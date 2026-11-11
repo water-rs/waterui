@@ -275,8 +275,19 @@ impl App {
         Fut: Future<Output = QuitReply> + 'static,
     {
         let mut action = boxed_action(handler);
+        // A handler whose parameters cannot be extracted does not run: the
+        // failure is reported and the request is answered as if the app had
+        // registered no handler, which lets the termination proceed.
         self.termination.on_quit_request = Some(Box::new(
-            move |env| -> Pin<Box<dyn Future<Output = QuitReply>>> { Box::pin(action(env)) },
+            move |env| -> Pin<Box<dyn Future<Output = QuitReply>>> {
+                match action(env) {
+                    Ok(question) => Box::pin(question),
+                    Err(error) => {
+                        error.report();
+                        Box::pin(core::future::ready(QuitReply::Quit))
+                    }
+                }
+            },
         ));
         self
     }
@@ -304,7 +315,16 @@ impl App {
         let action = boxed_action_once(handler);
         self.termination.on_terminate =
             Some(Box::new(move |env| -> Pin<Box<dyn Future<Output = ()>>> {
-                Box::pin(action(env))
+                // A handler whose parameters cannot be extracted does not
+                // run: the failure is reported and the shutdown work is
+                // empty, so termination still completes.
+                match action(env) {
+                    Ok(shutdown) => Box::pin(shutdown),
+                    Err(error) => {
+                        error.report();
+                        Box::pin(core::future::ready(()))
+                    }
+                }
             }));
         self
     }
@@ -433,7 +453,7 @@ mod tests {
                 _ => None,
             })
             .expect("the menu must contain the declared command");
-        command.action.call(&parts.env);
+        command.action.run(&parts.env);
     }
 
     /// The environment `into_parts` hands a runner decides the Close

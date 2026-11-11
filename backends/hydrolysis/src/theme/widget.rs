@@ -3,253 +3,18 @@
 
 use cherenkov_record::{MaterialRegistry, Paint, Recorder};
 use core::time::Duration;
-use kurbo::{BezPath, Point, Rect, RoundedRectRadii};
+use kurbo::{Point, Rect};
 use nami::signal::IntoComputed;
 use waterui::navigation::tab::NativeTabStyle;
-use waterui_controls::toggle::ToggleStyle;
-use waterui_controls::{ControlSize, button::ButtonStyle};
 use waterui_core::EasingCurve;
 use waterui_core::animation::Animation;
 use waterui_core::handler::SharedAction;
-use waterui_core::interaction::{InteractionState, StateValue};
+use waterui_core::interaction::InteractionState;
 use waterui_core::plugin::Plugin;
-use waterui_core::{Binding, Computed, Signal};
+use waterui_core::{Binding, Computed, Environment, Signal};
 use waterui_form::picker::PickerStyle;
-use waterui_graphics::WorkingColor;
 use waterui_graphics::color::Color;
 use waterui_text::font::Font;
-
-/// Button layout metrics.
-#[derive(Debug, Clone, Copy)]
-pub struct ButtonMetrics {
-    /// Horizontal content padding.
-    pub padding_x: f64,
-    /// Vertical content padding.
-    pub padding_y: f64,
-    /// Minimum button width.
-    pub min_width: f64,
-    /// Minimum button height.
-    pub min_height: f64,
-}
-
-impl ButtonMetrics {
-    /// Create button layout metrics.
-    #[must_use]
-    pub const fn new(padding_x: f64, padding_y: f64, min_width: f64, min_height: f64) -> Self {
-        Self {
-            padding_x,
-            padding_y,
-            min_width,
-            min_height,
-        }
-    }
-}
-
-/// What Hydrolysis asks a theme's button hooks for: the button's style, its
-/// control size and whether its label resolved to an icon-only
-/// presentation.
-///
-/// Parameters travel by name, so a new one does not break a theme that
-/// reads the others.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct ButtonSpec {
-    /// The button's style.
-    pub style: ButtonStyle,
-    /// The button's control size.
-    pub size: ControlSize,
-    /// Whether the label resolved to `IconOnly`: the bounds are the theme's
-    /// touch target, and the chrome is the icon-button container centred
-    /// inside them.
-    pub icon_only: bool,
-}
-
-impl ButtonSpec {
-    /// The button's style.
-    #[must_use]
-    pub const fn style(&self) -> ButtonStyle {
-        self.style
-    }
-
-    /// The button's control size.
-    #[must_use]
-    pub const fn size(&self) -> ControlSize {
-        self.size
-    }
-
-    /// Whether the label resolved to `IconOnly`: the bounds are the theme's
-    /// touch target, and the chrome is the icon-button container centred
-    /// inside them.
-    #[must_use]
-    pub const fn icon_only(&self) -> bool {
-        self.icon_only
-    }
-}
-
-impl ButtonSpec {
-    /// The spec of a `style` button of `size`.
-    #[must_use]
-    pub const fn new(style: ButtonStyle, size: ControlSize, icon_only: bool) -> Self {
-        Self {
-            style,
-            size,
-            icon_only,
-        }
-    }
-}
-
-/// Backend-neutral presentation for a semantic interactive surface whose visual
-/// chrome is composed by its content view.
-///
-/// Installing this plugin on a `Button` or tappable view keeps the control's
-/// input, keyboard, focus, and accessibility semantics while allowing theme
-/// packages to supply exact state-layer geometry and colors for composed
-/// controls such as icon buttons, FABs, chips, and navigation destinations.
-#[derive(Debug, Clone)]
-pub struct InteractionStyle {
-    /// Layout metrics used by the semantic button wrapper.
-    pub metrics: ButtonMetrics,
-    /// State-layer and ripple color.
-    pub state_layer_color: Color,
-    /// State-layer clipping radii, per interaction state — a list item's
-    /// shape morphs from 8 to 12 to 16 as it is hovered and pressed.
-    pub state_layer_radii: StateValue<RoundedRectRadii>,
-    /// Optional fixed state-layer width.
-    pub state_layer_width: Option<f64>,
-    /// Optional fixed state-layer height.
-    pub state_layer_height: Option<f64>,
-    /// Horizontal alignment of a fixed state layer in the hit bounds.
-    pub state_layer_alignment_x: f64,
-    /// Vertical alignment of a fixed state layer in the hit bounds.
-    pub state_layer_alignment_y: f64,
-    /// Label color for semantic text labels, per interaction state; `None`
-    /// leaves the label's own color.
-    pub label_color: StateValue<Option<Color>>,
-    /// The ring drawn around the state layer while the control shows
-    /// keyboard focus; `None` draws none.
-    pub focus_ring: Option<FocusRing>,
-    /// Whether this pointer action participates in keyboard focus traversal.
-    pub keyboard_focusable: bool,
-}
-
-/// A focus indicator drawn around an interactive control while it shows
-/// keyboard focus ([`InteractionState::FOCUSED`]).
-///
-/// The ring follows the state layer's shape, grown outward by `offset`, so it
-/// matches the control's current corner radii.
-#[derive(Debug, Clone)]
-pub struct FocusRing {
-    /// Ring color.
-    pub color: Color,
-    /// Stroke width.
-    pub width: f64,
-    /// Gap between the state layer's edge and the ring's inner edge.
-    pub offset: f64,
-}
-
-impl InteractionStyle {
-    /// Creates an interaction presentation with transparent semantic-button
-    /// chrome and no label-color override.
-    #[must_use]
-    pub fn new(
-        metrics: ButtonMetrics,
-        state_layer_color: impl Into<Color>,
-        state_layer_radii: impl Into<RoundedRectRadii>,
-    ) -> Self {
-        Self {
-            metrics,
-            state_layer_color: state_layer_color.into(),
-            state_layer_radii: StateValue::new(state_layer_radii.into()),
-            state_layer_width: None,
-            state_layer_height: None,
-            state_layer_alignment_x: 0.5,
-            state_layer_alignment_y: 0.5,
-            label_color: StateValue::new(None),
-            focus_ring: None,
-            keyboard_focusable: true,
-        }
-    }
-
-    /// Uses a fixed state-layer size aligned within the semantic hit bounds.
-    #[must_use]
-    pub const fn fixed_state_layer(
-        mut self,
-        width: f64,
-        height: f64,
-        alignment_x: f64,
-        alignment_y: f64,
-    ) -> Self {
-        self.state_layer_width = Some(width);
-        self.state_layer_height = Some(height);
-        self.state_layer_alignment_x = alignment_x;
-        self.state_layer_alignment_y = alignment_y;
-        self
-    }
-
-    /// Resolves the state-layer drawing bounds inside the semantic hit bounds.
-    #[must_use]
-    pub fn state_layer_bounds(&self, hit_bounds: Rect) -> Rect {
-        let width = self
-            .state_layer_width
-            .unwrap_or_else(|| hit_bounds.width())
-            .min(hit_bounds.width());
-        let height = self
-            .state_layer_height
-            .unwrap_or_else(|| hit_bounds.height())
-            .min(hit_bounds.height());
-        let x0 = (hit_bounds.width() - width)
-            .mul_add(self.state_layer_alignment_x.clamp(0.0, 1.0), hit_bounds.x0);
-        let y0 = (hit_bounds.height() - height)
-            .mul_add(self.state_layer_alignment_y.clamp(0.0, 1.0), hit_bounds.y0);
-        Rect::new(x0, y0, x0 + width, y0 + height)
-    }
-
-    /// Sets the state-layer clipping radii per interaction state.
-    #[must_use]
-    pub fn state_layer_radii(mut self, radii: StateValue<RoundedRectRadii>) -> Self {
-        self.state_layer_radii = radii;
-        self
-    }
-
-    /// Sets enabled and disabled label colors for semantic text labels.
-    #[must_use]
-    pub fn label_colors(self, enabled: impl Into<Color>, disabled: impl Into<Color>) -> Self {
-        self.label_color(
-            StateValue::new(Some(enabled.into()))
-                .when(InteractionState::DISABLED, Some(disabled.into())),
-        )
-    }
-
-    /// Sets the label color for semantic text labels per interaction state.
-    #[must_use]
-    pub fn label_color(mut self, color: StateValue<Option<Color>>) -> Self {
-        self.label_color = color;
-        self
-    }
-
-    /// Draws `ring` around the state layer while the control shows keyboard
-    /// focus.
-    #[must_use]
-    pub fn focus_ring(mut self, ring: FocusRing) -> Self {
-        self.focus_ring = Some(ring);
-        self
-    }
-
-    /// Returns the label color for `state`.
-    #[must_use]
-    pub fn resolved_label_color(&self, state: InteractionState) -> Option<Color> {
-        self.label_color.resolve(state).clone()
-    }
-
-    /// Keeps the interaction pointer-only, for modal scrims and similar layers.
-    #[must_use]
-    pub const fn pointer_only(mut self) -> Self {
-        self.keyboard_focusable = false;
-        self
-    }
-}
-
-impl Plugin for InteractionStyle {}
 
 /// Publishes whether an interactive subtree owns keyboard focus.
 #[derive(Debug, Clone)]
@@ -330,7 +95,7 @@ impl ModalInteraction {
 
     /// Dispatches the modal Escape action.
     pub fn handle_escape(&self, env: &waterui_core::Environment) {
-        self.escape_action.call(env);
+        self.escape_action.run(env);
     }
 }
 
@@ -412,8 +177,9 @@ impl PressWaves {
 pub struct WidgetInteractionState {
     /// The widget's interaction flags for this frame — hovered, pressed,
     /// keyboard-focus-visible, dragged, selected, disabled — resolved by the
-    /// renderer's bookkeeping. Themes read it to resolve [`StateValue`]
-    /// fields directly. When [`InteractionState::DISABLED`] is set the widget
+    /// renderer's bookkeeping. Themes read it to resolve
+    /// [`StateValue`](waterui_core::interaction::StateValue) fields
+    /// directly. When [`InteractionState::DISABLED`] is set the widget
     /// renders its inactive appearance and the renderer suppresses hover,
     /// press, and focus, so the remaining flags stay at rest.
     pub state: InteractionState,
@@ -477,26 +243,6 @@ pub struct InteractionMotion {
     pub touch_delay: Duration,
 }
 
-/// Motion policy for progress indicators.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ProgressMotion {
-    /// Animation used for linear determinate value changes.
-    pub linear_determinate: Animation,
-    /// Animation used for circular determinate value changes.
-    pub circular_determinate: Animation,
-    /// Full cycle duration for linear indeterminate progress.
-    pub linear_indeterminate_cycle: Duration,
-    /// Full cycle duration for circular indeterminate progress.
-    pub circular_indeterminate_cycle: Duration,
-    /// Full cycle duration for the loading indicator.
-    ///
-    /// The indicator runs two beats at once — it morphs on one and rotates on
-    /// another — and they do not divide each other, so this is the period over
-    /// which both come back into phase. It is long, which is the point: the
-    /// animation never visibly repeats.
-    pub loading_cycle: Duration,
-}
-
 /// Motion policy for radio selection indicators.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RadioSelectionMotion {
@@ -545,81 +291,6 @@ pub struct NavigationMotion {
     /// Progress at which the outgoing layer has faded out and the incoming
     /// layer begins fading in.
     pub fade_through_threshold: f32,
-}
-
-/// Toggle layout metrics.
-#[derive(Debug, Clone, Copy)]
-pub struct ToggleMetrics {
-    /// Toggle control width.
-    pub width: f64,
-    /// Toggle control height.
-    pub height: f64,
-    /// Spacing between label and toggle control.
-    pub label_spacing: f64,
-}
-
-impl ToggleMetrics {
-    /// Create toggle layout metrics.
-    #[must_use]
-    pub const fn new(width: f64, height: f64, label_spacing: f64) -> Self {
-        Self {
-            width,
-            height,
-            label_spacing,
-        }
-    }
-}
-
-/// Which of a stepper's two buttons is being drawn.
-///
-/// A stepper is a pair, and Material joins a pair into one silhouette: the two
-/// far ends are fully round while the corners either side of the seam are
-/// tucked in. A theme cannot tell those apart from bounds alone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "closed: a stepper has a decrement end and an increment end"
-)]
-pub enum StepperEnd {
-    /// The decrement button, at the leading end.
-    Decrement,
-    /// The increment button, at the trailing end.
-    Increment,
-}
-
-/// Stepper layout metrics.
-#[derive(Debug, Clone, Copy)]
-pub struct StepperMetrics {
-    /// Minimum size for each stepper button.
-    pub button_min_size: f64,
-    /// Maximum size for each stepper button.
-    pub button_max_size: f64,
-    /// Preferred size for each stepper button.
-    pub button_intrinsic_size: f64,
-    /// Spacing between stepper buttons.
-    pub button_spacing: f64,
-    /// Spacing between label and buttons.
-    pub label_spacing: f64,
-}
-
-impl StepperMetrics {
-    /// Create stepper layout metrics.
-    #[must_use]
-    pub const fn new(
-        button_min_size: f64,
-        button_max_size: f64,
-        button_intrinsic_size: f64,
-        button_spacing: f64,
-        label_spacing: f64,
-    ) -> Self {
-        Self {
-            button_min_size,
-            button_max_size,
-            button_intrinsic_size,
-            button_spacing,
-            label_spacing,
-        }
-    }
 }
 
 /// Text input layout metrics.
@@ -711,174 +382,6 @@ pub struct PickerMetrics {
     /// `horizontal_inset` padding on both sides (M3 `ButtonDefaults.MinWidth`
     /// is 58dp per segment; unused by non-segmented styles).
     pub segment_min_width: f64,
-}
-
-/// Slider layout metrics.
-#[derive(Debug, Clone, Copy)]
-pub struct SliderMetrics {
-    /// Horizontal slider inset.
-    pub horizontal_inset: f64,
-    /// Gap between slider labels and track.
-    pub horizontal_spacing: f64,
-    /// Vertical spacing around the track.
-    pub vertical_spacing: f64,
-    /// Minimum track width.
-    pub min_track_width: f64,
-    /// Track height.
-    pub track_height: f64,
-    /// Width of the handle. A theme whose handle is a bar rather than a circle
-    /// sets this independently of [`Self::handle_height`].
-    pub handle_width: f64,
-    /// Height of the handle, which also sets the control row's height.
-    pub handle_height: f64,
-}
-
-impl SliderMetrics {
-    /// Create slider layout metrics.
-    #[must_use]
-    pub const fn new(
-        horizontal_inset: f64,
-        horizontal_spacing: f64,
-        vertical_spacing: f64,
-        min_track_width: f64,
-        track_height: f64,
-        handle_width: f64,
-        handle_height: f64,
-    ) -> Self {
-        Self {
-            horizontal_inset,
-            horizontal_spacing,
-            vertical_spacing,
-            min_track_width,
-            track_height,
-            handle_width,
-            handle_height,
-        }
-    }
-
-    /// Horizontal room the handle needs beyond each end of the track, so it
-    /// stays inside the control at either extreme.
-    #[must_use]
-    pub const fn handle_overhang(&self) -> f64 {
-        self.handle_width / 2.0
-    }
-}
-
-/// Layout metrics of the value indicator a slider shows above its thumb while
-/// the thumb is dragged.
-#[derive(Debug, Clone, Copy)]
-pub struct SliderValueIndicatorMetrics {
-    /// Horizontal padding inside the bubble around the value text.
-    pub padding_x: f64,
-    /// Vertical padding inside the bubble around the value text.
-    pub padding_y: f64,
-    /// Gap between the top of the thumb and the bottom of the bubble.
-    pub thumb_gap: f64,
-    /// Smallest bubble width regardless of how narrow the label is.
-    pub min_width: f64,
-    /// Smallest bubble height regardless of how short the label is.
-    pub min_height: f64,
-}
-
-impl SliderValueIndicatorMetrics {
-    /// Create value indicator metrics.
-    #[must_use]
-    pub const fn new(
-        padding_x: f64,
-        padding_y: f64,
-        thumb_gap: f64,
-        min_width: f64,
-        min_height: f64,
-    ) -> Self {
-        Self {
-            padding_x,
-            padding_y,
-            thumb_gap,
-            min_width,
-            min_height,
-        }
-    }
-}
-
-/// Progress indicator layout metrics.
-#[derive(Debug, Clone, Copy)]
-pub struct ProgressMetrics {
-    /// Height reserved for labels.
-    pub label_height: f64,
-    /// Offset from label baseline to the linear bar.
-    pub bar_top_offset: f64,
-    /// Linear progress bar height.
-    pub bar_height: f64,
-    /// Horizontal inset for the linear bar.
-    pub bar_horizontal_inset: f64,
-    /// Gap above the value label.
-    pub value_label_top_spacing: f64,
-    /// Minimum linear track width.
-    pub min_track_width: f64,
-    /// Circular progress diameter. For the loading style this is the
-    /// container's side, and `loading_indicator_size` the shape drawn in it.
-    pub circular_diameter: f64,
-    /// Circular progress stroke width.
-    pub circular_stroke_width: f64,
-    /// Side of the morphing shape inside a loading indicator's container.
-    pub loading_indicator_size: f64,
-}
-
-impl ProgressMetrics {
-    /// Create linear progress layout metrics.
-    #[must_use]
-    pub const fn linear(
-        label_height: f64,
-        bar_top_offset: f64,
-        bar_height: f64,
-        bar_horizontal_inset: f64,
-        value_label_top_spacing: f64,
-        min_track_width: f64,
-    ) -> Self {
-        Self {
-            label_height,
-            bar_top_offset,
-            bar_height,
-            bar_horizontal_inset,
-            value_label_top_spacing,
-            min_track_width,
-            circular_diameter: 0.0,
-            circular_stroke_width: 0.0,
-            loading_indicator_size: 0.0,
-        }
-    }
-
-    /// Create circular progress layout metrics.
-    #[must_use]
-    pub const fn circular(circular_diameter: f64, circular_stroke_width: f64) -> Self {
-        Self {
-            label_height: 0.0,
-            bar_top_offset: 0.0,
-            bar_height: 0.0,
-            bar_horizontal_inset: 0.0,
-            value_label_top_spacing: 0.0,
-            min_track_width: 0.0,
-            circular_diameter,
-            circular_stroke_width,
-            loading_indicator_size: 0.0,
-        }
-    }
-
-    /// Create loading-indicator layout metrics.
-    #[must_use]
-    pub const fn loading(container_size: f64, indicator_size: f64) -> Self {
-        Self {
-            label_height: 0.0,
-            bar_top_offset: 0.0,
-            bar_height: 0.0,
-            bar_horizontal_inset: 0.0,
-            value_label_top_spacing: 0.0,
-            min_track_width: 0.0,
-            circular_diameter: container_size,
-            circular_stroke_width: 0.0,
-            loading_indicator_size: indicator_size,
-        }
-    }
 }
 
 /// How a tab bar lays out each item's icon and label.
@@ -1226,8 +729,6 @@ pub struct TableMetrics {
 pub trait WidgetTheme {
     /// Return motion policy for interactive widget chrome.
     fn interaction_motion(&self) -> InteractionMotion;
-    /// Return motion policy for progress indicators.
-    fn progress_motion(&self) -> ProgressMotion;
     /// Return motion policy for text input carets.
     fn text_caret_motion(&self) -> TextCaretMotion;
     /// Return motion policy for navigation transitions.
@@ -1253,155 +754,51 @@ pub trait WidgetTheme {
     /// right for a theme that records no backdrop material.
     fn register_backdrop_shaders(&self, _registry: &mut MaterialRegistry) {}
 
-    /// Return metrics for a button style.
-    fn button_metrics(&self, style: ButtonStyle, size: ControlSize) -> ButtonMetrics;
-    /// Return metrics for a button whose label presents only its icon.
+    /// The look of a button: a `Button`, an icon-only button and a menu
+    /// trigger.
     ///
-    /// Resolved by the backend when the label's own configuration — its
-    /// display-mode preference resolved against the environment — is
-    /// `IconOnly`. A theme's icon button lays out at its minimum touch
-    /// target with no text padding, so its bounds are also its hit area;
-    /// the chrome draws the smaller icon-button container centred inside
-    /// them. The default returns the text-button metrics, so a theme with
-    /// no icon-button presentation is unchanged.
-    fn icon_button_metrics(&self, style: ButtonStyle, size: ControlSize) -> ButtonMetrics {
-        self.button_metrics(style, size)
-    }
-    /// Optional button label foreground override. `disabled` selects the
-    /// inactive label color (e.g. Material's on-surface at 38%).
-    fn button_label_color(&self, _style: ButtonStyle, _disabled: bool) -> Option<Color> {
-        None
-    }
-    /// Optional button label font override.
-    fn button_label_font(&self, _style: ButtonStyle) -> Option<Font> {
-        None
-    }
+    /// Hydrolysis measures, places, hit-tests, records and animates the
+    /// button from the returned look, and requests it again only when
+    /// `spec` changes; everything else reaches the look through its
+    /// [`Driven`](super::Driven) values. A button inside a composed
+    /// control's [`Chrome`](super::Chrome) plugin takes that chrome, with
+    /// no padding, no minimum size and its label unstyled; a button on a
+    /// floating surface keeps this look's state-layer tokens, press
+    /// feedback, focus indicator, motion and hit region over the floating
+    /// style's container, colours and metrics.
+    fn button(&self, spec: &super::ButtonSpec, env: &Environment) -> super::ButtonLook;
+
     /// Content alpha for labels accompanying a disabled control (Material's
     /// 38% disabled-content token). Backends dim a disabled control's label
     /// views with this alpha.
     fn disabled_content_alpha(&self) -> f32 {
         0.38
     }
-    /// The button's chrome as engine-provided primitives.
-    ///
-    /// `Some` hands the button's container, interaction tint, press feedback
-    /// and focus indicator to Hydrolysis, which records them once and
-    /// animates hover, press and focus as live operands; the renderer then
-    /// does not call [`Self::draw_button_chrome`] or
-    /// [`Self::draw_button_state_layer`] for the button. `None`, the
-    /// default, keeps those draw hooks. A button inside an
-    /// [`InteractionStyle`] or a floating scope keeps the presentation that
-    /// scope supplies.
-    fn button_chrome(&self, _spec: ButtonSpec) -> Option<super::Chrome> {
-        None
-    }
-    /// Draw button chrome for a style. `state` carries the disabled flag so
-    /// themes can render the inactive container. `icon_only` marks a button
-    /// whose label resolved to `IconOnly`: the bounds are the theme's touch
-    /// target and the chrome draws the icon-button container centred inside
-    /// them rather than filling them.
-    fn draw_button_chrome(
-        &self,
-        recorder: &mut Recorder,
-        bounds: Rect,
-        style: ButtonStyle,
-        icon_only: bool,
-        state: WidgetInteractionState,
-    );
-    /// Draw the button state layer for a style. `icon_only` selects the
-    /// icon-button layer geometry — centred inside the touch-target bounds —
-    /// for a button whose label resolved to `IconOnly`.
-    fn draw_button_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _style: ButtonStyle,
-        _icon_only: bool,
-        _state: WidgetInteractionState,
-    ) {
-    }
-    /// Draw a state layer supplied by a composed semantic control.
-    fn draw_interaction_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _radii: RoundedRectRadii,
-        _color: WorkingColor,
-        _state: WidgetInteractionState,
-    ) {
-    }
 
-    /// Return metrics for a toggle style.
-    fn toggle_metrics(&self, style: ToggleStyle) -> ToggleMetrics;
-    /// Return the default animation for toggle value changes.
-    fn toggle_value_animation(&self) -> Animation;
-    /// Draw switch-style toggle chrome. `progress` is the animated 0..=1
-    /// value and `selected` is the toggle's current target, so staged
-    /// choreography (e.g. a thumb icon that enters late and exits early) can
-    /// tell which direction the animation is heading.
-    fn draw_toggle_switch(
-        &self,
-        recorder: &mut Recorder,
-        bounds: Rect,
-        progress: f32,
-        selected: bool,
-        state: WidgetInteractionState,
-    );
-    /// Draw switch-style toggle state layer.
-    fn draw_toggle_switch_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _progress: f32,
-        _selected: bool,
-        _state: WidgetInteractionState,
-    ) {
-    }
-    /// Draw checkbox-style toggle chrome. `state` carries the disabled flag
-    /// so themes can render the inactive container.
-    fn draw_toggle_checkbox(
-        &self,
-        recorder: &mut Recorder,
-        bounds: Rect,
-        progress: f32,
-        state: WidgetInteractionState,
-    );
-    /// Draw checkbox-style toggle state layer.
-    fn draw_toggle_checkbox_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _progress: f32,
-        _state: WidgetInteractionState,
-    ) {
-    }
-
-    /// Return stepper metrics.
-    fn stepper_metrics(&self) -> StepperMetrics;
-    /// Draw one stepper button.
+    /// The look of a switch toggle.
     ///
-    /// `end` says which of the pair this is, because a theme may join them into
-    /// one silhouette whose outer corners differ from the seam between them.
-    fn draw_stepper_button(
-        &self,
-        recorder: &mut Recorder,
-        bounds: Rect,
-        end: StepperEnd,
-        state: WidgetInteractionState,
-    );
-    /// Draw a stepper decrement icon.
-    fn draw_stepper_decrement_icon(&self, recorder: &mut Recorder, bounds: Rect);
-    /// Draw a stepper increment icon.
-    fn draw_stepper_increment_icon(&self, recorder: &mut Recorder, bounds: Rect);
-    /// Draw one stepper button state layer.
-    fn draw_stepper_button_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _end: StepperEnd,
-        _state: WidgetInteractionState,
-    ) {
-    }
+    /// Hydrolysis measures, places, hit-tests, records and animates the
+    /// switch from the returned look, and requests it again only when `spec`
+    /// changes; everything else reaches the look through its
+    /// [`Driven`](super::Driven) values, which read the toggle's `bool`, so a
+    /// toggle, hover, press or drag moves live operands and records nothing.
+    /// The look's [`SwitchDrag`](super::SwitchDrag) maps a drag of the knob
+    /// to the value it settles on.
+    fn switch(&self, spec: &super::ToggleSpec, env: &Environment) -> super::SwitchLook;
+
+    /// The look of a checkbox toggle, requested and realized like
+    /// [`Self::switch`] but taking taps only.
+    fn checkbox(&self, spec: &super::ToggleSpec, env: &Environment) -> super::CheckboxLook;
+
+    /// The look of a stepper.
+    ///
+    /// Hydrolysis measures, places, hit-tests and records the stepper from
+    /// the returned look, and requests it again only when `spec` changes;
+    /// everything else reaches the look through its ends'
+    /// [`Chrome`](super::Chrome) values, so a press, a hover or a value
+    /// change moves live operands and records nothing. An end at the limit
+    /// of the stepper's range is disabled.
+    fn stepper(&self, spec: &super::StepperSpec, env: &Environment) -> super::StepperLook;
 
     /// Return text input metrics.
     fn input_field_metrics(&self) -> InputFieldMetrics;
@@ -1521,109 +918,40 @@ pub trait WidgetTheme {
     ) {
     }
 
-    /// Return slider metrics for the given control size.
-    fn slider_metrics(&self, size: ControlSize) -> SliderMetrics;
-    /// Draw slider track chrome for a control of `size`. `state` carries the
-    /// disabled flag so themes can render the inactive track.
-    fn draw_slider_track(
-        &self,
-        recorder: &mut Recorder,
-        track_rect: Rect,
-        fill_rect: Rect,
-        size: ControlSize,
-        state: WidgetInteractionState,
-    );
-    /// Draw slider thumb chrome for a control of `size`.
-    fn draw_slider_thumb(
-        &self,
-        recorder: &mut Recorder,
-        center: Point,
-        radius: f64,
-        size: ControlSize,
-        state: WidgetInteractionState,
-    );
-    /// Draw slider thumb state layer.
-    fn draw_slider_thumb_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _center: Point,
-        _radius: f64,
-        _size: ControlSize,
-        _state: WidgetInteractionState,
-    ) {
-    }
-    /// Return the layout metrics of the value indicator shown above the thumb
-    /// while the slider is dragged.
-    fn slider_value_indicator_metrics(&self) -> SliderValueIndicatorMetrics;
-    /// Return the value indicator's label foreground color.
-    fn slider_value_indicator_color(&self) -> Color;
-    /// Return the value indicator's label font.
-    fn slider_value_indicator_font(&self) -> Font;
-    /// Draw the value indicator's chrome behind its label. `bounds` is the
-    /// bubble rect the renderer laid out above the thumb.
-    fn draw_slider_value_indicator(&self, recorder: &mut Recorder, bounds: Rect);
+    /// Return how the slider of `spec` looks and responds, as plain data
+    /// (water-rs/waterui#1434): the measures it is laid out by, its track,
+    /// fill, knob and value indicator as parts over the normalized value,
+    /// the motion of that value and how a drag maps to it. Hydrolysis
+    /// measures, places, hit-tests, records and animates the slider from
+    /// the look alone.
+    fn slider(&self, spec: &super::SliderSpec, env: &Environment) -> super::SliderLook;
 
-    /// Return progress indicator metrics.
-    fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics;
-    /// Draw the linear progress track.
+    /// The look of a linear progress indicator, determinate or not.
     ///
-    /// `active_end` is the x the active indicator reaches, or `None` while the
-    /// indicator is indeterminate. Material's Expressive linear indicator leaves
-    /// a gap between the active bar and the track and marks the track's end with
-    /// a stop indicator, so the track cannot be drawn without knowing where the
-    /// active portion stops.
-    fn draw_progress_linear_track(
+    /// Hydrolysis measures, places, records and animates the indicator from
+    /// the returned look, and requests it again only when `spec` changes;
+    /// the value reaches the look through its [`Driven`](super::Driven)
+    /// values, which follow it through the look's value motion. An
+    /// indeterminate indicator's motion is the look's repeating values and
+    /// rotating parts, which the engine runs.
+    fn linear_progress(
         &self,
-        recorder: &mut Recorder,
-        bounds: Rect,
-        active_end: Option<f64>,
-    );
-    /// Draw the linear progress fill.
-    fn draw_progress_linear_fill(&self, recorder: &mut Recorder, bounds: Rect);
-    /// Draw the linear indeterminate progress indicator.
-    fn draw_progress_linear_indeterminate(
+        spec: &super::ProgressSpec,
+        env: &Environment,
+    ) -> super::LinearProgressLook;
+    /// The look of a circular progress indicator, determinate or not.
+    fn circular_progress(
         &self,
-        recorder: &mut Recorder,
-        bounds: Rect,
-        elapsed: Duration,
-        four_color: bool,
-    );
-    /// Draw the circular progress track.
-    ///
-    /// `active_turns` is how much of the circle the active arc covers (`0.0..=1.0`),
-    /// or `None` while the indicator is indeterminate. As with the linear bar,
-    /// Material's Expressive circular indicator separates track from indicator by
-    /// `TrackActiveSpace`, so the track needs to know where the active arc ends.
-    fn draw_progress_circular_track(
+        spec: &super::ProgressSpec,
+        env: &Environment,
+    ) -> super::IndicatorLook;
+    /// The look of a loading indicator: an indeterminate indicator that says
+    /// work is under way, with no reading to fill.
+    fn loading_indicator(
         &self,
-        recorder: &mut Recorder,
-        center: Point,
-        radius: f64,
-        width: f64,
-        active_turns: Option<f64>,
-    );
-    /// Draw the circular progress fill path.
-    fn draw_progress_circular_fill(&self, recorder: &mut Recorder, path: &BezPath, width: f64);
-    /// Draw the loading indicator at `elapsed` into its cycle.
-    ///
-    /// `bounds` is the container; the theme insets the shape itself.
-    fn draw_progress_loading(
-        &self,
-        recorder: &mut Recorder,
-        bounds: Rect,
-        elapsed: Duration,
-        four_color: bool,
-    );
-    /// Draw the circular indeterminate progress indicator.
-    fn draw_progress_circular_indeterminate(
-        &self,
-        recorder: &mut Recorder,
-        center: Point,
-        radius: f64,
-        width: f64,
-        elapsed: Duration,
-        four_color: bool,
-    );
+        spec: &super::ProgressSpec,
+        env: &Environment,
+    ) -> super::IndicatorLook;
 
     /// Return navigation bar layout metrics.
     fn navigation_metrics(&self) -> NavigationMetrics;
@@ -1739,19 +1067,4 @@ pub trait WidgetTheme {
     fn draw_table_cell_border(&self, recorder: &mut Recorder, bounds: Rect);
     /// Draw a table column separator.
     fn draw_table_column_separator(&self, recorder: &mut Recorder, from: Point, to: Point);
-}
-
-/// Progress indicator visual style understood by backend theme packages.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "every style package draws each progress style variant by variant"
-)]
-pub enum ProgressIndicatorStyle {
-    /// Horizontal linear indicator.
-    Linear,
-    /// Circular indicator.
-    Circular,
-    /// Material's morphing loading indicator.
-    Loading,
 }

@@ -7,10 +7,10 @@ use naga::back::{hlsl, msl, spv};
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use naga::{Module, front::wgsl};
 
-/// The engine modules exactly as `build.rs` composed, validated
+/// Both colour precisions of the twelve engine modules exactly as `build.rs` composed, validated
 /// and emitted them — read from `OUT_DIR` so the test exercises the
 /// shipped source rather than a copy of its composition logic.
-const ENGINE_SOURCES: [&str; 12] = [
+const ENGINE_SOURCES: [&str; 24] = [
     include_str!(concat!(env!("OUT_DIR"), "/engine0.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine1.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine2.wgsl")),
@@ -23,6 +23,18 @@ const ENGINE_SOURCES: [&str; 12] = [
     include_str!(concat!(env!("OUT_DIR"), "/engine9.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine10.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine11.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine0_f32.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine1_f32.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine2_f32.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine3_f32.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine4_f32.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine5_f32.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine6_f32.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine7_f32.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine8_f32.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine9_f32.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine10_f32.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine11_f32.wgsl")),
 ];
 const SHARED: &str = include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl"));
 const BLEND: &str = include_str!("../src/render/blend.wgsl");
@@ -46,7 +58,7 @@ fn composed(variant: usize) -> (Module, naga::valid::ModuleInfo) {
     // image-source conversion rounds through `quantizeToF16`.
     let info = Validator::new(
         ValidationFlags::all(),
-        Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+        Capabilities::SHADER_FLOAT16_IN_FLOAT32.union(Capabilities::SHADER_FLOAT16),
     )
     .validate(&module)
     .unwrap_or_else(|e| panic!("variant {variant}: {e:?}"));
@@ -90,7 +102,7 @@ split_test! {
 fn every_variant_emits_hlsl() {
     for variant in 0..ENGINE_SOURCES.len() {
         let (module, info) = composed(variant);
-        let options = hlsl::Options::default();
+        let options = hlsl::Options { shader_model: hlsl::ShaderModel::V6_2, ..hlsl::Options::default() };
         let mut out = String::new();
         let pipeline_options = hlsl::PipelineOptions::default();
         let mut writer = hlsl::Writer::new(&mut out, &options, &pipeline_options);
@@ -114,7 +126,7 @@ fn effect_module(name: &str, user: &str) -> (Module, naga::valid::ModuleInfo) {
         wgsl::parse_str(&union_text).unwrap_or_else(|e| panic!("{name} (union): {e}"));
     Validator::new(
         ValidationFlags::all(),
-        Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+        Capabilities::SHADER_FLOAT16_IN_FLOAT32.union(Capabilities::SHADER_FLOAT16),
     )
     .validate(&union_module)
     .unwrap_or_else(|e| panic!("{name} (union): {e:?}"));
@@ -122,7 +134,7 @@ fn effect_module(name: &str, user: &str) -> (Module, naga::valid::ModuleInfo) {
     let module = wgsl::parse_str(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
     let info = Validator::new(
         ValidationFlags::all(),
-        Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+        Capabilities::SHADER_FLOAT16_IN_FLOAT32.union(Capabilities::SHADER_FLOAT16),
     )
     .validate(&module)
     .unwrap_or_else(|e| panic!("{name}: {e:?}"));
@@ -147,7 +159,10 @@ fn effect_emits(name: &str, module: &Module, info: &naga::valid::ModuleInfo) {
         .write(module, info, None, &None, &mut words)
         .unwrap_or_else(|e| panic!("{name}: spv: {e}"));
     assert_ne!(words, Vec::<u32>::new());
-    let options = hlsl::Options::default();
+    let options = hlsl::Options {
+        shader_model: hlsl::ShaderModel::V6_2,
+        ..hlsl::Options::default()
+    };
     let mut out = String::new();
     let pipeline_options = hlsl::PipelineOptions::default();
     let mut hlsl_writer = hlsl::Writer::new(&mut out, &options, &pipeline_options);
@@ -160,7 +175,7 @@ fn effect_emits(name: &str, module: &Module, info: &naga::valid::ModuleInfo) {
 split_test! {
 fn silhouette_shadow_emits() {
     let module = wgsl::parse_str(include_str!("../src/render/shadow.wgsl")).expect("silhouette WGSL");
-    let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16_IN_FLOAT32)
+    let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16_IN_FLOAT32.union(Capabilities::SHADER_FLOAT16))
         .validate(&module).expect("valid silhouette module");
     effect_emits("silhouette shadow", &module, &info);
 }
@@ -229,7 +244,7 @@ fn standalone_modules_emit() {
         ("resolve", RESOLVE.to_owned()),
     ] {
         let module = wgsl::parse_str(&source).unwrap_or_else(|e| panic!("{name}: {e}"));
-        let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16_IN_FLOAT32)
+        let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16_IN_FLOAT32.union(Capabilities::SHADER_FLOAT16))
             .validate(&module)
             .unwrap_or_else(|e| panic!("{name}: {e:?}"));
         effect_emits(name, &module, &info);

@@ -7,10 +7,14 @@ use std::ops::Range;
 
 use kurbo::Affine;
 use smallvec::SmallVec;
+use waterui_contract::contract_violation;
 
-use crate::{BlendMode, Command, Dirty, DisplayList, FillRule, Group, RenderError, ShapeData};
+use crate::{
+    BlendMode, Command, Dirty, DisplayList, FillRule, Group, RenderError, ShapeData, TextLayouts,
+};
 
 mod disjoint;
+pub mod memory;
 pub mod projective;
 pub mod rounded_box;
 pub mod scanline;
@@ -114,6 +118,19 @@ pub trait Compiler {
     /// # Errors
     /// Returns a backend error for unsupported or invalid content.
     fn group(&mut self, group: &Group, isolate: bool) -> Result<Option<Self::Op>, Self::Error>;
+    /// Preserve a nested picture boundary when the backend retains its raster.
+    /// Returning `None` keeps the ordinary inline command traversal.
+    ///
+    /// # Errors
+    /// Propagates the backend compiler's error.
+    fn picture(
+        &mut self,
+        _picture: &crate::Picture,
+        _ambient: Affine,
+    ) -> Result<Option<Self::Op>, Self::Error> {
+        Ok(None)
+    }
+
     /// Close a retained scope.
     fn end(&mut self) -> Self::Op;
 }
@@ -130,6 +147,9 @@ pub struct Lowered<T> {
     /// Draws and paired scopes in painter order.
     pub ops: Vec<T>,
     spans: Vec<Span>,
+    /// Whether the operations open a picture scope. Only a full walk can add
+    /// or remove one: a patch preserves every operation's kind.
+    pictures: bool,
 }
 
 impl<T: Operation> Lowered<T> {
@@ -140,12 +160,14 @@ impl<T: Operation> Lowered<T> {
     pub fn full<C: Compiler<Op = T>>(
         list: &DisplayList,
         compiler: &mut C,
+        text: &TextLayouts,
     ) -> Result<Self, C::Error> {
         let mut lowered = Self {
             ops: Vec::with_capacity(list.len()),
             spans: Vec::with_capacity(list.len()),
+            pictures: false,
         };
-        lowered.refill(list, compiler)?;
+        lowered.refill(list, compiler, text)?;
         Ok(lowered)
     }
 
@@ -153,18 +175,20 @@ impl<T: Operation> Lowered<T> {
         &mut self,
         list: &DisplayList,
         compiler: &mut C,
+        text: &TextLayouts,
     ) -> Result<(), C::Error> {
         self.ops.clear();
         self.spans.clear();
-        walk(
-            list,
+        self.pictures = walk(
+            Source { list, text },
             0..list.len(),
             Affine::IDENTITY,
             compiler,
             &mut self.ops,
             &mut self.spans,
             true,
-        )
+        )?;
+        Ok(())
     }
 
     /// Patch dirty command spans in place. `None` means the operation count or
@@ -181,6 +205,7 @@ impl<T: Operation> Lowered<T> {
         list: &DisplayList,
         dirty: &Dirty,
         compiler: &mut C,
+        text: &TextLayouts,
     ) -> Result<Option<Vec<Range<usize>>>, C::Error> {
         let mut patches = Vec::new();
         for range in dirty.ranges() {
@@ -188,7 +213,7 @@ impl<T: Operation> Lowered<T> {
             let mut ops = Vec::new();
             let mut spans = Vec::with_capacity(range.len());
             walk(
-                list,
+                Source { list, text },
                 range.clone(),
                 self.spans[range.start].ambient,
                 compiler,
@@ -209,7 +234,7 @@ impl<T: Operation> Lowered<T> {
                     .zip(&ops)
                     .any(|(a, b)| !a.same_structure(b))
             {
-                *self = Self::full(list, compiler)?;
+                *self = Self::full(list, compiler, text)?;
                 return Ok(None);
             }
             let offset = u32::try_from(lo).expect("op index fits u32");
@@ -255,27 +280,50 @@ pub fn append<C: Compiler>(
     compiler: &mut C,
     ops: &mut Vec<C::Op>,
 ) -> Result<(), C::Error> {
+    append_with(list, ambient, compiler, &TextLayouts::default(), ops)
+}
+
+/// [`append`] for content that may draw registered text layouts.
+fn append_with<C: Compiler>(
+    list: &DisplayList,
+    ambient: Affine,
+    compiler: &mut C,
+    text: &TextLayouts,
+    ops: &mut Vec<C::Op>,
+) -> Result<(), C::Error> {
     let mut spans = Vec::with_capacity(list.len());
     walk(
-        list,
+        Source { list, text },
         0..list.len(),
         ambient,
         compiler,
         ops,
         &mut spans,
         false,
-    )
+    )?;
+    Ok(())
 }
 
+/// A display list and the text layouts its `Command::Text`s may name.
+#[derive(Clone, Copy)]
+struct Source<'a> {
+    list: &'a DisplayList,
+    text: &'a TextLayouts,
+}
+
+/// Lowers `range` of `source`'s list, returning whether it opened a picture
+/// scope.
 fn walk<C: Compiler>(
-    list: &DisplayList,
+    source: Source<'_>,
     range: Range<usize>,
     ambient: Affine,
     compiler: &mut C,
     ops: &mut Vec<C::Op>,
     spans: &mut Vec<Span>,
     root: bool,
-) -> Result<(), C::Error> {
+) -> Result<bool, C::Error> {
+    let Source { list, text } = source;
+    let mut pictures = false;
     let mut i = range.start;
     while i < range.end {
         let start = u32::try_from(ops.len()).expect("op index fits u32");
@@ -297,13 +345,36 @@ fn walk<C: Compiler>(
                 Some((*end as usize, ambient, compiler.group(group, isolate)?))
             }
             Command::Picture { picture, transform } => {
-                append(picture.display_list(), ambient * *transform, compiler, ops)?;
+                let inner = ambient * *transform;
+                let opener = compiler.picture(picture, inner)?;
+                let emitted = opener.is_some();
+                pictures |= emitted;
+                ops.extend(opener);
+                append_with(picture.display_list(), inner, compiler, text, ops)?;
+                if emitted {
+                    let close = u32::try_from(ops.len()).expect("op index fits u32");
+                    *ops[start as usize]
+                        .end_mut()
+                        .expect("picture opener has an end") = close;
+                    ops.push(compiler.end());
+                }
                 None
             }
-            Command::Text { layout, .. } => panic!(
-                "text layout {} reached Cherenkov, which draws text as glyph runs and registers no text layouts: the recorder is bound to another target's text engine",
-                layout.raw()
-            ),
+            Command::Text {
+                layout,
+                transform,
+                paint,
+            } => {
+                let expansion = text.expand(*layout, paint.as_ref());
+                append_with(
+                    expansion.display_list(),
+                    ambient * *transform,
+                    compiler,
+                    text,
+                    ops,
+                )?;
+                None
+            }
             Command::End => unreachable!("validated scopes consume their end"),
             command => {
                 compiler.draw_at(command, ambient, ops, root.then_some(i))?;
@@ -317,7 +388,7 @@ fn walk<C: Compiler>(
                 ops: start..u32::try_from(ops.len()).expect("op index fits u32"),
                 ambient,
             });
-            walk(list, i + 1..end, inner, compiler, ops, spans, root)?;
+            pictures |= walk(source, i + 1..end, inner, compiler, ops, spans, root)?;
             let close = u32::try_from(ops.len()).expect("op index fits u32");
             if emitted {
                 *ops[start as usize]
@@ -338,7 +409,7 @@ fn walk<C: Compiler>(
             i += 1;
         }
     }
-    Ok(())
+    Ok(pictures)
 }
 
 /// A retained device realization. Invalidation keeps the storage available for
@@ -358,6 +429,16 @@ impl<T> Default for Realization<T> {
             valid: false,
         }
     }
+}
+
+/// What one [`Content::prepare`] did and found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Prepared {
+    /// Source commands lowered by this call.
+    pub commands: u32,
+    /// Whether the prepared operations open a picture scope, which happens
+    /// only where the compiler preserved a picture boundary.
+    pub pictures: bool,
 }
 
 /// One layer's display list, accumulated dirty commands, and retained output.
@@ -385,10 +466,15 @@ impl<O: Operation, E> Content<O, E> {
         }
     }
 
-    /// Replace all source commands while keeping the lowering buffers available.
-    pub fn replace(&mut self, list: crate::Picture) -> crate::Picture {
+    /// Replace source commands, returning the previous picture and whether it changed.
+    /// Equivalent content retains preparation, including any pending slot updates.
+    pub fn replace(&mut self, list: crate::Picture) -> (crate::Picture, bool) {
         self.live = true;
+        let changed = self.list != list;
         let previous = std::mem::replace(&mut self.list, list);
+        if !changed {
+            return (previous, false);
+        }
         self.dirty = Dirty::default();
         self.emissions.clear();
         if let Some(lowered) = &mut self.lowered {
@@ -396,7 +482,7 @@ impl<O: Operation, E> Content<O, E> {
             lowered.spans.clear();
         }
         self.rebuild = true;
-        previous
+        (previous, true)
     }
 
     /// Extract the retained source picture.
@@ -423,8 +509,8 @@ impl<O: Operation, E> Content<O, E> {
     /// Whether the current source commands, slot updates applied and nested
     /// pictures included, sample `resource`.
     #[must_use]
-    pub fn references(&self, resource: crate::ResourceId) -> bool {
-        self.list.display_list().references(resource)
+    pub fn references(&self, resource: crate::ResourceId, text: &TextLayouts) -> bool {
+        text.samples(self.list.display_list(), resource)
     }
 
     /// Current prepared operations and the source they index. Dirty or
@@ -449,48 +535,94 @@ impl<O: Operation, E> Content<O, E> {
     /// Returns whether anything was discarded.
     pub fn invalidate_image(&mut self, id: crate::ImageId) -> bool {
         let stale = self.lowered.is_some()
-            && (!self.dirty.is_empty() || self.references(crate::ResourceId::Image(id)));
+            && (!self.dirty.is_empty()
+                || self
+                    .list
+                    .display_list()
+                    .references(crate::ResourceId::Image(id)));
         if stale {
             self.invalidate();
         }
         stale
     }
 
+    /// Apply a structural edit of live content: its splices change the
+    /// command structure, so the content is lowered again at the next
+    /// prepare, as after a replacement, while the layer keeps it.
+    ///
+    /// # Contract
+    /// An edit targeting immutable picture content is a contract violation;
+    /// the content stays as it is.
+    pub fn edit(&mut self, edit: crate::Edit) {
+        if !self.live {
+            contract_violation!(
+                "a structural edit targets immutable picture content; the edit is dropped"
+            );
+            return;
+        }
+        self.list.edit(edit);
+        self.dirty = Dirty::default();
+        self.emissions.clear();
+        if let Some(lowered) = &mut self.lowered {
+            lowered.ops.clear();
+            lowered.spans.clear();
+        }
+        self.rebuild = true;
+    }
+
     /// Accumulate every commit arriving before the next render.
     ///
-    /// # Panics
-    /// When slot updates target immutable picture content.
+    /// # Contract
+    /// Slot updates targeting immutable picture content are a contract
+    /// violation; the content stays as it is.
     pub fn update(&mut self, updates: Vec<crate::SlotUpdate>) {
-        assert!(self.live, "slot update targets immutable picture content");
+        if !self.live {
+            contract_violation!(
+                "slot update targets immutable picture content; the updates are dropped"
+            );
+            return;
+        }
         self.dirty.union(self.list.apply(updates));
     }
 
-    /// Resolve dirty source commands; return the number lowered.
+    /// Resolve dirty source commands.
     ///
     /// # Errors
     /// Propagates the backend compiler's error.
     ///
     /// # Panics
     /// When the command count exceeds u32.
-    pub fn prepare<C: Compiler<Op = O>>(&mut self, compiler: &mut C) -> Result<u32, C::Error> {
+    pub fn prepare<C: Compiler<Op = O>>(
+        &mut self,
+        compiler: &mut C,
+        text: &TextLayouts,
+    ) -> Result<Prepared, C::Error> {
         let count;
+        let pictures;
         if self.rebuild
             && let Some(lowered) = &mut self.lowered
         {
-            lowered.refill(self.list.display_list(), compiler)?;
+            lowered.refill(self.list.display_list(), compiler, text)?;
             self.emissions
                 .resize_with(lowered.ops.len(), Realization::default);
             self.dirty = Dirty::default();
             self.rebuild = false;
-            return Ok(
-                u32::try_from(self.list.display_list().len()).expect("command count fits u32")
-            );
+            return Ok(Prepared {
+                commands: u32::try_from(self.list.display_list().len())
+                    .expect("command count fits u32"),
+                pictures: lowered.pictures,
+            });
         }
         if let Some(lowered) = &mut self.lowered {
             if self.dirty.is_empty() {
-                return Ok(0);
+                return Ok(Prepared {
+                    commands: 0,
+                    pictures: lowered.pictures,
+                });
             }
-            if let Some(patches) = lowered.patch(self.list.display_list(), &self.dirty, compiler)? {
+            if let Some(patches) =
+                lowered.patch(self.list.display_list(), &self.dirty, compiler, text)?
+            {
                 for range in patches {
                     for emission in &mut self.emissions[range] {
                         emission.valid = false;
@@ -504,16 +636,21 @@ impl<O: Operation, E> Content<O, E> {
                 count =
                     u32::try_from(self.list.display_list().len()).expect("command count fits u32");
             }
+            pictures = lowered.pictures;
         } else {
-            let lowered = Lowered::full(self.list.display_list(), compiler)?;
+            let lowered = Lowered::full(self.list.display_list(), compiler, text)?;
             self.emissions
                 .resize_with(lowered.ops.len(), Realization::default);
+            pictures = lowered.pictures;
             self.lowered = Some(lowered);
             count = u32::try_from(self.list.display_list().len()).expect("command count fits u32");
         }
         self.dirty = Dirty::default();
         self.rebuild = false;
-        Ok(count)
+        Ok(Prepared {
+            commands: count,
+            pictures,
+        })
     }
 
     /// The prepared ops and their independently mutable device realizations.
@@ -2772,8 +2909,11 @@ mod tests {
 
 #[cfg(test)]
 mod content_tests {
-    use super::{Content, Operation};
-    use crate::Draw;
+    use kurbo::{Affine, Rect};
+
+    use super::{Command, Compiler, Content, Operation, TextLayouts, append, append_with};
+    use crate::shape::ShapeData;
+    use crate::{Draw, Group};
 
     struct TestOp;
 
@@ -2787,6 +2927,106 @@ mod content_tests {
         }
     }
 
+    /// A compiler that keeps each drawn command's fill rectangle and the
+    /// ambient transform it was drawn under.
+    struct Collect;
+
+    impl Compiler for Collect {
+        type Op = (Affine, Rect);
+        type Error = ();
+
+        fn draw(
+            &mut self,
+            command: &Command,
+            ambient: Affine,
+            ops: &mut Vec<Self::Op>,
+        ) -> Result<(), ()> {
+            let Command::Fill {
+                shape: ShapeData::Rect(rect),
+                ..
+            } = command
+            else {
+                panic!("unexpected command {command:?}")
+            };
+            ops.push((ambient, *rect));
+            Ok(())
+        }
+
+        fn clip(&mut self, _: &ShapeData, _: Affine) -> Result<Self::Op, ()> {
+            unreachable!("no clips")
+        }
+
+        fn group(&mut self, _: &Group, _: bool) -> Result<Option<Self::Op>, ()> {
+            unreachable!("no groups")
+        }
+
+        fn end(&mut self) -> Self::Op {
+            unreachable!("no scopes")
+        }
+    }
+
+    impl Operation for (Affine, Rect) {
+        fn end_mut(&mut self) -> Option<&mut u32> {
+            None
+        }
+
+        fn same_structure(&self, _: &Self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn a_text_command_lowers_as_its_expansion_under_its_transform() {
+        use crate::text::{TextCommand, TextLayoutData};
+        use crate::{Draw as _, Fixed, TextLayoutId, WorkingColor};
+
+        let id = TextLayoutId::new(5);
+        let rect = Rect::new(1., 2., 3., 4.);
+        let mut layouts = TextLayouts::default();
+        layouts.add(
+            id,
+            TextLayoutData::new(
+                vec![TextCommand::Fill(rect, WorkingColor::WHITE.into())],
+                None,
+                &[],
+            ),
+        );
+        let list = crate::Picture::record(|c| {
+            c.transform(Fixed(Affine::translate((10., 20.))), |c| {
+                c.text(id, Fixed(Affine::scale(2.)));
+            });
+        });
+        let mut ops = Vec::new();
+        append_with(
+            list.display_list(),
+            Affine::IDENTITY,
+            &mut Collect,
+            &layouts,
+            &mut ops,
+        )
+        .expect("lowers");
+        assert_eq!(
+            ops,
+            [(Affine::translate((10., 20.)) * Affine::scale(2.), rect)]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "not registered")]
+    fn a_text_command_naming_an_unregistered_layout_panics() {
+        use crate::{Draw as _, Fixed, TextLayoutId};
+
+        let list = crate::Picture::record(|c| {
+            c.text(TextLayoutId::new(8), Fixed(Affine::IDENTITY));
+        });
+        let _ = append(
+            list.display_list(),
+            Affine::IDENTITY,
+            &mut Collect,
+            &mut Vec::new(),
+        );
+    }
+
     #[test]
     fn replacement_returns_the_previous_picture() {
         let previous = crate::Picture::from_list(crate::DisplayList::default());
@@ -2798,7 +3038,47 @@ mod content_tests {
         });
         let mut content = Content::<TestOp, ()>::new(previous.clone());
 
-        assert_eq!(content.replace(replacement.clone()), previous);
+        assert_eq!(content.replace(replacement.clone()), (previous, true));
+        assert_eq!(
+            content.replace(replacement.clone()),
+            (replacement.clone(), false)
+        );
         assert_eq!(content.into_picture(), replacement);
+    }
+
+    fn immutable() -> Content<TestOp, ()> {
+        Content::picture(crate::Picture::record(|c| {
+            c.fill(
+                crate::kurbo::Rect::new(0., 0., 1., 1.),
+                crate::WorkingColor::WHITE,
+            );
+        }))
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a structural edit targets immutable picture content")
+    )]
+    fn an_edit_of_immutable_content_is_dropped() {
+        let mut content = immutable();
+        let before = content.list.clone();
+        content.edit(crate::Edit::default());
+        assert!(!content.rebuild, "the dropped edit forces no rebuild");
+        assert_eq!(content.list, before);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "slot update targets immutable picture content")
+    )]
+    fn slot_updates_of_immutable_content_are_dropped() {
+        let mut content = immutable();
+        content.update(Vec::new());
+        assert!(
+            content.dirty.is_empty(),
+            "the dropped updates dirty nothing"
+        );
     }
 }

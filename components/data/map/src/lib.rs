@@ -144,11 +144,11 @@ impl_constant!(Coordinate, Region, Annotation, MapStyle, MapStatus);
 #[non_exhaustive]
 pub struct Annotation {
     /// The coordinate where the annotation is placed.
-    pub coordinate: Coordinate,
+    coordinate: Coordinate,
     /// The title text shown on the annotation.
-    pub title: Str,
+    title: Str,
     /// Optional subtitle text.
-    pub subtitle: Option<Str>,
+    subtitle: Option<Str>,
 }
 
 impl Annotation {
@@ -303,30 +303,30 @@ impl MapInteractivity {
 #[non_exhaustive]
 pub struct MapConfig {
     /// The region to display.
-    pub region: Computed<Region>,
+    region: Computed<Region>,
     /// Annotations (pins) to display on the map.
-    pub annotations: Computed<Vec<Annotation>>,
+    annotations: Computed<Vec<Annotation>>,
     /// The map display style.
-    pub style: MapStyle,
+    style: MapStyle,
     /// Whether to show the user's current location.
-    pub user_location_visibility: MapVisibility,
+    user_location_visibility: MapVisibility,
     /// `WaterKit` location values rendered by portable map realizations.
     ///
     /// Native realizations may use the platform location service when this is
     /// absent. Supplying it keeps camera following, the location marker, and
     /// horizontal-accuracy visualization driven by one reactive source.
-    pub user_location: Option<Computed<Option<Location>>>,
+    user_location: Option<Computed<Option<Location>>>,
     /// Whether the map is interactive (pan/zoom enabled).
-    pub interactivity: MapInteractivity,
+    interactivity: MapInteractivity,
     /// Whether to show the compass.
-    pub compass_visibility: MapVisibility,
+    compass_visibility: MapVisibility,
     /// Whether to show the scale.
-    pub scale_visibility: MapVisibility,
+    scale_visibility: MapVisibility,
     /// Caller-owned sink the realization reports its load lifecycle into.
     ///
     /// `None` means the application is not observing status, and a realization
     /// must not allocate one on its behalf.
-    pub status: Option<Binding<MapStatus>>,
+    status: Option<Binding<MapStatus>>,
 }
 
 impl MapConfig {

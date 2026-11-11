@@ -2,11 +2,12 @@
 //! a node's layers need from the engine beyond recorded content.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use cherenkov_record::{FilterId, Layer, MaterialRegistry, Transaction};
 use rustc_hash::FxHashMap;
-use waterui_graphics::Reactive;
-use waterui_graphics::filtrate::filters::OverscrollStretch;
+use waterui_graphics::backend::Reactive;
+use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
 
 #[cfg(hydrolysis_gpu)]
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
@@ -18,6 +19,7 @@ use crate::renderer::mount::backdrop::{
     MaterialBackdropGroups, MaterialMembership, MemberBind,
 };
 use crate::renderer::recording::SceneResources;
+use crate::text::TextService;
 
 /// A layer target: recorded runs land through `Transaction`, and the
 /// producer, filter and backdrop installs through the target's host.
@@ -41,6 +43,15 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
     const BACKDROP_SHADERS: bool;
 
     fn resources(host: &Self::Host) -> &Rc<SceneResources>;
+
+    /// Installs, on the host's shared resources, the registry that lays out
+    /// the text a canvas names through `text`, the session's text service.
+    /// A commit calls it ahead of every mount, so it installs once per
+    /// service. A target that does not draw canvas text leaves the default
+    /// no-op: a canvas that names text then reports the refusal.
+    fn install_text(host: &Self::Host, text: &Arc<TextService<E>>) {
+        let _ = (host, text);
+    }
 
     /// Binds hosted content at `size` on `layer`; returns whether this call
     /// (re)bound it. Only a target with system-compositor planes hosts
@@ -66,14 +77,18 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
         wake: ProducerWake,
     );
 
-    /// Starts (once) and feeds an external frame stream on `layer`;
-    /// returns the bound frame's pixel size once a frame arrived.
+    /// Starts (once) and feeds an external frame stream on `layer`:
+    /// reports `presented` — the extent and display scale the layer
+    /// presents at — to the source, runs the view's frame hook, and
+    /// installs the newest frame; returns the bound frame's pixel size
+    /// once a frame arrived.
     #[cfg(hydrolysis_gpu)]
     fn mount_external_frame(
         host: &Self::Host,
         tx: &mut Transaction<'_, Self>,
         layer: &Layer,
         runtime: &mut ExternalFrameRuntime,
+        presented: waterui_graphics::gpu::PresentedSize,
         wake: ProducerWake,
     ) -> Option<(u32, u32)>;
 
@@ -215,4 +230,4 @@ mod gpu;
 #[cfg(hydrolysis_gpu_painter)]
 pub use gpu::CherenkovHost;
 #[cfg(all(test, hydrolysis_gpu_painter))]
-pub use gpu::{attach_material_shaders, chrome_sample, chrome_spec};
+pub use gpu::{attach_material_shaders, chrome_sample, chrome_spec, install_gpu_text};

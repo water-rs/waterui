@@ -15,17 +15,17 @@ use waterui_text::styled::StyledStr;
 /// Configuration options for the [`Stepper`] component.
 pub struct StepperConfig {
     /// The binding to the current value of the stepper.
-    pub value: Binding<i32>,
+    value: Binding<i32>,
     /// The step size for each increment or decrement.
-    pub step: Computed<i32>,
+    step: Computed<i32>,
     /// The label displayed alongside the stepper.
-    pub label: Label,
+    label: Label,
     /// Optional formatter for the inline value display, layered on top of the
     /// label. When `None`, the stepper renders only the label; when `Some`, the
     /// formatted value is shown next to the buttons.
-    pub value_formatter: Option<Computed<StyledStr>>,
+    value_formatter: Option<Computed<StyledStr>>,
     /// The valid range of values for the stepper.
-    pub range: RangeInclusive<i32>,
+    range: RangeInclusive<i32>,
 }
 
 impl StepperConfig {

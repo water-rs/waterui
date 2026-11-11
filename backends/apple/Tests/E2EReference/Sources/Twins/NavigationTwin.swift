@@ -174,24 +174,50 @@ struct NavigationTwin: View {
         }
       }
       .navigationTitle("Inbox")
-      .navigationSubtitle("\(unreadCount) unread")
-      // iOS 26's automatic placement inside TabView hoists the field toward
-      // the tab-bar search slot and leaves an empty drawer stub; the
-      // navigation-bar drawer is the field this twin is for. macOS has no
-      // navigationBarDrawer — its automatic placement already draws it.
-      #if os(iOS)
-        .searchable(
-          text: $query,
-          placement: .navigationBarDrawer(displayMode: .always),
-          prompt: "Search mail"
-        )
-      #else
-        .searchable(text: $query, prompt: "Search mail")
+      #if os(macOS)
+        .navigationSubtitle("\(unreadCount) unread")
       #endif
+      // The example declares `.large_title()`; the automatic mode is not
+      // that declaration.
+      #if os(iOS)
+        .navigationBarTitleDisplayMode(.large)
+      #endif
+      // The example declares no display mode, so the field keeps the
+      // platform default: tucked under the large title, revealed by pulling
+      // the list down.
+      .searchable(text: $query, prompt: "Search mail")
       .toolbar {
+        // UIKit's large subtitle settles at 12 pt (ShortCaption1) once the
+        // bar has been updated (#3766), and `.navigationSubtitle` ignores the
+        // font of its text, so the iOS twin supplies the large title and
+        // subtitle as toolbar content it can size. The system places custom
+        // large-title content differently from the title it draws itself;
+        // the paddings restore UIKit's title and subtitle positions and the
+        // height of the region below them (iPhone 17, iOS 27).
+        #if os(iOS)
+          ToolbarItem(placement: .largeTitle) {
+            Text("Inbox")
+              .font(.largeTitle.bold())
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .padding(.top, 21)
+          }
+          ToolbarItem(placement: .largeSubtitle) {
+            Text("\(unreadCount) unread")
+              .font(.system(size: 12))
+              .foregroundStyle(.secondary)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .padding(.top, -8)
+              .padding(.bottom, 4)
+          }
+        #endif
         ToolbarItem(placement: .navigation) {
+          // iOS draws the example's titled bar button as UIKit's native
+          // titled item (#3594); SwiftUI's `.plain` toolbar realization is a
+          // narrower capsule, so the iOS twin keeps the default style.
           Button(editing ? "Done" : "Edit") {}
-            .buttonStyle(.plain)
+            #if os(macOS)
+              .buttonStyle(.plain)
+            #endif
         }
         ToolbarItem(placement: .primaryAction) {
           Button {} label: {

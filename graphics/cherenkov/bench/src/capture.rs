@@ -356,6 +356,7 @@ impl State<'_> {
                     m.points().to_vec(),
                     m.colors().iter().map(color).collect(),
                 )
+                .expect("an engine mesh already passed the same grid validation")
                 .interpolation(match m.interpolation_mode() {
                     cherenkov::MeshColorInterpolation::Linear => MeshColorInterpolation::Linear,
                     cherenkov::MeshColorInterpolation::Smoothstep => {

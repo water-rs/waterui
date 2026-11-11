@@ -5,9 +5,9 @@
 use std::rc::Rc;
 
 use crate::theme::WidgetTheme;
+use cherenkov_record::SurfaceId;
 use jni::objects::JObject;
 use waterui::Environment;
-use waterui_graphics::draw::SurfaceId;
 
 use super::jni::JniError;
 use crate::hwui::{HwuiSurface, JniPainter};
@@ -57,14 +57,6 @@ impl HwuiWindow {
                 "hydrolysis HWUI: nativeCreateSession got a null HwuiPainter".to_owned(),
             ));
         }
-        let api = env
-            .get_static_field(
-                jni::jni_str!("android/os/Build$VERSION"),
-                jni::jni_str!("SDK_INT"),
-                jni::jni_sig!("I"),
-            )?
-            .i()?;
-        let api = u32::try_from(api).expect("Build.VERSION.SDK_INT is never negative");
         let text_object = env
             .call_method(
                 peer,
@@ -82,8 +74,7 @@ impl HwuiWindow {
             )?
             .l()?;
 
-        let surface =
-            HwuiSurface::new(id, api, move || wake()).map_err(|e| JniError(e.to_string()))?;
+        let surface = HwuiSurface::new(id, move || wake()).map_err(|e| JniError(e.to_string()))?;
         // The window starts parked: `set_host_attached` and metrics unhide
         // it the way the GPU band's surface attach does.
         surface.set_hidden(true);
@@ -146,9 +137,11 @@ impl HwuiWindow {
             .commit_mount(&mut self.mount, &self.host, scale);
         runtime.renderer.platform_view_bindings(&mut self.bindings);
         self.surface.set_platform_views(&self.bindings);
+        // The presented frame's instant, so operand animations the encoder
+        // samples advance with the frames the pump presents.
         let frame = self
             .surface
-            .frame(cherenkov_record::Instant::now(), scale)
+            .frame(runtime.renderer.frame_instant(), scale)
             .map_err(|e| JniError(e.to_string()))?;
         let animating = frame.content_animating() || frame.sampling().rate.is_some();
         self.painter

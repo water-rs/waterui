@@ -80,6 +80,19 @@ fn main() {
     #[cfg(catalyst)]
     let _background_application =
         (!args.list).then(|| cocoa_ui::uikit::catalyst::BackgroundApplication::bring_up(mtm()));
+    // A host display asleep at run start leaves the simulator's Metal
+    // path stalled inside the process while it resumes — the runner's
+    // `caffeinate` wakes the display but cannot observe the stall, so the
+    // suite gates on one real GPU trip before its first case (#3529).
+    #[cfg(all(
+        target_os = "ios",
+        not(catalyst),
+        feature = "native-test",
+        feature = "gpu_surface"
+    ))]
+    if !args.list {
+        waterui_apple::native_test_support::await_gpu(90.0);
+    }
     libtest_mimic::run(&args, trials()).exit();
 }
 
@@ -324,7 +337,7 @@ fn trials() -> Vec<Trial> {
         tests.extend(material_reduce_transparency::trials());
         tests.extend(list_ax::trials());
         tests.extend(gesture_ax::trials());
-        tests.extend(a11y_extent::trials());
+        tests.extend(a11y_frame::trials());
         tests.extend(gesture_events::trials());
         #[cfg(all(feature = "scale", feature = "rotation"))]
         tests.extend(transform_modifiers::trials());
@@ -332,7 +345,6 @@ fn trials() -> Vec<Trial> {
         {
             tests.extend(gpu_surface::trials());
             tests.extend(filtered::trials());
-            tests.extend(capture_colour::trials());
             tests.extend(capture_order::trials());
         }
     }
@@ -348,7 +360,13 @@ fn trials() -> Vec<Trial> {
         tests.extend(tabs::trials());
         tests.extend(navigation::trials());
         tests.extend(controller_bounds::trials());
+        // A Catalyst window carries no container bands, so the suite's
+        // mount precondition cannot hold there (#3556). Its own Catalyst
+        // title-bar case runs instead.
+        #[cfg(not(catalyst))]
         tests.extend(safe_area::trials());
+        #[cfg(catalyst)]
+        tests.extend(safe_area::catalyst_trials());
         tests.extend(offset::trials());
     }
     tests.extend(migration::trials());
@@ -356,6 +374,8 @@ fn trials() -> Vec<Trial> {
     tests.extend(owner_lifetimes::trials());
     tests.extend(scroll::trials());
     tests.extend(list_scroll::trials());
+    #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
+    tests.extend(capture_colour::trials());
     #[cfg(feature = "webview")]
     tests.extend(webview::trials());
     tests
@@ -809,7 +829,9 @@ mod leaf {
 
     use waterui::reactive::binding;
     use waterui_apple::contract::NativeLeaf;
-    use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+    use waterui_core::layout::{
+        LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+    };
 
     use super::{HostView, Label, MainThreadMarker, PlatformView, mtm};
 
@@ -817,6 +839,14 @@ mod leaf {
     pub struct TestSubView;
 
     impl SubView for TestSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
+
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(Size::new(40.0, 20.0))
         }
@@ -994,12 +1024,13 @@ mod resolve {
     use waterui::layout::Spacer;
     use waterui::reactive::binding;
     use waterui_apple::contract::NativeLeaf;
+    use waterui_apple::native_test_support::transition::ManualTransitionClock;
     use waterui_backend_core::{AnyView, View};
     use waterui_core::layout::{ProposalSize, Size, StretchAxis};
     use waterui_core::metadata::MetadataKey;
     use waterui_core::{IgnorableMetadata, Metadata, Native, NativeView};
 
-    use super::{HostView, Label, Retained, mtm};
+    use super::{HostView, Label, PlatformView, Retained, mtm};
 
     /// A `Metadata` key no handler is registered for — an honest miss,
     /// never fabricated.
@@ -1020,8 +1051,26 @@ mod resolve {
     /// fresh env. Panics when nothing claims the view — the typed
     /// contract's answer to a miss.
     pub fn render(view: impl View) -> NativeLeaf {
+        render_with(view, |_| {})
+    }
+
+    /// [`render`] with `configure` applied to the render environment.
+    pub fn render_with(
+        view: impl View,
+        configure: impl FnOnce(&mut waterui_backend_core::Environment),
+    ) -> NativeLeaf {
         let _mtm = mtm();
-        waterui_apple::dispatch::render(AnyView::new(view), &env())
+        let mut env = env();
+        configure(&mut env);
+        waterui_apple::dispatch::render(AnyView::new(view), &env)
+    }
+
+    /// [`render`] under a [`ManualTransitionClock`]: every transition the
+    /// leaf runs holds still until the trial advances the returned clock.
+    pub fn render_on_manual_clock(view: impl View) -> (NativeLeaf, ManualTransitionClock) {
+        let clock = ManualTransitionClock::default();
+        let leaf = render_with(view, |env| env.insert(clock.clone()));
+        (leaf, clock)
     }
 
     /// Renders `view`, reporting whether `render` panicked instead of
@@ -1047,16 +1096,14 @@ mod resolve {
     }
 
     /// A `&'static str` expands `Str` → `Native<Str>` → the text leaf: a
-    /// `HostView` wrapper holding a real kit `Label` with the string's
-    /// attributed text on it — and the layout face still answers measure.
+    /// real kit `Label` with the string's attributed text on it — and the
+    /// layout face still answers measure.
     pub fn a_string_maps_to_the_text_leaf() {
         let leaf = render("hello waterui");
         let view = cocoa_ui::view::retain_base(leaf.view());
-        assert!(view.downcast_ref::<HostView>().is_some());
         assert!(!cocoa_ui::view::is_hidden(&view));
-        let subviews = cocoa_ui::view::subviews(&view);
-        assert_eq!(subviews.len(), 1);
-        let label = subviews[0]
+        let label_view = text_leaf_label(&view);
+        let label = label_view
             .downcast_ref::<Label>()
             .expect("the text leaf mounts a kit label");
         let text = label
@@ -1066,6 +1113,22 @@ mod resolve {
         let measured = leaf.layout().measure(ProposalSize::UNSPECIFIED);
         assert!(measured.size.width > 0.0);
         assert!(measured.size.height > 0.0);
+    }
+
+    /// The label view of a string's rich-text leaf: a `HostView` wrapping
+    /// exactly one kit label.
+    #[cfg(not(feature = "plain"))]
+    fn text_leaf_label(view: &Retained<PlatformView>) -> Retained<PlatformView> {
+        assert!(view.downcast_ref::<HostView>().is_some());
+        let subviews = cocoa_ui::view::subviews(view);
+        assert_eq!(subviews.len(), 1);
+        subviews[0].clone()
+    }
+
+    /// The label view of a string's `plain` leaf: the kit label itself.
+    #[cfg(feature = "plain")]
+    fn text_leaf_label(view: &Retained<PlatformView>) -> Retained<PlatformView> {
+        view.clone()
     }
 
     /// `Native<Spacer>` maps to a transparent host whose layout face
@@ -1351,7 +1414,9 @@ mod resolve {
 
     /// A switch row puts the label at the leading edge and the switch at
     /// the trailing edge of the full width; a checkbox row reads box first,
-    /// then the label `LABEL_SPACING` after it.
+    /// then the label `LABEL_SPACING` after it. Both are arranged in the
+    /// row's response rectangle (`docs/layout-spec.md` §6): the switch row
+    /// answers the full width, the checkbox row its own, centred.
     pub fn toggle_rows_place_the_control_by_kind() {
         #[cfg(target_os = "macos")]
         use cocoa_ui::appkit::toggle::LABEL_SPACING;
@@ -1374,7 +1439,8 @@ mod resolve {
             ("checkbox", Toggle::new("Wi-Fi", &on).checkbox(), false),
         ] {
             let leaf = render(toggle);
-            let height = f64::from(leaf.layout().measure(ProposalSize::UNSPECIFIED).size.height);
+            let row_height = leaf.layout().measure(ProposalSize::UNSPECIFIED).size.height;
+            let height = f64::from(row_height);
             let row = leaf.view();
             cocoa_ui::view::set_frame(row, cocoa_ui::Rect::new(0.0, 0.0, 400.0, height));
             cocoa_ui::view::layout_immediately(row);
@@ -1391,7 +1457,18 @@ mod resolve {
             // rect's.
             let control = cocoa_ui::view::alignment_frame(&subviews[1]);
             let control_trailing = control.origin.x + control.size.width;
+            let answer = leaf
+                .layout()
+                .measure(ProposalSize::new(Some(400.0), Some(row_height)))
+                .size;
+            let leading = (400.0 - f64::from(answer.width)) / 2.0;
             if switch {
+                assert_near(
+                    leading,
+                    0.0_f64,
+                    "a switch row answers the full width",
+                    name,
+                );
                 assert_near(label.origin.x, 0.0_f64, "label leading", name);
                 assert_near(
                     control_trailing,
@@ -1400,7 +1477,7 @@ mod resolve {
                     name,
                 );
             } else {
-                assert_near(control.origin.x, 0.0_f64, "box leading", name);
+                assert_near(control.origin.x, leading, "box leading", name);
                 assert_near(
                     label.origin.x,
                     control_trailing + LABEL_SPACING,
@@ -1508,10 +1585,50 @@ mod offset {
     }
 
     pub fn trials() -> Vec<libtest_mimic::Trial> {
-        vec![t(
-            "relayout_keeps_the_full_translation",
-            relayout_keeps_the_full_translation,
-        )]
+        vec![
+            t(
+                "relayout_keeps_the_full_translation",
+                relayout_keeps_the_full_translation,
+            ),
+            t(
+                "translation_past_the_window_edge_leaves_layout_unchanged",
+                translation_past_the_window_edge_leaves_layout_unchanged,
+            ),
+        ]
+    }
+
+    /// The translation is visual: content an offset carries past the
+    /// window's leading edge still lays out inside its own untransformed
+    /// bounds. Measuring the safe-area boundary through the transform
+    /// clipped the content's layout rect at the window edge, so a
+    /// fixed-size child landed off its container's centre — the
+    /// `liquid_glass` backdrop discs sat short of their offsets.
+    fn translation_past_the_window_edge_leaves_layout_unchanged() {
+        use waterui::ViewExt as _;
+        use waterui::graphics::color::Color;
+        use waterui::shape::{Circle, ShapeExt as _};
+
+        let disc = Circle.fill(Color::srgb(255, 149, 0)).size(100.0, 100.0);
+        let mount = mount_uikit(
+            mtm(),
+            AnyView::new(Metadata::new(disc, Offset::new(-400.0, 0.0))),
+            &render_environment(),
+        );
+        for _ in 0..2 {
+            mount.window.layoutIfNeeded();
+        }
+        let wrapper = view::retain_base(mount.content.view());
+        let container = &view::subviews(&wrapper)[0];
+        let shape = &view::subviews(container)[0];
+        let width = view::bounds(container).size.width;
+        let frame = view::frame(shape);
+        assert_eq!(frame.size.width, 100.0, "the disc keeps its declared width");
+        assert!(
+            (frame.origin.x - (width - 100.0) / 2.0).abs() < 0.5,
+            "the disc is centred in its container's untransformed bounds: \
+             x {} in a container {width} wide",
+            frame.origin.x
+        );
     }
 
     /// Two layout passes must leave the declared translation whole and the
@@ -1560,9 +1677,9 @@ mod picture {
     #[cfg(target_os = "ios")]
     use cocoa_ui::uikit::ImageView;
     use kurbo::Shape;
+    use waterui::graphics::backend::Picture;
+    use waterui::graphics::backend::draw::Draw;
     use waterui::graphics::color::WorkingColor;
-    use waterui::graphics::draw::Draw;
-    use waterui::graphics::picture::Picture;
     use waterui::reactive::constant;
     use waterui_core::layout::Size;
 
@@ -1670,7 +1787,7 @@ mod tabs {
     };
     use cocoa_ui::uikit::view_controller::owning_controller;
     use cocoa_ui::uikit::{Label, NavContentController};
-    use cocoa_ui::{PlatformView, Retained, view};
+    use cocoa_ui::{MainThreadMarker, PlatformView, Retained, view};
     use waterui::layout::scroll_both;
     use waterui::navigation::{NavigationStack, NavigationView, Tab, TabBarMinimizeBehavior, Tabs};
     use waterui::prelude::{label, scroll, text, vstack};
@@ -1854,10 +1971,11 @@ mod tabs {
     pub fn unmounting_before_the_commit_installs_no_accessory() {
         let (_pane, leaf) = tabs(text("Now Playing"));
         let controller = tab_bar_controller(&leaf);
-        // Registered after the tabs' own completion, so it runs after it
-        // in the same commit.
+        // Registered after the tabs' own install, so it runs after it
+        // following the same commit.
         let committed = std::rc::Rc::new(std::cell::Cell::new(false));
-        cocoa_ui::core_animation::on_commit({
+        let mtm = MainThreadMarker::new().expect("native cases run on the main thread");
+        cocoa_ui::core_animation::on_commit(mtm, {
             let committed = std::rc::Rc::clone(&committed);
             move || committed.set(true)
         });
@@ -2161,6 +2279,22 @@ mod tabs {
         );
         assert_eq!(root_scrolls.len(), 1, "the root page mounts one scroll");
         let root_scroll = &root_scrolls[0];
+        // The page controller answers the top edge for the navigation bar
+        // with the same surface, and nothing for the other edges.
+        let root_page = nav.topViewController().expect("the root page");
+        let top_associated = root_page
+            .contentScrollViewForEdge(NSDirectionalRectEdge::Top)
+            .expect("the page's list associates for the top edge");
+        assert_eq!(
+            Retained::as_ptr(&top_associated),
+            Retained::as_ptr(root_scroll)
+        );
+        assert!(
+            root_page
+                .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+                .is_none(),
+            "the page leaves the bottom edge to the tab pane"
+        );
         let associated = controller
             .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
             .expect("the root scroll associates for the bottom edge");
@@ -2788,6 +2922,7 @@ mod split {
     use cocoa_ui::appkit::ListTableView;
     use cocoa_ui::objc2_app_kit::NSTableViewStyle;
     use cocoa_ui::{PlatformView, view};
+    use waterui::ViewExt as _;
     use waterui::component::list::{List, ListItem};
     use waterui::navigation::{NavigationSplitView, NavigationView};
     use waterui::prelude::text;
@@ -2814,7 +2949,8 @@ mod split {
         let leaf = resolve::render(NavigationSplitView::new(
             &selection,
             move || {
-                List::content((|| ListItem::new(text("row")),)).selection(&binding(Some(0_usize)))
+                List::content(((|| ListItem::new(text("row"))).tag(0_usize),))
+                    .selection(&binding(Some(0_usize)))
             },
             |_id: i32| NavigationView::new("Detail", text("detail")),
         ));
@@ -2833,8 +2969,9 @@ mod split {
     /// The same list outside a split keeps the regular table chrome.
     pub fn a_plain_list_keeps_the_regular_chrome() {
         let selection = binding(Some(0_usize));
-        let leaf =
-            resolve::render(List::content((|| ListItem::new(text("row")),)).selection(&selection));
+        let leaf = resolve::render(
+            List::content(((|| ListItem::new(text("row"))).tag(0_usize),)).selection(&selection),
+        );
         let table = sidebar_table(leaf.view()).expect("the list mounts a table");
         assert!(
             !table.is_sidebar(),
@@ -3328,6 +3465,7 @@ mod material_reduce_transparency {
 /// real link deliveries.
 #[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
 mod gpu_surface {
+    use std::cell::Cell;
     use std::rc::Rc;
 
     use libtest_mimic::Trial;
@@ -3368,6 +3506,10 @@ mod gpu_surface {
                 external_capture_submission_completes_ok,
             ),
             Trial::test(
+                "gpu_surface::a_watchdog_terminated_submission_settles_failed",
+                a_watchdog_terminated_submission_settles_failed,
+            ),
+            Trial::test(
                 "gpu_surface::failure_inside_a_capture_scope_still_balances",
                 failure_inside_a_capture_scope_still_balances,
             ),
@@ -3386,6 +3528,10 @@ mod gpu_surface {
             Trial::test(
                 "gpu_surface::a_scope_end_after_teardown_settles_quietly",
                 a_scope_end_after_teardown_settles_quietly,
+            ),
+            Trial::test(
+                "gpu_surface::a_teardown_inside_a_capture_scope_wakes_the_capture",
+                a_teardown_inside_a_capture_scope_wakes_the_capture,
             ),
             Trial::test(
                 "gpu_surface::a_scope_end_beyond_the_orphaned_count_still_panics",
@@ -3423,7 +3569,68 @@ mod gpu_surface {
                 "gpu_surface::view_render_succeeds_over_a_healthy_gpu_child",
                 view_render_succeeds_over_a_healthy_gpu_child,
             ),
+            Trial::test(
+                "gpu_surface::an_input_surface_is_told_its_size_once_before_its_first_frame_and_once_per_change",
+                an_input_surface_is_told_its_size_once_before_its_first_frame_and_once_per_change,
+            ),
         ]
+    }
+
+    /// A surface whose content takes input hears `Resize` once the surface
+    /// learns its bounds and scale — before any frame renders — and then
+    /// once per change of logical size, never again for a repeated layout.
+    pub fn an_input_surface_is_told_its_size_once_before_its_first_frame_and_once_per_change()
+    -> Result<(), libtest_mimic::Failed> {
+        use waterui_graphics::input::SurfaceInputEvent;
+
+        let mtm = mtm();
+        let (mounted, events) = pollster::block_on(MountedSceneSurface::mount_recording_input(mtm))
+            .map_err(|error| format!("a mounted input surface: {error}"))?;
+        mounted.ensure_fixture_window();
+        let scale = mounted
+            .backing_scale()
+            .expect("a windowed surface has a backing scale");
+
+        // The window placed the surface and the surface learned its scale:
+        // the content has been told, and nothing but a resize happened.
+        {
+            let events = events.borrow();
+            let Some(SurfaceInputEvent::Resize { scale: told, .. }) = events.first() else {
+                panic!("the content was not told its size before its first frame: {events:?}");
+            };
+            assert!((f64::from(*told) - scale).abs() < f64::EPSILON);
+            assert!(
+                events
+                    .iter()
+                    .all(|event| matches!(event, SurfaceInputEvent::Resize { .. })),
+                "only resizes are delivered without input: {events:?}"
+            );
+        }
+
+        let resizes = || {
+            events
+                .borrow()
+                .iter()
+                .filter_map(|event| match event {
+                    SurfaceInputEvent::Resize { size, .. } => Some((size.width, size.height)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = resizes().len();
+        mounted.set_view_frame(200.0, 100.0);
+        mounted.initialize_gpu();
+        mounted.initialize_gpu();
+        assert_eq!(
+            resizes()[before..],
+            [(200.0, 100.0)],
+            "a new size is told once, however often the surface is laid out"
+        );
+
+        mounted.set_view_frame(300.0, 100.0);
+        mounted.initialize_gpu();
+        assert_eq!(resizes()[before..], [(200.0, 100.0), (300.0, 100.0)]);
+        Ok(())
     }
 
     /// A typed frame-path failure settling on the owner resolves its
@@ -3487,6 +3694,101 @@ mod gpu_surface {
             mounted.first_paint_participation(),
             "the capture scope restored the presenting surface"
         );
+        Ok(())
+    }
+
+    /// A compute dispatch the GPU watchdog terminates settles
+    /// `Err(SubmissionFailed)` and the context's `DeviceLoss` records the
+    /// reason: Metal retires the errored command buffer, wgpu reports the
+    /// loss before it fires the work-done callback, and
+    /// `submit_with_completion` turns that order into the failure. The
+    /// workload is wgpu's `WAIT_INDEFINITELY_LONG_RUNNING` dispatch. Should
+    /// the driver let it finish, the loss never happens and the completion
+    /// must be `Ok`. The test owns its `GpuRuntime`, so the lost device
+    /// touches no other case.
+    pub fn a_watchdog_terminated_submission_settles_failed() -> Result<(), libtest_mimic::Failed> {
+        use std::sync::mpsc;
+
+        use waterui_apple::native_test_support::gpu_surface::{
+            SubmissionFailed, submit_with_completion,
+        };
+        use waterui_apple::native_test_support::view_renderer::GpuRuntime;
+        use waterui_graphics::gpu::wgpu;
+
+        const THREADS: u32 = 1024 * 64;
+        const SECONDS: f64 = 120.0;
+
+        let mtm = mtm();
+        let runtime = waterui_apple::native_test_support::block_on_main(30.0, GpuRuntime::new())
+            .map_err(|error| format!("a GPU runtime: {error}"))?;
+        let context = runtime.context();
+        let device = context.device();
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("watchdog workload"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("gpu_watchdog.wgsl").into()),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("watchdog workload"),
+            layout: None,
+            module: &module,
+            entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("watchdog output"),
+            size: u64::from(THREADS) * 4,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("watchdog output"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("watchdog workload"),
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("watchdog workload"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(THREADS / 64, 1, 1);
+        }
+
+        let (settled, outcome) = mpsc::channel::<Result<(), SubmissionFailed>>();
+        submit_with_completion(mtm, encoder, &context, move |result| {
+            let _ = settled.send(result);
+        });
+        let result = std::cell::OnceCell::new();
+        waterui_apple::native_test_support::pump_main_until(SECONDS, || {
+            if let Ok(settled) = outcome.try_recv() {
+                let _ = result.set(settled);
+            }
+            result.get().is_some()
+        });
+        let result = result.into_inner().ok_or("the submission never settled")?;
+        let reason = context.device_lost_reason();
+        match (&result, &reason) {
+            (Err(failed), Some(reason)) => {
+                tracing::info!(%failed, reason, "the watchdog terminated the dispatch");
+            }
+            (Ok(()), None) => {
+                tracing::info!("the driver let the dispatch finish; no loss to report");
+            }
+            (Err(failed), None) => {
+                return Err(format!("a failed settle without a recorded loss: {failed}").into());
+            }
+            (Ok(()), Some(reason)) => {
+                return Err(format!("an Ok settle despite a recorded loss: {reason}").into());
+            }
+        }
         Ok(())
     }
 
@@ -3622,6 +3924,31 @@ mod gpu_surface {
         Ok(())
     }
 
+    /// A surface torn down inside an open capture scope calls the
+    /// capture's redraw hook once: it can never redraw again to replay a
+    /// deferral it answered, so its departure is the capture's retry
+    /// signal.
+    pub fn a_teardown_inside_a_capture_scope_wakes_the_capture() -> Result<(), libtest_mimic::Failed>
+    {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted.ensure_attached();
+        let wakes = Rc::new(Cell::new(0_u32));
+        mounted.begin_capture(Rc::new({
+            let wakes = Rc::clone(&wakes);
+            move || wakes.set(wakes.get() + 1)
+        }));
+        let before = wakes.get();
+        mounted.unmount_then_end_captures(1);
+        assert_eq!(
+            wakes.get(),
+            before + 1,
+            "the teardown wakes the capture holding the scope exactly once"
+        );
+        Ok(())
+    }
+
     /// The orphaned count keeps the balance honest: an end beyond what
     /// teardown recorded is still the unbalanced scope the assert
     /// names, not a quiet drop.
@@ -3668,7 +3995,7 @@ mod gpu_surface {
             matches!(
                 error.downcast_ref::<waterui_graphics::gpu::runtime::HostedLayerError>(),
                 Some(waterui_graphics::gpu::runtime::HostedLayerError::Surface(
-                    waterui_graphics::cherenkov::SurfaceError::TooLarge { .. }
+                    waterui_graphics::backend::cherenkov::SurfaceError::TooLarge { .. }
                 ))
             ),
             "the terminal outcome carries the settled typed failure: {error}"
@@ -3880,7 +4207,7 @@ mod gpu_surface {
         };
         use waterui_backend_core::AnyView;
         use waterui_core::view_renderer::{RenderError, RenderRequest, ViewRenderer};
-        use waterui_graphics::cherenkov::SurfaceError;
+        use waterui_graphics::backend::cherenkov::SurfaceError;
 
         let (runtime, mut env) = pollster::block_on(async {
             let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
@@ -3978,10 +4305,12 @@ mod gpu_surface {
             ),
         )
         .map_err(|error| format!("a render over the healthy GPU child resolves Ok: {error}"))?;
-        // The rendered leaf is measured detached, so the capture rasters
-        // at the backing scale a windowless view reports.
-        let scale =
-            cocoa_ui::view::backing_scale_factor(&cocoa_ui::PlatformView::new(super::mtm()));
+        // The rendered leaf joins a never-ordered capture window before it
+        // is measured, so the capture rasters at the backing scale AppKit
+        // reports for that window — the screen's, not a detached view's
+        // `1.0`.
+        let scale = cocoa_ui::bitmap::capture_window(super::mtm(), cocoa_ui::Size::new(64.0, 64.0))
+            .backingScaleFactor();
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
@@ -4052,6 +4381,7 @@ mod gpu_surface {
 /// generation publishes instead of retrying the failed one forever.
 #[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
 mod filtered {
+    use std::cell::Cell;
     use std::rc::Rc;
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
@@ -4126,6 +4456,10 @@ mod filtered {
                 a_view_collapsed_mid_capture_renders_transparent,
             ),
             Trial::test(
+                "filtered::a_teardown_mid_capture_wakes_the_parent",
+                a_teardown_mid_capture_wakes_the_parent,
+            ),
+            Trial::test(
                 "filtered::unmount_releases_the_state_and_view",
                 unmount_releases_the_state_and_view,
             ),
@@ -4196,7 +4530,7 @@ mod filtered {
             pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.frame_presented()),
             "the filtered view presents its first frame"
         );
-        let parent = filtered.parent_capture();
+        let parent = filtered.parent_capture(|| {});
 
         let control = parent.start();
         assert!(
@@ -4227,6 +4561,54 @@ mod filtered {
         assert!(
             parent.pixels().iter().all(|pixel| *pixel == [0; 4]),
             "the collapsed view's region of the parent's target is transparent"
+        );
+        Ok(())
+    }
+
+    /// A filtered output torn down while a parent capture holds it in an
+    /// open external-render scope wakes that capture: the leaf can never
+    /// redraw again to replay a deferral it answered, so its departure
+    /// is the parent's retry signal, and the retry over the subtree it
+    /// left lands.
+    pub fn a_teardown_mid_capture_wakes_the_parent() -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let filtered = pollster::block_on(MountedFilteredSurface::mount_filling(mtm))
+            .map_err(|error| format!("a mounted filling filtered surface: {error}"))?;
+        filtered.ensure_attached();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.frame_presented()),
+            "the filtered view presents its first frame"
+        );
+        let woken = Rc::new(Cell::new(false));
+        let parent = filtered.parent_capture({
+            let woken = Rc::clone(&woken);
+            move || woken.set(true)
+        });
+
+        // The prepare joins the leaf; the teardown lands before the
+        // submit, exactly where a transition run ending mid-capture
+        // drops its effect.
+        let in_flight = parent.start();
+        woken.set(false);
+        let _runtime = filtered.unmount();
+        assert!(
+            woken.get(),
+            "the torn-down output wakes the capture holding its scope"
+        );
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || in_flight.landed()),
+            "the capture in flight over the torn-down output settles"
+        );
+
+        let retry = parent.start();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || retry.landed()),
+            "the woken retry completes"
+        );
+        let outcome = retry.take();
+        assert!(
+            matches!(outcome, Some(Ok(()))),
+            "the retry over the subtree the output left lands, got {outcome:?}"
         );
         Ok(())
     }
@@ -4290,7 +4672,10 @@ mod filtered {
         let lost = filtered.current_generation();
 
         // The link has demand again when the loss lands, so the next
-        // delivered frame hits `render_frame`'s lost-context arm.
+        // delivered frame hits `render_frame`'s lost-context arm. The
+        // rebuild publication is held so the loss cannot already be
+        // replaced when the frame arrives.
+        let hold = filtered.hold_rebuild();
         filtered.request_render();
         filtered.lose_device("test device loss");
         assert!(
@@ -4317,6 +4702,7 @@ mod filtered {
         // The rebuild's publication wakes the parked wait: the hold
         // clears, the link re-arms, and the owed frame renders on the
         // new generation — the encode count is the render's own record.
+        drop(hold);
         assert!(
             pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.current_generation() > lost
                 && !filtered.parked()
@@ -4480,7 +4866,7 @@ mod filtered {
 /// linear-P3 output read back darker and hue-shifted. The trial captures
 /// the same column rendered plain and under the identity chain and
 /// measures the difference with the oracle's LDR-FLIP.
-#[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
+#[cfg(all(feature = "native-test", feature = "gpu_surface"))]
 mod capture_colour {
     use std::rc::Rc;
 
@@ -4563,19 +4949,19 @@ mod capture_colour {
         entries
     }
 
-    /// The outermost `200×200` views of `root`'s subtree ordered by their
-    /// leading edge in `root`'s coordinates: `index` 0 is the uncaptured
-    /// column, 1 the filtered one. Only size and order identify the
-    /// columns — their absolute origin is the window's — and `f64` frame
-    /// values compare inside a half-point band.
+    /// The outermost `200`-point-wide views of `root`'s subtree ordered by
+    /// their leading edge in `root`'s coordinates: `index` 0 is the
+    /// uncaptured column, 1 the filtered one. Only width and order
+    /// identify the columns — their absolute origin is the window's, and
+    /// on `UIKit` their height also spans the harness window's top
+    /// safe-area inset, the same for both — and `f64` frame values compare
+    /// inside a half-point band.
     pub fn column(root: &PlatformView, index: usize) -> Retained<PlatformView> {
         let mut columns = Vec::new();
         let mut queue = std::collections::VecDeque::from([view::retain_base(root)]);
         while let Some(candidate) = queue.pop_front() {
             let frame = view::convert_rect(&candidate, view::bounds(&candidate), Some(root));
-            if (frame.size.width - COLUMN_EDGE).abs() < 0.5
-                && (frame.size.height - COLUMN_EDGE).abs() < 0.5
-            {
+            if (frame.size.width - COLUMN_EDGE).abs() < 0.5 {
                 columns.push((frame.origin.x, candidate));
             } else {
                 queue.extend(view::subviews(&candidate));
@@ -4627,8 +5013,8 @@ mod capture_colour {
     /// `capture_view_rgba` — the `capture_rgba` path the issue's numbers
     /// came from — and must match under the oracle's same-pixels limits.
     pub fn a_capture_realized_identity_filter_preserves_colour() {
-        use waterui::graphics::filtrate::filters::Brightness;
-        use waterui::graphics::{AnyEffect, FilteredView, OutputSize, ParamGuards};
+        use waterui::graphics::backend::filtrate::filters::Brightness;
+        use waterui::graphics::backend::{AnyEffect, FilteredView, OutputSize, ParamGuards};
         use waterui::layout::{PinConstraints, PositionExt, absolute};
         use waterui_backend_core::AnyView;
 
@@ -4667,10 +5053,11 @@ mod capture_colour {
         );
 
         // Realization check: the capture realization hides its unfiltered
-        // content view and never arms `layerUsesCoreImageFilters` — a
-        // `CIFilter` realization keeps the content visible on a Core
-        // Image-filtered layer, so these assertions pin the case to the
-        // path under test.
+        // content view and, on `AppKit`, never arms
+        // `layerUsesCoreImageFilters` — a `CIFilter` realization keeps the
+        // content visible on a Core Image-filtered layer, so these
+        // assertions pin the case to the path under test. `UIKit` has no
+        // Core Image layer filters.
         let filtered_host = capturables(root)
             .into_iter()
             .find_map(|(host, _)| host.downcast_ref::<HostView>().is_some().then_some(host))
@@ -4681,6 +5068,7 @@ mod capture_colour {
                 .any(|child| view::is_hidden(child)),
             "the capture realization hides its unfiltered content"
         );
+        #[cfg(target_os = "macos")]
         assert!(
             !filtered_host.layerUsesCoreImageFilters(),
             "the identity chain took the capture realization, not the CIFilter one"
@@ -4893,8 +5281,8 @@ mod capture_order {
     /// outer capture composites the filter's output. The reference column
     /// is the same native column unfiltered.
     pub fn a_nested_filter_keeps_its_gpu_child_in_order() {
-        use waterui::graphics::filtrate::filters::Brightness;
-        use waterui::graphics::{AnyEffect, FilteredView, OutputSize, ParamGuards};
+        use waterui::graphics::backend::filtrate::filters::Brightness;
+        use waterui::graphics::backend::{AnyEffect, FilteredView, OutputSize, ParamGuards};
         let content = |child| layered(child).background(orange()).opacity(0.8);
         // The reference column is unfiltered: the identity chain
         // reproduces it (#3528), so only the GPU column runs the nested
@@ -5324,6 +5712,77 @@ mod safe_area {
         .into_iter()
         .flatten()
         .collect()
+    }
+
+    /// The Catalyst `safe_area::` trials — a Catalyst window's own
+    /// safe-area shape rather than the iPhone container bands.
+    #[cfg(catalyst)]
+    pub fn catalyst_trials() -> Vec<libtest_mimic::Trial> {
+        vec![t(
+            "a_catalyst_window_reports_its_titlebar_band",
+            a_catalyst_window_reports_its_titlebar_band,
+        )]
+    }
+
+    /// A Catalyst window carries no device container bands — the notch
+    /// and home indicator do not exist there — so the suite's `mount`
+    /// precondition can never hold (#3556). The band a Catalyst window
+    /// does carry is its title bar, docked by frame rather than
+    /// `safeAreaInsets`: the navigation bar covers the window top and
+    /// the content starts at the bar's bottom edge, reaching the
+    /// window's own bottom edge with no band reserved.
+    #[cfg(catalyst)]
+    fn a_catalyst_window_reports_its_titlebar_band() {
+        let env = render_environment();
+        let mount = mount_uikit(
+            mtm(),
+            AnyView::new(NavigationView::new(
+                "Home",
+                vstack((card("content"), spacer()))
+                    .background(Color::new(Srgb::new(0.2, 0.4, 0.7))),
+            )),
+            &env,
+        );
+        let bar_mounted = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            find_view::<UINavigationBar>(&mount.host).is_some()
+        });
+        assert!(bar_mounted, "the page must mount its navigation bar");
+        let bar = find_view::<UINavigationBar>(&mount.host).unwrap();
+        let bar_frame = window_frame(&bar);
+        let bar_bottom = bar_frame.origin.y + bar_frame.size.height;
+        let insets = mount.host.safeAreaInsets();
+        assert!(
+            insets.top == 0.0 && insets.bottom == 0.0 && insets.left == 0.0 && insets.right == 0.0,
+            "a Catalyst window reports no device container bands: {insets:?}"
+        );
+        assert!(
+            bar_frame.origin.y <= TOLERANCE,
+            "the title bar docks at the window top: {bar_frame:?}"
+        );
+        // The content's host is the sibling of the bar inside the
+        // root container; it must start at the bar's bottom edge and
+        // reach the window bottom — the band is paid by frame alone.
+        let container = view::subviews(&mount.host)
+            .into_iter()
+            .next()
+            .expect("the window hosts the page");
+        let content = view::subviews(&container)
+            .into_iter()
+            .find(|sub| sub.downcast_ref::<UINavigationBar>().is_none())
+            .expect("the bar has a content sibling");
+        let content_frame = window_frame(&content);
+        assert!(
+            (content_frame.origin.y - bar_bottom).abs() <= TOLERANCE,
+            "the content starts at the title bar's bottom edge: {content_frame:?} vs {bar_bottom}"
+        );
+        assert!(
+            (content_frame.origin.y + content_frame.size.height
+                - mount.window.bounds().size.height)
+                .abs()
+                <= TOLERANCE,
+            "the content reaches the window bottom: {content_frame:?}"
+        );
     }
 
     /// The keyboard band's height — the layout-spec's worked examples
@@ -9145,13 +9604,16 @@ mod navigation {
     use waterui::ViewExt as _;
     use waterui::component::toggle::toggle;
     use waterui::component::{ButtonStyle, button};
+    use waterui::graphics::color::WorkingColor;
     use waterui::icon::SystemIcon;
     use waterui::navigation::{
         NavigationStack, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
         NavigationView, ToolbarItemIcon,
     };
     use waterui::prelude::text;
-    use waterui::reactive::binding;
+    use waterui::reactive::{Signal as _, SignalExt as _, binding};
+    use waterui::resolve::Resolvable as _;
+    use waterui::theme::color::{Accent, Foreground};
     use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
 
     use super::{mtm, resolve};
@@ -9217,6 +9679,13 @@ mod navigation {
                 "navigation::toolbar_labels_default_to_icons_and_preserve_explicit_titles",
                 || {
                     toolbar_labels_default_to_icons_and_preserve_explicit_titles();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::a_borderless_toolbar_button_label_draws_the_foreground_colour",
+                || {
+                    a_borderless_toolbar_button_label_draws_the_foreground_colour();
                     Ok(())
                 },
             ),
@@ -9316,6 +9785,57 @@ mod navigation {
         assert!(
             view::bounds(&explicit).size.width > icon_width + 8.0,
             "an explicit title-and-icon preference keeps its title"
+        );
+    }
+
+    /// A view recording the `Foreground` its label environment resolves to.
+    struct ForegroundProbe(std::rc::Rc<std::cell::Cell<Option<WorkingColor>>>);
+
+    impl waterui_backend_core::View for ForegroundProbe {
+        fn body(self, env: &waterui_backend_core::Environment) -> impl waterui_backend_core::View {
+            self.0.set(Some(Foreground.resolve(env).snapshot()));
+        }
+    }
+
+    /// A borderless button in a navigation bar draws its label in the
+    /// theme's `Foreground`, as `SwiftUI` does, not the accent it has in
+    /// content (#3771).
+    fn a_borderless_toolbar_button_label_draws_the_foreground_colour() {
+        let _mtm = mtm();
+        // The shared harness theme installs every colour slot as black, so
+        // an unmodified env cannot tell a Foreground read from an Accent
+        // read. Give the accent a distinct value for this render.
+        let mut env = resolve::env();
+        waterui::theme::install_color_signal::<Accent>(
+            &mut env,
+            binding(WorkingColor::WHITE).computed(),
+        );
+        let drawn = std::rc::Rc::new(std::cell::Cell::new(None));
+        let _leaf = waterui_apple::dispatch::render(
+            waterui_backend_core::AnyView::new(NavigationStack::new(
+                NavigationView::new("Inbox", text("root")).navigation_toolbar(
+                    NavigationToolbar::new(vec![NavigationToolbarItem::new(
+                        NavigationToolbarPlacement::PrimaryAction,
+                        button(waterui::component::Label::new("", {
+                            let drawn = drawn.clone();
+                            move || ForegroundProbe(drawn.clone())
+                        }))
+                        .style(ButtonStyle::Borderless),
+                    )]),
+                ),
+            )),
+            &env,
+        );
+        let foreground = Foreground.resolve(&env).snapshot();
+        assert_ne!(
+            foreground,
+            Accent.resolve(&env).snapshot(),
+            "the fixture theme must tell the label color from the accent"
+        );
+        assert_eq!(
+            drawn.get().expect("the toolbar button label rendered"),
+            foreground,
+            "a borderless toolbar label resolves the theme Foreground, not the Accent"
         );
     }
 
@@ -9463,7 +9983,7 @@ mod navigation {
                 .style(ButtonStyle::Plain)
                 .disabled(disabled.clone()),
         );
-        item.icon = Some(ToolbarItemIcon::System(SystemIcon::new("checkmark")));
+        item.set_icon(Some(ToolbarItemIcon::System(SystemIcon::new("checkmark"))));
         let leaf = resolve::render(NavigationStack::new(
             NavigationView::new("Inbox", text("root"))
                 .navigation_toolbar(NavigationToolbar::new(vec![item])),
@@ -9499,7 +10019,7 @@ mod navigation {
                 .checkbox()
                 .disabled(disabled.clone()),
         );
-        item.icon = Some(ToolbarItemIcon::System(SystemIcon::new("checkmark")));
+        item.set_icon(Some(ToolbarItemIcon::System(SystemIcon::new("checkmark"))));
         let leaf = resolve::render(NavigationStack::new(
             NavigationView::new("Inbox", text("root"))
                 .navigation_toolbar(NavigationToolbar::new(vec![item])),
@@ -10001,7 +10521,7 @@ mod list_ax {
     use objc2_foundation::{NSArray, NSIndexSet};
     use waterui::component::list::ListItem;
     use waterui::layout::scroll::ScrollController;
-    use waterui_apple::native_test_support::{row_item, row_list};
+    use waterui_apple::native_test_support::{row_item, row_list, sectioned_row_list};
 
     use super::{AttachedWindow, Retained, leaf, mtm, trial_each};
 
@@ -10137,9 +10657,42 @@ mod list_ax {
         );
     }
 
+    /// A sectioned list's accessibility rows are its section bands and
+    /// content rows: the spacer row that carries the list's top gap below
+    /// a leading header reserves space and is no element.
+    fn a_sectioned_list_exposes_no_spacer_row() {
+        let (leaf, surface) = sectioned_row_list();
+        let _window = leaf::attach(mtm(), leaf.view());
+        leaf.view().setNeedsLayout(true);
+        leaf.view().layoutSubtreeIfNeeded();
+        let table = surface.table_view();
+        // Header, spacer, two rows, header, one row.
+        assert_eq!(table.numberOfRows(), 6);
+        // A window that never draws does not tile its table, so the rows
+        // are realized explicitly: the accessibility answers expose only
+        // realized rows, and the spacer must be left out even once it is.
+        for row in 0..table.numberOfRows() {
+            let _ = table.rowViewAtRow_makeIfNecessary(row, true);
+        }
+        assert_eq!(realized_rows(&table), 6, "every row is realized");
+        assert_eq!(
+            ax_rows(&table).count(),
+            5,
+            "accessibilityRows must hold the two bands and three rows, not the spacer"
+        );
+        assert!(
+            ax_children(&table).count() <= 5 + NON_ROW_CHILDREN,
+            "accessibilityChildren must not gain the spacer row"
+        );
+    }
+
     /// The `list_ax::` trials.
     pub fn trials() -> Vec<libtest_mimic::Trial> {
         trial_each(vec![
+            (
+                "list_ax::a_sectioned_list_exposes_no_spacer_row".to_owned(),
+                Box::new(a_sectioned_list_exposes_no_spacer_row),
+            ),
             (
                 "list_ax::a_large_list_walk_materializes_no_rows".to_owned(),
                 Box::new(a_large_list_walk_materializes_no_rows),
@@ -10241,20 +10794,229 @@ mod gesture_ax {
     }
 }
 
-/// `AppKit` accessibility coverage for the labelled-container frame —
-/// water-rs/waterui#1482: a labelled layout container announces the
-/// region its content resolved to, not the frame its parent assigned it.
+/// `AppKit` accessibility coverage for the element frame — water-rs/waterui#3823:
+/// an element reports its geometry owner's response rectangle
+/// (`docs/layout-spec.md` §2.4, §7.2), or the allocation or region
+/// `.a11y_geometry(...)` names, never the platform view's frame and never
+/// a union of its descendants.
 #[cfg(target_os = "macos")]
-mod a11y_extent {
-    use cocoa_ui::PlatformView;
+mod a11y_frame {
+    use cocoa_ui::appkit::{ColorView, ImageView, ScrollView};
+    use cocoa_ui::geometry::{EdgeInsets as KitInsets, MeasureProposal};
     use cocoa_ui::objc2::runtime::ProtocolObject;
-    use cocoa_ui::objc2_app_kit::{NSAccessibility, NSAccessibilityFrameInView};
-    use cocoa_ui::objc2_foundation::{NSRect, NSSize};
+    use cocoa_ui::objc2_app_kit::{
+        NSAccessibility, NSAccessibilityFrameInView, NSImageAlignment, NSImageScaling,
+    };
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize};
+    use cocoa_ui::response::ReportsResponse;
+    use cocoa_ui::{PlatformView, Rect as KitRect, Retained, view};
+    use waterui::Color;
     use waterui::ViewExt as _;
-    use waterui::prelude::text;
-    use waterui_backend_core::AnyView;
+    use waterui::accessibility::AccessibilityGeometry;
+    use waterui::component::list::{List, ListItem};
+    use waterui::component::toggle::Toggle;
+    use waterui::graphics::color::Srgb;
+    use waterui::icon::SystemIcon;
+    use waterui::layout::container::LazyContainer;
+    use waterui::layout::padding::EdgeInsets;
+    use waterui::layout::stack::HStackLayout;
+    use waterui::prelude::{scroll, text};
+    use waterui::reactive::binding;
+    use waterui::views::ForEach;
+    use waterui_apple::contract::NativeLeaf;
+    use waterui_apple::dispatch;
+    use waterui_backend_core::{AnyView, View};
+    use waterui_core::layout::{LayoutDirection, Point, ProposalSize, Rect, Size};
 
-    use super::{HostView, leaf, mtm, resolve, trial_each};
+    use super::appkit_input::present_first_frame;
+    use super::{HostView, Label, leaf, mount_and_order_front, mtm, resolve, trial_each};
+
+    /// Tolerance for geometry that passed through `f32` layout math.
+    const EPSILON: f64 = 1e-3;
+
+    /// Renders `view` as the content of a laid-out window: the leaf's view
+    /// fills the window, so a leaf that answers less than its allocation
+    /// sits in an oversized frame.
+    fn attached(view: impl View) -> (NativeLeaf, impl Sized) {
+        let leaf = resolve::render(view);
+        let window = leaf::attach(mtm(), leaf.view());
+        leaf.view().setNeedsLayout(true);
+        leaf.view().layoutSubtreeIfNeeded();
+        (leaf, window)
+    }
+
+    /// `view`'s bounds as the allocation its layout face is resolved in.
+    fn allocation(view: &PlatformView) -> Rect {
+        let bounds = view.bounds();
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the layout contract is f32; kit geometry is f64"
+        )]
+        Rect::new(
+            Point::new(bounds.origin.x as f32, bounds.origin.y as f32),
+            Size::new(bounds.size.width as f32, bounds.size.height as f32),
+        )
+    }
+
+    /// The size the leaf answers to the proposal its frame implies.
+    fn answer(leaf: &NativeLeaf) -> Size {
+        let bounds = allocation(leaf.view());
+        leaf.layout()
+            .measure(ProposalSize::new(
+                Some(bounds.width()),
+                Some(bounds.height()),
+            ))
+            .size
+    }
+
+    /// `size` centred in `view`'s bounds, reported in the screen space
+    /// `accessibilityFrame` answers.
+    fn centred_frame(view: &PlatformView, size: Size) -> NSRect {
+        let bounds = view.bounds();
+        let width = f64::from(size.width);
+        let height = f64::from(size.height);
+        NSAccessibilityFrameInView(
+            view,
+            NSRect::new(
+                NSPoint::new(
+                    bounds.origin.x + (bounds.size.width - width) / 2.0,
+                    bounds.origin.y + (bounds.size.height - height) / 2.0,
+                ),
+                NSSize::new(width, height),
+            ),
+        )
+    }
+
+    /// Asserts two screen rectangles agree to `EPSILON`.
+    fn assert_frame(actual: NSRect, expected: NSRect, what: &str) {
+        let close = |a: f64, b: f64| (a - b).abs() < EPSILON;
+        assert!(
+            close(actual.origin.x, expected.origin.x)
+                && close(actual.origin.y, expected.origin.y)
+                && close(actual.size.width, expected.size.width)
+                && close(actual.size.height, expected.size.height),
+            "{what}: reported {actual:?}, expected {expected:?}"
+        );
+    }
+
+    /// An oversized text — the whole content of a window — is announced at
+    /// its own size, centred, and draws its glyphs in that rectangle.
+    fn an_oversized_text_reports_its_centred_response() {
+        let (leaf, _window) = attached(text("Hello").a11y_label("Greeting"));
+        let view = leaf.view();
+        let size = answer(&leaf);
+        assert!(
+            f64::from(size.width) < view.bounds().size.width
+                && f64::from(size.height) < view.bounds().size.height,
+            "the fixture must be oversized for its text"
+        );
+        assert_frame(
+            ax_frame(view),
+            centred_frame(view, size),
+            "the labelled text",
+        );
+        assert_ne!(ax_frame(view), own_frame(view));
+
+        let label = view
+            .subviews()
+            .iter()
+            .next()
+            .expect("the text leaf mounts its label as a subview");
+        let centre = |rect: NSRect| {
+            (
+                rect.origin.x + rect.size.width / 2.0,
+                rect.origin.y + rect.size.height / 2.0,
+            )
+        };
+        let (label_x, label_y) = centre(label.frame());
+        let (host_x, host_y) = centre(view.bounds());
+        assert!(
+            (label_x - host_x).abs() < 1.0 && (label_y - host_y).abs() < 1.0,
+            "the glyphs are drawn centred in the frame the text was assigned"
+        );
+    }
+
+    /// `.a11y_geometry(Allocation)` names the whole assigned frame.
+    fn an_allocation_geometry_reports_the_assigned_frame() {
+        let (leaf, _window) = attached(
+            text("Hello")
+                .a11y_label("Greeting")
+                .a11y_geometry(AccessibilityGeometry::Allocation),
+        );
+        let view = leaf.view();
+        assert_frame(ax_frame(view), own_frame(view), "the allocation-named text");
+    }
+
+    /// `.a11y_geometry(Region)` names an owner-local rectangle.
+    fn a_region_geometry_reports_the_named_region() {
+        let region = Rect::new(Point::new(10.0, 20.0), Size::new(30.0, 40.0));
+        let (leaf, _window) = attached(
+            text("Hello")
+                .a11y_label("Greeting")
+                .a11y_geometry(AccessibilityGeometry::Region(region)),
+        );
+        let view = leaf.view();
+        assert_frame(
+            ax_frame(view),
+            NSAccessibilityFrameInView(
+                view,
+                NSRect::new(NSPoint::new(10.0, 20.0), NSSize::new(30.0, 40.0)),
+            ),
+            "the region-named text",
+        );
+    }
+
+    /// A background layer behind a labelled text neither widens nor moves
+    /// its frame: the labelled container answers its content's size.
+    fn a_background_does_not_move_a_labelled_frame() {
+        let (plain, _plain_window) = attached(text("Hello").a11y_label("Plain"));
+        let (backed, _backed_window) = attached(
+            text("Hello")
+                .background(Color::new(Srgb::new(0.2, 0.4, 0.7)))
+                .a11y_label("Backed"),
+        );
+        assert_frame(
+            ax_frame(backed.view()),
+            ax_frame(plain.view()),
+            "the backed text against the plain one",
+        );
+        assert_ne!(ax_frame(backed.view()), own_frame(backed.view()));
+    }
+
+    /// A leading-only padding adds exactly its inset to the answer: the
+    /// labelled frame is the padded size, centred, not the assignment.
+    fn a_leading_only_padding_reports_the_padded_response() {
+        let text_size = answer(&resolve::render(text("Hello")));
+        let (leaf, _window) = attached(
+            text("Hello")
+                .padding_with(EdgeInsets::new(0.0, 20.0, 0.0, 0.0))
+                .a11y_label("Padded"),
+        );
+        let view = leaf.view();
+        assert_frame(
+            ax_frame(view),
+            centred_frame(view, Size::new(text_size.width + 20.0, text_size.height)),
+            "the leading-padded text",
+        );
+    }
+
+    /// The frame a fixed `Frame` answers — water-rs/waterui#1482: a
+    /// `view.size(8, 8).a11y_label("…")` under a window-filling slot is
+    /// assigned the window but announces its own 8×8.
+    fn a_labelled_frame_reports_its_answer() {
+        let (leaf, _window) = attached(
+            AnyView::new(AnyView::new(text("x")).size(8.0, 8.0))
+                .size(8.0, 8.0)
+                .a11y_label("Sized"),
+        );
+        let view = leaf.view();
+        assert_frame(
+            ax_frame(view),
+            centred_frame(view, Size::new(8.0, 8.0)),
+            "the labelled frame",
+        );
+        assert_ne!(ax_frame(view), own_frame(view));
+    }
 
     /// The frame an assistive client reads for `view`.
     fn ax_frame(view: &PlatformView) -> NSRect {
@@ -10267,112 +11029,625 @@ mod a11y_extent {
         NSAccessibilityFrameInView(view, view.bounds())
     }
 
-    /// #1482: a `view.size(8, 8).a11y_label("Sized")` under the window's
-    /// `Overlay` is assigned the whole window while its content is placed
-    /// in the resolved 8×8 — the labelled element must report the placed
-    /// region, not the window.
-    fn a_labelled_container_reports_its_content_extent() {
-        let leaf = resolve::render(
-            AnyView::new(AnyView::new(text("x")).size(8.0, 8.0))
-                .size(8.0, 8.0)
-                .a11y_label("Sized"),
-        );
+    /// `region`, in `view`'s layout space, reported in the screen space
+    /// `accessibilityFrame` answers — through `view`'s own y axis, which
+    /// runs up on an unflipped `AppKit` class.
+    fn region_frame(view: &PlatformView, region: KitRect) -> NSRect {
+        NSAccessibilityFrameInView(view, view::from_layout_space(view, region).into())
+    }
+
+    /// An SF Symbol's image view keeps the frame its parent assigned, draws
+    /// the symbol unscaled at the centre of that frame — its response — and
+    /// announces that rectangle.
+    fn an_image_draws_and_reports_its_response() {
+        let (leaf, _window) = attached(SystemIcon::new("star.fill").a11y_label("Favourite"));
         let view = leaf.view();
-        let _window = leaf::attach(mtm(), view);
+        let image = view
+            .downcast_ref::<ImageView>()
+            .expect("an image leaf is the kit image view itself");
+        let size = answer(&leaf);
+        assert!(
+            f64::from(size.width) < view.bounds().size.width,
+            "the fixture must be oversized for its symbol"
+        );
+        assert_eq!(
+            image.imageScaling(),
+            NSImageScaling::ScaleNone,
+            "the symbol draws at its own size"
+        );
+        assert_eq!(
+            image.imageAlignment(),
+            NSImageAlignment::AlignCenter,
+            "the symbol draws at the centre of its frame, where its response sits"
+        );
+        assert_frame(
+            ax_frame(view),
+            centred_frame(view, size),
+            "the labelled image",
+        );
+        assert_ne!(ax_frame(view), own_frame(view));
+    }
+
+    /// A plain string's label keeps the frame its parent assigned, draws
+    /// its glyphs in its centred response and announces that rectangle:
+    /// the glyphs sit in the oversized frame's response exactly where they
+    /// sit in a frame the size of the answer (translation covariance,
+    /// `docs/layout-spec.md` §2.4). Without the `plain` feature a string
+    /// renders as rich text.
+    #[cfg(feature = "plain")]
+    fn a_plain_label_draws_and_reports_its_response() {
+        use waterui::Str;
+
+        /// How far pixel alignment may move a centred response.
+        const PIXEL: f64 = 1.0;
+        /// Each glyph rectangle's offset from `origin`, in screen space.
+        fn offsets(view: &PlatformView, label: &Label, origin: NSPoint) -> Vec<NSRect> {
+            label
+                .rects(0..5)
+                .into_iter()
+                .map(|glyph| {
+                    let drawn = NSAccessibilityFrameInView(view, glyph.into());
+                    NSRect::new(
+                        NSPoint::new(drawn.origin.x - origin.x, drawn.origin.y - origin.y),
+                        drawn.size,
+                    )
+                })
+                .collect()
+        }
+
+        let (leaf, _window) = attached(AnyView::new(Str::from("Hello")));
+        let view = leaf.view();
+        let label = view
+            .downcast_ref::<Label>()
+            .expect("a plain-string leaf is the kit label itself");
+        let size = answer(&leaf);
+        let response = centred_frame(view, size);
+        assert_frame(ax_frame(view), response, "the plain label");
+        assert_ne!(ax_frame(view), own_frame(view));
+        let oversized = offsets(view, label, response.origin);
+        assert!(!oversized.is_empty(), "the label lays its text out");
+
+        view.setFrameSize(NSSize::new(f64::from(size.width), f64::from(size.height)));
         view.setNeedsLayout(true);
         view.layoutSubtreeIfNeeded();
+        let fitted = offsets(view, label, own_frame(view).origin);
+        assert_eq!(
+            oversized.len(),
+            fitted.len(),
+            "both frames lay the same lines out"
+        );
+        for (moved, fitted) in oversized.iter().zip(&fitted) {
+            assert!(
+                (moved.origin.x - fitted.origin.x).abs() < PIXEL
+                    && (moved.origin.y - fitted.origin.y).abs() < PIXEL
+                    && (moved.size.width - fitted.size.width).abs() < PIXEL
+                    && (moved.size.height - fitted.size.height).abs() < PIXEL,
+                "the glyphs follow the response: {moved:?} in the oversized frame, \
+                 {fitted:?} in a frame the size of the answer"
+            );
+        }
+    }
 
-        let content = view
-            .subviews()
-            .iter()
-            .next()
-            .expect("the frame container mounts its content as a subview");
-        let reported = ax_frame(view);
-        assert_eq!(
-            reported.size,
-            NSSize::new(8.0, 8.0),
-            "the labelled element reports the resolved 8x8, not the window"
+    /// A labelled toggle announces its response, not the frame its parent
+    /// assigned, and arranges its control and label inside it.
+    fn a_labelled_toggle_reports_its_response() {
+        let on = binding(false);
+        let (leaf, _window) = attached(Toggle::new("Wi-Fi", &on).a11y_label("Wireless"));
+        let view = leaf.view();
+        let response = centred_frame(view, answer(&leaf));
+        assert_frame(ax_frame(view), response, "the labelled toggle");
+        for part in view::subviews(view) {
+            let drawn = NSAccessibilityFrameInView(view, view::alignment_frame(&part).into());
+            assert!(
+                drawn.origin.x >= response.origin.x - 1.0
+                    && drawn.origin.x + drawn.size.width
+                        <= response.origin.x + response.size.width + 1.0,
+                "the row's control and label sit inside its response: {drawn:?} outside \
+                 {response:?}"
+            );
+        }
+    }
+
+    /// How far a label's reported rectangle may sit from the leading edge:
+    /// the bare text bounds a label measures are a point narrower than the
+    /// cell it draws in, which the reported frame includes.
+    #[cfg(feature = "text_field")]
+    const LEADING_SLOP: f64 = 2.0;
+
+    /// The first `Label` below `view`, depth first.
+    fn find_label(view: &PlatformView) -> Option<Retained<PlatformView>> {
+        view::subviews(view).into_iter().find_map(|sub| {
+            if sub.downcast_ref::<Label>().is_some() {
+                Some(sub)
+            } else {
+                find_label(&sub)
+            }
+        })
+    }
+
+    /// A text field's label is anchored at the leading edge of the field's
+    /// width, announced at its own width rather than centred in the full
+    /// width frame its field assigned.
+    #[cfg(feature = "text_field")]
+    fn a_text_field_label_sits_at_the_leading_edge() {
+        let value = binding(waterui::Str::from("typed"));
+        let (leaf, _window) = attached(waterui::component::text_field::TextField::new(
+            "Name", &value,
+        ));
+        let field = own_frame(leaf.view());
+        let label = find_label(leaf.view()).expect("the field mounts its label");
+        let reported = ax_frame(&label);
+        assert!(
+            reported.size.width > 0.0 && reported.size.width < field.size.width - 1.0,
+            "the label announces its own width: {reported:?} in {field:?}"
         );
-        assert_eq!(
-            reported,
-            NSAccessibilityFrameInView(view, content.frame()),
-            "the reported frame is where the content was placed"
-        );
-        assert_ne!(
-            reported,
-            own_frame(view),
-            "the reported frame is not the assigned bounds"
+        assert!(
+            (reported.origin.x - field.origin.x).abs() < LEADING_SLOP,
+            "the label sits at the field's leading edge: {reported:?} in {field:?}"
         );
     }
 
-    /// A labelled leaf that is no `HostView` keeps reporting its own
-    /// frame — the flag never lands on it.
-    fn a_labelled_plain_leaf_keeps_its_own_frame() {
-        let on = waterui::reactive::binding(false);
-        let leaf = resolve::render(
-            waterui::component::toggle::Toggle::new("Wi-Fi", &on).a11y_label("Plain"),
+    /// A fill paints its whole frame, and a region named on it is what its
+    /// element reports.
+    fn a_region_on_a_fill_reports_the_named_region() {
+        let region = Rect::new(Point::new(4.0, 6.0), Size::new(20.0, 10.0));
+        let (leaf, _window) = attached(
+            Color::new(Srgb::new(0.2, 0.4, 0.7))
+                .a11y_label("Swatch")
+                .a11y_geometry(AccessibilityGeometry::Region(region)),
         );
         let view = leaf.view();
         assert!(
-            view.downcast_ref::<HostView>().is_none(),
-            "a switch leaf is no host view"
+            view.downcast_ref::<ColorView>().is_some(),
+            "a color leaf is the kit color view itself"
         );
-        let _window = leaf::attach(mtm(), view);
-        view.setNeedsLayout(true);
-        view.layoutSubtreeIfNeeded();
-        assert_eq!(ax_frame(view), own_frame(view));
+        assert_frame(
+            ax_frame(view),
+            region_frame(view, KitRect::new(4.0, 6.0, 20.0, 10.0)),
+            "the region-named fill",
+        );
     }
 
-    /// A host view without the flag reports what `NSView` reports; with
-    /// the flag it reports the union of its non-hidden children — or its
-    /// own bounds when it has none.
-    fn a_host_view_reports_content_extent_only_when_marked() {
+    /// `.a11y_geometry(...)` on a web view reports the named region of the
+    /// `WKWebView`'s committed geometry.
+    #[cfg(feature = "webview")]
+    fn a_region_on_a_web_view_reports_the_named_region() {
+        use cocoa_ui::web_kit::LeafWebView;
+        use waterui_apple::native_test_support::webview::controller;
+        use waterui_webview::WebViewConfig;
+
+        let region = Rect::new(Point::new(8.0, 12.0), Size::new(40.0, 24.0));
+        let page = controller(mtm()).open_with(WebViewConfig::default());
+        let (leaf, _window) = attached(
+            page.a11y_label("Page")
+                .a11y_geometry(AccessibilityGeometry::Region(region)),
+        );
+        let view = leaf.view();
+        assert!(
+            view.downcast_ref::<LeafWebView>().is_some(),
+            "a web view leaf is the kit web view itself"
+        );
+        assert_frame(
+            ax_frame(view),
+            region_frame(view, KitRect::new(8.0, 12.0, 40.0, 24.0)),
+            "the region-named web view",
+        );
+    }
+
+    /// `.a11y_geometry(...)` on a scroll surface and on a list — both
+    /// valid — reports the named region, not the viewport.
+    fn a_region_on_a_scroll_surface_reports_the_named_region() {
+        let region = Rect::new(Point::new(10.0, 20.0), Size::new(30.0, 40.0));
+        let named = KitRect::new(10.0, 20.0, 30.0, 40.0);
+        let (scrolled, _scroll_window) = attached(
+            scroll(text("Scrolled"))
+                .a11y_label("Scroller")
+                .a11y_geometry(AccessibilityGeometry::Region(region)),
+        );
+        let view = scrolled.view();
+        assert!(
+            view.downcast_ref::<ScrollView>().is_some(),
+            "the fixture's leaf is the scroll surface"
+        );
+        assert_frame(
+            ax_frame(view),
+            region_frame(view, named),
+            "the region-named scroll surface",
+        );
+        let (list, _list_window) = attached(
+            AnyView::new(List::content((|| ListItem::new(text("Row")),)))
+                .a11y_geometry(AccessibilityGeometry::Region(region)),
+        );
+        assert_frame(
+            ax_frame(list.view()),
+            region_frame(list.view(), named),
+            "the region-named list",
+        );
+    }
+
+    /// A placement whose proposal changes under an unchanged frame
+    /// re-resolves the response: a wrapping text offered a narrower width
+    /// answers, and announces, a narrower and taller box while its frame
+    /// stays where it was.
+    fn a_changed_proposal_re_resolves_the_response() {
+        let (leaf, _window) =
+            attached(text("one two three four five six seven").a11y_label("Words"));
+        let view = leaf.view();
+        let host = view
+            .downcast_ref::<HostView>()
+            .expect("a text leaf is a host view");
+        let wide = ax_frame(view);
+        let frame = view.frame();
+        host.response_geometry().set_placement(
+            view,
+            Some(MeasureProposal {
+                width: Some(80.0),
+                height: Some(frame.size.height),
+            }),
+            None,
+            KitInsets::ZERO,
+        );
+        view.layoutSubtreeIfNeeded();
+        assert_eq!(view.frame(), frame, "the frame stays where it was");
+        let narrow = ax_frame(view);
+        assert!(
+            narrow.size.width <= 80.0 + EPSILON && narrow.size.width < wide.size.width,
+            "the response answers the narrower proposal: {narrow:?} after {wide:?}"
+        );
+        assert!(
+            narrow.size.height > wide.size.height,
+            "the text wraps under the narrower proposal: {narrow:?} after {wide:?}"
+        );
+    }
+
+    /// The first text host in `view`'s subtree and its label, depth-first.
+    fn text_host(view: &PlatformView) -> Option<(Retained<PlatformView>, Retained<Label>)> {
+        let mut stack = vec![view::retain_base(view)];
+        while let Some(current) = stack.pop() {
+            if let Ok(label) = current.clone().downcast::<Label>() {
+                let host = view::superview(&label).expect("a text label lives in its host");
+                return Some((host, label));
+            }
+            stack.extend(view::subviews(&current));
+        }
+        None
+    }
+
+    /// Renders `list` laid out in `direction` into an ordered-front window
+    /// and presents its first frame, so the table realizes its visible
+    /// rows.
+    fn mounted_list(list: AnyView, direction: LayoutDirection) -> (NativeLeaf, impl Sized) {
+        let leaf = dispatch::render(list, &resolve::env().extending(direction));
+        let window = mount_and_order_front(leaf.view());
+        present_first_frame(mtm(), leaf.view());
+        view::layout_immediately(leaf.view());
+        (leaf, window)
+    }
+
+    /// A List row's content narrower than the row: its response sits at
+    /// the leading edge of the row's content rect — the trailing edge in
+    /// right-to-left — centred vertically, and the text draws there.
+    fn assert_row_content_anchored(direction: LayoutDirection) {
+        let (leaf, _window) = mounted_list(
+            AnyView::new(List::content((|| ListItem::new(text("Row")),))),
+            direction,
+        );
+        let (host, label) = text_host(leaf.view()).expect("the row mounts its text");
+        let own = own_frame(&host);
+        let reported = ax_frame(&host);
+        assert!(
+            reported.size.width + 1.0 < own.size.width,
+            "the fixture's text must be narrower than its row: {reported:?} in {own:?}"
+        );
+        let mid_y = |rect: NSRect| rect.origin.y + rect.size.height / 2.0;
+        let mid_x = |rect: NSRect| rect.origin.x + rect.size.width / 2.0;
+        assert!(
+            (mid_y(reported) - mid_y(own)).abs() < EPSILON,
+            "the row content is centred vertically: {reported:?} in {own:?}"
+        );
+        let drawn = NSAccessibilityFrameInView(&host, label.frame());
+        match direction {
+            LayoutDirection::LeftToRight => {
+                assert!(
+                    (reported.origin.x - own.origin.x).abs() < EPSILON,
+                    "the row content sits at the leading (left) edge: {reported:?} in {own:?}"
+                );
+                assert!(mid_x(drawn) < mid_x(own), "the text draws on the left");
+            }
+            LayoutDirection::RightToLeft => {
+                assert!(
+                    (reported.origin.x + reported.size.width - own.origin.x - own.size.width).abs()
+                        < EPSILON,
+                    "the row content sits at the leading (right) edge: {reported:?} in {own:?}"
+                );
+                assert!(mid_x(drawn) > mid_x(own), "the text draws on the right");
+            }
+        }
+    }
+
+    /// The List row rule, left to right.
+    fn a_list_row_places_its_content_at_the_leading_edge() {
+        assert_row_content_anchored(LayoutDirection::LeftToRight);
+    }
+
+    /// The List row rule, right to left.
+    fn a_right_to_left_list_row_places_its_content_at_the_trailing_edge() {
+        assert_row_content_anchored(LayoutDirection::RightToLeft);
+    }
+
+    /// A List row whose content is a padded text — or, `lazy`, a lazy
+    /// horizontal stack holding it: the row anchors the content's response
+    /// at the leading edge of its content rect, and the text inside it
+    /// moves with that response — it draws its inset past the leading
+    /// edge, not centred in the row (translation covariance,
+    /// `docs/layout-spec.md` §2.4).
+    fn assert_padded_row_content_follows_its_response(direction: LayoutDirection, lazy: bool) {
+        /// The padding on the content's leading and trailing sides.
+        const INSET: f32 = 12.0;
+        /// How far pixel alignment may move a placed frame and the
+        /// response centred in it — half a point each at a 1x backing
+        /// scale.
+        const PIXEL: f64 = 1.0;
+        let inset = f64::from(INSET);
+        let (leaf, _window) = mounted_list(
+            AnyView::new(List::content((move || {
+                let padded = |label: &'static str| {
+                    text(label).padding_with(EdgeInsets::new(4.0, INSET, 4.0, INSET))
+                };
+                if lazy {
+                    ListItem::new(AnyView::new(LazyContainer::new(
+                        HStackLayout::default(),
+                        ForEach::new(["Row"], padded),
+                    )))
+                } else {
+                    ListItem::new(AnyView::new(padded("Row")))
+                }
+            },))),
+            direction,
+        );
+        let (text, _label) = text_host(leaf.view()).expect("the row mounts its text");
+        let padded = view::superview(&text).expect("the padding container hosts the text");
+        assert!(
+            padded.downcast_ref::<HostView>().is_some(),
+            "the text's parent is the padding container"
+        );
+        let content = if lazy {
+            view::superview(&padded).expect("the lazy stack hosts the padding")
+        } else {
+            padded
+        };
+        assert!(
+            content.downcast_ref::<HostView>().is_some(),
+            "the row's content is a container"
+        );
+        let row = own_frame(&content);
+        let response = ax_frame(&content);
+        let drawn = ax_frame(&text);
+        assert!(
+            response.size.width + 1.0 < row.size.width,
+            "the fixture's content must be narrower than its row: {response:?} in {row:?}"
+        );
+        let mid_y = |rect: NSRect| rect.origin.y + rect.size.height / 2.0;
+        assert!(
+            (mid_y(drawn) - mid_y(row)).abs() < PIXEL,
+            "the text is centred vertically in the row: {drawn:?} in {row:?}"
+        );
+        match direction {
+            LayoutDirection::LeftToRight => {
+                assert!(
+                    (response.origin.x - row.origin.x).abs() < PIXEL,
+                    "the content's response sits at the leading (left) edge: {response:?} in \
+                     {row:?}"
+                );
+                assert!(
+                    (drawn.origin.x - row.origin.x - inset).abs() < PIXEL,
+                    "the text draws its inset past the left edge: {drawn:?} in {row:?}"
+                );
+            }
+            LayoutDirection::RightToLeft => {
+                let right = |rect: NSRect| rect.origin.x + rect.size.width;
+                assert!(
+                    (right(response) - right(row)).abs() < PIXEL,
+                    "the content's response sits at the leading (right) edge: {response:?} in \
+                     {row:?}"
+                );
+                assert!(
+                    (right(row) - right(drawn) - inset).abs() < PIXEL,
+                    "the text draws its inset before the right edge: {drawn:?} in {row:?}"
+                );
+            }
+        }
+    }
+
+    /// A padded List row's text follows the anchored response, left to
+    /// right.
+    fn a_padded_list_row_draws_its_content_at_the_leading_edge() {
+        assert_padded_row_content_follows_its_response(LayoutDirection::LeftToRight, false);
+    }
+
+    /// A padded List row's text follows the anchored response, right to
+    /// left.
+    fn a_right_to_left_padded_list_row_draws_its_content_at_the_trailing_edge() {
+        assert_padded_row_content_follows_its_response(LayoutDirection::RightToLeft, false);
+    }
+
+    /// A List row whose content is a lazy stack: its members follow the
+    /// anchored response, left to right.
+    fn a_lazy_padded_list_row_draws_its_content_at_the_leading_edge() {
+        assert_padded_row_content_follows_its_response(LayoutDirection::LeftToRight, true);
+    }
+
+    /// A List row whose content is a lazy stack: its members follow the
+    /// anchored response, right to left.
+    fn a_right_to_left_lazy_padded_list_row_draws_its_content_at_the_trailing_edge() {
+        assert_padded_row_content_follows_its_response(LayoutDirection::RightToLeft, true);
+    }
+
+    /// A GPU surface whose content has an intrinsic size keeps the frame
+    /// its parent assigned, presents its frames over its centred response
+    /// — the presentation layer covers the response and the drawable is
+    /// the response's size in device pixels — and announces that
+    /// rectangle (`docs/layout-spec.md` §6).
+    #[cfg(feature = "gpu_surface")]
+    fn a_gpu_surface_draws_in_its_response() {
+        use cocoa_ui::appkit::surface_view::SurfaceView;
+        use waterui_apple::native_test_support::{block_on_main, install_gpu, pump_main_until};
+        use waterui_graphics::gpu::wgpu;
+        use waterui_graphics::gpu::{Context, Frame, GpuContent, GpuContentView, GpuRuntime};
+
+        /// A content of a fixed natural size that clears its frame.
+        struct Clear;
+
+        impl GpuContent for Clear {
+            fn setup(&mut self, _gpu: &Context<'_>) {}
+
+            fn render(&mut self, frame: &mut Frame<'_>) {
+                let mut encoder =
+                    frame
+                        .device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("a11y_frame gpu surface"),
+                        });
+                drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("a11y_frame gpu surface"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: frame.view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLUE),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                }));
+                frame.queue.submit([encoder.finish()]);
+            }
+
+            fn intrinsic_size(&self) -> Option<Size> {
+                Some(Size::new(40.0, 30.0))
+            }
+        }
+
+        let mut env = resolve::env();
+        let runtime = block_on_main(30.0, GpuRuntime::new()).expect("the harness has a GPU");
+        install_gpu(&mut env, runtime);
+        let leaf = dispatch::render(AnyView::new(GpuContentView::new(Clear)), &env);
+        let _window = mount_and_order_front(leaf.view());
+        view::layout_immediately(leaf.view());
+        let view = leaf.view();
+        let surface = view
+            .downcast_ref::<SurfaceView>()
+            .expect("a GPU content leaf is the kit surface view itself");
+        let size = answer(&leaf);
+        let response = centred_frame(view, size);
+        assert_frame(ax_frame(view), response, "the GPU surface");
+        assert_ne!(ax_frame(view), own_frame(view));
+
+        let layer = surface.presentation_layer();
+        assert_frame(
+            NSAccessibilityFrameInView(view, view.convertRectFromLayer(layer.frame())),
+            response,
+            "the presentation layer",
+        );
+        let scale = surface
+            .backing_scale()
+            .expect("the mounted surface is on a window");
+        let expected = (
+            (f64::from(size.width) * scale).ceil(),
+            (f64::from(size.height) * scale).ceil(),
+        );
+        assert!(
+            pump_main_until(5.0, || {
+                let drawable = layer.drawableSize();
+                (drawable.width, drawable.height) == expected
+            }),
+            "the drawable is the response in device pixels: {:?}, expected {expected:?}",
+            layer.drawableSize()
+        );
+    }
+
+    /// A host view no leaf owns holds no committed geometry and reports
+    /// the platform frame; with a response handler it reports the response,
+    /// which its children never widen.
+    fn a_host_view_reports_its_committed_response() {
         let mtm = mtm();
-        let host = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 100.0));
+        let host = HostView::new(mtm, KitRect::new(0.0, 0.0, 200.0, 100.0));
         let _window = leaf::attach(mtm, &host);
         assert_eq!(
             ax_frame(&host),
             own_frame(&host),
-            "an unmarked host reports `super`'s frame"
+            "a host with no committed geometry reports its platform frame"
         );
 
-        host.set_reports_content_extent(true);
+        let child = HostView::new(mtm, KitRect::new(10.0, 20.0, 30.0, 40.0));
+        view::add_subview(&host, &child);
+        host.response_geometry()
+            .set_response_handler(|_| Some(KitRect::new(5.0, 6.0, 7.0, 8.0)));
         assert_eq!(
             ax_frame(&host),
-            own_frame(&host),
-            "with no children the extent falls back to the view's bounds"
-        );
-
-        let child = HostView::new(mtm, cocoa_ui::Rect::new(10.0, 20.0, 30.0, 40.0));
-        let hidden = HostView::new(mtm, cocoa_ui::Rect::new(100.0, 100.0, 50.0, 50.0));
-        cocoa_ui::view::set_hidden(&hidden, true);
-        host.set_layout_handler(|_| {});
-        cocoa_ui::view::add_subview(&host, &hidden);
-        cocoa_ui::view::add_subview(&host, &child);
-        let expected = NSAccessibilityFrameInView(&host, child.frame());
-        assert_eq!(
-            ax_frame(&host),
-            expected,
-            "the extent is the union of the non-hidden children's frames"
+            NSAccessibilityFrameInView(
+                &host,
+                NSRect::new(NSPoint::new(5.0, 6.0), NSSize::new(7.0, 8.0))
+            ),
+            "the committed response is the reported frame"
         );
     }
 
-    /// The `a11y_extent::` trials.
+    /// One `a11y_frame::` trial: its name inside the module and its body.
+    fn case(name: &str, body: fn()) -> (String, Box<dyn FnOnce() + Send>) {
+        (format!("a11y_frame::{name}"), Box::new(body))
+    }
+
+    /// The trial whose body is the function `body`, named after it.
+    macro_rules! case {
+        ($body:ident) => {
+            case(stringify!($body), $body)
+        };
+    }
+
+    /// The `a11y_frame::` trials.
     pub fn trials() -> Vec<libtest_mimic::Trial> {
-        trial_each(vec![
-            (
-                "a11y_extent::a_labelled_container_reports_its_content_extent".to_owned(),
-                Box::new(a_labelled_container_reports_its_content_extent),
-            ),
-            (
-                "a11y_extent::a_labelled_plain_leaf_keeps_its_own_frame".to_owned(),
-                Box::new(a_labelled_plain_leaf_keeps_its_own_frame),
-            ),
-            (
-                "a11y_extent::a_host_view_reports_content_extent_only_when_marked".to_owned(),
-                Box::new(a_host_view_reports_content_extent_only_when_marked),
-            ),
-        ])
+        #[cfg_attr(
+            not(any(feature = "plain", feature = "gpu_surface", feature = "webview")),
+            expect(
+                unused_mut,
+                reason = "only the plain-label, GPU-surface and web-view cases are pushed \
+                          afterwards"
+            )
+        )]
+        let mut cases = vec![
+            case!(an_oversized_text_reports_its_centred_response),
+            case!(an_allocation_geometry_reports_the_assigned_frame),
+            case!(a_region_geometry_reports_the_named_region),
+            case!(a_background_does_not_move_a_labelled_frame),
+            case!(a_leading_only_padding_reports_the_padded_response),
+            case!(a_labelled_frame_reports_its_answer),
+            case!(an_image_draws_and_reports_its_response),
+            case!(a_labelled_toggle_reports_its_response),
+            #[cfg(feature = "text_field")]
+            case!(a_text_field_label_sits_at_the_leading_edge),
+            case!(a_region_on_a_fill_reports_the_named_region),
+            case!(a_region_on_a_scroll_surface_reports_the_named_region),
+            case!(a_padded_list_row_draws_its_content_at_the_leading_edge),
+            case!(a_right_to_left_padded_list_row_draws_its_content_at_the_trailing_edge),
+            case!(a_lazy_padded_list_row_draws_its_content_at_the_leading_edge),
+            case!(a_right_to_left_lazy_padded_list_row_draws_its_content_at_the_trailing_edge),
+            case!(a_changed_proposal_re_resolves_the_response),
+            case!(a_list_row_places_its_content_at_the_leading_edge),
+            case!(a_right_to_left_list_row_places_its_content_at_the_trailing_edge),
+            case!(a_host_view_reports_its_committed_response),
+        ];
+        #[cfg(feature = "plain")]
+        cases.push(case!(a_plain_label_draws_and_reports_its_response));
+        #[cfg(feature = "gpu_surface")]
+        cases.push(case!(a_gpu_surface_draws_in_its_response));
+        #[cfg(feature = "webview")]
+        cases.push(case!(a_region_on_a_web_view_reports_the_named_region));
+        trial_each(cases)
     }
 }
 
@@ -10390,7 +11665,8 @@ mod embedding {
         HostEnvironment, waterui_apple_measure, waterui_apple_update_environment,
     };
     use waterui_core::layout::{
-        Layout, LayoutDirection, Point, ProposalSize, Rect, Size, SubView, SubviewPlacement,
+        Layout, LayoutDirection, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size,
+        SubView, SubviewPlacement, UnitPoint,
     };
     use waterui_locale::locale_binding;
 
@@ -10650,14 +11926,27 @@ mod embedding {
             cocoa_ui::system_font::FontMetrics {
                 size: base + index,
                 weight: 0.01 * (index + 1.0),
+                bold_weight: 0.3,
                 line_height: base + 3.0 + index,
             }
         })
     }
+    /// The ABI groups for `metrics`: the bold weight travels as the `wght`
+    /// coordinate of the system face at that weight, as a host reads it off
+    /// `SwiftUI`'s bold face.
     fn flat_metrics(metrics: &[cocoa_ui::system_font::FontMetrics; 6]) -> Vec<f64> {
         metrics
             .iter()
-            .flat_map(|font| [font.size, font.weight, font.line_height])
+            .flat_map(|font| {
+                let bold =
+                    cocoa_ui::font::Font::systemFontOfSize_weight(font.size, font.bold_weight);
+                [
+                    font.size,
+                    font.weight,
+                    cocoa_ui::font::weight_coordinate(&bold),
+                    font.line_height,
+                ]
+            })
             .collect()
     }
     fn test_locale(tag: &str) -> waterui::locale::Locale {
@@ -10673,6 +11962,13 @@ mod embedding {
         fn size_that_fits(&self, proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
             self.seen.borrow_mut().push(proposal);
             Size::new(17.0, 23.0)
+        }
+        fn resolve_extent(
+            &self,
+            input: PlacementInput,
+            _children: &[&dyn SubView],
+        ) -> Result<Rect, LayoutError> {
+            Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
         }
         fn place(
             &self,
@@ -10814,6 +12110,11 @@ mod embedding {
             waterui::text::font::FontWeight::Normal,
             "Body weight"
         );
+        assert_eq!(
+            cap.font_now(0).bold_weight(),
+            Some(waterui::text::font::FontWeight::SemiBold),
+            "Body bold weight"
+        );
     }
 
     /// The measure ABI delivers the host's proposal verbatim: `nil` axes
@@ -10914,7 +12215,7 @@ mod embedding {
         let updated_flat = flat_metrics(&updated);
         let ja = c"ja-JP";
         // SAFETY: `embed_a` is a live scoped mount; `ja` is NUL-terminated
-        // and `updated_flat` holds eighteen doubles.
+        // and `updated_flat` holds every style's metrics.
         unsafe {
             waterui_apple_update_environment(
                 embed_a.mount,
@@ -11262,9 +12563,10 @@ mod gesture_events {
     }
 
     /// `AppKit`: `NSRotationGestureRecognizer.rotation` reports radians
-    /// natively — the event's angle is the raw getter value, and each
-    /// `Updated`'s velocity is the wall-clock delta rate, never a
-    /// second conversion (#2757).
+    /// counter-clockwise like `NSEvent.rotation` — the event's angle is
+    /// the getter's negation in the contract's clockwise convention, and
+    /// each `Updated`'s velocity is the wall-clock delta rate, never a
+    /// second conversion (#2757, #3706).
     #[cfg(target_os = "macos")]
     fn a_rotation_gesture_reports_native_radians() {
         let rotations = Rc::new(RefCell::new(Vec::new()));
@@ -11298,30 +12600,30 @@ mod gesture_events {
         let e = fire(NSGestureRecognizerState::Changed, 0.75);
         assert_eq!(e.phase(), GesturePhase::Updated);
         assert!(
-            (e.angle() - 0.75).abs() < 1e-6,
-            "angle must be the raw radians getter, saw {}",
+            (e.angle() + 0.75).abs() < 1e-6,
+            "AppKit's counter-clockwise getter negates into the contract's clockwise angle, saw {}",
             e.angle()
         );
         assert!(
-            e.velocity().is_finite() && e.velocity() > 0.0,
-            "rotation progressed: {}",
+            e.velocity().is_finite() && e.velocity() < 0.0,
+            "a growing counter-clockwise getter reports a negative clockwise velocity: {}",
             e.velocity()
         );
         let e = fire(NSGestureRecognizerState::Changed, 1.25);
-        assert!((e.angle() - 1.25).abs() < 1e-6);
+        assert!((e.angle() + 1.25).abs() < 1e-6);
         let e = fire(NSGestureRecognizerState::Ended, 1.25);
         assert_eq!((e.phase(), e.velocity()), (GesturePhase::Ended, 0.0));
-        assert!((e.angle() - 1.25).abs() < 1e-6);
+        assert!((e.angle() + 1.25).abs() < 1e-6);
 
         // A second gesture reseeds at zero; a negative update and a
         // cancel keep the last angle with zero velocity.
         let e = fire(NSGestureRecognizerState::Began, 0.0);
         assert_eq!(e.phase(), GesturePhase::Started);
         let e = fire(NSGestureRecognizerState::Changed, -0.5);
-        assert!((e.angle() + 0.5).abs() < 1e-6);
+        assert!((e.angle() - 0.5).abs() < 1e-6);
         let e = fire(NSGestureRecognizerState::Cancelled, -0.5);
         assert_eq!((e.phase(), e.velocity()), (GesturePhase::Cancelled, 0.0));
-        assert!((e.angle() + 0.5).abs() < 1e-6);
+        assert!((e.angle() - 0.5).abs() < 1e-6);
     }
 
     /// `AppKit`: `NSMagnificationGestureRecognizer.magnification` is the
@@ -11435,7 +12737,10 @@ mod gesture_events {
         drive::<NSClickGestureRecognizer>(host, &click);
         assert!(events.borrow().is_empty(), "arming the Then emitted");
 
-        // Now the armed rotation forwards.
+        // Now the armed rotation forwards the second gesture's own event
+        // unchanged: AppKit's counter-clockwise getter of 0.5 is the
+        // contract's clockwise angle of -0.5, as the plain rotation reports
+        // (#3706).
         sender.seed(NSGestureRecognizerState::Began, 0.5, here);
         drive::<NSRotationGestureRecognizer>(host, &sender);
         {
@@ -11447,7 +12752,11 @@ mod gesture_events {
                 );
             };
             assert_eq!(event.phase(), GesturePhase::Started);
-            assert!((event.angle() - 0.5).abs() < 1e-6);
+            assert!(
+                (event.angle() + 0.5).abs() < 1e-6,
+                "the Then forwards the rotation's clockwise angle, saw {}",
+                event.angle()
+            );
         }
         assert!(
             matches!(gestures.borrow().as_slice(), [Gesture::Then(_)]),
@@ -11757,6 +13066,7 @@ mod transition {
     use waterui::views::ForEach;
     use waterui_apple::contract::Mounted;
     use waterui_apple::native_test_support::pump_main_until;
+    use waterui_apple::native_test_support::transition::ManualTransitionClock;
     use waterui_backend_core::AnyView;
     use waterui_core::Metadata;
     use waterui_core::metadata::Retain;
@@ -12278,22 +13588,39 @@ mod transition {
         waterui::navigation::NavigationPath<i32>,
         waterui_apple::contract::NativeLeaf,
     ) {
-        use waterui::navigation::{NavigationPath, NavigationStack, NavigationView};
-        let path = NavigationPath::<i32>::new();
-        let leaf = super::resolve::render(
-            NavigationStack::with_path(path.clone(), NavigationView::new("Root", text("root")))
-                .destination(|_route: i32| {
-                    NavigationView::new(
-                        "Detail",
-                        Metadata::new(
-                            text("detail"),
-                            TransitionSpec::new(PropertyTransition::opacity())
-                                .with_animation(Animation::linear(Duration::from_millis(150))),
-                        ),
-                    )
-                }),
-        );
+        let path = waterui::navigation::NavigationPath::<i32>::new();
+        let leaf = super::resolve::render(claimed_stack_view(&path));
         (path, leaf)
+    }
+
+    /// [`claimed_stack`] under a [`ManualTransitionClock`], so the
+    /// page's transition holds until the trial advances the clock.
+    fn claimed_stack_on_manual_clock() -> (
+        waterui::navigation::NavigationPath<i32>,
+        waterui_apple::contract::NativeLeaf,
+        ManualTransitionClock,
+    ) {
+        let path = waterui::navigation::NavigationPath::<i32>::new();
+        let (leaf, clock) = super::resolve::render_on_manual_clock(claimed_stack_view(&path));
+        (path, leaf, clock)
+    }
+
+    /// The stack both [`claimed_stack`] flavours render, driven by `path`.
+    fn claimed_stack_view(
+        path: &waterui::navigation::NavigationPath<i32>,
+    ) -> impl waterui_backend_core::View {
+        use waterui::navigation::{NavigationStack, NavigationView};
+        NavigationStack::with_path(path.clone(), NavigationView::new("Root", text("root")))
+            .destination(|_route: i32| {
+                NavigationView::new(
+                    "Detail",
+                    Metadata::new(
+                        text("detail"),
+                        TransitionSpec::new(PropertyTransition::opacity())
+                            .with_animation(Animation::linear(Duration::from_millis(150))),
+                    ),
+                )
+            })
     }
 
     /// A claimed page pushed then popped through the model: the pop is
@@ -12492,13 +13819,13 @@ mod transition {
     /// ramps its own insertion instead (§5.5).
     pub fn navigation_claimed_push_replaces_the_stack_animation() {
         let _mtm = mtm();
-        let (path, leaf) = claimed_stack();
+        let (path, leaf, clock) = claimed_stack_on_manual_clock();
         let _window = super::mount_and_order_front(leaf.view());
         let mid_ramp = Cell::new(false);
         #[cfg(target_os = "ios")]
-        push_unanimated_ios(&path, &leaf, &mid_ramp);
+        push_unanimated_ios(&path, &leaf, &clock, &mid_ramp);
         #[cfg(target_os = "macos")]
-        push_unanimated_macos(&path, &leaf, &mid_ramp);
+        push_unanimated_macos(&path, &leaf, &clock, &mid_ramp);
         assert!(
             mid_ramp.get(),
             "the page host's alpha ramped through its own transition"
@@ -12511,6 +13838,7 @@ mod transition {
     fn push_unanimated_ios(
         path: &waterui::navigation::NavigationPath<i32>,
         leaf: &waterui_apple::contract::NativeLeaf,
+        clock: &ManualTransitionClock,
         mid_ramp: &Cell<bool>,
     ) {
         let nav = nav_controller_in(leaf.view()).expect("the stack mounts a navigation controller");
@@ -12523,20 +13851,42 @@ mod transition {
             nav.transitionCoordinator().is_none(),
             "a claimed push is not the stack's animated transition"
         );
-        let done = pump_main_until(5.0, || {
+        // The pushed page's transition host. Call inside a pool: the kit
+        // getters autorelease.
+        let page_host = || {
+            let top = nav.topViewController().expect("the pushed page is top");
+            view::subviews(&top.view().expect("view"))
+                .into_iter()
+                .next()
+                .expect("a claimed page mounts inside a transition host")
+        };
+        let sample = || {
             autoreleasepool(|_| {
-                let top = nav.topViewController().expect("the pushed page is top");
-                let host = view::subviews(&top.view().expect("view"))
-                    .into_iter()
-                    .next()
-                    .expect("a claimed page mounts inside a transition host");
-                let alpha = view::alpha(&host);
+                let alpha = view::alpha(&page_host());
                 if alpha > 0.0 && alpha < 1.0 {
                     mid_ramp.set(true);
                 }
-                alpha >= 1.0
+                alpha
             })
-        });
+        };
+        // The insertion's clock starts when its host enters a window, and
+        // `UIKit` installs the pushed page's view in a later layout pass
+        // than the one that grew `viewControllers`; an advance before then
+        // becomes the run's origin instead of elapsed time.
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| view::has_window(&page_host()))),
+            "the claimed page's transition host enters the window"
+        );
+        clock.advance(Duration::from_millis(75));
+        assert!(
+            pump_main_until(5.0, || {
+                sample();
+                mid_ramp.get()
+            }),
+            "the page host's alpha ramps mid-flight"
+        );
+        clock.advance(Duration::from_millis(150));
+        let done = pump_main_until(5.0, || sample() >= 1.0);
         assert!(done, "the insertion transition completes");
     }
 
@@ -12546,15 +13896,17 @@ mod transition {
     fn push_unanimated_macos(
         path: &waterui::navigation::NavigationPath<i32>,
         leaf: &waterui_apple::contract::NativeLeaf,
+        clock: &ManualTransitionClock,
         mid_ramp: &Cell<bool>,
     ) {
         let host = view::retain_base(leaf.view());
         autoreleasepool(|_| path.push(1));
-        let done = pump_main_until(5.0, || {
+        // The entry's page alpha, `None` until the entry is mounted.
+        let sample = || {
             autoreleasepool(|_| {
                 let subviews = view::subviews(&host);
                 if subviews.len() < 2 {
-                    return false;
+                    return None;
                 }
                 let alpha = subviews.last().map_or(1.0, |entry| {
                     view::subviews(entry)
@@ -12564,9 +13916,23 @@ mod transition {
                 if alpha > 0.0 && alpha < 1.0 {
                     mid_ramp.set(true);
                 }
-                alpha >= 1.0
+                Some(alpha)
             })
-        });
+        };
+        assert!(
+            pump_main_until(5.0, || sample().is_some()),
+            "the push mounts the claimed entry"
+        );
+        clock.advance(Duration::from_millis(75));
+        assert!(
+            pump_main_until(5.0, || {
+                sample();
+                mid_ramp.get()
+            }),
+            "the entry host's alpha ramps mid-flight"
+        );
+        clock.advance(Duration::from_millis(150));
+        let done = pump_main_until(5.0, || sample().is_some_and(|alpha| alpha >= 1.0));
         assert!(done, "the insertion transition completes");
     }
 
@@ -12947,7 +14313,7 @@ mod transition {
         let _mtm = mtm();
         let (handler, view) = Dynamic::new();
         handler.set(label("before"));
-        let leaf = super::resolve::render(view);
+        let (leaf, clock) = super::resolve::render_on_manual_clock(view);
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
         handler.set(Metadata::new(
@@ -12955,6 +14321,7 @@ mod transition {
             TransitionSpec::new(PropertyTransition::opacity())
                 .with_animation(Animation::linear(Duration::from_millis(60))),
         ));
+        clock.advance(Duration::from_millis(30));
         autoreleasepool(|_| {
             let host = transition_host(&mounted);
             let content = content_of(&host);
@@ -12967,6 +14334,7 @@ mod transition {
                 (view::alpha(&content) - 0.5).abs() < 1e-6,
                 "the content's own opacity is untouched"
             );
+            clock.advance(Duration::from_millis(60));
             let settled = pump_main_until(2.0, || (view::alpha(&host) - 1.0).abs() < 1e-6);
             assert!(settled, "the insertion completes to full alpha");
             assert!((view::alpha(&content) - 0.5).abs() < 1e-6);
@@ -12980,7 +14348,7 @@ mod transition {
         let _mtm = mtm();
         let (handler, view) = Dynamic::new();
         handler.set(label("before"));
-        let leaf = super::resolve::render(view);
+        let (leaf, clock) = super::resolve::render_on_manual_clock(view);
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
         handler.set(Metadata::new(
@@ -12988,6 +14356,7 @@ mod transition {
             TransitionSpec::new(PropertyTransition::scale(0.5))
                 .with_animation(Animation::linear(Duration::from_millis(60))),
         ));
+        clock.advance(Duration::from_millis(30));
         autoreleasepool(|_| {
             let host = transition_host(&mounted);
             let transition_child = content_of(&host);
@@ -13007,6 +14376,7 @@ mod transition {
                 (own - 0.5).abs() < 1e-6,
                 "the content's own scale is untouched mid-flight, read {own}"
             );
+            clock.advance(Duration::from_millis(60));
             let settled = pump_main_until(2.0, || {
                 (scale_through(&host, &transition_child) - 1.0).abs() < 1e-6
             });
@@ -13027,7 +14397,7 @@ mod transition {
         let _mtm = mtm();
         let (handler, view) = Dynamic::new();
         handler.set(label("before"));
-        let leaf = super::resolve::render(view);
+        let (leaf, clock) = super::resolve::render_on_manual_clock(view);
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
         handler.set(Metadata::new(
@@ -13037,6 +14407,7 @@ mod transition {
             )
             .with_animation(Animation::linear(Duration::from_millis(120))),
         ));
+        clock.advance(Duration::from_millis(60));
         autoreleasepool(|_| {
             let host = transition_host(&mounted);
             let transition_child = content_of(&host);
@@ -13056,6 +14427,12 @@ mod transition {
                 shared.get()
             });
             assert!(mid, "a combined tick landed mid-flight");
+            clock.advance(Duration::from_millis(120));
+            let settled = pump_main_until(2.0, || {
+                (view::alpha(&host) - 1.0).abs() < 1e-6
+                    && (scale_through(&host, &transition_child) - 1.0).abs() < 1e-6
+            });
+            assert!(settled, "the combined insertion completes to the identity");
         });
         drop(window);
     }
@@ -13108,7 +14485,7 @@ mod transition {
             TransitionSpec::new(PropertyTransition::opacity())
                 .with_animation(Animation::linear(Duration::from_millis(60))),
         );
-        let leaf = super::resolve::render(leaf_view);
+        let (leaf, clock) = super::resolve::render_on_manual_clock(leaf_view);
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
         handler.set(Metadata::new(
@@ -13117,6 +14494,7 @@ mod transition {
                 .with_animation(Animation::linear(Duration::from_millis(60))),
         ));
         handler.set(label("b"));
+        clock.advance(Duration::from_millis(30));
         autoreleasepool(|_| {
             let host = transition_host(&mounted);
             let transition_child = content_of(&host);
@@ -13126,6 +14504,9 @@ mod transition {
                 (view::alpha(&host) - 1.0).abs() < 1e-6,
                 "the adopted opacity never applies to a claimed child"
             );
+            clock.advance(Duration::from_millis(60));
+            let completed = pump_main_until(2.0, || view::subviews(mounted.view()).len() == 1);
+            assert!(completed, "the claimed ghost completes");
         });
         drop(window);
     }
@@ -13562,6 +14943,8 @@ mod transition {
     /// The ghost's slot holds the gap until the clock ends — siblings
     /// move into it only when `on_complete` releases the slot.
     pub fn siblings_close_the_gap_at_completion() {
+        /// How far pixel alignment may move one member against another.
+        const PIXEL: f64 = 0.5;
         let _mtm = mtm();
         let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         // Only the middle row claims a transition.
@@ -13581,7 +14964,13 @@ mod transition {
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| view::layout_immediately(leaf.view()));
         let container = member_container(leaf.view()).expect("the container holds the members");
-        let b_origin = member_frames(&container)[1].2.origin.y;
+        // Where the removed member began, from the first member: the stack
+        // centres its block in the allocation (`docs/layout-spec.md`
+        // §4.2), so the block moves as a whole when it shrinks.
+        let offset = |members: &[(bool, usize, cocoa_ui::Rect)]| {
+            members[1].2.origin.y - members[0].2.origin.y
+        };
+        let b_offset = offset(&member_frames(&container));
         autoreleasepool(|_| {
             let _ = items.remove(1);
         });
@@ -13589,13 +14978,13 @@ mod transition {
             pump_main_until(2.0, || member_frames(&container).iter().any(|m| m.0)),
             "the removed member ghosts"
         );
-        // Completion drops the ghost and the slot; the trailing member's
-        // origin lands exactly where the removed member began.
+        // Completion drops the ghost and the slot; the trailing member
+        // lands where the removed member began, right after the first.
         assert!(
             pump_main_until(3.0, || {
                 autoreleasepool(|_| view::layout_immediately(leaf.view()));
                 let members = member_frames(&container);
-                members.len() == 2 && members[1].2.origin.y.to_bits() == b_origin.to_bits()
+                members.len() == 2 && (offset(&members) - b_offset).abs() < PIXEL
             }),
             "siblings close the gap once the ghost completes"
         );
@@ -14093,6 +15482,27 @@ mod transition {
     /// `gpu_runtime::prepare` production path installs.
     #[cfg(feature = "gpu_surface")]
     pub fn gpu_leaf(view: impl waterui_backend_core::View) -> waterui_apple::contract::NativeLeaf {
+        gpu_leaf_with(view, |_| {})
+    }
+
+    /// [`gpu_leaf`] under a [`ManualTransitionClock`]: every transition
+    /// the leaf runs holds still until the trial advances the returned
+    /// clock, so it observes a run in flight for as long as it needs.
+    #[cfg(feature = "gpu_surface")]
+    fn gpu_leaf_on_manual_clock(
+        view: impl waterui_backend_core::View,
+    ) -> (waterui_apple::contract::NativeLeaf, ManualTransitionClock) {
+        let clock = ManualTransitionClock::default();
+        let leaf = gpu_leaf_with(view, |env| env.insert(clock.clone()));
+        (leaf, clock)
+    }
+
+    /// [`gpu_leaf`] with `configure` applied to the leaf's environment.
+    #[cfg(feature = "gpu_surface")]
+    fn gpu_leaf_with(
+        view: impl waterui_backend_core::View,
+        configure: impl FnOnce(&mut waterui_backend_core::Environment),
+    ) -> waterui_apple::contract::NativeLeaf {
         // The filtered leaf's `AnyEffect::build` binds through the local
         // executor — `initialize_process` only runs on macOS, so install
         // the plain main-queue answer here the way the webview trials do.
@@ -14107,6 +15517,7 @@ mod transition {
         )
         .expect("the harness provides a GPU runtime");
         waterui_apple::native_test_support::install_gpu(&mut env, runtime);
+        configure(&mut env);
         waterui_apple::dispatch::render(waterui_backend_core::AnyView::new(view), &env)
     }
 
@@ -14432,8 +15843,6 @@ mod transition {
         });
     }
 
-    /// A blur spec — long enough to watch the effect live mid-flight.
-    #[cfg(feature = "gpu_surface")]
     /// Sharp edges over the GPU gradient: a review PNG shows whether
     /// the frame is blurred, which a smooth gradient alone cannot.
     #[cfg(feature = "gpu_surface")]
@@ -14442,9 +15851,16 @@ mod transition {
         vstack((text("BLUR").size(96.0), gpu_picture()))
     }
 
+    /// The blur transition's animation length — on a
+    /// [`ManualTransitionClock`], the advance that ends a run.
+    #[cfg(feature = "gpu_surface")]
+    const BLUR_DURATION: Duration = Duration::from_millis(400);
+
+    /// A blur spec over [`BLUR_DURATION`].
+    #[cfg(feature = "gpu_surface")]
     fn blur_spec() -> TransitionSpec {
         TransitionSpec::new(PropertyTransition::blur(8.0))
-            .with_animation(Animation::linear(Duration::from_millis(400)))
+            .with_animation(Animation::linear(BLUR_DURATION))
     }
 
     /// `blur_insertion_renders_through_the_live_effect` — a
@@ -14457,7 +15873,7 @@ mod transition {
     pub fn blur_insertion_renders_through_the_live_effect() {
         let _mtm = mtm();
         let (handler, dynamic) = Dynamic::new();
-        let leaf = gpu_leaf(dynamic);
+        let (leaf, clock) = gpu_leaf_on_manual_clock(dynamic);
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| handler.set(label("before")));
         assert!(
@@ -14496,6 +15912,7 @@ mod transition {
         );
         // Completion: the output leaves and the content view is the same
         // pointer — it was never reparented.
+        clock.advance(BLUR_DURATION);
         assert!(
             pump_main_until(5.0, || {
                 autoreleasepool(|_| {
@@ -14519,7 +15936,7 @@ mod transition {
     pub fn blur_removal_renders_from_the_frozen_capture() {
         let _mtm = mtm();
         let (handler, dynamic) = Dynamic::new();
-        let leaf = gpu_leaf(dynamic);
+        let (leaf, clock) = gpu_leaf_on_manual_clock(dynamic);
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| {
             handler.set(Metadata::new(blur_picture(), blur_spec()));
@@ -14531,6 +15948,19 @@ mod transition {
                     .any(|(_, surface)| surface.has_presented_frame())
             })),
             "the GPU surface presents before removal"
+        );
+        // The child's own blur insertion ends first, so the removal
+        // starts from the settled child: its live effect's output leaves
+        // the host.
+        clock.advance(BLUR_DURATION);
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(|_| {
+                view::subviews(leaf.view())
+                    .into_iter()
+                    .next()
+                    .is_some_and(|host| view::subviews(&host).len() == 1)
+            })),
+            "the blur insertion completes once its clock passes the animation's end"
         );
         let host_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
         let root_ptr: Cell<*const PlatformView> = Cell::new(std::ptr::null());
@@ -14566,6 +15996,9 @@ mod transition {
             );
             root
         });
+        // Mid-ramp: the removal blur grows from 0, and the first nonzero
+        // sample starts the frozen capture the effect blurs.
+        clock.advance(BLUR_DURATION / 2);
         assert!(
             pump_main_until(5.0, || autoreleasepool(|_| view::is_hidden(&root_view))),
             "the first blurred frame hides the retired root"
@@ -14578,14 +16011,12 @@ mod transition {
                 "the frozen effect's output joined the ghost host"
             );
         });
-        // Mid-ramp: the removal blur grows from 0, so the frame the
-        // effect first presents is barely blurred.
-        pump_main_until(0.2, || false);
         export_window_png(
             leaf.view(),
             "/tmp/1472-stage8",
             "blur_removal_renders_from_the_frozen_capture",
         );
+        clock.advance(BLUR_DURATION / 2);
         assert!(
             pump_main_until(5.0, || {
                 autoreleasepool(|_| view::subviews(leaf.view()).len() == 1)
@@ -14708,15 +16139,19 @@ mod transition {
             transition_context: waterui_core::transition::TransitionContext,
         ) -> impl waterui_backend_core::View {
             *self.frame.borrow_mut() = Some(transition_context.frame().clone());
-            let shader =
-                waterui::graphics::filtrate::ShaderEffect::new(include_str!("pixel_probe.wgsl"))
-                    .expect("the probe shader is valid WGSL");
+            let shader = waterui::graphics::ShaderEffect::new(include_str!("pixel_probe.wgsl"))
+                .expect("the probe shader is valid WGSL");
             waterui::graphics::WithEffect::new(content, shader)
         }
     }
 
-    /// A pixel probe's frame cell plus its spec — a 400 ms linear ramp
-    /// keeps the transition observable across several pumps.
+    /// The pixel probe's animation length — on a
+    /// [`ManualTransitionClock`], the advance that ends a run.
+    #[cfg(feature = "gpu_surface")]
+    const PIXEL_PROBE_DURATION: Duration = Duration::from_millis(400);
+
+    /// A pixel probe's frame cell plus its spec — a linear ramp over
+    /// [`PIXEL_PROBE_DURATION`].
     #[cfg(feature = "gpu_surface")]
     fn pixel_probe() -> (
         Rc<RefCell<Option<waterui::reactive::Computed<waterui_core::transition::TransitionFrame>>>>,
@@ -14726,8 +16161,23 @@ mod transition {
         let spec = TransitionSpec::new(PixelProbe {
             frame: Rc::clone(&frame),
         })
-        .with_animation(Animation::linear(Duration::from_millis(400)));
+        .with_animation(Animation::linear(PIXEL_PROBE_DURATION));
         (frame, spec)
+    }
+
+    /// Ends the pixel run in flight on `clock` — the probe child's own
+    /// insertion — and waits for its overlay to leave, so the removal
+    /// that follows starts from a settled child rather than retiring a
+    /// run mid-flight.
+    #[cfg(feature = "gpu_surface")]
+    fn finish_pixel_run(window: &super::AttachedWindow, clock: &ManualTransitionClock) {
+        clock.advance(PIXEL_PROBE_DURATION);
+        assert!(
+            pump_main_until(5.0, || autoreleasepool(
+                |_| retired_overlay(window).is_none()
+            )),
+            "the pixel run completes once its clock passes the animation's end"
+        );
     }
 
     /// The retired overlay host the pixel transition added directly to
@@ -14846,12 +16296,13 @@ mod transition {
         let _mtm = mtm();
         let (probe_frame, spec) = pixel_probe();
         let (handler, dynamic) = Dynamic::new();
-        let leaf = gpu_leaf(dynamic);
+        let (leaf, clock) = gpu_leaf_on_manual_clock(dynamic);
         let window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| {
             handler.set(Metadata::new(blur_picture(), spec));
         });
         await_gpu_presented(leaf.view());
+        finish_pixel_run(&window, &clock);
         autoreleasepool(|_| handler.set(label("gone")));
         // The frozen capture lands and the effect mounts in the window
         // overlay — the ghost stays beneath the live child.
@@ -14910,6 +16361,7 @@ mod transition {
             "a_pixel_removal_freezes_into_the_window_overlay",
         );
         // Completion releases the overlay and the ghost host.
+        clock.advance(PIXEL_PROBE_DURATION);
         assert!(
             pump_main_until(5.0, || {
                 autoreleasepool(|_| {
@@ -14929,7 +16381,7 @@ mod transition {
         let _mtm = mtm();
         let (_frame, spec) = pixel_probe();
         let (handler, dynamic) = Dynamic::new();
-        let leaf = gpu_leaf(dynamic);
+        let (leaf, clock) = gpu_leaf_on_manual_clock(dynamic);
         let window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| handler.set(label("before")));
         assert!(
@@ -14989,6 +16441,7 @@ mod transition {
         );
         // Completion: the overlay leaves and the content shows again —
         // its `Retain` never died, since semantics stayed live.
+        clock.advance(PIXEL_PROBE_DURATION);
         assert!(
             pump_main_until(5.0, || {
                 autoreleasepool(|_| {
@@ -15024,7 +16477,7 @@ mod transition {
         let _mtm = mtm();
         let (probe_frame, spec) = pixel_probe();
         let (handler, dynamic) = Dynamic::new();
-        let leaf = gpu_leaf(dynamic);
+        let (leaf, clock) = gpu_leaf_on_manual_clock(dynamic);
         // The site lives inside a scroll view sized beyond the window:
         // the claimed child gets a nonzero slot at once and the ghost's
         // window rect moves with the content offset.
@@ -15062,6 +16515,7 @@ mod transition {
             handler.set(Metadata::new(blur_picture(), spec));
         });
         await_gpu_presented(leaf.view());
+        finish_pixel_run(&window, &clock);
         autoreleasepool(|_| handler.set(label("gone")));
         assert!(
             pump_main_until(5.0, || autoreleasepool(
@@ -15109,6 +16563,7 @@ mod transition {
             "/tmp/1472-stage9",
             "pixel_frame_follows_the_slot_while_scrolling",
         );
+        finish_pixel_run(&window, &clock);
     }
 }
 

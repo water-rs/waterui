@@ -187,6 +187,85 @@ pub enum ScratchFormat {
     Rgba8Unorm,
 }
 
+/// The one wgpu backend GPU rendering uses on a native target: no other
+/// backend is compiled in, selected or fallen back to, and a device without
+/// it is unsupported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RequiredBackend {
+    /// The backend as an instance mask.
+    pub backends: wgpu::Backends,
+    /// The backend's name; `WGPU_BACKEND` reads it case-insensitively.
+    pub name: &'static str,
+    /// The platforms the requirement covers.
+    pub platform: &'static str,
+    /// What a device must offer, as a remedy for the user.
+    pub requirement: &'static str,
+}
+
+impl std::fmt::Display for RequiredBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unsupported device: no {} adapter is available; GPU rendering on {} requires {}",
+            self.name, self.platform, self.requirement
+        )
+    }
+}
+
+/// The backend GPU rendering requires on this target: Vulkan on Linux and
+/// Android, DX12 on Windows, Metal on Apple platforms. `None` on the web,
+/// which keeps WebGPU and WebGL.
+pub const REQUIRED_BACKEND: Option<RequiredBackend> = if cfg!(any(
+    target_os = "android",
+    target_os = "linux"
+)) {
+    Some(RequiredBackend {
+        backends: wgpu::Backends::VULKAN,
+        name: "Vulkan",
+        platform: "Linux and Android",
+        requirement: "a Vulkan driver, so install or update the device's Vulkan driver",
+    })
+} else if cfg!(target_os = "windows") {
+    Some(RequiredBackend {
+        backends: wgpu::Backends::DX12,
+        name: "DX12",
+        platform: "Windows",
+        requirement: "a DirectX 12 adapter and the DXC runtime (`dxcompiler.dll`), so update the \
+                      GPU driver and run `water doctor` to install DXC",
+    })
+} else if cfg!(target_vendor = "apple") {
+    Some(RequiredBackend {
+        backends: wgpu::Backends::METAL,
+        name: "Metal",
+        platform: "Apple platforms",
+        requirement: "a Metal device",
+    })
+} else {
+    None
+};
+
+/// The backends `WGPU_BACKEND` names, if it is set.
+///
+/// # Panics
+/// When the target has a [`REQUIRED_BACKEND`] and the variable names anything
+/// but it: no other backend exists there, so honouring the request is
+/// impossible and ignoring it would hide the misconfiguration.
+#[must_use]
+pub fn backends_from_env() -> Option<wgpu::Backends> {
+    let requested = wgpu::Backends::from_env()?;
+    if let Some(required) = REQUIRED_BACKEND {
+        assert!(
+            requested == required.backends,
+            "WGPU_BACKEND names {requested:?}, but GPU rendering on {} is {}-only: \
+             unset WGPU_BACKEND or set it to `{}`",
+            required.platform,
+            required.name,
+            required.name
+        );
+    }
+    Some(requested)
+}
+
 /// Configuration for the GPU engine.
 #[derive(Clone, Debug)]
 pub struct GpuConfig {
@@ -196,7 +275,8 @@ pub struct GpuConfig {
     /// Uses an existing host device. Handles must share one creation chain.
     /// Device limits and enabled features govern engine capabilities.
     pub device: Option<interop::SharedDevice>,
-    /// Which wgpu backends may be used. Defaults to all.
+    /// Which wgpu backends may be used. Defaults to the target's
+    /// [`REQUIRED_BACKEND`] alone, and to all on the web.
     pub backends: wgpu::Backends,
     /// Adapter power preference. Defaults to high performance.
     pub power_preference: wgpu::PowerPreference,
@@ -213,6 +293,12 @@ pub struct GpuConfig {
     /// not on duration. On wasm32, where a wait resolves on the page's event
     /// loop, it is a hard timeout.
     pub wait_timeout: std::time::Duration,
+    /// How long the GPU coverage route keeps its generation scratch after
+    /// the last frame that generated coverage. Consecutive generating frames
+    /// within it reuse the same buffers; once it passes with no such frame,
+    /// the render thread releases them, so an idle application holds none.
+    /// Zero releases right after the next wake. Defaults to one second.
+    pub scratch_idle: std::time::Duration,
     /// Memory budgets.
     pub budget: cherenkov::Budget,
     /// When set and the adapter supports pipeline caches, the closed
@@ -247,10 +333,12 @@ impl Default for GpuConfig {
             #[cfg(test)]
             coverage_route: None,
             device: None,
-            backends: wgpu::Backends::all(),
+            backends: REQUIRED_BACKEND
+                .map_or_else(wgpu::Backends::all, |required| required.backends),
             power_preference: wgpu::PowerPreference::HighPerformance,
             timestamps: false,
             wait_timeout: std::time::Duration::from_secs(30),
+            scratch_idle: std::time::Duration::from_secs(1),
             budget: cherenkov::Budget::default(),
             pipeline_cache: None,
             scratch_format: ScratchFormat::default(),
@@ -302,7 +390,7 @@ pub struct WindowTarget {
     handle: Box<dyn wgpu::WindowHandle>,
     /// The view's backing layer, captured on the caller's thread.
     #[cfg(target_vendor = "apple")]
-    parent: render::planes::apple::Parent,
+    parent: Result<render::planes::apple::Parent, cherenkov::SurfaceError>,
     size: (u32, u32),
     refresh: cherenkov::RefreshRange,
     output: render::present::OutputRequest,
@@ -313,16 +401,22 @@ impl WindowTarget {
     /// Wraps `handle` (any `raw-window-handle` window, e.g. an
     /// `Arc<winit::window::Window>`) at `size` device pixels.
     ///
-    /// # Panics
-    /// On Apple platforms, off the main thread: the view's layer is captured
-    /// here and a view is main-thread state. Also when the handle is
-    /// unavailable or is not an `AppKit` or `UIKit` view there.
+    /// # Contract
+    /// On Apple platforms the view's layer is captured here and a view is
+    /// main-thread state: a call off the main thread, or with a handle that
+    /// is unavailable or is not an `AppKit` or `UIKit` view, is a contract
+    /// violation, and creating the surface fails with
+    /// [`SurfaceError::UnsupportedTarget`](cherenkov::SurfaceError::UnsupportedTarget).
     pub fn new(handle: impl wgpu::WindowHandle + 'static, size: (u32, u32)) -> Self {
         Self {
             #[cfg(not(target_vendor = "apple"))]
             handle: Box::new(handle),
             #[cfg(target_vendor = "apple")]
-            parent: render::planes::apple::Parent::capture(Box::new(handle)),
+            parent: render::planes::apple::Parent::capture(Box::new(handle)).inspect_err(|error| {
+                waterui_contract::contract_violation!(
+                    "{error}; creating this window target's surface fails"
+                );
+            }),
             size,
             refresh: cherenkov::DEFAULT_REFRESH,
             output: render::present::OutputRequest {

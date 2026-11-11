@@ -16,18 +16,19 @@
 //! reset the modifier's transform to identity (#3504), while a parent's
 //! `sublayerTransform` is not part of that sync.
 
-use waterui::animation::Animation;
+use waterui::animation::ChangeAnimation;
 use waterui::reactive::watcher::Metadata as WatchMetadata;
 
 use cocoa_ui::core_animation::Timing;
 use cocoa_ui::objc2_quartz_core::CATransform3D;
 
 /// `parseAnimation`: the watcher metadata's `Animation` mapped to a kit
-/// [`Timing`] by the shared [`crate::animation::timing`] mapping. `None`
-/// answers `None`: no animation, the change applies directly.
+/// [`Timing`] by the shared [`crate::animation::timing`] mapping. A change
+/// that names no animation or disables it answers `None`: the change
+/// applies directly.
 pub fn watcher_timing(metadata: &WatchMetadata) -> Option<Timing> {
-    metadata
-        .try_get::<Animation>()
+    ChangeAnimation::of(metadata)
+        .animation()
         .map(|animation| crate::animation::timing(&animation))
 }
 

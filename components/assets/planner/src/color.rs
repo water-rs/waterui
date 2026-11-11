@@ -22,7 +22,7 @@ pub struct HexColor([u8; 3]);
 #[non_exhaustive]
 pub struct InvalidHexColor {
     /// The rejected text.
-    pub value: String,
+    value: String,
 }
 
 impl InvalidHexColor {

@@ -24,7 +24,7 @@ use waterui::gesture::{
     PointerButton, PointerButtons, RotationEvent, TapEvent,
 };
 use waterui_core::Environment;
-use waterui_core::handler::BoxedAction;
+use waterui_core::handler::{BoxedAction, ReportExtraction};
 
 use crate::input::TouchPhase;
 use crate::time::Instant;
@@ -216,7 +216,9 @@ impl GestureBinding {
             GesturePayload::Magnification(event) => local_env.insert(event),
             GesturePayload::Rotation(event) => local_env.insert(event),
         }
-        (self.action.borrow_mut())(&local_env);
+        // A gesture action whose parameters cannot be extracted does not run;
+        // the failure is reported and the gesture is still consumed.
+        (self.action.borrow_mut())(&local_env).report_extraction();
         true
     }
 
@@ -243,9 +245,9 @@ fn window_point(point: GesturePoint) -> kurbo::Point {
 }
 
 fn logical_coordinate(value: f64) -> f32 {
-    value
-        .to_f32()
-        .expect("gesture coordinate must be representable as f32")
+    value.to_f32().expect(
+        "`ToPrimitive::to_f32` is total for f64: it saturates to infinity rather than failing",
+    )
 }
 
 fn gesture_point(point: kurbo::Point) -> GesturePoint {
@@ -760,7 +762,7 @@ impl GestureDetector for TapDetector {
                     self.streak = self
                         .streak
                         .checked_add(1)
-                        .expect("tap streak counter overflow");
+                        .expect("a u32 tap streak does not overflow within the repeat window");
                 } else {
                     self.streak = 1;
                 }
@@ -1433,7 +1435,9 @@ fn build_gesture_detector(gesture: &Gesture) -> Box<dyn GestureDetector> {
             build_gesture_detector(pair.first()),
             build_gesture_detector(pair.second()),
         )),
-        _ => panic!("hydrolysis gesture variant is not implemented"),
+        _ => unreachable!(
+            "every `Gesture` variant `waterui-core` defines has a detector here; a new variant must add its arm"
+        ),
     }
 }
 

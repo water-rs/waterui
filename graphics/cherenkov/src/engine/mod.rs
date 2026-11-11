@@ -11,14 +11,15 @@ pub use browser::Engine;
 pub use native::Engine;
 pub use wake::{CompletionWaker, FrameScope, SurfaceWaker, SurfaceWakes};
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Weak;
 use std::sync::Arc;
 
 use crate::backend::{Backend, Visibility};
 use crate::error::{RenderError, SurfaceRejection};
 use crate::frame::{FrameTime, Next};
-use cherenkov_record::{ChangeSet, Shared, SurfaceId};
+use crate::message::SurfaceNext;
+use cherenkov_record::{ChangeSet, RunningTracks, Shared, SurfaceId};
 
 /// A live surface's engine-side entry: its shared UI-thread queue state
 /// (weak — the `Surface` handle owns it), its host waker, and the cell the
@@ -30,6 +31,8 @@ pub struct SurfaceEntry<B: Backend> {
     pub waker: Arc<SurfaceWaker>,
     /// The cell `Surface::next_frame` reads.
     pub next_frame: Weak<RefCell<Next>>,
+    /// The cell `Surface::running_tracks` reads.
+    pub running_tracks: Weak<Cell<RunningTracks>>,
 }
 
 /// The engine's surfaces, by their shared UI-thread state.
@@ -65,7 +68,7 @@ fn drain_visible<B: Backend>(
         if entry.waker.visibility() == Visibility::Visible {
             entry.waker.arm();
             let mut shared_mut = shared.borrow_mut();
-            if let Some(changes) = shared_mut.take_changes(time.0) {
+            if let Some(changes) = shared_mut.take_changes(time.instant()) {
                 commits.push((shared_mut.id, changes));
             }
         }
@@ -93,16 +96,19 @@ fn rendered(next: Next, rejected: Vec<SurfaceRejection>) -> Result<Next, RenderE
 
 fn publish_next<B: Backend>(
     surfaces: &Surfaces<B>,
-    frame_next: &rustc_hash::FxHashMap<SurfaceId, Next>,
+    frame_next: &rustc_hash::FxHashMap<SurfaceId, SurfaceNext>,
 ) {
     for entry in surfaces {
-        let (Some(shared), Some(next_frame)) = (entry.shared.upgrade(), entry.next_frame.upgrade())
-        else {
+        let (Some(shared), Some(next_frame), Some(running_tracks)) = (
+            entry.shared.upgrade(),
+            entry.next_frame.upgrade(),
+            entry.running_tracks.upgrade(),
+        ) else {
             continue;
         };
-        let next = frame_next
-            .get(&shared.borrow().id)
-            .map_or(Next::Idle, Clone::clone);
-        next_frame.replace(next);
+        let published = frame_next.get(&shared.borrow().id);
+        next_frame.replace(published.map_or(Next::Idle, |published| published.next.clone()));
+        running_tracks
+            .set(published.map_or_else(RunningTracks::default, |published| published.tracks));
     }
 }

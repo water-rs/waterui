@@ -221,6 +221,7 @@ fn translate_paint(paint: &Paint, d: Vec2) -> Paint {
                 m.points().iter().map(|p| *p + d).collect(),
                 m.colors().to_vec(),
             )
+            .expect("a translated mesh keeps the grid of the valid mesh it came from")
             .interpolation(m.interpolation_mode()),
         ),
         Paint::Image(ip) => Paint::Image(cherenkov_scene::ImagePaint {

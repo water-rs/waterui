@@ -27,9 +27,9 @@ use crate::ui::content_ledger::{ContentError, DisplayList, PendingContent};
 #[non_exhaustive]
 pub struct RenderRequest {
     /// The size proposed to the view, in points.
-    pub size: Size,
+    size: Size,
     /// How long the capture waits for owed content.
-    pub content_deadline: Duration,
+    content_deadline: Duration,
 }
 
 impl RenderRequest {
@@ -63,11 +63,11 @@ impl RenderRequest {
 #[non_exhaustive]
 pub struct RenderResult {
     /// RGBA pixel data (4 bytes per pixel, row-major order).
-    pub rgba_data: Vec<u8>,
+    rgba_data: Vec<u8>,
     /// Actual rendered width in pixels.
-    pub width: u32,
+    width: u32,
     /// Actual rendered height in pixels.
-    pub height: u32,
+    height: u32,
 }
 
 impl RenderResult {

@@ -112,7 +112,7 @@ impl ContentLedger {
         let id = state.next_id.get();
         state.next_id.set(
             id.checked_add(1)
-                .expect("content ledger token ids overflowed"),
+                .expect("a u64 token counter advancing by one per entry does not overflow"),
         );
         state.owed.borrow_mut().insert(
             id,
@@ -238,9 +238,9 @@ fn view_name<V: 'static>() -> &'static str {
 #[non_exhaustive]
 pub struct PendingContent {
     /// The owing view's type name, without its path.
-    pub view: &'static str,
+    view: &'static str,
     /// What the view is waiting for, as it described it.
-    pub detail: Cow<'static, str>,
+    detail: Cow<'static, str>,
 }
 
 impl PendingContent {
@@ -330,12 +330,12 @@ impl fmt::Debug for OwedContent {
 #[non_exhaustive]
 pub struct ContentFailure {
     /// The owing view's type name, without its path.
-    pub view: &'static str,
+    view: &'static str,
     /// What the view was waiting for.
-    pub detail: Cow<'static, str>,
+    detail: Cow<'static, str>,
     /// Why the load failed.
     #[source]
-    pub source: Box<dyn core::error::Error + Send + Sync>,
+    source: Box<dyn core::error::Error + Send + Sync>,
 }
 
 impl ContentFailure {

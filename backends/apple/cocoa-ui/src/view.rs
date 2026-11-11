@@ -159,6 +159,42 @@ pub const fn is_flipped(_view: &PlatformView) -> bool {
     true
 }
 
+/// `rect`, given in layout space — origin at the top-left corner of
+/// `view`'s bounds, y running down — in `view`'s own coordinate space.
+#[must_use]
+pub fn from_layout_space(view: &PlatformView, rect: Rect) -> Rect {
+    let bounds = bounds(view);
+    let y = if is_flipped(view) {
+        bounds.origin.y + rect.origin.y
+    } else {
+        bounds.origin.y + bounds.size.height - rect.origin.y - rect.size.height
+    };
+    Rect::new(
+        bounds.origin.x + rect.origin.x,
+        y,
+        rect.size.width,
+        rect.size.height,
+    )
+}
+
+/// `rect`, given in `view`'s own coordinate space, in layout space — the
+/// inverse of [`from_layout_space`].
+#[must_use]
+pub fn to_layout_space(view: &PlatformView, rect: Rect) -> Rect {
+    let bounds = bounds(view);
+    let y = if is_flipped(view) {
+        rect.origin.y - bounds.origin.y
+    } else {
+        bounds.origin.y + bounds.size.height - rect.origin.y - rect.size.height
+    };
+    Rect::new(
+        rect.origin.x - bounds.origin.x,
+        y,
+        rect.size.width,
+        rect.size.height,
+    )
+}
+
 /// Moves and resizes `view` in its superview's coordinate space.
 pub fn set_frame(view: &PlatformView, frame: Rect) {
     view.setFrame(frame.into());
@@ -315,13 +351,15 @@ pub fn invalidate_layout(view: &PlatformView) {
     }
 }
 
+/// Marks `view` alone as needing a layout pass.
 #[cfg(target_os = "macos")]
-fn set_needs_layout(view: &PlatformView) {
+pub(crate) fn set_needs_layout(view: &PlatformView) {
     view.setNeedsLayout(true);
 }
 
+/// Marks `view` alone as needing a layout pass.
 #[cfg(target_os = "ios")]
-fn set_needs_layout(view: &PlatformView) {
+pub(crate) fn set_needs_layout(view: &PlatformView) {
     view.setNeedsLayout();
 }
 
@@ -384,35 +422,20 @@ pub fn is_hidden_in_hierarchy(view: &PlatformView) -> bool {
 /// `hasVisibleAncestry` — this view and every ancestor visible: neither
 /// hidden nor fully transparent.
 ///
-/// A hidden or alpha-0 view ancestor parks the surface. On `UIKit` the
-/// terminal ancestor is the `UIWindow` itself (a `UIView`): a *hidden*
-/// window still rejects, but its alpha is outside content visibility —
-/// an ordered, unrevealed window holds `alpha = 0` until first paint and
-/// must not reject the way a transparent view ancestor does. `AppKit`
-/// windows sit outside the `NSView` chain, so behavior is unchanged.
+/// A hidden or alpha-0 ancestor parks the surface. On `UIKit` the terminal
+/// ancestor is the `UIWindow` itself (a `UIView`), whose hidden state and
+/// alpha count like any other ancestor's. `AppKit` windows sit outside the
+/// `NSView` chain.
 #[must_use]
 pub fn has_visible_ancestry(view: &PlatformView) -> bool {
     let mut node = Some(retain_base(view));
     while let Some(current) = node {
-        if is_hidden(&current) || (!is_window_view(&current) && alpha(&current) <= 0.0) {
+        if is_hidden(&current) || alpha(&current) <= 0.0 {
             return false;
         }
         node = superview(&current);
     }
     true
-}
-
-/// Whether `view` is the window itself. Only `UIKit` keeps the window in
-/// the view-ancestor chain (`UIWindow` is a `UIView`); `AppKit` windows
-/// never appear there.
-#[cfg(target_os = "ios")]
-fn is_window_view(view: &PlatformView) -> bool {
-    use objc2::ClassType;
-    view.isKindOfClass(objc2_ui_kit::UIWindow::class())
-}
-#[cfg(not(target_os = "ios"))]
-const fn is_window_view(_view: &PlatformView) -> bool {
-    false
 }
 
 /// `view`'s opacity (`alphaValue`/`alpha`).

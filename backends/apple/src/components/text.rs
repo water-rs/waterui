@@ -15,7 +15,7 @@ use core::ops::Range;
 
 use cocoa_ui::Retained;
 use waterui::Str;
-use waterui::animation::Animation;
+use waterui::animation::{Animation, ChangeAnimation};
 use waterui::graphics::color::WorkingColor;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
@@ -23,16 +23,19 @@ use waterui::resolve::Resolvable;
 use waterui::text::StyledStr;
 use waterui::text::TapSpan;
 use waterui::text::TextConfig;
-use waterui::text::font::{FontDesign, FontWeight, ResolvedFont};
+use waterui::text::font::ResolvedFont;
 use waterui::theme::color::Foreground;
 use waterui_backend_core::Environment;
 use waterui_core::layout::{
-    HorizontalAlignment, ProposalSize, Size, StretchAxis, SubView, VerticalAlignment,
-    ViewDimensions,
+    HorizontalAlignment, LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis,
+    SubView, VerticalAlignment, ViewDimensions,
 };
 
+use super::font::platform_font;
 use crate::contract::{NativeLeaf, RenderContext};
 use crate::dispatch::Dispatcher;
+use crate::proposal;
+use crate::theme::platform_color;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -83,7 +86,6 @@ mod platform {
     pub(super) use cocoa_ui::objc2_ui_kit::NSTextAlignment;
     pub(super) use cocoa_ui::uikit::HostView;
     pub(super) use cocoa_ui::uikit::Label;
-    pub(super) use cocoa_ui::uikit::colors;
     pub(super) use cocoa_ui::uikit::gesture::GestureAttachment;
 
     /// Attaches the span tap recognizer: a tap that begins only when the
@@ -245,113 +247,15 @@ fn sync_tap(state: &Rc<RefCell<TextState>>) {
     }
 }
 
-/// The cross-dissolve duration the metadata calls for, in seconds: `None`
-/// applies the change directly — the same table `withCrossDissolveAnimation`
-/// uses.
+/// The cross-dissolve duration the metadata calls for, in seconds: `None`,
+/// for a change that names no animation or disables it, applies the change
+/// directly — the same table `withCrossDissolveAnimation` uses.
 fn cross_dissolve_duration(metadata: &Metadata) -> Option<f64> {
-    match metadata.try_get::<Animation>() {
+    match ChangeAnimation::of(metadata).animation() {
         None => None,
         Some(Animation::Default) => Some(0.25),
         Some(Animation::Bezier { duration, .. }) => Some(duration.as_secs_f64()),
         Some(Animation::Spring { .. }) => Some(0.15),
-    }
-}
-
-/// The platform weight of a `FontWeight` on the `UIFont`/`NSFont` scale.
-const fn platform_weight(weight: FontWeight) -> f64 {
-    use cocoa_ui::font::weight;
-    match weight {
-        FontWeight::Thin => weight::THIN,
-        FontWeight::UltraLight => weight::ULTRA_LIGHT,
-        FontWeight::Light => weight::LIGHT,
-        FontWeight::Normal => weight::REGULAR,
-        FontWeight::Medium => weight::MEDIUM,
-        FontWeight::SemiBold => weight::SEMI_BOLD,
-        FontWeight::Bold => weight::BOLD,
-        FontWeight::UltraBold => weight::HEAVY,
-        FontWeight::Black => weight::BLACK,
-    }
-}
-
-/// The comma-separated candidates of a CSS-style family list, trimmed with
-/// the empties dropped — `fontFamilyCandidates` in the Swift port.
-fn family_candidates(family: &str) -> impl Iterator<Item = &str> {
-    family
-        .split(',')
-        .map(str::trim)
-        .filter(|candidate| !candidate.is_empty())
-}
-
-/// The platform face a resolved font names: a named family resolved through
-/// its candidate list — generics first, then `fontWithName:` — or the design
-/// face, italicized when the chunk asks for it.
-///
-/// # Panics
-///
-/// When the family names no installed font and no generic — the same
-/// `fatalError` the Swift port raises.
-fn platform_font(
-    mtm: cocoa_ui::MainThreadMarker,
-    resolved: &ResolvedFont,
-    italic: bool,
-) -> Retained<cocoa_ui::Font> {
-    let size = f64::from(resolved.size());
-    let weight = platform_weight(resolved.weight());
-    let mut font = match resolved.family() {
-        Some(family) if !family.is_empty() => {
-            let mut resolved_font = None;
-            for candidate in family_candidates(family) {
-                resolved_font = match candidate {
-                    "system" | "sans-serif" => Some(cocoa_ui::font::system(mtm, size, weight)),
-                    _ => cocoa_ui::font::named(candidate, size),
-                };
-                if resolved_font.is_some() {
-                    break;
-                }
-            }
-            resolved_font.unwrap_or_else(|| {
-                panic!(
-                    "WaterUI: font family '{family}' not found. Ensure the font is bundled and registered."
-                )
-            })
-        }
-        _ => match resolved.design() {
-            FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
-            FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
-        },
-    };
-    if italic && let Some(italic_font) = cocoa_ui::font::italic_variant(&font) {
-        font = italic_font;
-    }
-    font
-}
-
-/// A `WorkingColor` as the platform's extended linear Display-P3 color object.
-#[cfg(target_os = "ios")]
-pub fn platform_color(color: &WorkingColor) -> Retained<cocoa_ui::objc2_ui_kit::UIColor> {
-    {
-        let [red, green, blue, alpha] = color.components;
-        platform::colors::extended_linear_display_p3(
-            f64::from(red),
-            f64::from(green),
-            f64::from(blue),
-            f64::from(alpha),
-        )
-    }
-}
-
-/// A `WorkingColor` as the platform's extended linear Display-P3 color object, with HDR
-/// headroom applied as a content-headroom multiplier — the `AppKit` variant.
-#[cfg(target_os = "macos")]
-pub fn platform_color(color: &WorkingColor) -> Retained<cocoa_ui::objc2_app_kit::NSColor> {
-    {
-        let [red, green, blue, alpha] = color.components;
-        platform::colors::extended_linear_display_p3(
-            f64::from(red),
-            f64::from(green),
-            f64::from(blue),
-            f64::from(alpha),
-        )
     }
 }
 
@@ -601,6 +505,14 @@ impl core::fmt::Debug for TextSubView {
 }
 
 impl SubView for TextSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `TextMetrics` measures in f64; `ViewDimensions` speaks f32 — the
     // narrowing is the layout contract.
     #[expect(
@@ -688,12 +600,14 @@ fn label_leaf(
     host.set_layout_handler({
         let label = label.clone();
         move |view| {
-            let bounds = cocoa_ui::view::bounds(view);
+            // The text draws in its response rectangle, centred in the
+            // frame it was assigned (docs/layout-spec.md §2.4).
+            let bounds = proposal::response(view);
             // A `labelWithString:` field keeps its text's alignment rect
             // inside the frame (`-[NSView alignmentRectInsets]`); expand
             // the frame by those insets so the ink lands exactly on the
-            // leaf's bounds. `UILabel` draws at the frame's origin and
-            // wraps at `preferredMaxLayoutWidth`, so it takes the bounds
+            // response. `UILabel` draws at the frame's origin and wraps
+            // at `preferredMaxLayoutWidth`, so it takes the response
             // unchanged.
             #[cfg(target_os = "macos")]
             let frame = {
@@ -801,34 +715,6 @@ mod tests {
     use core::time::Duration;
 
     use super::*;
-
-    #[test]
-    fn family_candidates_splits_trims_and_drops_empties() {
-        let candidates: Vec<&str> = family_candidates("Menlo , Monaco ,,  Courier New ").collect();
-        assert_eq!(candidates, ["Menlo", "Monaco", "Courier New"]);
-        assert!(family_candidates("").next().is_none());
-        assert!(family_candidates(" ,  ").next().is_none());
-        assert_eq!(family_candidates("system").collect::<Vec<_>>(), ["system"]);
-    }
-
-    #[test]
-    fn platform_weight_maps_every_weight() {
-        use cocoa_ui::font::weight;
-        let table: [(FontWeight, f64); 9] = [
-            (FontWeight::Thin, weight::THIN),
-            (FontWeight::UltraLight, weight::ULTRA_LIGHT),
-            (FontWeight::Light, weight::LIGHT),
-            (FontWeight::Normal, weight::REGULAR),
-            (FontWeight::Medium, weight::MEDIUM),
-            (FontWeight::SemiBold, weight::SEMI_BOLD),
-            (FontWeight::Bold, weight::BOLD),
-            (FontWeight::UltraBold, weight::HEAVY),
-            (FontWeight::Black, weight::BLACK),
-        ];
-        for (weight, expected) in table {
-            assert_eq!(platform_weight(weight).to_bits(), expected.to_bits());
-        }
-    }
 
     #[test]
     fn cross_dissolve_duration_follows_animation_table() {

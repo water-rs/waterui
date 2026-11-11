@@ -37,6 +37,7 @@ fn text_node<E: crate::text::TextEngine>(content: &'static str) -> RenderNode<E>
         alignment,
         line_limit: None,
         layout_dirty: Rc::new(Cell::new(false)),
+        geometry: None,
         tap_span_targets: RefCell::default(),
     }))
 }
@@ -60,7 +61,7 @@ fn render_node_container_lays_out_and_flushes_text() {
         accessibility_child_env: None,
         placed: Vec::new(),
         #[cfg(feature = "accessibility")]
-        resolved: waterui_core::layout::Rect::from_size(Size::zero()),
+        geometry: None,
         layout_dirty: Rc::new(Cell::new(false)),
         _guards: Vec::new(),
     }));
@@ -122,7 +123,7 @@ fn geometry_static_flush_reuses_cached_placement() {
         accessibility_child_env: None,
         placed: Vec::new(),
         #[cfg(feature = "accessibility")]
-        resolved: waterui_core::layout::Rect::from_size(Size::zero()),
+        geometry: None,
         layout_dirty: Rc::new(Cell::new(false)),
         _guards: Vec::new(),
     }));
@@ -610,7 +611,7 @@ fn render_tree_chart_switch_snapshot() {
     eprintln!("wrote /tmp/waterui_tree_switch_before.png and /tmp/waterui_tree_switch_after.png");
 }
 
-/// The exact chart case: a `watch`-driven swap between two `Canvas` (`SceneView`)
+/// The exact chart case: a `watch`-driven swap between two `Canvas`
 /// charts — the effect-slot path where a swap could render the previous scene. On the render-tree path the
 /// switch must visibly take effect (red -> blue scene), proving the `SceneView`
 /// `SceneView` fixed (the patched node is re-dispatched in isolation).
@@ -620,10 +621,10 @@ fn render_tree_scene_view_switch_snapshot() {
     use std::time::Instant;
     use waterui::ViewExt as _;
     use waterui::reactive::binding;
-    use waterui_canvas::Canvas;
     use waterui_core::dynamic::watch;
     use waterui_core::handler::AnyViewBuilder;
     use waterui_core::layout::{Point, Rect, Size as LayoutSize};
+    use waterui_graphics::canvas::Canvas;
     use waterui_graphics::color::Srgb;
 
     fn write_png(path: &std::path::Path, width: u32, height: u32, rgba: Vec<u8>) {
@@ -634,9 +635,11 @@ fn render_tree_scene_view_switch_snapshot() {
 
     fn canvas_box(r: u8, g: u8, b: u8) -> AnyView {
         AnyView::new(
-            Canvas::new(move |ctx| {
-                ctx.set_fill_style(Srgb::new_u8(r, g, b));
-                ctx.fill_rect(Rect::new(Point::zero(), LayoutSize::new(150.0, 150.0)));
+            Canvas::new(move |cx| {
+                cx.fill(
+                    Rect::new(Point::zero(), LayoutSize::new(150.0, 150.0)),
+                    Srgb::new_u8(r, g, b).resolve(),
+                );
             })
             .size(150.0, 150.0),
         )
@@ -1310,6 +1313,19 @@ fn menu_picker_draws_its_label_above_the_value() {
     assert!(
         label_band.0 >= field.y0 && value_band.1 <= field.y1,
         "both text bands must lie inside the field {field:?}"
+    );
+    // The label's run starts where the value's does: flush with the content's
+    // leading edge, not centred over the field (water-rs/waterui#4126).
+    let origins: Vec<_> = labelled
+        .renderer()
+        .painted_scene()
+        .glyph_runs()
+        .map(|(transform, _)| transform * kurbo::Point::ORIGIN)
+        .collect();
+    assert_eq!(origins.len(), 2, "one run per drawn text: {origins:?}");
+    assert!(
+        (origins[0].x - origins[1].x).abs() < 0.5,
+        "the label and the value share a leading edge, got {origins:?}"
     );
 
     let mut hidden = mount_labelled(true);

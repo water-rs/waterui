@@ -71,7 +71,12 @@ objc2-core-foundation = { version = "0.3", default-features = false, features = 
     "CFString",
     "CFStringTokenizer",
     "CFLocale",
+    "CFRunLoop",
     "CFURL",
+    "CFAttributedString",
+    "CFDictionary",
+    "CFNumber",
+    "block2",
 ] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = [
     "std",
@@ -84,10 +89,19 @@ objc2-core-graphics = { version = "0.3", default-features = false, features = [
     "CGContext",
     "CGDataProvider",
     "CGImage",
+    "block2",
 ] }
 objc2-core-text = { version = "0.3", default-features = false, features = [
     "std",
+    "CTFont",
+    "CTFontDescriptor",
     "CTFontManager",
+    "CTFrame",
+    "CTFramesetter",
+    "CTLine",
+    "CTStringAttributes",
+    "CTRun",
+    "objc2-core-graphics",
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
@@ -103,6 +117,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSUUID",
     "NSDateFormatter",
     "NSFormatter",
+    "NSNumberFormatter",
     "NSDateInterval",
     "NSDictionary",
     "NSEnumerator",
@@ -160,6 +175,13 @@ objc2-web-kit = { version = "0.3", default-features = false, features = [
     "WKWebsiteDataStore",
     "WKWindowFeatures",
 ], optional = true }
+# The canvas mesh gradient pass paints into IOSurfaces that layers show as
+# their contents.
+objc2-io-surface = { version = "0.3", default-features = false, features = [
+    "std",
+    "IOSurfaceRef",
+    "objc2-core-foundation",
+] }
 objc2-metal = { version = "0.3", default-features = false, features = [
     "std",
     "MTLCommandBuffer",
@@ -266,6 +288,15 @@ tracing = "0.1"
 [dev-dependencies]
 libtest-mimic = "0.8"
 
+# The scroll-phase cases synthesize a wheel event with gesture and momentum
+# phases through `CGEventCreateScrollWheelEvent2` → `+[NSEvent eventWithCGEvent:]`.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2-core-graphics = { version = "0.3", default-features = false, features = [
+    "std",
+    "CGEvent",
+    "CGEventTypes",
+] }
+
 # The `native` suite (tests/native/main.rs) holds the cases that touch real
 # `AppKit`/`UIKit` objects. `harness = false` makes `main` the process's real
 # main thread — `MainThreadMarker::new()` is a genuine check there, with no
@@ -302,7 +333,9 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "objc2-core-foundation",
     "NSAppearance",
     "NSAlert",
+    "NSBezierPath",
     "NSBox",
+    "NSGridView",
     "NSColorList",
     "NSWorkspace",
     "NSApplication",
@@ -324,6 +357,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSGraphics",
     "NSGraphicsContext",
     "NSImage",
+    "NSImageCell",
     "NSImageView",
     "NSAccessibilityProtocols",
     "NSMenu",
@@ -419,6 +453,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSVisualEffectView",
     "NSGlassEffectView",
     "NSLayoutConstraint",
+    "NSLayoutGuide",
     "NSStringDrawing",
     "objc2-quartz-core",
     "objc2-core-graphics",
@@ -487,6 +522,7 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "NSStringDrawing",
     "UICalendarSelection",
     "UICalendarSelectionMultiDate",
+    "UICalendarSelectionSingleDate",
     "UICalendarView",
     "UICalendarViewDecoration",
     "UIDatePicker",
@@ -537,8 +573,6 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "UISplitViewController",
         "UISearchBar",
     "UISearchController",
-    "UISearchTextField",
-    "UIContentSizeCategoryAdjusting",
     "UIMenu",
     "UIMenuElement",
     "UIMenuBuilder",
@@ -597,6 +631,7 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "UIKey",
     "UITouch",
     "UITextInput",
+    "UIPasteboard",
     "objc2-quartz-core",
     "objc2-core-graphics",
     "block2",

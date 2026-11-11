@@ -20,7 +20,9 @@ use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::effects::{AppliedFilterMetrics, FilteredRuntime};
 use crate::renderer::mount::backdrop::{MemberBind, MemberJoin};
 use crate::renderer::mount::layers::{LayerVisitor, NodeLayers, visit};
-use crate::renderer::mount::target::{LayerTarget, MaterialTerms, attach_material_shaders};
+use crate::renderer::mount::target::{
+    LayerTarget, MaterialTerms, attach_material_shaders, install_gpu_text,
+};
 use crate::renderer::mount::{Mount, MountStats};
 use crate::renderer::recording::{Recording, SceneResources};
 use crate::renderer::{HydrolysisRenderer, ProducerWake};
@@ -134,6 +136,10 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
         &host.resources
     }
 
+    fn install_text(host: &MirrorHost, text: &Arc<crate::text::TextService<E>>) {
+        install_gpu_text(&host.resources, &host.engine, text);
+    }
+
     fn mount_gpu_content(
         _host: &MirrorHost,
         tx: &mut Transaction<'_, Self>,
@@ -154,6 +160,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
         tx: &mut Transaction<'_, Self>,
         layer: &Layer,
         runtime: &mut ExternalFrameRuntime,
+        _presented: waterui_graphics::gpu::PresentedSize,
         _wake: ProducerWake,
     ) -> Option<(u32, u32)> {
         let pixels = runtime.frame_pixels?;
@@ -175,7 +182,9 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
 
     fn stretch_filter(
         host: &MirrorHost,
-        filter: waterui_graphics::filtrate::filters::OverscrollStretch<waterui_graphics::Reactive>,
+        filter: waterui_graphics::backend::filtrate::filters::OverscrollStretch<
+            waterui_graphics::backend::Reactive,
+        >,
     ) -> crate::renderer::mount::target::FilterHandle {
         crate::renderer::mount::target::FilterHandle::new(host.engine.filter(filter))
     }
@@ -551,6 +560,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for NoShaderTarget {
         _tx: &mut Transaction<'_, Self>,
         _layer: &Layer,
         _runtime: &mut ExternalFrameRuntime,
+        _presented: waterui_graphics::gpu::PresentedSize,
         _wake: ProducerWake,
     ) -> Option<(u32, u32)> {
         None
@@ -566,7 +576,9 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for NoShaderTarget {
 
     fn stretch_filter(
         host: &NoShaderHost,
-        filter: waterui_graphics::filtrate::filters::OverscrollStretch<waterui_graphics::Reactive>,
+        filter: waterui_graphics::backend::filtrate::filters::OverscrollStretch<
+            waterui_graphics::backend::Reactive,
+        >,
     ) -> crate::renderer::mount::target::FilterHandle {
         crate::renderer::mount::target::FilterHandle::new(host.engine.filter(filter))
     }

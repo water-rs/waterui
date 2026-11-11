@@ -36,7 +36,13 @@ use waterui::prelude::theme_color::{Accent, Foreground, Surface};
 text("Title").foreground(Foreground)
 text("Caption").caption().muted()   // `.muted()` is `.foreground(MutedForeground)`
 card.background(Surface)
+button("Delete").action(|| {}).tint(Color::red())   // this subtree's controls draw with red
 ```
+
+`.tint(color)` sets the tint the controls in a subtree draw with — buttons, sliders,
+progress indicators — instead of the theme's `Accent`. The nearest `.tint` wins, and a
+subtree with none uses `Accent`. The color may be a signal, and a change updates the
+controls in place.
 
 The complete set:
 
@@ -193,7 +199,7 @@ let sky = from_linear_srgb([0.3, 0.5, 1.0], 1.0);
 Gradient::linear(vec![(0.0, rose), (1.0, sky)], [0.0, 0.0], [1.0, 1.0])   // fixed colours
 view.background(Gradient::radial(vec![(0.0, rose), (1.0, sky)], [0.5, 0.5], 0.0, 0.7))
 MeshGradient::new(3, 3, colors.clone()).size(300.0, 200.0)   // colors: any signal of WorkingColors
-AnimatedMeshGradient::new(AnimatedMeshGradientConfig::aqua_bloom())   // animates in-shader on the engine clock
+AnimatedMeshGradient::new(AnimatedMeshGradientConfig::aqua_bloom())   // flows with the canvas clock, on every backend
 FlowingGradient::new()   // drifting noise bands, GPU only
 ```
 
@@ -239,8 +245,9 @@ path-drawn corner stretches with the aspect ratio — that is why built-in shape
 their kind instead of path commands, and why shape code is tested against a deliberately
 non-square rectangle, never a square.
 
-Morphing is a self-animating view over the **SDF-backed built-ins only** (Rectangle,
-Circle, Ellipse, RoundedRectangle, UnevenRoundedRectangle, Capsule — not `Path`):
+Morphing is a self-animating view over the **built-in shapes only** (Rectangle,
+Circle, Ellipse, RoundedRectangle, UnevenRoundedRectangle, Capsule — not `Path`); the
+shapes' parameters interpolate and every backend draws the same path:
 
 ```rust
 Circle

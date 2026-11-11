@@ -26,18 +26,32 @@ pub enum ParamSource {
     /// [`Filter::Params`](crate::Filter::Params): one for an `f32` member, and
     /// `N` consecutive ones for a `vecN<f32>` member.
     Param(usize),
+    /// A length member, sourced like [`Param`](Self::Param) but in points:
+    /// the value the member receives is the parameter scaled by the frame's
+    /// `EffectInput::length_scale` — the host's display scale — so a radius
+    /// or offset declared in points lands on the shader in device pixels.
+    Length(usize),
     /// A constant. The composer specializes it into the shader, so it costs
     /// no uniform space. Its length is the member's component count.
     Constant(&'static [f32]),
 }
 
-/// Which representation of the clip shape a spatial stage reads through the
-/// snippet's `shape` argument.
+/// Which representation of the filtered content's shape a spatial stage
+/// reads through the snippet's `shape` argument.
+///
+/// The shape is the coverage of the filter's input — its alpha — whichever
+/// stage of the chain reads it, so a stage after a blur still sees the
+/// content's outline rather than the blurred one. Both representations have
+/// the input's size and are read with `textureLoad`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShapeInput {
-    /// The clip shape's signed distance field, in pixels: negative inside.
+    /// The signed distance, in pixels, to the contour where the input's
+    /// alpha is one half: negative inside, in the red channel. An input
+    /// with nothing covered is farther than any distance the field holds
+    /// everywhere.
     Sdf,
-    /// The clip shape's coverage mask, in the red channel.
+    /// The input's coverage, in the alpha channel: the filter's input
+    /// itself.
     Mask,
 }
 

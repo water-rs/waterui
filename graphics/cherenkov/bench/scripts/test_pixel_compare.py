@@ -65,7 +65,7 @@ class TheWidthRuleStands(unittest.TestCase):
         self.assertEqual(decide(-10.0, -10.5, -9.5), 'pass')
 
 
-def collection(out, scenes, rounds=4, frames=40, cycles=None, cpu=None):
+def collection(out, scenes, rounds=4, frames=40, cycles=None, cpu=None, unchanged=None):
     """Writes a completed pinned collection. `scenes` maps a name to its
     per-invocation GPU milliseconds `(base, head)`, one pair per round; each
     invocation's frames scatter ±1% around its value. With `cycles`, a
@@ -74,7 +74,9 @@ def collection(out, scenes, rounds=4, frames=40, cycles=None, cpu=None):
     values are frame milliseconds, `cpu` maps each scene to the share of the
     frame its `shade` phase takes per invocation `(base, head)`, and every
     frame splits into a 10% encode and a submit of which 0.1 ms lies outside
-    the phases."""
+    the phases. With `unchanged`, which maps a scene to the number of frames
+    per invocation `(base, head)` the report marks unchanged: they carry no
+    GPU time or cycles."""
     rng = random.Random(0)
     save = pixel_compare.save
     if cpu is not None:
@@ -95,7 +97,9 @@ def collection(out, scenes, rounds=4, frames=40, cycles=None, cpu=None):
                 run_id = f'{name}-p{pair}-{side}'
                 report = out / f'{run_id}.json'
                 if cpu is None:
-                    samples = [{'gpu_seconds': milliseconds * rng.uniform(0.99, 1.01) / 1000}
+                    # `None` is an invocation whose frames carry no GPU time.
+                    samples = [{'gpu_seconds': None if milliseconds is None else
+                                milliseconds * rng.uniform(0.99, 1.01) / 1000}
                                for _ in range(frames)]
                 else:
                     samples = [cpu_sample(milliseconds * rng.uniform(0.99, 1.01),
@@ -104,6 +108,11 @@ def collection(out, scenes, rounds=4, frames=40, cycles=None, cpu=None):
                     for sample in samples:
                         sample['gpu_counters'] = {'shader_core_active_cycles': round(
                             cycles[name][pair][arm] * rng.uniform(0.99, 1.01))}
+                for sample in samples[:(unchanged or {}).get(name, [(0, 0)] * rounds)[pair][arm]]:
+                    sample['unchanged'] = True
+                    sample['gpu_seconds'] = None
+                    if cycles is not None:
+                        sample['gpu_counters'] = {'shader_core_active_cycles': 0}
                 save(report, {'warmup_frames': 10, 'samples': samples})
                 rows.append({'scene': name, 'pair': pair, 'side': side, 'run_id': run_id,
                              'report_sha256': hashlib.sha256(report.read_bytes()).hexdigest(),
@@ -126,10 +135,10 @@ def cpu_sample(frame_ms, shade_share):
 
 
 class Analyze(unittest.TestCase):
-    def analyze(self, scenes, cycles=None, cpu=None):
+    def analyze(self, scenes, cycles=None, cpu=None, unchanged=None):
         with tempfile.TemporaryDirectory() as dir:
             out = pathlib.Path(dir)
-            collection(out, scenes, cycles=cycles, cpu=cpu)
+            collection(out, scenes, cycles=cycles, cpu=cpu, unchanged=unchanged)
             return pixel_compare.analyze(out, LIMIT, 1000 / pixel_compare.RATE_HZ)['scenes']
 
     def metric(self, entry, name):
@@ -167,6 +176,48 @@ class Analyze(unittest.TestCase):
         self.assertAlmostEqual(judged['change_percent'], 5.0, delta=0.5)
         self.assertEqual(entry['verdict'], 'fail')
         self.assertEqual(self.analyze(time)['tiny']['verdict'], 'pass')
+
+    def test_frames_without_gpu_time_make_the_scene_invalid(self):
+        # Every measured frame of a static scene the engine retained: no
+        # GPU work, so no GPU time, in a collection `run` recorded as valid.
+        entry = self.analyze({'chart': [(None, None)] * 4})['chart']
+        self.assertEqual(entry['verdict'], 'invalid')
+        self.assertNotIn('metrics', entry)
+        self.assertEqual(len(entry['untimed_runs']), 8)
+        self.assertEqual(entry['untimed_runs']['chart-p0-base'],
+                         ['40 of 40 measured frames carry no GPU time'])
+
+    def test_one_untimed_arm_makes_the_scene_invalid(self):
+        entry = self.analyze({'chart': [(4.0, None)] + [(4.0, 4.0)] * 3})['chart']
+        self.assertEqual(entry['verdict'], 'invalid')
+        self.assertEqual(list(entry['untimed_runs']), ['chart-p0-head'])
+
+    def test_frames_without_shader_core_cycles_make_a_counter_scene_invalid(self):
+        entry = self.analyze({'tiny': [(0.1, 0.1)] * 4},
+                             cycles={'tiny': [(140_000, 0)] + [(140_000, 140_000)] * 3})['tiny']
+        self.assertEqual(entry['verdict'], 'invalid')
+        self.assertEqual(entry['untimed_runs'],
+                         {'tiny-p0-head': ['40 of 40 measured frames carry no shader-core cycles']})
+
+    def test_unchanged_frames_are_exempt_and_counted_per_arm(self):
+        scenes = {'scroll': [(4.0, 4.0)] * 4}
+        entry = self.analyze(scenes, unchanged={'scroll': [(10, 10)] * 4})['scroll']
+        self.assertEqual(entry['verdict'], 'pass')
+        self.assertEqual(entry['unchanged_frames'], {'base': [10] * 4, 'head': [10] * 4})
+        self.assertFalse(entry['unchanged_frames_differ'])
+        entry = self.analyze(scenes, unchanged={'scroll': [(10, 12)] * 4})['scroll']
+        self.assertTrue(entry['unchanged_frames_differ'])
+
+    def test_unchanged_frames_need_no_shader_core_cycles(self):
+        entry = self.analyze({'tiny': [(0.1, 0.1)] * 4},
+                             cycles={'tiny': [(140_000, 140_000)] * 4},
+                             unchanged={'tiny': [(5, 5)] * 4})['tiny']
+        self.assertEqual(entry['verdict'], 'pass')
+
+    def test_a_report_with_no_drawn_frame_is_invalid(self):
+        entry = self.analyze({'scroll': [(4.0, 4.0)] * 4},
+                             unchanged={'scroll': [(40, 40)] * 4})['scroll']
+        self.assertEqual(entry['verdict'], 'invalid')
 
     def test_a_cpu_collection_reports_frame_and_shade_without_a_verdict(self):
         # Shade grows from 50% to 55% of a frame that grows 5%: shade +15.5%.

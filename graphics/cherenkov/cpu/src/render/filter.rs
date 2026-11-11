@@ -269,11 +269,11 @@ impl Registry {
             if last_id == id {
                 self.delta = Duration::ZERO;
             } else {
-                self.delta = time.0.saturating_duration_since(last_time);
-                self.last_frame = Some((id, time.0));
+                self.delta = time.instant().saturating_duration_since(last_time);
+                self.last_frame = Some((id, time.instant()));
             }
         } else {
-            self.last_frame = Some((id, time.0));
+            self.last_frame = Some((id, time.instant()));
             self.delta = Duration::ZERO;
         }
         self.delta

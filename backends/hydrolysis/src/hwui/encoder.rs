@@ -16,14 +16,14 @@
 
 use std::collections::BTreeMap;
 
-use waterui_graphics::draw::color::WorkingColor;
-use waterui_graphics::draw::kurbo::{Affine, Rect, Vec2};
-use waterui_graphics::draw::tree::Sampling;
-use waterui_graphics::draw::{
+use cherenkov_record::color::WorkingColor;
+use cherenkov_record::kurbo::{Affine, Point, Rect, Vec2};
+use cherenkov_record::tree::Sampling;
+use cherenkov_record::{
     BlendMode, ChangeSet, ContentOp, LayerId, LayerNode, LayerOp, Op as TreeOp, Picture, Realize,
     ShapeData, SurfaceTree,
 };
-use waterui_graphics::draw::{ResourceId, TextLayoutId};
+use cherenkov_record::{ResourceId, TextLayoutId};
 
 use super::buffer::{CommandBuffer, Field};
 use super::effects::Effects;
@@ -61,11 +61,11 @@ mod hit;
 #[non_exhaustive]
 pub struct PlatformViewBinding {
     /// The layer whose node hosts the view.
-    pub layer: LayerId,
+    layer: LayerId,
     /// The placement id of the view.
-    pub view: u64,
+    view: u64,
     /// The view's bounds in the layer's local coordinates.
-    pub bounds: kurbo::Rect,
+    bounds: kurbo::Rect,
 }
 
 impl PlatformViewBinding {
@@ -105,9 +105,9 @@ impl PlatformViewBinding {
 #[non_exhaustive]
 pub struct Recycle {
     /// The emptied op vector.
-    pub ops: Vec<TreeOp<HwuiTarget>>,
+    ops: Vec<TreeOp<HwuiTarget>>,
     /// The pictures this commit replaced.
-    pub recycled: Vec<(LayerId, Picture)>,
+    recycled: Vec<(LayerId, Picture)>,
 }
 
 impl Recycle {
@@ -135,13 +135,13 @@ impl Recycle {
 #[non_exhaustive]
 pub struct Frame<'a> {
     /// The command buffer, header included.
-    pub words: &'a [u32],
+    words: &'a [u32],
     /// What sampling the tree's animations reported.
-    pub sampling: Sampling,
+    sampling: Sampling,
     /// Whether recorded-content operands still animate.
-    pub content_animating: bool,
+    content_animating: bool,
     /// The window clear the frame asks the host to draw first.
-    pub clear: Option<u64>,
+    clear: Option<u64>,
 }
 
 impl<'a> Frame<'a> {
@@ -371,21 +371,20 @@ pub struct Encoder {
     platform_scale: f64,
     clear: Option<WorkingColor>,
     content_animating: bool,
-    api_level: u32,
     effects: Effects,
 }
 
 impl Encoder {
-    /// An encoder for a device at `api_level`, mirroring an empty tree.
+    /// An encoder mirroring an empty tree.
     ///
     /// # Errors
     ///
     /// [`HwuiError::Encoding`] if the root node cannot be created.
-    pub fn new(api_level: u32) -> Result<Self, HwuiError> {
+    pub fn new() -> Result<Self, HwuiError> {
         let tree = SurfaceTree::new();
         let root = tree.root();
         let registry = SharedRegistry::new();
-        let effects = Effects::new(registry.clone(), api_level);
+        let effects = Effects::new(registry.clone());
         let mut encoder = Self {
             tree,
             buffer: CommandBuffer::new(),
@@ -404,7 +403,6 @@ impl Encoder {
             host_dirty: true,
             clear: None,
             content_animating: false,
-            api_level,
             effects,
         };
         encoder.create_layer(root)?;
@@ -490,7 +488,6 @@ impl Encoder {
             registry: &self.registry,
             text_layouts: &self.text_layouts,
             scratch: &mut self.scratch,
-            api_level: self.api_level,
             layer,
         }
     }
@@ -607,6 +604,18 @@ impl Encoder {
                 picture.apply(updates);
                 Content::Live(picture.clone())
             }
+            // A region recorded, removed or moved in place: the layer's
+            // RenderNode list records again, like after a slot update.
+            Some(ContentOp::Edit(edit)) => {
+                let Content::Live(picture) = &mut state.content else {
+                    return Err(HwuiError::Encoding {
+                        op: "commit",
+                        reason: format!("layer {} edits regions of no live content", id.raw()),
+                    });
+                };
+                picture.edit(*edit);
+                Content::Live(picture.clone())
+            }
         };
         let previous = std::mem::replace(&mut state.content, next);
         if let (Content::Live(old), Content::Live(new)) = (&previous, &state.content)
@@ -648,7 +657,7 @@ impl Encoder {
     /// call, not inputs.
     pub fn frame(
         &mut self,
-        time: waterui_graphics::draw::Instant,
+        time: cherenkov_record::Instant,
         scale: f64,
     ) -> Result<Frame<'_>, HwuiError> {
         if !scale.is_finite() || scale <= 0.0 {
@@ -682,6 +691,7 @@ impl Encoder {
         pending.reset();
         self.pending = pending;
         layers?;
+        self.resolve_effect_origins(time)?;
         self.registry.drain_releases(&mut self.buffer)?;
         let layers = &self.layers;
         self.text_layouts.drain_releases(&mut self.buffer, |raw| {
@@ -849,6 +859,47 @@ impl Encoder {
         Ok(multiply(multiply(self.world_rows(parent)?, scroll), local))
     }
 
+    /// Tells every effect that draws in window device pixels (the overscroll
+    /// stretch) where its node's top-left corner sits there, and redefines
+    /// the effects that moved: the node's origin is the layer's extent
+    /// origin carried through the layer's world transform, which only the
+    /// encoder knows once the frame's layers are settled.
+    ///
+    /// # Errors
+    ///
+    /// [`HwuiError::Unsupported`] when the world transform is not a
+    /// translation and scale: the platform filters in a scale-only layer
+    /// space, in which the stretch's device-space frame no longer holds.
+    fn resolve_effect_origins(&mut self, time: cherenkov_record::Instant) -> Result<(), HwuiError> {
+        let mut moved = false;
+        for (&raw, state) in &self.layers {
+            let Some(wire) = state.sent.effect.filter(|wire| *wire != u32::MAX) else {
+                continue;
+            };
+            if !self.effects.takes_origin(wire) {
+                continue;
+            }
+            let world = flat_affine(self.world_rows(LayerId::new(raw))?)
+                .filter(|world| {
+                    let [_, b, c, _, _, _] = world.as_coeffs();
+                    b == 0.0 && c == 0.0
+                })
+                .ok_or_else(|| HwuiError::Unsupported {
+                    layer: raw,
+                    what: "draws an overscroll stretch under a rotated, skewed or projective pose"
+                        .to_owned(),
+                })?;
+            let origin = world * Point::new(f64::from(state.origin[0]), f64::from(state.origin[1]));
+            moved |= self
+                .effects
+                .set_origin(wire, [f32_of(origin.x), f32_of(origin.y)]);
+        }
+        if moved {
+            self.content_animating |= self.effects.encode(time, &mut self.buffer)?;
+        }
+        Ok(())
+    }
+
     /// Emits a `BindPlatformView` for every binding whose
     /// `(binding, density, world matrix)` moved — alpha-only ancestor
     /// changes resend nothing; a moved ancestor rewrites the matrix.
@@ -986,7 +1037,6 @@ impl Encoder {
                 registry: &self.registry,
                 text_layouts: &self.text_layouts,
                 scratch: &mut self.scratch,
-                api_level: self.api_level,
                 layer: raw,
             };
             let inner = if needs_inner {
@@ -1263,7 +1313,6 @@ impl Encoder {
             registry,
             text_layouts,
             scratch,
-            api_level,
             platform_scale,
             ..
         } = self;
@@ -1276,7 +1325,6 @@ impl Encoder {
             registry,
             text_layouts,
             scratch,
-            api_level: *api_level,
             layer: raw,
         };
         let mut owned = Owned::default();

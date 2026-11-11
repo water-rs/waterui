@@ -7,6 +7,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use filtrate_core::{AuxData, AuxFormat, AuxImage};
+use waterui_contract::contract_violation;
 
 /// A caller-provided GPU texture, bound to a stage's `aux` argument at its
 /// native format.
@@ -93,9 +94,9 @@ enum Source {
 impl FilterImage {
     /// Creates an image from raw RGBA8 bytes, row-major.
     ///
-    /// # Panics
-    ///
-    /// Panics when `rgba8` does not contain exactly `width * height * 4` bytes.
+    /// `rgba8` must contain exactly `width * height * 4` bytes; otherwise the
+    /// contract is broken and the texels are truncated or zero-padded to that
+    /// length.
     #[must_use]
     pub fn from_rgba8(width: u32, height: u32, rgba8: Vec<u8>) -> Self {
         Self::from_data(width, height, AuxFormat::Rgba8, rgba8)
@@ -103,10 +104,9 @@ impl FilterImage {
 
     /// Creates an image from f16 texels, row-major.
     ///
-    /// # Panics
-    ///
-    /// Panics when `rgba16f` does not contain exactly `width * height * 4`
-    /// texels.
+    /// `rgba16f` must contain exactly `width * height * 4` texels; otherwise
+    /// the contract is broken and the texels are truncated or zero-padded to
+    /// that length.
     #[must_use]
     pub fn from_rgba16f(width: u32, height: u32, rgba16f: &[half::f16]) -> Self {
         Self::from_data(
@@ -122,10 +122,9 @@ impl FilterImage {
 
     /// Creates an image from f32 texels, row-major.
     ///
-    /// # Panics
-    ///
-    /// Panics when `rgba32f` does not contain exactly `width * height * 4`
-    /// texels.
+    /// `rgba32f` must contain exactly `width * height * 4` texels; otherwise
+    /// the contract is broken and the texels are truncated or zero-padded to
+    /// that length.
     #[must_use]
     pub fn from_rgba32f(width: u32, height: u32, rgba32f: &[f32]) -> Self {
         Self::from_data(
@@ -148,19 +147,20 @@ impl FilterImage {
 
     /// Creates an image from CPU texels.
     ///
-    /// # Panics
-    ///
-    /// Panics when `texels` is not exactly `width * height *
-    /// format.texel_size()` bytes.
+    /// `texels` must be exactly `width * height * format.texel_size()` bytes;
+    /// otherwise the contract is broken and they are truncated or zero-padded
+    /// to that length.
     #[must_use]
-    fn from_data(width: u32, height: u32, format: AuxFormat, texels: Vec<u8>) -> Self {
+    fn from_data(width: u32, height: u32, format: AuxFormat, mut texels: Vec<u8>) -> Self {
         let expected_len = width as usize * height as usize * format.texel_size();
-        assert_eq!(
-            texels.len(),
-            expected_len,
-            "FilterImage: expected {expected_len} bytes for a {width}x{height} {format:?} image, got {}",
-            texels.len()
-        );
+        if texels.len() != expected_len {
+            contract_violation!(
+                "FilterImage: expected {expected_len} bytes for a {width}x{height} {format:?} image, got {}; \
+                 the texels are truncated or zero-padded to fit",
+                texels.len()
+            );
+            texels.resize(expected_len, 0);
+        }
         Self(Source::Cpu {
             width,
             height,
@@ -235,41 +235,50 @@ pub struct LutImage {
 impl LutImage {
     /// Creates a LUT from a strip image.
     ///
-    /// # Panics
-    ///
-    /// Panics when `size < 2`, when `image` is a GPU texture, or when `image`
-    /// is not `size * size` by `size` texels.
+    /// `size` must be in `2..=65535` and `image` must be `size * size` by
+    /// `size` texels; otherwise the contract is broken. The size is clamped
+    /// into that range and the strip is sampled as given, with lookups
+    /// beyond it clamped to its edge.
     #[must_use]
     pub fn new(image: FilterImage, size: u32) -> Self {
-        assert!(
-            size >= 2,
-            "LutImage::new: lut size must be >= 2, got {size}"
-        );
-        let expected_width = size * size;
-        assert_eq!(
-            image.width(),
-            expected_width,
-            "LutImage::new: expected width {expected_width} for size {size}, got {}",
-            image.width()
-        );
-        assert_eq!(
-            image.height(),
-            size,
-            "LutImage::new: expected height {size} for size {size}, got {}",
-            image.height()
-        );
-        Self { image, size }
+        let clamped = size.clamp(2, Self::MAX_SIZE);
+        if clamped != size {
+            contract_violation!(
+                "LutImage::new: lut size must be in 2..={}, got {size}; the size is clamped to {clamped}",
+                Self::MAX_SIZE
+            );
+        }
+        // `MAX_SIZE` squared fits u32.
+        let expected_width = clamped * clamped;
+        if image.width() != expected_width || image.height() != clamped {
+            contract_violation!(
+                "LutImage::new: expected a {expected_width}x{clamped} strip for size {clamped}, got {}x{}; \
+                 the strip is sampled as given, with lookups beyond it clamped to its edge",
+                image.width(),
+                image.height()
+            );
+        }
+        Self {
+            image,
+            size: clamped,
+        }
     }
+
+    /// The largest cube size: its strip is `size * size` texels wide, which
+    /// must fit a texture dimension.
+    const MAX_SIZE: u32 = u16::MAX as u32;
 
     /// Creates a LUT from RGBA8 strip bytes.
     ///
-    /// # Panics
-    ///
-    /// Panics when the bytes do not form a `size * size` by `size` strip, or
-    /// when `size < 2`.
+    /// The bytes must form a `size * size` by `size` strip and `size` must be
+    /// in `2..=65535`; see [`new`](Self::new) for a broken contract.
     #[must_use]
     pub fn from_rgba8(size: u32, rgba8: Vec<u8>) -> Self {
-        Self::new(FilterImage::from_rgba8(size * size, size, rgba8), size)
+        let clamped = size.clamp(2, Self::MAX_SIZE);
+        Self::new(
+            FilterImage::from_rgba8(clamped * clamped, clamped, rgba8),
+            size,
+        )
     }
 
     /// Decodes a LUT strip from encoded image bytes.
@@ -278,10 +287,8 @@ impl LutImage {
     ///
     /// Returns the decode error when the bytes cannot be parsed as an image.
     ///
-    /// # Panics
-    ///
-    /// Panics when the decoded image is not a `size * size` by `size` strip,
-    /// or when `size < 2`.
+    /// The decoded image must be a `size * size` by `size` strip and `size`
+    /// must be in `2..=65535`; see [`new`](Self::new) for a broken contract.
     pub fn from_encoded(size: u32, encoded: &[u8]) -> Result<Self, image::ImageError> {
         Ok(Self::new(FilterImage::from_encoded(encoded)?, size))
     }
@@ -304,17 +311,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn filter_image_rejects_invalid_buffer_len() {
-        let result = std::panic::catch_unwind(|| FilterImage::from_rgba8(2, 2, vec![0; 3]));
-        assert!(result.is_err());
+    #[cfg_attr(debug_assertions, should_panic(expected = "expected 16 bytes"))]
+    fn filter_image_pads_or_truncates_invalid_buffer_len() {
+        let short = FilterImage::from_rgba8(2, 2, vec![7; 3]);
+        let data = short.data().expect("CPU image");
+        assert_eq!(data.bytes, [7, 7, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let long = FilterImage::from_rgba8(1, 1, vec![9; 6]);
+        assert_eq!(long.data().expect("CPU image").bytes, [9, 9, 9, 9]);
     }
 
     #[test]
-    fn lut_image_rejects_invalid_dimensions() {
+    #[cfg_attr(debug_assertions, should_panic(expected = "expected a 16x4 strip"))]
+    fn lut_image_samples_an_invalid_strip_as_given() {
         let bad_image = FilterImage::from_rgba8(16, 15, vec![0; 16 * 15 * 4]);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = LutImage::new(bad_image, 4);
-        }));
-        assert!(result.is_err());
+        let lut = LutImage::new(bad_image, 4);
+        assert_eq!((lut.size(), lut.image().height()), (4, 15));
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "lut size must be in 2..=65535")
+    )]
+    fn lut_image_clamps_an_out_of_range_size() {
+        let lut = LutImage::new(FilterImage::from_rgba8(4, 2, vec![0; 32]), 1);
+        assert_eq!(lut.size(), 2);
     }
 }

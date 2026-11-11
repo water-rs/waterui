@@ -57,8 +57,8 @@ pub use parley;
 pub use web_time::Instant;
 
 pub use crate::animation::{
-    Animatable, Animation, AnimationTrack, Curve, Decay, Lanes, Spring, curve_value, decay_step,
-    settled, spring_step,
+    Animatable, Animation, AnimationTrack, Curve, Decay, Easing, KeyframeAnimation, Keyframes,
+    Lanes, Repeat, Spring, curve_value, decay_step, settled, spring_step,
 };
 
 pub use crate::backend::{
@@ -75,8 +75,8 @@ pub use crate::color::{
 };
 pub use crate::config::{Budget, Bytes, MemoryUsage, Pressure};
 pub use crate::display_list::{
-    Command, Dirty, DisplayList, DisplayListView, Operand, OperandKind, OperandRef, Operands,
-    Picture, ScopeError, Slot, SlotUpdate,
+    Command, Dirty, DisplayList, DisplayListView, Edit, Operand, OperandKind, OperandRef, Operands,
+    Picture, ScopeError, Slot, SlotUpdate, Splice,
 };
 pub use crate::engine::Engine;
 pub use crate::engine::{CompletionWaker, FrameScope, SurfaceWakes};
@@ -102,7 +102,7 @@ pub use crate::record::{
 };
 pub use crate::resource::{
     BackdropGroup, BackdropShader, Filter, Font, FontSource, FrameSink, GpuProducer, Hosted, Image,
-    Shader,
+    Shader, TextLayoutHandle,
 };
 pub use crate::shape::{
     ContinuousRect, EvenOdd, FillRule, PATH_TOLERANCE, PathRef, Semantic, Shape, ShapeData,
@@ -110,7 +110,8 @@ pub use crate::shape::{
 pub use crate::size::LayoutSize;
 pub use crate::style::{BlendMode, BlendSpace, FilterId, Group, Shadow};
 pub use crate::surface::{EngineQueue, Surface};
-pub use crate::text::{TextLayout, draw_text};
+pub use crate::text::{TextLayout, TextLayoutData, TextLayouts, draw_text};
+pub use cherenkov_record::Region;
 // The moved layer-tree types: re-exported at the root exactly like the
 // rest of `cherenkov-record`.
 pub use cherenkov_record::{
@@ -118,9 +119,10 @@ pub use cherenkov_record::{
     BackdropSampling, BackdropShaderEffect, BackdropShaderId, BackdropShaderSource, BackdropSpec,
     BackdropUnion, BackdropUnionError, CaptureLevels, CaptureLevelsError, CaptureScale,
     CaptureScaleError, ColorMatrix, ContentOp, GpuInstalls, ImageLimits, ImageStorage, Install,
-    Layer, LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode, LayerOwner, LevelRamp,
-    LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize,
-    RecordingScale, RecordingScaleError, Refraction, RefreshRange, ResourceId, Rim, Shared,
-    SurfaceId, SurfaceTree, Target, Transaction, snap_animating,
+    KeyframeProp, Layer, LayerAnimations, LayerContent, LayerEdit, LayerId, LayerKeyframes,
+    LayerNode, LayerOwner, LevelRamp, LevelRampError, Projective, ProjectiveError,
+    ProjectiveLayers, Prop, Queue, Realize, RecordingScale, RecordingScaleError, Refraction,
+    RefreshRange, ResourceId, Rim, Shared, SurfaceId, SurfaceTree, Target, TextLayoutId,
+    Transaction, snap_animating,
 };
 pub use kurbo::Stroke;

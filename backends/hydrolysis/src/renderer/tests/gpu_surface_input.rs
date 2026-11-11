@@ -10,11 +10,13 @@
 //! platform-neutral `InputEvent`s the winit layer produces, and the
 //! winit-specific quirks that layer depends on are pinned separately below.
 
+use core::num::NonZeroU32;
 use core::time::Duration;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
+use cherenkov_record::Recorder;
 use nami::Signal as _;
 use waterui::ViewExt as _;
 use waterui::component::text;
@@ -23,23 +25,25 @@ use waterui_core::AnyView;
 use waterui_core::Binding;
 use waterui_core::View;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_graphics::draw::Recorder;
-use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
+use waterui_graphics::backend::{RecordingResources, SceneContent, SceneInvalidator, SceneView};
+use waterui_graphics::gpu::{
+    Context as GpuContext, ExternalFrameSource, ExternalFrameView, Frame as GpuFrame, FrameOutput,
+};
 use waterui_graphics::input::{
-    Code, Key, Modifiers as W3cModifiers, NamedKey, ScrollUnit, SurfaceInputEvent,
-    SurfacePointerButton,
+    Code, GesturePhase, Key, Modifiers as W3cModifiers, NamedKey, ScrollPhase, ScrollUnit,
+    SurfaceInputEvent, SurfacePointerButton,
 };
-use waterui_graphics::{
-    GpuContent, GpuContentView, RecordingResources, SceneContent, SceneInvalidator, SceneView,
-};
+use waterui_graphics::{GpuContent, GpuContentView};
 use waterui_layout::scroll::scroll;
 use waterui_layout::stack::{vstack, zstack};
 
-use super::{MinimalTestTheme, test_environment};
+use super::{MinimalTestTheme, pumped_test_environment, test_environment};
 use crate::HeadlessRuntime;
 use crate::platform::{
-    InputEvent, KeyCode, KeyState, Modifiers, PointerButton, PointerKind, TouchPhase,
+    InputConventions, InputEvent, KeyCode, KeyState, Modifiers, MultiClickConfig, PointerButton,
+    PointerKind, ScrollPlatform, TouchPhase,
 };
+use crate::renderer::ClipboardRead;
 
 const WINDOW_WIDTH: u32 = 400;
 const WINDOW_HEIGHT: u32 = 640;
@@ -47,12 +51,14 @@ const HEADER_HEIGHT: f32 = 100.0;
 const SURFACE_WIDTH: f32 = 200.0;
 const SURFACE_HEIGHT: f32 = 150.0;
 
-/// Where the surface lands, in window coordinates: the column is anchored at
-/// the window's top, so the 200-wide surface is centred across the 400-wide
-/// window (`(400 - 200) / 2`) and sits under the full-width 100-high header
-/// plus the stack's 10-point default spacing.
+/// Where the surface lands, in window coordinates. The 200-wide surface is
+/// centred across the 400-wide window (`(400 - 200) / 2`). The root column's
+/// block — the 100-high header, the stack's 10-point default spacing and the
+/// 150-high surface, 260 in all — is centred in the 640-high window
+/// (`docs/layout-spec.md` §4.2), so it starts at `(640 - 260) / 2 = 190` and
+/// the surface sits 110 below that.
 const SURFACE_ORIGIN_X: f64 = 100.0;
-const SURFACE_ORIGIN_Y: f64 = 110.0;
+const SURFACE_ORIGIN_Y: f64 = 300.0;
 
 const POINTER_ID: u64 = 7;
 
@@ -94,6 +100,16 @@ fn probe_view(log: ProbeLog, caret: Option<kurbo::Rect>) -> GpuContentView {
 }
 
 fn runtime_with(surface: impl View) -> HeadlessRuntime {
+    runtime_in(surface, test_environment())
+}
+
+/// [`runtime_with`] in an environment whose spawned tasks run: the clipboard
+/// read a paste starts is one.
+fn runtime_with_running_tasks(surface: impl View) -> HeadlessRuntime {
+    runtime_in(surface, pumped_test_environment())
+}
+
+fn runtime_in(surface: impl View, environment: waterui_core::Environment) -> HeadlessRuntime {
     let surface = RefCell::new(Some(surface));
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         let surface = surface
@@ -107,7 +123,7 @@ fn runtime_with(surface: impl View) -> HeadlessRuntime {
         )))
     });
     HeadlessRuntime::new_for_tests(
-        test_environment(),
+        environment,
         builder,
         WINDOW_WIDTH,
         WINDOW_HEIGHT,
@@ -120,6 +136,15 @@ fn runtime_with(surface: impl View) -> HeadlessRuntime {
 fn settled(runtime: &mut HeadlessRuntime, start: Instant) {
     for frame in 0..4 {
         let _ = runtime.pump_at(false, start + Duration::from_millis(frame * 16));
+    }
+}
+
+/// The size announcement every input-receiving surface gets before its first
+/// frame: its laid-out size in logical points at the headless window's scale.
+fn announced_size() -> SurfaceInputEvent {
+    SurfaceInputEvent::Resize {
+        size: kurbo::Size::new(f64::from(SURFACE_WIDTH), f64::from(SURFACE_HEIGHT)),
+        scale: 1.0,
     }
 }
 
@@ -260,6 +285,7 @@ fn a_press_focuses_the_surface_and_later_frames_keep_that_focus() {
                 pressed: true,
                 button: SurfacePointerButton::Primary,
                 position: kurbo::Point::new(12.0, 34.0),
+                click_count: NonZeroU32::MIN,
             },
         ],
     );
@@ -283,6 +309,7 @@ fn a_press_focuses_the_surface_and_later_frames_keep_that_focus() {
                 pressed: false,
                 button: SurfacePointerButton::Primary,
                 position: kurbo::Point::new(12.0, 34.0),
+                click_count: NonZeroU32::MIN,
             },
         ],
     );
@@ -384,49 +411,66 @@ fn scrolls_carry_their_unit_and_the_end_of_the_gesture() {
         dy: -3.0,
         is_line_delta: true,
     });
-    runtime.push_input_event(InputEvent::TrackpadPan {
-        x,
-        y,
-        dx: 1.0,
-        dy: -12.0,
-        phase: TouchPhase::Moved,
-    });
-    runtime.push_input_event(InputEvent::TrackpadPan {
+    for (dx, dy, phase) in [
+        (0.0, 0.0, TouchPhase::Started),
+        (1.0, -12.0, TouchPhase::Moved),
+        (0.0, 0.0, TouchPhase::Ended),
+        // A `Moved` with no gesture begun: winit's report of a precise-delta
+        // wheel, which has no phase.
+        (0.0, -2.0, TouchPhase::Moved),
+    ] {
+        runtime.push_input_event(InputEvent::TrackpadPan {
+            x,
+            y,
+            dx,
+            dy,
+            phase,
+        });
+    }
+    // A pixel delta from a platform that reports no phase (Android, the web).
+    runtime.push_input_event(InputEvent::Scroll {
         x,
         y,
         dx: 0.0,
-        dy: 0.0,
-        phase: TouchPhase::Ended,
+        dy: -5.0,
+        is_line_delta: false,
     });
     let _ = runtime.pump_at(false, start + Duration::from_millis(100));
 
+    let scroll = |delta_x, delta_y, unit, phase| SurfaceInputEvent::Scroll {
+        position: kurbo::Point::new(60.0, 40.0),
+        delta_x,
+        delta_y,
+        unit,
+        phase,
+    };
     assert_eq!(
         log.drain(),
         vec![
-            SurfaceInputEvent::Scroll {
-                position: kurbo::Point::new(60.0, 40.0),
-                delta_x: 0.0,
-                delta_y: 3.0,
-                unit: ScrollUnit::Line,
-                finished: true,
-            },
-            SurfaceInputEvent::Scroll {
-                position: kurbo::Point::new(60.0, 40.0),
-                delta_x: -1.0,
-                delta_y: 12.0,
-                unit: ScrollUnit::Pixel,
-                finished: false,
-            },
-            SurfaceInputEvent::Scroll {
-                position: kurbo::Point::new(60.0, 40.0),
-                delta_x: 0.0,
-                delta_y: 0.0,
-                unit: ScrollUnit::Pixel,
-                finished: true,
-            },
+            scroll(0.0, 3.0, ScrollUnit::Line, ScrollPhase::Discrete),
+            scroll(
+                0.0,
+                0.0,
+                ScrollUnit::Pixel,
+                ScrollPhase::Contact(GesturePhase::Started)
+            ),
+            scroll(
+                -1.0,
+                12.0,
+                ScrollUnit::Pixel,
+                ScrollPhase::Contact(GesturePhase::Moved)
+            ),
+            scroll(
+                0.0,
+                0.0,
+                ScrollUnit::Pixel,
+                ScrollPhase::Contact(GesturePhase::Ended)
+            ),
+            scroll(0.0, 2.0, ScrollUnit::Pixel, ScrollPhase::Discrete),
+            scroll(0.0, 5.0, ScrollUnit::Pixel, ScrollPhase::Discrete),
         ],
-        "a wheel notch is a complete line-unit gesture; a trackpad glide is \
-         pixel-unit and only its last event finishes"
+        "a wheel notch and a phaseless pixel delta are complete on their own; \
+         a trackpad pan is a contact gesture from its start to its end"
     );
 }
 
@@ -464,14 +508,14 @@ fn a_wheel_turned_down_or_right_scrolls_surface_content_up_or_left() {
                 delta_x: 0.0,
                 delta_y: 1.0,
                 unit: ScrollUnit::Line,
-                finished: true,
+                phase: ScrollPhase::Discrete,
             },
             SurfaceInputEvent::Scroll {
                 position: kurbo::Point::new(60.0, 40.0),
                 delta_x: 1.0,
                 delta_y: 0.0,
                 unit: ScrollUnit::Line,
-                finished: true,
+                phase: ScrollPhase::Discrete,
             },
         ],
         "surface deltas must follow the W3C WheelEvent sign"
@@ -668,7 +712,11 @@ fn scene_content_that_wants_input_is_routed_like_a_surface() {
     }));
     let start = Instant::now();
     settled(&mut runtime, start);
-    assert_eq!(log.drain(), Vec::new(), "nothing reaches unfocused content");
+    assert_eq!(
+        log.drain(),
+        vec![announced_size()],
+        "nothing but its size reaches unfocused content"
+    );
 
     press_at(&mut runtime, 12.0, 34.0);
     let _ = runtime.pump_at(false, start + Duration::from_millis(100));
@@ -683,6 +731,7 @@ fn scene_content_that_wants_input_is_routed_like_a_surface() {
                 pressed: true,
                 button: SurfacePointerButton::Primary,
                 position: kurbo::Point::new(12.0, 34.0),
+                click_count: NonZeroU32::MIN,
             },
         ],
         "a press lands on the content in its own logical coordinates and \
@@ -725,6 +774,115 @@ fn scene_content_that_wants_input_is_routed_like_a_surface() {
     );
 }
 
+/// A source that keeps every output it is started with, so a test reads
+/// what the host reports back through it.
+struct OutputProbe(Rc<RefCell<Vec<FrameOutput>>>);
+
+impl ExternalFrameSource for OutputProbe {
+    fn start(&mut self, output: FrameOutput) {
+        self.0.borrow_mut().push(output);
+    }
+}
+
+/// An `ExternalFrameView` with an input handler is an embedded input surface
+/// exactly like a `GpuContentView`: a press focuses it and lands in its own
+/// logical coordinates, the keyboard reaches it on later frames, it places
+/// the input-method panel at its caret, its frame hook runs on every pass,
+/// and its source learns the pixel extent the layer presents at.
+#[test]
+fn an_external_frame_view_is_routed_like_a_gpu_surface() {
+    let log = ProbeLog::default();
+    let outputs = Rc::new(RefCell::new(Vec::new()));
+    let passes = Rc::new(core::cell::Cell::new(0_usize));
+    let view = {
+        let log = log.clone();
+        let passes = Rc::clone(&passes);
+        ExternalFrameView::new(OutputProbe(Rc::clone(&outputs)))
+            .on_input(move |event| log.0.borrow_mut().push(event.clone()))
+            .on_ime_caret(|| Some(kurbo::Rect::new(10.0, 20.0, 12.0, 38.0)))
+            .on_frame(move || passes.set(passes.get() + 1))
+    };
+    let mut runtime = runtime_with(view);
+    let start = Instant::now();
+    settled(&mut runtime, start);
+    assert_eq!(
+        log.drain(),
+        vec![announced_size()],
+        "nothing but its size reaches an unfocused view"
+    );
+    assert!(passes.get() > 0, "the frame hook runs on the host's passes");
+
+    let output = outputs
+        .borrow()
+        .last()
+        .cloned()
+        .expect("the host started the source");
+    let presented = output
+        .presented_size()
+        .expect("the host reports its presented size every pass");
+    assert_eq!(
+        (presented.pixels.width(), presented.pixels.height()),
+        (200, 150),
+        "the layer presents at its laid-out extent in physical pixels"
+    );
+    assert!(
+        (presented.scale - 1.0).abs() < f64::EPSILON,
+        "the headless window's display scale reaches the source, got {}",
+        presented.scale
+    );
+
+    press_at(&mut runtime, 12.0, 34.0);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(100));
+    assert_eq!(
+        log.drain(),
+        vec![
+            SurfaceInputEvent::Focus(true),
+            SurfaceInputEvent::PointerMove {
+                position: kurbo::Point::new(12.0, 34.0),
+            },
+            SurfaceInputEvent::PointerButton {
+                pressed: true,
+                button: SurfacePointerButton::Primary,
+                position: kurbo::Point::new(12.0, 34.0),
+                click_count: NonZeroU32::MIN,
+            },
+        ],
+        "a press lands on the view in its own logical coordinates and focuses it"
+    );
+    let state = runtime
+        .focused_text_input_state()
+        .expect("a focused view publishes its caret");
+    assert!(
+        (state.x() - (SURFACE_ORIGIN_X + 10.0)).abs() < 0.01
+            && (state.y() - (SURFACE_ORIGIN_Y + 20.0)).abs() < 0.01,
+        "the view's caret is projected into the window (got {}, {})",
+        state.x(),
+        state.y()
+    );
+
+    for frame in 8..12 {
+        let _ = runtime.pump_at(false, start + Duration::from_millis(frame * 16));
+    }
+    let passes_before = passes.get();
+    runtime.push_input_event(key_event("a", Code::KeyA, KeyState::Pressed));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(300));
+    assert_eq!(
+        log.drain(),
+        vec![SurfaceInputEvent::Key {
+            pressed: true,
+            key: Key::Character("a".to_owned()),
+            code: Code::KeyA,
+            modifiers: W3cModifiers::empty(),
+            repeat: false,
+        }],
+        "the keyboard still reaches the focused view frames later"
+    );
+    assert!(
+        passes.get() > passes_before,
+        "the frame hook keeps running while the view is shown"
+    );
+}
+
 /// An input-wanting surface joins keyboard traversal like any focusable
 /// control: Tab reaches it in tree order, `Focus(true)` opens the input
 /// session — and once it holds focus it follows GTK's text-view convention,
@@ -746,10 +904,17 @@ fn tab_focuses_the_surface_and_ctrl_tab_leaves_it() {
     let mut runtime = runtime_with(view);
     let start = Instant::now();
     settled(&mut runtime, start);
-    assert_eq!(
-        log.drain(),
-        Vec::new(),
-        "nothing reaches the surface before it is focused"
+    // The surface shares its 150-high slot with two buttons, so its height is
+    // the stack's to decide; its width is the slot's.
+    let heard = log.drain();
+    assert!(
+        matches!(
+            heard.as_slice(),
+            [SurfaceInputEvent::Resize { size, scale }]
+                if (size.width - f64::from(SURFACE_WIDTH)).abs() < f64::EPSILON
+                    && (*scale - 1.0).abs() < f32::EPSILON
+        ),
+        "nothing but its size reaches the surface before it is focused: {heard:?}"
     );
 
     // A pointer press still focuses, through the same keyboard-focus slot
@@ -768,6 +933,7 @@ fn tab_focuses_the_surface_and_ctrl_tab_leaves_it() {
                 pressed: true,
                 button: SurfacePointerButton::Primary,
                 position: kurbo::Point::new(10.0, 10.0),
+                click_count: NonZeroU32::MIN,
             },
         ],
         "a press focuses the surface through the same slot traversal uses"
@@ -888,7 +1054,7 @@ fn the_focused_binding_focuses_the_surface_without_a_pointer() {
     let mut runtime = runtime_with(view);
     let start = Instant::now();
     settled(&mut runtime, start);
-    assert_eq!(log.drain(), Vec::new());
+    assert_eq!(log.drain(), vec![announced_size()]);
 
     focus.set(Some(Pane::Document));
     let _ = runtime.pump_at(false, start + Duration::from_millis(100));
@@ -949,6 +1115,7 @@ fn a_structural_rebuild_re_focuses_the_surface_programmatically() {
     let mut runtime = runtime_with(view);
     let start = Instant::now();
     settled(&mut runtime, start);
+    let _ = (log_document.drain(), log_canvas.drain());
 
     focus.set(Some(Pane::Document));
     let _ = runtime.pump_at(false, start + Duration::from_millis(100));
@@ -1033,6 +1200,7 @@ fn hiding_the_focused_tab_moves_focus_to_the_shown_tab() {
                 pressed: true,
                 button: SurfacePointerButton::Primary,
                 position: kurbo::Point::new(10.0, 10.0),
+                click_count: NonZeroU32::MIN,
             },
         ],
         "the press focuses the visible tab's surface"
@@ -1203,6 +1371,7 @@ fn context_menu_claims_the_secondary_button_over_an_input_surface() {
     );
     let start = Instant::now();
     settled(&mut runtime, start);
+    let _ = log.drain();
 
     let (x, y) = window_point(12.0, 34.0);
     runtime.push_input_event(InputEvent::PointerDown {
@@ -1252,6 +1421,7 @@ fn an_empty_context_menu_mounts_no_popup_and_keeps_the_secondary_press() {
     );
     let start = Instant::now();
     settled(&mut runtime, start);
+    let _ = log.drain();
 
     let (x, y) = window_point(12.0, 34.0);
     runtime.push_input_event(InputEvent::PointerDown {
@@ -1280,6 +1450,7 @@ fn an_empty_context_menu_mounts_no_popup_and_keeps_the_secondary_press() {
                 pressed: true,
                 button: SurfacePointerButton::Secondary,
                 position: kurbo::Point::new(12.0, 34.0),
+                click_count: NonZeroU32::MIN,
             },
         ],
         "with no menu to open the secondary button must reach the surface, \
@@ -1298,6 +1469,7 @@ fn secondary_button_reaches_an_input_surface_without_a_context_menu() {
     }));
     let start = Instant::now();
     settled(&mut runtime, start);
+    let _ = log.drain();
 
     let (x, y) = window_point(12.0, 34.0);
     runtime.push_input_event(InputEvent::PointerDown {
@@ -1319,6 +1491,7 @@ fn secondary_button_reaches_an_input_surface_without_a_context_menu() {
                 pressed: true,
                 button: SurfacePointerButton::Secondary,
                 position: kurbo::Point::new(12.0, 34.0),
+                click_count: NonZeroU32::MIN,
             },
         ],
         "the secondary button reaches the surface when no menu claims it"
@@ -1378,5 +1551,279 @@ fn a_scroll_view_stacked_above_a_surface_receives_the_wheel_and_pan() {
             .iter()
             .any(|event| matches!(event, SurfaceInputEvent::Scroll { .. })),
         "the surface beneath the scroll view must see none of its deltas"
+    );
+}
+
+/// Double-click settings a test pins, so the runs below do not depend on the
+/// machine's own.
+fn pin_multi_click(runtime: &mut HeadlessRuntime) {
+    let mut conventions = InputConventions::for_platform(ScrollPlatform::Apple);
+    conventions.multi_click = MultiClickConfig {
+        interval: Duration::from_millis(300),
+        tolerance: kurbo::Vec2::new(4.0, 4.0),
+    };
+    runtime.set_input_conventions(conventions);
+}
+
+fn release_at(runtime: &mut HeadlessRuntime, local_x: f64, local_y: f64) {
+    let (x, y) = window_point(local_x, local_y);
+    runtime.push_input_event(InputEvent::PointerUp {
+        id: POINTER_ID,
+        kind: PointerKind::Mouse,
+        x,
+        y,
+        button: PointerButton::Primary,
+    });
+}
+
+/// The click counts of the primary presses and releases in `events`.
+fn click_counts(events: &[SurfaceInputEvent]) -> Vec<(bool, u32)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            SurfaceInputEvent::PointerButton {
+                pressed,
+                click_count,
+                ..
+            } => Some((*pressed, click_count.get())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn presses_count_into_runs_with_the_platforms_interval_and_distance() {
+    let log = ProbeLog::default();
+    let mut runtime = runtime_with(probe_view(log.clone(), None));
+    pin_multi_click(&mut runtime);
+    let start = Instant::now();
+    settled(&mut runtime, start);
+    let _ = log.drain();
+
+    let mut at = 100;
+    let mut click = |runtime: &mut HeadlessRuntime, gap: u64, x: f64| {
+        at += gap;
+        press_at(runtime, x, 20.0);
+        release_at(runtime, x, 20.0);
+        let _ = runtime.pump_at(false, start + Duration::from_millis(at));
+    };
+
+    click(&mut runtime, 0, 10.0);
+    click(&mut runtime, 200, 12.0);
+    click(&mut runtime, 200, 10.0);
+    // A fourth click: embedded surfaces are not capped at a triple click.
+    click(&mut runtime, 200, 11.0);
+    // Past the interval, the run starts over.
+    click(&mut runtime, 400, 10.0);
+    // Inside the interval but outside the distance, too.
+    click(&mut runtime, 100, 30.0);
+    let events = log.drain();
+
+    assert_eq!(
+        click_counts(&events),
+        vec![
+            (true, 1),
+            (false, 1),
+            (true, 2),
+            (false, 2),
+            (true, 3),
+            (false, 3),
+            (true, 4),
+            (false, 4),
+            (true, 1),
+            (false, 1),
+            (true, 1),
+            (false, 1),
+        ],
+        "a release carries the count of the press it ends"
+    );
+}
+
+#[test]
+fn the_surface_hears_its_size_once_before_anything_else() {
+    let log = ProbeLog::default();
+    let mut runtime = runtime_with(probe_view(log.clone(), None));
+    let start = Instant::now();
+    for frame in 0..4 {
+        let _ = runtime.pump_at(false, start + Duration::from_millis(frame * 16));
+    }
+    assert_eq!(
+        log.drain(),
+        vec![announced_size()],
+        "the size is announced exactly once, however many frames follow"
+    );
+
+    // What winit reports for a window moved onto a denser display: the scale
+    // changes, and the physical size follows as a resize.
+    runtime.set_scale_factor(2.0);
+    runtime.push_input_event(InputEvent::Resize {
+        width: WINDOW_WIDTH * 2,
+        height: WINDOW_HEIGHT * 2,
+    });
+    for frame in 4..8 {
+        let _ = runtime.pump_at(false, start + Duration::from_millis(frame * 16));
+    }
+    assert_eq!(
+        log.drain(),
+        vec![SurfaceInputEvent::Resize {
+            size: kurbo::Size::new(f64::from(SURFACE_WIDTH), f64::from(SURFACE_HEIGHT)),
+            scale: 2.0,
+        }],
+        "a new scale is announced once, on its own"
+    );
+}
+
+/// A clipboard whose read finishes when the test says so.
+#[derive(Clone, Default)]
+struct GatedClipboard(Rc<RefCell<GateState>>);
+
+#[derive(Default)]
+struct GateState {
+    /// What the clipboard holds once the read has finished; `None` while it
+    /// is pending.
+    text: Option<String>,
+    waker: Option<core::task::Waker>,
+    reads: usize,
+}
+
+impl GatedClipboard {
+    fn reader(&self) -> ClipboardRead {
+        let gate = self.clone();
+        Rc::new(move || {
+            gate.0.borrow_mut().reads += 1;
+            let gate = gate.clone();
+            Box::pin(core::future::poll_fn(move |cx| {
+                let mut state = gate.0.borrow_mut();
+                if let Some(text) = state.text.take() {
+                    return core::task::Poll::Ready(Some(text));
+                }
+                state.waker = Some(cx.waker().clone());
+                core::task::Poll::Pending
+            }))
+        })
+    }
+
+    fn finish(&self, text: &str) {
+        let mut state = self.0.borrow_mut();
+        state.text = Some(text.to_owned());
+        if let Some(waker) = state.waker.take() {
+            waker.wake();
+        }
+    }
+}
+
+/// Pumps frames, waiting on the local executor between them, until the
+/// surface has been handed an event: a clipboard read that finishes off the
+/// frame loop re-queues its task, and the next pump delivers what it holds.
+fn pump_until_delivered(
+    runtime: &mut HeadlessRuntime,
+    log: &ProbeLog,
+    start: Instant,
+    from_millis: u64,
+) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut frame = from_millis;
+    while log.0.borrow().is_empty() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "the clipboard read never completed");
+        let _ = runtime.pump_at(false, start + Duration::from_millis(frame));
+        frame += 16;
+        if log.0.borrow().is_empty() {
+            let _ = runtime.wait_for_local_work(remaining);
+        }
+    }
+}
+
+fn paste_chord(state: KeyState) -> InputEvent {
+    let modifiers = Modifiers {
+        super_key: true,
+        ..Modifiers::default()
+    };
+    InputEvent::Key {
+        key: KeyCode::Character("v".to_owned()),
+        logical_key: Key::Character("v".to_owned()),
+        physical_code: Code::KeyV,
+        repeat: false,
+        state,
+        modifiers,
+    }
+}
+
+#[test]
+fn the_paste_shortcut_becomes_a_paste_event_in_order_behind_the_clipboard_read() {
+    let log = ProbeLog::default();
+    let mut runtime = runtime_with_running_tasks(probe_view(log.clone(), None));
+    runtime.set_input_conventions(InputConventions::for_platform(ScrollPlatform::Apple));
+    let clipboard = GatedClipboard::default();
+    runtime
+        .renderer_mut()
+        .set_clipboard_read(clipboard.reader());
+    let start = Instant::now();
+    settled(&mut runtime, start);
+    press_at(&mut runtime, 5.0, 5.0);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(100));
+    let _ = log.drain();
+
+    runtime.push_input_event(paste_chord(KeyState::Pressed));
+    runtime.push_input_event(paste_chord(KeyState::Released));
+    // A key typed while the clipboard read is still pending.
+    runtime.push_input_event(key_event("a", Code::KeyA, KeyState::Pressed));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(120));
+    assert_eq!(clipboard.0.borrow().reads, 1);
+    assert_eq!(
+        log.drain(),
+        vec![],
+        "the chord's own key events are consumed, and what follows waits \
+         behind the pending read"
+    );
+
+    clipboard.finish("pasted\ntext");
+    pump_until_delivered(&mut runtime, &log, start, 140);
+    assert_eq!(
+        log.drain(),
+        vec![
+            SurfaceInputEvent::Paste("pasted\ntext".into()),
+            SurfaceInputEvent::Key {
+                pressed: true,
+                key: Key::Character("a".to_owned()),
+                code: Code::KeyA,
+                modifiers: W3cModifiers::default(),
+                repeat: false,
+            },
+        ],
+    );
+}
+
+#[test]
+fn an_empty_clipboard_delivers_no_paste() {
+    let log = ProbeLog::default();
+    let mut runtime = runtime_with_running_tasks(probe_view(log.clone(), None));
+    runtime.set_input_conventions(InputConventions::for_platform(ScrollPlatform::Apple));
+    let clipboard = GatedClipboard::default();
+    runtime
+        .renderer_mut()
+        .set_clipboard_read(clipboard.reader());
+    let start = Instant::now();
+    settled(&mut runtime, start);
+    press_at(&mut runtime, 5.0, 5.0);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(100));
+    let _ = log.drain();
+
+    runtime.push_input_event(paste_chord(KeyState::Pressed));
+    runtime.push_input_event(paste_chord(KeyState::Released));
+    runtime.push_input_event(key_event("a", Code::KeyA, KeyState::Pressed));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(120));
+    clipboard.finish("");
+    pump_until_delivered(&mut runtime, &log, start, 140);
+    assert_eq!(
+        log.drain(),
+        vec![SurfaceInputEvent::Key {
+            pressed: true,
+            key: Key::Character("a".to_owned()),
+            code: Code::KeyA,
+            modifiers: W3cModifiers::default(),
+            repeat: false,
+        }],
+        "an empty clipboard pastes nothing, and releases what waited behind it"
     );
 }

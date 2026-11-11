@@ -53,9 +53,9 @@ impl<'s> Stage<'s> {
 pub struct ComposeOptions {
     /// The precision of the colour values segments take and return. Each
     /// stage uses its variant of this precision when declared.
-    pub precision: Precision,
+    precision: Precision,
     /// Use the subgroup variant of each stage that declares one.
-    pub subgroups: bool,
+    subgroups: bool,
 }
 
 impl ComposeOptions {
@@ -123,13 +123,13 @@ pub enum SegmentArg {
 #[non_exhaustive]
 pub struct UniformMember {
     /// The stage index in the chain.
-    pub stage: usize,
+    stage: usize,
     /// The parameter name.
-    pub param: String,
+    param: String,
     /// The parameter type.
-    pub ty: ParamType,
+    ty: ParamType,
     /// The byte offset in the block.
-    pub offset: u32,
+    offset: u32,
 }
 
 impl UniformMember {
@@ -165,11 +165,11 @@ pub struct UniformLayout {
     /// Spatial segments only: the byte offset of the `size` member, the
     /// `vec2<f32>` carrying the segment's input extent in pixels. It is
     /// the block's first member, always at offset 0.
-    pub input_size: Option<u32>,
+    input_size: Option<u32>,
     /// The dynamic parameters, in offset order.
-    pub members: Vec<UniformMember>,
+    members: Vec<UniformMember>,
     /// The block size in bytes; zero when every parameter is constant.
-    pub size: u32,
+    size: u32,
 }
 
 impl UniformLayout {
@@ -199,15 +199,15 @@ impl UniformLayout {
 #[non_exhaustive]
 pub struct Segment {
     /// The function's name in the module.
-    pub function: String,
+    function: String,
     /// The chain stages it applies.
-    pub stages: Range<usize>,
+    stages: Range<usize>,
     /// The variant each stage used, in stage order.
-    pub variants: Vec<Variant>,
+    variants: Vec<Variant>,
     /// Its arguments, in order.
-    pub args: Vec<SegmentArg>,
+    args: Vec<SegmentArg>,
     /// Its uniform block.
-    pub uniform: UniformLayout,
+    uniform: UniformLayout,
 }
 
 impl Segment {
@@ -268,9 +268,9 @@ impl Segment {
 #[non_exhaustive]
 pub struct FoldCost {
     /// Computed expressions in the prefix, applied once per sample.
-    pub prefix_ops: u32,
+    prefix_ops: u32,
     /// Samples the spatial stage takes per output pixel.
-    pub samples: SampleCount,
+    samples: SampleCount,
 }
 
 impl FoldCost {
@@ -293,14 +293,14 @@ impl FoldCost {
 pub struct Folded {
     /// The folded function. It replaces the preceding colour piece and the
     /// plain spatial segment.
-    pub segment: Segment,
+    segment: Segment,
     /// What folding costs.
-    pub cost: FoldCost,
+    cost: FoldCost,
     /// The filter mode the snippet declares for `SegmentArg::InputSampler`.
     /// The executor must honor it when binding the folded program's sampler
     /// — for a sampled stage it is [`SamplerFilter::Point`], the contract
     /// that makes folding equivalent.
-    pub sampler: SamplerFilter,
+    sampler: SamplerFilter,
 }
 
 impl Folded {

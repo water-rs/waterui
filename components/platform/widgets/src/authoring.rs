@@ -53,7 +53,7 @@ pub trait WidgetContent {
 /// A value usable as the root of a timeline-producing function.
 ///
 /// Any [`WidgetContent`] produces a single-entry timeline dated "now" with
-/// the default [`ReloadPolicy::AtEnd`]; an explicit [`TimelineEntry`] or
+/// the default [`ReloadPolicy::AtEnd`](crate::ReloadPolicy::AtEnd); an explicit [`TimelineEntry`] or
 /// [`Timeline`] sets the date and reload behavior itself.
 pub trait IntoTimeline {
     /// Convert into the timeline the extension reports.

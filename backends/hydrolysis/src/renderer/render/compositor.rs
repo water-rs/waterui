@@ -35,7 +35,7 @@ pub struct HydrolysisRenderTarget<'a> {
     /// The render target's height in pixels.
     pub height: u32,
     /// The colour under the scene's content.
-    pub base_color: waterui_graphics::draw::WorkingColor,
+    pub base_color: cherenkov_record::WorkingColor,
 }
 
 /// The frame description both render paths work on — the texture frame a
@@ -45,7 +45,6 @@ pub struct HydrolysisRenderTarget<'a> {
 pub struct FrameRenderTarget<'a> {
     pub adapter: &'a wgpu::Adapter,
     pub device: &'a wgpu::Device,
-    pub queue: &'a wgpu::Queue,
     pub device_loss: crate::platform::DeviceLoss,
     /// The device-creation chain the frame's handles belong to — the engine
     /// pool key.
@@ -57,7 +56,7 @@ pub struct FrameRenderTarget<'a> {
     pub display_scale: f64,
     pub width: u32,
     pub height: u32,
-    pub base_color: waterui_graphics::draw::WorkingColor,
+    pub base_color: cherenkov_record::WorkingColor,
 }
 
 impl<'a> HydrolysisRenderTarget<'a> {
@@ -70,7 +69,6 @@ impl<'a> HydrolysisRenderTarget<'a> {
         FrameRenderTarget {
             adapter: self.adapter,
             device: self.device,
-            queue: self.queue,
             device_loss: device_loss.clone(),
             gpu_context_id: context.context_id,
             shared_device: context.shared_device.clone(),
@@ -214,8 +212,9 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         let _frame = self.commit_window_frame(&mut window, &target, headroom);
 
         self.applied_filter_metrics.reset();
-        let rendered = crate::engine::engine_await!(window.surface.render());
+        let rendered = crate::engine::engine_await!(window.surface.render(self.frame_time()));
         self.take_applied_filter_metrics();
+        self.engine_tracks = crate::engine::EngineSurface::running_tracks(&window.surface);
         self.cherenkov_window = Some(window);
         self.engine_next = Some(rendered?.into());
         let content_range = self.cherenkov_window.as_ref().expect("rendered window").surface.content_range();
@@ -283,8 +282,9 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             window.surface.display_moved();
         }
 
+        let at = self.frame_time();
         let rendered = self.render_presented_window(&mut window, target, |surface| {
-            surface.render(target.display_scale)
+            surface.render(at, target.display_scale)
         });
         *window_slot = Some(window);
         rendered
@@ -303,6 +303,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             window: native_window,
             window_slot,
             transparent,
+            band_commits,
         } = engine_target;
         if !window_slot
             .as_ref()
@@ -318,6 +319,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
                 (target.width, target.height),
                 self.host_wake(),
                 transparent,
+                band_commits.clone(),
             );
             *window_slot = Some(CherenkovWindow::new(
                 surface,
@@ -334,11 +336,8 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         // existing display range; native buffers retain source HDR metadata.
         let _frame =
             self.commit_window_frame(window, target, cherenkov::Display::default().headroom);
-        self.render_presented_window(
-            window,
-            target,
-            crate::engine::AndroidCherenkovSurface::render,
-        )
+        let time = self.frame_time();
+        self.render_presented_window(window, target, |surface| surface.render(time))
     }
 
     /// The common completion path for engine-presented native windows.
@@ -357,15 +356,13 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         self.take_applied_filter_metrics();
         #[cfg(feature = "frame-profile")]
         {
-            self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 2);
-            self.finish_gpu_frame_profile_with(
-                window.gpu_profiler.as_ref(),
-                target.device,
-                target.queue,
-            );
+            let queue = &target.shared_device.queue;
+            self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, queue, 2);
+            self.finish_gpu_frame_profile_with(window.gpu_profiler.as_ref(), target.device, queue);
         }
         #[cfg(not(feature = "frame-profile"))]
         let _ = target;
+        self.engine_tracks = crate::engine::EngineSurface::running_tracks(&window.surface);
         self.engine_next = Some(rendered?.into());
         Ok(())
     }
@@ -429,8 +426,9 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         let _frame = self.commit_window_frame(&mut window, target, 1.0);
 
         self.applied_filter_metrics.reset();
-        let rendered = window.surface.render().await;
+        let rendered = window.surface.render(self.frame_time()).await;
         self.take_applied_filter_metrics();
+        self.engine_tracks = crate::engine::EngineSurface::running_tracks(&window.surface);
         *window_slot = Some(window);
         self.engine_next = Some(rendered?.into());
         Ok(())
@@ -474,7 +472,12 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         let frame = window.surface.core().begin_frame();
 
         #[cfg(feature = "frame-profile")]
-        self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 0);
+        self.gpu_profile_mark(
+            window.gpu_profiler.as_ref(),
+            target.device,
+            &target.shared_device.queue,
+            0,
+        );
 
         let surface = window.surface.core_mut();
         surface.resize((target.width, target.height));
@@ -487,7 +490,12 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         self.commit_mount(&mut window.mount, &window.host, target.display_scale);
 
         #[cfg(feature = "frame-profile")]
-        self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 1);
+        self.gpu_profile_mark(
+            window.gpu_profiler.as_ref(),
+            target.device,
+            &target.shared_device.queue,
+            1,
+        );
 
         frame
     }
@@ -557,8 +565,7 @@ impl<S: crate::engine::EngineSurface, E: crate::text::TextEngine> CherenkovWindo
             metrics,
             surface: core.engine_surface_weak(),
             materials: mount::MaterialTerms::resolve(&state.engine, materials),
-            device: target.device.clone(),
-            queue: target.queue.clone(),
+            shared_device: target.shared_device.clone(),
         };
         Self {
             surface,

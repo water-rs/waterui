@@ -112,6 +112,10 @@ pub enum Op {
     Mesh = 0x020C,
     /// `node`. Draws a child node.
     DrawNode = 0x020D,
+    /// `layout`, a [`MATRIX_WORDS`] matrix, `color` as a `ColorLong`: draws
+    /// a platform text layout with its default-coloured runs in `color`;
+    /// runs the text styled with their own colour keep it.
+    PaintedText = 0x020E,
 
     /// `path, fill_type` ([`fill_type`]), `verb_count, point_count`, then
     /// the verbs ([`verb`]) one to a word and `2 × point_count` coordinates.
@@ -148,7 +152,7 @@ pub enum Op {
 impl Op {
     /// Every opcode, in code order.
     #[cfg(test)]
-    pub const ALL: [Self; 36] = [
+    pub const ALL: [Self; 37] = [
         Self::CreateNode,
         Self::ReleaseNode,
         Self::SetPosition,
@@ -173,6 +177,7 @@ impl Op {
         Self::Image,
         Self::Mesh,
         Self::DrawNode,
+        Self::PaintedText,
         Self::DefinePath,
         Self::ReleasePath,
         Self::DefineShader,
@@ -217,6 +222,7 @@ impl Op {
             Self::SetClip => 7,
             Self::Concat => MATRIX_WORDS,
             Self::Text => 1 + MATRIX_WORDS,
+            Self::PaintedText => 3 + MATRIX_WORDS,
             Self::SetTransform => 1 + TRANSFORM_VALUES,
             Self::BindPlatformView => 17,
             Self::Fill => SHAPE_WORDS + PAINT_WORDS,
@@ -257,6 +263,7 @@ impl Op {
             Self::Shadow => "Shadow",
             Self::Glyphs => "Glyphs",
             Self::Text => "Text",
+            Self::PaintedText => "PaintedText",
             Self::Image => "Image",
             Self::Mesh => "Mesh",
             Self::DrawNode => "DrawNode",
@@ -415,6 +422,11 @@ codes! {
         /// One linear-light matrix: the conjugated product's top three
         /// rows, row-major.
         LINEAR_COLOR = 1;
+        /// The overscroll stretch shader: the frame from the stretched
+        /// viewport's space to the drawn node's own pixels `[a, b, c, d,
+        /// e, f]`, the viewport's `width, height`, HWUI's stretch direction
+        /// `x, y` and the interpolation strength, in `values[0..11]`.
+        OVERSCROLL_STRETCH = 2;
     }
 }
 

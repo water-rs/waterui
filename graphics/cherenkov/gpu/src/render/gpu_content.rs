@@ -15,7 +15,7 @@ use crate::interop::{
     ExternalFrame, FrameColor, FramePlanes, GpuContentBox, RgbAlpha,
     wgpu::{Context, Frame},
 };
-use cherenkov::{CompletionWaker, Instant, ProducerId, RenderError};
+use cherenkov::{CompletionWaker, FrameTime, Instant, ProducerId, RenderError};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -245,6 +245,7 @@ impl Producer {
             },
             color: FrameColor::LINEAR_P3,
             wait: None,
+            release: None,
             #[cfg(target_vendor = "apple")]
             attachments: None,
         }
@@ -263,12 +264,12 @@ impl Producer {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn render(
         &mut self,
+        instance: &wgpu::Instance,
         adapter: &wgpu::Adapter,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        time: Instant,
-        size: (u32, u32),
-        scale: f32,
+        frame_time: FrameTime,
+        (size, scale): ((u32, u32), f32),
     ) -> Result<(), RenderError> {
         if self.content.is_none() {
             // A submitted-frame producer draws nothing: its frame landed
@@ -304,6 +305,7 @@ impl Producer {
             let content = self.content.as_mut().expect("checked above");
             let redraw = content.redraw.clone();
             content.content.setup(&Context {
+                instance,
                 adapter,
                 device,
                 queue,
@@ -323,6 +325,7 @@ impl Producer {
             self.again = true;
             return Ok(());
         };
+        let time = frame_time.instant();
         let mut frame = Frame {
             device,
             queue,
@@ -336,6 +339,7 @@ impl Producer {
             delta: self
                 .last_frame
                 .map_or(Duration::ZERO, |last| time.saturating_duration_since(last)),
+            presentation_time: frame_time.presentation_time(),
             redraw: false,
         };
         self.content
@@ -360,12 +364,12 @@ impl Producer {
     )]
     pub async fn render(
         &mut self,
+        instance: &wgpu::Instance,
         adapter: &wgpu::Adapter,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        time: Instant,
-        size: (u32, u32),
-        scale: f32,
+        frame_time: FrameTime,
+        (size, scale): ((u32, u32), f32),
     ) -> Result<(), RenderError> {
         if self.content.is_none() {
             return Ok(());
@@ -396,6 +400,7 @@ impl Producer {
             content
                 .content
                 .setup(&Context {
+                    instance,
                     adapter,
                     device,
                     queue,
@@ -414,6 +419,7 @@ impl Producer {
             self.again = true;
             return Ok(());
         };
+        let time = frame_time.instant();
         let mut frame = Frame {
             device,
             queue,
@@ -427,6 +433,7 @@ impl Producer {
             delta: self
                 .last_frame
                 .map_or(Duration::ZERO, |last| time.saturating_duration_since(last)),
+            presentation_time: frame_time.presentation_time(),
             redraw: false,
         };
         self.content

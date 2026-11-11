@@ -4,7 +4,7 @@
 //! including fonts, attributed text, and internationalization support.
 //!
 //! Note: The `Link` component has been moved to the main `waterui` crate
-//! where it can use `robius-open` for URL handling.
+//! where it can use `waterkit-deeplink` for URL handling.
 
 #![no_std]
 

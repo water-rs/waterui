@@ -9,13 +9,15 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use waterui_contract::contract_violation;
+
 use crate::ImageLimits;
 use crate::ShaderId;
 use crate::error::ResourceError;
 use crate::glyph::FontId;
 use crate::image::{Format, ImageData, ImageUpload};
 use cherenkov_record::{
-    BackdropEffect, BackdropId, BackdropSample, BackdropShaderId, LayerContent,
+    BackdropEffect, BackdropId, BackdropSample, BackdropShaderId, LayerContent, TextLayoutId,
 };
 
 use crate::paint::ImageId;
@@ -198,6 +200,47 @@ impl Font {
     /// The identifier glyph runs reference.
     #[must_use]
     pub fn id(&self) -> FontId {
+        self.inner.id
+    }
+}
+
+/// A text layout registered with an engine.
+///
+/// Its laid-out glyph runs are what [`Command::Text`](crate::Command::Text)
+/// expands to. It holds the fonts its runs draw with, so they stay
+/// registered as long as the layout is. Dropping the last clone unregisters
+/// the layout once no installed content draws it, and its fonts with it.
+#[derive(Debug)]
+pub struct TextLayoutHandle {
+    inner: Rc<Inner<TextLayoutId>>,
+    /// Dropped after `inner`, whose release must be queued first.
+    fonts: Rc<[Font]>,
+}
+
+impl Clone for TextLayoutHandle {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Rc::clone(&self.inner),
+            fonts: Rc::clone(&self.fonts),
+        }
+    }
+}
+
+impl TextLayoutHandle {
+    pub(crate) fn new(
+        id: TextLayoutId,
+        fonts: Vec<Font>,
+        on_drop: impl FnOnce() + 'static,
+    ) -> Self {
+        Self {
+            inner: handle(id, on_drop),
+            fonts: fonts.into(),
+        }
+    }
+
+    /// The identifier [`Command::Text`](crate::Command::Text) names.
+    #[must_use]
+    pub fn id(&self) -> TextLayoutId {
         self.inner.id
     }
 }
@@ -598,14 +641,19 @@ impl<B: crate::HostedLayers> Hosted<B> {
     /// layer moves it there. Its pixels are the host's, so the layer is
     /// never known to be opaque.
     ///
-    /// # Panics
-    /// When `size` is not finite or has a negative side.
+    /// # Contract
+    /// A `size` that is not finite or has a negative side is a contract
+    /// violation; the extent is then the empty size.
     #[must_use]
     pub fn at(&self, size: kurbo::Size) -> LayerContent<B> {
-        assert!(
-            size.is_finite() && size.width >= 0.0 && size.height >= 0.0,
-            "a hosted extent is a finite, non-negative size, not {size:?}"
-        );
+        let size = if size.is_finite() && size.width >= 0.0 && size.height >= 0.0 {
+            size
+        } else {
+            contract_violation!(
+                "a hosted extent is a finite, non-negative size, not {size:?}; the extent is empty"
+            );
+            kurbo::Size::ZERO
+        };
         let object = self.object.clone();
         let install: crate::message::InstallOp<B> = Box::new(move |r, surface, layer| {
             B::bind_hosted(r, surface, layer, object, size);

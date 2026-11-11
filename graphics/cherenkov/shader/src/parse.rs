@@ -19,9 +19,9 @@ use crate::{
 #[non_exhaustive]
 pub struct Variant {
     /// The precision of colour values.
-    pub precision: Precision,
+    precision: Precision,
     /// Whether the source uses subgroup operations.
-    pub subgroups: bool,
+    subgroups: bool,
 }
 
 impl Variant {
@@ -139,12 +139,12 @@ impl<'a> SnippetSource<'a> {
 #[non_exhaustive]
 pub struct LibrarySource<'a> {
     /// The library's identity name.
-    pub name: &'a str,
+    name: &'a str,
     /// The `f32` source.
-    pub f32: &'a str,
+    f32: &'a str,
     /// The `f16` source. A snippet registering the library declares an
     /// `f16` variant only if the library has one.
-    pub f16: Option<&'a str>,
+    f16: Option<&'a str>,
 }
 
 impl<'a> LibrarySource<'a> {

@@ -10,10 +10,10 @@ use fmt::Display;
 use nami::signal::{IntoComputed, IntoSignal};
 use nami::{Binding, Computed, Signal, SignalExt};
 use suiteki::Str;
+use waterui_color::Color;
 use waterui_core::configurable;
 use waterui_core::layout::HorizontalAlignment;
 use waterui_core::{Environment, View, flatten_signal};
-use waterui_graphics::color::Color;
 use waterui_locale::{Locale, TranslationCatalog, locale_binding};
 
 use crate::font::FontWeight;
@@ -32,9 +32,9 @@ pub trait Formatter<T>: Clone {
 #[non_exhaustive]
 pub struct TextConfig {
     /// The rich text content to be displayed.
-    pub content: Computed<StyledStr>,
+    content: Computed<StyledStr>,
     /// Paragraph alignment for multiline layout.
-    pub paragraph_alignment: Computed<HorizontalAlignment>,
+    paragraph_alignment: Computed<HorizontalAlignment>,
     /// Maximum number of laid-out lines, or `None` for no limit.
     ///
     /// Text that does not fit the limit is truncated at its last visible
@@ -42,7 +42,7 @@ pub struct TextConfig {
     /// machinery provides one. This is `SwiftUI`'s `lineLimit`: a control
     /// label capped at one line stays a label under compression instead of
     /// folding into a paragraph.
-    pub line_limit: Option<NonZeroUsize>,
+    line_limit: Option<NonZeroUsize>,
 }
 
 impl TextConfig {
@@ -591,9 +591,17 @@ impl Text {
         })
     }
 
-    /// Sets the font to bold.
+    /// Asks for the platform's bold face of the font, which each backend
+    /// resolves from its platform's definition; [`Self::weight`] with
+    /// [`FontWeight::Bold`] is an exact weight of 700 instead. Text with no
+    /// font or text style takes the platform's plain bold (Bold on macOS),
+    /// while a text style takes its own bold (`.body()` is Semibold on
+    /// macOS). See [`Font::bold`](crate::font::Font::bold).
     pub fn bold(self) -> Self {
-        self.weight(FontWeight::Bold)
+        self.map_config(|mut config| {
+            config.content = config.content.map(StyledStr::bold).computed();
+            config
+        })
     }
 
     /// Asks for the platform's fixed-pitch face, keeping the font's slot,

@@ -16,17 +16,22 @@ use alloc::string::String;
 use core::cell::RefCell;
 
 use cocoa_ui::slider::ValueAnimation;
-use cocoa_ui::{PlatformView, Rect, Retained};
-use waterui::animation::Animation;
-use waterui::component::slider::SliderConfig;
+use cocoa_ui::{PlatformView, Rect, Retained, view};
+use waterui::animation::{Animation, ChangeAnimation};
+use waterui::component::slider::{SliderConfig, snap};
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
 use waterui_core::interaction::Disabled;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 
+use crate::components::button_chrome;
 use crate::components::control_size::platform_control_size;
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -149,17 +154,16 @@ fn child_sizes(children: &Children) -> ChildSizes {
     }
 }
 
-/// Lays out the children inside `view`'s bounds: the label at top-leading,
-/// then the slider row — min label, track, max label — below it. Manual
-/// frames replicate `WuiSlider`'s `AutoLayout` constraints, with the whole
-/// arrangement mirrored when the view is right-to-left (leading and
-/// trailing swap edges).
-fn layout_children(view: &PlatformView, state: &SliderState) {
+/// Lays out the children inside the `response` rectangle: the label at
+/// top-leading, then the slider row — min label, track, max label — below
+/// it. Manual frames replicate `WuiSlider`'s `AutoLayout` constraints, with
+/// the whole arrangement mirrored when the view is right-to-left (leading
+/// and trailing swap edges).
+fn layout_children(view: &PlatformView, response: Rect, state: &SliderState) {
     let Some(children) = &state.children else {
         return;
     };
-    let bounds = cocoa_ui::view::bounds(view);
-    let width = bounds.size.width;
+    let width = response.size.width;
     let sizes = child_sizes(children);
     let slider_height = track_height(&state.slider);
     let rtl = cocoa_ui::view::is_right_to_left(view);
@@ -168,7 +172,7 @@ fn layout_children(view: &PlatformView, state: &SliderState) {
     // right-to-left `NSLayoutConstraint` pass would give.
     let place = |child: &PlatformView, x: f64, y: f64, w: f64, h: f64| {
         let x = if rtl { width - x - w } else { x };
-        cocoa_ui::view::set_frame(child, Rect::new(x, y, w, h));
+        view::set_frame(child, Rect::new(x, y, w, h).translated(response.origin));
     };
 
     place(
@@ -224,6 +228,14 @@ impl core::fmt::Debug for SliderSubView {
 }
 
 impl SubView for SliderSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `measure` speaks f32; the geometry math runs in f64 — the narrowing is
     // the layout contract, as in `text`.
     #[expect(
@@ -253,12 +265,16 @@ impl SubView for SliderSubView {
     }
 }
 
-/// The `ValueAnimation` the watcher's metadata calls for: `None` applies the
-/// change directly. `Spring` has no `AppKit` equivalent — `WuiSlider` runs it
-/// as a timed animation of an estimated duration, matching
+/// The `ValueAnimation` the watcher's metadata calls for: `None`, for a
+/// change that names no animation or disables it, applies the change
+/// directly. `Spring` has no `AppKit` equivalent — `WuiSlider` runs it as a
+/// timed animation of an estimated duration, matching
 /// `withPlatformAnimation`.
 fn value_animation(metadata: &Metadata) -> Option<ValueAnimation> {
-    match metadata.try_get::<Animation>() {
+    match ChangeAnimation::of(metadata)
+        .animation()
+        .map(Animation::validated)
+    {
         None => None,
         Some(Animation::Default) => Some(ValueAnimation::Duration(0.25)),
         Some(Animation::Bezier {
@@ -322,6 +338,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
             waterui::component::ControlSize::ExtraSmall,
         ));
         slider.set_range(*config.range().start(), *config.range().end());
+        // AppKit holds the thumb to tick marks, one per step.
+        #[cfg(target_os = "macos")]
+        slider.set_step(config.step());
         slider.set_value(
             clamped(
                 config.value().snapshot(),
@@ -333,9 +352,19 @@ pub fn install(dispatcher: &mut Dispatcher) {
         host.add_subview(as_view(&slider));
 
         let range = config.range().clone();
+        let step = config.step();
         let action = slider.install_action({
             let binding = config.value().clone();
-            move |value| binding.set(value)
+            let slider = slider.clone();
+            let range = range.clone();
+            move |value| {
+                // UIKit has no step: the thumb moves freely, so the value is
+                // snapped here and the thumb follows it, whether or not the
+                // binding changes.
+                let snapped = snap(value, &range, step);
+                slider.set_value(snapped, None);
+                binding.set(snapped);
+            }
         });
 
         // The label's semantic text is announced on the control itself; the
@@ -362,7 +391,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         host.set_layout_handler({
             let state = Rc::clone(&state);
             move |view| {
-                layout_children(view, &state.borrow());
+                layout_children(view, proposal::response(view), &state.borrow());
             }
         });
 
@@ -399,6 +428,12 @@ pub fn install(dispatcher: &mut Dispatcher) {
             }
         });
 
+        // The tint colours the filled part of the track.
+        leaf.bind(&button_chrome::tint_signal(ctx.env()), {
+            let slider = slider.clone();
+            move |color| slider.set_track_tint(&button_chrome::platform_color(&color))
+        });
+
         // A disabled subtree must not respond to input.
         if let Some(disabled) = ctx.env().get::<Disabled>() {
             leaf.bind(disabled.signal(), {
@@ -415,7 +450,19 @@ pub fn install(dispatcher: &mut Dispatcher) {
 mod tests {
     use core::time::Duration;
 
+    use waterui::animation::NoAnimation;
+
     use super::*;
+
+    #[test]
+    fn a_value_the_platform_leaves_unstepped_snaps_from_the_range_start() {
+        // UIKit reports whatever the thumb is at; the value the binding gets
+        // is the nearest multiple of the step counted from the range's start.
+        let range = 1.0..=10.0;
+        assert_eq!(snap(4.4, &range, Some(2.0)).to_bits(), 5.0_f64.to_bits());
+        assert_eq!(snap(9.9, &range, Some(2.0)).to_bits(), 9.0_f64.to_bits());
+        assert_eq!(snap(4.4, &range, None).to_bits(), 4.4_f64.to_bits());
+    }
 
     #[test]
     fn spacing_collapses_beside_an_empty_label() {
@@ -464,6 +511,10 @@ mod tests {
         assert_eq!(
             value_animation(&Metadata::new().with(Animation::Default)),
             Some(ValueAnimation::Duration(0.25))
+        );
+        assert_eq!(
+            value_animation(&Metadata::new().with(Animation::Default).with(NoAnimation)),
+            None
         );
         assert_eq!(
             value_animation(&Metadata::new().with(Animation::Bezier {

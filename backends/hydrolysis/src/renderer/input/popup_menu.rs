@@ -1,8 +1,8 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::theme::{ButtonMetrics, InteractionStyle, PickerMetrics};
-use crate::widgets::controls::button::ListRowChrome;
+use crate::theme::PickerMetrics;
+use crate::widgets::controls::button::{ListRowChrome, MenuRowChrome, menu_row_font};
 use core::ops::RangeInclusive;
 use core::time::Duration;
 use nami::Signal;
@@ -20,6 +20,7 @@ use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::hstack;
+use waterui_text::font::Font;
 use waterui_text::text;
 
 /// Backend-private presentation service for transient popup windows.
@@ -319,10 +320,9 @@ pub fn popup_menu_size(
 }
 
 /// A menu command row: a borderless `Button` that closes the menu group and
-/// runs the command on press. A `disabled` row draws its label at Material's
-/// disabled contrast — on-surface at 38% opacity, which here is the menu's
-/// `Foreground` token at 0.38 — while its press stays inert (the action's
-/// early return also gates it).
+/// runs the command on press. A `disabled` row draws its label in the
+/// `DisabledForeground` token while its press stays inert (the action's early
+/// return also gates it).
 fn popup_menu_command_row(
     label: SemanticLabel,
     action: SharedAction<()>,
@@ -338,38 +338,49 @@ fn popup_menu_command_row(
         },
     );
     if disabled {
-        AnyView::new(
-            button.foreground(Color::new(waterui::theme::color::Foreground).with_opacity(0.38)),
-        )
+        AnyView::new(button.foreground(Color::new(waterui::theme::color::DisabledForeground)))
     } else {
         AnyView::new(button)
     }
 }
 
 /// A row's trailing shortcut hint in the theme's menu-label treatment: the
-/// borderless-button label font the row's own label resolves through
-/// [`crate::theme::WidgetTheme::button_label_font`] — label-large in the
-/// Material mapping — over the muted (on-surface-variant) colour, dimmed
-/// with the row's label when the command is disabled. The drawn row and
+/// borderless button look's label font the row's own label takes
+/// ([`menu_row_font`]) — label-large in the Material mapping — over the
+/// muted (on-surface-variant) colour, in the disabled colour with the row's
+/// label when the command is disabled. The drawn row and
 /// [`SemanticCore::popup_menu_text_metrics`] share it so the two cannot
 /// drift (water-rs/hydrolysis#247).
-fn shortcut_hint_styled(
-    shortcut: &Shortcut,
-    disabled: bool,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> StyledStr {
-    let mut styled = StyledStr::plain(shortcut.to_string()).foreground({
-        let color = Color::new(waterui::theme::color::MutedForeground);
+fn shortcut_hint_styled(shortcut: &Shortcut, disabled: bool, font: Option<Font>) -> StyledStr {
+    let styled = StyledStr::plain(shortcut.to_string()).foreground({
         if disabled {
-            color.with_opacity(0.38)
+            Color::new(waterui::theme::color::DisabledForeground)
         } else {
-            color
+            Color::new(waterui::theme::color::MutedForeground)
         }
     });
-    if let Some(font) = theme.button_label_font(ButtonStyle::Borderless) {
-        styled = styled.font(font);
+    match font {
+        Some(font) => styled.font(font),
+        None => styled,
     }
-    styled
+}
+
+/// A shortcut hint styled in the environment it renders in, where the
+/// theme's button look resolves.
+struct ShortcutHint {
+    shortcut: Shortcut,
+    disabled: bool,
+    theme: Rc<dyn crate::theme::WidgetTheme>,
+}
+
+impl View for ShortcutHint {
+    fn body(self, env: &Environment) -> impl View {
+        waterui_text::text(shortcut_hint_styled(
+            &self.shortcut,
+            self.disabled,
+            menu_row_font(&self.theme, env),
+        ))
+    }
 }
 
 /// The menu's row content shared by the popup-window and the drawn
@@ -418,13 +429,17 @@ pub fn popup_menu_content(
                         hstack((
                             AnyView::new(button),
                             spacer(),
-                            waterui_text::text(shortcut_hint_styled(&shortcut, disabled, theme))
-                                .padding_with(EdgeInsets::new(
-                                    0.0,
-                                    0.0,
-                                    0.0,
-                                    crate::num_cast::f64_as_f32(metrics.horizontal_padding),
-                                )),
+                            ShortcutHint {
+                                shortcut,
+                                disabled,
+                                theme: theme.clone(),
+                            }
+                            .padding_with(EdgeInsets::new(
+                                0.0,
+                                0.0,
+                                0.0,
+                                crate::num_cast::f64_as_f32(metrics.horizontal_padding),
+                            )),
                         ))
                         .spacing(0.0),
                     ),
@@ -504,14 +519,9 @@ pub fn popup_menu_content(
             .with(ListRowChrome)
             // A menu row is not a button: its inset is the theme's menu-item
             // inset (`md.comp.menu.list-item.leading-space`/`trailing-space`,
-            // 12 dp in M3), its state layer is the on-surface colour under
-            // `md.sys.state.*` opacities, and the label colours stay semantic
-            // (`label_color: None`).
-            .install(InteractionStyle::new(
-                ButtonMetrics::new(metrics.horizontal_padding, 0.0, 0.0, 0.0),
-                Color::new(waterui::theme::color::Foreground),
-                kurbo::RoundedRectRadii::from(0.0),
-            )),
+            // 12 dp in M3) and its state layer the foreground colour over a
+            // square, containerless surface.
+            .with(MenuRowChrome),
     )
 }
 
@@ -1311,7 +1321,11 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                         // enabled treatment measures the hint's true extent.
                         let size = HydrolysisRenderer::measure_text_intrinsic_size(
                             &mut self.state,
-                            shortcut_hint_styled(shortcut, disabled.snapshot(), theme),
+                            shortcut_hint_styled(
+                                shortcut,
+                                disabled.snapshot(),
+                                menu_row_font(theme, env),
+                            ),
                             env,
                         );
                         max_hint_width = max_hint_width.max(f64::from(size.width));

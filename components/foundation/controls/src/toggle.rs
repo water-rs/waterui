@@ -6,6 +6,7 @@ use nami::Binding;
 use waterui_core::{Environment, configurable, layout::StretchAxis};
 
 use crate::label::{IntoLabel, Label, LabelDisplayMode, impl_label_style_methods};
+use crate::size::ControlSize;
 
 /// Visual style options for toggle controls.
 #[non_exhaustive]
@@ -54,15 +55,17 @@ pub struct ToggleConfig {
     /// has a name to announce, even when
     /// [`LabelDisplayMode::Hidden`](crate::label::LabelDisplayMode::Hidden)
     /// removes the visible chrome.
-    pub label: Label,
+    label: Label,
     /// The binding to the toggle state.
-    pub toggle: Binding<bool>,
+    toggle: Binding<bool>,
     /// The visual style of the toggle.
     ///
     /// The native payload a backend receives is resolved: its style is never
     /// [`ToggleStyle::Automatic`], and its label's display mode is the
     /// effective one.
-    pub style: ToggleStyle,
+    style: ToggleStyle,
+    /// How large the toggle is drawn.
+    size: ControlSize,
 }
 
 impl ToggleConfig {
@@ -103,10 +106,16 @@ impl ToggleConfig {
         self.style
     }
 
+    /// How large the toggle is drawn.
+    #[must_use]
+    pub const fn size(&self) -> ControlSize {
+        self.size
+    }
+
     /// Takes the value apart into its fields, in declaration order.
     #[must_use]
-    pub fn into_parts(self) -> (Label, Binding<bool>, ToggleStyle) {
-        (self.label, self.toggle, self.style)
+    pub fn into_parts(self) -> (Label, Binding<bool>, ToggleStyle, ControlSize) {
+        (self.label, self.toggle, self.style, self.size)
     }
 }
 
@@ -217,12 +226,22 @@ impl Toggle {
             label: label.into_label(),
             toggle: toggle.clone(),
             style: ToggleStyle::default(),
+            size: ControlSize::Small,
         })
     }
     #[must_use]
     /// Sets the visual style of the toggle.
     pub const fn style(mut self, style: ToggleStyle) -> Self {
         self.0.style = style;
+        self
+    }
+
+    /// Sets how large the toggle is drawn. A toggle is
+    /// [`ControlSize::Small`], like a [`Button`](crate::button::Button), when
+    /// none is chosen; a theme decides what each size changes.
+    #[must_use]
+    pub const fn size(mut self, size: ControlSize) -> Self {
+        self.0.size = size;
         self
     }
 

@@ -13,18 +13,18 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 
-use cocoa_ui::geometry::MeasureProposal;
+use cocoa_ui::response::ReportsResponse;
 use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::layout::container::FixedContainer;
 use waterui_backend_core::{AnyView, View};
 use waterui_core::layout::{
-    Layout, ProposalSize, StretchAxis, SubView, ViewDimensions, measure_layout,
-    with_memoized_children,
+    Layout, LayoutError, PlacedGeometry, ProposalSize, Rect as LayoutRect, ResolvedExtent,
+    StretchAxis, SubView, ViewDimensions, measure_layout, place_layout, resolve_layout_extent,
 };
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
-use crate::proposal::{self, Placement};
+use crate::proposal::{self, CommittedGeometry, Placement, to_proposal};
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{HitTest, HostView};
@@ -45,6 +45,9 @@ struct FixedState {
     placement: Cell<Placement>,
     /// The host view, for layout invalidation inside watchers.
     host: Retained<HostView>,
+    /// The leaf's committed geometry, which each layout pass commits from
+    /// its `place_layout` answer — the leaf's own once it is rendered.
+    geometry: CommittedGeometry,
 }
 
 impl core::fmt::Debug for FixedState {
@@ -87,7 +90,7 @@ fn perform_layout(state: &Rc<RefCell<FixedState>>) {
     // boundary, not per child.
     let context = crate::native_layout::LayoutContext::of(host_view);
     let safe_rect = context.safe_rect();
-    let placements = {
+    let (placements, moved) = {
         let state = state.borrow();
         // Placed by a Rust parent: the proposal it selected. Natively hosted:
         // the boundary offer for the rect this container fills.
@@ -97,51 +100,59 @@ fn perform_layout(state: &Rc<RefCell<FixedState>>) {
                 Some(safe_rect.size.height as f32),
             )
         });
-        with_memoized_children(&children_of(&state), |children| {
-            state.layout.place(
-                waterui_core::layout::Rect::new(
-                    waterui_core::layout::Point::new(
-                        safe_rect.origin.x as f32,
-                        safe_rect.origin.y as f32,
-                    ),
-                    waterui_core::layout::Size::new(
-                        safe_rect.size.width as f32,
-                        safe_rect.size.height as f32,
-                    ),
-                ),
+        let placements = place_layout(
+            &*state.layout,
+            proposal::layout_rect(safe_rect),
+            proposal,
+            &children_of(&state),
+        )
+        .expect("a fixed container's layout resolves its response");
+        // The container's response and its children's placements come from
+        // one answer; the leaf retains that geometry with the placement.
+        // Where the parent anchors the response elsewhere in the
+        // allocation, the children move with it.
+        let allocation = proposal::allocation(&host);
+        let moved = state.geometry.commit(
+            host.response_geometry(),
+            PlacedGeometry {
                 proposal,
-                children,
-            )
-        })
+                answer: placements.answer,
+                allocation,
+                response_rect: placements
+                    .response_rect
+                    .translated(-allocation.x(), -allocation.y()),
+            },
+        );
+        (placements, moved)
     };
 
     let state = state.borrow();
-    assert_eq!(
-        placements.len(),
-        state.children.len(),
-        "fixed container layout returned {} placements for {} children",
-        placements.len(),
-        state.children.len()
-    );
-    for (index, (child, placement)) in state.children.iter().zip(placements.iter()).enumerate() {
-        let mut frame = Rect::new(
-            f64::from(placement.frame.x()),
-            f64::from(placement.frame.y()),
-            f64::from(placement.frame.width()),
-            f64::from(placement.frame.height()),
+    for (index, (child, placement)) in state
+        .children
+        .iter()
+        .zip(placements.children.iter())
+        .enumerate()
+    {
+        let placed_frame = placement.frame.translated(moved.x, moved.y);
+        let frame = Rect::new(
+            f64::from(placed_frame.x()),
+            f64::from(placed_frame.y()),
+            f64::from(placed_frame.width()),
+            f64::from(placed_frame.height()),
         );
         assert!(
             frame.is_valid_for_layout(),
             "fixed container received an invalid layout rect for child {index}: {frame:?}"
         );
-        frame = context.extend_child(
+        let written = context.extend_child(
             child.view(),
             frame,
             state.host.background_slot() == Some(index),
         );
-        proposal::place(
+        proposal::place_painted(
             child.view(),
-            frame,
+            written.frame,
+            written.painted_past,
             Some(placement.proposal),
             state.placement.get().offset,
         );
@@ -162,6 +173,15 @@ impl core::fmt::Debug for FixedSubView {
 }
 
 impl SubView for FixedSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        let state = self.state.borrow();
+        resolve_layout_extent(&*state.layout, bounds, proposal, &children_of(&state))
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         measure(&self.state.borrow(), proposal)
     }
@@ -179,19 +199,6 @@ impl SubView for FixedSubView {
     fn priority(&self) -> i32 {
         0
     }
-}
-
-/// A `MeasureProposal` (f64, `None`-free axes) as a layout `ProposalSize`
-/// (f32, `Option` axes).
-fn to_proposal(proposal: MeasureProposal) -> ProposalSize {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the layout contract is f32; kit geometry is f64"
-    )]
-    ProposalSize::new(
-        proposal.width.map(|width| width as f32),
-        proposal.height.map(|height| height as f32),
-    )
 }
 
 /// Installs the `fixed_container` handler on the dispatcher.
@@ -231,6 +238,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             children,
             placement: Cell::new(Placement::UNPLACED),
             host: host.clone(),
+            geometry: CommittedGeometry::default(),
         }));
 
         host.set_hit_test_handler(|_host, _point| HitTest::PassIfSelf);
@@ -311,6 +319,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 state: Rc::clone(&state),
             },
         );
+        state.borrow_mut().geometry = leaf.drive_geometry();
         leaf.keep(sink_guard);
         leaf.keep(layout_guards);
         leaf.keep(state);

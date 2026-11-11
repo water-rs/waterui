@@ -17,8 +17,8 @@
 
 use cherenkov_record::FilterId;
 use nami::Binding;
-use waterui_graphics::filtrate::filters::OverscrollStretch;
-use waterui_graphics::{ParamGuards, Reactive};
+use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
+use waterui_graphics::backend::{ParamGuards, Reactive};
 
 use super::target::{FilterHandle, LayerTarget};
 
@@ -39,7 +39,7 @@ impl ShownStretch {
         clippy::cast_possible_truncation,
         reason = "filtrate parameters are f32"
     )]
-    fn params(self, world: kurbo::Affine) -> [f32; 10] {
+    pub(super) fn params(self, world: kurbo::Affine) -> [f32; 10] {
         let frame = world * kurbo::Affine::translate(self.viewport.origin().to_vec2());
         let [xx, xy, yx, yy, tx, ty] = frame.as_coeffs();
         [

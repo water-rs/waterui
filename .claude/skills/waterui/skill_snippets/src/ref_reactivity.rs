@@ -438,6 +438,20 @@ pub fn reactivity_animation_prose() {
     let _ = scale.animated(); // shorthand for `.with(Animation::Default)`
 }
 
+// ---------------------------------------------------------------------------
+// reactivity.md § "## Animation" (prose, not a fenced block): `NoAnimation`
+// from `waterui::animation`, attached as `opacity.with(NoAnimation)`, and
+// `opacity.animated().with(NoAnimation)`.
+// Not counted as one of the 20 rust blocks.
+// ---------------------------------------------------------------------------
+pub fn reactivity_no_animation_prose() {
+    use waterui::animation::NoAnimation;
+
+    let opacity = Binding::f32(1.0);
+    let _ = opacity.with(NoAnimation);
+    let _ = opacity.animated().with(NoAnimation);
+}
+
 /// The same `AnimationExt` reached by the other documented path — "one trait,
 /// one meaning, whichever path you import it by".
 pub fn reactivity_animation_ext_single_trait() {

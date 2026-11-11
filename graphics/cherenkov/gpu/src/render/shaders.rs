@@ -11,8 +11,8 @@
 //! Delivery by backend:
 //!
 //! - **Vulkan** gets naga's SPIR-V emission. The `.spv` artifacts exist
-//!   only on the non-Apple, non-wasm targets where wgpu compiles its
-//!   Vulkan backend (issue #241), so SPIR-V is embedded there only.
+//!   only on the Linux and Android targets, where GPU rendering is
+//!   Vulkan-only (issue #241), so SPIR-V is embedded there only.
 //! - **Metal** gets a `.metallib` compiled by `xcrun` during the build.
 //! - **DX12** gets DXIL compiled by `dxc` during the build, embedded on
 //!   Windows targets only, where wgpu compiles its DX12 backend (issue
@@ -165,7 +165,11 @@ const ENGINE_WGSL11: &str = include_str!(concat!(env!("OUT_DIR"), "/engine11.wgs
 #[must_use]
 pub fn backdrop_effect_text(user: &str, union: bool) -> Cow<'static, str> {
     const MARK: &str = "// backdrop-effect-stub";
-    let module = if union { ENGINE_WGSL3 } else { ENGINE_WGSL5 };
+    let module = if union {
+        ENGINE_F32[3].wgsl
+    } else {
+        ENGINE_F32[5].wgsl
+    };
     let (head, rest) = module
         .split_once(MARK)
         .expect("the backdrop-effect stub marker is part of shader.wgsl");
@@ -203,11 +207,11 @@ pub fn validate_wgsl(text: &str) -> Result<naga::Module, ResourceError> {
 
 /// The `.spv` artifacts, embedded only where a Vulkan backend can exist.
 ///
-/// wgpu compiles its Vulkan backend on exactly the non-Apple, non-wasm
-/// targets (issue #241): Apple builds load `.metallib`s and wasm keeps
-/// WGSL, so neither produces nor embeds these bytes. `build.rs` emits the
-/// `cherenkov_spirv` cfg on
-/// exactly those targets, so the condition lives in one place (issue #241).
+/// GPU rendering is Vulkan-only on exactly the Linux and Android targets
+/// (issue #241): Apple builds load `.metallib`s, Windows loads DXIL and wasm
+/// keeps WGSL, so none of them produces nor embeds these bytes. `build.rs`
+/// emits the `cherenkov_spirv` cfg on exactly those targets, so the
+/// condition lives in one place (issue #241).
 #[cfg(cherenkov_spirv)]
 pub mod spirv {
     /// naga SPIR-V for the nine `VARIANT` specializations of
@@ -373,6 +377,40 @@ const COVERAGE_METALLIB: &[u8] = &[];
 const HEADROOM_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/headroom.metallib"));
 #[cfg(target_os = "android")]
 const HEADROOM_METALLIB: &[u8] = &[];
+
+macro_rules! precise_engine {
+    ($name:literal, $entry:ident) => {
+        Fixed {
+            wgsl: include_str!(concat!(env!("OUT_DIR"), "/", $name, ".wgsl")),
+            #[cfg(cherenkov_spirv)]
+            spirv: include_bytes!(concat!(env!("OUT_DIR"), "/", $name, ".spv")),
+            #[cfg(target_vendor = "apple")]
+            metallib: include_bytes!(concat!(env!("OUT_DIR"), "/", $name, ".metallib")),
+            #[cfg(not(target_vendor = "apple"))]
+            metallib: &[],
+            #[cfg(cherenkov_dxil)]
+            dxil: dxil::$entry,
+            programs: programs::ENGINE,
+            entries: entries::$entry,
+        }
+    };
+}
+
+/// The full-precision colour variants of `ENGINE`, for `Rgba32Float` targets.
+const ENGINE_F32: [Fixed; 12] = [
+    precise_engine!("engine0_f32", ENGINE0_F32),
+    precise_engine!("engine1_f32", ENGINE1_F32),
+    precise_engine!("engine2_f32", ENGINE2_F32),
+    precise_engine!("engine3_f32", ENGINE3_F32),
+    precise_engine!("engine4_f32", ENGINE4_F32),
+    precise_engine!("engine5_f32", ENGINE5_F32),
+    precise_engine!("engine6_f32", ENGINE6_F32),
+    precise_engine!("engine7_f32", ENGINE7_F32),
+    precise_engine!("engine8_f32", ENGINE8_F32),
+    precise_engine!("engine9_f32", ENGINE9_F32),
+    precise_engine!("engine10_f32", ENGINE10_F32),
+    precise_engine!("engine11_f32", ENGINE11_F32),
+];
 
 /// The paint/coverage specializations of `shader.wgsl`, indexed by
 /// `variant_index`.
@@ -632,9 +670,9 @@ pub enum ShaderDelivery {
     /// `create_shader_module_passthrough`.
     ///
     /// Exists only where `build.rs` emits `.spv` artifacts — the
-    /// `cherenkov_spirv` targets (issue #241): on Apple and wasm there is
-    /// no Vulkan backend to deliver them to, so the variant does not
-    /// exist there.
+    /// `cherenkov_spirv` targets (issue #241): on Apple, Windows and wasm
+    /// there is no Vulkan backend to deliver them to, so the variant does
+    /// not exist there.
     #[cfg(cherenkov_spirv)]
     Spirv,
     /// A compiled `.metallib` through `create_shader_module_passthrough`.
@@ -662,8 +700,8 @@ pub fn delivery(
     let delivery = match backend {
         #[cfg(cherenkov_spirv)]
         wgpu::Backend::Vulkan => ShaderDelivery::Spirv,
-        // wgpu compiles no Vulkan backend off `cherenkov_spirv` targets,
-        // so a Vulkan adapter cannot exist there: this is the single
+        // GPU rendering compiles no Vulkan backend off `cherenkov_spirv`
+        // targets, so a Vulkan adapter cannot exist there: this is the single
         // fail-fast arm, reached only through a non-engine device.
         #[cfg(not(cherenkov_spirv))]
         wgpu::Backend::Vulkan => {
@@ -693,8 +731,18 @@ impl ShaderDelivery {
     /// The engine `VARIANT` module's programs, the variant indexed by
     /// `variant_index`.
     #[must_use]
-    pub fn engine_programs(self, device: &wgpu::Device, variant: usize) -> EnginePrograms {
-        self.render_programs(device, "cherenkov", &ENGINE[variant])
+    pub fn engine_programs(
+        self,
+        device: &wgpu::Device,
+        variant: usize,
+        format: wgpu::TextureFormat,
+    ) -> EnginePrograms {
+        let modules = if format == wgpu::TextureFormat::Rgba32Float {
+            &ENGINE_F32
+        } else {
+            &ENGINE
+        };
+        self.render_programs(device, "cherenkov", &modules[variant])
             .try_into()
             .unwrap_or_else(|_| unreachable!("programs::ENGINE has three programs"))
     }

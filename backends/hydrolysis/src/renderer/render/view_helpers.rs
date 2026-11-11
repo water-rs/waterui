@@ -125,6 +125,7 @@ pub fn restore_a11y_naming_scope<E: crate::text::TextEngine>(
         AccessibilityValue,
         AccessibilityRole,
         AccessibilityChildren,
+        AccessibilityGeometry,
         ScopedAccessibilityIdentifier,
         // The claim identity travels with the name: carrying the label without
         // it would let the leaf render the name that a container above still
@@ -214,6 +215,9 @@ pub fn a11y_scoped_env_for_view<E: crate::text::TextEngine>(
         AccessibilityRole => a11y_naming_scoped_env::<AccessibilityRole, E>,
         AccessibilityHidden => a11y_scoped_env::<AccessibilityHidden>,
         AccessibilityChildren => a11y_scoped_env::<AccessibilityChildren>,
+        // The geometry source names the element the way a label does: the
+        // node that represents the wrapped view reads it from the scope.
+        AccessibilityGeometry => a11y_scoped_env::<AccessibilityGeometry>,
         AccessibilityState => a11y_scoped_env_for_state,
         AccessibilityStateSignal => a11y_scoped_env::<AccessibilityStateSignal>,
     )
@@ -361,6 +365,7 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         AccessibilityRole,
         AccessibilityHidden,
         AccessibilityChildren,
+        AccessibilityGeometry,
         AccessibilityState,
         AccessibilityStateSignal
     );
@@ -536,7 +541,8 @@ fn normalize_layout_view_with_budget(
         AccessibilityLabel,
         AccessibilityValue,
         AccessibilityRole,
-        AccessibilityChildren
+        AccessibilityChildren,
+        AccessibilityGeometry
     );
 
     // Hidden and (reactive) state have *subtree* semantics: every emission
@@ -615,13 +621,7 @@ fn normalize_layout_view_with_budget(
         let native = *view
             .downcast::<Native<ScrollView>>()
             .expect("layout normalization failed to downcast Native<ScrollView>");
-        let waterui_layout::scroll::ScrollViewParts {
-            axis,
-            content,
-            controller,
-            offset,
-            ..
-        } = native.into_inner().into_inner();
+        let (axis, content, controller, offset) = native.into_inner().into_inner().into_parts();
         let normalized_content = normalize_layout_view_with_budget(content, env, remaining);
         let scroll = ScrollView::new(axis, normalized_content);
         let scroll = match controller {
@@ -683,46 +683,11 @@ pub fn estimate_layout_intrinsic<'a, E: crate::text::TextEngine>(
     layout.size_that_fits(ProposalSize::UNSPECIFIED, &refs)
 }
 
-/// The stroke parameters of `style.focus_ring` while `state` is FOCUSED
-/// (keyboard focus): the ring strokes the layer bounds grown by `offset`, so
-/// its inner edge sits `offset` points out — the stroked box and the resolved
-/// radii both grow by `offset + width / 2` — in the ring's color. The caller
-/// strokes it on the draw context it opens after resolving.
-pub fn interaction_focus_ring<E: crate::text::TextEngine>(
-    renderer: &mut HydrolysisRenderer<E>,
-    env: &Environment,
-    layer_bounds: kurbo::Rect,
-    layer_radii: kurbo::RoundedRectRadii,
-    style: &crate::theme::InteractionStyle,
-    state: waterui_core::interaction::InteractionState,
-) -> Option<(
-    kurbo::Rect,
-    kurbo::RoundedRectRadii,
-    waterui_graphics::draw::WorkingColor,
-    f64,
-)> {
-    let ring = style.focus_ring.as_ref()?;
-    if !state.contains(waterui_core::interaction::InteractionState::FOCUSED) {
-        return None;
-    }
-    let grow = ring.offset + ring.width / 2.0;
-    let bounds = layer_bounds.inflate(grow, grow);
-    let radii = kurbo::RoundedRectRadii::new(
-        layer_radii.top_left + grow,
-        layer_radii.top_right + grow,
-        layer_radii.bottom_right + grow,
-        layer_radii.bottom_left + grow,
-    );
-    let color_signal = ring.color.resolve(env);
-    let color = renderer.read_signal(&color_signal);
-    Some((bounds, radii, color, ring.width))
-}
-
 /// Resolves a shape into a concrete path for `bounds`.
 ///
 /// Structured shape kinds resolve their normalized corner radii against the
 /// shorter side, producing circular corners — the same interpretation the
-/// morph path and the Apple backend use. Scaling the unit-space path
+/// Apple backend uses. Scaling the unit-space path
 /// non-uniformly instead (the `CustomPath` fallback) stretches corner arcs
 /// into ellipse segments on wide containers, which violates the Material
 /// corner shape (e.g. a 4dp snackbar radius smeared across a 1500px bar).
@@ -751,24 +716,6 @@ pub fn shape_kind_path(kind: ShapeKind, bounds: kurbo::Rect) -> Option<kurbo::Be
         ShapeKind::Ellipse => Some(kurbo::Ellipse::from_rect(bounds).into_path(PATH_TOLERANCE)),
         ShapeKind::CustomPath => None,
     }
-}
-
-pub fn resolved_morph_shape_to_path(
-    shape: &ResolvedMorphShape,
-    progress: f32,
-    bounds: kurbo::Rect,
-) -> kurbo::BezPath {
-    let min_side = crate::num_cast::f64_as_f32(bounds.width().min(bounds.height()).max(0.0));
-    let from = shape_kind_radii(*shape.from(), min_side);
-    let to = shape_kind_radii(*shape.to(), min_side);
-    let progress = progress.clamp(0.0, 1.0);
-    let radii = [
-        lerp(from[0], to[0], progress),
-        lerp(from[1], to[1], progress),
-        lerp(from[2], to[2], progress),
-        lerp(from[3], to[3], progress),
-    ];
-    rounded_rect_path(bounds, radii)
 }
 
 /// Per-corner radii in points, in top-left/top-right/bottom-right/bottom-left
@@ -806,9 +753,7 @@ fn shape_kind_radii(kind: ShapeKind, min_side: f32) -> [f32; 4] {
             fixed(bottom_right),
             fixed(bottom_left),
         ],
-        ShapeKind::CustomPath => {
-            panic!("hydrolysis morph shape rendering requires built-in shape kinds")
-        }
+        ShapeKind::CustomPath => panic!("a custom path has no corner radii"),
     }
 }
 
@@ -887,10 +832,6 @@ fn append_corner(
         (radius * kappa).mul_add(-end.cos(), end_point.y),
     );
     path.curve_to(c1, c2, end_point);
-}
-
-fn lerp(from: f32, to: f32, progress: f32) -> f32 {
-    (to - from).mul_add(progress, from)
 }
 
 pub fn path_commands_to_path(commands: &[PathCommand], bounds: kurbo::Rect) -> kurbo::BezPath {
@@ -1000,7 +941,7 @@ pub fn anchor_point(bounds: kurbo::Rect, anchor: waterui::style::Anchor) -> kurb
 
 /// The sRGB8 encoding of a resolved working colour — the brush form text
 /// shaping takes.
-pub fn working_color_to_rgba8(color: waterui_graphics::draw::WorkingColor) -> [u8; 4] {
+pub fn working_color_to_rgba8(color: cherenkov_record::WorkingColor) -> [u8; 4] {
     let srgb = waterui_graphics::color::working::to_srgb(color);
     [
         crate::num_cast::f32_as_u8((srgb.red.clamp(0.0, 1.0) * 255.0).round()),
@@ -1040,31 +981,4 @@ pub fn transformed_rect(transform: kurbo::Affine, rect: kurbo::Rect) -> kurbo::R
         .iter()
         .fold(f64::NEG_INFINITY, |acc, point| acc.max(point.y));
     kurbo::Rect::new(min_x, min_y, max_x, max_y)
-}
-
-pub fn circle_arc_path(
-    center: kurbo::Point,
-    radius: f64,
-    start_angle: f64,
-    sweep: f64,
-) -> kurbo::BezPath {
-    let mut path = kurbo::BezPath::new();
-    if sweep == 0.0 {
-        return path;
-    }
-    let segments = 64usize;
-    let step = sweep / crate::num_cast::usize_as_f64(segments);
-    let mut angle = start_angle;
-    path.move_to(kurbo::Point::new(
-        radius.mul_add(angle.cos(), center.x),
-        radius.mul_add(angle.sin(), center.y),
-    ));
-    for _ in 0..segments {
-        angle += step;
-        path.line_to(kurbo::Point::new(
-            radius.mul_add(angle.cos(), center.x),
-            radius.mul_add(angle.sin(), center.y),
-        ));
-    }
-    path
 }

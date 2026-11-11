@@ -144,11 +144,11 @@ macro_rules! hydro_native_view_types {
         #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
         $macro!(Native<crate::HostedView>);
         $macro!(Native<SceneView>);
+        $macro!(Native<CanvasView>);
         $macro!(Native<FilteredView>);
         $macro!(Native<Color>);
         $macro!(Native<Gradient>);
         $macro!(Native<ResolvedShape>);
-        $macro!(Native<ResolvedMorphShape>);
         $macro!(Native<MapConfig>);
         $macro!(WebView);
     };

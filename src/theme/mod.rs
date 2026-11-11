@@ -70,14 +70,17 @@
 //! - `Border` - Borders and dividers
 //! - `Foreground` - Primary text and icons
 //! - `MutedForeground` - Secondary/dimmed text
-//! - `Accent` - Interactive elements, links
+//! - `TertiaryForeground` - Tertiary text, fainter than `MutedForeground`
+//! - `DisabledForeground` - Text and glyphs of a control or item that cannot be used
+//! - `Accent`- Interactive elements, links
 //! - `AccentContainer` - Container backgrounds associated with the accent color
 //! - `AccentForeground` - Text on accent backgrounds
 //! - `Tertiary` - Contrasting accent for complementary emphasis
 //! - `TertiaryContainer` - Container backgrounds associated with the tertiary color
 //! - `SelectionContainer` - Fill painted behind a selected item
 //! - `SelectionForeground` - Content drawn on the selection container
-//! - `Error` - Destructive / error emphasis (badges, destructive buttons, validation)
+//! - `UnemphasizedSelection` - Fill painted behind a selected item while its control is not focused
+//! - `Error`- Destructive / error emphasis (badges, destructive buttons, validation)
 //! - `ErrorForeground` - Content drawn on the error color
 //!
 //! **Fonts**: Use standard font tokens from `waterui::text::font`:
@@ -101,13 +104,14 @@
 //! 2. Create `Computed<WorkingColor>` signals that react to color scheme changes
 //! 3. Install via `Theme::new().color_scheme(binding).colors(ColorSettings::new()...)`
 
+use alloc::rc::Rc;
 use core::{any::TypeId, marker::PhantomData};
 
 use nami::{Computed, SignalExt, signal::IntoSignal};
 use waterui_core::{Environment, env::Store, plugin::Plugin};
 
 use crate::{
-    color::WorkingColor,
+    color::{Color, WorkingColor},
     text::font::{Body, Caption, FontSlot, Footnote, Headline, ResolvedFont, Subheadline, Title},
 };
 
@@ -163,6 +167,8 @@ pub struct ColorSettings {
     border: Option<Computed<WorkingColor>>,
     foreground: Option<Computed<WorkingColor>>,
     muted_foreground: Option<Computed<WorkingColor>>,
+    tertiary_foreground: Option<Computed<WorkingColor>>,
+    disabled_foreground: Option<Computed<WorkingColor>>,
     accent: Option<Computed<WorkingColor>>,
     accent_container: Option<Computed<WorkingColor>>,
     accent_foreground: Option<Computed<WorkingColor>>,
@@ -170,6 +176,7 @@ pub struct ColorSettings {
     tertiary_container: Option<Computed<WorkingColor>>,
     selection_container: Option<Computed<WorkingColor>>,
     selection_foreground: Option<Computed<WorkingColor>>,
+    unemphasized_selection: Option<Computed<WorkingColor>>,
     error: Option<Computed<WorkingColor>>,
     error_foreground: Option<Computed<WorkingColor>>,
     scrim: Option<Computed<WorkingColor>>,
@@ -224,6 +231,20 @@ impl ColorSettings {
         self
     }
 
+    /// Sets the tertiary foreground color (text fainter than the muted tier).
+    #[must_use]
+    pub fn tertiary_foreground(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
+        self.tertiary_foreground = Some(color.into_signal().computed());
+        self
+    }
+
+    /// Sets the disabled foreground color (text of an unusable control or item).
+    #[must_use]
+    pub fn disabled_foreground(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
+        self.disabled_foreground = Some(color.into_signal().computed());
+        self
+    }
+
     /// Sets the accent color (interactive elements).
     #[must_use]
     pub fn accent(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
@@ -273,6 +294,13 @@ impl ColorSettings {
         self
     }
 
+    /// Sets the fill painted behind a selected item while its control is not focused.
+    #[must_use]
+    pub fn unemphasized_selection(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
+        self.unemphasized_selection = Some(color.into_signal().computed());
+        self
+    }
+
     /// Sets the error color (destructive / error emphasis).
     #[must_use]
     pub fn error(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
@@ -315,6 +343,12 @@ impl ColorSettings {
         if let Some(signal) = self.muted_foreground {
             install_color_signal::<color::MutedForeground>(env, signal);
         }
+        if let Some(signal) = self.tertiary_foreground {
+            install_color_signal::<color::TertiaryForeground>(env, signal);
+        }
+        if let Some(signal) = self.disabled_foreground {
+            install_color_signal::<color::DisabledForeground>(env, signal);
+        }
         if let Some(signal) = self.accent {
             install_color_signal::<color::Accent>(env, signal);
         }
@@ -335,6 +369,9 @@ impl ColorSettings {
         }
         if let Some(signal) = self.selection_foreground {
             install_color_signal::<color::SelectionForeground>(env, signal);
+        }
+        if let Some(signal) = self.unemphasized_selection {
+            install_color_signal::<color::UnemphasizedSelection>(env, signal);
         }
         if let Some(signal) = self.error {
             install_color_signal::<color::Error>(env, signal);
@@ -602,6 +639,14 @@ pub mod color {
     define_color_token!(Border, "Border and divider color.");
     define_color_token!(Foreground, "Primary text and icon color.");
     define_color_token!(MutedForeground, "Secondary/dimmed text color.");
+    define_color_token!(
+        TertiaryForeground,
+        "Tertiary text color, fainter than the muted tier: a month grid's days outside the shown month."
+    );
+    define_color_token!(
+        DisabledForeground,
+        "Text and glyph color of a control or item that cannot be used."
+    );
     define_color_token!(Accent, "Accent color for interactive elements.");
     define_color_token!(
         AccentContainer,
@@ -623,6 +668,10 @@ pub mod color {
     define_color_token!(
         SelectionForeground,
         "Foreground drawn on the selection container."
+    );
+    define_color_token!(
+        UnemphasizedSelection,
+        "The fill painted behind a selected item while its control is not focused."
     );
     define_color_token!(
         Error,
@@ -656,16 +705,20 @@ impl<T> ColorSlotValue<T> {
 }
 
 /// Resolves a color slot by looking up the signal installed by the backend or theme.
+///
+/// A slot the backend or theme never installed breaks the contract: a debug
+/// build panics, and a release build logs the error and resolves opaque black.
 fn resolve_color_slot<T: 'static>(env: &Environment) -> Computed<WorkingColor> {
-    env.get::<ColorSlotValue<T>>()
-        .unwrap_or_else(|| {
-            panic!(
-                "WaterUI color token `{}` is not installed in the environment",
+    env.get::<ColorSlotValue<T>>().map_or_else(
+        || {
+            crate::contract_violation!(
+                "WaterUI color token `{}` is not installed in the environment, so it resolves opaque black",
                 core::any::type_name::<T>()
-            )
-        })
-        .signal
-        .clone()
+            );
+            Computed::constant(WorkingColor::BLACK)
+        },
+        |slot| slot.signal.clone(),
+    )
 }
 
 // ============================================================================
@@ -674,12 +727,19 @@ fn resolve_color_slot<T: 'static>(env: &Environment) -> Computed<WorkingColor> {
 
 /// Returns the current color scheme signal from the environment.
 ///
-/// # Panics
+/// # Contract
 ///
-/// Panics when the active backend or theme has not installed a color scheme.
+/// A backend or theme that has not installed a color scheme breaks the
+/// contract: a debug build panics, and a release build logs the error and
+/// returns the light scheme.
 #[must_use]
 pub fn current_color_scheme(env: &Environment) -> Computed<ColorScheme> {
-    installed_color_scheme(env).expect("WaterUI color scheme is not installed in the environment")
+    installed_color_scheme(env).unwrap_or_else(|| {
+        crate::contract_violation!(
+            "WaterUI color scheme is not installed in the environment, so it is the light scheme"
+        );
+        Computed::constant(ColorScheme::default())
+    })
 }
 
 /// Returns the color-scheme signal installed by the active backend or theme.
@@ -734,6 +794,14 @@ pub fn install_color_signal<T: 'static>(env: &mut Environment, signal: Computed<
         color::MutedForeground,
         waterui_graphics::color::MutedForegroundColor
     );
+    mirror_graphics_color!(
+        color::TertiaryForeground,
+        waterui_graphics::color::TertiaryForegroundColor
+    );
+    mirror_graphics_color!(
+        color::DisabledForeground,
+        waterui_graphics::color::DisabledForegroundColor
+    );
     mirror_graphics_color!(color::Accent, waterui_graphics::color::AccentColor);
     mirror_graphics_color!(
         color::AccentContainer,
@@ -755,6 +823,10 @@ pub fn install_color_signal<T: 'static>(env: &mut Environment, signal: Computed<
     mirror_graphics_color!(
         color::SelectionForeground,
         waterui_graphics::color::SelectionForegroundColor
+    );
+    mirror_graphics_color!(
+        color::UnemphasizedSelection,
+        waterui_graphics::color::UnemphasizedSelectionColor
     );
     mirror_graphics_color!(color::Error, waterui_graphics::color::ErrorColor);
     mirror_graphics_color!(
@@ -792,8 +864,6 @@ pub fn install_color_scheme(env: &mut Environment, signal: Computed<ColorScheme>
 // ForegroundOverride - Plugin for .foreground() view modifier
 // ============================================================================
 
-use waterui_graphics::color::Color;
-
 /// A plugin that overrides the foreground color for a view subtree.
 ///
 /// This is used by the `.foreground()` view modifier to inject a custom
@@ -819,14 +889,167 @@ impl Plugin for ForegroundOverride {
     }
 }
 
+/// The tint the controls of a subtree draw with, set by
+/// [`ViewExt::tint`](crate::ViewExt::tint).
+///
+/// A control's tint is the nearest enclosing `Tint`, and the
+/// [`Accent`](color::Accent) token when none is set; [`resolve_tint`]
+/// resolves it. The colour may be a signal: a change of the signal updates
+/// the controls in place, without rebuilding them.
+///
+/// Two tints are equal when they are the same installed tint, so a backend
+/// asks "did the subtree's tint change" without comparing colours.
+#[derive(Debug, Clone)]
+pub struct Tint(Rc<Color>);
+
+impl Tint {
+    /// A tint of `color`.
+    pub fn new(color: impl Into<Color>) -> Self {
+        Self(Rc::new(color.into()))
+    }
+
+    /// The tint colour.
+    #[must_use]
+    pub fn color(&self) -> &Color {
+        &self.0
+    }
+
+    /// The tint installed for the subtree `env` belongs to, if any.
+    #[must_use]
+    pub fn inherited(env: &Environment) -> Option<&Self> {
+        env.get::<Self>()
+    }
+
+    /// The colour of `tint`, or the [`Accent`](color::Accent) token when
+    /// there is none.
+    #[must_use]
+    pub fn color_or_accent(tint: Option<&Self>) -> Color {
+        tint.map_or_else(|| Color::new(color::Accent), |tint| tint.color().clone())
+    }
+}
+
+impl PartialEq for Tint {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for Tint {}
+
+/// The tint of the controls in `env`: the nearest [`Tint`], else the
+/// [`Accent`](color::Accent) token.
+#[must_use]
+pub fn resolve_tint(env: &Environment) -> Color {
+    Tint::color_or_accent(Tint::inherited(env))
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::rc::Rc;
     use core::cell::Cell;
     use nami::{Binding, Signal, SignalExt};
-    use waterui_graphics::color::{AccentColor, Color};
+    use waterui_core::resolve::Resolvable;
+    use waterui_graphics::color::{AccentColor, Color, Working};
 
     use super::*;
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "resolves opaque black"))]
+    fn an_uninstalled_color_slot_resolves_opaque_black() {
+        let env = Environment::new();
+        let resolved = color::Foreground.resolve(&env).snapshot();
+        assert_eq!(resolved.components, WorkingColor::BLACK.components);
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "so it is the light scheme"))]
+    fn an_uninstalled_color_scheme_is_light() {
+        let scheme = current_color_scheme(&Environment::new()).snapshot();
+        assert_eq!(scheme, ColorScheme::Light);
+    }
+
+    #[test]
+    fn tint_resolves_to_the_nearest_tint_else_the_accent() {
+        let accent = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
+        let outer = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
+        let inner = WorkingColor::new([0.0, 1.0, 0.0, 1.0]);
+        let mut env = Environment::new();
+        install_color_signal::<color::Accent>(&mut env, nami::constant(accent).computed());
+        let channels = |env: &Environment| resolve_tint(env).resolve(env).snapshot().components;
+
+        assert_eq!(channels(&env), accent.components);
+        let outer_env = env.extending(Tint::new(Color::new(Working(outer))));
+        assert_eq!(channels(&outer_env), outer.components);
+        let inner_env = outer_env.extending(Tint::new(Color::new(Working(inner))));
+        assert_eq!(channels(&inner_env), inner.components);
+        assert_eq!(channels(&outer_env), outer.components);
+    }
+
+    #[test]
+    fn tint_signal_updates_in_place() {
+        let source = Binding::container(WorkingColor::BLACK);
+        let tint = Tint::new(crate::color::signal_color(
+            source.map(|color| Color::new(Working(color))),
+        ));
+        let env = Environment::new().extending(tint.clone());
+        let resolved = resolve_tint(&env).resolve(&env);
+        assert!(resolved.snapshot().components[0].abs() < f32::EPSILON);
+
+        source.set(WorkingColor::new([1.0, 0.0, 0.0, 1.0]));
+
+        assert!((resolved.snapshot().components[0] - 1.0).abs() < f32::EPSILON);
+        assert_eq!(Tint::inherited(&env), Some(&tint), "the tint is unchanged");
+    }
+
+    #[test]
+    fn tier_tokens_install_and_mirror_into_graphics_keys() {
+        use waterui_graphics::color::{
+            DisabledForegroundColor, TertiaryForegroundColor, UnemphasizedSelectionColor,
+        };
+
+        let red = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
+        let green = WorkingColor::new([0.0, 1.0, 0.0, 1.0]);
+        let blue = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
+        let mut env = Environment::new();
+        Theme::new()
+            .colors(
+                ColorSettings::new()
+                    .tertiary_foreground(red)
+                    .disabled_foreground(green)
+                    .unemphasized_selection(blue),
+            )
+            .install(&mut env);
+
+        let channel = |color: WorkingColor| color.components;
+        assert_eq!(
+            channel(color::TertiaryForeground.resolve(&env).snapshot()),
+            channel(red)
+        );
+        assert_eq!(
+            channel(color::DisabledForeground.resolve(&env).snapshot()),
+            channel(green)
+        );
+        assert_eq!(
+            channel(color::UnemphasizedSelection.resolve(&env).snapshot()),
+            channel(blue)
+        );
+        assert_eq!(
+            channel(Color::new(TertiaryForegroundColor).resolve(&env).snapshot()),
+            channel(red)
+        );
+        assert_eq!(
+            channel(Color::new(DisabledForegroundColor).resolve(&env).snapshot()),
+            channel(green)
+        );
+        assert_eq!(
+            channel(
+                Color::new(UnemphasizedSelectionColor)
+                    .resolve(&env)
+                    .snapshot()
+            ),
+            channel(blue)
+        );
+    }
 
     #[test]
     fn graphics_accent_color_tracks_installed_theme_signal() {

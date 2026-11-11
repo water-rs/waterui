@@ -127,3 +127,37 @@ fn retained_present_preserves_pixels_and_full_texture_coordinates()
     save("complete.png", &complete)?;
     Ok(())
 }
+
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "extended output requires a non-sRGB texture format")
+)]
+fn extended_output_into_an_srgb_texture_encodes_as_requested() {
+    let shared = SharedDevice::create(&GpuConfig::default()).expect("GPU device");
+    let texture = shared.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("extended output into sRGB"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let bytes = Presenter::uniform_bytes(&TextureOutput {
+        texture: &texture,
+        color: OutputColor::ExtendedSrgb,
+        alpha: OutputAlpha::Opaque,
+        headroom: 2.0,
+    });
+    assert_eq!(
+        bytes[0..4],
+        6_u32.to_ne_bytes(),
+        "extended sRGB encode code"
+    );
+}

@@ -165,11 +165,11 @@ impl GesturePoint {
 #[non_exhaustive]
 pub struct TapEvent {
     /// Location of the tap in the widget's coordinate space.
-    pub location: GesturePoint,
+    location: GesturePoint,
     /// Number of taps that occurred in succession.
-    pub count: u32,
+    count: u32,
     /// The button that tapped.
-    pub button: PointerButton,
+    button: PointerButton,
 }
 
 impl TapEvent {
@@ -217,11 +217,11 @@ impl TapEvent {
 #[non_exhaustive]
 pub struct LongPressEvent {
     /// Location of the press in the widget's coordinate space.
-    pub location: GesturePoint,
+    location: GesturePoint,
     /// Duration, in platform-defined time units, that the press was held.
-    pub duration: f32,
+    duration: f32,
     /// The button that is held.
-    pub button: PointerButton,
+    button: PointerButton,
 }
 
 impl LongPressEvent {
@@ -269,15 +269,15 @@ impl LongPressEvent {
 #[non_exhaustive]
 pub struct DragEvent {
     /// Phase of the drag gesture.
-    pub phase: GesturePhase,
+    phase: GesturePhase,
     /// Current location of the pointer.
-    pub location: GesturePoint,
+    location: GesturePoint,
     /// Total translation since the drag started.
-    pub translation: GesturePoint,
+    translation: GesturePoint,
     /// Velocity of the drag in points per second.
-    pub velocity: GesturePoint,
+    velocity: GesturePoint,
     /// The button that drags.
-    pub button: PointerButton,
+    button: PointerButton,
 }
 
 impl DragEvent {
@@ -356,13 +356,13 @@ impl DragEvent {
 #[non_exhaustive]
 pub struct MagnificationEvent {
     /// Phase of the magnification gesture.
-    pub phase: GesturePhase,
+    phase: GesturePhase,
     /// Focal point of the gesture.
-    pub center: GesturePoint,
+    center: GesturePoint,
     /// Current scale factor relative to the gesture start.
-    pub scale: f32,
+    scale: f32,
     /// Rate of change of the scale factor.
-    pub velocity: f32,
+    velocity: f32,
 }
 
 impl MagnificationEvent {
@@ -419,13 +419,13 @@ impl MagnificationEvent {
 #[non_exhaustive]
 pub struct RotationEvent {
     /// Phase of the rotation gesture.
-    pub phase: GesturePhase,
+    phase: GesturePhase,
     /// Pivot point the rotation is measured around.
-    pub center: GesturePoint,
+    center: GesturePoint,
     /// Current angle in radians relative to the gesture start.
-    pub angle: f32,
+    angle: f32,
     /// Rate of change of the angle, in radians per second.
-    pub velocity: f32,
+    velocity: f32,
 }
 
 impl RotationEvent {
@@ -478,9 +478,9 @@ impl RotationEvent {
 #[non_exhaustive]
 pub struct TapGesture {
     /// The number of consecutive taps required to trigger this gesture.
-    pub count: u32,
+    count: u32,
     /// The buttons that can tap; [`PointerButtons::PRIMARY`] by default.
-    pub buttons: PointerButtons,
+    buttons: PointerButtons,
 }
 
 impl TapGesture {
@@ -533,9 +533,9 @@ impl Default for TapGesture {
 #[non_exhaustive]
 pub struct LongPressGesture {
     /// The minimum duration (in time units) the press must be held.
-    pub duration: u32,
+    duration: u32,
     /// The buttons that can press; [`PointerButtons::PRIMARY`] by default.
-    pub buttons: PointerButtons,
+    buttons: PointerButtons,
 }
 
 impl LongPressGesture {
@@ -578,9 +578,9 @@ impl LongPressGesture {
 #[non_exhaustive]
 pub struct DragGesture {
     /// The minimum distance the pointer must travel to initiate the drag.
-    pub min_distance: f32,
+    min_distance: f32,
     /// The buttons that can drag; [`PointerButtons::PRIMARY`] by default.
-    pub buttons: PointerButtons,
+    buttons: PointerButtons,
 }
 
 impl DragGesture {
@@ -621,7 +621,7 @@ impl DragGesture {
 #[non_exhaustive]
 pub struct MagnificationGesture {
     /// The initial scale factor when the gesture begins.
-    pub initial_scale: f32,
+    initial_scale: f32,
 }
 
 impl MagnificationGesture {
@@ -645,7 +645,7 @@ impl MagnificationGesture {
 #[non_exhaustive]
 pub struct RotationGesture {
     /// The initial angle (in radians) when the gesture begins.
-    pub initial_angle: f32,
+    initial_angle: f32,
 }
 
 impl RotationGesture {
@@ -838,9 +838,9 @@ impl_gesture! {
 #[non_exhaustive]
 pub struct GestureObserver {
     /// The gesture to observe.
-    pub gesture: Gesture,
+    gesture: Gesture,
     /// The action to execute when the gesture is recognized.
-    pub action: BoxedAction<()>,
+    action: BoxedAction<()>,
 }
 
 impl GestureObserver {

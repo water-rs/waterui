@@ -388,6 +388,20 @@ fn record_ops_static(c: &mut cherenkov::Recorder, ops: &[Op], live: &[LiveRun]) 
     }
 }
 
+/// Records [`record_ops_static`]'s content under the frame's drift, when it
+/// has one.
+fn record_ops_drifted(
+    c: &mut cherenkov::Recorder,
+    ops: &[Op],
+    live: &[LiveRun],
+    drift: Option<kurbo::Affine>,
+) {
+    match drift {
+        Some(drift) => c.transform(Fixed(drift), |c| record_ops_static(c, ops, live)),
+        None => record_ops_static(c, ops, live),
+    }
+}
+
 /// Records `ops` with `live` slot bindings and `motions` animated paint
 /// bindings, reached only on scenes that carry motions.
 #[expect(
@@ -1396,6 +1410,10 @@ impl Engine for Cherenkov {
         &self.info
     }
 
+    fn gpu_timing_unavailable(&self) -> Option<&'static str> {
+        Some(crate::CPU_RASTERIZER)
+    }
+
     fn supported(&self) -> BTreeSet<Feature> {
         cherenkov_features().into_iter().collect()
     }
@@ -1512,21 +1530,28 @@ impl Engine for Cherenkov {
             }
             self.motion_committed = true;
         }
-        // Motion and live scenes record their content once: later encodes
-        // only set live bindings and advance the clock. Static scenes keep
-        // re-recording each frame so their numbers stay comparable.
-        if first_frame || !(self.has_motion || self.has_live || input.scroll_offset.is_some()) {
+        // Content is recorded on the first frame and again on every frame
+        // the bench drifts — each frame of a static scene, and a motion
+        // scene's frames once its motion has come to rest — so no frame
+        // repeats the last. Otherwise encodes only set live bindings and
+        // advance the clock.
+        if first_frame || input.drift.is_some() {
             surface.update(|tx| {
                 if self.has_motion {
                     for cl in &self.content_layers {
-                        tx[cl.handle(surface)]
-                            .record(|c| record_ops(c, &cl.ops, &cl.live, &cl.motions));
+                        tx[cl.handle(surface)].record(|c| match input.drift {
+                            Some(drift) => c.transform(Fixed(drift), |c| {
+                                record_ops(c, &cl.ops, &cl.live, &cl.motions);
+                            }),
+                            None => record_ops(c, &cl.ops, &cl.live, &cl.motions),
+                        });
                     }
                 } else {
                     for cl in &self.content_layers {
                         // A motionless scene's record keeps the dev shape:
                         // no motions reach it at all.
-                        tx[cl.handle(surface)].record(|c| record_ops_static(c, &cl.ops, &cl.live));
+                        tx[cl.handle(surface)]
+                            .record(|c| record_ops_drifted(c, &cl.ops, &cl.live, input.drift));
                     }
                 }
             });
@@ -1657,6 +1682,16 @@ impl Engine for Cherenkov {
         })
     }
 
+    fn animating(&self) -> bool {
+        self.surface
+            .as_ref()
+            .is_some_and(|surface| matches!(surface.next_frame(), cherenkov::Next::At { .. }))
+    }
+
+    fn drew_nothing(&self) -> bool {
+        self.engine.stats().frame.is_none()
+    }
+
     fn completion_signal(&self) -> crate::CompletionSignal {
         crate::CompletionSignal::Measured(
             "the host instant Engine::render returned, after the CPU raster work it ran ended",
@@ -1680,15 +1715,16 @@ impl Engine for Cherenkov {
     fn counters(&self) -> Counters {
         let mut counters = self.counters.clone();
         let stats = self.engine.stats();
-        let memory = self.engine.memory();
         counters.dispatches = Some(stats.draws);
         counters.passes = Some(stats.passes);
-        counters.memory_gpu_bytes = Some(memory.gpu.0);
-        counters.memory_cpu_bytes = Some(memory.cpu.0);
-        counters.memory_backdrop_capture_bytes = Some(memory.backdrop_captures.0);
-        counters.memory_backdrop_capture_format = memory.backdrop_capture_format;
-        counters.memory_filter_target_bytes = Some(memory.filter_targets.0);
-        counters.memory_filter_image_bytes = Some(memory.filter_images.0);
+        if let Ok(memory) = self.engine.memory() {
+            counters.memory_gpu_bytes = Some(memory.gpu.0);
+            counters.memory_cpu_bytes = Some(memory.cpu.0);
+            counters.memory_backdrop_capture_bytes = Some(memory.backdrop_captures.0);
+            counters.memory_backdrop_capture_format = memory.backdrop_capture_format;
+            counters.memory_filter_target_bytes = Some(memory.filter_targets.0);
+            counters.memory_filter_image_bytes = Some(memory.filter_images.0);
+        }
         counters
     }
 
@@ -1715,13 +1751,18 @@ impl Engine for Cherenkov {
     fn memory(&self) -> AdapterMemory {
         let usage = self.engine.memory();
         AdapterMemory {
-            engine: Reading::Measured(EngineBytes {
-                cpu_bytes: usage.cpu.0,
-                gpu_bytes: usage.gpu.0,
-                backdrop_capture_bytes: usage.backdrop_captures.0,
-                filter_target_bytes: usage.filter_targets.0,
-                filter_image_bytes: usage.filter_images.0,
-            }),
+            engine: usage.map_or_else(
+                |error| Reading::unavailable(error.to_string()),
+                |usage| {
+                    Reading::Measured(EngineBytes {
+                        cpu_bytes: usage.cpu.0,
+                        gpu_bytes: usage.gpu.0,
+                        backdrop_capture_bytes: usage.backdrop_captures.0,
+                        filter_target_bytes: usage.filter_targets.0,
+                        filter_image_bytes: usage.filter_images.0,
+                    })
+                },
+            ),
             wgpu_allocator: Reading::unavailable("cherenkov-cpu has no wgpu allocator"),
             skia_budgeted: Reading::unavailable("cherenkov-cpu has no Skia budget"),
             vk_memory_budget: Reading::unavailable("cherenkov-cpu has no Vulkan device"),

@@ -29,7 +29,7 @@ pub type FrameReplySender<T> = crate::transport::Reply<T>;
 #[cfg(not(target_arch = "wasm32"))]
 pub type RequestGuard<T> = crate::transport::FrameRequest<T>;
 
-use cherenkov_record::{ChangeSet, LayerId, ResourceId, SurfaceId};
+use cherenkov_record::{ChangeSet, LayerId, ResourceId, RunningTracks, SurfaceId};
 
 use crate::backend::{Backend, Display, Renderer, SurfaceInfo};
 use crate::config::{MemoryUsage, Pressure};
@@ -122,12 +122,21 @@ impl std::fmt::Debug for FontData {
     }
 }
 
+/// What a rendered frame publishes for one surface.
+#[derive(Clone, Debug)]
+pub struct SurfaceNext {
+    /// The surface's own deadline.
+    pub next: Next,
+    /// The layer tracks the engine still runs on the surface.
+    pub tracks: RunningTracks,
+}
+
 /// What one rendered frame produces.
 pub struct RenderedFrame<B: Backend> {
     /// The aggregate [`Next`].
     pub next: Next,
-    /// Each rendered surface's own deadline.
-    pub surface_next: rustc_hash::FxHashMap<SurfaceId, Next>,
+    /// Each rendered surface's own deadline and running tracks.
+    pub surface_next: rustc_hash::FxHashMap<SurfaceId, SurfaceNext>,
     /// The frame's stats.
     pub stats: FrameStats,
     /// The work the awaiting caller applies on its own thread before
@@ -221,6 +230,17 @@ pub enum Message<B: Backend> {
     DisplayMoved {
         /// The surface id.
         id: SurfaceId,
+    },
+    /// Set or clear the band presenting one region of the surface: the
+    /// content above an external host window's mark
+    /// (water-rs/waterui#2225). `None` leaves the region unshown.
+    SetBand {
+        /// The surface id.
+        id: SurfaceId,
+        /// The host's id for the window whose mark opens the region.
+        window: u64,
+        /// The band's presentation target, or `None` to clear.
+        target: Option<B::Target>,
     },
     /// An opaque render-thread operation that cannot fail: font, filter
     /// and effect registration and removal, capability hooks.

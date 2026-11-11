@@ -91,7 +91,7 @@ pub mod prelude {
     pub use waterui_core::dynamic::{DynamicHandler, watch};
 
     pub use super::theme::{
-        self, ColorScheme, ColorSettings, FontSettings, Theme, color as theme_color,
+        self, ColorScheme, ColorSettings, FontSettings, Theme, Tint, color as theme_color,
     };
 
     pub use super::text::{TextConfig, font, highlight, styled};
@@ -120,7 +120,8 @@ pub mod prelude {
 
     // Gradient views
     #[cfg(feature = "gpu")]
-    pub use super::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig, FlowingGradient};
+    pub use super::gradient::FlowingGradient;
+    pub use super::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig};
     pub use super::gradient::{Gradient, MeshGradient};
 
     // Background types (explicit to avoid module name conflict with layout::background)
@@ -153,11 +154,11 @@ pub use view::FilterViewExt;
 pub use view::ViewExt;
 #[cfg(feature = "barcode")]
 pub use waterui_barcode as barcode;
-#[cfg(feature = "canvas")]
-pub use waterui_canvas as canvas;
 #[cfg(feature = "chart")]
 pub use waterui_chart as chart;
 pub use waterui_form as form;
+#[cfg(feature = "canvas")]
+pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
 pub use waterui_graphics::gradient;
 #[cfg(feature = "gpu")]
@@ -225,7 +226,7 @@ pub use waterui_url::Url;
 
 #[doc(inline)]
 pub use waterui_core::{
-    AnyView, ContentLedger, Error, Str, animation,
+    AnyView, ContentLedger, Error, Str, animation, contract_violation,
     easing::{self, EasingCurve, Interpolatable},
     env::{self, Environment},
     event,
@@ -240,7 +241,8 @@ pub use waterui_core::{
 // Selective re-exports only: `waterui::transition` stays free for the
 // `waterui-transition` pixel-effects crate re-export (#1389).
 pub use waterui_core::transition::{
-    AnyTransition, Edge, PropertyTransition, ReduceMotion, Transition,
+    AnyTransition, Edge, PropertyTransition, ReduceMotion, Transition, TransitionContext,
+    TransitionFrame, TransitionGeometry, TransitionPhase, TransitionProperties,
 };
 
 /// Haptic feedback intensity for the `on_*_haptic` modifiers.

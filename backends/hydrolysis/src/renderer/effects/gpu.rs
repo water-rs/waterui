@@ -4,12 +4,11 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use waterui_graphics::AnyEffect;
-use waterui_graphics::filter_view::ErasedEffect;
-use waterui_graphics::filtrate::{
+use waterui_graphics::backend::filtrate::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRedrawCallback, EffectRenderResult,
     EffectSetupResult, RetainedMemory,
 };
+use waterui_graphics::backend::{AnyEffect, ErasedEffect};
 
 use crate::time::Instant;
 

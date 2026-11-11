@@ -27,9 +27,12 @@ use cherenkov_record::ResourceId;
 
 use crate::resource::{
     Filter, Font, FontSource, FrameSink, GpuProducer, Image, ImageBudget, ReplaceImage, Shader,
+    TextLayoutHandle,
 };
 use crate::style::FilterId;
 use crate::surface::Surface;
+use crate::text::{TextLayout, TextLayoutData};
+use cherenkov_record::TextLayoutId;
 
 /// The engine: owns the device and the render thread. `!Send`, lives on
 /// the UI thread.
@@ -79,6 +82,7 @@ pub struct Engine<B: Backend> {
     surfaces: RefCell<super::Surfaces<B>>,
     next_surface: Cell<u64>,
     next_font: Cell<u64>,
+    next_text: Cell<u64>,
     next_image: Cell<u64>,
     next_shader: Cell<u64>,
     next_filter: Cell<u64>,
@@ -201,6 +205,7 @@ impl<B: Backend> Engine<B> {
             surfaces: RefCell::new(Vec::new()),
             next_surface: Cell::new(0),
             next_font: Cell::new(1),
+            next_text: Cell::new(1),
             next_image: Cell::new(1),
             next_shader: Cell::new(1),
             next_filter: Cell::new(1),
@@ -266,21 +271,21 @@ impl<B: Backend> Engine<B> {
 
     /// The engine's current memory usage.
     ///
-    #[must_use]
-    pub fn memory(&self) -> MemoryUsage {
-        if self
-            .tx
+    /// # Errors
+    /// [`RenderError::Thread`] when the render thread cannot answer — a
+    /// request it dropped closes the reply channel and marks it gone — so
+    /// an unmeasurable engine is an error, never a fabricated zero usage.
+    pub fn memory(&self) -> Result<MemoryUsage, RenderError> {
+        self.tx
             .send(Message::Memory {
                 reply: self.memory_reply.request(),
             })
-            .is_err()
-        {
-            return MemoryUsage::default();
-        }
-        let Ok(reply) = self.memory_reply_rx.recv_blocking() else {
-            return MemoryUsage::default();
-        };
-        reply.usage
+            .map_err(|_| RenderError::Thread)?;
+        let reply = self
+            .memory_reply_rx
+            .recv_blocking()
+            .map_err(|_| RenderError::Thread)?;
+        Ok(reply.usage)
     }
 
     /// Reports system memory pressure. `Critical` drops every cache.
@@ -318,6 +323,29 @@ impl<B: Backend> Engine<B> {
         Ok(Font::new(
             id,
             self.on_release(ResourceId::Font(id), move |r| r.remove_font(id)),
+        ))
+    }
+
+    /// Registers a laid-out text. The layout's fonts, registered when it
+    /// was lowered, stay registered as long as the handle lives.
+    ///
+    /// # Errors
+    /// [`ResourceError::Lost`] when the render thread is gone.
+    pub fn text_layout(&self, layout: TextLayout) -> Result<TextLayoutHandle, ResourceError> {
+        let (commands, default, fonts) = layout.into_parts();
+        let data = TextLayoutData::new(commands, default, &fonts);
+        let id = TextLayoutId::new(Self::alloc(&self.next_text));
+        self.tx
+            .send(Message::Resource(Box::new(move |r: &mut B::Renderer| {
+                r.add_text_layout(id, data);
+            })))
+            .map_err(|_| ResourceError::Lost)?;
+        Ok(TextLayoutHandle::new(
+            id,
+            fonts,
+            self.on_release(ResourceId::TextLayout(id), move |r| {
+                r.remove_text_layout(id);
+            }),
         ))
     }
 
@@ -477,8 +505,36 @@ impl<B: Backend> Engine<B> {
             shared: Rc::downgrade(&surface.shared),
             waker: Arc::clone(&surface.waker),
             next_frame: Rc::downgrade(&surface.next_frame),
+            running_tracks: Rc::downgrade(&surface.running_tracks),
         });
         surface
+    }
+
+    /// Sets or clears the band of host window `window` on `surface`: the
+    /// content painted above the mark naming that window
+    /// ([`LayerEdit::host_window`](crate::LayerEdit::host_window)) and
+    /// beneath the next mark presents into `target`, which the host stacks
+    /// right above the window (water-rs/waterui#2225). `None` leaves the
+    /// region with no band, and its content is not shown. A renderer
+    /// without a band realization reports a contract violation on the render
+    /// thread and drops the band
+    /// ([`Renderer::set_band`](crate::Renderer::set_band)).
+    ///
+    /// # Errors
+    /// [`SurfaceError::Lost`] when the render thread is gone.
+    pub fn set_band(
+        &self,
+        surface: &Surface<B>,
+        window: u64,
+        target: Option<impl Into<B::Target>>,
+    ) -> Result<(), SurfaceError> {
+        self.tx
+            .send(Message::SetBand {
+                id: surface.id(),
+                window,
+                target: target.map(Into::into),
+            })
+            .map_err(|_| SurfaceError::Lost)
     }
 
     /// The number of surfaces still alive, for leak testing.
@@ -769,7 +825,8 @@ impl<B: Filters> Engine<B> {
     where
         B: Runs<F>,
     {
-        let id = FilterId::new(Self::alloc(&self.next_filter));
+        let id = FilterId::new(Self::alloc(&self.next_filter))
+            .with_coordinate_remap(F::COORDINATE_REMAP);
         (self.post)(Message::Resource(Box::new(move |r: &mut B::Renderer| {
             B::add_filter(r, id, filter);
         })));
@@ -1185,6 +1242,33 @@ mod tests {
         );
     }
 
+    /// A second scope on a surface is inert: dropping it leaves the first
+    /// scope's frame open.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a surface has at most one open FrameScope")
+    )]
+    fn a_second_frame_scope_is_inert() {
+        let (_engine, surface, wakes) = counted_surface();
+        let first = surface.begin_frame();
+        let second = surface.begin_frame();
+        edit(&surface, 0.5);
+        drop(second);
+        edit(&surface, 0.25);
+        assert_eq!(
+            wakes.load(Ordering::Relaxed),
+            0,
+            "the first scope still holds the frame"
+        );
+        drop(first);
+        assert_eq!(
+            wakes.load(Ordering::Relaxed),
+            1,
+            "the first scope's end woke"
+        );
+    }
+
     /// A scope that ends without its render and owes nothing re-arms.
     #[test]
     fn a_frame_scope_dropped_without_a_debt_rearms() {
@@ -1366,7 +1450,7 @@ mod tests {
         // overwrites the stale `At`; the still-running peer is
         // unaffected.
         let _ = engine
-            .render(FrameTime::at(
+            .render(FrameTime::unpresented_at(
                 crate::Instant::now() + std::time::Duration::from_secs(120),
             ))
             .unwrap();
@@ -1774,5 +1858,25 @@ mod tests {
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {}
             other => panic!("the renderer's event sender did not disconnect: {other:?}"),
         }
+    }
+
+    /// A memory query distinguishes a failed measurement from a successful
+    /// zero: the `Null` renderer owns nothing and answers an all-zero
+    /// [`MemoryUsage`] through `Ok`, while an engine whose render thread is
+    /// gone reports [`RenderError::Thread`] — never a fabricated zero —
+    /// and the reply channel stays unusable after the loss.
+    #[test]
+    fn memory_distinguishes_failure_from_zero_usage() {
+        let (events, _rx) = std::sync::mpsc::channel();
+        let mut engine = null_engine(events);
+
+        let usage = engine.memory().unwrap();
+        assert_eq!(usage, MemoryUsage::default());
+
+        engine.tx.send(Message::Shutdown).unwrap();
+        engine.thread.take().unwrap().join().unwrap();
+
+        assert!(matches!(engine.memory(), Err(RenderError::Thread)));
+        assert!(matches!(engine.memory(), Err(RenderError::Thread)));
     }
 }

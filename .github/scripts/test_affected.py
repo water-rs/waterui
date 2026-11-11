@@ -4,10 +4,11 @@ the prose classification (which must agree with ci.yml's `code` filter)
 and the MSRV-relevance extraction, which compares parsed manifest content
 so layout and comment edits do not re-arm the MSRV leg.
 
-The tool-level behaviours — root-package swallowing, the in-package
-markdown carve-out and the `nextest-fixtures` check of the `test-fonts`
+The tool-level behaviours — root-package swallowing and the in-package
+markdown carve-out through the shared affected-crates binary
+(`AFFECTED_CRATES`), and the `nextest-fixtures` check of the `test-fonts`
 setup-script rule against the package graph — run against the real
-repository, skipped when the built determinator binary is absent.
+repository, each skipped when its binary is absent.
 """
 
 import json
@@ -55,7 +56,7 @@ def test_licenses_and_issue_templates_are_prose():
 def test_code_and_ci_files_are_not_prose():
     assert not is_prose("core/src/lib.rs")
     assert not is_prose(".github/workflows/ci.yml")
-    assert not is_prose(".github/tools/affected/rules.toml")
+    assert not is_prose(".github/affected-rules.toml")
     assert not is_prose("tests/layout-twins/README.md")
 
 
@@ -151,7 +152,11 @@ def test_the_threshold_counts_only_linux_members():
 # ---------------------------------------------------------------------------
 
 REPO = Path(__file__).resolve().parents[2]
-TOOL = REPO / ".github/tools/affected/target/release/affected"
+TOOL = Path(os.environ["AFFECTED_CRATES"]) if "AFFECTED_CRATES" in os.environ else None
+FIXTURES_TOOL = (
+    REPO / ".github/tools/nextest-fixtures/target/release/nextest-fixtures"
+)
+RULES = REPO / ".github/affected-rules.toml"
 
 
 def _commit_with(edits):
@@ -200,19 +205,44 @@ def _commit_with(edits):
 
 
 def _report(edits):
+    """The tool's report for a commit carrying `edits` on top of HEAD: the
+    tool diffs the checkout it runs in against its base, so the commit is
+    checked out as a detached worktree."""
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO)
     sha = _commit_with(edits)
-    return json.loads(
-        subprocess.check_output(
-            [str(TOOL), "--base", head.strip().decode(), "--head", sha],
-            text=True,
+    with tempfile.TemporaryDirectory(prefix="affected-report-") as tmp:
+        root = Path(tmp) / "tree"
+        subprocess.check_call(
+            ["git", "worktree", "add", "--detach", "--quiet", str(root), sha],
             cwd=REPO,
         )
-    )
+        try:
+            return json.loads(
+                subprocess.check_output(
+                    [
+                        str(TOOL),
+                        "--locked",
+                        "--root",
+                        str(root),
+                        "--rules",
+                        str(RULES),
+                        "--base",
+                        head.strip().decode(),
+                    ],
+                    text=True,
+                )
+            )
+        finally:
+            subprocess.check_call(
+                ["git", "worktree", "remove", "--force", str(root)], cwd=REPO
+            )
 
 
 pytestmark_tool = pytest.mark.skipif(
-    not TOOL.exists(), reason="the determinator tool is not built"
+    TOOL is None or not TOOL.exists(), reason="the affected-crates binary is not set"
+)
+pytestmark_fixtures = pytest.mark.skipif(
+    not FIXTURES_TOOL.exists(), reason="the nextest-fixtures checker is not built"
 )
 
 
@@ -271,7 +301,7 @@ def test_root_package_sources_select_waterui():
 
 
 def _fixture_check(edits):
-    """Run `affected nextest-fixtures` on a detached worktree of HEAD with
+    """Run `nextest-fixtures` on a detached worktree of HEAD with
     `edits` applied; returns the completed process."""
     sha = _commit_with(edits)
     with tempfile.TemporaryDirectory(prefix="affected-fixtures-") as tmp:
@@ -284,7 +314,7 @@ def _fixture_check(edits):
             # The edits only add or drop an edge between workspace
             # members, which re-resolves the lockfile without the network.
             return subprocess.run(
-                [str(TOOL), "nextest-fixtures", "--root", str(root)],
+                [str(FIXTURES_TOOL), "--root", str(root)],
                 capture_output=True,
                 text=True,
                 cwd=REPO,
@@ -296,13 +326,13 @@ def _fixture_check(edits):
             )
 
 
-@pytestmark_tool
+@pytestmark_fixtures
 def test_test_fonts_rule_matches_the_graph():
     result = _fixture_check({})
     assert result.returncode == 0, result.stderr
 
 
-@pytestmark_tool
+@pytestmark_fixtures
 def test_dropping_a_testing_edge_flags_the_rule():
     manifest = "components/foundation/controls/Cargo.toml"
     text = (REPO / manifest).read_text()
@@ -316,7 +346,7 @@ def test_dropping_a_testing_edge_flags_the_rule():
     )
 
 
-@pytestmark_tool
+@pytestmark_fixtures
 def test_gaining_a_testing_edge_flags_the_rule():
     manifest = "utils/meta/Cargo.toml"
     text = (REPO / manifest).read_text()
@@ -421,3 +451,22 @@ def test_an_unknown_group_or_a_host_group_is_an_error():
 def test_an_unknown_target_is_an_error():
     with pytest.raises(ValueError):
         crates_for("x86_64-apple-ios", "workspace")
+
+
+# ---- wasm32 lint legs ----
+
+from wasm_gated import LEGS as WASM_LEGS, legs_in_scope as wasm_legs_in_scope
+
+
+def test_wasm_workspace_scope_runs_every_leg():
+    assert wasm_legs_in_scope("workspace") == list(WASM_LEGS)
+
+
+def test_wasm_scope_selects_only_the_affected_packages_legs():
+    legs = wasm_legs_in_scope("waterui-core hydrolysis cherenkov")
+    assert [leg[0] for leg in legs] == ["hydrolysis", "hydrolysis", "cherenkov"]
+
+
+def test_wasm_scope_without_a_wasm_package_runs_nothing():
+    assert wasm_legs_in_scope("waterui-core") == []
+    assert wasm_legs_in_scope("") == []

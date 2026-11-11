@@ -296,6 +296,110 @@ pub fn mount_uikit_window(
     }
 }
 
+/// Performs the application entry's once-per-process `startup::initialize`.
+///
+/// It installs the executors a realized window's tasks run on. Called once
+/// from the `Tests/native_app.rs` harness's main thread before any trial
+/// runs.
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+pub fn initialize_process() {
+    let _ = crate::startup::initialize();
+}
+
+/// A scene window filled by the production `windows::realize`.
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+pub struct RealizedScene {
+    /// The scene's root host, which places the window content.
+    pub root: cocoa_ui::Retained<cocoa_ui::uikit::HostView>,
+    /// The scene window.
+    pub window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
+    _host: crate::windows::WindowHost,
+}
+
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+impl core::fmt::Debug for RealizedScene {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RealizedScene")
+            .field("root", &self.root)
+            .field("window", &self.window)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Fills an already shown scene window through the production `windows::realize`.
+///
+/// The window has appeared before `declaration`'s content arrives, and the
+/// theme is installed from the root controller's scheme as
+/// `windows::connect` installs it.
+///
+/// This is the order a launch takes when the declaration lands after the
+/// scene's window displayed: the window is key and visible with the empty
+/// root and the veil `windows::connect` gives it, and `realize` then adds
+/// the content.
+/// The wait is on the root controller's `viewDidAppear:`, the signal the
+/// window displayed.
+///
+/// # Panics
+/// Panics when the root controller does not appear within
+/// [`MAIN_QUEUE_DEADLINE`].
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+#[must_use]
+pub fn realize_into_shown_scene(
+    mtm: MainThreadMarker,
+    declaration: &waterui::window::Window,
+    env: &Environment,
+    window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
+) -> RealizedScene {
+    let controller = cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
+    window.setRootViewController(Some(&controller));
+    window.makeKeyAndVisible();
+    assert!(
+        pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            controller.appearance_counts().did_appear >= 1
+        }),
+        "the root controller's viewDidAppear: did not run within \
+         {MAIN_QUEUE_DEADLINE}s of showing its scene window"
+    );
+    let root = objc2::Message::retain(controller.host_view());
+    let mut env = env.clone();
+    env.insert(crate::first_paint::FirstPaint::default());
+    let theme = alloc::rc::Rc::new(crate::theme::install(&mut env, controller.color_scheme()));
+    let observation =
+        controller.observe_color_scheme(move |scheme| crate::theme::refresh(&theme, scheme));
+    let veil = crate::windows::Veil::cover(
+        &window,
+        &waterui::graphics::Color::new(waterui::theme::color::Background).resolve(&env),
+    );
+    let host = crate::windows::realize(
+        declaration,
+        crate::windows::Pending {
+            session_id: String::new(),
+            window: window.clone(),
+            controller,
+            observation,
+            veil,
+        },
+        &env,
+        mtm,
+    );
+    RealizedScene {
+        root,
+        window,
+        _host: host,
+    }
+}
+
+/// The frame `root` resolves for `content` — what its placement handler
+/// gives the content.
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+#[must_use]
+pub fn content_frame(
+    root: &cocoa_ui::uikit::HostView,
+    content: &cocoa_ui::PlatformView,
+) -> cocoa_ui::Rect {
+    crate::native_layout::LayoutContext::of(root).content_frame(content)
+}
+
 /// `mount_uikit` at a fixed window frame — trials that assert geometry
 /// inside a window sized for the case rather than the screen's.
 #[cfg(target_os = "ios")]
@@ -975,6 +1079,7 @@ pub mod gpu_surface {
     pub use crate::components::gpu_surface::native_test::{
         MountedSceneSurface, WakeProbe, fixture_env, fixture_scene_view,
     };
+    pub use crate::gpu_completion::{SubmissionFailed, submit_with_completion};
 
     /// Performs the once-per-process `startup::initialize` — called
     /// once from the `Tests/native.rs` harness's true main thread
@@ -983,6 +1088,12 @@ pub mod gpu_surface {
     pub fn initialize_process() {
         let _ = crate::startup::initialize();
     }
+}
+
+/// Re-exports the transition clock a trial drives by hand.
+#[cfg(feature = "transition_sites")]
+pub mod transition {
+    pub use crate::transition::clock::ManualTransitionClock;
 }
 
 /// Re-exports the pieces a `ViewRenderer::render` trial needs.
@@ -1124,6 +1235,18 @@ pub fn render_environment() -> Environment {
         &mut env,
         black(),
     );
+    waterui::theme::install_color_signal::<waterui::theme::color::TertiaryForeground>(
+        &mut env,
+        black(),
+    );
+    waterui::theme::install_color_signal::<waterui::theme::color::DisabledForeground>(
+        &mut env,
+        black(),
+    );
+    waterui::theme::install_color_signal::<waterui::theme::color::UnemphasizedSelection>(
+        &mut env,
+        black(),
+    );
     waterui::theme::install_color_signal::<waterui::theme::color::Accent>(&mut env, black());
     // A selectable list's rows re-theme onto the selection role.
     waterui::theme::install_color_signal::<waterui::theme::color::SelectionForeground>(
@@ -1176,27 +1299,706 @@ pub fn capture_template_image(
 
 /// Installs the GPU owners onto an existing environment.
 ///
-/// Runtime, scene engine, filter-pipeline cache and the
-/// `PresentationTime` anchor — the set a `captures_content` transition
-/// and the filtered handler resolve. `gpu_runtime::prepare` installs
-/// the same beside the runtime in production; trials that render
-/// `FilteredView` through the dispatcher need it on the env they hand
-/// `dispatch::render`.
+/// The runtime plus the owners `gpu_runtime::install_owners` puts beside
+/// it — the set a `captures_content` transition and the filtered handler
+/// resolve, exactly as `gpu_runtime::prepare` installs it in production;
+/// trials that render `FilteredView` through the dispatcher need it on
+/// the env they hand `dispatch::render`.
+///
+/// # Panics
+///
+/// Off the main thread.
 #[cfg(feature = "gpu_surface")]
 pub fn install_gpu(
     env: &mut waterui_backend_core::Environment,
     runtime: waterui_graphics::gpu::GpuRuntime,
 ) {
-    use std::rc::Rc;
     env.insert(runtime);
-    env.insert(Rc::new(crate::gpu_runtime::SceneEngine::new()));
-    env.insert(Rc::new(crate::gpu_runtime::FilterPipelines::new()));
-    crate::presentation_time::PresentationTime::install(env);
+    crate::gpu_runtime::install_owners(
+        env,
+        objc2::MainThreadMarker::new().expect("GPU owners install on the main thread"),
+    );
     crate::components::view_renderer::install_service(env);
     // The dispatcher captures the environment at install time — re-run
     // the install so its root env sees the GPU services just inserted
     // (`handler.set`-driven remounts render through it).
     crate::dispatch::install(env);
+}
+
+/// Gates the suite on one real trip through the simulator's Metal path:
+/// runtime, pipeline creation, submission, completion.
+///
+/// A host display asleep when the run starts leaves these calls stalled
+/// inside the process while the simulator resumes presenting — the
+/// runner's `caffeinate` wakes the display but cannot observe the
+/// in-process stall, and `simctl io screenshot` answers regardless
+/// (#3529). The only honest readiness signal is a completed GPU trip:
+/// this blocks the suite until one lands, bounded at `seconds` so a
+/// truly dead device fails naming the bound instead of hanging a case.
+/// Kept off the main thread where `wgpu` compiles Metal state the same
+/// way `filtrate`'s `compile::validated` does.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+pub fn await_gpu(seconds: f64) {
+    let _ = executor_core::try_init_local_executor(
+        native_executor::NativeMainExecutor::new()
+            .expect("the native suite runs on the process's main thread"),
+    );
+    // The stage the run is waiting on, for the timeout panic's name.
+    let stage = std::cell::Cell::new("GPU runtime");
+    // One absolute deadline bounds the whole gate — the pool witness and
+    // every stage inside every trip spend from the same clock, never a
+    // fresh `seconds` each.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(seconds);
+    await_gpu_stage(seconds, &stage, gpu_readiness_trip(&stage, 0, deadline));
+    // One landed trip proves the first stall unstuck — not that the
+    // cold-boot window passed: it recurs per call site until it closes
+    // (#3798). A repeat trip landing inside a fast bound is the warmth
+    // signal — each probes a fresh pipeline (`salt` varies the shader)
+    // so warmth covers call sites the first trip never walked; retry
+    // until one lands within the same total budget.
+    stage.set("warmth");
+    let mut salt = 0u32;
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !left.is_zero(),
+            "the GPU readiness warmth stage did not settle within {seconds}s"
+        );
+        salt += 1;
+        // The probe's own deadline — inside `poll()` the trip's pool
+        // witness pumps and joins on this bound, so a stalled drawable
+        // pool cannot stretch the "fast" probe to the gate's clock.
+        let probe_deadline =
+            std::time::Instant::now() + left.min(std::time::Duration::from_secs(5));
+        let trip = poll_gpu_stage(
+            probe_deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .as_secs_f64(),
+            &stage,
+            gpu_readiness_trip(&stage, salt, probe_deadline),
+        );
+        match trip {
+            // A hard error the trip modelled — not a warmup miss: the
+            // suite sees the real failure, never a retry (#3812).
+            ProbeOutcome::Failed(reason) => panic!("{reason}"),
+            ProbeOutcome::TimedOut => continue,
+            ProbeOutcome::Ready => {}
+        }
+        let fresh = poll_gpu_stage(
+            probe_deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .as_secs_f64(),
+            &stage,
+            // Instance-level warmth: the gate's own runtime proves
+            // nothing about a *fresh* one — a test still stalls inside
+            // its own `GpuRuntime::new` if instance startup is cold
+            // (#3798). A new instance landing inside the bound is the
+            // honest signal for that path; its `Err` is a real failure,
+            // not warmth.
+            async {
+                waterui_graphics::gpu::GpuRuntime::new()
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| TripFail::Failed(error.to_string()))
+            },
+        );
+        match fresh {
+            ProbeOutcome::Failed(reason) => panic!("{reason}"),
+            ProbeOutcome::TimedOut => {}
+            ProbeOutcome::Ready => return,
+        }
+    }
+}
+
+/// The trip `await_gpu` blocks on: runtime → pipeline compile → one real
+/// presented frame → queue completion.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+#[expect(
+    clippy::future_not_send,
+    reason = "the gate polls the future by hand on the main thread; the MetalPresenter it holds across the wait is single-threaded"
+)]
+async fn gpu_readiness_trip(
+    stage: &std::cell::Cell<&'static str>,
+    salt: u32,
+    deadline: std::time::Instant,
+) -> Result<(), TripFail> {
+    use waterui_graphics::gpu::wgpu;
+    {
+        let runtime = waterui_graphics::gpu::GpuRuntime::new()
+            .await
+            .expect("the harness provides a GPU runtime");
+        let context = runtime.context();
+        let device = context.device().clone();
+        let queue = context.queue().clone();
+        // Pipeline creation compiles Metal shader state on the calling
+        // thread — the same `blocking::unblock` trip `filtrate`'s
+        // `compile::validated` takes, so the gate warms exactly the path
+        // the suites' effect setup stalls on (#3529).
+        stage.set("pipeline compile");
+        let compile_device = device.clone();
+        blocking::unblock(move || {
+            // `filtrate`'s `compile::validated` wraps pipeline creation in a
+            // validation error scope; the gate takes the same trip so the
+            // warmed path matches what effect setup walks.
+            let error_scope = compile_device.push_error_scope(wgpu::ErrorFilter::Validation);
+            // `salt` varies the fragment's constant so every probe
+            // compiles a pipeline Metal has never seen — a fast compile
+            // then proves the service is warm for any new shader, not
+            // that the cache hit this one again (#3798).
+            let module = compile_device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("native-test readiness"),
+                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Owned(format!(
+                    "@vertex fn vs() -> @builtin(position) vec4f {{ return vec4f(); }}
+                     @fragment fn fs() -> @location(0) vec4f {{ return vec4f({salt}.0); }}",
+                ))),
+            });
+            let _pipeline =
+                compile_device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("native-test readiness"),
+                    layout: None,
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs"),
+                        buffers: &[],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("fs"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+            assert!(
+                futures::executor::block_on(error_scope.pop()).is_none(),
+                "the readiness pipeline compiles without validation errors"
+            );
+        })
+        .await;
+        // A queue submission alone is not presenting (#3529): the stall the
+        // issue describes keeps `CAMetalDisplayLink` from ever delivering a
+        // drawable — `present_readiness_frame` drives the real
+        // render → present → completion loop against a visible layer.
+        stage.set("frame presentation");
+        present_readiness_frame(&context, deadline).await?;
+        // One queue-completion trip proves the GPU side of the frame
+        // settled too — `submit_with_completion` carries the error a dead
+        // device would surface instead of letting the case discover it.
+        stage.set("submission completion");
+        let mtm = MainThreadMarker::new().expect("the readiness gate polls on the main thread");
+        let (done, submitted) = futures::channel::oneshot::channel();
+        crate::gpu_completion::submit_with_completion(
+            mtm,
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("native-test readiness"),
+            }),
+            &context,
+            move |result| {
+                let _ = done.send(result);
+            },
+        );
+        let result = submitted
+            .await
+            .expect("the readiness submission reports its completion");
+        result.map_err(|failure| {
+            TripFail::Failed(format!("the readiness submission failed: {failure}"))
+        })?;
+        let _ = queue;
+        Ok(())
+    }
+}
+
+/// Presents one real frame end to end: a `CAMetalLayer` in a visible
+/// window, one clear encoded into the `CAMetalDisplayLink`-delivered
+/// drawable's texture, `presentDrawable` on that same command buffer,
+/// and the buffer's completed handler — so a wedged display path holds
+/// the suite here instead of inside a case.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+#[expect(
+    clippy::future_not_send,
+    reason = "the gate polls the future by hand on the main thread; the MetalPresenter and UIWindow it holds across the wait are single-threaded"
+)]
+async fn present_readiness_frame(
+    context: &waterui_graphics::gpu::SharedGpuContext,
+    deadline: std::time::Instant,
+) -> Result<(), TripFail> {
+    use cocoa_ui::objc2::Message;
+    use cocoa_ui::objc2_metal::{
+        MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLDevice,
+        MTLLoadAction, MTLRenderPassDescriptor, MTLStoreAction,
+    };
+    let (present_tx, present_rx) = futures::channel::oneshot::channel::<Result<(), String>>();
+    let present_tx = std::cell::RefCell::new(Some(present_tx));
+    let armed = std::rc::Rc::new(std::cell::Cell::new(false));
+    let mtm = MainThreadMarker::new().expect("the readiness gate polls on the main thread");
+    // A scene-attached window when the host connects one —
+    // `drawViewHierarchy` only captures composited content under a real
+    // `UIWindowScene`; the scene-less spawn answers `false` forever.
+    let present_window = cocoa_ui::bitmap::any_window_scene().map_or_else(
+        || spawned_window(mtm),
+        |scene| {
+            use cocoa_ui::objc2::MainThreadOnly as _;
+            let window = cocoa_ui::objc2_ui_kit::UIWindow::initWithWindowScene(
+                cocoa_ui::objc2_ui_kit::UIWindow::alloc(mtm),
+                &scene,
+            );
+            window.setFrame(window.screen().bounds());
+            window
+        },
+    );
+    let controller = cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
+    let host = controller.host_view().retain();
+    present_window.setRootViewController(Some(&controller));
+    present_window.makeKeyAndVisible();
+    cocoa_ui::view::set_frame(&host, cocoa_ui::view::bounds(&present_window));
+    present_window.layoutIfNeeded();
+    let layer = cocoa_ui::objc2_quartz_core::CAMetalLayer::new();
+    let probe_layer = layer.clone();
+    host.layer().addSublayer(&layer);
+    let bounds = cocoa_ui::view::bounds(&host);
+    assert!(
+        bounds.size.width > 0.0 && bounds.size.height > 0.0,
+        "the readiness host lays out before the metal layer mounts"
+    );
+    layer.setFrame(bounds.into());
+    let render_queue = crate::gpu_runtime::raw_metal_device(context)
+        .newCommandQueue()
+        .expect("the readiness device creates a command queue");
+    let armed_slot = armed.clone();
+    let pool_queue = render_queue.clone();
+    let presenter = cocoa_ui::metal_presenter::MetalPresenter::new(
+        layer,
+        std::rc::Rc::new(move |frame| {
+            // The probe fires exactly once: the first frame encodes,
+            // commits, and presents; every later update returns before
+            // touching a drawable, queue, or buffer.
+            if armed_slot.get() {
+                return;
+            }
+            let drawable = cocoa_ui::objc2::runtime::ProtocolObject::<
+                dyn cocoa_ui::objc2_metal::MTLDrawable,
+            >::from_retained(frame.drawable());
+            let texture = frame.texture();
+            if let Some(tx) = present_tx.borrow_mut().take() {
+                armed_slot.set(true);
+                let buffer = render_queue
+                    .commandBuffer()
+                    .expect("the readiness queue hands a command buffer");
+                let pass = MTLRenderPassDescriptor::renderPassDescriptor();
+                let attachment = unsafe {
+                    // SAFETY: index 0 is the first color attachment every
+                    // render pass descriptor answers.
+                    pass.colorAttachments().objectAtIndexedSubscript(0)
+                };
+                attachment.setTexture(Some(&texture));
+                attachment.setLoadAction(MTLLoadAction::Clear);
+                attachment.setStoreAction(MTLStoreAction::Store);
+                attachment.setClearColor(MTLClearColor {
+                    red: 0.0,
+                    green: 0.0,
+                    blue: 1.0,
+                    alpha: 1.0,
+                });
+                let render = buffer
+                    .renderCommandEncoderWithDescriptor(&pass)
+                    .expect("the readiness pass opens a render encoder");
+                render.endEncoding();
+                arm_present_witness(&buffer, drawable, tx);
+                buffer.commit();
+            }
+            // (water-rs/waterui#3529).
+        }),
+        false,
+    );
+    presenter.set_device(&crate::gpu_runtime::raw_metal_device(context));
+    presenter.set_drawable_size(cocoa_ui::objc2_core_foundation::CGSize::new(64.0, 64.0));
+    presenter.set_paused(false);
+    // `MetalPresenter` reconfigures the layer for its own cadence —
+    // including resetting `presentsWithTransaction` — so the flag is
+    // asserted only after the presenter settles. With it, this frame's
+    // drawable presentation rides the CoreAnimation commit the callback
+    // ends, and that commit's completion is the display-side witness for
+    // the frame (the documented stand-in for the `addPresentedHandler`/
+    // `presentedTime` APIs `CAMetalDrawable` lacks on iOS).
+    probe_layer.setPresentsWithTransaction(true);
+    present_rx
+        .await
+        .expect("the readiness present delivers its frame or the sender drops")
+        .unwrap_or_else(|reason| panic!("the readiness frame failed: {reason}"));
+    pool_display_witness(
+        context,
+        probe_layer.frame(),
+        &host.layer(),
+        &pool_queue,
+        deadline,
+    )
+    .await?;
+    drop(presenter);
+    drop(present_window);
+    Ok(())
+}
+/// The display-side witness `CATransaction` completion cannot give: a
+/// bounded drawable pool recycles a slot only when Core Animation has
+/// finished displaying it, so blocking on `nextDrawable` resolves exactly
+/// when a frame went on screen. Runs on a sibling layer:
+/// `CAMetalDisplayLink`-driven layers forbid `nextDrawable` outright
+/// (water-rs/waterui#3529).
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+#[expect(
+    clippy::future_not_send,
+    reason = "the gate polls the future by hand on the main thread; the ObjC objects it holds across the wait are single-threaded"
+)]
+async fn pool_display_witness(
+    context: &waterui_graphics::gpu::SharedGpuContext,
+    frame: cocoa_ui::objc2_core_foundation::CGRect,
+    host_layer: &cocoa_ui::objc2_quartz_core::CALayer,
+    queue: &cocoa_ui::Retained<
+        cocoa_ui::objc2::runtime::ProtocolObject<dyn cocoa_ui::objc2_metal::MTLCommandQueue>,
+    >,
+    deadline: std::time::Instant,
+) -> Result<(), TripFail> {
+    use cocoa_ui::objc2_metal::{
+        MTLClearColor, MTLCommandBuffer as _, MTLCommandEncoder as _, MTLCommandQueue as _,
+        MTLLoadAction, MTLRenderPassDescriptor, MTLStoreAction,
+    };
+    use cocoa_ui::objc2_quartz_core::CAMetalDrawable as _;
+    // The display-side witness `CATransaction` completion cannot give:
+    // a one-slot drawable pool recycles its drawable only when Core
+    // Animation has finished displaying it, so blocking on
+    // `nextDrawable` resolves exactly when a frame went on screen — a
+    // submitted, scheduled, transaction-committed frame that never
+    // displayed keeps the pool held and times the probe out. The probe
+    // runs on a sibling layer: `CAMetalDisplayLink`-driven layers forbid
+    // `nextDrawable` outright (water-rs/waterui#3529).
+    let pool_layer = cocoa_ui::objc2_quartz_core::CAMetalLayer::new();
+    pool_layer.setDevice(Some(&crate::gpu_runtime::raw_metal_device(context)));
+    pool_layer.setMaximumDrawableCount(2);
+    pool_layer.setPresentsWithTransaction(true);
+    pool_layer.setFrame(frame);
+    pool_layer.setDrawableSize(cocoa_ui::objc2_core_foundation::CGSize::new(
+        frame.size.width,
+        frame.size.height,
+    ));
+    host_layer.addSublayer(&pool_layer);
+    let pool_drawable = pool_layer
+        .nextDrawable()
+        .expect("a fresh pool hands its drawable");
+    // The second slot is held too: with every drawable outstanding, the
+    // probe's `nextDrawable` below unblocks only when this one presents.
+    let pool_spare = pool_layer
+        .nextDrawable()
+        .expect("a fresh pool hands its spare drawable");
+    // Negative control: unpresented drawables never hold the pool —
+    // `nextDrawable` vends a fresh one while both stay outstanding, so a
+    // block can come only from drawables the compositor took to display
+    // (water-rs/waterui#3529).
+    assert!(
+        pool_layer.nextDrawable().is_some(),
+        "an unpresented pool must still vend — the control isolates presented-outstanding as the blocker"
+    );
+    let spare_buffer = queue
+        .commandBuffer()
+        .expect("the readiness queue hands the spare buffer");
+    arm_present_witness(
+        &spare_buffer,
+        cocoa_ui::objc2::runtime::ProtocolObject::<
+            dyn cocoa_ui::objc2_metal::MTLDrawable,
+        >::from_retained(pool_spare.clone()),
+        futures::channel::oneshot::channel::<Result<(), String>>().0,
+    );
+    spare_buffer.commit();
+    let pool_buffer = queue
+        .commandBuffer()
+        .expect("the readiness queue hands the pool buffer");
+    let pool_pass = MTLRenderPassDescriptor::renderPassDescriptor();
+    let pool_attachment = unsafe {
+        // SAFETY: index 0 is the first color attachment every render
+        // pass descriptor answers.
+        pool_pass.colorAttachments().objectAtIndexedSubscript(0)
+    };
+    pool_attachment.setTexture(Some(&pool_drawable.texture()));
+    pool_attachment.setLoadAction(MTLLoadAction::Clear);
+    pool_attachment.setStoreAction(MTLStoreAction::Store);
+    pool_attachment.setClearColor(MTLClearColor {
+        red: 0.0,
+        green: 1.0,
+        blue: 0.0,
+        alpha: 1.0,
+    });
+    let pool_render = pool_buffer
+        .renderCommandEncoderWithDescriptor(&pool_pass)
+        .expect("the pool pass opens a render encoder");
+    pool_render.endEncoding();
+    let (pool_tx, pool_rx) = futures::channel::oneshot::channel::<Result<(), String>>();
+    arm_present_witness(
+        &pool_buffer,
+        cocoa_ui::objc2::runtime::ProtocolObject::<
+            dyn cocoa_ui::objc2_metal::MTLDrawable,
+        >::from_retained(pool_drawable.clone()),
+        pool_tx,
+    );
+    pool_buffer.commit();
+    pool_rx
+        .await
+        .expect("the pool present delivers or the sender drops")
+        .unwrap_or_else(|reason| panic!("the pool frame failed: {reason}"));
+    // `allowsNextDrawableTimeout` bounds every single `nextDrawable`
+    // call to about a second, so the worker retries until the gate's
+    // shared deadline while the main thread keeps its run loop turning —
+    // presentation needs main-thread transactions committed.
+    let layer_ptr = cocoa_ui::Retained::as_ptr(&pool_layer) as usize;
+    let worker = std::thread::spawn(move || {
+        let layer = unsafe {
+            // SAFETY: `pool_layer` is retained by this test and released
+            // only after the worker joins; `nextDrawable` is the
+            // documented render-thread entry point.
+            &*(layer_ptr as *const cocoa_ui::objc2_quartz_core::CAMetalLayer)
+        };
+        while std::time::Instant::now() < deadline {
+            if layer.nextDrawable().is_some() {
+                return true;
+            }
+        }
+        false
+    });
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    let _ = pump_main_until(remaining.as_secs_f64(), || worker.is_finished());
+    let pool_presented = worker
+        .join()
+        .expect("the readiness pool worker always exits at the deadline");
+    if !pool_presented {
+        return Err(TripFail::TimedOut);
+    }
+    Ok(())
+}
+
+/// The witness tally the two completion paths share — the Metal buffer
+/// handler may run on any driver thread while the transaction
+/// completion lands on the main one, so it rides a mutex.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+type WitnessState = std::sync::Mutex<(
+    Option<futures::channel::oneshot::Sender<Result<(), String>>>,
+    u8,
+)>;
+
+/// Arms the frame's two witnesses: the buffer carrying the clear must
+/// report `MTLCommandBufferStatusCompleted` — an error propagates its
+/// reason — and the transaction carrying the present must complete.
+///
+/// Transaction-synchronized presentation forbids the convenience
+/// `presentDrawable`: once the buffer is scheduled the drawable
+/// presents at the commit carrying it. The schedule witness fires on a
+/// driver thread, so the present hops back to the main transaction that
+/// claims the completion block.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+fn arm_present_witness(
+    buffer: &cocoa_ui::objc2::runtime::ProtocolObject<dyn cocoa_ui::objc2_metal::MTLCommandBuffer>,
+    drawable: cocoa_ui::Retained<
+        cocoa_ui::objc2::runtime::ProtocolObject<dyn cocoa_ui::objc2_metal::MTLDrawable>,
+    >,
+    tx: futures::channel::oneshot::Sender<Result<(), String>>,
+) {
+    use cocoa_ui::objc2_metal::{MTLCommandBuffer, MTLDrawable};
+
+    let state = std::sync::Arc::new(WitnessState::new((Some(tx), 0u8)));
+    let complete = {
+        let state = state.clone();
+        block2::RcBlock::new(
+            move |buf: core::ptr::NonNull<
+                cocoa_ui::objc2::runtime::ProtocolObject<
+                    dyn cocoa_ui::objc2_metal::MTLCommandBuffer,
+                >,
+            >| {
+                // SAFETY: Metal delivers the handler a valid buffer.
+                let buf = unsafe { buf.as_ref() };
+                witness_signal(
+                    &state,
+                    if buf.status() == cocoa_ui::objc2_metal::MTLCommandBufferStatus::Completed {
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "command buffer status {:?}: {:?}",
+                            buf.status(),
+                            buf.error()
+                        ))
+                    },
+                );
+            },
+        )
+    };
+    let scheduled = block2::RcBlock::new(
+        move |_buf: core::ptr::NonNull<
+            cocoa_ui::objc2::runtime::ProtocolObject<dyn cocoa_ui::objc2_metal::MTLCommandBuffer>,
+        >| {
+            let state = state.clone();
+            let drawable = drawable.clone();
+            let on_main = block2::RcBlock::new(move || {
+                drawable.present();
+                // The completion block rides the transaction this
+                // present is bound to — its fire marks the commit that
+                // put the frame on screen.
+                let state = state.clone();
+                let committed = block2::RcBlock::new(move || {
+                    witness_signal(&state, Ok(()));
+                });
+                unsafe {
+                    // SAFETY: the block matches the documented signature
+                    // and is set on the implicit transaction the next
+                    // line commits.
+                    cocoa_ui::objc2_quartz_core::CATransaction::setCompletionBlock(Some(
+                        &committed,
+                    ));
+                }
+                cocoa_ui::objc2_quartz_core::CATransaction::commit();
+            });
+            unsafe {
+                // SAFETY: `on_main` outlives the call — `performBlock`
+                // copies the block.
+                cocoa_ui::objc2_foundation::NSRunLoop::mainRunLoop().performBlock(&on_main);
+            }
+        },
+    );
+    unsafe {
+        // SAFETY: the blocks match their documented signatures, attached
+        // before `commit` as the API requires.
+        buffer
+            .addCompletedHandler(block2::RcBlock::as_ptr(&complete)
+                as cocoa_ui::objc2_metal::MTLCommandBufferHandler);
+        buffer
+            .addScheduledHandler(block2::RcBlock::as_ptr(&scheduled)
+                as cocoa_ui::objc2_metal::MTLCommandBufferHandler);
+    }
+}
+
+/// One witness event — the buffer's completion or the present's
+/// transaction completion — tallied into the gate's release. Two `Ok`s
+/// release it; the first error propagates its reason.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+fn witness_signal(state: &WitnessState, outcome: Result<(), String>) {
+    let mut state = state
+        .lock()
+        .expect("the readiness witness state is never poisoned");
+    if let Err(reason) = outcome {
+        if let Some(tx) = state.0.take() {
+            let _ = tx.send(Err(reason));
+        }
+    } else {
+        state.1 += 1;
+        if state.1 == 2
+            && let Some(tx) = state.0.take()
+        {
+            let _ = tx.send(Ok(()));
+        }
+    }
+}
+
+/// What a readiness trip answers — the probe retries only `TimedOut`;
+/// `Failed` carries a real error the suite must see, never a warmup
+/// state (#3812).
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+enum TripFail {
+    TimedOut,
+    Failed(String),
+}
+
+/// What a bounded probe reports.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+enum ProbeOutcome {
+    Ready,
+    TimedOut,
+    Failed(String),
+}
+
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+fn await_gpu_stage(
+    seconds: f64,
+    stage: &std::cell::Cell<&'static str>,
+    future: impl core::future::Future<Output = Result<(), TripFail>>,
+) {
+    match poll_gpu_stage(seconds, stage, future) {
+        ProbeOutcome::Ready => {}
+        ProbeOutcome::TimedOut => {
+            panic!(
+                "the GPU readiness {} stage did not settle within {seconds}s",
+                stage.get(),
+            );
+        }
+        ProbeOutcome::Failed(reason) => panic!("{reason}"),
+    }
+}
+
+/// The hand-rolled poll `await_gpu_stage` panics through: `false` at the
+/// deadline so the warmth probe can retry a stalled trip instead of
+/// failing the suite on it.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+fn poll_gpu_stage(
+    seconds: f64,
+    stage: &std::cell::Cell<&'static str>,
+    future: impl core::future::Future<Output = Result<(), TripFail>>,
+) -> ProbeOutcome {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
+    use std::time::Instant;
+    struct Flag(Arc<AtomicBool>);
+    impl Wake for Flag {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    let woken = Arc::new(AtomicBool::new(false));
+    let waker = Waker::from(Arc::new(Flag(Arc::clone(&woken))));
+    let mut cx = Context::from_waker(&waker);
+    let mut gate = core::pin::pin!(future);
+    let start = Instant::now();
+    let _ = stage;
+    loop {
+        woken.store(false, Ordering::Release);
+        // `catch_unwind` only catches errors the trip did not model —
+        // its own timeout path returns `Err(TimedOut)` so the warmth
+        // loop retries; every real failure lands in `Failed` and
+        // propagates with its message (#3812).
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gate.as_mut().poll(&mut cx)));
+        match outcome {
+            Ok(Poll::Ready(Ok(()))) => {
+                // A `poll` that blocked past the bound and still resolved
+                // is a slow trip, not a warm one — the warmth probe
+                // counts only completion inside the bound (#3798).
+                return if start.elapsed().as_secs_f64() < seconds {
+                    ProbeOutcome::Ready
+                } else {
+                    ProbeOutcome::TimedOut
+                };
+            }
+            Ok(Poll::Ready(Err(TripFail::TimedOut))) => return ProbeOutcome::TimedOut,
+            Ok(Poll::Ready(Err(TripFail::Failed(reason)))) => {
+                return ProbeOutcome::Failed(reason);
+            }
+            Ok(Poll::Pending) => {}
+            Err(payload) => {
+                let reason = payload
+                    .downcast_ref::<&str>()
+                    .map(|m| (*m).to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "the readiness trip panicked".to_string());
+                return ProbeOutcome::Failed(reason);
+            }
+        }
+        if start.elapsed().as_secs_f64() >= seconds {
+            return ProbeOutcome::TimedOut;
+        }
+        pump_main_until(0.05, || woken.load(Ordering::Acquire));
+    }
 }
 
 /// Rehosts the detached `view` the way `capture_rgba` does.
@@ -1339,6 +2141,26 @@ pub fn row_list(
     (leaf, table)
 }
 
+/// A sectioned list's table, rendered but not mounted: "A" with two rows
+/// and "B" with one, each under a header.
+#[must_use]
+pub fn sectioned_row_list() -> (crate::contract::NativeLeaf, cocoa_ui::Retained<ListSurface>) {
+    use objc2::Message;
+    use waterui::component::list::{List, Section};
+    use waterui::views::ForEach;
+
+    let leaf = render(List::content((
+        Section::new("A").content(ForEach::new(["a1", "a2"], |_| row_item())),
+        Section::new("B").content(ForEach::new(["b1"], |_| row_item())),
+    )));
+    let table = leaf
+        .view()
+        .downcast_ref::<ListSurface>()
+        .expect("a List renders the kit's table surface")
+        .retain();
+    (leaf, table)
+}
+
 /// Reads the standard menu bar as `menus::install` builds it — for the
 /// native suite to assert the standard items' rows without an `AppKit`
 /// handle of its own.
@@ -1356,18 +2178,18 @@ pub mod menus {
     #[non_exhaustive]
     pub struct MenuRow {
         /// The row's title.
-        pub title: String,
+        title: String,
         /// Its key equivalent — `""` for none.
-        pub key_equivalent: String,
+        key_equivalent: String,
         /// The modifiers its key equivalent takes.
-        pub modifiers: NSEventModifierFlags,
+        modifiers: NSEventModifierFlags,
         /// The name of the selector the row sends, when it sends one —
         /// `performClose:` on the standard Close item.
-        pub action: Option<String>,
+        action: Option<String>,
         /// Whether the row reports enabled after a validation pass.
-        pub enabled: bool,
+        enabled: bool,
         /// Whether the row is a separator.
-        pub separator: bool,
+        separator: bool,
     }
 
     impl MenuRow {

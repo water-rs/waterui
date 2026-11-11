@@ -2,7 +2,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{BuildHasher, Hash, Hasher};
-use std::num::NonZeroU64;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -23,6 +23,10 @@ const ATLAS_START: u32 = 1024;
 const ATLAS_MAX: u32 = 8192;
 /// Texels of padding around each cell.
 const PAD: u32 = 1;
+/// Shelf band height quantum: every band's height and its page-local
+/// `y` are multiples of this many rows — a global `y` need not be
+/// aligned when the page edge is not.
+const SHELF_QUANTUM: u32 = 8;
 
 /// Registered font data: the file bytes and collection index.
 pub struct FontData {
@@ -528,6 +532,9 @@ pub struct Atlas {
     generation: u64,
     /// Cell placement: live and dead shelves plus the virgin watermark.
     layout: Layout,
+    /// One owner per shelf-height unit, indexed within each page.
+    /// Slot zero is encoded as one so unused rows cost no separate tag.
+    shelf_rows: Vec<Option<NonZeroU32>>,
     /// Live-key hashes per shelf, parallel to `layout.shelves`: the keys
     /// an eviction of that shelf must drop from the caches.
     slot_keys: Vec<rustc_hash::FxHashSet<u64>>,
@@ -643,6 +650,7 @@ impl Atlas {
                 tops: vec![0],
                 next_epoch: 0,
             },
+            shelf_rows: Vec::new(),
             page_budget: budget / 8,
             slot_keys: Vec::new(),
             live: rustc_hash::FxHashMap::default(),
@@ -746,6 +754,7 @@ impl Atlas {
     /// Approximate CPU-side cache bytes.
     pub const fn cpu_bytes(&self) -> u64 {
         self.cpu_bytes
+            + (self.shelf_rows.capacity() * std::mem::size_of::<Option<NonZeroU32>>()) as u64
     }
 
     /// Drops every cached glyph of `font`. The freed texels stay claimed
@@ -788,6 +797,7 @@ impl Atlas {
         self.layout.shelves.clear();
         self.layout.vacant.clear();
         self.layout.tops.clear();
+        self.shelf_rows.clear();
         self.layout.tops.resize(self.pages as usize, 0);
         self.slot_keys.clear();
         self.live.clear();
@@ -983,6 +993,16 @@ impl Atlas {
                 // lands on the shape a fresh engine reaches for the same
                 // content, not just any smaller area (#211).
                 let area = u64::from(self.size) * u64::from(self.size) * u64::from(self.pages);
+                // Packing lower bound: every cell occupies a
+                // `(w + 2*PAD)` × `band(h)` slice of its shelf's rows,
+                // so the summed footprint can never exceed the atlas
+                // area that packs it — a candidate below this is
+                // provably too small and its layout probe is skipped.
+                let minimum_area: u64 = self
+                    .plan_all
+                    .iter()
+                    .map(|&(w, h)| (u64::from(w) + u64::from(2 * PAD)) * u64::from(band(h)))
+                    .sum();
                 let mut candidates: Vec<(u32, u32)> = Vec::new();
                 let mut size = ATLAS_START;
                 while size <= self.size {
@@ -997,6 +1017,9 @@ impl Atlas {
                     }
                 }
                 for (size, pages) in candidates {
+                    if minimum_area > u64::from(size) * u64::from(size) * u64::from(pages) {
+                        continue;
+                    }
                     let mut probe = Layout {
                         shelves: Vec::new(),
                         vacant: Vec::new(),
@@ -1245,7 +1268,7 @@ impl Atlas {
                 PendingRaster::MaskTexture { .. }
                 | PendingRaster::Colr { .. }
                 | PendingRaster::Bitmap { .. }
-                | PendingRaster::GpuPath(_) => {}
+                | PendingRaster::GpuPath { .. } => {}
             }
         }
     }
@@ -1852,6 +1875,14 @@ impl Atlas {
             );
         }
         let old = std::mem::replace(&mut self.layout, layout);
+        // `size`/`pages` moved above; rebuild the row index against the
+        // new layout's live bands.
+        self.shelf_rows.clear();
+        for slot in 0..self.layout.shelves.len() {
+            if self.layout.shelves[slot].live {
+                self.index_shelf(slot);
+            }
+        }
         // Pending cells may append to migrated shelves but must never
         // rewrite migrated texels: each migrated band's upload region
         // starts at its migrated frontier.
@@ -2105,23 +2136,41 @@ impl Atlas {
     }
 
     /// The live shelf covering texel `(x, y)` in `y`, as a slot index.
-    /// Bands never overlap in y within a page, so the scan hits at
-    /// most once; shelves from dead-band splits sit at any index, so
-    /// the search is a filter rather than a binary search.
-    ///
-    /// Kept out of line: the commit's pin walk calls the hint check
-    /// from four nested loops, and inlined there at opt-level 3 the
-    /// scan's position counter is spilled to the stack, so every shelf
-    /// pays a store-to-load round trip (#2852). In its own frame the
-    /// counter stays in a register.
-    #[inline(never)]
+    /// `shelf_rows` holds the owning shelf slot — encoded `+1`, so 0
+    /// marks no live band — of every `SHELF_QUANTUM`-tall row each live
+    /// band covers within its page, which is the whole containment
+    /// question since bands never overlap in y or cross a page edge.
+    /// The band's used run (`x < shelf.x`) is not indexed, so it is
+    /// still checked here.
     fn shelf_hit(&self, y: u32, x: u32) -> Option<u32> {
-        let page = y / self.size;
-        self.layout
-            .shelves
-            .iter()
-            .position(|s| s.live && s.y <= y && y < s.y + s.h && s.y / self.size == page && x < s.x)
-            .and_then(|i| u32::try_from(i).ok())
+        let slot = self
+            .shelf_rows
+            .get(shelf_row(y, self.size))?
+            .as_ref()?
+            .get()
+            - 1;
+        (x < self.layout.shelves[slot as usize].x).then_some(slot)
+    }
+
+    /// Marks `slot`'s live band in `shelf_rows` — or returns at once
+    /// when it is already marked, which is the common case of `alloc`
+    /// appending to a shelf it opened earlier in the commit. Eviction
+    /// clears the original band's rows — the range saved before
+    /// `free_band` reshaped the layout — so a marked row always names
+    /// the live shelf owning it.
+    fn index_shelf(&mut self, slot: usize) {
+        let first = shelf_row(self.layout.shelves[slot].y, self.size);
+        let owner = NonZeroU32::MIN
+            .checked_add(u32::try_from(slot).expect("shelf index fits u32"))
+            .expect("encoded shelf index fits u32");
+        if self.shelf_rows.get(first) == Some(&Some(owner)) {
+            return;
+        }
+        let end = first
+            + usize::try_from(self.layout.shelves[slot].h / SHELF_QUANTUM)
+                .expect("shelf row count fits usize");
+        self.shelf_rows.resize(self.shelf_rows.len().max(end), None);
+        self.shelf_rows[first..end].fill(Some(owner));
     }
 
     /// Lets [`Self::alloc`] reclaim the coldest shelves: set by the
@@ -2155,9 +2204,17 @@ impl Atlas {
     /// evictable — every shelf was touched this commit or the layout is
     /// empty.
     fn evict_one(&mut self) -> bool {
-        let Some(slot) = evict_layout(&mut self.layout, self.size, self.tick) else {
+        let Some((slot, band)) = evict_layout(&mut self.layout, self.size, self.tick) else {
             return false;
         };
+        // Clear the evicted band's original row range — `free_band` may
+        // have merged it into a different extent or zeroed its height,
+        // and the dead band it joined is already unmarked.
+        let first = shelf_row(band.start, self.size);
+        let end = first
+            + usize::try_from((band.end - band.start) / SHELF_QUANTUM)
+                .expect("shelf row count fits usize");
+        self.shelf_rows[first..end].fill(None);
         let served_recently = self.layout.shelves[slot].last_used + 1 == self.tick;
         let mut bytes = 0u64;
         for hk in std::mem::take(&mut self.slot_keys[slot]) {
@@ -2173,6 +2230,13 @@ impl Atlas {
                 }
                 LiveKind::Path => {
                     if let Some(emit) = self.paths.remove(&hk) {
+                        // A path's cells can span shelves: its key leaves
+                        // every other shelf's index too, or evicting one of
+                        // those later would drop a re-admission of the key.
+                        for cell in &emit.cells {
+                            self.slot_keys[usize::try_from(cell.slot).expect("shelf index")]
+                                .remove(&hk);
+                        }
                         self.slot_dead.push(emit.slots.clone());
                         bytes += path_entry_bytes(&emit);
                     }
@@ -2207,6 +2271,7 @@ impl Atlas {
                 while self.slot_keys.len() < self.layout.shelves.len() {
                     self.slot_keys.push(rustc_hash::FxHashSet::default());
                 }
+                self.index_shelf(slot);
                 return Some((x, y, slot));
             }
             if !self.evicting || !self.evict_one() {
@@ -2228,9 +2293,12 @@ fn touched_in(layout: &Layout, tick: u64, slot: u32) -> bool {
 /// picks: the least recently used of the probationary segment
 /// (`hits == 0`) if any, else the LRU of the protected segment. Marks
 /// it dead and hands its band to `vacant`. `None` when every shelf was
-/// touched this commit or the layout is empty. `Atlas::plan`'s dry run
-/// shares this so the verdict matches what the commit would do (#119).
-fn evict_layout(layout: &mut Layout, size: u32, tick: u64) -> Option<usize> {
+/// touched this commit or the layout is empty. On success returns the
+/// slot and the band's `y` range as it was live — `free_band` may
+/// merge, move or zero it — so the atlas can clear exactly the index
+/// rows the band owned. `Atlas::plan`'s dry run shares this so the
+/// verdict matches what the commit would do (#119).
+fn evict_layout(layout: &mut Layout, size: u32, tick: u64) -> Option<(usize, Range<u32>)> {
     let slot = layout
         .shelves
         .iter()
@@ -2238,9 +2306,10 @@ fn evict_layout(layout: &mut Layout, size: u32, tick: u64) -> Option<usize> {
         .filter(|(_, s)| s.live && s.last_used < tick)
         .min_by_key(|(_, s)| (u8::from(s.hits > 0), s.last_used))
         .map(|(i, _)| i)?;
+    let band = layout.shelves[slot].y..layout.shelves[slot].y + layout.shelves[slot].h;
     layout.shelves[slot].live = false;
     free_band(layout, size, slot);
-    Some(slot)
+    Some((slot, band))
 }
 
 /// Returns the dead band at `slot` to `vacant` — coalesced. Evicting
@@ -2310,7 +2379,16 @@ fn free_band(layout: &mut Layout, size: u32, slot: usize) {
 /// A cell's shelf band height: cell height plus padding, quantised up
 /// to a multiple of 8 — the rows the cell actually consumes on a shelf.
 const fn band(h: u32) -> u32 {
-    (h + 2 * PAD).div_ceil(8) * 8
+    (h + 2 * PAD).div_ceil(SHELF_QUANTUM) * SHELF_QUANTUM
+}
+
+/// The `shelf_rows` index covering texel row `y`: rows are
+/// `SHELF_QUANTUM` tall inside each page, so a page edge that is not a
+/// quantum multiple still starts each page's indexing on a fresh row.
+fn shelf_row(y: u32, size: u32) -> usize {
+    let rows_per_page = size.div_ceil(SHELF_QUANTUM);
+    usize::try_from((y / size) * rows_per_page + (y % size) / SHELF_QUANTUM)
+        .expect("atlas row index fits usize")
 }
 
 /// `Atlas::alloc` against an explicit layout and atlas edge — never
@@ -2591,7 +2669,7 @@ impl PendingRaster {
             Self::MaskTexture { .. }
             | Self::Colr { .. }
             | Self::Bitmap { .. }
-            | Self::GpuPath(_) => 0,
+            | Self::GpuPath { .. } => 0,
         }
     }
 }
@@ -2690,7 +2768,12 @@ pub enum PendingRaster {
     /// array supplies the drawing state the vertex stage joins to each
     /// emitted geometry record (water-rs/waterui#3081). The record is
     /// shared with the retained emission that drew it.
-    GpuPath(Arc<GpuDraw>),
+    GpuPath {
+        draw: Arc<GpuDraw>,
+        /// Ordinary draws retain coverage; picture generation only needs it
+        /// until every surface in this frame has been encoded.
+        retain: bool,
+    },
 }
 
 /// A GPU-routed path's draw record (water-rs/waterui#3081): the
@@ -3263,6 +3346,29 @@ mod tests {
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
     }
 
+    /// Checks the shelf row index against the layout scan it replaced:
+    /// every texel row of every page resolves to the same shelf the
+    /// band filter would find.
+    fn assert_shelf_lookup(atlas: &Atlas) {
+        for y in 0..=atlas.size * atlas.pages {
+            for x in [0, atlas.size / 2, atlas.size - 1, atlas.size] {
+                let expected = atlas
+                    .layout
+                    .shelves
+                    .iter()
+                    .position(|s| {
+                        s.live
+                            && s.y <= y
+                            && y < s.y + s.h
+                            && s.y / atlas.size == y / atlas.size
+                            && x < s.x
+                    })
+                    .map(|i| u32::try_from(i).expect("test shelf index"));
+                assert_eq!(atlas.shelf_hit(y, x), expected, "texel ({x}, {y})");
+            }
+        }
+    }
+
     /// Two parallel lowerings that both miss the same glyphs produce the
     /// same atlas as serial lowering: pending rasters commit in
     /// dirty-surface order and a duplicated key resolves to the first
@@ -3484,7 +3590,11 @@ mod tests {
             atlas.slot_keys[0].iter().copied().collect::<Vec<_>>(),
             [live_hash(&other)]
         );
-        assert_eq!(atlas.cpu_bytes(), 16 + LIVE_ENTRY_BYTES);
+        assert_eq!(
+            atlas.cpu_bytes(),
+            16 + LIVE_ENTRY_BYTES
+                + (atlas.shelf_rows.capacity() * std::mem::size_of::<Option<NonZeroU32>>()) as u64
+        );
         // The same after a reset: a fresh layout holds only the
         // outline-less glyph, and dropping its font touches no shelf.
         atlas.clear();
@@ -3599,6 +3709,125 @@ mod tests {
             epoch_a,
             "a surviving band keeps its epoch"
         );
+    }
+
+    /// A path whose cells span two shelves leaves both shelves' indexes
+    /// when one of them is evicted: re-admitted elsewhere, it survives
+    /// the later eviction of the other shelf, which once dropped the
+    /// fresh admission through the stale index entry and failed the
+    /// commit's `just stored` lookup.
+    #[test]
+    fn a_split_path_survives_its_old_shelf_eviction() {
+        // A class-16 cell and a class-24 cell, each too wide to share its
+        // shelf with a second one.
+        const W: u32 = 100;
+        const SHORT: usize = W as usize * 10;
+        let Some((device, _queue)) = device_and_queue() else {
+            return;
+        };
+        let mut atlas = Atlas::new(&device, u64::MAX);
+        atlas.size = 128;
+        let mut writes = CellWrites::default();
+        let arena = writes.push_arena(vec![0x80; W as usize * 30]);
+        let mut place = |atlas: &mut Atlas| {
+            let emit = PathEmit {
+                cells: vec![
+                    PathCell {
+                        rect: [0.0; 4],
+                        x: 0,
+                        y: 0,
+                        slot: 0,
+                        interior: 0,
+                    };
+                    2
+                ],
+                ..PathEmit::default()
+            };
+            let cells = vec![(W, 10, 0..SHORT), (W, 20, SHORT..SHORT * 3)];
+            atlas
+                .place_path(1, emit, cells, arena, &mut writes)
+                .expect("the path places");
+            atlas.path(1).expect("just stored").cells.clone()
+        };
+        atlas.begin_commit(&[]);
+        let first = place(&mut atlas);
+        let old_tall = first[1].slot;
+        assert_ne!(first[0].slot, old_tall, "the cells take two shelves");
+        // Only the short shelf is cold: evicting it drops the path.
+        atlas.begin_commit(&[old_tall]);
+        assert!(atlas.evict_one());
+        assert!(atlas.path(1).is_none(), "the evicted path is gone");
+        // Re-admitted, the tall cell cannot share the full old shelf.
+        atlas.begin_commit(&[]);
+        let again = place(&mut atlas);
+        assert!(again.iter().all(|cell| cell.slot != old_tall));
+        // The next commit draws the path; only its old tall shelf is cold.
+        let touches: Vec<u32> = again.iter().map(|cell| cell.slot).collect();
+        atlas.begin_commit(&touches);
+        assert!(atlas.evict_one());
+        assert!(
+            atlas.path(1).is_some(),
+            "evicting a shelf the path left keeps its admission"
+        );
+    }
+
+    /// The shelf row index tracks live bands through dead-band splits,
+    /// evictions, merges and frontier recycling — including a page edge
+    /// that is not a `SHELF_QUANTUM` multiple — and `clear` resets it.
+    #[test]
+    fn shelf_row_index_tracks_live_bands() {
+        let (device, _queue) = device_and_queue().expect("atlas index test needs a GPU adapter");
+        let mut atlas = Atlas::new(&device, u64::MAX);
+        // 65 = 8 quantum rows plus one stray row per page; four bands
+        // fill page one and four fill page two.
+        atlas.size = 65;
+        atlas.cap = 65;
+        atlas.pages = 2;
+        atlas.layout.tops.resize(2, 0);
+        let mut slots = Vec::new();
+        for h in [4, 10, 20, 10, 4, 10, 20, 10] {
+            let (_, _, slot) = atlas.alloc(60, h).expect("cell fits");
+            slots.push(slot);
+            assert_shelf_lookup(&atlas);
+        }
+        // Every live slot except the middle class-24 band of page one:
+        // the evicting alloc splits it into a live class-8 band and a
+        // dead class-16 remainder, which the next alloc reclaims.
+        let pin = |atlas: &Atlas, except: &[usize]| {
+            atlas
+                .layout
+                .shelves
+                .iter()
+                .enumerate()
+                .filter(|(i, s)| s.live && !except.contains(i))
+                .map(|(i, _)| u32::try_from(i).expect("shelf index"))
+                .collect::<Vec<_>>()
+        };
+        atlas.begin_commit(&pin(&atlas, &[slots[2]]));
+        atlas.enable_evicting();
+        let (_, _, split) = atlas.alloc(60, 4).expect("evicting alloc");
+        assert_eq!(split, slots[2], "the evicted slot is split in place");
+        assert_shelf_lookup(&atlas);
+        let (_, _, remainder) = atlas.alloc(60, 10).expect("remainder reclaimed");
+        assert_shelf_lookup(&atlas);
+        // Evicting the three adjacent bands coalesces them into one
+        // dead band that a class-24 cell then reoccupies.
+        atlas.begin_commit(&pin(&atlas, &[slots[1], slots[2], remainder]));
+        for _ in 0..3 {
+            assert!(atlas.evict_one());
+            assert_shelf_lookup(&atlas);
+        }
+        atlas.alloc(60, 20).expect("merged band reoccupied");
+        assert_shelf_lookup(&atlas);
+        // Evicting the last two bands of page two merges them and folds
+        // the merged band back into the virgin frontier.
+        atlas.begin_commit(&pin(&atlas, &[slots[6], slots[7]]));
+        for _ in 0..2 {
+            assert!(atlas.evict_one());
+            assert_shelf_lookup(&atlas);
+        }
+        atlas.clear();
+        assert_shelf_lookup(&atlas);
     }
 
     /// A retained emission's stored UVs name only the shelf each quad's
@@ -3719,7 +3948,9 @@ mod tests {
             &mut raster_scratch,
             Some(crate::render::gpu_cov::CoverageLimit::new(&device.limits())),
         );
-        lowering.prepare(&mut caches, &glyphs).expect("prepared");
+        lowering
+            .prepare(&mut caches, &glyphs, &cherenkov::TextLayouts::default())
+            .expect("prepared");
         let plan = crate::render::planes::Plan {
             planes: Vec::new(),
             rejected: Vec::new(),
@@ -3956,6 +4187,11 @@ mod tests {
             (u32::from(retained.x), u32::from(retained.y)),
             (moved.x, moved.y)
         );
+        assert_eq!(
+            atlas.shelf_hit(moved.y, moved.x),
+            atlas.map[&key(100)].shelf,
+            "the migrated cell resolves to its cached shelf"
+        );
         queue.submit([encoder.finish()]);
         assert_eq!(atlas.pages(), 1);
         assert!(atlas.gpu_bytes() < bytes_peak);
@@ -3967,10 +4203,17 @@ mod tests {
                 "the shrunken atlas still holds the whole batch"
             );
         }
-        let max_y = (100..140)
-            .map(|glyph| u32::from(atlas.get(&key(glyph)).expect("stored glyph").y))
-            .max();
-        assert!(max_y.unwrap_or(0) < 4096, "no cell lands past page one");
+        let mut max_y = 0;
+        for glyph in 100..140 {
+            let e = atlas.get(&key(glyph)).expect("stored glyph");
+            max_y = max_y.max(u32::from(e.y));
+            assert_eq!(
+                atlas.shelf_hit(u32::from(e.y), u32::from(e.x)),
+                atlas.map[&key(glyph)].shelf,
+                "glyph {glyph} resolves to its cached shelf"
+            );
+        }
+        assert!(max_y < 4096, "no cell lands past page one");
 
         // A batch whose stored-plus-pending cells still need both pages
         // keeps them: 40 cached + 50 new = 90, which two pages hold.

@@ -5,7 +5,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::renderer::frame::ScopeClip;
-use waterui_graphics::draw::Draw as _;
+use waterui_core::handler::ReportExtraction as _;
 
 /// The claim a tap gesture registered for the wrapped view: the node it
 /// stands for, the environment it was registered under — carrying the naming
@@ -359,7 +359,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         Rc::new(RefCell::new(
             move |_renderer: &mut crate::renderer::SemanticCore<E>, runtime_env: &Environment| {
                 let action_env = captured_env.layered_on(runtime_env);
-                action.borrow_mut()(&action_env);
+                action.borrow_mut()(&action_env).report_extraction();
                 true
             },
         ))
@@ -532,19 +532,39 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let action = Rc::clone(&effect.action);
         let mut layered_action: BoxedAction<()> = Box::new(move |runtime_env: &Environment| {
             let action_env = captured_env.layered_on(runtime_env);
-            action.borrow_mut()(&action_env);
+            action.borrow_mut()(&action_env)
         });
 
         if matches!(effect.gesture, Gesture::Tap(_))
-            && let Some(style) = env.get::<crate::theme::InteractionStyle>().cloned()
+            && let Some(chrome) = env.get::<crate::theme::Chrome>().cloned()
         {
             let interaction_key = InteractionKey::for_rc(&effect.action, 0);
-            let (interaction, press_slot, _) = renderer.bind_control_interaction_target(
+            let target = chrome.target(bounds);
+            let (_, press_slot, handles) = renderer.bind_live_chrome_target(
                 interaction_key.clone(),
-                bounds,
+                target,
                 env,
                 disabled,
+                &chrome,
             );
+            let state = renderer.reported_interaction_state(&interaction_key);
+            if effect.chrome_state.snapshot() != state {
+                effect.chrome_state.set(state);
+            }
+            let parts = crate::renderer::chrome::LiveChromeParts::ensure(
+                &mut effect.chrome.borrow_mut(),
+                &chrome,
+                &crate::renderer::chrome::ChromeContent::default(),
+                bounds,
+                state,
+                env,
+                &effect.chrome_state,
+            )
+            .clone();
+            handles.attach_live(Rc::clone(parts.chrome()));
+            // The surface below the composed control's own content, the
+            // interaction layers above it.
+            parts.push_below(renderer, ctx);
             // The claim parents the wrapped content's nodes for the walk, the
             // way a naming container's node parents its children's — without
             // it the content registers beside the claim and the synthesized
@@ -571,42 +591,15 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 }
             }
 
-            let state = renderer.reported_interaction_state(&interaction_key);
-            let color_signal = style.state_layer_color.resolve(env);
-            let color = renderer.read_signal(&color_signal);
-            let interaction =
-                local_interaction_state(interaction, renderer.current_hit_transform());
-            {
-                let theme = renderer.theme();
-                let layer_bounds = style.state_layer_bounds(ctx.bounds());
-                let radii = *style.state_layer_radii.resolve(state);
-                let ring =
-                    interaction_focus_ring(renderer, env, layer_bounds, radii, &style, state);
-                renderer.draw_context(ctx, |draw| {
-                    theme.draw_interaction_state_layer(
-                        draw,
-                        layer_bounds,
-                        radii,
-                        color,
-                        interaction,
-                    );
-                    if let Some((ring_bounds, ring_radii, color, width)) = ring {
-                        draw.stroke(
-                            kurbo::RoundedRect::from_rect(ring_bounds, ring_radii),
-                            kurbo::Stroke::new(width),
-                            color,
-                        );
-                    }
-                });
-            }
+            parts.push_above(renderer, ctx);
 
             if !disabled {
                 renderer.register_interactive_pointer_target_with_keyboard(
-                    bounds,
+                    target,
                     press_slot,
-                    style.keyboard_focusable,
+                    chrome.keyboard_focusable(),
                     move |_renderer, _point, runtime_env| {
-                        layered_action(runtime_env);
+                        layered_action(runtime_env).report_extraction();
                         false
                     },
                 );

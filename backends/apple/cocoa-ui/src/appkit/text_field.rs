@@ -312,6 +312,11 @@ impl TextField {
         self.setPlaceholderAttributedString(Some(placeholder));
     }
 
+    /// The font the field lays its line out with and starts typed text in.
+    pub fn set_font(&self, font: &objc2_app_kit::NSFont) {
+        self.setFont(Some(font));
+    }
+
     /// The declared content type — the `NSTextContentType` autofill and
     /// one-time-code completion key on. `NSTextField` conforms to
     /// `NSTextContent`, which carries the property.

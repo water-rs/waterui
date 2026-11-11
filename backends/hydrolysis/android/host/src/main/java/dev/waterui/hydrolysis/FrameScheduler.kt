@@ -25,7 +25,7 @@ import android.view.Choreographer
  * stopped scheduler is inert for the rest of its life.
  */
 internal class FrameScheduler(private val session: HydrolysisSession) :
-    Choreographer.FrameCallback {
+    Choreographer.FrameCallback, Choreographer.VsyncCallback {
 
     private val choreographer = Choreographer.getInstance()
     private var posted = false
@@ -56,7 +56,7 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
         }
         posted = true
         wakeCause = cause
-        choreographer.postFrameCallback(this)
+        choreographer.postVsyncCallback(this)
     }
 
     /** The host reports a touch going down (`true`) or ending (`false`). */
@@ -74,7 +74,11 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
     fun stop() {
         stopped = true
         if (posted) {
-            choreographer.removeFrameCallback(this)
+            if (deadlinePosted) {
+                choreographer.removeFrameCallback(this)
+            } else {
+                choreographer.removeVsyncCallback(this)
+            }
             posted = false
             deadlinePosted = false
             wakeCause = null
@@ -103,27 +107,42 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
      */
     fun pumpNow(cause: String) {
         if (stopped) return
-        pump(cause)
+        pump(cause, null)
     }
 
-    override fun doFrame(vsyncNanos: Long) {
+    /** The delayed deadline frame: there is no vsync to read a presentation time from. */
+    override fun doFrame(frameTimeNanos: Long) {
         posted = false
         deadlinePosted = false
         val cause = wakeCause ?: "external"
         wakeCause = null
-        pump(cause)
+        pump(cause, null)
     }
 
     /**
-     * One frame transaction and its outcome handling — the path both the
-     * vsync callback ([doFrame]) and an in-traversal pump ([pumpNow])
-     * share. `vsyncNanos` is advisory only; the native side clocks the
-     * transaction itself.
+     * The vsync frame. The preferred frame timeline's expected presentation
+     * time — on the `System.nanoTime` clock — is the instant the engine
+     * renders the frame against.
      */
-    private fun pump(cause: String) {
+    override fun onVsync(data: Choreographer.FrameData) {
+        posted = false
+        deadlinePosted = false
+        val cause = wakeCause ?: "external"
+        wakeCause = null
+        pump(cause, data.preferredFrameTimeline.expectedPresentationTimeNanos)
+    }
+
+    /**
+     * One frame transaction and its outcome handling — the path the vsync
+     * callback ([onVsync]), the deadline frame ([doFrame]) and an
+     * in-traversal pump ([pumpNow]) share. `presentationNanos` is the
+     * frame's expected presentation time, null for a frame no vsync
+     * started.
+     */
+    private fun pump(cause: String, presentationNanos: Long?) {
         val outcome =
             session.withNativePtr(NativeBridge::nativeOnFrame.name) { ptr ->
-                NativeBridge.nativeOnFrame(ptr, System.nanoTime())
+                NativeBridge.nativeOnFrame(ptr, presentationNanos != null, presentationNanos ?: 0L)
             }
         // The frame can end the session: a teardown requested inside it ran
         // as the frame returned and stopped this scheduler.

@@ -9,7 +9,9 @@
 
 use std::{rc::Rc, sync::Mutex};
 
+use cherenkov_record::Paint;
 use lru::LruCache;
+use nami::Computed;
 use waterui_core::layout::{Size as LayoutSize, VerticalAlignment, ViewDimensions};
 
 use crate::renderer::{FrameWorkCounters, Recording};
@@ -183,6 +185,27 @@ impl<E: TextEngine> TextService<E> {
         layout
     }
 
+    /// `layout` as Cherenkov text; see [`TextEngine::cherenkov_text`].
+    #[cfg(hydrolysis_gpu_painter)]
+    pub(crate) fn cherenkov_text(
+        &self,
+        layout: &E::Layout,
+        font: &mut dyn FnMut(
+            &parley::FontData,
+        ) -> Result<cherenkov::Font, cherenkov::ResourceError>,
+    ) -> Result<cherenkov::TextLayout, cherenkov::ResourceError> {
+        self.engine.cherenkov_text(layout, font)
+    }
+
+    /// The platform layout `layout` is; see [`TextEngine::platform_text`].
+    #[cfg(any(test, hydrolysis_hwui))]
+    pub(crate) fn platform_text(
+        &self,
+        layout: &E::Layout,
+    ) -> Option<std::sync::Arc<crate::hwui::text::TextLayoutResource>> {
+        self.engine.platform_text(layout)
+    }
+
     /// Horizontal ink extent of `layout` at the draw-time line limit — what
     /// the measured-frame contract widens by and the record path shifts by.
     pub(crate) fn ink_extent(
@@ -266,6 +289,34 @@ impl<E: TextEngine> TextService<E> {
         if let Some(scene) = scenes.entries.get(&key) {
             return Rc::clone(scene);
         }
+        let scene = Rc::new(self.encode(input, max_width, tail, None, counters));
+        scenes.entries.put(key, Rc::clone(&scene));
+        scene
+    }
+
+    /// [`Self::record`] with the text's default-coloured runs drawn in
+    /// `paint`, live. The scene belongs to its caller, which keeps it while
+    /// the paint moves, so it is not cached.
+    pub(crate) fn record_painted(
+        &self,
+        input: &ResolvedTextLayoutInput,
+        max_width: Option<f32>,
+        tail: TailMark,
+        paint: &Computed<Paint>,
+        counters: &mut FrameWorkCounters,
+    ) -> Rc<Recording> {
+        Rc::new(self.encode(input, max_width, tail, Some(paint), counters))
+    }
+
+    fn encode(
+        &self,
+        input: &ResolvedTextLayoutInput,
+        max_width: Option<f32>,
+        tail: TailMark,
+        paint: Option<&Computed<Paint>>,
+        counters: &mut FrameWorkCounters,
+    ) -> Recording {
+        let (max_lines, tail_ellipsis) = tail.parts();
         let layout = if tail_ellipsis {
             self.shape_limited(input, max_width, max_lines)
         } else {
@@ -278,10 +329,8 @@ impl<E: TextEngine> TextService<E> {
                 .ink_extent(&layout, max_lines)
                 .map_or(0.0, |(ink_min, _)| -ink_min.min(0.0));
             self.engine
-                .record(&layout, max_lines, x_shift, &mut scene, counters);
+                .record(&layout, max_lines, x_shift, paint, &mut scene, counters);
         }
-        let scene = Rc::new(scene);
-        scenes.entries.put(key, Rc::clone(&scene));
         scene
     }
 }

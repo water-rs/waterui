@@ -17,6 +17,7 @@ pub mod animation;
 mod entry;
 mod gpu;
 mod plan;
+mod shape;
 pub mod uniforms;
 
 #[cfg(test)]
@@ -25,7 +26,11 @@ mod tests;
 use alloc::vec::Vec;
 use core::fmt;
 
-use filtrate_core::{Chain, Filter, ParamArray, SpatialFilter, WatchGuard};
+use filtrate_core::{
+    Chain, ColorStage, Filter, ParamArray, ParamSource, Placed, SpatialFilter, SpatialStage,
+    StageCollector, WatchGuard,
+};
+use waterui_contract::contract_violation;
 
 use crate::effect::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRedrawCallback, EffectRenderError,
@@ -52,9 +57,41 @@ pub struct Executor<F: Filter, S = fn(u32, u32) -> (u32, u32)> {
     /// channel they feed.
     watcher_guards: Vec<WatchGuard>,
     animator: ParamAnimator,
+    /// The flattened-parameter indices the filter's stages declare as
+    /// point-space lengths ([`ParamSource::Length`]): they are multiplied
+    /// by the frame's `EffectInput::length_scale` before the GPU sees them.
+    length_indices: Vec<usize>,
+    /// The display scale of the most recent frame, applied to
+    /// [`Self::footprint`]'s parameter bounds the same way
+    /// [`Self::encode_render`] applies it to the values. `1.0` until the
+    /// first encode.
+    length_scale: f32,
     gpu: Option<Gpu>,
     /// Sticky setup error: once set, rendering fails fast.
     setup_error: Option<EffectSetupError>,
+}
+
+/// Collects the flattened-parameter indices a stage list declares as
+/// point-space lengths.
+struct LengthIndices(Vec<usize>);
+
+impl LengthIndices {
+    fn collect(params: &[ParamSource], param_base: usize, into: &mut Vec<usize>) {
+        for source in params {
+            if let ParamSource::Length(offset) = source {
+                into.push(param_base + offset);
+            }
+        }
+    }
+}
+
+impl StageCollector for LengthIndices {
+    fn color(&mut self, stage: Placed<ColorStage>) {
+        Self::collect(stage.stage.params, stage.param_base, &mut self.0);
+    }
+    fn spatial(&mut self, stage: Placed<SpatialStage>) {
+        Self::collect(stage.stage.params, stage.param_base, &mut self.0);
+    }
 }
 
 impl<F: Filter, S> fmt::Debug for Executor<F, S> {
@@ -75,12 +112,21 @@ impl<F: Filter> Executor<F> {
         filter.params().write_to(&mut targets);
         let (animator, watcher_guards) =
             ParamAnimator::new(targets, |installer| filter.visit_signals(installer));
+        let mut length_indices = LengthIndices(Vec::new());
+        filter.collect_stages(&mut length_indices);
+        // Several stages may index the same length parameter — a two-pass
+        // blur's horizontal and vertical halves share one radius — and each
+        // is scaled exactly once.
+        length_indices.0.sort_unstable();
+        length_indices.0.dedup();
         Self {
             filter,
             output_size: |width, height| (width, height),
             resizes_output: false,
             watcher_guards,
             animator,
+            length_indices: length_indices.0,
+            length_scale: 1.0,
             gpu: None,
             setup_error: None,
         }
@@ -88,6 +134,17 @@ impl<F: Filter> Executor<F> {
 }
 
 impl<F: Filter, S: Fn(u32, u32) -> (u32, u32) + 'static> Executor<F, S> {
+    /// `values`, with the length-indexed parameters scaled into device
+    /// pixels — the space every downstream consumer (footprint, uniforms,
+    /// intermediate sizing) works in.
+    fn pixel_params(&self, values: &[f32]) -> Vec<f32> {
+        let mut values = values.to_vec();
+        for &index in &self.length_indices {
+            values[index] *= self.length_scale;
+        }
+        values
+    }
+
     /// Declares the final output size as a function of the input dimensions.
     ///
     /// The callback can read reactive state and is queried for each frame.
@@ -108,6 +165,8 @@ impl<F: Filter, S: Fn(u32, u32) -> (u32, u32) + 'static> Executor<F, S> {
             resizes_output: true,
             watcher_guards: self.watcher_guards,
             animator: self.animator,
+            length_indices: self.length_indices,
+            length_scale: self.length_scale,
             gpu: None,
             setup_error: None,
         }
@@ -124,16 +183,19 @@ impl<F: Filter, S: Fn(u32, u32) -> (u32, u32) + 'static> Executor<F, S> {
     #[must_use]
     pub fn then<G: Filter>(self, filter: G) -> Executor<Chain<F, G>, S> {
         let redraw_callback = self.animator.redraw_callback();
-        let next = Executor::new(Chain {
+        let mut next = Executor::new(Chain {
             first: self.filter,
             second: filter,
         });
+        next.length_scale = self.length_scale;
         let next = Executor {
             output_size: self.output_size,
             resizes_output: self.resizes_output,
             filter: next.filter,
             watcher_guards: next.watcher_guards,
             animator: next.animator,
+            length_indices: next.length_indices,
+            length_scale: next.length_scale,
             gpu: next.gpu,
             setup_error: next.setup_error,
         };
@@ -145,10 +207,19 @@ impl<F: Filter, S: Fn(u32, u32) -> (u32, u32) + 'static> Executor<F, S> {
 
     /// The parameters' largest magnitudes over their running animations,
     /// after the changes received so far — the values [`Self::footprint`]
-    /// evaluates `footprint_of` at.
+    /// evaluates `footprint_of` at, in the pixels the lengths land in.
     #[must_use]
     pub fn param_bounds(&mut self) -> F::Params {
-        F::Params::read_from(&self.animator.magnitude_bounds())
+        let bounds = self.animator.magnitude_bounds();
+        F::Params::read_from(&self.pixel_params(&bounds))
+    }
+
+    /// Sets the display scale the next `pixel_params`, `param_bounds` and
+    /// `footprint` answers apply — driven ahead of planning so the current
+    /// frame's scale shapes footprint and capture decisions, not only the
+    /// eventual encode.
+    pub const fn set_length_scale(&mut self, scale: f32) {
+        self.length_scale = scale;
     }
 
     /// The largest distance, in pixels, between an output pixel and any
@@ -164,7 +235,8 @@ impl<F: Filter, S: Fn(u32, u32) -> (u32, u32) + 'static> Executor<F, S> {
     where
         F: SpatialFilter,
     {
-        F::footprint_of(&F::Params::read_from(&self.animator.magnitude_bounds())).resolve(size)
+        let bounds = self.animator.magnitude_bounds();
+        F::footprint_of(&F::Params::read_from(&self.pixel_params(&bounds))).resolve(size)
     }
 
     /// The per-frame sampled parameter values, for test observation.
@@ -246,10 +318,12 @@ impl<F: Filter, S: Fn(u32, u32) -> (u32, u32) + 'static> Executor<F, S> {
 impl<F: Filter, S: Fn(u32, u32) -> (u32, u32) + 'static> Effect for Executor<F, S> {
     fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
         let size = (self.output_size)(input_width, input_height);
-        assert!(
-            size.0 > 0 && size.1 > 0,
-            "effect declared a zero output dimension: {size:?}"
-        );
+        if size.0 == 0 || size.1 == 0 {
+            contract_violation!(
+                "effect declared a zero output dimension: {size:?}; each zero dimension is raised to 1"
+            );
+            return (size.0.max(1), size.1.max(1));
+        }
         size
     }
 
@@ -274,17 +348,20 @@ impl<F: Filter, S: Fn(u32, u32) -> (u32, u32) + 'static> Effect for Executor<F, 
         if let Some(error) = &self.setup_error {
             return Err(EffectRenderError::SetupFailed(error.clone()));
         }
-        let expected = self.output_size(input.width, input.height);
-        if expected != (output.width, output.height) {
+        let (width, height) = input.size();
+        let expected = self.output_size(width, height);
+        if expected != output.size() {
             return Err(EffectRenderError::SizeMismatch {
-                input: (input.width, input.height),
+                input: input.size(),
                 expected,
-                output: (output.width, output.height),
+                output: output.size(),
             });
         }
+        let needs_redraw = self.animator.update(input.timing().delta());
+        self.length_scale = input.length_scale();
+        let values = self.pixel_params(self.animator.current_values());
         let gpu = self.gpu.as_mut().ok_or(EffectRenderError::NotSetUp)?;
-        let needs_redraw = self.animator.update(input.timing.delta());
-        gpu.encode(input, output, encoder, self.animator.current_values())?;
+        gpu.encode(input, output, encoder, &values)?;
         self.animator.mark_rendered();
         Ok(needs_redraw)
     }

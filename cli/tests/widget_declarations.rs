@@ -17,6 +17,19 @@ use waterui_cli::apple::widgets::{declared_intents, declared_widgets};
 use waterui_cli::artifact_symbols::ArtifactSymbols;
 use waterui_cli::toolchain::Host;
 
+/// The deadline of one `xcrun swiftc` step.
+///
+/// The step is a few seconds of work when the machine is quiet (about 6 s for
+/// the intent probe on an M2 Max), but the nightly's ignored-test pass runs the
+/// whole ignored suite at once on a small shared runner: the Swift driver
+/// competes with the other tests' cargo builds. There the first attempt of the
+/// intent probe exceeded 120 s while the retry took 28 s for the whole test. The
+/// bound is 2.5 times the 120 s that proved too short and leaves the fixture
+/// build room inside nextest's 600 s ceiling for the whole test; a real hang
+/// still fails, only later.
+#[cfg(target_os = "macos")]
+const SWIFTC_DEADLINE: Duration = Duration::from_secs(300);
+
 /// The staged fixture's `Cargo.toml`.
 ///
 /// The fixture builds the enclosing checkout's framework source, so it must
@@ -133,6 +146,8 @@ fn build_fixture(profile: &str) -> WidgetFixture {
         let staged = stage_fixture(workspace, &target_dir);
         // Not `--locked`: Cargo prunes the seeded checkout lock to the
         // fixture's graph, which keeps every version the checkout pins.
+        // Plain `json`: rustc's `native-static-libs` note is a diagnostic,
+        // which `json-render-diagnostics` would render to stderr instead.
         let output = host
             .with_cwd(staged.path())
             .with_env("CARGO_TARGET_DIR", &target_dir)
@@ -143,7 +158,7 @@ fn build_fixture(profile: &str) -> WidgetFixture {
                     "--lib",
                     "--profile",
                     profile,
-                    "--message-format=json-render-diagnostics",
+                    "--message-format=json",
                     "--",
                     "--print=native-static-libs",
                 ],
@@ -151,12 +166,26 @@ fn build_fixture(profile: &str) -> WidgetFixture {
             )
             .await
             .expect("build the widget fixture");
-        assert!(output.status.success(), "{output:?}");
+        let messages = Message::parse_stream(output.stdout.as_slice())
+            .map(|message| message.expect("Cargo emits valid messages"))
+            .collect::<Vec<_>>();
+        assert!(
+            output.status.success(),
+            "the widget fixture must build:\n{}{}",
+            messages
+                .iter()
+                .filter_map(|message| match message {
+                    Message::CompilerMessage(message) => message.message.rendered.as_deref(),
+                    _ => None,
+                })
+                .collect::<String>(),
+            String::from_utf8_lossy(&output.stderr)
+        );
         let mut artifact = None;
         #[cfg(target_os = "macos")]
         let mut native_links = None;
-        for message in Message::parse_stream(output.stdout.as_slice()) {
-            match message.expect("Cargo emits valid messages") {
+        for message in messages {
+            match message {
                 Message::CompilerArtifact(message) if message.target.name == "widget_app" => {
                     artifact = message
                         .filenames
@@ -181,19 +210,13 @@ fn build_fixture(profile: &str) -> WidgetFixture {
             target_dir,
             #[cfg(target_os = "macos")]
             native_links: native_links
-                .or_else(|| {
-                    String::from_utf8_lossy(&output.stderr)
-                        .lines()
-                        .find_map(|line| line.split_once("native-static-libs: "))
-                        .map(|(_, flags)| flags.split_whitespace().map(OsString::from).collect())
-                })
                 .expect("rustc reports the fixture's native link requirements"),
         }
     })
 }
 
 #[test]
-#[ignore = "builds framework source; runs in the nightly cli-ignored job"]
+#[ignore = "builds framework source; runs in the nightly's ignored-test pass"]
 fn widget_declarations_pair_exports_with_records() {
     for profile in ["dev", "release"] {
         assert_fixture_declarations(&build_fixture(profile));
@@ -252,20 +275,34 @@ fn assert_fixture_declarations(fixture: &WidgetFixture) {
     assert_eq!(intent.symbol(), format!("waterui_intent_widget_app_{hash}"));
 
     // The `waterui-widgets` static record the extension build locates the
-    // shipped Swift sources through rides the same artifact.
-    let sources = fixture_swift_sources(&symbols);
+    // shipped Swift sources through rides the same artifact on Apple
+    // targets, the only ones that package a `WidgetKit` extension; every
+    // other target carries no record.
+    #[cfg(target_vendor = "apple")]
+    {
+        let sources = fixture_swift_sources(&symbols);
+        assert!(
+            sources.join("FFI.swift").is_file(),
+            "the record points at the crate's Swift sources: {}",
+            sources.display()
+        );
+    }
+    #[cfg(not(target_vendor = "apple"))]
     assert!(
-        sources.join("FFI.swift").is_file(),
-        "the record points at the crate's Swift sources: {}",
-        sources.display()
+        symbols.meta_record(SWIFT_SOURCES_RECORD).is_err(),
+        "only Apple targets carry the widget sources record"
     );
 }
 
+/// The record `waterui-widgets` locates its shipped Swift sources through.
+const SWIFT_SOURCES_RECORD: &str = "waterui_meta_widgets_swift_sources";
+
+#[cfg(target_vendor = "apple")]
 fn fixture_swift_sources(symbols: &ArtifactSymbols) -> PathBuf {
     PathBuf::from(
         String::from_utf8(
             symbols
-                .meta_record("waterui_meta_widgets_swift_sources")
+                .meta_record(SWIFT_SOURCES_RECORD)
                 .expect("the widget sources are declared"),
         )
         .expect("the sources path is UTF-8"),
@@ -274,7 +311,7 @@ fn fixture_swift_sources(symbols: &ArtifactSymbols) -> PathBuf {
 
 #[cfg(target_os = "macos")]
 #[test]
-#[ignore = "builds framework source and uses the Swift SDK; runs in nightly cli-ignored"]
+#[ignore = "builds framework source and uses the Swift SDK; runs in the nightly's ignored-test pass"]
 fn widget_snapshot_round_trips_through_swift() {
     let fixture = build_fixture("dev");
     smol::block_on(async {
@@ -331,7 +368,7 @@ async fn run_swift_probe(
     args.extend(fixture.native_links.iter().cloned());
     let host = Host::current().with_cwd(directory);
     let compile = host
-        .output_within("xcrun", args, Duration::from_secs(120))
+        .output_within("xcrun", args, SWIFTC_DEADLINE)
         .await
         .expect("compile the shipped Swift bridge against the Rust exports");
     assert!(compile.status.success(), "{compile:?}");
@@ -344,7 +381,7 @@ async fn run_swift_probe(
 
 #[cfg(target_os = "macos")]
 #[test]
-#[ignore = "builds framework source and executes AppIntents; runs in nightly cli-ignored"]
+#[ignore = "builds framework source and executes AppIntents; runs in the nightly's ignored-test pass"]
 fn widget_intent_performs_through_generated_app_intent() {
     #[derive(askama::Template)]
     #[template(path = "apple_widgets/IntentProbe.swift.tpl", escape = "none")]
@@ -396,7 +433,7 @@ fn widget_intent_performs_through_generated_app_intent() {
 
 #[cfg(target_os = "macos")]
 #[test]
-#[ignore = "builds framework source and uses the Swift SDK; runs in nightly cli-ignored"]
+#[ignore = "builds framework source and uses the Swift SDK; runs in the nightly's ignored-test pass"]
 fn widget_renderer_typechecks_without_intents() {
     let fixture = build_fixture("dev");
     smol::block_on(async {
@@ -428,7 +465,7 @@ fn widget_renderer_typechecks_without_intents() {
                 .map(PathBuf::into_os_string),
         );
         let checked = Host::current()
-            .output_within("xcrun", args, Duration::from_secs(120))
+            .output_within("xcrun", args, SWIFTC_DEADLINE)
             .await
             .expect("typecheck the renderer with no declared intents");
         assert!(checked.status.success(), "{checked:?}");

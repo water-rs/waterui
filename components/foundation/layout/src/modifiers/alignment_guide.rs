@@ -10,8 +10,9 @@ use alloc::{vec, vec::Vec};
 use waterui_core::View;
 
 use crate::{
-    HorizontalAlignment, Layout, PlacedSubview, ProposalSize, Rect, Size, StretchAxis, SubView,
-    SubviewPlacement, VerticalAlignment, ViewDimensions, container::FixedContainer,
+    HorizontalAlignment, Layout, LayoutError, PlacedSubview, PlacementInput, ProposalSize, Rect,
+    Size, StretchAxis, SubView, SubviewPlacement, VerticalAlignment, ViewDimensions,
+    container::FixedContainer,
 };
 
 #[derive(Clone)]
@@ -56,6 +57,22 @@ where
             bounds,
             ProposalSize::new(Some(bounds.width()), Some(bounds.height())),
         )]
+    }
+
+    /// Transparent: a guide moves where the child lines up, never where its
+    /// own response sits.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        assert!(
+            children.len() == 1,
+            "HorizontalAlignmentGuideLayout expects exactly one child"
+        );
+        Ok(children[0]
+            .resolve_extent(input.bounds, input.proposal)?
+            .rect)
     }
 
     fn explicit_horizontal(
@@ -194,6 +211,22 @@ where
         )]
     }
 
+    /// Transparent: a guide moves where the child lines up, never where its
+    /// own response sits.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        assert!(
+            children.len() == 1,
+            "VerticalAlignmentGuideLayout expects exactly one child"
+        );
+        Ok(children[0]
+            .resolve_extent(input.bounds, input.proposal)?
+            .rect)
+    }
+
     fn explicit_horizontal(
         &self,
         alignment: HorizontalAlignment,
@@ -286,6 +319,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::{LayoutError, Rect, ResolvedExtent};
     use waterui_core::{AnyView, Environment, View, layout::Point};
 
     use super::*;
@@ -305,6 +339,13 @@ mod tests {
     }
 
     impl SubView for GuidedSubview {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }

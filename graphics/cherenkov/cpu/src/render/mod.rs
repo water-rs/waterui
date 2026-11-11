@@ -153,6 +153,7 @@ pub struct RasterRenderer {
     surfaces: FxHashMap<SurfaceId, SurfaceState>,
     pub(super) filters: filter::Registry,
     fonts: FxHashMap<u64, font::Font>,
+    text_layouts: cherenkov::TextLayouts,
     bitmap_fonts: FxHashMap<u64, Arc<bitmap::BitmapFont>>,
     images: FxHashMap<u64, Arc<CpuImage>>,
     image_budget: u64,
@@ -216,6 +217,7 @@ pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), Engin
                     surfaces: FxHashMap::default(),
                     filters: filter::Registry::default(),
                     fonts: FxHashMap::default(),
+                    text_layouts: cherenkov::TextLayouts::default(),
                     bitmap_fonts: FxHashMap::default(),
                     images: FxHashMap::default(),
                     image_budget: config.budget.cpu.0,
@@ -487,6 +489,14 @@ impl Renderer for RasterRenderer {
         );
     }
 
+    fn add_text_layout(&mut self, id: cherenkov::TextLayoutId, layout: cherenkov::TextLayoutData) {
+        self.text_layouts.add(id, layout);
+    }
+
+    fn remove_text_layout(&mut self, id: cherenkov::TextLayoutId) {
+        self.text_layouts.remove(id);
+    }
+
     fn remove_font(&mut self, id: FontId) {
         self.fonts.remove(&id.raw());
         self.bitmap_fonts.remove(&id.raw());
@@ -544,7 +554,7 @@ impl Renderer for RasterRenderer {
             state
                 .layers
                 .values()
-                .any(|content| content.references(resource))
+                .any(|content| content.references(resource, &self.text_layouts))
         })
     }
 
@@ -579,6 +589,17 @@ impl Renderer for RasterRenderer {
                     .get_mut(&layer)
                     .expect("slot update targets a layer without content")
                     .update(updates);
+                None
+            }
+            Some(ContentOp::Edit(edit)) => {
+                let content = state
+                    .layers
+                    .get_mut(&layer)
+                    .expect("a structural edit targets a layer without content");
+                // The edit lowers the content again: its geometry is
+                // offered for reuse first, as a replacement's is.
+                lower::harvest(&mut self.geometry, content);
+                content.edit(*edit);
                 None
             }
             Some(ContentOp::Picture(picture)) => state
@@ -1048,7 +1069,7 @@ impl RasterRenderer {
                 lowering.damage_rows = std::mem::take(&mut surf.damage.command_rows);
                 lowering.damage_rows.clear();
             }
-            let result = lowering.run(id, sf.tree, &mut caches, &self.images);
+            let result = lowering.run(id, sf.tree, &mut caches, &self.images, &self.text_layouts);
             if local.is_none() {
                 surf.damage.layers = std::mem::take(&mut lowering.damage_layers);
                 surf.damage.command_rows = std::mem::take(&mut lowering.damage_rows);

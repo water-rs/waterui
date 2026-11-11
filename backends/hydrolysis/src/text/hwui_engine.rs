@@ -11,17 +11,19 @@ use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::sync::Arc;
 
+use cherenkov_record::kurbo::{Affine, Rect};
 use waterui_core::layout::HorizontalAlignment;
-use waterui_graphics::draw::kurbo::{Affine, Rect};
 
 use crate::hwui::HwuiError;
 use crate::hwui::text::{
     HwuiTextLayout, PlatformText, ShapeRequest, TextAlignment, TextLayoutIds, TextRun,
 };
 use crate::renderer::{FrameWorkCounters, Recording};
+use cherenkov_record::Paint;
+use nami::Computed;
 
 use super::engine::{FontFamilyResolution, TextEngine};
-use super::input::{ResolvedFontSpec, ResolvedTextLayoutInput, font_weight};
+use super::input::{ResolvedFontSpec, ResolvedTextLayoutInput};
 
 /// The HWUI-backed text engine. Shaping runs on the platform behind
 /// `provider`; layout ids come from `ids`, the table the encoder writes
@@ -117,7 +119,7 @@ fn color_long([r, g, b, a]: [u8; 4]) -> u64 {
 /// A style run on the text wire from a resolved font.
 fn font_run(font: &ResolvedFontSpec, range: Range<usize>, foreground: Option<[u8; 4]>) -> TextRun {
     {
-        let mut literal = TextRun::new(range, font.size, font_weight(font.weight));
+        let mut literal = TextRun::new(range, font.size, font.weight);
         literal.set_family(font.family.clone());
         literal.set_italic(false);
         literal.set_underline(false);
@@ -162,6 +164,7 @@ impl<P: PlatformText> TextEngine for HwuiTextEngine<P> {
         layout: &Self::Layout,
         max_lines: Option<usize>,
         x_shift: f32,
+        paint: Option<&Computed<Paint>>,
         scene: &mut Recording,
         _counters: &mut FrameWorkCounters,
     ) {
@@ -183,7 +186,19 @@ impl<P: PlatformText> TextEngine for HwuiTextEngine<P> {
                     .sum::<f64>();
                 Rect::new(bounds.x0, bounds.y0, bounds.x1, bottom)
             });
-        scene.draw_platform_text(resource, Affine::translate((f64::from(x_shift), 0.0)), clip);
+        scene.draw_platform_text(
+            resource,
+            Affine::translate((f64::from(x_shift), 0.0)),
+            clip,
+            paint,
+        );
+    }
+
+    fn platform_text(
+        &self,
+        layout: &Self::Layout,
+    ) -> Option<Arc<crate::hwui::text::TextLayoutResource>> {
+        layout.resource()
     }
 
     /// The engine holds no shape or ink caches of its own — [`TextService`]

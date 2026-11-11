@@ -8,6 +8,7 @@
 //! clamped to what the destination can carry.
 
 use rustc_hash::FxHashMap;
+use waterui_contract::contract_violation;
 
 use cherenkov::{RenderError, SurfaceError};
 
@@ -992,10 +993,28 @@ impl WindowSurface {
         Ok(())
     }
 
+    /// The presentation conventions of `texture`, one of this swapchain's
+    /// images, for a frame on a display with `headroom`.
+    pub(crate) const fn output<'a>(
+        &self,
+        texture: &'a wgpu::Texture,
+        headroom: f32,
+    ) -> TextureOutput<'a> {
+        TextureOutput {
+            texture,
+            color: self.selection.output_color(),
+            alpha: surface_output_alpha(self.config.alpha_mode),
+            headroom: self.selection.effective_headroom(headroom),
+        }
+    }
+
     /// Acquires the next swapchain image, reconfiguring once when the
     /// swapchain is outdated or lost. `None` skips the frame: the window is
     /// occluded or the acquire timed out.
-    fn acquire(&self, device: &wgpu::Device) -> Result<Option<wgpu::SurfaceTexture>, RenderError> {
+    pub(crate) fn acquire(
+        &self,
+        device: &wgpu::Device,
+    ) -> Result<Option<wgpu::SurfaceTexture>, RenderError> {
         use wgpu::CurrentSurfaceTexture as Current;
         let acquired = match self.surface.get_current_texture() {
             Current::Outdated | Current::Lost => {
@@ -1153,17 +1172,11 @@ impl Presenter {
         let Some(frame) = window.acquire(device)? else {
             return Ok(None);
         };
-        let alpha = surface_output_alpha(window.config.alpha_mode);
         self.texture(
             device,
             queue,
             source,
-            TextureOutput {
-                texture: &frame.texture,
-                color: window.selection.output_color(),
-                alpha,
-                headroom: window.selection.effective_headroom(headroom),
-            },
+            window.output(&frame.texture, headroom),
         );
         Ok(Some(frame))
     }
@@ -1302,21 +1315,25 @@ impl Presenter {
     /// The uniform contents a blit into `output` reads: `{ encode, alpha,
     /// headroom, pad }`, see `Present` in `present.wgsl`.
     ///
-    /// # Panics
-    /// If linear Display P3 output is requested for an sRGB texture format.
+    /// # Contract
+    /// Extended or linear output into an sRGB texture format is a contract
+    /// violation; the blit encodes as requested and the texture's hardware
+    /// sRGB encode applies on top.
     #[must_use]
     pub(crate) fn uniform_bytes(output: &TextureOutput<'_>) -> [u8; 16] {
         let format = output.texture.format();
-        assert!(
-            !matches!(
-                output.color,
-                OutputColor::LinearDisplayP3
-                    | OutputColor::ExtendedSrgbLinear
-                    | OutputColor::ExtendedSrgb
-                    | OutputColor::ExtendedDisplayP3
-            ) || !format.is_srgb(),
-            "extended output requires a non-sRGB texture format"
-        );
+        if matches!(
+            output.color,
+            OutputColor::LinearDisplayP3
+                | OutputColor::ExtendedSrgbLinear
+                | OutputColor::ExtendedSrgb
+                | OutputColor::ExtendedDisplayP3
+        ) && format.is_srgb()
+        {
+            contract_violation!(
+                "extended output requires a non-sRGB texture format, found {format:?}; the blit encodes as requested and the texture's hardware sRGB encode applies on top"
+            );
+        }
         // The `present.wgsl` `encode` codes: 0/1 sRGB SDR (hw/sw),
         // 2 linear P3, 3/4 Display P3 SDR (sw/hw), 5 scRGB linear,
         // 6 extended sRGB, 7 extended P3, 8 PQ, 9 HLG.

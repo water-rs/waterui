@@ -356,16 +356,19 @@ impl fmt::Debug for Quit {
 impl Quit {
     /// Files a cancellable termination request with the runner.
     ///
-    /// # Panics
+    /// # Contract
     ///
-    /// When the runner that installed this `Quit` has already dropped its
-    /// termination machine — the application is gone, and nothing is left
-    /// to quit.
+    /// A runner that has already dropped its termination machine — the
+    /// application is gone, and nothing is left to quit — breaks the
+    /// contract: a debug build panics, and a release build logs the error and
+    /// ignores the request.
     pub fn request(&self) {
-        let inner = self
-            .0
-            .upgrade()
-            .expect("Quit::request called after the runner's termination machine ended");
+        let Some(inner) = self.0.upgrade() else {
+            crate::contract_violation!(
+                "Quit::request called after the runner's termination machine ended, so it is ignored"
+            );
+            return;
+        };
         TerminationHandle { inner }.request(TerminationKind::Cancellable);
     }
 
@@ -411,6 +414,12 @@ mod tests {
     use super::super::parked_executor::{drain, install as install_executor};
     use super::*;
     use crate::app::{App, QuitReply};
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "termination machine ended"))]
+    fn a_quit_request_after_the_machine_ended_is_ignored() {
+        Quit(Weak::new()).request();
+    }
 
     /// A `TerminationHost` that records the machine's decisions.
     #[derive(Clone, Default)]
@@ -490,7 +499,7 @@ mod tests {
         );
         assert_eq!(command.shortcut, Some(Shortcut::new('q').command()));
 
-        command.action.call(&env);
+        command.action.run(&env);
         drain();
         // Only a cancellable request asks `on_quit_request`; a required one
         // would skip straight to terminating.

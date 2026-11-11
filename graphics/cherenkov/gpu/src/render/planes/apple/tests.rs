@@ -10,6 +10,37 @@ fn rect() -> Rect {
     Rect::new(10.0, 20.0, 110.0, 70.0)
 }
 
+/// A window whose handle is never available.
+struct NoWindow;
+
+impl wgpu::rwh::HasWindowHandle for NoWindow {
+    fn window_handle(&self) -> Result<wgpu::rwh::WindowHandle<'_>, wgpu::rwh::HandleError> {
+        Err(wgpu::rwh::HandleError::Unavailable)
+    }
+}
+
+impl wgpu::rwh::HasDisplayHandle for NoWindow {
+    fn display_handle(&self) -> Result<wgpu::rwh::DisplayHandle<'_>, wgpu::rwh::HandleError> {
+        Err(wgpu::rwh::HandleError::Unavailable)
+    }
+}
+
+/// A window target made off the main thread captures no view: its surface
+/// fails with `UnsupportedTarget` instead of presenting.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "a window target's view is captured on the main thread")
+)]
+fn a_window_target_off_the_main_thread_fails_its_surface() {
+    // A test body never runs on the main thread.
+    let target = crate::WindowTarget::new(NoWindow, (64, 64));
+    assert!(matches!(
+        target.parent,
+        Err(cherenkov::SurfaceError::UnsupportedTarget(_))
+    ));
+}
+
 #[test]
 fn motionless_placement_needs_no_animation_transaction() {
     let mut state = super::MotionState::default();

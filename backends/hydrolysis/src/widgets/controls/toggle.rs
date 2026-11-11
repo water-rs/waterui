@@ -1,30 +1,77 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::live_toggle::LiveToggleParts;
 use crate::renderer::{
-    HydroNativeView, HydroState, InteractionKey, RenderContext, WidgetRenderContext,
-    measure_label_intrinsic,
+    HydroNativeView, HydroState, InteractionKey, RenderContext, Track, TrackAction,
+    WidgetRenderContext, measure_label_intrinsic,
+};
+use crate::theme::{
+    CheckboxLook, SpecTint, SwitchDrag, SwitchLook, ToggleControl, ToggleSpec, WidgetTheme,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
     Toggled as AccessibilityToggled,
 };
-use std::cell::RefCell;
+use kurbo::{Point, Vec2};
+use nami::Signal as _;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
-use waterui_core::layout::Size as LayoutSize;
+use waterui_core::interaction::InteractionState;
+use waterui_core::layout::{LayoutDirection, Size as LayoutSize};
 use waterui_core::layout::{ProposalSize, StretchAxis, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native};
 
-use crate::renderer::{RetainedSubview, local_interaction_state};
-use crate::widgets::util::{label_beside_control_bounds, widget_disabled};
+use crate::renderer::RetainedSubview;
+use crate::widgets::util::{label_beside_control_bounds, mirrored_in, widget_disabled};
+
+/// A toggle's look: the theme's switch or checkbox for a [`ToggleSpec`].
+#[derive(Clone)]
+enum ToggleLook {
+    Switch(SwitchLook),
+    Checkbox(CheckboxLook),
+}
+
+impl ToggleLook {
+    /// The look `theme` gives a toggle of `spec` in `env`.
+    fn resolve(theme: &Rc<dyn WidgetTheme>, spec: &ToggleSpec, env: &Environment) -> Self {
+        match spec.style() {
+            ToggleStyle::Switch => Self::Switch(theme.switch(spec, env)),
+            ToggleStyle::Checkbox => Self::Checkbox(theme.checkbox(spec, env)),
+            ToggleStyle::Automatic => panic!("{UNRESOLVED_STYLE}"),
+            _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
+        }
+    }
+
+    const fn control(&self) -> &ToggleControl {
+        match self {
+            Self::Switch(look) => look.control(),
+            Self::Checkbox(look) => look.control(),
+        }
+    }
+}
+
+/// The spec of the toggle `config` describes in `env`.
+fn toggle_spec(config: &ToggleConfig, env: &Environment) -> ToggleSpec {
+    ToggleSpec::new(
+        config.style(),
+        config.size(),
+        waterui_core::layout::layout_direction(env).snapshot(),
+        SpecTint::resolve(env),
+    )
+}
 
 /// The retained render state of a toggle: the cloneable [`ToggleConfig`] drives the
 /// control + accessibility, and its main label is held as a [`RetainedSubview`]
 /// built once and re-flushed each frame so reactive label content stays live.
+/// The look the theme gave, and the parts recorded from it, are held across
+/// renders while the toggle's spec and frame stay the same.
 pub struct ToggleRenderState<E: crate::text::TextEngine> {
     config: ToggleConfig,
     label_view: RetainedSubview<E>,
+    look: Option<(ToggleSpec, ToggleLook)>,
+    parts: Option<LiveToggleParts>,
 }
 
 impl<E: crate::text::TextEngine> ToggleRenderState<E> {
@@ -32,6 +79,8 @@ impl<E: crate::text::TextEngine> ToggleRenderState<E> {
         Self {
             label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
             config,
+            look: None,
+            parts: None,
         }
     }
 
@@ -50,6 +99,41 @@ impl<E: crate::text::TextEngine> ToggleRenderState<E> {
     /// (water-rs/waterui#1957).
     pub(crate) fn take_layout_dirty(&mut self) -> bool {
         self.label_view.take_layout_dirty_if_built()
+    }
+
+    /// The look for `spec` in `env`: the one already held when the spec is
+    /// unchanged, otherwise requested again.
+    fn look(
+        &mut self,
+        theme: &Rc<dyn WidgetTheme>,
+        spec: ToggleSpec,
+        env: &Environment,
+    ) -> &ToggleLook {
+        if self.held(&spec).is_none() {
+            let look = ToggleLook::resolve(theme, &spec, env);
+            self.look = Some((spec, look));
+        }
+        &self.look.as_ref().expect("the look was just ensured").1
+    }
+
+    fn held(&self, spec: &ToggleSpec) -> Option<&ToggleLook> {
+        self.look
+            .as_ref()
+            .filter(|(held, _)| held == spec)
+            .map(|(_, look)| look)
+    }
+
+    /// The look for `spec` in `env` without holding it: the held one, or a
+    /// fresh one for a measurement ahead of the render that holds it.
+    fn peek(
+        &self,
+        theme: &Rc<dyn WidgetTheme>,
+        spec: &ToggleSpec,
+        env: &Environment,
+    ) -> ToggleLook {
+        self.held(spec)
+            .cloned()
+            .unwrap_or_else(|| ToggleLook::resolve(theme, spec, env))
     }
 }
 
@@ -131,6 +215,18 @@ pub fn toggle_accessibility<E: crate::text::TextEngine>(
 const UNRESOLVED_STYLE: &str =
     "the toggle payload reached hydrolysis with an unresolved Automatic style";
 
+/// The size a toggle of `control` takes beside a label of `label_size`.
+fn toggle_size(control: &ToggleControl, label_size: LayoutSize) -> (f64, f64) {
+    let label_width = f64::from(label_size.width);
+    let size = control.size();
+    let width = if label_width > 0.0 {
+        label_width + control.get_label_spacing() + size.width
+    } else {
+        size.width
+    };
+    (width, f64::from(label_size.height).max(size.height))
+}
+
 /// Measures a retained toggle leaf from its [`ToggleRenderState`], reading the
 /// label size from its already-built [`RetainedSubview`] so layout and render agree.
 ///
@@ -144,15 +240,10 @@ pub fn measure_toggle_node<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
-    let metrics = theme.toggle_metrics(render_state.config.style());
+    let spec = toggle_spec(&render_state.config, env);
+    let look = render_state.peek(theme, &spec, env);
     let label_size = render_state.label_view.measure_built(state, env, theme);
-    let label_width = f64::from(label_size.width);
-    let width = if label_width > 0.0 {
-        label_width + metrics.label_spacing + metrics.width
-    } else {
-        metrics.width
-    };
-    let height = f64::from(label_size.height).max(metrics.height);
+    let (width, height) = toggle_size(look.control(), label_size);
     let width = match (
         waterui_core::NativeView::stretch_axis(&render_state.config),
         proposal.width,
@@ -191,10 +282,6 @@ pub fn render_toggle_node<E: crate::text::TextEngine>(
     render_toggle_parts(ctx, state, env);
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the render sequence is one continuous scenario; splitting it would obscure the order"
-)]
 pub fn render_toggle_parts<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<ToggleRenderState<E>>>,
@@ -202,11 +289,13 @@ pub fn render_toggle_parts<E: crate::text::TextEngine>(
 ) {
     let visual_interaction_key = InteractionKey::for_rc(state, 0);
     let activation_interaction_key = InteractionKey::for_rc(state, 1);
-    let owner = state;
     let theme = ctx.theme();
     let mut state = state.borrow_mut();
     let style = state.config.style();
-    let metrics = theme.toggle_metrics(style);
+    let spec = toggle_spec(&state.config, env);
+    let direction = spec.direction();
+    let look = state.look(&theme, spec, env).clone();
+    let control = look.control();
     // Reading the disabled signal watches it, so a change schedules a frame
     // and this persistent node re-renders (and re-registers input) with the
     // new state.
@@ -218,7 +307,7 @@ pub fn render_toggle_parts<E: crate::text::TextEngine>(
     // content stays live through the node's own per-frame re-flush, with no dispatch.
     let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
     let (control_bounds, label_bounds) =
-        toggle_control_and_label_bounds(ctx.bounds, style, metrics, label_size);
+        toggle_control_and_label_bounds(ctx.bounds, style, direction, control, label_size);
     if label_bounds.width() > 0.0 {
         // A disabled control dims its label to the theme's disabled-content
         // alpha (Material: on-surface at 38% for default-colored labels).
@@ -251,55 +340,24 @@ pub fn render_toggle_parts<E: crate::text::TextEngine>(
         );
     }
 
-    // Reading the toggle value through `resolve_toggle_progress` watches the
-    // signal (it registers a retained-refresh watcher), so a value change
-    // schedules a frame and this persistent node re-renders the new state.
-    let (thumb_progress, selected) = {
-        let binding = state.config.toggle().clone();
-        ctx.renderer_mut()
-            .resolve_toggle_progress(&binding, owner, theme.toggle_value_animation())
-    };
-    let visual_hit_bounds = control_bounds;
-    let activation_hit_bounds = ctx.bounds;
-    let hit_transform = ctx.renderer_mut().current_hit_transform();
-    let (interaction, press_slot, _) = ctx.renderer_mut().bind_control_interaction_target(
+    let binding = state.config.toggle().clone();
+    let target = control.target(control_bounds);
+    let (_, press_slot, handles) = ctx.renderer_mut().bind_live_toggle_target(
         visual_interaction_key.clone(),
-        visual_hit_bounds,
+        target,
         env,
         disabled,
+        control,
     );
-    let interaction = local_interaction_state(interaction, hit_transform);
-    {
-        ctx.draw_context(|draw| match style {
-            ToggleStyle::Switch => {
-                theme.draw_toggle_switch(
-                    &mut *draw,
-                    control_bounds,
-                    thumb_progress,
-                    selected,
-                    interaction,
-                );
-                theme.draw_toggle_switch_state_layer(
-                    &mut *draw,
-                    control_bounds,
-                    thumb_progress,
-                    selected,
-                    interaction,
-                );
-            }
-            ToggleStyle::Checkbox => {
-                theme.draw_toggle_checkbox(&mut *draw, control_bounds, thumb_progress, interaction);
-                theme.draw_toggle_checkbox_state_layer(
-                    &mut *draw,
-                    control_bounds,
-                    thumb_progress,
-                    interaction,
-                );
-            }
-            ToggleStyle::Automatic => panic!("{UNRESOLVED_STYLE}"),
-            _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
-        });
-    }
+    let flags = ctx
+        .renderer_mut()
+        .reported_interaction_state(&visual_interaction_key);
+    // The parts read the toggle's value through its binding: a toggle, hover,
+    // press or drag moves their operands and records nothing.
+    let parts =
+        LiveToggleParts::ensure(&mut state.parts, control, control_bounds, flags, &binding).clone();
+    handles.attach_live_toggle(Rc::clone(parts.toggle()));
+    push_control(ctx, &parts, flags, target);
     // A disabled toggle registers no tap target: the pointer neither presses
     // nor toggles it. Targets are re-registered every flush, so re-enabling
     // restores interactivity on the next frame.
@@ -310,13 +368,13 @@ pub fn render_toggle_parts<E: crate::text::TextEngine>(
     // switch's visual interaction. An associated the Material label toggles the switch
     // but does not originate a switch ripple or pressed thumb from the label's
     // distant pointer coordinate.
-    let binding = state.config.toggle().clone();
     if label_bounds.width() > 0.0 {
         let mut activation_press_slot = press_slot.clone();
         activation_press_slot.key = activation_interaction_key;
+        let row = ctx.bounds;
         ctx.renderer_mut()
             .register_interactive_pointer_target_with_keyboard(
-                activation_hit_bounds,
+                row,
                 activation_press_slot,
                 false,
                 toggle_binding_action(binding.clone(), visual_interaction_key.clone()),
@@ -324,11 +382,108 @@ pub fn render_toggle_parts<E: crate::text::TextEngine>(
     }
     // Register the visual control last so it wins hit testing where the full-row
     // activation target overlaps it.
-    ctx.renderer_mut().register_interactive_pointer_target(
-        visual_hit_bounds,
-        press_slot,
-        toggle_binding_action(binding, visual_interaction_key),
-    );
+    let action = toggle_binding_action(binding.clone(), visual_interaction_key);
+    match &look {
+        ToggleLook::Switch(switch) => {
+            let track = switch_track(
+                *switch.drag(),
+                parts.toggle().clone(),
+                binding,
+                press_slot.slop,
+            );
+            ctx.renderer_mut()
+                .register_tracked_pointer_target(target, press_slot, track, action);
+        }
+        ToggleLook::Checkbox(_) => {
+            ctx.renderer_mut()
+                .register_interactive_pointer_target(target, press_slot, action);
+        }
+    }
+}
+
+/// Lists a toggle's control as one group. An opacity that varies between
+/// renders follows its operand; a fixed one groups the parts only when it
+/// fades. The group reaches as far as the parts draw and the touch `target`.
+fn push_control<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    parts: &LiveToggleParts,
+    flags: InteractionState,
+    target: kurbo::Rect,
+) {
+    let group = crate::renderer::mount::ScopeKey {
+        role: "toggle-group",
+        item: 0,
+    };
+    let reach = parts.toggle().visual_bounds().union(target);
+    let body = |ctx: &mut WidgetRenderContext<'_, E>| {
+        let render_ctx = ctx.render_context();
+        parts.push(ctx.renderer_mut(), render_ctx);
+    };
+    if let Some(opacity) = parts.toggle().live_group_opacity(flags) {
+        let operands = crate::renderer::ScopeOperands {
+            opacity: Some(opacity),
+            transform: None,
+        };
+        ctx.with_live_scope(group, operands, reach, body);
+    } else {
+        let opacity = parts.toggle().fixed_group_opacity(flags);
+        ctx.with_scope_if(opacity < 1.0, group, opacity, reach, body);
+    }
+}
+
+/// The handler of a switch's press: a press that moves farther than `slop`
+/// horizontally drags the knob and settles on release, any other tap within
+/// reach toggles it.
+fn switch_track(
+    drag: SwitchDrag,
+    toggle: Rc<crate::renderer::live_toggle::LiveToggle>,
+    binding: nami::Binding<bool>,
+    slop: f64,
+) -> TrackAction {
+    let start = Cell::new(None::<Point>);
+    let dragging = Cell::new(false);
+    let offset = move |from: Option<Point>, to: Point| {
+        from.map_or(Vec2::ZERO, |from| Vec2::new(to.x - from.x, 0.0))
+    };
+    Rc::new(RefCell::new(move |step: Track| match step {
+        Track::Begin(point) => {
+            start.set(Some(point));
+            dragging.set(false);
+        }
+        Track::Move(point) => {
+            let offset = offset(start.get(), point);
+            if !dragging.get() && offset.x.abs() > slop {
+                dragging.set(true);
+                toggle.begin_drag();
+            }
+            if dragging.get() {
+                toggle.drag_to(offset);
+            }
+        }
+        Track::Release {
+            point,
+            within_reach,
+        } => {
+            let offset = offset(start.take(), point);
+            if dragging.replace(false) {
+                let value = binding.snapshot();
+                let settled = if within_reach {
+                    drag.settles_on(value, offset)
+                } else {
+                    value
+                };
+                toggle.end_drag(settled, &binding);
+            } else if within_reach {
+                binding.toggle();
+            }
+        }
+        Track::Cancel => {
+            start.set(None);
+            if dragging.replace(false) {
+                toggle.end_drag(binding.snapshot(), &binding);
+            }
+        }
+    }))
 }
 
 fn toggle_binding_action<E: crate::text::TextEngine>(
@@ -351,41 +506,55 @@ pub fn measure_toggle_intrinsic<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
-    let metrics = theme.toggle_metrics(toggle.style());
+    let look = ToggleLook::resolve(theme, &toggle_spec(toggle, env), env);
     let label_size = measure_label_intrinsic(toggle.label(), state, env, theme);
-    let label_width = f64::from(label_size.width);
-    let width = if label_width > 0.0 {
-        label_width + metrics.label_spacing + metrics.width
-    } else {
-        metrics.width
-    };
-    let height = f64::from(label_size.height).max(metrics.height);
+    let (width, height) = toggle_size(look.control(), label_size);
     LayoutSize::new(
         crate::num_cast::f64_as_f32(width),
         crate::num_cast::f64_as_f32(height),
     )
 }
 
+/// Where a toggle of `style` places its control and its label in `bounds`.
+/// The label lies at the leading edge of a switch's frame and the control at
+/// its trailing edge; a checkbox's control leads its label. A right-to-left
+/// layout mirrors both about the frame's centre line.
+fn toggle_control_and_label_bounds(
+    bounds: kurbo::Rect,
+    style: ToggleStyle,
+    direction: LayoutDirection,
+    toggle: &ToggleControl,
+    label_size: LayoutSize,
+) -> (kurbo::Rect, kurbo::Rect) {
+    let (control, label) = left_to_right_bounds(bounds, style, toggle, label_size);
+    match direction {
+        LayoutDirection::LeftToRight => (control, label),
+        LayoutDirection::RightToLeft => (mirrored_in(control, bounds), mirrored_in(label, bounds)),
+    }
+}
+
 #[expect(
     clippy::similar_names,
     reason = "the names follow the fixture domain vocabulary; renaming would obscure rather than clarify"
 )]
-fn toggle_control_and_label_bounds(
+fn left_to_right_bounds(
     bounds: kurbo::Rect,
     style: ToggleStyle,
-    metrics: crate::theme::ToggleMetrics,
+    toggle: &ToggleControl,
     label_size: LayoutSize,
 ) -> (kurbo::Rect, kurbo::Rect) {
-    let control_y0 = bounds.y0 + ((bounds.height() - metrics.height) / 2.0).max(0.0);
-    let control_y1 = control_y0 + metrics.height;
+    let size = toggle.size();
+    let spacing = toggle.get_label_spacing();
+    let control_y0 = bounds.y0 + ((bounds.height() - size.height) / 2.0).max(0.0);
+    let control_y1 = control_y0 + size.height;
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
     match style {
         ToggleStyle::Checkbox => {
             let control_x0 = bounds.x0;
-            let control_x1 = control_x0 + metrics.width;
+            let control_x1 = control_x0 + size.width;
             let control = kurbo::Rect::new(control_x0, control_y0, control_x1, control_y1);
             let label_x0 = if has_label {
-                (control_x1 + metrics.label_spacing).min(bounds.x1)
+                (control_x1 + spacing).min(bounds.x1)
             } else {
                 control_x1
             };
@@ -403,15 +572,11 @@ fn toggle_control_and_label_bounds(
             )
         }
         ToggleStyle::Switch => {
-            let control_x0 = (bounds.x1 - metrics.width).max(bounds.x0);
-            let control = kurbo::Rect::new(
-                control_x0,
-                control_y0,
-                control_x0 + metrics.width,
-                control_y1,
-            );
+            let control_x0 = (bounds.x1 - size.width).max(bounds.x0);
+            let control =
+                kurbo::Rect::new(control_x0, control_y0, control_x0 + size.width, control_y1);
             let label_x1 = if has_label {
-                (control_x0 - metrics.label_spacing).max(bounds.x0)
+                (control_x0 - spacing).max(bounds.x0)
             } else {
                 bounds.x0
             };
@@ -452,18 +617,28 @@ pub fn emit_toggle_accessibility<E: crate::text::TextEngine>(
 #[cfg(test)]
 mod tests {
     use super::toggle_control_and_label_bounds;
-    use crate::theme::ToggleMetrics;
+    use crate::theme::{Motion, ToggleControl};
     use kurbo::Rect;
+    use std::time::Duration;
     use waterui_controls::toggle::ToggleStyle;
-    use waterui_core::layout::Size;
+    use waterui_core::animation::Animation;
+    use waterui_core::layout::{LayoutDirection, Size};
+
+    fn control(width: f64, height: f64, spacing: f64) -> ToggleControl {
+        ToggleControl::new(
+            kurbo::Size::new(width, height),
+            Motion::uniform(Animation::linear(Duration::ZERO)),
+        )
+        .label_spacing(spacing)
+    }
 
     #[test]
     fn checkbox_layout_places_control_before_label() {
-        let metrics = ToggleMetrics::new(18.0, 18.0, 8.0);
         let (control, label) = toggle_control_and_label_bounds(
             Rect::new(16.0, 20.0, 320.0, 60.0),
             ToggleStyle::Checkbox,
-            metrics,
+            LayoutDirection::LeftToRight,
+            &control(18.0, 18.0, 8.0),
             Size::new(64.0, 16.0),
         );
 
@@ -471,13 +646,39 @@ mod tests {
         assert_eq!(label, Rect::new(42.0, 32.0, 106.0, 48.0));
     }
 
+    /// A right-to-left layout mirrors both placements about the frame.
+    #[test]
+    fn right_to_left_mirrors_the_placement() {
+        let bounds = Rect::new(16.0, 20.0, 320.0, 60.0);
+        let label_size = Size::new(64.0, 16.0);
+        let (control, label) = toggle_control_and_label_bounds(
+            bounds,
+            ToggleStyle::Switch,
+            LayoutDirection::RightToLeft,
+            &self::control(52.0, 32.0, 8.0),
+            label_size,
+        );
+        assert_eq!(control, Rect::new(16.0, 24.0, 68.0, 56.0));
+        assert_eq!(label, Rect::new(76.0, 32.0, 320.0, 48.0));
+
+        let (control, label) = toggle_control_and_label_bounds(
+            bounds,
+            ToggleStyle::Checkbox,
+            LayoutDirection::RightToLeft,
+            &self::control(18.0, 18.0, 8.0),
+            label_size,
+        );
+        assert_eq!(control, Rect::new(302.0, 31.0, 320.0, 49.0));
+        assert_eq!(label, Rect::new(230.0, 32.0, 294.0, 48.0));
+    }
+
     #[test]
     fn switch_layout_keeps_control_trailing() {
-        let metrics = ToggleMetrics::new(52.0, 32.0, 8.0);
         let (control, label) = toggle_control_and_label_bounds(
             Rect::new(16.0, 20.0, 320.0, 60.0),
             ToggleStyle::Switch,
-            metrics,
+            LayoutDirection::LeftToRight,
+            &self::control(52.0, 32.0, 8.0),
             Size::new(64.0, 16.0),
         );
 
@@ -487,15 +688,19 @@ mod tests {
 
     #[test]
     fn label_shares_the_control_centre_line() {
-        let metrics = ToggleMetrics::new(52.0, 32.0, 8.0);
         let bounds = Rect::new(16.0, 20.0, 320.0, 60.0);
         for style in [ToggleStyle::Switch, ToggleStyle::Checkbox] {
-            let metrics = match style {
-                ToggleStyle::Checkbox => ToggleMetrics::new(18.0, 18.0, 8.0),
-                _ => metrics,
+            let toggle = match style {
+                ToggleStyle::Checkbox => control(18.0, 18.0, 8.0),
+                _ => control(52.0, 32.0, 8.0),
             };
-            let (control, label) =
-                toggle_control_and_label_bounds(bounds, style, metrics, Size::new(64.0, 16.0));
+            let (control, label) = toggle_control_and_label_bounds(
+                bounds,
+                style,
+                LayoutDirection::LeftToRight,
+                &toggle,
+                Size::new(64.0, 16.0),
+            );
             assert!(
                 (label.center().y - control.center().y).abs() < 1e-9,
                 "{style:?}: label centre {} != control centre {}",

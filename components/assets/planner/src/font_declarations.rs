@@ -18,14 +18,14 @@ use thiserror::Error;
 #[non_exhaustive]
 pub struct FontDeclaration {
     /// Font family name (used as `font_family` in Text).
-    pub name: String,
+    name: String,
     /// Source of the font file.
-    pub source: FontSource,
+    source: FontSource,
     /// Crate or project that declared this font.
-    pub crate_name: String,
+    crate_name: String,
     /// The platforms whose builds bundle this font; `None` bundles it on
     /// every platform.
-    pub platforms: Option<Vec<FontPlatform>>,
+    platforms: Option<Vec<FontPlatform>>,
 }
 
 impl FontDeclaration {

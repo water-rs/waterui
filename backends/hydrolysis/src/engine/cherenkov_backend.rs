@@ -264,7 +264,7 @@ impl SurfaceCore {
     }
 
     /// The colour the surface clears to before content.
-    pub fn clear_color(&self, color: waterui_graphics::draw::WorkingColor) {
+    pub fn clear_color(&self, color: cherenkov_record::WorkingColor) {
         self.surface.clear_color(color);
     }
 }
@@ -277,6 +277,12 @@ pub trait EngineSurface {
     fn core(&self) -> &SurfaceCore;
     /// The engine surface this kind wraps, for resizing.
     fn core_mut(&mut self) -> &mut SurfaceCore;
+
+    /// The layer tracks the engine still ran when it last rendered the
+    /// surface.
+    fn running_tracks(&self) -> cherenkov_record::RunningTracks {
+        self.core().engine_surface().running_tracks()
+    }
 }
 
 /// Android presents retained buffers directly through the system compositor.
@@ -313,6 +319,7 @@ impl AndroidCherenkovSurface {
         size: (u32, u32),
         wake: impl Fn() + Send + Sync + 'static,
         transparent: bool,
+        band_commits: std::sync::mpsc::Sender<cherenkov_gpu::interop::android::BandCommit>,
     ) -> Self {
         use cherenkov_gpu::interop::android::{SurfaceControl, SurfaceControlTarget};
         // SAFETY: the host holds the live SurfaceView's ANativeWindow lease.
@@ -322,7 +329,9 @@ impl AndroidCherenkovSurface {
             .expect("hydrolysis android: surface creation requires the host Looper");
         let surface = engine
             .surface(
-                SurfaceControlTarget::new(parent, size, looper).transparent(transparent),
+                SurfaceControlTarget::new(parent, size, looper)
+                    .transparent(transparent)
+                    .band_commits(band_commits),
                 wake,
             )
             .expect("hydrolysis android: failed to create the compositor surface");
@@ -331,9 +340,31 @@ impl AndroidCherenkovSurface {
         }
     }
 
-    pub(crate) fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        self.core
-            .own(self.core.engine.render(cherenkov::FrameTime::now()))
+    /// The engine surface's identity — which window a band was delivered
+    /// to.
+    pub(crate) fn id(&self) -> cherenkov::SurfaceId {
+        self.core.surface.id()
+    }
+
+    /// Sets or clears the band above the embedded platform view whose
+    /// placement id is `view`: `target` is the swapchain window of the
+    /// band `View` the host stacks above it (water-rs/waterui#2225).
+    ///
+    /// # Errors
+    /// [`SurfaceError::Lost`] when the render thread is gone.
+    pub(crate) fn set_band(
+        &self,
+        view: u64,
+        target: Option<cherenkov_gpu::WindowTarget>,
+    ) -> Result<(), cherenkov::SurfaceError> {
+        self.core.engine.set_band(&self.core.surface, view, target)
+    }
+
+    pub(crate) fn render(
+        &self,
+        time: cherenkov::FrameTime,
+    ) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        self.core.own(self.core.engine.render(time))
     }
 }
 
@@ -440,8 +471,9 @@ impl TextureCherenkovSurface {
         }
     }
 
-    /// Renders the committed change set and drains texture notifications,
-    /// returning the engine's `Next` for the pump to schedule against.
+    /// Renders the committed change set at `at`, the frame instant the pump
+    /// runs, and drains texture notifications, returning the engine's
+    /// `Next` for the pump to schedule against.
     ///
     /// The rendered texture stays held in [`Self::texture`]; the presenter
     /// samples it through [`Self::present_into`].
@@ -453,10 +485,11 @@ impl TextureCherenkovSurface {
     /// Returns the engine's [`cherenkov::RenderError`] when the frame fails
     /// to render.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        let next = self
-            .core
-            .own(self.core.engine.render(cherenkov::FrameTime::now()))?;
+    pub(crate) fn render(
+        &mut self,
+        at: cherenkov::FrameTime,
+    ) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        let next = self.core.own(self.core.engine.render(at))?;
         Ok(self.render_inner(next))
     }
 
@@ -467,10 +500,11 @@ impl TextureCherenkovSurface {
         clippy::future_not_send,
         reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
     )]
-    pub(crate) async fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        let next = self
-            .core
-            .own(self.core.engine.render(cherenkov::FrameTime::now()).await)?;
+    pub(crate) async fn render(
+        &mut self,
+        at: cherenkov::FrameTime,
+    ) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        let next = self.core.own(self.core.engine.render(at).await)?;
         Ok(self.render_inner(next))
     }
 
@@ -635,9 +669,9 @@ impl WindowCherenkovSurface {
             .expect("hydrolysis renderer: engine surface display move failed");
     }
 
-    /// Renders the committed change set; the engine presents the frame
-    /// itself. Returns the engine's `Next` for the pump to schedule
-    /// against.
+    /// Renders the committed change set at `at`, the frame instant the pump
+    /// runs; the engine presents the frame itself. Returns the engine's
+    /// `Next` for the pump to schedule against.
     ///
     /// Output negotiation runs inside the render, so the probe it pushes —
     /// on the first frame, after a display move — is sampled here: a
@@ -648,10 +682,12 @@ impl WindowCherenkovSurface {
     ///
     /// Returns the engine's [`cherenkov::RenderError`] when the frame fails
     /// to render.
-    pub fn render(&mut self, scale: f64) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        let next = self
-            .core
-            .own(self.core.engine.render(cherenkov::FrameTime::now()))?;
+    pub fn render(
+        &mut self,
+        at: cherenkov::FrameTime,
+        scale: f64,
+    ) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        let next = self.core.own(self.core.engine.render(at))?;
         let (headroom, changed) = self.headroom();
         if changed {
             self.core.display(cherenkov::Display { scale, headroom });
@@ -745,9 +781,11 @@ impl DomCherenkovSurface {
         clippy::future_not_send,
         reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
     )]
-    pub(crate) async fn render(&self) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        self.core
-            .own(self.core.engine.render(cherenkov::FrameTime::now()).await)
+    pub(crate) async fn render(
+        &self,
+        at: cherenkov::FrameTime,
+    ) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        self.core.own(self.core.engine.render(at).await)
     }
 }
 

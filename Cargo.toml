@@ -98,7 +98,7 @@ apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watcho
 web-frontend-apple-deployment-targets = { macos = "27.0", ios = "27.0", tvos = "27.0", watchos = "27.0", visionos = "27.0" }
 # The Android API floor the native runtime supports; the backend's Gradle
 # `minSdk` must agree.
-android-min-api-level = 31
+android-min-api-level = 33
 # The Gradle release every project this framework assembles runs — the
 # scaffolded `gradle-wrapper.properties` renders it and the in-tree Hydrolysis
 # host pins it, so the version CI exercises is the one users' `./gradlew`
@@ -140,7 +140,7 @@ scaffold-packages = [
 # matching, and cargo reports the split as hundreds of type errors that
 # never name a version. The `water` CLI fails on that divergence before it
 # reaches the compiler.
-reexported-dependencies = { anyhow = "waterui::Error", bytemuck = "waterui::graphics::bytemuck", cherenkov = "waterui::graphics::cherenkov", cherenkov-cpu = "waterui::graphics::cherenkov_cpu", cherenkov-gpu = "waterui::graphics::cherenkov_gpu", cherenkov-record = "waterui::graphics::draw", color = "waterui::graphics::Color", executor-core = "waterui::task", filtrate = "waterui::graphics::filtrate", filtrate-core = "waterui::media::Filter", keyboard-types = "waterui::graphics::input", nami = "waterui::reactive", nami-core = "waterui::reactive", native-executor = "waterui::task", pastey = "waterui::pastey", serde = "waterui::webview::serde", serde_json = "waterui::webview::serde_json", suiteki = "waterui::Str", tracing = "waterui::log", url = "waterui::media::Url", waterkit-haptic = "waterui::Intensity", wgpu = "waterui::graphics::wgpu" }
+reexported-dependencies = { anyhow = "waterui::Error", bytemuck = "waterui::graphics::gpu::bytemuck", cherenkov = "waterui::graphics::backend::cherenkov", cherenkov-cpu = "waterui::graphics::backend::cherenkov_cpu", cherenkov-gpu = "waterui::graphics::backend::cherenkov_gpu", cherenkov-record = "waterui::graphics::backend::draw", color = "waterui::graphics::Color", executor-core = "waterui::task", filtrate = "waterui::graphics::backend::filtrate", filtrate-core = "waterui::media::Filter", keyboard-types = "waterui::graphics::input", nami = "waterui::reactive", nami-core = "waterui::reactive", native-executor = "waterui::task", pastey = "waterui::pastey", serde = "waterui::webview::serde", serde_json = "waterui::webview::serde_json", suiteki = "waterui::Str", tracing = "waterui::log", url = "waterui::media::Url", waterkit-haptic = "waterui::Intensity", wgpu = "waterui::graphics::gpu::wgpu" }
 
 [lib]
 path = "facade.rs"
@@ -253,8 +253,8 @@ waterui-video = { version = "0.5.1", path = "components/multimedia/video" }
 waterui-video-gpu = "0.4.0"
 waterui-form = { version = "0.5.1", path = "components/foundation/form" }
 waterui-controls = { version = "0.5.1", path = "components/foundation/controls"}
+waterui-color = { version = "0.5.1", path = "components/foundation/color" }
 waterui-graphics = { version = "0.5.1", path = "components/visual/graphics", default-features = false }
-waterui-canvas = "0.2.0"
 waterui-shape = { version = "0.5.1", path = "components/foundation/shape", default-features = false }
 waterui-svg = "0.4.0"
 waterui-math = "0.2.0"
@@ -275,9 +275,11 @@ waterui-icons-native = { version = "0.5.1", path = "components/icon/native" }
 waterui-locale = { version = "0.5.1", path = "utils/locale" }
 waterui-map = { version = "0.5.1", path = "components/data/map" }
 waterui-meta = { version = "0.5.1", path = "utils/meta" }
+waterui-contract = { version = "0.5.1", path = "utils/contract" }
 waterui-apple-os = { version = "0.5.1", path = "utils/apple-os" }
 waterkit-location = "0.2"
 waterkit-screen = "0.2"
+waterkit-deeplink = "0.2"
 waterkit-audio = { version = "0.2", default-features = false }
 waterkit-clipboard = "0.2"
 waterkit-permission = "0.2"
@@ -353,8 +355,11 @@ serde = { version = "1.0", default-features = false, features = ["alloc"] }
 erased-serde = { version = "0.4.10", default-features = false, features = ["alloc"] }
 # 30, the exact minor `cherenkov-gpu` builds against: an application can link
 # only one wgpu, and every `wgpu` type that crosses between the engine and a
-# `GpuContent` producer must be one type.
-wgpu = "30.0.1"
+# `GpuContent` producer must be one type. Only target-neutral features live
+# here: a workspace dependency cannot be target-specific, so each crate that
+# creates a GPU instance enables its target's one native backend (`dx12` on
+# Windows, `metal` on Apple, `vulkan` on Linux and Android) in a target table.
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "webgpu"] }
 parley = { version = "0.12", default-features = false }
 kurbo = "0.13"
 skrifa = "0.48.0"
@@ -380,7 +385,7 @@ quick-xml = "0.42"
 mathcat = { version = "0.7.5", features = ["include-zip"] }
 toml = "1.1.8"
 lyon = "1.0"
-wgpu-hal = { version = "30.0.1", features = ["gles", "metal"] }
+wgpu-hal = { version = "30.0.1", default-features = false, features = ["metal"] }
 # Must match the `glow` version wgpu-hal links against, or GLES handles from
 # `wgpu::hal::gles` fail to unify with locally created ones.
 # Tracks whatever `wgpu-hal` links, not the newest release: the GTK backend
@@ -393,7 +398,6 @@ zenwave = { version = "0.7.1", default-features = false, features = ["hyper-back
 futures-timer = "3"
 pastey = "0.2.3"
 tracing-panic = "0.1.3"
-robius-open = { version = "0.3", default-features = false }
 gtk4 = "0.11"
 gdk4 = "0.11"
 glib = "0.22"
@@ -643,11 +647,11 @@ waterui-chromium = { path = "components/platform/chromium" }
 waterui-watcher-set = { path = "utils/watcher-set" }
 # `hydrolysis-m3` declares its renderer requirement against the registry;
 # this entry makes it resolve to the in-tree backend so the graph carries
-# exactly one hydrolysis. The registry 0.3.1 theme implements the
-# four-argument `draw_button_chrome` removed on this branch; the pinned
-# revision carries the icon-button contract (water-rs/hydrolysis#115) and the
-# split tabs-bar surface and divider calls (#1982). Drop the git pin once a
-# release has both changes.
+# exactly one hydrolysis. The registry 0.3.1 theme implements button hooks
+# this branch replaced with `WidgetTheme::button`; the pinned revision carries
+# the icon-button contract (water-rs/hydrolysis#115), the button look (#4037)
+# and the split tabs-bar surface and divider calls (#1982). Drop the git pin
+# once a release has these changes.
 hydrolysis = { path = "backends/hydrolysis" }
 hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "dev" }
 # The waterkit family follows waterkit's `dev` so the framework consumes its
@@ -725,12 +729,13 @@ waterui-canvas = { git = "https://github.com/water-rs/canvas", branch = "dev" }
 waterui-chart = { git = "https://github.com/water-rs/chart", branch = "dev" }
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "dev" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "dev" }
-waterui-particle = { git = "https://github.com/water-rs/particle", rev = "bf663af85211d1f0bcce511b94ac435efad046a6" }
+waterui-particle = { git = "https://github.com/water-rs/particle", branch = "dev" }
 waterui-image = { git = "https://github.com/water-rs/image", branch = "dev" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16f99e021f735d0b1b31c95552b074e953d56418" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
 waterkit-camera = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
 waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
+waterkit-deeplink = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
 waterkit-dialog = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
 waterkit-fs = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
 waterkit-haptic = { git = "https://github.com/water-rs/waterkit", branch = "dev" }

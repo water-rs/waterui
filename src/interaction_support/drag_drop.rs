@@ -58,7 +58,10 @@ use nami::Signal;
 use suiteki::Str;
 use waterui_core::{
     Environment,
-    handler::{BoxedAction, BoxedEventAction, EventHandler, boxed_action, boxed_event_handler},
+    handler::{
+        BoxedAction, BoxedEventAction, EventHandler, ReportExtraction, boxed_action,
+        boxed_event_handler,
+    },
     metadata::{Metadata, MetadataKey},
 };
 use waterui_url::Url;
@@ -225,8 +228,8 @@ impl DragPayload {
 
     fn expect_value<T: Transferable>(&self) -> &T {
         self.downcast_ref().unwrap_or_else(|| {
-            panic!(
-                "drag payload of kind {:?} does not hold a {}",
+            unreachable!(
+                "`DragPayload::new` derives the kind from the stored type, so a payload of kind {:?} holds a {}",
                 self.kind,
                 core::any::type_name::<T>()
             )
@@ -319,7 +322,7 @@ impl DropDestination {
             accepted_kind: TransferKind::of::<T>(),
             on_drop: Box::new(move |payload: DragPayload, env: &Environment| {
                 let value = payload.expect_value::<T>().clone();
-                on_drop(value, env);
+                on_drop(value, env)
             }),
             on_enter: None,
             on_exit: None,
@@ -340,31 +343,34 @@ impl DropDestination {
 
     /// Delivers a dropped payload to the handler.
     ///
-    /// # Panics
+    /// # Contract
     ///
-    /// Panics if this destination does not [accept](Self::accepts) `payload`;
-    /// a backend delivers only accepted drags.
+    /// A backend delivers only accepted drags. A payload this destination does
+    /// not [accept](Self::accepts) breaks the contract: a debug build panics,
+    /// and a release build logs the error and drops the payload.
     pub fn deliver(&mut self, payload: DragPayload, env: &Environment) {
-        assert!(
-            self.accepts(&payload),
-            "drop destination accepting {:?} was delivered a {:?} payload",
-            self.accepted_kind,
-            payload.kind()
-        );
-        (self.on_drop)(payload, env);
+        if !self.accepts(&payload) {
+            crate::contract_violation!(
+                "drop destination accepting {:?} was delivered a {:?} payload, which is dropped",
+                self.accepted_kind,
+                payload.kind()
+            );
+            return;
+        }
+        (self.on_drop)(payload, env).report_extraction();
     }
 
     /// Reports that an accepted drag entered the destination's bounds.
     pub fn enter(&mut self, env: &Environment) {
         if let Some(on_enter) = &mut self.on_enter {
-            on_enter(env);
+            on_enter(env).report_extraction();
         }
     }
 
     /// Reports that an accepted drag left the destination's bounds without dropping.
     pub fn exit(&mut self, env: &Environment) {
         if let Some(on_exit) = &mut self.on_exit {
-            on_exit(env);
+            on_exit(env).report_extraction();
         }
     }
 
@@ -392,9 +398,9 @@ fn chain(previous: Option<BoxedAction<()>>, handler: impl FnMut() + 'static) -> 
     let mut handler = boxed_action(handler);
     Box::new(move |env| {
         if let Some(previous) = &mut previous {
-            previous(env);
+            previous(env)?;
         }
-        handler(env);
+        handler(env)
     })
 }
 
@@ -457,5 +463,28 @@ impl DropDestinationExt for Metadata<DropDestination> {
     fn on_exit(mut self, handler: impl FnMut() + 'static) -> Self {
         self.value = self.value.on_exit(handler);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::rc::Rc;
+    use core::cell::Cell;
+
+    use super::*;
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "was delivered a"))]
+    fn delivering_an_unaccepted_payload_drops_it() {
+        let delivered = Rc::new(Cell::new(false));
+        let mut destination = DropDestination::new({
+            let delivered = Rc::clone(&delivered);
+            move |_: Str| delivered.set(true)
+        });
+        destination.deliver(
+            DragPayload::new(Files::new(core::iter::empty())),
+            &Environment::new(),
+        );
+        assert!(!delivered.get());
     }
 }

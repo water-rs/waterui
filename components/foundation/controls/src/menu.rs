@@ -31,8 +31,9 @@ use waterui_locale::locale_binding;
 use waterui_text::{TextConfig, styled::StyledStr};
 
 use crate::{
-    button::Button,
+    button::{Button, ButtonStyle},
     label::{IntoLabel, Label},
+    size::ControlSize,
 };
 
 /// Keyboard shortcut modifiers used by commands and system menus.
@@ -309,9 +310,9 @@ impl InvalidShortcutKey {
 #[non_exhaustive]
 pub struct Shortcut {
     /// The key the shortcut fires on.
-    pub key: ShortcutKey,
+    key: ShortcutKey,
     /// Modifier flags required alongside the key.
-    pub modifiers: ShortcutModifiers,
+    modifiers: ShortcutModifiers,
 }
 
 impl Shortcut {
@@ -420,17 +421,37 @@ pub struct Menu {
     /// The menu items to display when the menu is opened.
     pub items: Computed<Vec<MenuItem>>,
     identity: Rc<()>,
+    style: ButtonStyle,
+    size: ControlSize,
 }
 
 impl Menu {
-    /// Creates a menu with a semantic label.
+    /// Creates a menu with a semantic label. Its trigger is drawn as an
+    /// [`Automatic`](ButtonStyle::Automatic) button of
+    /// [`ControlSize::Small`], like a [`Button`].
     #[must_use]
     pub fn new(label: impl IntoLabel, items: impl MenuView) -> Self {
         Self {
             label: label.into_label(),
             items: items.into_menu_items(),
             identity: Rc::new(()),
+            style: ButtonStyle::Automatic,
+            size: ControlSize::Small,
         }
+    }
+
+    /// Sets the style the menu's trigger button is drawn in.
+    #[must_use]
+    pub const fn style(mut self, style: ButtonStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    /// Sets how large the menu's trigger button is drawn.
+    #[must_use]
+    pub const fn size(mut self, size: ControlSize) -> Self {
+        self.size = size;
+        self
     }
 
     #[must_use]
@@ -457,6 +478,8 @@ impl View for Menu {
             label: AnyView::new(label),
             items: resolve_menu_items(&self.items, env),
             accessibility_label,
+            style: self.style.resolve(env),
+            size: self.size,
         })
     }
 
@@ -485,21 +508,21 @@ pub enum CommandRole {
 #[non_exhaustive]
 pub struct Command {
     /// The semantic label for the command.
-    pub label: Label,
+    label: Label,
     /// The action to perform when the command is selected.
-    pub action: SharedAction<()>,
+    action: SharedAction<()>,
     /// Whether the command is currently disabled.
-    pub disabled: Computed<bool>,
+    disabled: Computed<bool>,
     /// Whether the command is currently selected or checked.
-    pub selected: Computed<bool>,
+    selected: Computed<bool>,
     /// Optional keyboard shortcut metadata.
-    pub shortcut: Option<Shortcut>,
+    shortcut: Option<Shortcut>,
     /// What the command does, which decides its presentation.
-    pub role: CommandRole,
+    role: CommandRole,
     /// An optional secondary line shown under the label.
-    pub subtitle: Option<Str>,
+    subtitle: Option<Str>,
     /// Local state layered onto the environment when the action runs.
-    pub captured_env: Environment,
+    captured_env: Environment,
     identity: Rc<()>,
 }
 
@@ -581,7 +604,7 @@ impl Command {
             semantic_label,
             icon,
             action: shared_action(move |env: Environment| {
-                action.call(&captured_env.layered_on(&env));
+                action.run(&captured_env.layered_on(&env));
             }),
             disabled: Disabled::resolve(env, self.disabled),
             selected: self.selected,
@@ -872,7 +895,7 @@ impl MenuView for Divider {
 
 impl<Action> MenuView for Button<Action>
 where
-    Action: FnMut(&Environment) + 'static,
+    Action: FnMut(&Environment) -> Result<(), waterui_core::handler::ExtractionError> + 'static,
 {
     fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
         Computed::constant(vec![self.into()])
@@ -1345,6 +1368,11 @@ pub struct ResolvedMenu {
     pub items: Computed<Vec<ResolvedMenuItem>>,
     /// Semantic accessibility label for the menu trigger.
     pub accessibility_label: Computed<StyledStr>,
+    /// The style the trigger button is drawn in, `Automatic` already
+    /// resolved against the ambient [`ButtonStyle`].
+    pub style: ButtonStyle,
+    /// How large the trigger button is drawn.
+    pub size: ControlSize,
 }
 
 raw_view!(ResolvedMenu, StretchAxis::None);
@@ -1702,8 +1730,8 @@ mod tests {
             .state(&count);
         let resolved = command.resolve(&Environment::default());
 
-        resolved.action.call(&Environment::default());
-        resolved.action.call(&Environment::default());
+        resolved.action.run(&Environment::default());
+        resolved.action.run(&Environment::default());
 
         assert_eq!(count.get(), 2);
     }

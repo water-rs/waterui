@@ -128,7 +128,7 @@ fn row_view(row: SignalRow) -> ListItem {
             ),
         ))
         .spacing(16.0)
-        .padding_with(EdgeInsets::new(8.0, 8.0, 12.0, 12.0))
+        .padding_with(EdgeInsets::new(8.0, 12.0, 8.0, 12.0))
         // A dropped node stays visible so its history can still be read, but it is
         // clearly no longer live.
         .opacity(if dropped { 0.45 } else { 1.0 }),

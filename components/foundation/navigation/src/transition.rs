@@ -70,13 +70,13 @@ pub enum NavigationTransitionDirection {
 #[non_exhaustive]
 pub struct NavigationTransitionLayer {
     /// Horizontal offset as a fraction of the navigation viewport width.
-    pub offset_x: f32,
+    offset_x: f32,
     /// Vertical offset as a fraction of the navigation viewport height.
-    pub offset_y: f32,
+    offset_y: f32,
     /// Uniform scale.
-    pub scale: f32,
+    scale: f32,
     /// Layer opacity.
-    pub opacity: f32,
+    opacity: f32,
 }
 
 impl NavigationTransitionLayer {
@@ -127,9 +127,9 @@ impl NavigationTransitionLayer {
 #[non_exhaustive]
 pub struct NavigationTransitionFrame {
     /// Transform and opacity applied to the page that was active.
-    pub outgoing: NavigationTransitionLayer,
+    outgoing: NavigationTransitionLayer,
     /// Transform and opacity applied to the page becoming active.
-    pub incoming: NavigationTransitionLayer,
+    incoming: NavigationTransitionLayer,
 }
 
 impl NavigationTransitionFrame {

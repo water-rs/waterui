@@ -86,6 +86,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     alignment,
                     line_limit: line_limit.map(core::num::NonZeroUsize::get),
                     layout_dirty,
+                    geometry: None,
                     _guards: guards,
                     tap_span_targets: RefCell::new(Vec::new()),
                 }));
@@ -592,6 +593,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     default_a11y_label: renderer.accessibility_label_from_view(&content, env),
                     gesture_group_identity: gesture_group_identity(&content),
                     gesture_target: Cell::new(None),
+                    chrome: RefCell::new(None),
+                    chrome_state: nami::Binding::container(
+                        waterui_core::interaction::InteractionState::empty(),
+                    ),
                 };
                 return Self::build_wrapper(
                     WrapperEffect::GestureObserver(effect),
@@ -618,13 +623,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         };
         let view = match view.downcast::<Native<ScrollView>>() {
             Ok(scroll) => {
-                let ScrollViewParts {
-                    axis,
-                    content,
-                    controller,
-                    offset,
-                    ..
-                } = (*scroll).into_inner().into_inner();
+                let (axis, content, controller, offset) =
+                    (*scroll).into_inner().into_inner().into_parts();
                 let content = normalize_layout_view(content, env);
                 // A scroll surface owns §7.1 for its subtree: the layout
                 // pass hands the surface its facts and the child lays out
@@ -652,7 +652,17 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         };
         let view = match view.downcast::<Native<SceneView>>() {
             Ok(scene_view) => {
-                return Self::build_scene_view_node(*scene_view, renderer);
+                return Self::build_scene_view_node(
+                    scene_view.into_inner().into_content(),
+                    renderer,
+                );
+            }
+            Err(view) => view,
+        };
+        // A canvas mounts through the same scene node as any scene content.
+        let view = match view.downcast::<Native<CanvasView>>() {
+            Ok(canvas) => {
+                return Self::build_scene_view_node(Box::new(canvas.into_inner()), renderer);
             }
             Err(view) => view,
         };
@@ -783,10 +793,6 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         };
         let view = match view.downcast::<Native<ResolvedShape>>() {
             Ok(shape) => return Self::build_shape(renderer, (*shape).into_inner(), env),
-            Err(view) => view,
-        };
-        let view = match view.downcast::<Native<ResolvedMorphShape>>() {
-            Ok(shape) => return Self::build_morph_shape(renderer, (*shape).into_inner(), env),
             Err(view) => view,
         };
         let Err(view) = view.downcast::<Native<MapConfig>>() else {
@@ -1055,7 +1061,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             entries,
             placed: Vec::new(),
             #[cfg(feature = "accessibility")]
-            resolved: Rect::from_size(Size::zero()),
+            geometry: None,
             ghosts: Vec::new(),
             ghost_placed: Vec::new(),
             reduce_motion: env
@@ -1153,6 +1159,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             core,
             safe_area: None,
             #[cfg(feature = "accessibility")]
+            geometry: None,
+            #[cfg(feature = "accessibility")]
             accessibility_container_env,
             extent_index: RefCell::new(VirtualExtentIndex::default()),
             item_cache: RefCell::new(VisibleSubviewCache::new()),
@@ -1176,13 +1184,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
     )]
     fn build_scene_view_node(
-        scene_view: Native<SceneView>,
+        mut content: Box<dyn waterui_graphics::backend::SceneContent>,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
-        let mut content = scene_view.into_inner().into_content();
         let core = renderer.new_core();
         let cell = Rc::downgrade(&core.cell);
-        let invalidator: waterui_graphics::SceneInvalidator = Rc::new(move || {
+        let invalidator: waterui_graphics::backend::SceneInvalidator = Rc::new(move || {
             if let Some(cell) = cell.upgrade() {
                 cell.mark(Dirty::PAINT);
             }
@@ -1194,6 +1201,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             content: Rc::new(RefCell::new(content)),
             invalidator,
             association: Rc::new(RefCell::new(None)),
+            resize: Rc::new(RefCell::new(crate::renderer::ResizeTracker::new())),
             measured: Cell::new(None),
         }))
     }
@@ -1361,7 +1369,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             accessibility_child_env,
             placed: Vec::new(),
             #[cfg(feature = "accessibility")]
-            resolved: Rect::from_size(Size::zero()),
+            geometry: None,
             layout_dirty,
             _guards: guards,
         }))

@@ -4,8 +4,8 @@ extern crate alloc;
 
 /// The bridge from the framework's animations to the engine's.
 pub mod animation;
-/// Color types and conversion utilities.
-pub mod color;
+pub mod backend;
+pub mod canvas;
 #[cfg(feature = "effects")]
 mod effects;
 #[cfg(feature = "gpu")]
@@ -30,7 +30,6 @@ pub use cherenkov_record as draw;
 #[cfg(feature = "cherenkov")]
 pub use cherenkov;
 
-pub use color::{Color, ColorScheme, Colorspace, CurrentColorScheme, WorkingColor};
 #[cfg(feature = "effects")]
 pub use effects::filter_view;
 #[cfg(feature = "gpu")]
@@ -58,14 +57,14 @@ pub use gpu::{
     InputHandler, RedrawHandle, SharedGpuContext,
 };
 #[cfg(feature = "gpu")]
-pub use gradient::{
-    ANIMATED_MESH_PALETTE_LEN, AnimatedMeshGradient, AnimatedMeshGradientConfig, FlowingGradient,
-};
+pub use gradient::FlowingGradient;
+pub use gradient::{ANIMATED_MESH_PALETTE_LEN, AnimatedMeshGradient, AnimatedMeshGradientConfig};
 pub use gradient::{Gradient, GradientType, MeshGradient};
 #[cfg(feature = "gpu")]
 pub use image::image_decode;
 pub use input::{
-    Code, Key, Modifiers, NamedKey, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
+    Code, GesturePhase, Key, Modifiers, NamedKey, ScrollPhase, ScrollUnit, SurfaceInputEvent,
+    SurfacePointerButton,
 };
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub use offscreen::{OffscreenError, OffscreenImage, OffscreenRenderer, OffscreenSize};
@@ -73,12 +72,12 @@ pub use scene::picture::{Picture, PictureRecording, PictureSource};
 #[cfg(feature = "cherenkov")]
 pub use scene::resources::SceneCaps;
 pub use scene::resources::{
-    Handle, HeldResources, PlainId, RecordingResources, Registered, ResourceHandle, SceneBackend,
-    SceneResources, ShaderBackend,
+    Handle, HeldResources, PlainId, RecordingResources, Registered, RegisteredText, ResourceHandle,
+    SceneBackend, SceneResources, ShaderBackend, TextBackend, TextRegistration, TextRequest,
 };
 pub use scene::scene_view::{
-    SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent, invalidate_on_change,
-    resolve_scene_proposal, scene_stretch_axis,
+    SceneContent, SceneFrame, SceneInvalidator, SceneUpdate, SceneView, SceneViewMergeToParent,
+    invalidate_on_change, resolve_scene_proposal, scene_stretch_axis,
 };
 pub use scene::source::{
     FontSource, Format, ImageColorSpace, ImageData, ImageFormat, ResourceError, Rgba8, Rgba16F,
@@ -87,6 +86,9 @@ pub use scene::source::{
 pub use scene::{picture, resources, scene_view, source};
 #[cfg(feature = "gpu")]
 pub use shader_paint::ShaderPaintView;
+/// Color types and conversion utilities.
+pub use waterui_color as color;
+pub use waterui_color::{Color, ColorScheme, Colorspace, CurrentColorScheme, WorkingColor};
 
 /// The CPU raster backend behind [`OffscreenRenderer::cpu`].
 #[cfg(feature = "cpu")]

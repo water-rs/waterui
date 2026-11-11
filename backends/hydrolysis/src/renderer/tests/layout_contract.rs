@@ -3,16 +3,16 @@ use crate::renderer::{HydrolysisRenderer, tree::RenderNode};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use waterui::{AnyView, Color, Environment, View, ViewExt};
-use waterui_graphics::FilteredView;
-use waterui_graphics::filtrate::{
+use waterui_graphics::backend::FilteredView;
+use waterui_graphics::backend::filtrate::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
     RetainedMemory,
 };
 use waterui_layout::container::FixedContainer;
 use waterui_layout::stack::vstack;
 use waterui_layout::{
-    Layout, Point, ProposalSize, Rect, Size, Spacer, SubView, SubviewPlacement, scroll,
-    scroll_horizontal, spacer, spacer_min,
+    Layout, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size, Spacer, SubView,
+    SubviewPlacement, UnitPoint, scroll, scroll_horizontal, spacer, spacer_min,
 };
 
 #[derive(Debug)]
@@ -32,6 +32,14 @@ struct ProbeLayout {
 impl Layout for ProbeLayout {
     fn size_that_fits(&self, _proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
         axis_size(self.vertical, 160.0, 20.0)
+    }
+
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
     }
 
     fn place(
@@ -393,11 +401,11 @@ struct Drifting {
     natural: Rc<Cell<f32>>,
 }
 
-impl waterui_graphics::SceneContent for Drifting {
+impl waterui_graphics::backend::SceneContent for Drifting {
     fn build_scene(
         &mut self,
-        _recorder: &mut waterui_graphics::draw::Recorder,
-        _resources: &mut waterui_graphics::RecordingResources<'_>,
+        _recorder: &mut cherenkov_record::Recorder,
+        _resources: &mut waterui_graphics::backend::RecordingResources<'_>,
         _width: f32,
         _height: f32,
     ) -> bool {
@@ -420,6 +428,14 @@ struct RecordingRow {
 }
 
 impl Layout for RecordingRow {
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
+    }
+
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         let sizes = children
             .iter()
@@ -461,7 +477,7 @@ impl Layout for RecordingRow {
 
 /// `[scene | color]` — the row's first frame is the scene's laid-out box.
 struct DriftingRow {
-    scene: waterui_graphics::SceneView,
+    scene: waterui_graphics::backend::SceneView,
     trace: Trace,
 }
 
@@ -484,7 +500,7 @@ impl View for DriftingRow {
 fn retained_subview_relayouts_when_a_scene_leaves_natural_size_moves() {
     use crate::renderer::{RenderContext, tree::RetainedSubview};
     use kurbo::{Affine, Rect as SceneRect};
-    use waterui_graphics::SceneView;
+    use waterui_graphics::backend::SceneView;
 
     let env = test_environment();
     let mut renderer = test_renderer();
@@ -589,6 +605,14 @@ fn transparent_metadata_preserves_the_selected_proposal() {
 struct PriorityProbe(Rc<Cell<Option<i32>>>);
 
 impl Layout for PriorityProbe {
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
+    }
+
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         children[0].measure(proposal).size
     }

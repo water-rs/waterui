@@ -8,6 +8,7 @@
 //! window is titled.
 
 use waterui::navigation::NavigationView;
+use waterui_core::layout::{LayoutError, ProposalSize, Rect, ResolvedExtent};
 
 use crate::dispatch::Dispatcher;
 
@@ -19,6 +20,14 @@ pub fn install(dispatcher: &mut Dispatcher) {
 struct Fill;
 
 impl waterui_core::layout::SubView for Fill {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(
         &self,
         _proposal: waterui_core::layout::ProposalSize,
@@ -50,8 +59,8 @@ mod platform {
     use crate::components::navigation::bar::{
         BarItem, BarState, bar_color, bar_item_frame, search_prompt,
     };
-    use crate::components::text::platform_color;
     use crate::contract::{KeepAlive, NativeLeaf, RenderContext};
+    use crate::theme::platform_color;
 
     use super::Fill;
     use alloc::rc::Rc;
@@ -344,8 +353,8 @@ mod platform {
     use crate::components::navigation::bar::{
         BarItem, BarItemIcon, BarState, bar_color, bar_item_frame, search_prompt,
     };
-    use crate::components::text::platform_color;
     use crate::contract::{KeepAlive, NativeLeaf, RenderContext};
+    use crate::theme::platform_color;
 
     use super::Fill;
     use alloc::rc::Rc;

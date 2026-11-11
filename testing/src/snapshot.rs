@@ -6,9 +6,8 @@ use hydrolysis::{
     FontFamilyResolution, HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow, Style,
     readback_texture_rgba8,
 };
-use waterui::graphics::SceneViewMergeToParent;
 use waterui::graphics::WorkingColor;
-use waterui::graphics::draw::kurbo;
+use waterui::graphics::backend::SceneViewMergeToParent;
 use waterui::text::FontCollection;
 use waterui_core::{AnyView, Environment, View};
 
@@ -19,11 +18,11 @@ use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 #[non_exhaustive]
 pub struct Snapshot {
     /// Frame width in pixels.
-    pub width: u32,
+    width: u32,
     /// Frame height in pixels.
-    pub height: u32,
+    height: u32,
     /// Pixel data in RGBA8 row-major order.
-    pub rgba8: Vec<u8>,
+    rgba8: Vec<u8>,
 }
 
 impl Snapshot {
@@ -128,7 +127,7 @@ impl TestHost {
         fonts.clone().install(&mut env);
         Self {
             env,
-            gpu: OffscreenGpuContext::new_for_tests_blocking(),
+            gpu: OffscreenGpuContext::new_blocking(),
             width,
             height,
             theme: Rc::new(style),

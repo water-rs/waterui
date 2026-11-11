@@ -2,7 +2,7 @@
 //!
 //! [`Recording`] keeps the fixed imperative API drawing code records through;
 //! internally it is an ordered op list. The flush lowers each contiguous run
-//! into a [`waterui_graphics::draw::Content`] the mounted engine layer shows, so engine
+//! into a [`cherenkov_record::Content`] the mounted engine layer shows, so engine
 //! mounts and hierarchy persist across frames while only the content payload
 //! is replaced.
 //!
@@ -21,12 +21,12 @@ use rustc_hash::FxHashMap;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
-use waterui_graphics::draw::{
+use cherenkov_record::{
     BlendSpace, ColorStop, Content, Draw, EvenOdd, Extend, FontId, Glyph as EngineGlyph,
     GlyphStyle, Group, ImageId, ImagePattern, Interpolation, LayoutSize, LinearGradient, Paint,
     RadialGradient, Recorder, Sampling, Shadow, ShapeData, SweepGradient, WorkingColor,
 };
-use waterui_graphics::{
+use waterui_graphics::backend::{
     FontSource, HeldResources, ImageColorSpace, ImageData, PlainId, RecordingResources, Registered,
     ResourceError, Rgba8,
 };
@@ -123,6 +123,8 @@ enum Op {
         brush_alpha: f32,
         style: peniko::Style,
         glyphs: Arc<[Glyph]>,
+        /// A live paint drawn in place of `brush`.
+        paint: Option<Computed<Paint>>,
     },
     BlurredRoundedRect {
         transform: Affine,
@@ -148,7 +150,7 @@ enum Op {
     },
     Picture {
         transform: Affine,
-        picture: waterui_graphics::draw::Picture,
+        picture: cherenkov_record::Picture,
     },
     /// A platform text layout, drawn through the retained lease the painter
     /// handed over — the HWUI seam (water-rs/waterui#1811).
@@ -157,6 +159,8 @@ enum Op {
         resource: Arc<crate::hwui::text::TextLayoutResource>,
         transform: Affine,
         clip: Option<Rect>,
+        /// A live paint the layout's default-coloured runs draw with.
+        paint: Option<Computed<Paint>>,
     },
     PopLayer,
 }
@@ -196,9 +200,9 @@ pub fn assert_well_formed_image(image: &peniko::ImageData) {
 /// rather than panicking on it. Returns `(width, height, bytes)`.
 fn fit_image_to_limits(
     image: &peniko::ImageData,
-    limits: waterui_graphics::draw::ImageLimits,
+    limits: cherenkov_record::ImageLimits,
 ) -> (u32, u32, Arc<[u8]>) {
-    let (width, height) = limits.fit::<waterui_graphics::draw::Rgba8>(image.width, image.height);
+    let (width, height) = limits.fit::<cherenkov_record::Rgba8>(image.width, image.height);
     assert!(
         (width, height) != (0, 0),
         "hydrolysis renderer: engine image limits admit no image at all"
@@ -221,7 +225,7 @@ fn fit_image_to_limits(
 /// images, keyed by the identity of the peniko resource they came from.
 ///
 /// Registration itself goes through the one `SceneResources` table
-/// (`waterui_graphics::resources::SceneResources`, the #1324 contract) the
+/// (`waterui_graphics::backend::SceneResources`, the #1324 contract) the
 /// host built over its `Engine`. The table alone already dedups by content
 /// hash — the identity key here keeps that hash, the copy of a peniko blob
 /// into the table's source bytes, and the engine upload behind a cache miss,
@@ -235,7 +239,7 @@ fn fit_image_to_limits(
 pub struct SceneResources {
     /// The `SceneContent::build_scene` resource table, shared with every scene
     /// view this engine draws.
-    inner: waterui_graphics::SceneResources,
+    inner: waterui_graphics::backend::SceneResources,
     fonts: IdentityCache<FontKey, FontId>,
     images: IdentityCache<ImageKey, ImageId>,
     /// Fresh engine registrations since the last
@@ -243,6 +247,10 @@ pub struct SceneResources {
     /// that fonts and images are not re-registered per frame.
     font_registrations: std::cell::Cell<u64>,
     image_registrations: std::cell::Cell<u64>,
+    /// The address of the text service the table's canvas-text registry was
+    /// built over; the registry holds the service, so the address names it
+    /// for as long as it is installed.
+    text_owner: std::cell::Cell<usize>,
 }
 
 /// What identifies a peniko resource in an identity cache.
@@ -320,7 +328,7 @@ pub struct LoweringNames<'a> {
     /// Text-layout leases this recording's `Text` ops name.
     #[cfg(any(test, hydrolysis_hwui))]
     text_layouts:
-        FxHashMap<waterui_graphics::draw::TextLayoutId, Arc<crate::hwui::text::TextLayoutResource>>,
+        FxHashMap<cherenkov_record::TextLayoutId, Arc<crate::hwui::text::TextLayoutResource>>,
 }
 
 impl LoweringNames<'_> {
@@ -392,20 +400,37 @@ impl SceneResources {
     /// Creates caches served by `engine`.
     #[cfg(hydrolysis_gpu_painter)]
     pub(crate) fn new(engine: &Rc<crate::engine::GpuEngine>) -> Self {
-        Self::over(waterui_graphics::SceneResources::with_shaders(
+        Self::over(waterui_graphics::backend::SceneResources::with_shaders(
             engine.clone(),
             engine.clone(),
         ))
     }
 
     /// Creates caches over the registration table `inner`.
-    pub(crate) fn over(inner: waterui_graphics::SceneResources) -> Self {
+    pub(crate) fn over(inner: waterui_graphics::backend::SceneResources) -> Self {
         Self {
             inner,
             fonts: IdentityCache::new(),
             images: IdentityCache::new(),
             font_registrations: std::cell::Cell::new(0),
             image_registrations: std::cell::Cell::new(0),
+            text_owner: std::cell::Cell::new(0),
+        }
+    }
+
+    /// Installs the registry canvas text lays out through, built by `make`
+    /// over `service`, unless the table already has the one over `service`.
+    pub(crate) fn install_text<
+        E: crate::text::TextEngine,
+        B: waterui_graphics::backend::TextBackend,
+    >(
+        &self,
+        service: &Arc<crate::text::TextService<E>>,
+        make: impl FnOnce() -> Rc<B>,
+    ) {
+        let owner = Arc::as_ptr(service).addr();
+        if self.text_owner.replace(owner) != owner {
+            self.inner.set_text(make());
         }
     }
 
@@ -440,7 +465,7 @@ impl SceneResources {
     }
 
     /// The table `SceneContent::build_scene` calls register through.
-    pub(crate) const fn waterui(&self) -> &waterui_graphics::SceneResources {
+    pub(crate) const fn waterui(&self) -> &waterui_graphics::backend::SceneResources {
         &self.inner
     }
 
@@ -654,6 +679,18 @@ impl Recording {
     /// Draws a run of shaped glyphs.
     #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) fn glyphs(&mut self, run: &GlyphRun<'_>) {
+        self.push_glyphs(run, None);
+    }
+
+    /// Draws a run of shaped glyphs with `paint`, live, in place of the
+    /// run's brush.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    pub(crate) fn painted_glyphs(&mut self, run: &GlyphRun<'_>, paint: &Computed<Paint>) {
+        self.push_glyphs(run, Some(paint.clone()));
+    }
+
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    fn push_glyphs(&mut self, run: &GlyphRun<'_>, paint: Option<Computed<Paint>>) {
         if run.glyphs.is_empty() {
             return;
         }
@@ -666,6 +703,7 @@ impl Recording {
             brush_alpha: run.brush_alpha,
             style: run.style.to_owned(),
             glyphs: Arc::from(run.glyphs),
+            paint,
         });
     }
 
@@ -689,27 +727,26 @@ impl Recording {
 
     /// Draws a recorded picture under `transform` — the content of a child
     /// view recorded against the same engine.
-    pub(crate) fn draw_picture(
-        &mut self,
-        transform: Affine,
-        picture: waterui_graphics::draw::Picture,
-    ) {
+    pub(crate) fn draw_picture(&mut self, transform: Affine, picture: cherenkov_record::Picture) {
         self.ops.push(Op::Picture { transform, picture });
     }
 
     /// Draws the platform text layout `resource` leases, under `transform`
     /// and clipped to `clip` in layout-local coordinates.
+    /// Its default-coloured runs draw with `paint`, live, when given.
     #[cfg(any(test, hydrolysis_hwui))]
     pub(crate) fn draw_platform_text(
         &mut self,
         resource: Arc<crate::hwui::text::TextLayoutResource>,
         transform: Affine,
         clip: Option<Rect>,
+        paint: Option<&Computed<Paint>>,
     ) {
         self.ops.push(Op::Text {
             resource,
             transform,
             clip,
+            paint: paint.cloned(),
         });
     }
 
@@ -854,6 +891,20 @@ impl Recording {
             } => Some((*transform, glyphs.as_ref())),
             _ => None,
         })
+    }
+
+    /// The current value of each glyph run's live paint, in op order; a run
+    /// drawn in its fixed brush reads `None`. For tests asserting that a
+    /// label colour follows its operand without a new recording.
+    #[cfg(test)]
+    pub(crate) fn glyph_paints(&self) -> Vec<Option<Paint>> {
+        self.ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Glyphs { paint, .. } => Some(paint.as_ref().map(nami::Signal::snapshot)),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The premultiplied sRGB colours of every solid fill or stroke op, for
@@ -1103,19 +1154,14 @@ fn lower(
                 brush_alpha,
                 style,
                 glyphs,
+                paint: live,
             } => {
                 let font = resources.font(names, font);
-                let Some(mut paint) = drawable(resources.paint(names, brush)) else {
-                    continue;
-                };
-                if *brush_alpha < 1.0 {
-                    paint = alpha_scaled_paint(paint, *brush_alpha);
-                }
                 let style = match style {
                     peniko::Style::Fill(_) => GlyphStyle::Fill,
                     peniko::Style::Stroke(stroke) => GlyphStyle::Stroke(stroke.clone()),
                 };
-                let run = waterui_graphics::draw::GlyphRun {
+                let run = cherenkov_record::GlyphRun {
                     font,
                     size: *font_size,
                     coords: coords.to_vec().into(),
@@ -1130,7 +1176,24 @@ fn lower(
                         .collect(),
                     style,
                 };
-                recorder.transform(*transform, |r| r.glyphs(run, paint));
+                let alpha = *brush_alpha;
+                let scaled = move |paint| {
+                    if alpha < 1.0 {
+                        alpha_scaled_paint(paint, alpha)
+                    } else {
+                        paint
+                    }
+                };
+                if let Some(live) = live {
+                    let paint = nami::SignalExt::map(live, scaled);
+                    recorder.transform(*transform, |r| r.glyphs(run, paint));
+                } else {
+                    let Some(paint) = drawable(resources.paint(names, brush)) else {
+                        continue;
+                    };
+                    let paint = scaled(paint);
+                    recorder.transform(*transform, |r| r.glyphs(run, paint));
+                }
             }
             Op::BlurredRoundedRect {
                 transform,
@@ -1179,7 +1242,7 @@ fn lower(
                         // under the push site's ambient, restored inside the
                         // scope to keep it from compounding onto every op.
                         r.transform(transform.inverse(), |r| {
-                            if alpha >= 1.0 && blend == waterui_graphics::draw::BlendMode::Normal {
+                            if alpha >= 1.0 && blend == cherenkov_record::BlendMode::Normal {
                                 lower(ops, index, r, resources, names);
                             } else {
                                 let group = Group {
@@ -1200,18 +1263,23 @@ fn lower(
                 resource,
                 transform,
                 clip,
+                paint,
             } => {
                 let id = resource.id();
                 names
                     .text_layouts
                     .entry(id)
                     .or_insert_with(|| Arc::clone(resource));
+                let draw = |r: &mut Recorder, transform: Affine| match paint {
+                    Some(paint) => r.painted_text(id, transform, paint.clone()),
+                    None => r.text(id, transform),
+                };
                 if let Some(clip) = clip {
                     recorder.transform(*transform, |r| {
-                        r.clip(*clip, |r| r.text(id, Affine::IDENTITY));
+                        r.clip(*clip, |r| draw(r, Affine::IDENTITY));
                     });
                 } else {
-                    recorder.text(id, *transform);
+                    draw(recorder, *transform);
                 }
             }
             Op::PopLayer => return,
@@ -1223,9 +1291,7 @@ fn lower(
 fn shape_data<S: Shape + 'static>(rule: Fill, shape: &S) -> ShapeData {
     match rule {
         Fill::NonZero => ShapeData::of(shape),
-        Fill::EvenOdd => ShapeData::of(&EvenOdd(
-            shape.to_path(waterui_graphics::draw::PATH_TOLERANCE),
-        )),
+        Fill::EvenOdd => ShapeData::of(&EvenOdd(shape.to_path(cherenkov_record::PATH_TOLERANCE))),
     }
 }
 
@@ -1233,7 +1299,7 @@ fn shape_data<S: Shape + 'static>(rule: Fill, shape: &S) -> ShapeData {
 pub fn working_color(color: peniko::Color) -> WorkingColor {
     WorkingColor::new(
         color
-            .convert::<waterui_graphics::draw::LinearDisplayP3>()
+            .convert::<cherenkov_record::LinearDisplayP3>()
             .components,
     )
 }
@@ -1281,10 +1347,10 @@ fn gradient_paint(gradient: &peniko::Gradient) -> Paint {
 /// The working colour of a run-time colour space colour.
 fn dynamic_working_color(color: peniko::color::DynamicColor) -> WorkingColor {
     let linear = color.convert(peniko::color::ColorSpaceTag::LinearSrgb);
-    let alpha = linear.to_alpha_color::<waterui_graphics::draw::LinearSrgb>();
+    let alpha = linear.to_alpha_color::<cherenkov_record::LinearSrgb>();
     WorkingColor::new(
         alpha
-            .convert::<waterui_graphics::draw::LinearDisplayP3>()
+            .convert::<cherenkov_record::LinearDisplayP3>()
             .components,
     )
 }
@@ -1320,37 +1386,37 @@ const fn sampling(quality: peniko::ImageQuality) -> Sampling {
 /// one combined mode; peniko's separable pair collapses where Porter-Duff and
 /// CSS compositing overlap, and the remaining combinations have no engine
 /// equivalent.
-fn blend_mode(mode: BlendMode) -> waterui_graphics::draw::BlendMode {
+fn blend_mode(mode: BlendMode) -> cherenkov_record::BlendMode {
     use peniko::{Compose, Mix};
     match (mode.mix, mode.compose) {
-        (Mix::Normal, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Normal,
-        (Mix::Multiply, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Multiply,
-        (Mix::Screen, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Screen,
-        (Mix::Overlay, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Overlay,
-        (Mix::Darken, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Darken,
-        (Mix::Lighten, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Lighten,
-        (Mix::ColorDodge, Compose::SrcOver) => waterui_graphics::draw::BlendMode::ColorDodge,
-        (Mix::ColorBurn, Compose::SrcOver) => waterui_graphics::draw::BlendMode::ColorBurn,
-        (Mix::HardLight, Compose::SrcOver) => waterui_graphics::draw::BlendMode::HardLight,
-        (Mix::SoftLight, Compose::SrcOver) => waterui_graphics::draw::BlendMode::SoftLight,
-        (Mix::Difference, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Difference,
-        (Mix::Exclusion, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Exclusion,
-        (Mix::Hue, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Hue,
-        (Mix::Saturation, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Saturation,
-        (Mix::Color, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Color,
-        (Mix::Luminosity, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Luminosity,
-        (Mix::Normal, Compose::Clear) => waterui_graphics::draw::BlendMode::Clear,
-        (Mix::Normal, Compose::Copy) => waterui_graphics::draw::BlendMode::Src,
-        (Mix::Normal, Compose::Dest) => waterui_graphics::draw::BlendMode::Dst,
-        (Mix::Normal, Compose::DestOver) => waterui_graphics::draw::BlendMode::DestOver,
-        (Mix::Normal, Compose::SrcIn) => waterui_graphics::draw::BlendMode::SrcIn,
-        (Mix::Normal, Compose::DestIn) => waterui_graphics::draw::BlendMode::DestIn,
-        (Mix::Normal, Compose::SrcOut) => waterui_graphics::draw::BlendMode::SrcOut,
-        (Mix::Normal, Compose::DestOut) => waterui_graphics::draw::BlendMode::DestOut,
-        (Mix::Normal, Compose::SrcAtop) => waterui_graphics::draw::BlendMode::SrcAtop,
-        (Mix::Normal, Compose::DestAtop) => waterui_graphics::draw::BlendMode::DestAtop,
-        (Mix::Normal, Compose::Xor) => waterui_graphics::draw::BlendMode::Xor,
-        (Mix::Normal, Compose::PlusLighter) => waterui_graphics::draw::BlendMode::PlusLighter,
+        (Mix::Normal, Compose::SrcOver) => cherenkov_record::BlendMode::Normal,
+        (Mix::Multiply, Compose::SrcOver) => cherenkov_record::BlendMode::Multiply,
+        (Mix::Screen, Compose::SrcOver) => cherenkov_record::BlendMode::Screen,
+        (Mix::Overlay, Compose::SrcOver) => cherenkov_record::BlendMode::Overlay,
+        (Mix::Darken, Compose::SrcOver) => cherenkov_record::BlendMode::Darken,
+        (Mix::Lighten, Compose::SrcOver) => cherenkov_record::BlendMode::Lighten,
+        (Mix::ColorDodge, Compose::SrcOver) => cherenkov_record::BlendMode::ColorDodge,
+        (Mix::ColorBurn, Compose::SrcOver) => cherenkov_record::BlendMode::ColorBurn,
+        (Mix::HardLight, Compose::SrcOver) => cherenkov_record::BlendMode::HardLight,
+        (Mix::SoftLight, Compose::SrcOver) => cherenkov_record::BlendMode::SoftLight,
+        (Mix::Difference, Compose::SrcOver) => cherenkov_record::BlendMode::Difference,
+        (Mix::Exclusion, Compose::SrcOver) => cherenkov_record::BlendMode::Exclusion,
+        (Mix::Hue, Compose::SrcOver) => cherenkov_record::BlendMode::Hue,
+        (Mix::Saturation, Compose::SrcOver) => cherenkov_record::BlendMode::Saturation,
+        (Mix::Color, Compose::SrcOver) => cherenkov_record::BlendMode::Color,
+        (Mix::Luminosity, Compose::SrcOver) => cherenkov_record::BlendMode::Luminosity,
+        (Mix::Normal, Compose::Clear) => cherenkov_record::BlendMode::Clear,
+        (Mix::Normal, Compose::Copy) => cherenkov_record::BlendMode::Src,
+        (Mix::Normal, Compose::Dest) => cherenkov_record::BlendMode::Dst,
+        (Mix::Normal, Compose::DestOver) => cherenkov_record::BlendMode::DestOver,
+        (Mix::Normal, Compose::SrcIn) => cherenkov_record::BlendMode::SrcIn,
+        (Mix::Normal, Compose::DestIn) => cherenkov_record::BlendMode::DestIn,
+        (Mix::Normal, Compose::SrcOut) => cherenkov_record::BlendMode::SrcOut,
+        (Mix::Normal, Compose::DestOut) => cherenkov_record::BlendMode::DestOut,
+        (Mix::Normal, Compose::SrcAtop) => cherenkov_record::BlendMode::SrcAtop,
+        (Mix::Normal, Compose::DestAtop) => cherenkov_record::BlendMode::DestAtop,
+        (Mix::Normal, Compose::Xor) => cherenkov_record::BlendMode::Xor,
+        (Mix::Normal, Compose::PlusLighter) => cherenkov_record::BlendMode::PlusLighter,
         (mix, compose) => panic!(
             "hydrolysis renderer: blend mode ({mix:?}, {compose:?}) has no engine equivalent"
         ),
@@ -1390,12 +1456,13 @@ pub fn transform_paint(paint: Paint, transform: Option<Affine>) -> Paint {
             Paint::Sweep(gradient)
         }
         Paint::Mesh(mesh) => Paint::Mesh(
-            waterui_graphics::draw::MeshGradient::new(
+            cherenkov_record::MeshGradient::new(
                 mesh.columns(),
                 mesh.rows(),
                 mesh.points().iter().map(|p| transform * *p).collect(),
                 mesh.colors().to_vec(),
             )
+            .expect("a transformed mesh keeps the grid of the valid mesh it came from")
             .interpolation(mesh.interpolation_mode()),
         ),
         Paint::Image(mut pattern) => {
@@ -1452,8 +1519,8 @@ impl crate::renderer::chrome::LiveSource for Recording {
 
 #[cfg(test)]
 mod tests {
+    use cherenkov_record::{MeshColorInterpolation, MeshGradient};
     use kurbo::Point;
-    use waterui_graphics::draw::{MeshColorInterpolation, MeshGradient};
 
     use super::*;
 
@@ -1475,6 +1542,7 @@ mod tests {
                 WorkingColor::BLACK,
             ],
         )
+        .expect("one patch, four vertices")
         .interpolation(MeshColorInterpolation::Smoothstep);
         let Paint::Mesh(transformed) =
             transform_paint(Paint::Mesh(mesh), Some(Affine::translate((4.0, 2.0))))
@@ -1508,7 +1576,7 @@ mod tests {
                     cherenkov::testing::NullConfig {
                         events,
                         reject: std::collections::HashSet::new(),
-                        image_limits: waterui_graphics::draw::ImageLimits::UNLIMITED,
+                        image_limits: cherenkov_record::ImageLimits::UNLIMITED,
                     },
                 )
                 .expect("the null engine starts"),
@@ -1519,8 +1587,9 @@ mod tests {
                     || {},
                 )
                 .expect("surface");
-            let resources =
-                SceneResources::over(waterui_graphics::SceneResources::new(Rc::clone(&engine)));
+            let resources = SceneResources::over(waterui_graphics::backend::SceneResources::new(
+                Rc::clone(&engine),
+            ));
             Self {
                 engine,
                 probe,
@@ -1558,13 +1627,14 @@ mod tests {
         let wire = ids.acquire().expect("a fresh table has ids");
         let resource = Arc::new(crate::hwui::text::TextLayoutResource::new(wire, ids));
         let weak = Arc::downgrade(&resource);
-        let layout_id = waterui_graphics::draw::TextLayoutId::new(u64::from(wire));
+        let layout_id = cherenkov_record::TextLayoutId::new(u64::from(wire));
 
         let mut recording = Recording::new();
         recording.draw_platform_text(
             Arc::clone(&resource),
             Affine::translate((3.0, 4.0)),
             Some(Rect::new(0.0, 0.0, 30.0, 20.0)),
+            None,
         );
 
         // The resource also survives a clone through `append` into a placed
@@ -1578,7 +1648,7 @@ mod tests {
         let content = mount.surface.record(|recorder| {
             lowered = Some(placed.record_on(recorder, &mount.resources));
         });
-        assert!(content.references(waterui_graphics::draw::ResourceId::TextLayout(layout_id)));
+        assert!(content.references(cherenkov_record::ResourceId::TextLayout(layout_id)));
 
         drop(placed);
         drop(resource);
@@ -1703,10 +1773,10 @@ mod tests {
     #[test]
     fn an_image_past_the_image_budget_reports_the_error() {
         let (events, _events) = std::sync::mpsc::channel();
-        let limits = waterui_graphics::draw::ImageLimits {
+        let limits = cherenkov_record::ImageLimits {
             max_dimension: 8,
             max_bytes: 64 * 4,
-            ..waterui_graphics::draw::ImageLimits::UNLIMITED
+            ..cherenkov_record::ImageLimits::UNLIMITED
         };
         let engine = std::rc::Rc::new(
             cherenkov::Engine::<cherenkov::testing::Null>::new(cherenkov::testing::NullConfig {
@@ -1716,7 +1786,8 @@ mod tests {
             })
             .expect("engine"),
         );
-        let resources = SceneResources::over(waterui_graphics::SceneResources::new(engine));
+        let resources =
+            SceneResources::over(waterui_graphics::backend::SceneResources::new(engine));
         let mut names = resources.recording();
         let square = |side: u32, fill: u8| peniko::ImageData {
             data: peniko::Blob::from(vec![fill; 4 * side as usize * side as usize]),
@@ -1767,16 +1838,16 @@ mod tests {
             width: 16,
             height: 4,
         };
-        let limits = waterui_graphics::draw::ImageLimits {
+        let limits = cherenkov_record::ImageLimits {
             max_dimension: 8,
             max_bytes: 64 * 4,
-            ..waterui_graphics::draw::ImageLimits::UNLIMITED
+            ..cherenkov_record::ImageLimits::UNLIMITED
         };
         let (width, height, bytes) = fit_image_to_limits(&source, limits);
         assert_eq!((width, height), (8, 2));
         assert_eq!(bytes.len(), 8 * 2 * 4);
         let (width, height, bytes) =
-            fit_image_to_limits(&source, waterui_graphics::draw::ImageLimits::UNLIMITED);
+            fit_image_to_limits(&source, cherenkov_record::ImageLimits::UNLIMITED);
         assert_eq!((width, height), (16, 4));
         assert_eq!(&*bytes, &[255u8; 16 * 4 * 4][..]);
     }

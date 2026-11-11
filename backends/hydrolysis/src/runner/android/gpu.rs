@@ -10,7 +10,10 @@ use std::fmt;
 use std::sync::Arc;
 
 use ndk::native_window::NativeWindow;
-use raw_window_handle::{AndroidDisplayHandle, DisplayHandle, HasDisplayHandle, RawDisplayHandle};
+use raw_window_handle::{
+    AndroidDisplayHandle, AndroidNdkWindowHandle, DisplayHandle, HasDisplayHandle, HasWindowHandle,
+    RawDisplayHandle, RawWindowHandle, WindowHandle,
+};
 
 use crate::platform::{PresentationSurface, SurfaceError};
 
@@ -26,6 +29,68 @@ impl HasDisplayHandle for AndroidDisplay {
         Ok(unsafe {
             DisplayHandle::borrow_raw(RawDisplayHandle::Android(AndroidDisplayHandle::new()))
         })
+    }
+}
+
+/// A band's `ImageReader` surface as the window its swapchain presents
+/// to (water-rs/waterui#2225).
+struct BandWindow(NativeWindow);
+
+impl HasWindowHandle for BandWindow {
+    fn window_handle(&self) -> Result<WindowHandle<'_>, raw_window_handle::HandleError> {
+        let handle = RawWindowHandle::AndroidNdk(AndroidNdkWindowHandle::new(self.0.ptr().cast()));
+        // SAFETY: the wrapper holds its own reference to the native
+        // window, so the pointer stays valid for the borrow.
+        Ok(unsafe { WindowHandle::borrow_raw(handle) })
+    }
+}
+
+impl HasDisplayHandle for BandWindow {
+    fn display_handle(&self) -> Result<DisplayHandle<'_>, raw_window_handle::HandleError> {
+        AndroidDisplay.display_handle()
+    }
+}
+
+/// One band's attachment: the `ImageReader` surface behind the host's
+/// band `View` for one region above an embedded platform view
+/// (water-rs/waterui#2225).
+pub struct BandAttachment {
+    window: NativeWindow,
+    width: u32,
+    height: u32,
+    /// The host's generation for this surface; a stale detach is ignored.
+    generation: u64,
+}
+
+impl BandAttachment {
+    /// `window` is the owned lease `ANativeWindow_fromSurface` returned
+    /// for the band's `ImageReader` surface.
+    pub(crate) const fn new(
+        window: NativeWindow,
+        width: u32,
+        height: u32,
+        generation: u64,
+    ) -> Self {
+        Self {
+            window,
+            width,
+            height,
+            generation,
+        }
+    }
+
+    /// Whether `generation` names this attachment.
+    pub(crate) const fn is(&self, generation: u64) -> bool {
+        self.generation == generation
+    }
+
+    /// The band's presentation target: a transparent swapchain whose
+    /// colour space the engine selects as for any window; each image it
+    /// delivers reports that space, which the band `View` tags its
+    /// hardware bitmap with.
+    fn target(&self) -> cherenkov_gpu::WindowTarget {
+        cherenkov_gpu::WindowTarget::new(BandWindow(self.window.clone()), (self.width, self.height))
+            .transparent(true)
     }
 }
 
@@ -63,7 +128,8 @@ async fn request_adapter(instance: &wgpu::Instance) -> Result<wgpu::Adapter, Gpu
         .await
         .map_err(|error| {
             GpuError::new(format!(
-                "hydrolysis android: no wgpu-capable GPU adapter: {error}"
+                "hydrolysis android: unsupported device: no Vulkan adapter is available \
+                 (the device's Vulkan driver is missing or unusable): {error}"
             ))
         })
 }
@@ -214,6 +280,17 @@ pub struct AndroidSurface {
     >,
     /// GPU pipelines survive `SurfaceHolder` teardown while this host stays alive.
     engine_state: Option<std::rc::Rc<crate::engine::SharedEngineState>>,
+    /// The bands the engine knows of, by the placement id of the platform
+    /// view each sits above, each with the engine surface it was delivered
+    /// to: a rebuilt engine window gets every band again
+    /// (water-rs/waterui#2225).
+    bands_delivered: std::collections::BTreeMap<u64, cherenkov::SurfaceId>,
+    /// Frames that changed bands, as the engine hands them over once
+    /// their GPU work finished; the sender goes to every engine window.
+    band_commits: (
+        std::sync::mpsc::Sender<cherenkov_gpu::interop::android::BandCommit>,
+        std::sync::mpsc::Receiver<cherenkov_gpu::interop::android::BandCommit>,
+    ),
     native_window: Option<WindowLease>,
     /// The Kotlin `SurfaceHolder`'s reported geometry, independent of the
     /// engine surface — valid while between surface generations too.
@@ -278,6 +355,8 @@ impl AndroidSurface {
             generation: 0,
             engine_window: None,
             engine_state: None,
+            bands_delivered: std::collections::BTreeMap::new(),
+            band_commits: std::sync::mpsc::channel(),
             native_window: None,
             width: 0,
             height: 0,
@@ -361,7 +440,7 @@ impl AndroidSurface {
     fn render_targets(
         &mut self,
         display_scale: f64,
-        base_color: waterui_graphics::draw::WorkingColor,
+        base_color: cherenkov_record::WorkingColor,
     ) -> (
         crate::renderer::FrameRenderTarget<'_>,
         crate::platform::EngineAndroidTarget<'_>,
@@ -378,7 +457,6 @@ impl AndroidSurface {
             crate::renderer::FrameRenderTarget {
                 adapter: &context.shared_device.adapter,
                 device: &context.shared_device.device,
-                queue: &context.shared_device.queue,
                 device_loss: self.handles.clone(),
                 gpu_context_id: context.context_id,
                 shared_device: context.shared_device.clone(),
@@ -396,8 +474,59 @@ impl AndroidSurface {
                     .window,
                 window_slot: &mut self.engine_window,
                 transparent: self.transparent,
+                band_commits: &self.band_commits.0,
             },
         )
+    }
+
+    /// Sets or clears the band presenting the content above the embedded
+    /// platform view whose placement id is `view` (water-rs/waterui#2225).
+    /// With no live engine window the band waits for
+    /// [`Self::deliver_bands`].
+    pub(crate) fn set_band(&mut self, view: u64, band: Option<&BandAttachment>) {
+        self.bands_delivered.remove(&view);
+        let Some(window) = self.engine_window.as_ref() else {
+            return;
+        };
+        window
+            .surface
+            .set_band(view, band.map(BandAttachment::target))
+            .expect("hydrolysis android: engine render thread is gone");
+        if band.is_some() {
+            self.bands_delivered.insert(view, window.surface.id());
+        }
+    }
+
+    /// Delivers every band of `bands` the live engine window does not
+    /// have yet — after it was (re)built. Answers whether any was, so the
+    /// host renders a frame that fills them.
+    pub(crate) fn deliver_bands(
+        &mut self,
+        bands: &std::collections::BTreeMap<u64, BandAttachment>,
+    ) -> bool {
+        let Some(live) = self
+            .engine_window
+            .as_ref()
+            .map(|window| window.surface.id())
+        else {
+            return false;
+        };
+        let mut delivered = false;
+        for (&view, band) in bands {
+            if self.bands_delivered.get(&view) != Some(&live) {
+                self.set_band(view, Some(band));
+                delivered = true;
+            }
+        }
+        delivered
+    }
+
+    /// The band commits the engine handed over since the last call, oldest
+    /// first.
+    pub(crate) fn take_band_commits(
+        &self,
+    ) -> impl Iterator<Item = cherenkov_gpu::interop::android::BandCommit> + '_ {
+        self.band_commits.1.try_iter()
     }
 
     /// If `generation` names the live attachment, releases it. A stale
@@ -442,7 +571,7 @@ impl AndroidSurface {
         };
         let rate = lease.refresh.requested(&self.refresh_demand);
         // `ANativeWindow_setFrameRate` is API 30. The framework floor is API
-        // 31, so the symbol is a direct link, not a run-time lookup.
+        // 33, so the symbol is a direct link, not a run-time lookup.
         lease
             .window
             .set_frame_rate(rate, ndk::native_window::FrameRateCompatibility::Default)

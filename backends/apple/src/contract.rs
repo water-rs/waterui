@@ -24,12 +24,16 @@ use cocoa_ui::PlatformView;
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
 use cocoa_ui::uikit::HostView;
+use cocoa_ui::view::retain_base;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Context;
 use waterui_backend_core::{AnyView, Environment, View};
 use waterui_core::layout::SubView;
 
 use cocoa_ui::Retained;
+
+use crate::measure_memo::MemoizingSubView;
+use crate::proposal::{self, CommittedGeometry};
 
 /// What a rendered component owns beyond its platform view: watcher guards,
 /// action targets, rendered children, the platform objects they act on.
@@ -93,6 +97,10 @@ pub struct NativeLeaf {
     keepalive: KeepAlive,
     layout: Rc<dyn SubView>,
     view: Retained<PlatformView>,
+    /// The geometry the leaf's last placement committed
+    /// (`docs/layout-spec.md` §7.2), which its content layout and
+    /// accessibility frame read.
+    geometry: CommittedGeometry,
     /// The `.transition(...)` declaration the `Metadata<TransitionSpec>`
     /// handler stored on this leaf, waiting for a structural site to claim
     /// it. A leaf rendered beneath another modifier keeps its declaration,
@@ -117,11 +125,20 @@ impl fmt::Debug for NativeLeaf {
 impl NativeLeaf {
     /// A leaf whose platform view is `view` (any `NSView`/`UIView`
     /// subclass), retained for the leaf's life.
+    ///
+    /// A view whose class carries response geometry commits it under the
+    /// leaf's rule at the start of every layout pass and reports the
+    /// committed response as its accessibility frame; a container driver
+    /// takes the commit over through [`drive_geometry`](Self::drive_geometry).
     pub fn new<V: AsRef<PlatformView> + ?Sized>(view: &V, layout: impl SubView + 'static) -> Self {
+        let layout: Rc<dyn SubView> = Rc::new(MemoizingSubView::new(Box::new(layout)));
+        let view = retain_base(view);
+        let geometry = proposal::install(&view, &layout);
         Self {
             keepalive: KeepAlive::default(),
-            layout: Rc::new(crate::measure_memo::MemoizingSubView::new(Box::new(layout))),
-            view: cocoa_ui::view::retain_base(view),
+            layout,
+            view,
+            geometry,
             transition: None,
             #[cfg(target_os = "ios")]
             attached_controllers: Vec::new(),
@@ -137,7 +154,7 @@ impl NativeLeaf {
     /// outer declaration wins, the inner one dropping unowned.
     pub fn set_transition(&mut self, claim: crate::transition::TransitionClaim) {
         if self.transition.is_some() {
-            crate::transition::transition_violation!(
+            waterui::contract_violation!(
                 "waterui-apple: a `.transition(...)` declaration beneath another `.transition(...)` \
                  is never owned — remove the inner declaration (docs/layout-spec.md §4.5)"
             );
@@ -173,6 +190,28 @@ impl NativeLeaf {
     #[must_use]
     pub(crate) fn layout_handle(&self) -> Rc<dyn SubView> {
         Rc::clone(&self.layout)
+    }
+
+    /// The geometry the leaf's last placement committed — what a handler
+    /// that names the leaf's accessibility geometry reads.
+    #[must_use]
+    pub(crate) fn geometry(&self) -> CommittedGeometry {
+        self.geometry.clone()
+    }
+
+    /// Hands the leaf's committed geometry to the container driver that
+    /// places its children: the driver commits it from the
+    /// `place_layout` answer of each pass, so the leaf stops resolving it
+    /// under its own rule.
+    ///
+    /// # Panics
+    ///
+    /// When the leaf's view carries no response geometry — a driver lays
+    /// its children out in a `HostView`.
+    #[must_use]
+    pub(crate) fn drive_geometry(&self) -> CommittedGeometry {
+        proposal::drive(&self.view);
+        self.geometry.clone()
     }
 
     /// Mirrors the leaf's layout face onto the view's intrinsic measure,
@@ -229,7 +268,7 @@ impl NativeLeaf {
     #[must_use]
     pub fn mount(mut self, parent: &PlatformView) -> Mounted {
         if self.transition.take().is_some() {
-            crate::transition::transition_violation!(
+            waterui::contract_violation!(
                 "waterui-apple: `.transition(...)` reached a view with no structural transition \
                  owner. A transition declares how a view is inserted and removed, so it must be \
                  the outermost modifier of the content a structural site swaps — of a \
@@ -302,12 +341,14 @@ impl Drop for NativeLeaf {
     /// the leaf finds `None`. Other handler-holding views clear through the
     /// `cocoa_ui::HandlerTeardown` guard their component keeps in
     /// `keepalive`, which drops after this and before the layout face and the
-    /// view. The view stays where it is: removing it from its superview is
-    /// the owner's job, as [`Mounted`] does.
+    /// view. Any other view carrying response geometry drops the geometry
+    /// handlers the leaf installed. The view stays where it is: removing it
+    /// from its superview is the owner's job, as [`Mounted`] does.
     fn drop(&mut self) {
         if let Some(host) = self.view.downcast_ref::<HostView>() {
             host.clear_handlers();
         }
+        proposal::release(&self.view);
     }
 }
 

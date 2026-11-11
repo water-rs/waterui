@@ -18,7 +18,10 @@ use cocoa_ui::{Point, Rect, view};
 use waterui::reactive::Signal;
 use waterui::style::Scale;
 use waterui_core::Metadata;
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 #[cfg(macos_layer_transform)]
 use crate::components::layer_transform;
@@ -86,6 +89,18 @@ impl core::fmt::Debug for ScaleSubView {
 }
 
 impl SubView for ScaleSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.state
+            .borrow()
+            .child
+            .layout()
+            .resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.borrow().child.layout().measure(proposal)
     }

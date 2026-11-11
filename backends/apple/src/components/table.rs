@@ -30,7 +30,9 @@ use waterui::reactive::{Computed, Signal};
 use waterui::text::{StyledStr, Text};
 use waterui::views::{AnyViewsSnapshot, ViewSnapshot, Views};
 use waterui_backend_core::AnyView;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 
 use crate::contract::{NativeLeaf, RenderContext, Renderer};
 use crate::dispatch::Dispatcher;
@@ -773,6 +775,14 @@ impl core::fmt::Debug for TableSubView {
 }
 
 impl SubView for TableSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(size_that_fits(&self.state.borrow()))
     }

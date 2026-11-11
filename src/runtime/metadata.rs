@@ -59,14 +59,14 @@ pub mod context_menu {
     #[non_exhaustive]
     pub struct ContextMenu {
         /// The menu items to display in the context menu.
-        pub items: Computed<Vec<MenuItem>>,
+        items: Computed<Vec<MenuItem>>,
         /// The custom preview shown while the menu is open. `None` uses
         /// the platform's default presentation of the source view.
-        pub preview: Option<AnyView>,
+        preview: Option<AnyView>,
         /// An interactive view presented alongside the menu — a
         /// pointer-interactive `NSMenuItem` view row on macOS, alongside
         /// the preview and commands in a native popover on iOS.
-        pub accessory: Option<AnyView>,
+        accessory: Option<AnyView>,
     }
 
     impl ContextMenu {
@@ -198,9 +198,9 @@ pub mod context_menu {
     #[non_exhaustive]
     pub struct ContextMenuView<Content> {
         /// The wrapped content view.
-        pub content: Content,
+        content: Content,
         /// The context menu to resolve.
-        pub menu: ContextMenu,
+        menu: ContextMenu,
     }
 
     impl<Content> ContextMenuView<Content> {
@@ -466,7 +466,7 @@ pub mod anchored_overlay {
     ///     .gap(4.0)
     ///     .flip(true)
     ///     .clamp(Clamp::Window { margin: 2.0 });
-    /// assert_eq!(placement.edge, AnchorEdge::Top);
+    /// assert_eq!(placement.get_edge(), AnchorEdge::Top);
     /// ```
     ///
     /// The defaults describe a dropdown: below the anchor, centered, no gap,
@@ -476,26 +476,26 @@ pub mod anchored_overlay {
     /// use waterui::metadata::anchored_overlay::{AnchorEdge, AnchorPlacement, Clamp, EdgeAlignment};
     ///
     /// let default = AnchorPlacement::default();
-    /// assert_eq!(default.edge, AnchorEdge::Bottom);
-    /// assert_eq!(default.alignment, EdgeAlignment::Center);
-    /// assert_eq!(default.gap, 0.0);
-    /// assert!(default.flip);
-    /// assert_eq!(default.clamp, Clamp::Window { margin: 0.0 });
+    /// assert_eq!(default.get_edge(), AnchorEdge::Bottom);
+    /// assert_eq!(default.get_alignment(), EdgeAlignment::Center);
+    /// assert_eq!(default.get_gap(), 0.0);
+    /// assert!(default.get_flip());
+    /// assert_eq!(default.get_clamp(), Clamp::Window { margin: 0.0 });
     /// ```
     #[derive(Debug, Clone, Copy, PartialEq)]
     #[non_exhaustive]
     pub struct AnchorPlacement {
         /// The edge of the anchor the overlay is placed against.
-        pub edge: AnchorEdge,
+        edge: AnchorEdge,
         /// How the overlay lines up with the anchor along that edge.
-        pub alignment: EdgeAlignment,
+        alignment: EdgeAlignment,
         /// The distance between the anchor and the overlay, in points.
-        pub gap: f32,
+        gap: f32,
         /// Whether the overlay moves to the opposite edge when the preferred
         /// edge has no room for it.
-        pub flip: bool,
+        flip: bool,
         /// How the overlay is kept inside the window.
-        pub clamp: Clamp,
+        clamp: Clamp,
     }
 
     impl AnchorPlacement {

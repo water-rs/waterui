@@ -9,13 +9,19 @@
 //! the control; the payload's stretch axis picks how the row fills its
 //! offer (`docs/layout-spec.md` §3, §6).
 
-use waterui::animation::Animation;
+use waterui::animation::{Animation, ChangeAnimation};
+use waterui::component::ControlSize;
 use waterui::component::toggle::{ToggleConfig, ToggleStyle};
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
 use waterui_core::interaction::Disabled;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 
+#[cfg(target_os = "ios")]
+use crate::components::button_chrome;
+use crate::components::control_size::platform_control_size;
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
 
@@ -46,12 +52,12 @@ const fn kind(style: ToggleStyle) -> Kind {
 }
 
 /// The `StateChange` the metadata asks for, `withCrossDissolveAnimation`'s
-/// table: an absent animation writes directly, and any present animation
-/// plays — a switch slides, a checkbox cross-fades for the seconds the
-/// table gives.
+/// table: a change that names no animation or disables it writes directly,
+/// and any named animation plays — a switch slides, a checkbox cross-fades
+/// for the seconds the table gives.
 #[cfg(target_os = "ios")]
 fn state_change(metadata: &Metadata) -> StateChange {
-    match metadata.try_get::<Animation>() {
+    match ChangeAnimation::of(metadata).animation() {
         None => StateChange::Immediate,
         Some(Animation::Default) => StateChange::Dissolve { seconds: 0.25 },
         Some(Animation::Bezier { duration, .. }) => StateChange::Dissolve {
@@ -66,7 +72,7 @@ fn state_change(metadata: &Metadata) -> StateChange {
 /// group under its clamped estimate.
 #[cfg(target_os = "macos")]
 fn state_change(metadata: &Metadata) -> StateChange {
-    match metadata.try_get::<Animation>() {
+    match ChangeAnimation::of(metadata).animation() {
         None => StateChange::Immediate,
         Some(Animation::Default) => StateChange::Implicit {
             seconds: 0.25,
@@ -114,6 +120,14 @@ impl core::fmt::Debug for ToggleSubView {
 }
 
 impl SubView for ToggleSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // Measured points come back in f64; `ViewDimensions` speaks f32 — the
     // narrowing is the layout contract.
     #[expect(
@@ -165,8 +179,15 @@ pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_native::<ToggleConfig>(|config, ctx| {
         let mtm = ctx.mtm();
         let stretch = waterui_core::NativeView::stretch_axis(&config);
-        let (label, binding, style) = config.into_parts();
+        let (label, binding, style, size) = config.into_parts();
         let toggle = Toggle::new(mtm, kind(style), binding.snapshot());
+        // `Toggle`'s documented default size is `Small`; the mapping is
+        // relative to it, so a bare toggle draws at the platform's regular
+        // size like a bare `NSSwitch` or checkbox. `AppKit` honours every
+        // size on the switch and the checkbox; `UIKit` draws one size at
+        // every control size, so the platform fixes the size on iOS and
+        // `set_control_size` ignores the value there.
+        toggle.set_control_size(platform_control_size(size, ControlSize::Small));
         let disabled = Disabled::resolve(ctx.env(), false);
 
         // The label's spoken name lands on the control; the visual label
@@ -207,6 +228,17 @@ pub fn install(dispatcher: &mut Dispatcher) {
             move |is_disabled| toggle.set_enabled(!is_disabled)
         });
 
+        // The tint colours the on state: a switch's track, a checkbox's
+        // glyph. `AppKit` has no per-control tint for `NSSwitch` or the
+        // checkbox `NSButton` (`contentTintColor` touches borderless
+        // buttons only, `bezelColor` bordered ones), so they draw with the
+        // application's accent colour there.
+        #[cfg(target_os = "ios")]
+        leaf.bind(&button_chrome::tint_signal(ctx.env()), {
+            let toggle = toggle.clone();
+            move |color| toggle.set_tint(&button_chrome::platform_color(&color))
+        });
+
         let control = cocoa_ui::view::retain_base(toggle.control());
         leaf.bind(&accessibility_label, move |styled| {
             let plain = cocoa_ui::text::strip_bidi_controls(&styled.to_plain());
@@ -220,6 +252,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
 #[cfg(test)]
 mod tests {
     use core::time::Duration;
+
+    use waterui::animation::NoAnimation;
 
     use super::*;
 
@@ -246,6 +280,16 @@ mod tests {
     #[should_panic(expected = "unresolved Automatic style")]
     fn kind_rejects_an_unresolved_automatic_style() {
         let _ = kind(ToggleStyle::Automatic);
+    }
+
+    /// A change that disables animation writes directly, even when an
+    /// animation is attached too.
+    #[test]
+    fn state_change_snaps_when_animation_is_disabled() {
+        let disabled = Metadata::new().with(Animation::Default).with(NoAnimation);
+        let StateChange::Immediate = state_change(&disabled) else {
+            panic!("a change that disables animation must write immediately");
+        };
     }
 
     #[cfg(target_os = "ios")]

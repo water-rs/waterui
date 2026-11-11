@@ -230,6 +230,11 @@ class CommandDecoder(private val sink: CommandSink) {
                 readMatrix()
                 sink.text(layout, matrix)
             }
+            Protocol.PAINTED_TEXT -> {
+                val layout = word()
+                readMatrix()
+                sink.paintedText(layout, matrix, color())
+            }
             Protocol.IMAGE -> {
                 val bitmap = word()
                 val left = float()
@@ -258,7 +263,10 @@ class CommandDecoder(private val sink: CommandSink) {
                 val values = floats(count * 12)
                 for (i in 0 until count) {
                     val kind = word()
-                    if (kind != EffectKind.BLUR && kind != EffectKind.LINEAR_COLOR) {
+                    if (kind != EffectKind.BLUR &&
+                        kind != EffectKind.LINEAR_COLOR &&
+                        kind != EffectKind.OVERSCROLL_STRETCH
+                    ) {
                         fail("effect ${unsigned(effect)} stage $i kind ${unsigned(kind)} is unknown")
                     }
                     kinds[i] = kind

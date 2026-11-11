@@ -1,7 +1,14 @@
 //! Core Animation, the compositor both frameworks draw through.
 
+use std::cell::Cell;
+
+use block2::RcBlock;
+use objc2::MainThreadMarker;
 #[cfg(target_os = "macos")]
 use objc2::rc::Retained;
+use objc2_core_foundation::{
+    CFIndex, CFOptionFlags, CFRunLoop, CFRunLoopActivity, CFRunLoopObserver, kCFRunLoopCommonModes,
+};
 use objc2_quartz_core::CALayer;
 use objc2_quartz_core::CATransaction;
 #[cfg(target_os = "macos")]
@@ -33,46 +40,91 @@ pub fn without_animation(body: impl FnOnce()) {
     CATransaction::commit();
 }
 
-/// Runs `body` when the current implicit transaction commits.
-///
-/// Commit is the boundary after which a layer added this transaction is on
-/// screen, so an animation started then animates from its initial value
-/// instead of landing already at its end state. `CATransaction` holds one
-/// completion block — a second `setCompletionBlock` replaces rather than
-/// appends — so `on_commit` chains onto whatever is already installed: a
-/// second registration this transaction runs after the first instead of
-/// silently dropping it.
-pub fn on_commit(body: impl FnOnce() + 'static) {
-    use std::cell::RefCell;
+/// The order of Core Animation's own commit observer on the main run loop
+/// (`CA::Transaction::observer_callback`, on `BeforeWaiting | Exit`).
+/// [`on_commit`]'s observer sits right after it, [`before_commit`]'s right
+/// before it.
+const CORE_ANIMATION_COMMIT_ORDER: CFIndex = 2_000_000;
 
-    // Retain the completion already installed — an earlier `on_commit`'s
-    // chain, or the framework's own — since `setCompletionBlock` below
-    // releases the transaction's reference to it. The `take` at run time
-    // keeps each link single-shot if the chain is ever re-invoked.
-    // SAFETY: a plain getter on the current transaction — no aliasing,
-    // no lifetime transfer; the pointer's validity is established below.
-    let previous = unsafe { CATransaction::completionBlock() };
-    let previous = RefCell::new(if previous.is_null() {
-        None
-    } else {
-        // SAFETY: `previous` is a live block the transaction retains;
-        // `copy` extends it into an owned `RcBlock`.
-        Some(unsafe { &*previous }.copy())
+/// Runs `body` once, after the main run loop's current turn commits its
+/// Core Animation transaction.
+///
+/// Commit is the boundary after which a layer added this turn is on
+/// screen, so an animation started then animates from its initial value
+/// instead of landing already at its end state.
+///
+/// The boundary is a one-shot main run-loop observer ordered after Core
+/// Animation's commit observer, not the transaction's completion block:
+/// that block waits for every animation added to the transaction after it
+/// to finish, and a Liquid Glass tab bar adds animations of infinite
+/// duration while it is built, so a completion block registered before it
+/// never runs (#3881). Bodies registered in one turn run in registration
+/// order. One registered while that turn's observers are already being
+/// called — from inside the commit, or from another `on_commit` body —
+/// runs after the next turn's commit.
+///
+/// The marker is the proof `body` — which need not be `Send` — is
+/// registered on the thread the main run loop calls it on.
+///
+/// # Panics
+///
+/// If Core Foundation hands back no main run loop or no observer — both
+/// exist for every process with a main thread.
+pub fn on_commit(mtm: MainThreadMarker, body: impl FnOnce() + 'static) {
+    let run_loop = CFRunLoop::main().expect("the main thread has a run loop");
+    observe_turn_once(mtm, CORE_ANIMATION_COMMIT_ORDER + 1, move || {
+        body();
+        // Layer changes `body` made join a transaction opened after this
+        // turn's commit; wake the loop so the next turn commits them
+        // instead of leaving them until some other event arrives.
+        run_loop.wake_up();
     });
-    // The completion block is `Fn`, but Core Animation evaluates it once;
-    // the option still guards a double evaluation.
-    let body = RefCell::new(Some(body));
-    let block = block2::RcBlock::new(move || {
-        if let Some(previous) = previous.borrow_mut().take() {
-            previous.call(());
-        }
-        if let Some(body) = body.borrow_mut().take() {
+}
+
+/// Runs `body` once, just before the main run loop's current turn commits
+/// its Core Animation transaction.
+///
+/// The observer is ordered right before Core Animation's commit observer:
+/// it runs after the turn's sources, timers and display-link callbacks,
+/// and layer changes `body` makes ride that same commit.
+///
+/// Registration follows [`on_commit`]'s rules: bodies registered in one
+/// turn run in registration order, and one registered while that turn's
+/// observers are already being called — from another `before_commit`
+/// body — runs before the next turn's commit.
+///
+/// # Panics
+///
+/// If Core Foundation hands back no main run loop or no observer — both
+/// exist for every process with a main thread.
+pub fn before_commit(mtm: MainThreadMarker, body: impl FnOnce() + 'static) {
+    observe_turn_once(mtm, CORE_ANIMATION_COMMIT_ORDER - 1, body);
+}
+
+/// Runs `body` once from a one-shot main run-loop observer at `order` on
+/// `BeforeWaiting | Exit`, in the common modes.
+fn observe_turn_once(_mtm: MainThreadMarker, order: CFIndex, body: impl FnOnce() + 'static) {
+    let run_loop = CFRunLoop::main().expect("the main thread has a run loop");
+    // The handler is `Fn`; the run loop calls a non-repeating observer
+    // once and then invalidates it, releasing the handler and `body`.
+    let body = Cell::new(Some(body));
+    let handler = RcBlock::new(move |_: *mut CFRunLoopObserver, _: CFRunLoopActivity| {
+        if let Some(body) = body.take() {
             body();
         }
     });
-    // SAFETY: the block lives in the transaction, which calls it once on
-    // commit and releases it afterwards.
-    unsafe { CATransaction::setCompletionBlock(Some(&block)) };
+    let activities: CFOptionFlags = (CFRunLoopActivity::BeforeWaiting | CFRunLoopActivity::Exit).0;
+    // SAFETY: the default allocator, a valid activity mask and a live
+    // handler block, which the observer copies.
+    let observer =
+        unsafe { CFRunLoopObserver::with_handler(None, activities, false, order, Some(&handler)) }
+            .expect("CFRunLoopObserverCreateWithHandler answers an observer");
+    // SAFETY: `kCFRunLoopCommonModes` is a Core Foundation constant.
+    run_loop.add_observer(Some(&observer), unsafe { kCFRunLoopCommonModes });
+    // A registration made while the run loop is already calling this
+    // turn's observers misses that pass; waking the loop guarantees the
+    // next pass comes instead of the loop sleeping on it.
+    run_loop.wake_up();
 }
 
 /// Runs `body` inside an `NSAnimationContext` group.

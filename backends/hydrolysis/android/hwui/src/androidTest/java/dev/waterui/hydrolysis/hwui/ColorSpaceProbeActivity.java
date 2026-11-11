@@ -112,10 +112,6 @@ final class ProbeView extends View {
 
   @Override
   protected void onSizeChanged(int w, int h, int oldw, int oldh) {
-    if (Build.VERSION.SDK_INT < 33) {
-      encodedNode = null;
-      return;
-    }
     int margin = (int)(16 * density);
     int swatchW = w - margin * 2;
     int swatchH = (int)(56 * density);
@@ -155,9 +151,7 @@ final class ProbeView extends View {
         margin, y, labelPaint);
     y += 30 * density;
 
-    if (Build.VERSION.SDK_INT < 33 || encodedNode == null) {
-      canvas.drawText("RuntimeShader requires API 33; device is API "
-          + Build.VERSION.SDK_INT, margin, y, labelPaint);
+    if (encodedNode == null) {
       return;
     }
 

@@ -27,7 +27,7 @@ waterui-watcher-set.workspace = true
 waterui-layout.workspace = true
 waterui-controls.workspace = true
 waterui-form.workspace = true
-waterui-backend-core = { workspace = true, features = ["gestures", "overlay"] }
+waterui-backend-core = { workspace = true, features = ["gestures", "overlay", "log"] }
 waterkit-clipboard.workspace = true
 waterui-locale.workspace = true
 # `std` for `Url::from_file_path`, the OS file-drop path.
@@ -264,6 +264,8 @@ windows-sys = { version = "0.61", optional = true, features = [
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
@@ -279,12 +281,12 @@ windows = { workspace = true, features = [
 ] }
 
 # The Android host's JNI boundary (see src/runner/android/): `ndk` with
-# `api-level-31` binds the NDK symbols of the framework's API floor, `libc`
+# `api-level-33` binds the NDK symbols of the framework's API floor, `libc`
 # carries the eventfd the main-Looper executor wakes on, and `android_logger`
 # + `tracing-log` route `tracing` into logcat.
 [target.'cfg(target_os = "android")'.dependencies]
 jni.workspace = true
-ndk = { version = "0.9.0", features = ["nativewindow", "api-level-31"] }
+ndk = { version = "0.9.0", features = ["nativewindow", "api-level-33"] }
 # The application `Context` for service crates that resolve it through
 # `ndk_context::android_context` — waterkit-clipboard's Android backend
 # panics without it; published once in `nativeCreateSession`.
@@ -373,10 +375,6 @@ cherenkov = { workspace = true, features = ["testing"] }
 # merged-tree queries and `testing::TestStyle` — and a dev-dependency on the
 # package itself is what turns them on for test builds (water-rs/waterui#1673).
 hydrolysis = { workspace = true, features = ["accessibility", "testing"] }
-# The renderer itself knows nothing about `Canvas`: it resolves to a
-# `SceneView` before it reaches layout. The tests still author canvases, which
-# is what keeps that resolution honest.
-waterui-canvas.workspace = true
 # The HWUI target's unit tests read font metrics on the host as well.
 read-fonts = { version = "0.45.1", default-features = false, features = ["std"] }
 # The `hwui::kotlin` test renders the Kotlin wire constants from the Rust
@@ -406,6 +404,9 @@ tempfile = "3.27"
 approx = "0.5"
 executor-core = { workspace = true, features = ["async-executor"] }
 tiny_http = "0.12"
+# The macOS real-engine suite's harness: it lists its scenarios the way
+# nextest asks and runs each one on the process main thread.
+libtest-mimic = "0.8.2"
 # The macOS real-engine suite drives the shared mirrored-state case.
 waterui-webview = { workspace = true, features = ["conformance"] }
 # Two crates that only exist to let the segmentation test see what it asserts
@@ -437,9 +438,8 @@ accessibility = ["dep:accesskit"]
 testing = []
 # Per-frame CPU/GPU stage timing: wgpu timestamp queries around the
 # layer-content and compositor submits plus the CPU stage split the window
-# pump measures. The `testing` adapter selection is what lets the profiler
-# exercise a software adapter for bring-up on a host without a GPU.
-frame-profile = ["testing"]
+# pump measures.
+frame-profile = []
 # The Cherenkov GPU painter and its GPU-content surface: the `cherenkov`
 # engine crates, `wgpu`, the parley text engine, and the framework's GPU
 # component vocabulary (`GpuView`, `ExternalFrame`, `waterui_graphics::gpu`).

@@ -16,7 +16,10 @@ use cocoa_ui::view;
 use cocoa_ui::{PlatformView, Rect};
 use waterui_backend_core::Environment;
 use waterui_core::Metadata;
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
@@ -52,6 +55,14 @@ impl core::fmt::Debug for WithEnvSubView {
 }
 
 impl SubView for WithEnvSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.state.child.layout().resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.child.layout().measure(proposal)
     }
@@ -125,14 +136,12 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         #[cfg(target_os = "ios")]
         {
-            use waterui::reactive::SignalExt;
-            use waterui::resolve::Resolvable;
-            use waterui::theme::color::Accent;
-
             // `WuiComputedObservation(themeColor: Accent, env: newEnv)`: the
-            // wrapper's tint follows the overlaid environment's accent.
+            // wrapper's tint follows the overlaid environment's tint — its
+            // nearest `.tint(...)`, else the accent — and the native
+            // controls below inherit it.
             let tint_view = view::retain_base(host_view);
-            leaf.bind(&Accent.resolve(&env).computed(), move |color| {
+            leaf.bind(&super::button_chrome::tint_signal(&env), move |color| {
                 let accent = {
                     let [red, green, blue, alpha] = color.components;
                     cocoa_ui::uikit::colors::extended_linear_display_p3(

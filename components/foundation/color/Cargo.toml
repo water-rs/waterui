@@ -1,0 +1,27 @@
+[package]
+name = "waterui-color"
+version = "0.5.1"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "../../../README.md"
+repository.workspace = true
+description = "Colour types, spaces and theme colour tokens for WaterUI"
+keywords = ["color", "oklch", "ui", "waterui"]
+categories = ["gui"]
+
+[dependencies]
+waterui-core.workspace = true
+nami.workspace = true
+# The working colour (`WorkingColor`) and the space markers the authoring
+# spaces resolve into: the render-target-neutral recorder's colour vocabulary.
+cherenkov-record.workspace = true
+# Colour-space conversion (`AlphaColor::convert`) for `working`.
+color.workspace = true
+# The working-space ↔ sRGB matrices and transfer, the engine's one
+# definition (`filtrate_core::space`).
+filtrate-core.workspace = true
+pastey.workspace = true
+
+[lints]
+workspace = true

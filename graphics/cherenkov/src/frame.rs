@@ -4,28 +4,66 @@
 //! [`Engine::render`]: crate::Engine::render
 
 use cherenkov_record::RefreshRange;
+use waterui_contract::contract_violation;
 
 use crate::Instant;
 
-/// The presentation timestamp handed to [`Engine::render`](crate::Engine::render).
+/// The time handed to [`Engine::render`](crate::Engine::render): the instant
+/// the engine animates and schedules against, and whether that instant is a
+/// target presentation time the platform reported.
 ///
-/// Two timestamps are equal when they name the same instant — a host that
-/// batches one engine frame per production target timestamp deduplicates on
-/// this, not on an approximation.
+/// Two frame times are equal when they name the same instant from the same
+/// source — a host that batches one engine frame per production target
+/// timestamp deduplicates on this, not on an approximation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct FrameTime(pub Instant);
+pub struct FrameTime {
+    instant: Instant,
+    reported: bool,
+}
 
 impl FrameTime {
-    /// The frame time at `t`.
+    /// A frame whose platform reported `target` as its presentation time (a
+    /// display link's target timestamp, for example).
     #[must_use]
-    pub const fn at(t: Instant) -> Self {
-        Self(t)
+    pub const fn presented_at(target: Instant) -> Self {
+        Self {
+            instant: target,
+            reported: true,
+        }
     }
 
-    /// The frame time now.
+    /// A frame with no reported presentation time, rendered at the current
+    /// instant.
     #[must_use]
     pub fn now() -> Self {
-        Self(Instant::now())
+        Self::unpresented_at(Instant::now())
+    }
+
+    /// A frame with no reported presentation time, rendered at `instant`: an
+    /// offscreen capture or a harness's synthetic clock.
+    #[must_use]
+    pub const fn unpresented_at(instant: Instant) -> Self {
+        Self {
+            instant,
+            reported: false,
+        }
+    }
+
+    /// The instant the engine animates and schedules against.
+    #[must_use]
+    pub const fn instant(&self) -> Instant {
+        self.instant
+    }
+
+    /// The target presentation time the platform reported, or `None` when
+    /// the frame has none.
+    #[must_use]
+    pub const fn presentation_time(&self) -> Option<Instant> {
+        if self.reported {
+            Some(self.instant)
+        } else {
+            None
+        }
     }
 }
 
@@ -208,14 +246,18 @@ pub struct Offscreen {
 impl Offscreen {
     /// Configure the refresh range of this target.
     ///
-    /// # Panics
-    /// When the range is empty or contains zero hertz.
+    /// # Contract
+    /// An empty range or one containing zero hertz is a contract
+    /// violation; the refresh range stays as it was.
     #[must_use]
     pub fn rate(mut self, rate: RefreshRange) -> Self {
-        assert!(
-            *rate.start() > 0 && !rate.is_empty(),
-            "refresh range must be positive and ordered"
-        );
+        if *rate.start() == 0 || rate.is_empty() {
+            contract_violation!(
+                "refresh range must be positive and ordered, not {rate:?}; the range stays {:?}",
+                self.refresh
+            );
+            return self;
+        }
         self.refresh = rate;
         self
     }

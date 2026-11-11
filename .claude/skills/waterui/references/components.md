@@ -85,11 +85,11 @@ Common modifiers on stacks:
 ```
 
 `.padding_with` takes `impl IntoComputed<EdgeInsets>`: a bare number (every edge), a
-`(vertical, horizontal)` pair, a `[top, bottom, leading, trailing]` array, an `EdgeInsets`,
+`(vertical, horizontal)` pair, a `[top, leading, bottom, trailing]` array, an `EdgeInsets`,
 or a signal of one. `.padding_horizontal(x)` / `.padding_vertical(x)` pad one axis. Do not
 spell `EdgeInsets::all(x)` / `symmetric(v, h)` / `new(..)` at a padding call — the number,
 pair and array are those constructors. The orders are traps worth memorizing —
-`[top, bottom, leading, trailing]` (not CSS order) and `(vertical, horizontal)`.
+`[top, leading, bottom, trailing]` (SwiftUI's order, not CSS) and `(vertical, horizontal)`.
 
 Alignment is a token or a method, never the qualified constant: `vstack(..).leading()` or
 `.alignment(Leading)`, `hstack(..).top()`, `zstack(..).top_leading()`. The tokens
@@ -164,7 +164,7 @@ absolute((
         UnitPoint::TOP_LEADING, UnitPoint::TOP_LEADING,       // anchor on child, position in parent
         16.0, 16.0,                                           // offsets — these are signal slots
     ),
-    controls().position_in(UnitPoint::BOTTOM_TRAILING),
+    controls().position_in_anchor(UnitPoint::BOTTOM_TRAILING, UnitPoint::BOTTOM_TRAILING),
 ))
 ```
 
@@ -496,12 +496,25 @@ List::content((
 ))
 ```
 
-`ListItem` modifiers: `.deletable(signal)`, `.section(section)`. Selection lives on the
-list itself, keyed by row identity — `.selection(&Binding<Option<V::Id>>)` or
-`.multi_selection(&Binding<BTreeSet<V::Id>>)` on both `List` and `ListBuilder`; for
-`List::content` rows `V::Id` is the row index (`usize`), for `List::for_each` it is the
-collection's id: `Identifiable::Id` for a `List`/`Vec`/`SignalCollection`, the index for an
-array or static slice. At most one mode per list: a later call replaces an earlier one.
+A section's content may also be a `ForEach` over a reactive collection, next to or instead
+of static rows — `Section::new("Today").content(ForEach::new(today, |item| ListItem::new(text(item.title))))`.
+Its rows are inserted and removed in place as the collection changes, the header sits on
+whichever row currently opens the section, and a section with no rows draws neither header
+nor footer until rows come back. A grouped, filtered list is therefore one `List::content`
+with a `Section` per group, each over its own `SignalCollection`; sections do not nest.
+
+`ListItem` modifiers: `.deletable(signal)`, `.insets(insets)`. Selection lives on the
+list itself and holds the app's own values — `.selection(&Binding<Option<T>>)` or
+`.multi_selection(&Binding<BTreeSet<T>>)` on both `List` and `ListBuilder`, `T: Ord + Clone`.
+A `ForEach` row — every row of `List::for_each`, or a `ForEach` inside `List::content` —
+is selected by its collection id: `Identifiable::Id` for a `List`/`Vec`/`SignalCollection`,
+the index for an array or static slice. A static row of `List::content` is selected by the
+value it is tagged with, like SwiftUI's `.tag(_:)` — `(|| ListItem::new(text("Inbox"))).tag(Mailbox::Inbox)`
+or `row("Archive", "12").tag(Mailbox::Archive)` — and an untagged static row is not
+selectable. Every selectable row of one list is selected by the same type; a selection
+of another type does not compile, and neither does a selection over a `List::content`
+whose rows are all untagged. Rows carrying the same value are selected together.
+At most one mode per list: a later call replaces an earlier one.
 `List::for_each` takes any collection whose items are `Clone`; `List::content` takes the
 structural tree above. An enum row type implements `Identifiable` by hand (`type Id; fn id(&self)`),
 keeping the id ranges of different variants disjoint.

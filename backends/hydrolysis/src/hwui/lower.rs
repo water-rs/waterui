@@ -11,17 +11,17 @@ use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::sync::Arc;
 
-use waterui_graphics::draw::color::WorkingColor;
-use waterui_graphics::draw::kurbo::{
+use cherenkov_record::color::WorkingColor;
+use cherenkov_record::kurbo::{
     Affine, BezPath, Cap, Join, PathEl, Point, Rect, Shape as _, Stroke, Vec2,
 };
-use waterui_graphics::draw::{
+use cherenkov_record::{
     BlendMode, Command, DisplayList, Extend, FillRule, GlyphRun, GlyphStyle, Group, ImageId,
     ImagePattern, MeshColorInterpolation, MeshGradient, PATH_TOLERANCE, Paint, Picture, Sampling,
     ShaderPaint, Shadow, ShapeData, SweepGradient, blends_within,
 };
 
-use waterui_graphics::draw::TextLayoutId;
+use cherenkov_record::TextLayoutId;
 
 use super::HwuiError;
 use super::buffer::{CommandBuffer, Field, Fields};
@@ -37,11 +37,6 @@ use super::protocol::{
 };
 use super::resources::{Kind, Registry, SharedRegistry};
 use super::text::TextLayoutIds;
-
-/// `drawMesh`.
-pub const MESH_API: u32 = 34;
-/// AGSL `RuntimeShader`.
-pub const RUNTIME_SHADER_API: u32 = 33;
 
 /// The id pools of what recordings define.
 #[derive(Debug)]
@@ -302,7 +297,6 @@ pub struct Lower<'a> {
     pub registry: &'a SharedRegistry,
     pub text_layouts: &'a TextLayoutIds,
     pub scratch: &'a mut Scratch,
-    pub api_level: u32,
     /// The layer being lowered, for errors.
     pub layer: u64,
 }
@@ -312,19 +306,6 @@ impl Lower<'_> {
         HwuiError::Unsupported {
             layer: self.layer,
             what: what.into(),
-        }
-    }
-
-    const fn require(&self, what: &'static str, needs: u32) -> Result<(), HwuiError> {
-        if self.api_level >= needs {
-            Ok(())
-        } else {
-            Err(HwuiError::RequiresApi {
-                layer: self.layer,
-                what,
-                needs,
-                device: self.api_level,
-            })
         }
     }
 
@@ -409,6 +390,37 @@ impl Lower<'_> {
             &[
                 Field::U("layout", layout),
                 Field::Fs("matrix", &affine_matrix(transform)),
+            ],
+        )
+    }
+
+    /// `PaintedText`: draws platform text layout `layout` under
+    /// `transform`, its default-coloured runs in `paint`.
+    ///
+    /// # Errors
+    ///
+    /// [`HwuiError::Unregistered`] naming the layer when the platform holds
+    /// no such layout, and [`HwuiError::Encoding`] for a paint other than a
+    /// solid colour — a platform layout's default runs take one colour.
+    pub fn painted_text(
+        &mut self,
+        layout: TextLayoutId,
+        transform: Affine,
+        paint: &Paint,
+    ) -> Result<(), HwuiError> {
+        let Paint::Solid(color) = paint else {
+            return Err(HwuiError::Encoding {
+                op: "PaintedText",
+                reason: format!("a text layout's default runs take a solid colour, not {paint:?}"),
+            });
+        };
+        let layout = self.text_layouts.resolve(layout.raw(), self.layer)?;
+        self.buffer.op(
+            Op::PaintedText,
+            &[
+                Field::U("layout", layout),
+                Field::Fs("matrix", &affine_matrix(transform)),
+                Field::Color("color", color_long(*color, 1.0)),
             ],
         )
     }
@@ -556,7 +568,6 @@ impl Lower<'_> {
         owned: &mut Owned,
         groups: &mut GroupNodes,
     ) -> Result<(), HwuiError> {
-        self.require("a mesh gradient", MESH_API)?;
         let command = &list.commands()[index];
         let ink = content_ink(
             list,
@@ -747,14 +758,21 @@ impl Lower<'_> {
                     sampling,
                 } => self.image(*image, *dst, *sampling)?,
                 Command::Picture { picture, transform } => self.picture(picture, *transform)?,
-                Command::Text { layout, transform } => {
+                Command::Text {
+                    layout,
+                    transform,
+                    paint,
+                } => {
                     if alpha < 1.0 {
                         return Err(HwuiError::Encoding {
                             op: "Text",
                             reason: "a text layout's node cannot take a folded opacity".to_owned(),
                         });
                     }
-                    self.text(*layout, *transform)?;
+                    match paint {
+                        Some(paint) => self.painted_text(*layout, *transform, paint)?,
+                        None => self.text(*layout, *transform)?,
+                    }
                 }
                 Command::BeginClip { shape, .. } => {
                     self.buffer.op(Op::Save, &[])?;
@@ -1120,7 +1138,6 @@ impl Lower<'_> {
     }
 
     fn runtime_shader(&mut self, shader: &ShaderPaint, local: Affine) -> Result<u32, HwuiError> {
-        self.require("a runtime shader", RUNTIME_SHADER_API)?;
         let runtime =
             self.registry
                 .lock()
@@ -1503,8 +1520,8 @@ fn sweep_span(sweep: &SweepGradient) -> Option<f64> {
 /// A shape grown by `spread`, or `None` for a path, which has no exact
 /// offset.
 fn grow(shape: &ShapeData, spread: f64) -> Option<ShapeData> {
-    use waterui_graphics::draw::ContinuousRect;
-    use waterui_graphics::draw::kurbo::{Circle, Ellipse, RoundedRect, RoundedRectRadii};
+    use cherenkov_record::ContinuousRect;
+    use cherenkov_record::kurbo::{Circle, Ellipse, RoundedRect, RoundedRectRadii};
     if spread == 0.0 {
         return Some(shape.clone());
     }
@@ -1711,6 +1728,7 @@ pub fn content_ink(
             Command::Text {
                 layout,
                 transform: placed,
+                ..
             } => {
                 if let Some(bounds) = text_layouts.bounds(layout.raw()) {
                     add(bounds, transform * *placed, clip);

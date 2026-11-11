@@ -276,6 +276,25 @@ class PlatformViewRegistryFocusTest {
     }
 
     @Test
+    fun `a clip reaches the slot as x y width height away from the origin`() {
+        val (hostView, registry) = host()
+        val events = mutableListOf<String>()
+        // A frame below the origin whose lower half a scroll viewport cuts.
+        mount(hostView, events, CLIPPED_BELOW_ORIGIN)
+        val density = hostView.resources.displayMetrics.density
+        val slot = registry.container.getChildAt(0)
+
+        val clip = android.graphics.Rect()
+        assertTrue(slot.getClipBounds(clip))
+        assertEquals(
+            android.graphics.Rect(0, 0, (100 * density).toInt(), (50 * density).toInt()),
+            clip,
+        )
+        assertTrue(registry.containsPlatformView(7L, 10 * density, 120 * density))
+        assertFalse(registry.containsPlatformView(7L, 10 * density, 175 * density))
+    }
+
+    @Test
     fun `covers pixel follows the ordered top entry`() {
         val (hostView, registry) = host()
         val events = mutableListOf<String>()
@@ -441,6 +460,63 @@ class PlatformViewRegistryFocusTest {
         assertTrue(hostView.touches.isEmpty())
     }
 
+    @Test
+    fun `a latched gesture never reorders the GPU band's paint order`() {
+        val (hostView, registry) = host()
+        val events = mutableListOf<String>()
+        registry.bandFactory = { id ->
+            object : RegionBand(hostView.context) {
+                override fun draw(canvas: Canvas) {
+                    super.draw(canvas)
+                    events += "band$id:draw"
+                }
+
+                override fun show(colorSpace: android.graphics.ColorSpace) = Unit
+
+                override fun clear() = Unit
+            }
+        }
+        // Two slots side by side with a band after each: the container holds
+        // slot 7, band 7, slot 8, band 8 — paint order.
+        mount(
+            hostView,
+            events,
+            """[
+                {"id":7,"kind":"first","x":0,"y":0,"width":100,"height":100,"order":0,"visible":true},
+                {"id":8,"kind":"second","x":100,"y":0,"width":100,"height":100,"order":1,"visible":true}
+            ]""",
+            mapOf("first" to "a", "second" to "b"),
+        )
+        // The GPU painter has the hit test only, never ordered content.
+        registry.setOrderedHitTest { x, y ->
+            listOf(7L, 8L).firstOrNull { registry.containsPlatformView(it, x, y) }
+        }
+        val paintOrder = listOf("a:draw", "band7:draw", "b:draw", "band8:draw")
+
+        events.clear()
+        registry.container.draw(Canvas())
+        assertEquals(paintOrder, events)
+
+        // The gesture on the first slot reaches it and keeps its target...
+        events.clear()
+        registry.container.dispatchTouchEvent(touch(MotionEvent.ACTION_DOWN, 10f, 10f))
+        assertEquals(listOf("a:touch:0"), events)
+
+        // ...without moving it above the band that paints over it.
+        events.clear()
+        registry.container.draw(Canvas())
+        assertEquals(paintOrder, events)
+
+        events.clear()
+        registry.container.dispatchTouchEvent(touch(MotionEvent.ACTION_MOVE, 12f, 12f))
+        registry.container.dispatchTouchEvent(touch(MotionEvent.ACTION_UP, 12f, 12f))
+        assertEquals(listOf("a:touch:2", "a:touch:1"), events)
+        events.clear()
+        registry.container.draw(Canvas())
+        assertEquals(paintOrder, events)
+        assertTrue(hostView.touches.isEmpty())
+    }
+
     private companion object {
         const val OVERLAPPING =
             """[{"id":7,"kind":"low","x":0,"y":0,"width":100,"height":100,"order":0,"visible":true},{"id":8,"kind":"high","x":0,"y":0,"width":100,"height":100,"order":1,"visible":true}]"""
@@ -452,5 +528,9 @@ class PlatformViewRegistryFocusTest {
         /** Same view clipped to its left half. */
         const val CLIPPED =
             """[{"id":7,"kind":"rec","x":0,"y":0,"width":100,"height":100,"clip":[0,0,50,100],"order":0,"visible":true}]"""
+
+        /** A view at y 100 whose lower half is clipped away. */
+        const val CLIPPED_BELOW_ORIGIN =
+            """[{"id":7,"kind":"rec","x":0,"y":100,"width":100,"height":100,"clip":[0,100,100,50],"order":0,"visible":true}]"""
     }
 }

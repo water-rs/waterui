@@ -69,9 +69,11 @@ use objc2_quartz_core::{
     CATransaction, kCAAnimationLinear, kCAMediaTimingFunctionLinear,
 };
 use waterui_backend_core::{AnyView, Environment};
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
-use waterui_graphics::filter_view::{AnyEffect, ParamGuards};
-use waterui_graphics::filtrate::{FilterLink, Interpolator, WatchGuard, WorkingSpace};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView, ViewDimensions,
+};
+use waterui_graphics::backend::filtrate::{FilterLink, Interpolator, WatchGuard, WorkingSpace};
+use waterui_graphics::backend::{AnyEffect, ParamGuards};
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
 
@@ -648,8 +650,8 @@ pub struct EffectPlan {
 /// `Convolution*`, halftone variants, distortions, every custom
 /// `Filter`) realize through capture.
 fn map_link(link: &FilterLink<'_>) -> Option<NativeStage> {
+    use waterui_graphics::backend::filtrate::filters;
     use waterui_graphics::filter_view as fv;
-    use waterui_graphics::filtrate::filters;
     let base = link.param_base;
     if link.downcast_ref::<fv::Brightness>().is_some()
         || link.downcast_ref::<filters::Brightness<f32>>().is_some()
@@ -936,8 +938,17 @@ impl Drop for NativeFilterOwner {
     /// layer's filters are not cleared: the layer dies with its view on
     /// an ordinary removal, and a ghost keeps them until the retired
     /// tree detaches.
+    ///
+    /// An enclosing capture still holding this output in an open
+    /// external-render scope has lost content it may have deferred on:
+    /// the owner's departure is the wake the capture's retry waits for.
     fn drop(&mut self) {
         self.capture.shutdown();
+        if self.external_count.get() > 0
+            && let Some(redraw) = self.external_redraw.get_mut().take()
+        {
+            redraw();
+        }
     }
 }
 
@@ -1271,7 +1282,7 @@ fn apply_animated(
     owner: &NativeFilterOwner,
     effect: usize,
     flat: usize,
-    target: waterui_graphics::filtrate::AnimatedTarget,
+    target: waterui_graphics::backend::filtrate::AnimatedTarget,
 ) {
     let now = CACurrentMediaTime();
     let mut target = target;
@@ -1450,6 +1461,17 @@ impl std::fmt::Debug for NativeFilteredSubView {
 }
 
 impl SubView for NativeFilteredSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.mounted
+            .borrow()
+            .layout()
+            .resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.mounted.borrow().layout().measure(proposal)
     }
@@ -1678,7 +1700,11 @@ impl CapturableSurface for NativeFilterCapturable {
         );
         let input = Retained::clone(&work.get(mtm).prepared.input);
         let generation = work.get(mtm).prepared.context.generation();
-        owner.capture.capture(&input, generation, move |captured| {
+        // A parent's frame drives this render: the capture joins the
+        // turn's shared pass, one transaction commit for every
+        // display-driven capture of the turn (#4074).
+        let captures = crate::gpu_runtime::capture_pass(&owner.env);
+        captures.capture(&owner.capture, &input, generation, move |captured| {
             let work = Arc::clone(&work);
             cocoa_ui::main_queue::enqueue(move |mtm| {
                 finish_capture(&work, captured.is_ok(), mtm);

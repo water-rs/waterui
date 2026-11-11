@@ -292,6 +292,15 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
             .collect()
     }
 
+    /// Every bound control's live toggle.
+    #[cfg(test)]
+    pub(crate) fn live_toggles(&self) -> Vec<Rc<crate::renderer::live_toggle::LiveToggle>> {
+        self.states
+            .values()
+            .filter_map(|state| state.handles.as_ref()?.live_toggle())
+            .collect()
+    }
+
     pub(crate) fn handles_for_key(
         &self,
         key: &InteractionKey,
@@ -328,6 +337,8 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
             modal: false,
             focus_binding: None,
             escape_action: None,
+            slop: 0.0,
+            cancel_distance: 0.0,
         };
         let previous = interaction_state.handles.take();
 
@@ -487,6 +498,12 @@ pub struct PressSlot {
     pub(crate) modal: bool,
     pub(crate) focus_binding: Option<Binding<bool>>,
     pub(crate) escape_action: Option<SharedAction>,
+    /// How far a waiting touch press may move from where it landed and stay
+    /// a press ([`HitRegion::get_slop`](crate::theme::HitRegion::get_slop)).
+    pub(crate) slop: f64,
+    /// How far outside the target a release still activates
+    /// ([`HitRegion::get_cancel_distance`](crate::theme::HitRegion::get_cancel_distance)).
+    pub(crate) cancel_distance: f64,
 }
 
 /// Outcome of releasing all active presses: `visual_changed` replays state

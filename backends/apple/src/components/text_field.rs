@@ -37,16 +37,21 @@ use waterui::reactive::Computed;
 use waterui::reactive::{Binding, Signal};
 use waterui::resolve::Resolvable;
 use waterui::text::StyledStr;
-use waterui::text::font::{FontDesign, FontWeight, ResolvedFont};
+#[cfg(target_os = "macos")]
+use waterui::text::font::Body;
+use waterui::text::font::ResolvedFont;
 use waterui::theme::color::Foreground;
 use waterui_backend_core::Environment;
 use waterui_core::interaction::Disabled;
 use waterui_core::layout::{
-    HorizontalAlignment, ProposalSize, Size, StretchAxis, SubView, ViewDimensions,
+    HorizontalAlignment, LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size,
+    StretchAxis, SubView, ViewDimensions,
 };
 
+use super::font::platform_font;
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -148,72 +153,6 @@ fn platform_color(color: &WorkingColor) -> Retained<PlatformColor> {
             f64::from(alpha),
         )
     }
-}
-
-/// The platform weight of a `FontWeight` on the `UIFont`/`NSFont` scale.
-const fn platform_weight(weight: FontWeight) -> f64 {
-    use cocoa_ui::font::weight;
-    match weight {
-        FontWeight::Thin => weight::THIN,
-        FontWeight::UltraLight => weight::ULTRA_LIGHT,
-        FontWeight::Light => weight::LIGHT,
-        FontWeight::Normal => weight::REGULAR,
-        FontWeight::Medium => weight::MEDIUM,
-        FontWeight::SemiBold => weight::SEMI_BOLD,
-        FontWeight::Bold => weight::BOLD,
-        FontWeight::UltraBold => weight::HEAVY,
-        FontWeight::Black => weight::BLACK,
-    }
-}
-
-/// The comma-separated candidates of a CSS-style family list — as in `text`.
-fn family_candidates(family: &str) -> impl Iterator<Item = &str> {
-    family
-        .split(',')
-        .map(str::trim)
-        .filter(|candidate| !candidate.is_empty())
-}
-
-/// The platform face a resolved font names — the same rule as `text`.
-///
-/// # Panics
-///
-/// When the family names no installed font and no generic — the same
-/// `fatalError` the Swift port raises.
-fn platform_font(
-    mtm: cocoa_ui::MainThreadMarker,
-    resolved: &ResolvedFont,
-    italic: bool,
-) -> Retained<cocoa_ui::Font> {
-    let size = f64::from(resolved.size());
-    let weight = platform_weight(resolved.weight());
-    let mut font = match resolved.family() {
-        Some(family) if !family.is_empty() => {
-            let mut resolved_font = None;
-            for candidate in family_candidates(family) {
-                resolved_font = match candidate {
-                    "system" | "sans-serif" => Some(cocoa_ui::font::system(mtm, size, weight)),
-                    _ => cocoa_ui::font::named(candidate, size),
-                };
-                if resolved_font.is_some() {
-                    break;
-                }
-            }
-            resolved_font.unwrap_or_else(|| {
-                panic!(
-                    "WaterUI: font family '{family}' not found. Ensure the font is bundled and registered."
-                )
-            })
-        }
-        _ => match resolved.design() {
-            FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
-            FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
-        },
-    };
-    if italic && let Some(italic_font) = cocoa_ui::font::italic_variant(&font) {
-        font = italic_font;
-    }
-    font
 }
 
 /// The attributed string the current chunks render into — `text`'s builder
@@ -525,23 +464,26 @@ struct FieldState {
     label: Mounted,
 }
 
-/// Lays out the children inside `view`'s bounds: the label at top-leading,
-/// then the field spanning the full width below it — `WuiTextField`'s
-/// constraints as manual frames. `UIKit` centers the input inside the
-/// region between the label and the container's bottom, the way the
-/// field's `inputRegion` layout guide does.
-fn layout_children(view: &PlatformView, state: &FieldState) {
-    let bounds = view::bounds(view);
+/// Lays out the children inside the `response` rectangle: the label at
+/// top-leading, then the field spanning the full width below it —
+/// `WuiTextField`'s constraints as manual frames. `UIKit` centers the input
+/// inside the region between the label and the container's bottom, the way
+/// the field's `inputRegion` layout guide does.
+fn layout_children(view: &PlatformView, response: Rect, state: &FieldState) {
+    let bounds = response;
     let label = state.label.layout().measure(ProposalSize::UNSPECIFIED).size;
     let has_label = label.height > 0.0;
     view::set_hidden(state.label.view(), !has_label);
 
     // The label pins top+leading and keeps its intrinsic width; the measure
     // reports bare text bounds, which is narrower than the cell's drawing
-    // frame, so the full region width is what keeps it unclipped.
-    view::set_frame(
+    // frame, so the full region width is its allocation and its response
+    // is anchored at the leading edge of it.
+    proposal::place_leading(
         state.label.view(),
-        Rect::new(0.0, 0.0, bounds.size.width, f64::from(label.height)),
+        Rect::new(0.0, 0.0, bounds.size.width, f64::from(label.height)).translated(response.origin),
+        ProposalSize::UNSPECIFIED,
+        cocoa_ui::view::is_right_to_left(view),
     );
 
     let region_top = if has_label {
@@ -561,7 +503,7 @@ fn layout_children(view: &PlatformView, state: &FieldState) {
         field_height,
     );
     let field_view: &PlatformView = &state.field;
-    view::set_frame(field_view, field_frame);
+    view::set_frame(field_view, field_frame.translated(response.origin));
 }
 
 /// The container's layout face: reports `WuiTextField.sizeThatFits`'s
@@ -595,6 +537,14 @@ const fn measure_width(_proposal: ProposalSize, _label_width: f64) -> f64 {
 }
 
 impl SubView for TextFieldSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `measure` speaks f32; the geometry math runs in f64 — the narrowing is
     // the layout contract, as in `text`.
     #[expect(
@@ -673,7 +623,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         });
         host.set_layout_handler({
             let state = Rc::clone(&state);
-            move |view| layout_children(view, &state)
+            move |view| layout_children(view, proposal::response(view), &state)
         });
 
         let control = view::retain_base(field_view);
@@ -710,14 +660,27 @@ pub fn install(dispatcher: &mut Dispatcher) {
         if let Some(on_submit) = on_submit {
             let env = ctx.env().clone();
             #[cfg(target_os = "ios")]
-            leaf.keep(field.install_submit_handler(move |_| on_submit.call(&env)));
+            leaf.keep(field.install_submit_handler(move |_| on_submit.run(&env)));
             #[cfg(target_os = "macos")]
-            field.on_submit(move |_| on_submit.call(&env));
+            field.on_submit(move |_| on_submit.run(&env));
         }
 
         // The prompt renders into the placeholder under the placeholder
         // color — `WuiStyledStrRenderer`'s `defaultForegroundColor`.
         wire_prompt(mtm, &mut leaf, ctx, &field, &prompt);
+
+        // The theme `Body` font is the field's own font, as in the secure
+        // field: a single-line `NSTextField` cell positions its line by that
+        // font, not by the attributed value or placeholder, and typing into
+        // an empty field starts in it.
+        #[cfg(target_os = "macos")]
+        leaf.bind(&Body.resolve(ctx.env()), {
+            let field = field.clone();
+            move |font| {
+                crate::measure_memo::invalidate();
+                field.set_font(&platform_font(mtm, &font, false));
+            }
+        });
 
         // Announce the label's semantic text on the field.
         leaf.bind(&accessibility_label, {

@@ -108,21 +108,21 @@ impl Identifiable for Section {
 pub struct TreeRow {
     /// Node identity, which is also the reconciliation key.
     #[id]
-    pub id: u64,
+    id: u64,
     /// Nesting depth, used for indentation.
-    pub depth: usize,
+    depth: usize,
     /// Node role.
-    pub role: Str,
+    role: Str,
     /// Accessibility label, when the node has one.
-    pub label: Option<Str>,
+    label: Option<Str>,
     /// Node value, when the node has one.
-    pub value: Option<Str>,
+    value: Option<Str>,
     /// Formatted bounds, when the node is laid out.
-    pub bounds: Option<Str>,
+    bounds: Option<Str>,
     /// Whether the node is hidden from assistive technology.
-    pub hidden: bool,
+    hidden: bool,
     /// Whether the node accepts interaction.
-    pub enabled: bool,
+    enabled: bool,
 }
 
 impl TreeRow {
@@ -211,15 +211,15 @@ impl TreeRow {
 pub struct TaskRow {
     /// Task type name, which is also its identity.
     #[id]
-    pub id: Str,
+    id: Str,
     /// Polls in the last window.
-    pub polls: u32,
+    polls: u32,
     /// Mean wall time per poll.
-    pub mean_us: u64,
+    mean_us: u64,
     /// Longest single poll.
-    pub max_us: u32,
+    max_us: u32,
     /// Polls that exceeded the frame budget.
-    pub over_budget: u32,
+    over_budget: u32,
 }
 
 impl TaskRow {
@@ -272,15 +272,15 @@ impl TaskRow {
 pub struct LogRow {
     /// Monotonic identity; log records have no natural key.
     #[id]
-    pub id: u64,
+    id: u64,
     /// Severity.
-    pub level: LogLevel,
+    level: LogLevel,
     /// Emitting target.
-    pub target: Str,
+    target: Str,
     /// Rendered message.
-    pub message: Str,
+    message: Str,
     /// Source location, when the record carried one.
-    pub origin: Option<Str>,
+    origin: Option<Str>,
 }
 
 impl LogRow {
@@ -327,17 +327,17 @@ impl LogRow {
 pub struct SignalRow {
     /// Node identity.
     #[id]
-    pub id: u64,
+    id: u64,
     /// Type of the value it holds.
-    pub type_name: Str,
+    type_name: Str,
     /// Where in the application it was created.
-    pub origin: Str,
+    origin: Str,
     /// Live watchers.
-    pub subscribers: u32,
+    subscribers: u32,
     /// Notifications observed since it appeared.
-    pub notifications: u64,
+    notifications: u64,
     /// Whether the node has since been dropped.
-    pub dropped: bool,
+    dropped: bool,
 }
 
 impl SignalRow {
@@ -397,15 +397,15 @@ impl SignalRow {
 pub struct StallRow {
     /// Monotonic identity; stalls have no natural key.
     #[id]
-    pub id: u64,
+    id: u64,
     /// Task that overran.
-    pub task_type: Str,
+    task_type: Str,
     /// Percentage of the frame budget consumed.
-    pub usage_pct: f32,
+    usage_pct: f32,
     /// Wall time spent in the poll.
-    pub wall_us: u64,
+    wall_us: u64,
     /// Captured stack, empty when capture was rate-limited.
-    pub backtrace: Vec<Str>,
+    backtrace: Vec<Str>,
 }
 
 impl StallRow {

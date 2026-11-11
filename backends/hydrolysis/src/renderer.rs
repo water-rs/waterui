@@ -34,6 +34,8 @@ mod identity;
 mod input;
 mod interaction_layers;
 mod lifecycle;
+pub mod live_progress;
+pub mod live_toggle;
 pub mod material;
 mod metadata;
 pub mod mount;
@@ -94,9 +96,8 @@ pub use render::HydrolysisRenderTarget;
 pub use render::WidgetRenderContext;
 pub use render::*;
 pub use render::{
-    anchor_point, circle_arc_path, estimate_layout_intrinsic, gesture_group_identity,
-    normalize_layout_view, normalize_view_for_render, path_commands_to_path,
-    resolved_morph_shape_to_path, resolved_shape_to_path, transformed_rect,
+    anchor_point, estimate_layout_intrinsic, gesture_group_identity, normalize_layout_view,
+    normalize_view_for_render, path_commands_to_path, resolved_shape_to_path, transformed_rect,
 };
 use rustc_hash::FxHashSet;
 use signals::LayoutDependencies;
@@ -117,13 +118,15 @@ use accesskit::{
     TreeId as AccessibilityTreeId, TreeInfo as AccessibilityTree,
     TreeUpdate as AccessibilityTreeUpdate,
 };
+use cherenkov_record::{Paint, WorkingColor};
 use executor_core::spawn_local;
 use nami::{Binding, Signal};
 use waterkit_clipboard::Clipboard;
 use waterui::ViewExt;
 use waterui::accessibility::{
-    AccessibilityChildren, AccessibilityHidden, AccessibilityIdentifier, AccessibilityLabel,
-    AccessibilityRole, AccessibilityState, AccessibilityStateSignal, AccessibilityValue,
+    AccessibilityChildren, AccessibilityGeometry, AccessibilityHidden, AccessibilityIdentifier,
+    AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
+    AccessibilityValue,
 };
 use waterui::animation::Animation;
 use waterui::background::{Background, MaterialBackground, MaterialGroup};
@@ -131,7 +134,7 @@ use waterui::border::Border;
 use waterui::component::badge::BadgeConfig;
 use waterui::component::focus::Focused;
 use waterui::component::list::{ListConfig, ListItem};
-use waterui::component::progress::{ProgressConfig, ProgressStyle};
+use waterui::component::progress::ProgressConfig;
 use waterui::component::table::{TableColumn, TableConfig};
 use waterui::cursor::{Cursor, CursorStyle};
 use waterui::drag_drop::{Draggable, DropDestination};
@@ -179,13 +182,14 @@ use waterui_form::picker::PickerConfig;
 use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
+use waterui_graphics::Gradient;
+use waterui_graphics::backend::{FilteredView, SceneView};
+use waterui_graphics::canvas::CanvasView;
 use waterui_graphics::color::Color;
-use waterui_graphics::draw::{Paint, WorkingColor};
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::gpu::RedrawHandle;
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::{ExternalFrameView, GpuContentView};
-use waterui_graphics::{FilteredView, Gradient, SceneView};
 
 use waterui_icon::SystemIcon;
 use waterui_layout::container::{FixedContainer, LazyContainer};
@@ -195,7 +199,7 @@ use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_map::MapConfig;
-use waterui_shape::{ClipShape, PathCommand, ResolvedMorphShape, ResolvedShape, ShapeKind};
+use waterui_shape::{ClipShape, PathCommand, ResolvedShape, ShapeKind};
 use waterui_text::styled::StyledStr;
 use waterui_text::{Text, TextConfig};
 use waterui_webview::WebView;
@@ -223,7 +227,6 @@ const SCALE_Y_ANIMATION_KEY: usize = 0x0100_0003;
 const ROTATION_ANIMATION_KEY: usize = 0x0100_0004;
 const OFFSET_X_ANIMATION_KEY: usize = 0x0100_0005;
 const OFFSET_Y_ANIMATION_KEY: usize = 0x0100_0006;
-const MORPH_PROGRESS_ANIMATION_KEY: usize = 0x0100_0007;
 
 #[cfg(feature = "accessibility")]
 pub use accessibility::{
@@ -345,10 +348,10 @@ pub enum Next {
     #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     At {
         /// When the frame is wanted.
-        #[cfg_attr(not(target_os = "android"), expect(dead_code))]
+        #[cfg_attr(not(any(target_os = "android", trybuild)), expect(dead_code))]
         time: Instant,
         /// The refresh-rate range the frame requests.
-        #[cfg_attr(not(target_os = "android"), expect(dead_code))]
+        #[cfg_attr(not(any(target_os = "android", trybuild)), expect(dead_code))]
         rate: cherenkov_record::RefreshRange,
     },
 }
@@ -451,11 +454,12 @@ pub struct MaterializedPlatformView<E: crate::text::TextEngine> {
     /// The retained node that emitted the view.
     #[cfg(any(test, hydrolysis_hwui))]
     pub(crate) owner: Weak<crate::renderer::mount::NodeCell<E>>,
-    /// The view's bounds in `owner`'s local coordinates.
+    /// The view's bounds in `owner`'s local coordinates — the HWUI
+    /// portal's binding datum; the GPU band split needs only `owner`.
     #[cfg(any(test, hydrolysis_hwui))]
     pub(crate) local: kurbo::Rect,
-    /// `E` reaches the record only through `owner`; where the HWUI portal
-    /// does not compile, the parameter is phantom.
+    /// `E` reaches the record only through `owner`; where neither painter
+    /// binds the node, the parameter is phantom.
     #[cfg(not(any(test, hydrolysis_hwui)))]
     _phantom: std::marker::PhantomData<fn() -> E>,
 }
@@ -516,7 +520,16 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// Reserves the address of every owner keying a live renderer-local
     /// slot in `animation_controller`; begins and retires with it.
     animation_owner_pins: AnimationOwnerPins,
+    /// The layer tracks the engine still ran at the last presented frame:
+    /// scheduled work the host-side `animation_controller` cannot see.
+    engine_tracks: cherenkov_record::RunningTracks,
     frame_instant: Instant,
+    /// When the platform reports the frame being rendered will reach the
+    /// display — Android's Choreographer expected presentation time. `None`
+    /// on a platform that reports none: the frame is then rendered at the
+    /// instant it starts.
+    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+    presentation_target: Option<Instant>,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState<E>,
     #[cfg(feature = "accessibility")]
@@ -756,8 +769,9 @@ impl<E: crate::text::TextEngine> core::ops::DerefMut for HydrolysisRenderer<E> {
 
 pub const HIT_TEST_ALPHA_THRESHOLD: f32 = 0.01;
 
-const TEXT_SELECTION_MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
-const TEXT_SELECTION_MULTI_CLICK_DISTANCE: f64 = 6.0;
+/// The click count at which text selection stops growing: a double click
+/// selects a word, a triple click a line.
+const MAX_TEXT_SELECTION_CLICKS: u32 = 3;
 const TEXT_CONTEXT_MENU_WINDOW_TITLE: &str = "";
 
 impl<E: crate::text::TextEngine> SemanticCore<E> {
@@ -882,7 +896,10 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             signals,
             animation_controller: AnimationController::default(),
             animation_owner_pins: AnimationOwnerPins::default(),
+            engine_tracks: cherenkov_record::RunningTracks::default(),
             frame_instant,
+            #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+            presentation_target: None,
             lazy: LazyState::default(),
             navigation: NavigationState::default(),
             #[cfg(feature = "accessibility")]
@@ -1933,6 +1950,22 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// [`SemanticCore::record_platform_views`].
     pub(crate) fn record_platform_views(&self) {
         self.core.record_platform_views();
+    }
+
+    /// The platform view that owns a touch at host pixel `point`: the
+    /// topmost view placed there, unless an interactive target painted
+    /// above it covers the point — the GPU band's ordered hit test, the
+    /// same rule the HWUI `platform_view_hit` applies (water-rs/waterui#2225).
+    /// `scale` is the density the touch edge divides host pixels by: the
+    /// placed frames and the interactive targets are both in window logical
+    /// coordinates.
+    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg_attr(not(any(target_os = "android", test)), expect(dead_code))]
+    pub(crate) fn platform_view_hit_gpu(&self, point: kurbo::Point, scale: f64) -> Option<u64> {
+        let logical = kurbo::Point::new(point.x / scale, point.y / scale);
+        self.core
+            .platform_view_at(logical)
+            .filter(|view| !self.core.platform_view_occluded(*view, logical))
     }
 
     /// [`SemanticCore::current_placement`].

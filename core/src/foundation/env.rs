@@ -196,11 +196,9 @@ impl Environment {
         match state {
             EnvironmentState::Map(map) => {
                 if let Some(value) = map.get(&TypeId::of::<T>()) {
-                    matches.push(
-                        value
-                            .downcast_ref::<T>()
-                            .expect("failed to downcast value while collecting environment state"),
-                    );
+                    matches.push(value.downcast_ref::<T>().expect(
+                        "an environment entry keyed by TypeId::of::<T>() holds a value of type T",
+                    ));
                 }
             }
             EnvironmentState::Overlay { parent, key, entry } => {
@@ -209,11 +207,10 @@ impl Environment {
                     return;
                 }
                 match entry {
-                    EnvironmentEntry::Present(value) => matches.push(
-                        value
-                            .downcast_ref::<T>()
-                            .expect("failed to downcast value while collecting environment state"),
-                    ),
+                    EnvironmentEntry::Present(value) => matches
+                        .push(value.downcast_ref::<T>().expect(
+                        "an environment entry keyed by TypeId::of::<T>() holds a value of type T",
+                    )),
                     EnvironmentEntry::Removed => matches.clear(),
                 }
             }
@@ -330,8 +327,10 @@ impl Environment {
     #[must_use]
     #[allow(clippy::coerce_container_to_any)]
     pub fn get<T: 'static>(&self) -> Option<&T> {
-        self.lookup_any(TypeId::of::<T>())
-            .map(|v| v.downcast_ref::<T>().expect("failed to downcast value"))
+        self.lookup_any(TypeId::of::<T>()).map(|v| {
+            v.downcast_ref::<T>()
+                .expect("an environment entry keyed by TypeId::of::<T>() holds a value of type T")
+        })
     }
 
     /// Retrieves the `index`-th visible value of type `T`, counting from the
@@ -367,7 +366,7 @@ impl Environment {
             self.insert(f());
         }
         self.get::<T>()
-            .expect("value missing from environment after insertion")
+            .expect("a value inserted into the environment is visible to the next lookup")
     }
 
     /// Extracts a value from the environment using the `Extractor` trait.
@@ -436,19 +435,28 @@ impl<F> UseEnv<F> {
 /// });
 /// ```
 ///
-/// # Panics
+/// # Missing values
 ///
-/// Panics if [`Extractor::extract`] fails for `E`.
+/// When [`Extractor::extract`] fails for `E`, the closure does not run: a
+/// debug build panics and a release build logs the failure through
+/// [`contract_violation!`](crate::contract_violation), and the view renders
+/// nothing. Take `Option<E>` to handle an absent value in the closure.
 #[must_use]
-pub fn use_env<E, V, F>(f: F) -> UseEnv<impl FnOnce(&Environment) -> V>
+pub fn use_env<E, V, F>(f: F) -> UseEnv<impl FnOnce(&Environment) -> Option<V>>
 where
     E: Extractor,
     V: View,
     F: FnOnce(E) -> V + 'static,
 {
-    UseEnv::new(move |env: &Environment| {
-        let extracted = E::extract(env).expect("failed to extract value from environment");
-        f(extracted)
+    UseEnv::new(move |env: &Environment| match E::extract(env) {
+        Ok(extracted) => Some(f(extracted)),
+        Err(error) => {
+            crate::contract_violation!(
+                "failed to extract `{}` from environment: {error}",
+                core::any::type_name::<E>()
+            );
+            None
+        }
     })
 }
 
@@ -501,6 +509,7 @@ mod tests {
     use alloc::string::String;
 
     use super::*;
+    use crate::extract::Use;
 
     #[test]
     fn extending_reuses_parent_state_via_overlay() {
@@ -544,6 +553,42 @@ mod tests {
         let env = Environment::new().extending(1_i32).extending(2_i32);
 
         assert_eq!(env.get_nth::<i32>(0), env.get::<i32>());
+    }
+
+    #[test]
+    fn use_env_runs_the_closure_with_the_extracted_value() {
+        let seen = alloc::rc::Rc::new(core::cell::Cell::new(0_u8));
+        let view = use_env({
+            let seen = alloc::rc::Rc::clone(&seen);
+            move |Use(value): Use<u8>| seen.set(value)
+        });
+        let mut env = Environment::new();
+        env.insert(5_u8);
+
+        let _ = View::body(view, &env);
+
+        assert_eq!(seen.get(), 5);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "failed to extract")]
+    fn use_env_reports_a_missing_value_in_debug() {
+        let _ = View::body(use_env(|Use(_): Use<u8>| ()), &Environment::new());
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn use_env_skips_the_closure_for_a_missing_value_in_release() {
+        let ran = alloc::rc::Rc::new(core::cell::Cell::new(false));
+        let view = use_env({
+            let ran = alloc::rc::Rc::clone(&ran);
+            move |Use(_): Use<u8>| ran.set(true)
+        });
+
+        let _ = View::body(view, &Environment::new());
+
+        assert!(!ran.get());
     }
 
     #[test]

@@ -1,6 +1,7 @@
 package dev.waterui.hydrolysis.hwui
 
 import androidx.core.graphics.toColorInt
+import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
@@ -29,6 +30,10 @@ import dev.waterui.hydrolysis.CalledFromNative
 interface TextLayouts {
     /** Layout `id`'s node, recorded once with `Layout.draw`. */
     fun node(id: Int): RenderNode
+
+    /** Draws layout `id` into `canvas`, its default-coloured runs in
+     * `color` — runs the text styled with their own colour keep it. */
+    fun draw(id: Int, canvas: Canvas, color: Long)
 
     /** Drops layout `id`, on the frame's `ReleaseTextLayout`. */
     fun release(id: Int)
@@ -173,6 +178,21 @@ class HwuiTextProvider : TextLayouts {
         val node = nodes[id]
         if (!node.hasDisplayList()) record(layouts[id], node)
         node
+    }
+
+    // The base paint carries the paragraph's default colour; a run with its
+    // own foreground overrides it in its span, so swapping the base colour
+    // for the draw recolours exactly the default runs.
+    override fun draw(id: Int, canvas: Canvas, color: Long) = synchronized(lock) {
+        val layout = layouts[id]
+        val paint = layout.paint
+        val laidOut = paint.colorLong
+        paint.setColor(color)
+        try {
+            layout.draw(canvas)
+        } finally {
+            paint.setColor(laidOut)
+        }
     }
 
     /** Final teardown for a destroyed painter: every retained layout, node
@@ -373,11 +393,14 @@ class HwuiTextProvider : TextLayouts {
     /**
      * The horizontal glyph bounds of `line` into `out[at]`, `out[at + 1]`,
      * widening the layout's vertical ink in `out[2]`, `out[3]`; measured per
-     * segment of one style and one direction with that segment's paint.
+     * segment of one style and one direction with that segment's paint. The
+     * bounds are measured from the line's own start, [Layout.getLineLeft], so
+     * alignment inside a wider layout never counts as ink.
      */
     private fun lineInk(layout: Layout, styled: Spanned, line: Int, out: FloatArray, at: Int) {
         var left = Float.POSITIVE_INFINITY
         var right = Float.NEGATIVE_INFINITY
+        val lineStart = layout.getLineLeft(line)
         val end = layout.getLineVisibleEnd(line)
         var from = layout.getLineStart(line)
         while (from < end) {
@@ -391,8 +414,8 @@ class HwuiTextProvider : TextLayouts {
             if (!bounds.isEmpty) {
                 val pen = layout.getPrimaryHorizontal(from)
                 val origin = if (rtl) pen - inkPaint.measureText(styled, from, to) else pen
-                left = minOf(left, origin + bounds.left)
-                right = maxOf(right, origin + bounds.right)
+                left = minOf(left, origin + bounds.left - lineStart)
+                right = maxOf(right, origin + bounds.right - lineStart)
                 val baseline = layout.getLineBaseline(line)
                 out[2] = minOf(out[2], (baseline + bounds.top).toFloat())
                 out[3] = maxOf(out[3], (baseline + bounds.bottom).toFloat())

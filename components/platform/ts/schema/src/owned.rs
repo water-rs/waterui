@@ -63,9 +63,9 @@ pub enum Schema {
 #[non_exhaustive]
 pub struct Struct {
     /// The type name.
-    pub name: String,
+    name: String,
     /// The fields in declaration order.
-    pub fields: Vec<Field>,
+    fields: Vec<Field>,
 }
 
 impl Struct {
@@ -99,9 +99,9 @@ impl Struct {
 #[non_exhaustive]
 pub struct Field {
     /// The field name.
-    pub name: String,
+    name: String,
     /// The field type.
-    pub ty: Schema,
+    ty: Schema,
 }
 
 impl Field {
@@ -129,11 +129,11 @@ impl Field {
 #[non_exhaustive]
 pub struct Enum {
     /// The type name.
-    pub name: String,
+    name: String,
     /// How the variants are laid out on the TypeScript side.
-    pub representation: Representation,
+    representation: Representation,
     /// The variants in declaration order.
-    pub variants: Vec<Variant>,
+    variants: Vec<Variant>,
 }
 
 impl Enum {
@@ -186,9 +186,9 @@ pub enum Representation {
 #[non_exhaustive]
 pub struct Variant {
     /// The variant name.
-    pub name: String,
+    name: String,
     /// What the variant carries.
-    pub payload: Payload,
+    payload: Payload,
 }
 
 impl Variant {

@@ -44,13 +44,13 @@ pub const WEBKIT_TRANSPORT: &str = include_str!("js/webkit_transport.js");
 #[non_exhaustive]
 pub struct Request {
     /// Correlates the reply with the pending promise in the page.
-    pub id: u64,
+    id: u64,
     /// The handler name the page asked for.
-    pub name: String,
+    name: String,
     /// The payload, already decoded to bytes.
-    pub payload: Vec<u8>,
+    payload: Vec<u8>,
     /// Whether the payload arrived as binary rather than JSON.
-    pub is_binary: bool,
+    is_binary: bool,
 }
 
 impl Request {

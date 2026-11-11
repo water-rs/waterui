@@ -12,9 +12,11 @@ name: Apple E2E Suite
 # Dispatching with `record_baselines` captures fresh baselines and parity
 # budgets and opens a PR containing them.
 #
-# Shape (#156, #218): `prepare` builds the water CLI once and hands it to
-# every job as an artifact — seventeen macOS jobs each running
-# `cargo install` cost ~110 macOS-minutes a night for one binary.
+# Shape (#156, #218): the water CLI is built once and handed to every job
+# as an artifact — seventeen macOS jobs each running `cargo install` cost
+# ~110 macOS-minutes a night for one binary. The Nightly builds it in its
+# own `cli-build` job and passes the artifact name as `cli_artifact`;
+# without one (the Sunday schedule, a dispatch) `prepare` builds it.
 # `build-ios`/`build-macos` then package the examples, fanned out over
 # PACKAGE_GROUP_TOTAL weight-balanced matrix legs per platform (#252 — the
 # serial packaging leg was ~90 of the run's ~102 minutes); each leg
@@ -47,6 +49,13 @@ on:
     - cron: "23 5 * * 0"
   workflow_call:
     inputs:
+      # The release CLI the caller already built; empty makes `prepare`
+      # build and upload its own `water-cli`.
+      cli_artifact:
+        description: Artifact holding the built water CLI
+        required: false
+        type: string
+        default: ""
       # A called run inherits its caller's event name, so the Nightly's
       # scheduled call reports `schedule` like this workflow's own Sunday
       # trigger. This input tells them apart: a call runs the full suite,
@@ -112,6 +121,9 @@ env:
   CARGO_PROFILE_TEST_DEBUG: "0"
   SHARD_TOTAL: 8
   PACKAGE_GROUP_TOTAL: 5
+  # The nextest `test-fonts` setup script fetches its pinned GitHub-hosted
+  # sources as authenticated traffic with the job token (#3942).
+  GITHUB_TOKEN: ${{ github.token }}
 
 jobs:
   prepare:
@@ -158,12 +170,13 @@ jobs:
           cache: "false"
 
       - name: Build the water CLI
+        if: inputs.cli_artifact == ''
         env:
           # The CLI's own target directory lives with its checkout in the
           # job-owned temp area, outside the framework workspace; it shares
           # nothing with the framework builds the shards perform.
           CARGO_TARGET_DIR: ${{ runner.temp }}/water-cli-target
-        run: cargo install --path "${WATER_CLI_DIR:?WATER_CLI_DIR is required; run .github/scripts/setup-e2e.sh first}" --locked --root "${{ github.workspace }}/cli-bin"
+        run: cargo install --timings --path "${WATER_CLI_DIR:?WATER_CLI_DIR is required; run .github/scripts/setup-e2e.sh first}" --locked --root "${{ github.workspace }}/cli-bin"
 
       - name: Build the screenshot comparer
         if: github.event_name != 'schedule' || inputs.full_suite
@@ -172,11 +185,12 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/water-cli-target
         run: |
           export PATH="${{ github.workspace }}/cli-bin/bin:${PATH}"
-          cargo install --path "${WATERUI_DIR}/graphics/cherenkov/oracle" --locked \
+          cargo install --timings --path "${WATERUI_DIR}/graphics/cherenkov/oracle" --locked \
             --features apple-screenshots --bin compare-screenshots --debug \
             --root "${{ github.workspace }}/cli-bin"
 
       - name: Upload the water CLI
+        if: inputs.cli_artifact == ''
         uses: actions/upload-artifact@v4
         with:
           name: water-cli
@@ -192,6 +206,11 @@ jobs:
           path: cli-bin/bin/compare-screenshots
           retention-days: 1
           if-no-files-found: error
+
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: apple-e2e-prepare
 
   # One build matrix per platform packages every example once and hands the
   # capture shards the bundles as one tarball per group — the shards used to
@@ -243,7 +262,7 @@ jobs:
       - name: Install the water CLI
         uses: actions/download-artifact@v4
         with:
-          name: water-cli
+          name: ${{ inputs.cli_artifact || 'water-cli' }}
           path: cli-bin/bin
       - run: |
           chmod +x cli-bin/bin/water
@@ -267,6 +286,7 @@ jobs:
           WATERUI_DIR: ${{ github.workspace }}
           EXAMPLE_LOG_DIR: ${{ github.workspace }}/e2e-logs
           PACKAGE_OUT_DIR: ${{ github.workspace }}/packaged-ios
+          WATER_CARGO_TIMINGS: "1"
         run: ./.github/scripts/package-examples.sh
 
       # Bundles must survive the artifact round trip intact — symlinks,
@@ -282,7 +302,6 @@ jobs:
         with:
           name: packaged-ios-${{ matrix.group.i }}
           path: packaged-ios-${{ matrix.group.i }}.tar
-          retention-days: 1
           if-no-files-found: error
 
       # Separate from the bundle tar so startup-report can merge the numbers
@@ -296,6 +315,11 @@ jobs:
           path: packaged-ios/package-sizes-ios.json
           retention-days: 90
           if-no-files-found: error
+
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: apple-e2e-build-ios-${{ matrix.group.i }}
 
   build-macos:
     name: build-macos-${{ matrix.group.i }}
@@ -338,7 +362,7 @@ jobs:
       - name: Install the water CLI
         uses: actions/download-artifact@v4
         with:
-          name: water-cli
+          name: ${{ inputs.cli_artifact || 'water-cli' }}
           path: cli-bin/bin
       - run: |
           chmod +x cli-bin/bin/water
@@ -362,6 +386,7 @@ jobs:
           WATERUI_DIR: ${{ github.workspace }}
           EXAMPLE_LOG_DIR: ${{ github.workspace }}/e2e-logs
           PACKAGE_OUT_DIR: ${{ github.workspace }}/packaged-macos
+          WATER_CARGO_TIMINGS: "1"
         run: ./.github/scripts/package-examples.sh
 
       # Bundles must survive the artifact round trip intact — symlinks,
@@ -377,7 +402,6 @@ jobs:
         with:
           name: packaged-macos-${{ matrix.group.i }}
           path: packaged-macos-${{ matrix.group.i }}.tar
-          retention-days: 1
           if-no-files-found: error
 
       # Separate from the bundle tar so startup-report can merge the numbers
@@ -391,6 +415,11 @@ jobs:
           path: packaged-macos/package-sizes-macos.json
           retention-days: 90
           if-no-files-found: error
+
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: apple-e2e-build-macos-${{ matrix.group.i }}
 
   e2e-ios:
     name: e2e-ios-${{ matrix.shard }}
@@ -416,7 +445,7 @@ jobs:
       - name: Install the water CLI
         uses: actions/download-artifact@v4
         with:
-          name: water-cli
+          name: ${{ inputs.cli_artifact || 'water-cli' }}
           path: cli-bin/bin
       - run: |
           chmod +x cli-bin/bin/water
@@ -531,7 +560,7 @@ jobs:
       - name: Install the water CLI
         uses: actions/download-artifact@v4
         with:
-          name: water-cli
+          name: ${{ inputs.cli_artifact || 'water-cli' }}
           path: cli-bin/bin
       - run: |
           chmod +x cli-bin/bin/water
@@ -638,14 +667,18 @@ jobs:
       # `native-test` is waterui-apple's feature and forwards to
       # cocoa-ui's, so one flag selects both `native` suites.
       - name: Test
-        run: cargo nextest run -p waterui-apple -p cocoa-ui --locked --features waterui-apple/native-test
+        run: cargo nextest run --timings -pwaterui-apple -p cocoa-ui --locked --features waterui-apple/native-test
       - name: Doc tests
-        run: cargo test -p waterui-apple -p cocoa-ui --locked --doc
+        run: cargo test --timings -p waterui-apple -p cocoa-ui --locked --doc
       # The benches are an informational trend series, not a gate: this step
       # only guarantees they stay compilable. Numbers come from the bench
       # lane and the Mac mini, never a shared macOS runner.
       - name: Benchmarks (compile)
-        run: cargo bench -p waterui-apple --locked --no-run
+        run: cargo bench --timings -p waterui-apple --locked --no-run
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: apple-e2e-host-native
 
   # The embedding contract is verified end to end: this job stages the same
   # waterui checkout the shards build, packages the repository's own
@@ -701,7 +734,7 @@ jobs:
       - name: Install the water CLI
         uses: actions/download-artifact@v4
         with:
-          name: water-cli
+          name: ${{ inputs.cli_artifact || 'water-cli' }}
           path: cli-bin/bin
       - run: |
           chmod +x cli-bin/bin/water
@@ -745,7 +778,32 @@ jobs:
       - name: Run packaged-app and native iOS tests
         env:
           WATERUI_DIR: ${{ github.workspace }}
+          WATER_CARGO_TIMINGS: "1"
         run: ./.github/scripts/run-ios-device-tests.sh ios_test_host "${SIMULATOR_UDID}"
+
+      # Runs before the delete step, which removes the device's own logs.
+      - name: Collect the CoreSimulator diagnostics
+        if: failure()
+        timeout-minutes: 5
+        run: |
+          mkdir -p sim-diagnostics
+          log show --last 90m --style compact --predicate 'subsystem == "com.apple.CoreSimulator" OR process == "CoreSimulatorService" OR process == "ibtoold" OR process == "actool" OR process == "launchd_sim" OR process == "com.apple.CoreSimulator.CoreSimulatorService"' \
+            > sim-diagnostics/coresimulator.log 2>&1 || true
+          pgrep -fl 'ibtoold|actool|Simulator|CoreSimulator|launchd_sim' > sim-diagnostics/processes.txt || true
+          xcrun simctl list devices > sim-diagnostics/devices.txt 2>&1 || true
+          sysctl kern.memorystatus_vm_pressure_level > sim-diagnostics/memory-pressure.txt 2>&1 || true
+          if [[ -n "${SIMULATOR_UDID:-}" ]]; then
+            cp -R ~/Library/Logs/CoreSimulator/"${SIMULATOR_UDID}" sim-diagnostics/device-logs 2>/dev/null || true
+          fi
+
+      - name: Upload the CoreSimulator diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        timeout-minutes: 5
+        with:
+          name: ios-device-tests-simulator-diagnostics
+          path: sim-diagnostics
+          if-no-files-found: warn
 
       - name: Delete the iOS simulator
         if: always()
@@ -755,6 +813,10 @@ jobs:
             xcrun simctl shutdown "${SIMULATOR_UDID}"
             xcrun simctl delete "${SIMULATOR_UDID}"
           fi
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: apple-e2e-ios-device-tests
 
   # Every shard uploads one startup-times JSON and one memory JSON; the build
   # jobs upload one package-size JSON per platform. This job merges them into
@@ -921,7 +983,7 @@ jobs:
       - name: Install the water CLI
         uses: actions/download-artifact@v4
         with:
-          name: water-cli
+          name: ${{ inputs.cli_artifact || 'water-cli' }}
           path: cli-bin/bin
       - run: |
           chmod +x cli-bin/bin/water
@@ -956,7 +1018,26 @@ jobs:
           METRICS_DIR: ${{ github.workspace }}/release-metrics-${{ matrix.platform }}
           RECORD: ${{ inputs.record_baselines == true && '1' || '0' }}
           PLATFORMS: ${{ matrix.platform }}
+          PACKAGES_DIR: ${{ github.workspace }}/release-packages
+          WATER_CARGO_TIMINGS: "1"
         run: ./.github/scripts/check-package-size.sh
+
+      # As a tar, like the packaged examples: symlinks, permissions and the
+      # code signature must survive the artifact round trip.
+      - name: Archive release packages
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -d release-packages ]; then
+            COPYFILE_DISABLE=1 tar -C release-packages -cf "release-packages-${{ matrix.platform }}.tar" .
+          fi
+
+      - name: Upload release packages
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-packages-${{ matrix.platform }}
+          path: release-packages-${{ matrix.platform }}.tar
+          if-no-files-found: ignore
 
       - name: Summarize release metrics
         if: always()
@@ -977,6 +1058,10 @@ jobs:
           name: e2e-baselines-package-size-${{ matrix.platform }}
           path: e2e-baselines/
           retention-days: 7
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: apple-e2e-release-metrics-${{ matrix.platform }}
 
   # The two platform legs produce one platform slice each; this job merges
   # them into the single release-metrics report the suite reports on.

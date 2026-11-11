@@ -42,7 +42,11 @@ use waterui::gesture::{
     MagnificationEvent, PointerButton, RotationEvent, TapEvent,
 };
 use waterui_core::Metadata;
-use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
+use waterui_core::handler::ReportExtraction as _;
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
+    ViewDimensions,
+};
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
@@ -94,6 +98,18 @@ impl core::fmt::Debug for GestureSubView {
 }
 
 impl SubView for GestureSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        self.state
+            .borrow()
+            .child
+            .layout()
+            .resolve_extent(bounds, proposal)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.borrow().child.layout().measure(proposal)
     }
@@ -514,14 +530,18 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
             {
                 // `NSRotationGestureRecognizer` reports radians and no
                 // velocity: the angle delta between updates over their
-                // wall-clock interval.
+                // wall-clock interval. Its sign follows `NSEvent.rotation`
+                // — counter-clockwise positive, per Apple's Event
+                // documentation — the opposite of the contract's
+                // clockwise-positive convention, so both the angle and
+                // its derived velocity negate (#3706).
                 vec![kit::rotation(
                     host,
                     rotation_handler!(
                         recognizer,
-                        recognizer.rotation() as f32,
+                        -(recognizer.rotation() as f32),
                         |previous: f32, dt: f32| {
-                            (recognizer.rotation() as f32 - previous) / dt.max(f32::EPSILON)
+                            (-(recognizer.rotation() as f32) - previous) / dt.max(f32::EPSILON)
                         }
                     ),
                 )]
@@ -641,7 +661,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 GesturePayload::Magnification(event) => action_env.insert(event),
                 GesturePayload::Rotation(event) => action_env.insert(event),
             }
-            (action.borrow_mut())(&action_env);
+            (action.borrow_mut())(&action_env).report_extraction();
         });
 
         // An assistive client's activation — `AXPress` on `AppKit`,

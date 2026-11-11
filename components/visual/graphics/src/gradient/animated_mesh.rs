@@ -1,25 +1,27 @@
-//! A mesh gradient animated on the GPU: a 4×4 palette warped by flowing noise.
+//! A 4×4 mesh gradient whose points and colours move with the canvas clock.
 
 extern crate alloc;
 
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::draw::WorkingColor;
 use nami::{Computed, SignalExt};
-use waterui_core::layout::StretchAxis;
+use waterui_core::layout::{Point, Rect, Size, StretchAxis};
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Environment, View};
 
+use crate::canvas::{Canvas, MeshGradient};
+use crate::color::WorkingColor;
 use crate::color::working::from_linear_srgb;
-use crate::shader_paint::ShaderPaintView;
 
 /// Number of colours in the animated mesh palette (a 4×4 grid).
 pub const ANIMATED_MESH_PALETTE_LEN: usize = 16;
 
-/// The user uniforms the shader reads: `speed`, `warp`, two padding floats,
-/// then the palette's RGB triples.
-const UNIFORM_LEN: usize = 4 + ANIMATED_MESH_PALETTE_LEN * 3;
+/// Vertices along one side of the mesh.
+const SIDE: usize = 4;
+
+/// Where the mesh's vertices rest along each axis, in unit space.
+const REST: [f32; SIDE] = [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0];
 
 /// Configuration for an [`AnimatedMeshGradient`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -31,12 +33,12 @@ pub struct AnimatedMeshGradientConfig {
     /// The flow's phase is the engine clock times `speed`, so a new speed
     /// takes effect from the current clock rather than continuing the old
     /// phase.
-    pub speed: f32,
+    speed: f32,
     /// UV warp strength (controls flow intensity).
-    pub warp: f32,
+    warp: f32,
     /// The 4×4 mesh palette, row-major, the first row along the bottom
     /// edge. The palette is opaque: alpha is ignored.
-    pub palette: [WorkingColor; ANIMATED_MESH_PALETTE_LEN],
+    palette: [WorkingColor; ANIMATED_MESH_PALETTE_LEN],
 }
 
 impl AnimatedMeshGradientConfig {
@@ -207,23 +209,139 @@ impl AnimatedMeshGradientConfig {
         )
     }
 
-    /// The flat uniform list the shader reads.
+    /// The mesh at `elapsed` seconds on the canvas clock, laid over `size`.
     ///
-    /// # Panics
-    ///
-    /// When `speed` or `warp` is negative or not finite: the public fields
-    /// bypass the builders' checks, so the values are checked again here.
-    fn uniforms(&self) -> Vec<f32> {
-        assert_speed(self.speed);
-        assert_warp(self.warp);
-        let mut uniforms = Vec::with_capacity(UNIFORM_LEN);
-        uniforms.extend([self.speed, self.warp, 0.0, 0.0]);
-        for color in &self.palette {
-            let [red, green, blue, _] = color.components;
-            uniforms.extend([red, green, blue]);
+    /// The vertices rest on an even 4×4 grid and are displaced by a smooth
+    /// two-stage flow field, drifting at the rates the shader's noise did and
+    /// scaled by `warp`; the border stays pinned. Each vertex takes the
+    /// palette's colour at its displaced position, dimmed toward the corners
+    /// by the shader's vignette.
+    fn mesh(&self, size: Size, elapsed: f64) -> MeshGradient {
+        let phase = flow_phase(elapsed, self.speed);
+        let aspect = if size.height > 0.0 {
+            size.width / size.height
+        } else {
+            1.0
+        };
+        let mut points = Vec::with_capacity(ANIMATED_MESH_PALETTE_LEN);
+        let mut colors = Vec::with_capacity(ANIMATED_MESH_PALETTE_LEN);
+        // Mesh rows run top to bottom; the palette's first row is the bottom.
+        for &v in REST.iter().rev() {
+            for &u in &REST {
+                let [dx, dy] = displacement([u, v], aspect, phase, self.warp);
+                let (x, y) = (u + dx, v + dy);
+                points.push(Point::new(x * size.width, (1.0 - y) * size.height));
+                let [red, green, blue, _] = self.palette_at(x, y);
+                let shade = 0.04f32.mul_add(vignette(u, v, aspect), 0.96);
+                colors.push(WorkingColor::new([
+                    red * shade,
+                    green * shade,
+                    blue * shade,
+                    1.0,
+                ]));
+            }
         }
-        uniforms
+        MeshGradient::new(3, 3, points, colors)
     }
+
+    /// The palette eased across its cells at unit-space `(u, v)`, `v` up.
+    fn palette_at(&self, u: f32, v: f32) -> [f32; 4] {
+        let (column, tx) = cell(u.clamp(0.0, 1.0) * 3.0);
+        let (row, ty) = cell(v.clamp(0.0, 1.0) * 3.0);
+        let (tx, ty) = (ease(tx), ease(ty));
+        let at = |row: usize, column: usize| self.palette[row * SIDE + column].components;
+        let bottom = mix(at(row, column), at(row, column + 1), tx);
+        let top = mix(at(row + 1, column), at(row + 1, column + 1), tx);
+        mix(bottom, top, ty)
+    }
+}
+
+/// The flow's phase: the clock times `speed`, as the shader's `t`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the product is formed in f64 and narrowed once; f32 resolves it to milliseconds for hours"
+)]
+fn flow_phase(elapsed: f64, speed: f32) -> f32 {
+    (elapsed * f64::from(speed)) as f32
+}
+
+/// A smooth stand-in for the shader's noise: three crossed sines in
+/// `[-1, 1]`.
+fn wave(x: f32, y: f32) -> f32 {
+    (4.4f32.mul_add(x, 0.3).sin() + 3.7f32.mul_add(y, 1.3).sin() + 2.9f32.mul_add(x + y, 0.7).sin())
+        / 3.0
+}
+
+/// `p` moved by `by` scaled with `k`.
+const fn advect(p: [f32; 2], by: [f32; 2], k: f32) -> [f32; 2] {
+    [by[0].mul_add(k, p[0]), by[1].mul_add(k, p[1])]
+}
+
+/// One drifting wave: `scale` applied to `p`, then carried by `drift` per
+/// unit of phase `t`, from `offset`.
+fn drifting(p: [f32; 2], scale: f32, drift: [f32; 2], t: f32, offset: [f32; 2]) -> f32 {
+    wave(
+        scale.mul_add(p[0], drift[0].mul_add(t, offset[0])),
+        scale.mul_add(p[1], drift[1].mul_add(t, offset[1])),
+    ) * 0.3
+}
+
+/// The shader's two-stage flow at centred, aspect-scaled `p`: a first flow
+/// from two drifting waves, then a finer one sampled through the first.
+fn flow(p: [f32; 2], t: f32) -> [f32; 2] {
+    let first = [
+        drifting(p, 1.8, [0.12, -0.10], t, [0.0, 0.0]),
+        drifting(p, 2.1, [-0.09, 0.11], t, [2.0, -1.6]),
+    ];
+    let second = [
+        drifting(advect(p, first, 0.6), 3.0, [0.18, 0.14], t, [0.0, 0.0]),
+        drifting(advect(p, first, -0.5), 3.6, [-0.15, 0.12], t, [0.0, 0.0]),
+    ];
+    [
+        second[0].mul_add(0.45, first[0]),
+        second[1].mul_add(0.45, first[1]),
+    ]
+}
+
+/// How far the vertex resting at unit-space `rest` moves, in unit space.
+/// Zero on the border, where the mesh stays pinned to the box.
+fn displacement(rest: [f32; 2], aspect: f32, phase: f32, warp: f32) -> [f32; 2] {
+    let [u, v] = rest;
+    let edge = smoothstep(0.0, 0.12, u.min(1.0 - u).min(v.min(1.0 - v)));
+    let [fx, fy] = flow([(u - 0.5) * aspect, v - 0.5], phase);
+    [fx * warp * edge, fy * warp * edge]
+}
+
+/// The shader's vignette weight at unit-space `(u, v)`.
+fn vignette(u: f32, v: f32, aspect: f32) -> f32 {
+    smoothstep(1.1, 0.18, ((u - 0.5) * aspect).hypot(v - 0.5))
+}
+
+/// GLSL's `smoothstep`, edges in either order.
+fn smoothstep(from: f32, to: f32, x: f32) -> f32 {
+    ease(((x - from) / (to - from)).clamp(0.0, 1.0))
+}
+
+/// The cubic ease the shader applied across each cell.
+fn ease(t: f32) -> f32 {
+    t * t * 2.0f32.mul_add(-t, 3.0)
+}
+
+/// The palette cell `p` (in `0.0..=3.0`) lies in and the fraction across it.
+fn cell(p: f32) -> (usize, f32) {
+    let (index, start) = if p >= 2.0 {
+        (2, 2.0)
+    } else if p >= 1.0 {
+        (1, 1.0)
+    } else {
+        (0, 0.0)
+    };
+    (index, p - start)
+}
+
+/// Linear interpolation of two colours' components.
+fn mix(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    core::array::from_fn(|i| (b[i] - a[i]).mul_add(t, a[i]))
 }
 
 impl Default for AnimatedMeshGradientConfig {
@@ -259,12 +377,12 @@ fn assert_warp(warp: f32) {
     );
 }
 
-/// A mesh gradient animated on the GPU: a 4×4 palette warped by flowing
-/// noise, advanced by the engine's frame clock.
+/// A 4×4 mesh gradient whose vertices and colours flow with the canvas
+/// clock, drawn through [`Canvas`] on every backend.
 ///
 /// The configuration follows a signal. A new speed, warp or palette updates
-/// the shader's uniforms in place; the engine re-renders the gradient every
-/// frame while `speed` is positive and stays idle while it is `0.0`.
+/// the mesh in place; the gradient presents a frame every refresh while
+/// `speed` is positive and presents none while it is `0.0`.
 ///
 /// # Layout Behavior
 ///
@@ -298,9 +416,28 @@ impl Default for AnimatedMeshGradient {
 
 impl View for AnimatedMeshGradient {
     fn body(self, _env: &Environment) -> impl View {
-        ShaderPaintView::new(include_str!("animated_mesh.wgsl"))
-            .animated(self.config.map(|config| config.speed > 0.0))
-            .uniforms(self.config.map(|config| config.uniforms()))
+        let config = self.config;
+        Canvas::new(move |cx| {
+            let size = cx.size();
+            let clock = cx.time();
+            // Only an animating gradient observes the clock, so a gradient
+            // held at speed 0 presents no frames; the region re-records when
+            // the speed crosses zero.
+            let animating = config.map(|config| config.speed > 0.0);
+            cx.scope(animating, move |cx, animating: &bool| {
+                let elapsed: Computed<f64> = if *animating {
+                    clock.map(|time| time.as_secs_f64()).computed()
+                } else {
+                    Computed::constant(0.0)
+                };
+                let mesh = size
+                    .zip(&config)
+                    .zip(&elapsed)
+                    .map(|((size, config), elapsed)| config.mesh(size, elapsed))
+                    .computed();
+                cx.fill(size.map(Rect::from_size), mesh);
+            });
+        })
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -312,21 +449,53 @@ impl View for AnimatedMeshGradient {
 mod tests {
     use super::*;
 
+    const BOX: Size = Size::new(300.0, 200.0);
+
     #[test]
-    fn the_uniforms_fit_the_shader_paint_budget() {
-        // A shader paint takes at most 64 uniform floats.
-        let uniforms = AnimatedMeshGradientConfig::aqua_bloom().uniforms();
-        assert_eq!(uniforms.len(), UNIFORM_LEN);
-        assert!(uniforms.len() <= 64);
+    fn the_mesh_is_four_by_four_vertices() {
+        let mesh = AnimatedMeshGradientConfig::aqua_bloom().mesh(BOX, 1.0);
+        assert_eq!((mesh.columns(), mesh.rows()), (3, 3));
+        assert_eq!(mesh.points().len(), ANIMATED_MESH_PALETTE_LEN);
+        assert_eq!(mesh.colors().len(), ANIMATED_MESH_PALETTE_LEN);
     }
 
     #[test]
-    fn the_uniforms_lead_with_speed_and_warp_then_the_palette() {
-        let config = AnimatedMeshGradientConfig::deep_blue().speed(1.5).warp(0.3);
-        let uniforms = config.uniforms();
-        assert_eq!(&uniforms[..2], &[1.5, 0.3]);
-        let [red, green, blue, _] = config.palette[15].components;
-        assert_eq!(&uniforms[UNIFORM_LEN - 3..], &[red, green, blue]);
+    fn the_border_stays_pinned_while_the_interior_moves() {
+        let config = AnimatedMeshGradientConfig::deep_blue();
+        let (early, late) = (config.mesh(BOX, 0.0), config.mesh(BOX, 7.0));
+        let interior = [5, 6, 9, 10];
+        for (index, (a, b)) in early.points().iter().zip(late.points()).enumerate() {
+            if interior.contains(&index) {
+                assert!(
+                    (a.x - b.x).abs() + (a.y - b.y).abs() > 1.0,
+                    "interior vertex {index} moved from {a:?} to {b:?}"
+                );
+            } else {
+                assert!(
+                    (a.x - b.x).abs() < 1e-3 && (a.y - b.y).abs() < 1e-3,
+                    "border vertex {index} moved from {a:?} to {b:?}"
+                );
+            }
+        }
+        assert_ne!(early.colors(), late.colors(), "the colours move with time");
+    }
+
+    #[test]
+    fn a_held_gradient_is_the_mesh_at_phase_zero() {
+        let held = AnimatedMeshGradientConfig::aqua_bloom().speed(0.0);
+        assert_eq!(held.mesh(BOX, 0.0), held.mesh(BOX, 9.0));
+    }
+
+    #[test]
+    fn a_zero_warp_leaves_the_vertices_on_the_grid() {
+        let mesh = AnimatedMeshGradientConfig::aqua_bloom()
+            .warp(0.0)
+            .mesh(BOX, 3.0);
+        let corner = mesh.points()[SIDE * SIDE - 1];
+        assert!((corner.x - BOX.width).abs() < 1e-3 && (corner.y - BOX.height).abs() < 1e-3);
+        let inner = mesh.points()[5];
+        assert!((inner.x - BOX.width / 3.0).abs() < 1e-3);
+        assert!((inner.y - BOX.height / 3.0).abs() < 1e-3);
     }
 
     #[test]

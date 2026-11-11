@@ -46,6 +46,7 @@ mod inspector;
 mod invalidation;
 pub(crate) mod locale;
 #[cfg(any(
+    feature = "canvas",
     feature = "gpu_surface",
     feature = "applied_filter",
     feature = "view_effect",
@@ -73,6 +74,7 @@ mod termination;
 pub(crate) mod theme;
 #[cfg(target_os = "macos")]
 mod toolbar;
+mod toolbar_chrome;
 pub(crate) mod transition;
 pub(crate) mod window_background;
 pub(crate) mod windows;
@@ -112,7 +114,8 @@ macro_rules! export_app {
         ) -> *mut core::ffi::c_void {
             // SAFETY: the embedding host supplies the documented runtime, host,
             // paths, and — when `host_fonts` is non-null — a live locale
-            // string and eighteen readable `f64`s.
+            // string and the readable `f64`s `HostEnvironment::from_abi`
+            // documents.
             let host_environment = (!host_fonts.is_null()).then(|| unsafe {
                 $crate::embedding::HostEnvironment::from_abi(dark, rtl, locale, host_fonts)
             });

@@ -2,15 +2,23 @@
 //!
 //! `Queue::on_submitted_work_done` is only serviced while wgpu's internal
 //! `maintain` runs inside `Device::poll`; nothing else polls the device, so a
-//! registered callback would never run on its own. The native Metal
-//! completion event is the wake: when the submitted command buffer reports
-//! completion, a single nonblocking `device.poll(PollType::Poll)` on the main
-//! queue fires every callback whose submission finished.
+//! registered callback would never run on its own. A trailing marker command
+//! buffer is the wake: when Metal reports it complete, a single nonblocking
+//! `device.poll(PollType::Poll)` on the main queue fires every callback whose
+//! submission wgpu has retired.
 //!
-//! The same helper serves every consumer: the onscreen frame path passes a
-//! marker encoder whose whole job is ordering the frame's already-submitted
-//! work, filtered rendering passes the real frame encoder, and external
-//! capture passes a marker encoder after the render submissions.
+//! The success receipt comes from wgpu, not from the marker. wgpu-hal's Metal
+//! backend advances its fence only past submissions whose command buffers all
+//! finished and reports a buffer that ended in an error as a lost device;
+//! wgpu-core runs the device-lost callback before it fires the outstanding
+//! `on_submitted_work_done` callbacks of a failed submission. A work-done
+//! callback that runs while the context's `DeviceLoss` is still unannounced
+//! therefore means the work completed.
+//!
+//! The same helper serves every consumer: the onscreen frame path passes an
+//! encoder that orders the frame's already-submitted work, filtered rendering
+//! passes the real frame encoder, and external capture passes an encoder
+//! after the render submissions.
 
 use std::fmt;
 use std::ptr::NonNull;
@@ -22,16 +30,18 @@ use objc2::MainThreadMarker;
 use objc2::runtime::ProtocolObject;
 use objc2_metal::{MTLCommandBuffer, MTLCommandBufferHandler};
 use waterui_graphics::gpu::SharedGpuContext;
-use waterui_graphics::wgpu;
+use waterui_graphics::gpu::wgpu;
 use wgpu_hal::api::Metal as MetalApi;
 
-/// The submission's pixels were never vouched for: the context generation
-/// that owned the queue was reported lost before the submission's
-/// `on_submitted_work_done` callback ran. Whatever landed belongs to the
+/// The submission's pixels were never vouched for.
+///
+/// The context generation that owned the queue was reported lost before the
+/// submission's `on_submitted_work_done` callback ran. Whatever landed belongs to the
 /// dead generation — the work must be re-encoded on the replacement
 /// context, never trusted.
 pub struct SubmissionFailed {
-    /// The reason the driver reported through the context's `DeviceLoss`.
+    /// The device-loss message wgpu reported through the context's
+    /// `DeviceLoss`, which includes command buffers that ended in an error.
     reason: String,
 }
 
@@ -58,43 +68,73 @@ impl std::error::Error for SubmissionFailed {}
 
 /// Submits `encoder` through `context`'s queue exactly once, registers
 /// `completion` via `Queue::on_submitted_work_done` for that submission, and
-/// services the device poll that fires it when the submitted command buffer
-/// completes.
+/// services the device poll that fires it.
+///
+/// The submissions are, in order: the caller's work, the work-done
+/// registration tied to it, then a marker command buffer as a separate later
+/// submission. The marker only wakes the poll; it certifies nothing.
+///
+/// wgpu-hal advances its fence inside the completed handler it attaches to
+/// each committed command buffer, at submit time. The poll that services the
+/// callbacks must therefore run after those handlers, which is why the marker
+/// is its own, later submission: Metal delivers the completion handlers of
+/// earlier command buffers on a queue before those of later ones, so by the
+/// time the marker's handler runs, wgpu-hal's handlers for every work buffer
+/// have run and the poll sees the fence advanced. Apple documents only the
+/// start order of command buffers on a queue; this relies on in-order
+/// completion delivery on one queue, the same assumption Dawn's Metal backend
+/// makes when it advances its completed serial from each buffer's completed
+/// handler.
 ///
 /// `_mtm` proves the caller runs on the main thread, which is what makes the
-/// ordering below sound: the Metal handler can only *enqueue* the service
-/// poll onto the same main queue this call is registering `completion` on,
-/// and a queued block cannot run until the synchronous part of this call —
-/// submit and registration included — has returned. wgpu-hal's
-/// `Fence::get_latest` then reads the raw command buffer's `Completed`/`Error`
-/// status directly, so the single post-completion poll settles every callback
-/// parked on this submission regardless of handler ordering.
+/// registration order sound: the Metal handler can only *enqueue* the poll
+/// onto the same main queue this call is registering `completion` on, and a
+/// queued block cannot run until the synchronous part of this call — both
+/// submissions and the registration — has returned.
 ///
 /// `addCompletedHandler` must be attached before `commit`. The caller's
 /// encoder may already carry wgpu-recorded passes, and wgpu forbids
 /// `as_hal_mut` on an encoder that used the wgpu recording API — so the
-/// native completion handler is armed on a trailing marker command buffer
-/// (still `EncodingApi::Undecided`), and both buffers commit in one ordered
-/// `queue.submit`. The marker completes only after the real work, so its
-/// native completion implies the caller's command buffer completed.
-/// `as_hal_mut` opens the marker, which runs `begin_encoding` and
-/// materializes `raw_cmd_buf` even though no commands were recorded; the
-/// retained handle names the same object the submission commits.
+/// native handler is armed on a fresh marker command buffer (still
+/// `EncodingApi::Undecided`). `as_hal_mut` opens the marker, which runs
+/// `begin_encoding` and materializes `raw_cmd_buf` even though no commands
+/// were recorded; the retained handle names the same object the submission
+/// commits.
 ///
 /// `context` is retained across the asynchronous completion so the poll runs
 /// against the exact device generation that submitted the work.
 ///
-/// `completion` runs with `Ok(())` only when the callback fired while the
-/// context's `DeviceLoss` stood unannounced; a loss reported first settles
-/// the submission as `Err(SubmissionFailed)` — the pixels belong to the
-/// dead generation and the consumer goes through explicit context
-/// recovery instead.
+/// `completion` runs with `Ok(())` only when wgpu fired the work-done
+/// callback while the context's `DeviceLoss` stood unannounced; wgpu reports
+/// a lost device, including a command buffer that ended in an error, before
+/// it fires the callback, so a loss settles the submission as
+/// `Err(SubmissionFailed)` — the pixels belong to the dead generation and
+/// the consumer goes through explicit context recovery instead.
+///
+/// # Panics
+///
+/// When the marker encoder does not expose a raw Metal command buffer, which
+/// only a non-Metal device could cause.
 pub fn submit_with_completion(
     _mtm: MainThreadMarker,
     encoder: wgpu::CommandEncoder,
     context: &Arc<SharedGpuContext>,
     completion: impl FnOnce(Result<(), SubmissionFailed>) + Send + 'static,
 ) {
+    // The caller's work is its own submission, and the work-done callback
+    // registered right after it is tied to exactly that submission. A loss
+    // announced before the callback runs fails the submission — its pixels,
+    // if any, belong to the dead generation.
+    context.queue().submit([encoder.finish()]);
+    let device_loss = context.device_loss();
+    context.queue().on_submitted_work_done(move || {
+        completion(
+            device_loss
+                .reason()
+                .map_or(Ok(()), |reason| Err(SubmissionFailed { reason })),
+        );
+    });
+
     let mut marker = context
         .device()
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -122,10 +162,10 @@ pub fn submit_with_completion(
         move |_cmd_buf: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
             let context = service_context.clone();
             cocoa_ui::main_queue::enqueue(move |_mtm| {
-                context
-                    .device()
-                    .poll(wgpu::PollType::Poll)
-                    .expect("nonblocking GPU completion poll must not fail");
+                context.device().poll(wgpu::PollType::Poll).expect(
+                    "a nonblocking poll returns Ok even on a lost device: wgpu reports \
+                     the loss through the device-lost callback, never as a poll error",
+                );
             });
         },
     );
@@ -136,17 +176,5 @@ pub fn submit_with_completion(
         raw_command_buffer
             .addCompletedHandler(RcBlock::as_ptr(&service) as MTLCommandBufferHandler);
     }
-    // One ordered batch: the caller's work commits before the marker, so the
-    // marker's completion implies the work completed.
-    context.queue().submit([encoder.finish(), marker.finish()]);
-    // A loss announced before the callback ran fails the submission — its
-    // pixels, if any, belong to the dead generation.
-    let device_loss = context.device_loss();
-    context.queue().on_submitted_work_done(move || {
-        completion(
-            device_loss
-                .reason()
-                .map_or(Ok(()), |reason| Err(SubmissionFailed { reason })),
-        );
-    });
+    context.queue().submit([marker.finish()]);
 }

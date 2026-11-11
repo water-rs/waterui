@@ -255,6 +255,12 @@ Curves: `Animation::linear(d)`, `ease_in(d)`, `ease_out(d)`, `ease_in_out(d)`,
 which the prelude re-exports and `waterui::animation` also exports — one trait, one
 meaning, whichever path you import it by.
 
+A signal with no animation attached leaves the receiver to choose, and a control that
+owns its motion may still animate the change. To make changes apply in the next frame,
+attach `NoAnimation` (also from `waterui::animation`) the same way:
+`opacity.with(NoAnimation)`. It wins over an animation attached anywhere else on the
+same signal, so `opacity.animated().with(NoAnimation)` snaps too.
+
 Because the animation rides on the signal, any signal can be animated — including derived
 ones — and independently-animated signals compose:
 

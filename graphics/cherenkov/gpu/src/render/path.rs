@@ -2,6 +2,7 @@
 //! cells, plus the cache key for replaying them.
 
 use std::hash::{Hash, Hasher};
+use std::ops::Range;
 use std::sync::Arc;
 
 use cherenkov::{FillRule, ShapeData};
@@ -30,6 +31,10 @@ const SMALL_BBOX: f64 = 32.0;
 
 /// Flattening tolerance in device pixels.
 pub const FLATTEN: f64 = 0.02;
+
+/// Relative margin on a straight chord's slope in a row profile: it
+/// covers the kernels' f32 chord against the f64 one it was bound from.
+const SLOPE_MARGIN: f64 = 1.0 / 4096.0;
 
 /// A semantic shape as a local `BezPath`: its outline (shared with every
 /// other lowering through [`cherenkov::lowering::shape_outline`]), or the
@@ -523,6 +528,352 @@ pub struct GpuPath {
     origin: Vec2,
     /// Device-space capacity and work estimates for these records.
     pub bound: GpuBound,
+    /// Where `bound`'s bins and fragments lie along the device rows of
+    /// the encoding frame, for [`GpuPath::row_slice`].
+    profile: Arc<RowProfile>,
+    /// A stroke's subpaths as [`InputUnit`]s in the encoding frame, in
+    /// record order; empty for a fill, whose units are its elements.
+    subpaths: Arc<[InputUnit]>,
+}
+
+/// What a path's compute inputs, or a subset of them, add to a batch:
+/// the counts [`GpuBound::segments`] and the dash table's
+/// `stage_total`, `dashes` and `fragments` hold for the whole path.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InputCounts {
+    /// Curve elements the flatten kernel reads.
+    pub elements: usize,
+    /// Stroke records the compute stroker reads.
+    pub records: usize,
+    /// Segments the inputs flatten or stroke to.
+    pub segments: usize,
+    /// A dashed stroke's staging entries.
+    pub stage: usize,
+    /// A dashed stroke's dashes.
+    pub dashes: usize,
+}
+
+impl InputCounts {
+    pub const fn add(&mut self, other: &Self) {
+        self.elements += other.elements;
+        self.records += other.records;
+        self.segments += other.segments;
+        self.stage += other.stage;
+        self.dashes += other.dashes;
+    }
+
+    /// These counts less `other`, a subset of them.
+    #[must_use]
+    pub const fn less(mut self, other: &Self) -> Self {
+        self.elements -= other.elements;
+        self.records -= other.records;
+        self.segments -= other.segments;
+        self.stage -= other.stage;
+        self.dashes -= other.dashes;
+        self
+    }
+}
+
+impl std::iter::Sum for InputCounts {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::default(), |mut sum, counts| {
+            sum.add(&counts);
+            sum
+        })
+    }
+}
+
+impl InputCounts {
+    /// A dashed stroke's bound on its dash fragments, `F` of
+    /// [`DashTable::fragments`].
+    pub const fn dash_fragments(&self) -> usize {
+        self.dashes.saturating_add(self.records)
+    }
+}
+
+/// The smallest part of a path's compute input a row slice takes whole
+/// or leaves out (water-rs/waterui#4131): a fill element, which the
+/// flatten kernel reads alone, or a stroke subpath, whose records'
+/// vertex links, joins, closing join and dash scan stay within it. The
+/// geometry it produces reaches only the device rows `[top, bottom]`,
+/// so a row window it does not reach is generated exactly without it.
+#[derive(Clone, Copy, Debug)]
+pub struct InputUnit {
+    /// The first device row its geometry reaches.
+    pub top: f64,
+    /// The last device row its geometry reaches.
+    pub bottom: f64,
+    /// Its elements or stroke records, `[first, end)`.
+    pub inputs: [u32; 2],
+    /// What it adds to its path's counts.
+    pub counts: InputCounts,
+}
+
+/// One contribution to a path's bin and fragment bound, and the
+/// encoding-frame device rows `[top, bottom]` its geometry reaches.
+#[derive(Clone, Copy, Debug, Default)]
+struct RowCharge {
+    top: f64,
+    bottom: f64,
+    /// Bins and fragments charged whole to any window reaching the rows.
+    bins: u64,
+    fragments: u64,
+    /// Straight chords among them, bounded per band instead when that is
+    /// tighter ([`StraightChords`]).
+    straight: Option<StraightChords>,
+    /// A dashed stroke record's share of the path's dash starts
+    /// ([`DashCost`]): `on * polygon / period`, margins included.
+    dashes: Option<f64>,
+}
+
+/// The bound one dash start adds to a dashed stroke (design section 6.6):
+/// its extra fragment and start cap where it starts, its end cap where it
+/// ends, within one period of arc length later.
+///
+/// A window's dash starts are at most those of the runs of consecutive
+/// records reaching it, each run at most `on * ceil(length / period)`:
+/// the records' fractional shares plus `on` per run. A run begins at a
+/// subpath's first record, which carries `on` starts more, or at a record
+/// whose rows reach past the window's first or last band, as its
+/// predecessor's do not. The end caps reaching a window belong to dashes
+/// starting within `reach` rows of it, so they are counted over the
+/// window widened by `reach`; each subpath's terminal dot is one start
+/// more on its last record.
+#[derive(Clone, Copy, Debug)]
+struct DashCost {
+    on: u64,
+    /// The extra fragment and the start cap.
+    start: [u64; 2],
+    /// The end cap.
+    end: [u64; 2],
+    /// One period in device rows.
+    reach: f64,
+}
+
+/// Cumulative sums of the charges up to a band.
+#[derive(Clone, Copy, Debug, Default)]
+struct RowSums {
+    bins: u64,
+    fragments: u64,
+    /// Dashed records' fractional dash starts.
+    dashes: f64,
+    /// Dashed records.
+    records: u64,
+}
+
+impl RowSums {
+    fn add(&mut self, charge: &RowCharge, whole: [u64; 2]) {
+        self.bins += whole[0];
+        self.fragments += whole[1];
+        if let Some(dashes) = charge.dashes {
+            self.dashes += dashes;
+            self.records += 1;
+        }
+    }
+
+    fn accumulate(&mut self, previous: Self) {
+        self.bins += previous.bins;
+        self.fragments += previous.fragments;
+        self.dashes += previous.dashes;
+        self.records += previous.records;
+    }
+}
+
+/// Straight chords spanning a charge's rows, whose own bound is
+/// `bins`/`fragments`. A straight chord's incidences in a band of `B`
+/// rows are those of its piece within them: at most `B` rows tall and
+/// `slope * B` wide, so at most `3 + ceil(B / 4)` strip bins and
+/// `4 + ceil((slope + 1) * B)` cells, with two rows of margin for the
+/// kernels' f32 chords. Summed over a window's bands this bounds the
+/// window's share of a long edge, which the whole charge would count in
+/// every window it reaches.
+#[derive(Clone, Copy, Debug)]
+struct StraightChords {
+    chords: u64,
+    /// `|dx| / |dy|` of the chords in device space, margins included.
+    slope: f64,
+    bins: u64,
+    fragments: u64,
+}
+
+/// Where a path's [`GpuBound::bins`] and [`GpuBound::fragments`] lie
+/// along its device rows, so one placement's grid can be generated in
+/// row windows, each sized from the rows it covers alone
+/// (water-rs/waterui#4108). Every contribution to the bound is charged
+/// to the bands of rows its geometry reaches, widened by one row on
+/// each side for the kernels' f32 evaluation and the row-boundary
+/// incidences; the bound of a window is the sum of the contributions
+/// that touch any of its bands. The kernels compute winding along rows
+/// only, so a window's bins and fragments are exactly the incidences of
+/// the segments reaching its rows.
+///
+/// Bands are one row, doubled until there are no more bands than
+/// contributions, so the profile costs at most three cumulative pairs per
+/// contribution and far fewer on a tall sparse path.
+#[derive(Debug, Default)]
+struct RowProfile {
+    /// Encoding-frame device row of band 0's top edge.
+    top: f64,
+    /// Rows per band.
+    band: f64,
+    /// `starts[i]`: the sums of the contributions whose first band is
+    /// below `i`.
+    starts: Box<[RowSums]>,
+    /// `ends[i]`: the same of the contributions whose last band is below `i`.
+    ends: Box<[RowSums]>,
+    /// `spread[i]`: the per-band bounds of straight chords summed over
+    /// the bands below `i`.
+    spread: Box<[[u64; 2]]>,
+    /// A dashed stroke's cost per dash start.
+    dash: Option<DashCost>,
+}
+
+impl RowProfile {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "band indices and counts of a finite device extent"
+    )]
+    fn new<'a>(
+        charges: impl Iterator<Item = &'a RowCharge> + Clone,
+        dash: Option<DashCost>,
+    ) -> Self {
+        let Some(top) = charges
+            .clone()
+            .map(|charge| charge.top - 1.0)
+            .reduce(f64::min)
+        else {
+            return Self::default();
+        };
+        let top = top.floor();
+        let bottom = charges
+            .clone()
+            .map(|charge| charge.bottom + 1.0)
+            .fold(top, f64::max);
+        let rows = (bottom - top).ceil().max(1.0) as u64;
+        let count = charges.clone().count() as u64;
+        let mut band = 1u64;
+        while rows.div_ceil(band) > count {
+            band *= 2;
+        }
+        let bands = usize::try_from(rows.div_ceil(band)).expect("bands fit usize") + 1;
+        let band = band as f64;
+        let index = |y: f64| (((y - top) / band).floor() as usize).min(bands - 1);
+        let mut starts = vec![RowSums::default(); bands + 1];
+        let mut ends = vec![RowSums::default(); bands + 1];
+        // Per-band amounts as differences: `+` at the first band, `-` past
+        // the last; one prefix makes them per band, a second cumulative.
+        let mut spread = vec![[0i64; 2]; bands + 1];
+        let rows_per_band = band + 2.0;
+        for charge in charges {
+            let (first, last) = (index(charge.top - 1.0), index(charge.bottom + 1.0));
+            let mut whole = [charge.bins, charge.fragments];
+            if let Some(chords) = charge.straight {
+                let per_band = [
+                    chords.chords * (3 + (rows_per_band / 4.0).ceil() as u64),
+                    chords.chords * (4 + ((chords.slope + 1.0) * rows_per_band).ceil() as u64),
+                ];
+                let spanned = (last - first + 1) as u64;
+                if per_band[1].saturating_mul(spanned) < chords.fragments {
+                    for (axis, amount) in per_band.into_iter().enumerate() {
+                        let amount = i64::try_from(amount).expect("a band's bound fits i64");
+                        spread[first][axis] += amount;
+                        spread[last + 1][axis] -= amount;
+                    }
+                } else {
+                    whole[0] += chords.bins;
+                    whole[1] += chords.fragments;
+                }
+            }
+            starts[first + 1].add(charge, whole);
+            ends[last + 1].add(charge, whole);
+        }
+        for sums in [&mut starts, &mut ends] {
+            for i in 1..sums.len() {
+                let previous = sums[i - 1];
+                sums[i].accumulate(previous);
+            }
+        }
+        let mut per_band = [0i64; 2];
+        let mut cumulative = vec![[0u64; 2]; bands + 1];
+        for i in 0..bands {
+            for axis in 0..2 {
+                per_band[axis] += spread[i][axis];
+                cumulative[i + 1][axis] = cumulative[i][axis]
+                    + u64::try_from(per_band[axis]).expect("per-band bounds are nonnegative");
+            }
+        }
+        Self {
+            top,
+            band,
+            starts: starts.into(),
+            ends: ends.into(),
+            spread: cumulative.into(),
+            dash,
+        }
+    }
+
+    /// The `(bins, fragments)` bound of the encoding-frame rows
+    /// `[top, bottom)`: every whole contribution whose first band lies
+    /// below the window's end band and whose last band does not lie below
+    /// its first, the straight chords' bounds of the window's bands, and
+    /// the dash starts of the dashed records reaching it ([`DashCost`]).
+    fn window(&self, top: f64, bottom: f64) -> [u64; 2] {
+        let Some((first, end)) = self.bands(top, bottom) else {
+            return [0; 2];
+        };
+        let (starts, ends) = (self.starts[end], self.ends[first]);
+        let (spread_end, spread_first) = (self.spread[end], self.spread[first]);
+        let dashes = self.dash.map_or([0; 2], |dash| {
+            let (near, far) = (
+                self.dash_starts(dash, top, bottom),
+                self.dash_starts(dash, top - dash.reach, bottom + dash.reach),
+            );
+            [0, 1].map(|axis| near * dash.start[axis] + far * dash.end[axis])
+        });
+        [
+            starts.bins - ends.bins + spread_end[0] - spread_first[0] + dashes[0],
+            starts.fragments - ends.fragments + spread_end[1] - spread_first[1] + dashes[1],
+        ]
+    }
+
+    /// The bands `[first, end)` covering the encoding-frame rows
+    /// `[top, bottom)`, when any do.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "band indices clamped to the profile"
+    )]
+    fn bands(&self, top: f64, bottom: f64) -> Option<(usize, usize)> {
+        let bands = self.starts.len().saturating_sub(1);
+        let index = |y: f64| ((y - self.top) / self.band).clamp(0.0, bands as f64);
+        let (first, end) = (index(top).floor() as usize, index(bottom).ceil() as usize);
+        (first < end).then_some((first, end))
+    }
+
+    /// The dash starts of the runs of dashed records reaching the rows
+    /// `[top, bottom)` ([`DashCost`]).
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a nonnegative count of dash starts"
+    )]
+    fn dash_starts(&self, dash: DashCost, top: f64, bottom: f64) -> u64 {
+        let Some((first, end)) = self.bands(top, bottom) else {
+            return 0;
+        };
+        // Dashed records whose rows reach band `k`.
+        let reaching = |k: usize| self.starts[k + 1].records - self.ends[k].records;
+        let shares = (self.starts[end].dashes - self.ends[first].dashes).max(0.0);
+        shares.ceil() as u64 + dash.on * (reaching(first) + reaching(end - 1))
+    }
+
+    fn heap_bytes(&self) -> usize {
+        (self.starts.len() + self.ends.len()) * std::mem::size_of::<RowSums>()
+            + self.spread.len() * std::mem::size_of::<[u64; 2]>()
+    }
 }
 
 /// Decision R2's per-path buffer bound, computed in `O(n)` over the
@@ -628,6 +979,8 @@ struct GpuEncode {
     start: Point,
     raster: Affine,
     bound: GpuBound,
+    /// Each element's bound contribution and its device rows.
+    charges: Vec<RowCharge>,
 }
 
 impl GpuEncode {
@@ -685,10 +1038,36 @@ impl GpuEncode {
         // Each chord visits at most |dx|+|dy|+3 cells, including
         // horizontal/vertical boundary ownership. Bezier variation is
         // bounded by its control polygon's variation.
-        self.bound.bins += n * 2
+        let bins = n * 2
             + (variation.y / f64::from(u32::try_from(STRIP_H).expect("strip height fits u32")))
                 .ceil() as usize;
-        self.bound.fragments += n * 3 + (variation.x + variation.y).ceil() as usize;
+        let fragments = n * 3 + (variation.x + variation.y).ceil() as usize;
+        self.bound.bins += bins;
+        self.bound.fragments += fragments;
+        // The flattened chords lie in the control hull; a line is one
+        // straight chord.
+        let (bins, fragments) = (bins as u64, fragments as u64);
+        self.charges.push(if kind == 0 && variation.y > 0.0 {
+            RowCharge {
+                top: dev.y0,
+                bottom: dev.y1,
+                straight: Some(StraightChords {
+                    chords: 1,
+                    slope: variation.x / variation.y * (1.0 + SLOPE_MARGIN),
+                    bins,
+                    fragments,
+                }),
+                ..RowCharge::default()
+            }
+        } else {
+            RowCharge {
+                top: dev.y0,
+                bottom: dev.y1,
+                bins,
+                fragments,
+                ..RowCharge::default()
+            }
+        });
         self.out.push(GpuElement {
             head: [
                 kind,
@@ -722,6 +1101,7 @@ pub fn prepare_gpu(elements: &[PathEl], raster: Affine, surface: (f64, f64)) -> 
         start: Point::ORIGIN,
         raster,
         bound: GpuBound::default(),
+        charges: Vec::new(),
     };
     for &el in elements {
         match el {
@@ -763,6 +1143,8 @@ pub fn prepare_gpu(elements: &[PathEl], raster: Affine, surface: (f64, f64)) -> 
         bound,
         hull,
         origin,
+        profile: Arc::new(RowProfile::new(state.charges.iter(), None)),
+        subpaths: Arc::from([]),
     }
     .placed(origin, surface)
 }
@@ -798,35 +1180,133 @@ impl GpuPath {
     /// path's own. Every other field of a placed bound is a function of
     /// the grid size alone.
     pub fn grid_bound(&self, w: usize, h: usize) -> GpuBound {
-        let mut bound = self.bound;
-        bound.grid_w = w;
-        bound.grid_h = h;
-        // Partial columns, absorbed gaps (<=8) and demoted full runs (<8)
-        // need at most 16 columns per touched boundary column. Four rows
-        // per strip; the retained large full interval is implicit.
-        bound.texels = if w <= 32 && h <= 32 {
-            w * h
-        } else {
-            (bound.fragments * 64).min(w * h)
-        };
-        bound.empty = w == 0 || h == 0;
-        // classify demotes full runs shorter than 8 columns and bridges
-        // empty gaps up to 8. Within a chunk, separate cells therefore have
-        // at least 8 intervening columns; chunk edges can split a run.
-        // Spans occupy at least 8 columns and all outputs are disjoint.
-        let strips = h.div_ceil(STRIP_H);
-        let chunks = w.div_ceil(GPU_CLASSIFY_WIDTH as usize);
-        let cells_per_strip = w.div_ceil(8) + chunks;
-        let strip_cap = strips * w;
-        let cell_cap = (strips * cells_per_strip).min(strip_cap);
-        let instance_cap = (strips * (cells_per_strip + w / 8)).min(strip_cap);
-        bound.cell_cap = bound
-            .fragments
-            .min(cell_cap)
-            .max(usize::from(w <= 32 && h <= 32));
-        bound.instance_cap = (bound.cell_cap * 2 + strips).min(instance_cap);
-        bound
+        sized(self.bound, w, h)
     }
+
+    /// The bound of the rows `[top, bottom)` alone of `bound`, this
+    /// path's bound placed in a generation frame whose raster translates
+    /// by `ty` vertically: the bins and fragments of the contributions
+    /// reaching those rows ([`RowProfile`], never more than the whole
+    /// path's), and the capacities of a grid that many rows tall. The
+    /// kernels generate those rows from it once the record's clip is
+    /// narrowed to them (water-rs/waterui#4108). `rows` lie within
+    /// `bound.rect`.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "device rows are f32 in the bound"
+    )]
+    pub fn row_slice(&self, bound: &GpuBound, ty: f64, rows: Range<i32>) -> GpuBound {
+        // The generation frame is the encoding frame moved by the
+        // difference of the two translations; the 2x2 is shared.
+        let shift = ty - self.origin.y;
+        let [bins, fragments] = self
+            .profile
+            .window(f64::from(rows.start) - shift, f64::from(rows.end) - shift);
+        let mut slice = *bound;
+        slice.bins = usize::try_from(bins).map_or(bound.bins, |bins| bins.min(bound.bins));
+        slice.fragments = usize::try_from(fragments)
+            .map_or(bound.fragments, |fragments| fragments.min(bound.fragments));
+        let height = usize::try_from(rows.end - rows.start).expect("a window of rows");
+        let mut slice = sized(slice, bound.grid_w, height);
+        slice.rect = [
+            bound.rect[0],
+            rows.start as f32,
+            bound.rect[2],
+            rows.end as f32,
+        ];
+        slice
+    }
+
+    /// The whole path's [`InputCounts`].
+    pub fn inputs(&self) -> InputCounts {
+        InputCounts {
+            elements: self.elements.len(),
+            records: self.strokes.len(),
+            segments: self.bound.segments,
+            stage: self.dash.as_deref().map_or(0, |dash| dash.stage_total),
+            dashes: self.dash.as_deref().map_or(0, |dash| dash.dashes),
+        }
+    }
+
+    /// The path's [`InputUnit`]s in input order, their rows in a
+    /// generation frame whose raster is `raster`: each fill element's
+    /// control hull, which holds its flattened chords, or each stroke
+    /// subpath's rows, which the encoder charged its outline to
+    /// ([`GpuPath::row_slice`] reads the same rows). The generation
+    /// raster shares the encoding raster's 2x2.
+    pub fn input_units(&self, raster: Affine) -> impl Iterator<Item = InputUnit> + '_ {
+        let [_, yx, _, yy, _, ty] = raster.as_coeffs();
+        let shift = ty - self.origin.y;
+        let fills = self
+            .elements
+            .iter()
+            .zip(0u32..)
+            .map(move |(element, index)| {
+                // A line's control points are its start and a quad's second
+                // one is its first ([`GpuEncode::push`]), so all four points
+                // span every element's hull.
+                let [x0, y0, ax, ay] = element.lo.map(f64::from);
+                let [bx, by, x1, y1] = element.hi.map(f64::from);
+                let rows = [(x0, y0), (ax, ay), (bx, by), (x1, y1)]
+                    .map(|(x, y)| yx.mul_add(x, yy.mul_add(y, ty)));
+                InputUnit {
+                    top: rows.into_iter().fold(f64::INFINITY, f64::min),
+                    bottom: rows.into_iter().fold(f64::NEG_INFINITY, f64::max),
+                    inputs: [index, index + 1],
+                    counts: InputCounts {
+                        elements: 1,
+                        segments: element.head[1] as usize,
+                        ..InputCounts::default()
+                    },
+                }
+            });
+        let strokes = self.subpaths.iter().map(move |&unit| InputUnit {
+            top: unit.top + shift,
+            bottom: unit.bottom + shift,
+            ..unit
+        });
+        fills.chain(strokes)
+    }
+
+    /// Heap bytes these records and their row profile hold.
+    pub fn heap_bytes(&self) -> usize {
+        self.elements.len() * std::mem::size_of::<GpuElement>()
+            + self.strokes.len() * std::mem::size_of::<GpuStrokeRecord>()
+            + self.subpaths.len() * std::mem::size_of::<InputUnit>()
+            + self.profile.heap_bytes()
+    }
+}
+
+/// `bound`'s capacities on a `w` x `h` grid: everything a placement
+/// derives from the grid's size and `bound`'s fragments.
+fn sized(mut bound: GpuBound, w: usize, h: usize) -> GpuBound {
+    bound.grid_w = w;
+    bound.grid_h = h;
+    // Partial columns, absorbed gaps (<=8) and demoted full runs (<8)
+    // need at most 16 columns per touched boundary column. Four rows
+    // per strip; the retained large full interval is implicit.
+    bound.texels = if w <= 32 && h <= 32 {
+        w * h
+    } else {
+        (bound.fragments * 64).min(w * h)
+    };
+    bound.empty = w == 0 || h == 0;
+    // classify demotes full runs shorter than 8 columns and bridges
+    // empty gaps up to 8. Within a chunk, separate cells therefore have
+    // at least 8 intervening columns; chunk edges can split a run.
+    // Spans occupy at least 8 columns and all outputs are disjoint.
+    let strips = h.div_ceil(STRIP_H);
+    let chunks = w.div_ceil(GPU_CLASSIFY_WIDTH as usize);
+    let cells_per_strip = w.div_ceil(8) + chunks;
+    let strip_cap = strips * w;
+    let cell_cap = (strips * cells_per_strip).min(strip_cap);
+    let instance_cap = (strips * (cells_per_strip + w / 8)).min(strip_cap);
+    bound.cell_cap = bound
+        .fragments
+        .min(cell_cap)
+        .max(usize::from(w <= 32 && h <= 32));
+    bound.instance_cap = (bound.cell_cap * 2 + strips).min(instance_cap);
+    bound
 }
 
 /// A retained GPU coverage entry's identity (water-rs/waterui#3081):

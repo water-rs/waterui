@@ -8,8 +8,8 @@ use waterui_core::{
 };
 
 use crate::{
-    Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView, SubviewPlacement,
-    ViewDimensions,
+    Layout, LayoutError, PlacedSubview, PlacementInput, Point, ProposalSize, Rect, Size, SubView,
+    SubviewPlacement, UnitPoint, ViewDimensions,
     container::FixedContainer,
     stack::{
         Alignment, HorizontalAlignment, VerticalAlignment,
@@ -236,6 +236,17 @@ impl Layout for FrameLayout {
         )]
     }
 
+    /// The frame's own answer centred in the bounds. The frame's alignment
+    /// aligns its child, never the frame's own box: a child overflowing the
+    /// frame does not move it.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::CENTER))
+    }
+
     fn explicit_horizontal(
         &self,
         alignment: HorizontalAlignment,
@@ -351,11 +362,19 @@ fn frame_resolved_axis(
     max: Option<f32>,
 ) -> f32 {
     let content = if max.is_some() && parent_proposal != Some(0.0) {
-        let extent = parent_proposal.or(ideal).unwrap_or(child_size);
+        // `min(max, max(child, proposal))`: a maximum lets the frame grow
+        // into the offer, never shrink below the child's own answer — an
+        // offer narrower than the child is not a reason to claim less
+        // than the child needs.
+        let extent = parent_proposal
+            .or(ideal)
+            .unwrap_or(child_size)
+            .max(child_size);
         // An unbounded answer is legal only on an axis the child left
         // unbounded: a maximum is something to grow into, not a source of
-        // infinity of its own.
-        if extent.is_infinite() && child_size.is_finite() {
+        // infinity of its own — a finite one still bounds the answer, so
+        // the release applies only when `max` is itself unbounded.
+        if extent.is_infinite() && child_size.is_finite() && max.is_none_or(f32::is_infinite) {
             child_size
         } else {
             extent
@@ -493,7 +512,7 @@ impl View for Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::StretchAxis;
+    use crate::{LayoutError, Rect, ResolvedExtent, StretchAxis, resolve_layout_extent};
     use alloc::rc::Rc;
     use core::cell::{Cell, RefCell};
     use nami::{SignalExt, binding};
@@ -556,6 +575,56 @@ mod tests {
         assert_eq!(size, Size::new(30.0, 30.0));
     }
 
+    /// `min(max, max(child, proposal))`: a maximum lets the frame grow into
+    /// the offer but never shrink it below the child's own answer — the
+    /// offer the child declined is not a reason to claim less than the
+    /// child needs (#3595).
+    #[test]
+    fn a_max_frame_never_shrinks_below_its_child() {
+        let layout = FrameLayout {
+            max_width: Some(Computed::constant(60.0)),
+            ..Default::default()
+        };
+        let child = MockSubView {
+            size: Size::new(58.3, 20.0),
+        };
+        let size = layout.size_that_fits(ProposalSize::new(Some(30.0), Some(10.0)), &[&child]);
+        assert_eq!(size, Size::new(58.3, 20.0));
+    }
+
+    /// An unbounded offer is still an offer: a finite `max` clamps it, so
+    /// the frame grows to `max` rather than staying at its finite child.
+    #[test]
+    fn a_max_frame_clamps_an_unbounded_offer() {
+        let layout = FrameLayout {
+            max_width: Some(Computed::constant(60.0)),
+            ..Default::default()
+        };
+        let child = MockSubView {
+            size: Size::new(57.0, 20.0),
+        };
+        let size = layout.size_that_fits(
+            ProposalSize::new(Some(f32::INFINITY), Some(10.0)),
+            &[&child],
+        );
+        assert_eq!(size, Size::new(60.0, 20.0));
+    }
+
+    /// A larger offer is still the extent the frame grows into, capped by
+    /// `max`.
+    #[test]
+    fn a_max_frame_grows_into_a_larger_offer() {
+        let layout = FrameLayout {
+            max_width: Some(Computed::constant(60.0)),
+            ..Default::default()
+        };
+        let child = MockSubView {
+            size: Size::new(58.3, 20.0),
+        };
+        let size = layout.size_that_fits(ProposalSize::new(Some(80.0), Some(10.0)), &[&child]);
+        assert_eq!(size, Size::new(60.0, 20.0));
+    }
+
     /// Chained setters mutate one `FrameLayout`, so `.size(40, 20)` followed by
     /// `.min_width(60)` inverts the width axis — and `min` wins: the chain asks
     /// for a 60x20 frame and gets exactly that.
@@ -598,6 +667,13 @@ mod tests {
     }
 
     impl<C: SubView> SubView for FramedChild<C> {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            resolve_layout_extent(&self.layout, bounds, proposal, &[&self.child])
+        }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.layout.size_that_fits(proposal, &[&self.child]))
         }
@@ -612,6 +688,13 @@ mod tests {
     struct WrappingChild;
 
     impl SubView for WrappingChild {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             let width = proposal.width.unwrap_or(200.0).clamp(10.0, 200.0);
             ViewDimensions::new(Size::new(width, (200.0 / width).ceil() * 10.0))
@@ -705,6 +788,13 @@ mod tests {
     }
 
     impl SubView for MockSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }
@@ -724,6 +814,13 @@ mod tests {
     }
 
     impl SubView for FillingSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(Size::new(
                 proposal.width.unwrap_or(self.intrinsic.width),
@@ -766,6 +863,13 @@ mod tests {
     }
 
     impl<C: SubView> SubView for RecordingSubView<C> {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            self.inner.resolve_extent(bounds, proposal)
+        }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             self.proposals.borrow_mut().push(proposal);
             self.inner.measure(proposal)
@@ -1259,6 +1363,13 @@ mod tests {
     struct HeightCoupledSubView;
 
     impl SubView for HeightCoupledSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             let offered_height = proposal.height.unwrap_or(20.0);
             ViewDimensions::new(Size::new(offered_height.min(80.0), 20.0))
@@ -1276,6 +1387,13 @@ mod tests {
     struct WidthCoupledSubView;
 
     impl SubView for WidthCoupledSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             let offered_width = proposal.width.unwrap_or(20.0);
             ViewDimensions::new(Size::new(20.0, offered_width.min(80.0)))

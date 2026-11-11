@@ -24,12 +24,17 @@ use cocoa_ui::{PlatformView, Rect, Retained, focus, view};
 use waterui::component::form::secure::{Secure, SecureFieldConfig};
 use waterui::resolve::Resolvable;
 use waterui::text::StyledStr;
-use waterui::text::font::{Body, FontDesign, FontWeight, ResolvedFont};
+use waterui::text::font::Body;
 use waterui_core::interaction::Disabled;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
+};
 
+use super::font::platform_font;
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
+use crate::proposal;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -47,71 +52,6 @@ use platform::{HostView, SecureField};
 const VERTICAL_SPACING: f64 = 4.0;
 /// The narrowest width the leaf reports — `WuiSecureField`'s 100pt floor.
 const MIN_WIDTH: f64 = 100.0;
-
-/// The platform weight of a `FontWeight` on the `UIFont`/`NSFont` scale —
-/// the same table `text_field` uses.
-const fn platform_weight(weight: FontWeight) -> f64 {
-    use cocoa_ui::font::weight;
-    match weight {
-        FontWeight::Thin => weight::THIN,
-        FontWeight::UltraLight => weight::ULTRA_LIGHT,
-        FontWeight::Light => weight::LIGHT,
-        FontWeight::Normal => weight::REGULAR,
-        FontWeight::Medium => weight::MEDIUM,
-        FontWeight::SemiBold => weight::SEMI_BOLD,
-        FontWeight::Bold => weight::BOLD,
-        FontWeight::UltraBold => weight::HEAVY,
-        FontWeight::Black => weight::BLACK,
-    }
-}
-
-/// The comma-separated candidates of a CSS-style family list — as in
-/// `text_field`.
-fn family_candidates(family: &str) -> impl Iterator<Item = &str> {
-    family
-        .split(',')
-        .map(str::trim)
-        .filter(|candidate| !candidate.is_empty())
-}
-
-/// The platform face a resolved font names — the same rule as
-/// `text_field`'s `platform_font` with no italic pass: a masked field
-/// draws plain text.
-///
-/// # Panics
-///
-/// When the family names no installed font and no generic — the same
-/// `fatalError` the Swift port raises.
-fn platform_font(
-    mtm: cocoa_ui::MainThreadMarker,
-    resolved: &ResolvedFont,
-) -> Retained<cocoa_ui::Font> {
-    let size = f64::from(resolved.size());
-    let weight = platform_weight(resolved.weight());
-    match resolved.family() {
-        Some(family) if !family.is_empty() => {
-            let mut resolved_font = None;
-            for candidate in family_candidates(family) {
-                resolved_font = match candidate {
-                    "system" | "sans-serif" => Some(cocoa_ui::font::system(mtm, size, weight)),
-                    _ => cocoa_ui::font::named(candidate, size),
-                };
-                if resolved_font.is_some() {
-                    break;
-                }
-            }
-            resolved_font.unwrap_or_else(|| {
-                panic!(
-                    "WaterUI: font family '{family}' not found. Ensure the font is bundled and registered."
-                )
-            })
-        }
-        _ => match resolved.design() {
-            FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
-            FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
-        },
-    }
-}
 
 /// The field's share of a measure — the text height `WuiSecureField`
 /// reports. `AppKit` reads `intrinsicContentSize`; `UIKit` floors
@@ -134,20 +74,22 @@ struct FieldState {
     label: Mounted,
 }
 
-/// Lays out the children inside `view`'s bounds: the label at top-leading,
-/// then the field spanning the full width below it — `WuiSecureField`'s
-/// constraints as manual frames. `UIKit` centers the input inside the
-/// region between the label and the container's bottom, the way the
-/// field's `inputRegion` layout guide does.
-fn layout_children(view: &PlatformView, state: &FieldState) {
-    let bounds = view::bounds(view);
+/// Lays out the children inside the `response` rectangle: the label at
+/// top-leading, then the field spanning the full width below it —
+/// `WuiSecureField`'s constraints as manual frames. `UIKit` centers the
+/// input inside the region between the label and the container's bottom,
+/// the way the field's `inputRegion` layout guide does.
+fn layout_children(view: &PlatformView, response: Rect, state: &FieldState) {
+    let bounds = response;
     let label = state.label.layout().measure(ProposalSize::UNSPECIFIED).size;
     let has_label = label.height > 0.0;
     view::set_hidden(state.label.view(), !has_label);
 
-    view::set_frame(
+    proposal::place_leading(
         state.label.view(),
-        Rect::new(0.0, 0.0, f64::from(label.width), f64::from(label.height)),
+        Rect::new(0.0, 0.0, bounds.size.width, f64::from(label.height)).translated(response.origin),
+        ProposalSize::UNSPECIFIED,
+        cocoa_ui::view::is_right_to_left(view),
     );
 
     let region_top = if has_label {
@@ -167,7 +109,7 @@ fn layout_children(view: &PlatformView, state: &FieldState) {
         field_height,
     );
     let field_view: &PlatformView = &state.field;
-    view::set_frame(field_view, field_frame);
+    view::set_frame(field_view, field_frame.translated(response.origin));
 }
 
 /// The container's layout face: reports `WuiSecureField.sizeThatFits`'s
@@ -201,6 +143,14 @@ const fn measure_width(_proposal: ProposalSize, _label_width: f64) -> f64 {
 }
 
 impl SubView for SecureFieldSubView {
+    fn resolve_extent(
+        &self,
+        bounds: LayoutRect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     // `measure` speaks f32; the geometry math runs in f64 — the narrowing
     // is the layout contract, as in `text_field`.
     #[expect(
@@ -264,7 +214,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         });
         host.set_layout_handler({
             let state = Rc::clone(&state);
-            move |view| layout_children(view, &state)
+            move |view| layout_children(view, proposal::response(view), &state)
         });
 
         let control = view::retain_base(field_view);
@@ -307,7 +257,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let body = Body.resolve(ctx.env());
         leaf.bind(&body, {
             let field = field.clone();
-            move |font| field.set_font(&platform_font(mtm, &font))
+            move |font| field.set_font(&platform_font(mtm, &font, false))
         });
 
         // Announce the label's semantic text on the field.

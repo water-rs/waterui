@@ -13,7 +13,7 @@ use std::fmt;
 use objc2::rc::{Retained, Weak};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAccessibility, NSAnimatablePropertyContainer, NSControl, NSControlSize, NSSlider,
+    NSAccessibility, NSAnimatablePropertyContainer, NSColor, NSControl, NSControlSize, NSSlider,
 };
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSObjectProtocol, NSString};
@@ -92,9 +92,34 @@ impl Slider {
         self.setMaxValue(end);
     }
 
+    /// Moves the thumb in increments of `step` from the start of the current
+    /// range, or continuously for `None`: one tick mark per increment, the
+    /// thumb held to them. Set the range first.
+    pub fn set_step(&self, step: Option<f64>) {
+        let ticks = step.map_or(0, |step| {
+            Self::tick_marks(self.minValue(), self.maxValue(), step)
+        });
+        self.setNumberOfTickMarks(ticks);
+        self.setAllowsTickMarkValuesOnly(step.is_some());
+    }
+
+    /// The tick marks `step` makes on `start..=end`, the two ends included.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a slider has a handful of steps, far below `isize::MAX`"
+    )]
+    fn tick_marks(start: f64, end: f64, step: f64) -> isize {
+        ((end - start) / step).round() as isize + 1
+    }
+
     /// Whether the slider responds to input.
     pub fn set_enabled(&self, enabled: bool) {
         self.setEnabled(enabled);
+    }
+
+    /// The colour the filled part of the track draws with.
+    pub fn set_track_tint(&self, color: &NSColor) {
+        self.setTrackFillColor(Some(color));
     }
 
     /// How large the control is drawn.
@@ -134,5 +159,17 @@ impl Slider {
         self.setAccessibilityElement(label.is_some());
         self.setAccessibilityLabel(label.map(NSString::from_str).as_deref());
         self.setToolTip(label.map(NSString::from_str).as_deref());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Slider;
+
+    #[test]
+    fn a_step_marks_both_ends_of_the_range() {
+        assert_eq!(Slider::tick_marks(0.0, 10.0, 2.5), 5);
+        assert_eq!(Slider::tick_marks(-1.0, 1.0, 0.5), 5);
+        assert_eq!(Slider::tick_marks(0.0, 1.0, 1.0), 2);
     }
 }

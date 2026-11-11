@@ -3,11 +3,13 @@ use std::rc::Rc;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
 use waterui_core::{Environment, Native};
+use waterui_graphics::Gradient;
+use waterui_graphics::backend::{FilteredView, SceneView, resolve_scene_proposal};
+use waterui_graphics::canvas::CanvasView;
 use waterui_graphics::color::Color;
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::{ExternalFrameView, GpuContentView};
-use waterui_graphics::{FilteredView, Gradient, SceneView, resolve_scene_proposal};
-use waterui_shape::{ResolvedMorphShape, ResolvedShape};
+use waterui_shape::ResolvedShape;
 
 #[cfg(hydrolysis_gpu)]
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<GpuContentView> {
@@ -87,6 +89,32 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SceneView> {
     }
 }
 
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<CanvasView> {
+    fn intrinsic(
+        _state: &mut HydroState<E>,
+        view: &Self,
+        _env: &Environment,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
+    ) -> LayoutSize {
+        view.as_inner()
+            .intrinsic_size()
+            .unwrap_or_else(LayoutSize::zero)
+    }
+
+    fn dimensions(
+        _state: &mut HydroState<E>,
+        view: &Self,
+        _env: &Environment,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
+        proposal: ProposalSize,
+    ) -> ViewDimensions {
+        graphics_dimensions_from_proposal(resolve_scene_proposal(
+            view.as_inner().intrinsic_size(),
+            proposal,
+        ))
+    }
+}
+
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<FilteredView> {
     fn intrinsic(
         state: &mut HydroState<E>,
@@ -141,27 +169,6 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<Gradient> {
 }
 
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedShape> {
-    fn intrinsic(
-        _state: &mut HydroState<E>,
-        _view: &Self,
-        _env: &Environment,
-        _theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        LayoutSize::zero()
-    }
-
-    fn dimensions(
-        _state: &mut HydroState<E>,
-        _view: &Self,
-        _env: &Environment,
-        _theme: &Rc<dyn crate::theme::WidgetTheme>,
-        proposal: ProposalSize,
-    ) -> ViewDimensions {
-        graphics_dimensions_from_proposal(proposal)
-    }
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedMorphShape> {
     fn intrinsic(
         _state: &mut HydroState<E>,
         _view: &Self,

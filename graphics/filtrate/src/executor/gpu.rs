@@ -11,18 +11,19 @@ use alloc::{
 
 use cherenkov_shader::{SamplerFilter, SegmentArg, naga::Module};
 use filtrate_core::{AuxFormat, AuxImage, Filter, ImageVisitor, ShapeInput, WorkingSpace};
-use futures_util::future::try_join_all;
+use futures_util::future::{try_join, try_join_all};
 
 use super::{
     entry::{self, ENTRY_POINT, binding},
     plan::{PassAux, PassPlan, Plan},
+    shape::{FieldTargets, ShapeField},
     uniforms::UniformBuffers,
 };
 use crate::{
     aux_image::TextureImage,
     effect::{
         EffectContext, EffectInput, EffectOutput, EffectRenderError, EffectSetupError,
-        RetainedMemory,
+        RetainedMemory, TextureViews,
     },
     pipeline_cache::{self, PassCompile, PassKey, PassPipeline},
 };
@@ -134,6 +135,8 @@ pub(super) struct Intermediates {
     /// unused for a whole frame is dropped rather than retained.
     pub(super) last_used: u64,
     pub(super) views: Vec<wgpu::TextureView>,
+    /// The shape's distance field, when a pass reads it.
+    shape: Option<FieldTargets>,
 }
 
 /// Bindings every pass may read.
@@ -155,9 +158,14 @@ pub(super) struct Gpu {
     slot_of: Vec<usize>,
     slot_count: usize,
     shared: Shared,
+    /// The shape field's pipelines, when a pass reads
+    /// [`ShapeInput::Sdf`].
+    shape: Option<ShapeField>,
     /// Intermediate slots per input size, capped; a frame can encode one
     /// effect against several sizes (backdrop capture regions).
     pub(super) intermediates: Vec<Intermediates>,
+    /// Views of the host's input and output textures.
+    views: TextureViews,
     input_format: wgpu::TextureFormat,
     output_format: wgpu::TextureFormat,
 }
@@ -203,7 +211,12 @@ impl Gpu {
         // Slots first: a single-pass chain never materializes an
         // intermediate and must not probe for one.
         let (slot_of, slot_count) = assign_slots(&plan.passes);
-        if slot_count > 0 {
+        let reads_sdf = plan
+            .passes
+            .iter()
+            .any(|pass| pass.shape == Some(ShapeInput::Sdf));
+        // The shape field's targets are intermediates too.
+        if slot_count > 0 || reads_sdf {
             probe_intermediate_format(ctx.device).await?;
         }
 
@@ -239,7 +252,14 @@ impl Gpu {
                 ))
             })
             .collect::<Result<Vec<_>, EffectSetupError>>()?;
-        let passes = try_join_all(passes).await?;
+        let shape = async {
+            if reads_sdf {
+                ShapeField::new(ctx).await.map(Some)
+            } else {
+                Ok(None)
+            }
+        };
+        let (passes, shape) = try_join(try_join_all(passes), shape).await?;
 
         let space = ctx.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("filtrate working space"),
@@ -257,21 +277,25 @@ impl Gpu {
         let mut uploader = Uploader {
             ctx,
             images: (0..F::IMAGES).map(|_| None).collect(),
+            error: None,
         };
         filter.visit_images(&mut uploader);
-        let images: Vec<Image> = uploader
+        if let Some(error) = uploader.error {
+            return Err(error);
+        }
+        let images = uploader
             .images
             .into_iter()
             .enumerate()
             .map(|(index, image)| {
-                image.unwrap_or_else(|| {
-                    panic!(
+                image.ok_or_else(|| {
+                    EffectSetupError::AuxImages(format!(
                         "the filter declares {} images but never visited image {index}",
                         F::IMAGES
-                    )
+                    ))
                 })
             })
-            .collect();
+            .collect::<Result<Vec<Image>, _>>()?;
 
         check_bound_textures(&passes, &images, ctx.device)?;
 
@@ -285,7 +309,9 @@ impl Gpu {
                 space,
                 images,
             },
+            shape,
             intermediates: Vec::new(),
+            views: TextureViews::new(),
             input_format: ctx.input_format,
             output_format: ctx.output_format,
         })
@@ -299,8 +325,12 @@ impl Gpu {
             .intermediates
             .iter()
             .map(|intermediates| {
+                let shape = intermediates
+                    .shape
+                    .as_ref()
+                    .map_or(0, FieldTargets::texture_count);
                 texture_bytes(intermediates.size, INTERMEDIATE_FORMAT)
-                    * intermediates.views.len() as u64
+                    * (intermediates.views.len() + shape) as u64
             })
             .sum();
         let images = self.shared.images.iter().map(Image::retained_bytes).sum();
@@ -333,21 +363,16 @@ impl Gpu {
         encoder: &mut wgpu::CommandEncoder,
         values: &[f32],
     ) -> Result<(), EffectRenderError> {
-        if input.format != self.input_format || output.format != self.output_format {
+        if input.format() != self.input_format || output.format() != self.output_format {
             return Err(EffectRenderError::FormatMismatch {
-                input: input.format,
-                output: output.format,
+                input: input.format(),
+                output: output.format(),
                 setup_input: self.input_format,
                 setup_output: self.output_format,
             });
         }
-        let size = (input.width, input.height);
-        for pass in &self.passes {
-            if let Some(shape) = pass.plan.shape {
-                shape_view(input, shape)?;
-            }
-        }
-        let sequence = input.timing.sequence();
+        let size = input.size();
+        let sequence = input.timing().sequence();
         // A used size is live this frame: mark it before stale sizes are
         // dropped so steady state reuses its slots.
         if let Some(index) = self
@@ -372,28 +397,39 @@ impl Gpu {
                     self.intermediates.remove(0);
                 }
                 self.intermediates.push(Intermediates::new(
-                    input.device,
+                    input,
                     size,
                     self.slot_count,
                     sequence,
+                    self.shape.as_ref(),
                 ));
                 self.intermediates.len() - 1
             });
 
-        let slots = &self.intermediates[intermediates_index].views;
+        let input_view = self.views.view(input.texture(), sequence);
+        let output_view = self.views.view(output.texture(), sequence);
+        let Intermediates {
+            views: slots,
+            shape: field,
+            ..
+        } = &self.intermediates[intermediates_index];
+        if let (Some(builder), Some(field)) = (&self.shape, field) {
+            builder.encode(input.device(), encoder, &input_view, field);
+        }
+        let sdf = field.as_ref().map(FieldTargets::field);
         let slot_of = &self.slot_of;
         let last = self.passes.len() - 1;
         for (index, pass) in self.passes.iter_mut().enumerate() {
             let output_scale = pass.output_scale.as_mut().map(|buffers| {
                 buffers.select(
-                    input.device,
-                    input.queue,
-                    scale_words(size, (output.width, output.height)),
+                    input.device(),
+                    input.queue(),
+                    scale_words(size, output.size()),
                     sequence,
                 )
             });
             let params = pass
-                .params_index(input.device, input.queue, values, size, sequence)
+                .params_index(input.device(), input.queue(), values, size, sequence)
                 .map(|index| pass.params.buffer(index));
 
             let output_scale = output_scale.map(|index| {
@@ -404,7 +440,8 @@ impl Gpu {
             });
             let bind_group = pass.bind_group(
                 index,
-                input,
+                input.device(),
+                &input_view,
                 &self.shared,
                 slots,
                 slot_of,
@@ -412,35 +449,46 @@ impl Gpu {
                     params,
                     output_scale,
                 },
-            )?;
+                sdf,
+            );
 
             let target = if index == last {
-                &output.view
+                &output_view
             } else {
                 &slots[slot_of[index]]
             };
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("filtrate pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            render_pass.set_pipeline(&pass.pipeline);
-            render_pass.set_bind_group(0, &bind_group, &[]);
-            render_pass.draw(0..3, 0..1);
+            draw(encoder, &pass.pipeline, &bind_group, target);
         }
         Ok(())
     }
+}
+
+/// Encodes one full-screen pass of `pipeline` into `target`.
+pub(super) fn draw(
+    encoder: &mut wgpu::CommandEncoder,
+    pipeline: &wgpu::RenderPipeline,
+    bind_group: &wgpu::BindGroup,
+    target: &wgpu::TextureView,
+) {
+    let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("filtrate pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    });
+    render_pass.set_pipeline(pipeline);
+    render_pass.set_bind_group(0, bind_group, &[]);
+    render_pass.draw(0..3, 0..1);
 }
 
 #[expect(
@@ -476,7 +524,9 @@ impl GpuPass {
         };
         let shared = ctx
             .pipelines
-            .pass(key, |key| build_pipeline(ctx, module, key))
+            .pass(key, |key| {
+                build_pipeline(ctx, wgpu::ShaderSource::Naga(Cow::Owned(module)), key)
+            })
             .await
             .map_err(|message| {
                 ctx.pipelines.forget_failed();
@@ -498,17 +548,25 @@ impl GpuPass {
         })
     }
 
-    /// Binds the pass's inputs for one frame. `params` is the uniform
-    /// buffer [`Self::params_index`] selected for this encode.
+    /// Binds the pass's inputs for one frame. `input` is the view of the
+    /// chain's input, `params` the uniform buffer [`Self::params_index`]
+    /// selected for this encode, and `sdf` this frame's shape field,
+    /// present whenever a pass reads it.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is a distinct per-frame binding source of the pass"
+    )]
     fn bind_group(
         &self,
         index: usize,
-        input: &EffectInput<'_>,
+        device: &wgpu::Device,
+        input: &wgpu::TextureView,
         shared: &Shared,
         slots: &[wgpu::TextureView],
         slot_of: &[usize],
         uniforms: PassUniforms<'_>,
-    ) -> Result<wgpu::BindGroup, EffectRenderError> {
+        sdf: Option<&wgpu::TextureView>,
+    ) -> wgpu::BindGroup {
         let mut entries = alloc::vec![wgpu::BindGroupEntry {
             binding: binding::INPUT,
             resource: wgpu::BindingResource::TextureView(input_view(index, input, slots, slot_of)),
@@ -541,9 +599,15 @@ impl GpuPass {
             });
         }
         if let Some(shape) = self.plan.shape {
+            let view = match shape {
+                ShapeInput::Mask => input,
+                ShapeInput::Sdf => {
+                    sdf.expect("setup builds the shape field whenever a pass reads it")
+                }
+            };
             entries.push(wgpu::BindGroupEntry {
                 binding: binding::SHAPE,
-                resource: wgpu::BindingResource::TextureView(shape_view(input, shape)?),
+                resource: wgpu::BindingResource::TextureView(view),
             });
         }
         for (n, aux) in (0u32..).zip(&self.plan.aux) {
@@ -556,11 +620,11 @@ impl GpuPass {
                 resource: wgpu::BindingResource::TextureView(view),
             });
         }
-        Ok(input.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("filtrate pass bindings"),
             layout: &self.layout,
             entries: &entries,
-        }))
+        })
     }
 
     /// The uniform buffer holding this encode's `values` and `size` — the
@@ -597,10 +661,14 @@ impl GpuPass {
     }
 }
 
-/// Starts compiling `module` into the pipeline `key` describes, off the GPU
-/// host thread (see [`compile`](crate::compile)). A validation failure
-/// resolves to its diagnostic.
-fn build_pipeline(ctx: &EffectContext<'_>, module: Module, key: &PassKey) -> PassCompile {
+/// Starts compiling the fragment `source` into the full-screen pipeline
+/// `key` describes, off the GPU host thread (see [`compile`](crate::compile)).
+/// A validation failure resolves to its diagnostic.
+pub(super) fn build_pipeline(
+    ctx: &EffectContext<'_>,
+    source: wgpu::ShaderSource<'static>,
+    key: &PassKey,
+) -> PassCompile {
     let vertex = ctx.pipelines.vertex(ctx.device);
     let entries = key.layout.clone();
     let format = key.format;
@@ -612,7 +680,7 @@ fn build_pipeline(ctx: &EffectContext<'_>, module: Module, key: &PassKey) -> Pas
         });
         let fragment = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("filtrate pass"),
-            source: wgpu::ShaderSource::Naga(Cow::Owned(module)),
+            source,
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("filtrate pass pipeline layout"),
@@ -651,14 +719,22 @@ fn build_pipeline(ctx: &EffectContext<'_>, module: Module, key: &PassKey) -> Pas
     }))
 }
 
-/// The bind group layout a pass's segment needs.
-fn layout_entries(plan: &PassPlan, resizes_output: bool) -> Vec<wgpu::BindGroupLayoutEntry> {
-    let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
+/// A fragment-stage bind group layout entry.
+pub(super) const fn layout_entry(
+    binding: u32,
+    ty: wgpu::BindingType,
+) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
         ty,
         count: None,
-    };
+    }
+}
+
+/// The bind group layout a pass's segment needs.
+fn layout_entries(plan: &PassPlan, resizes_output: bool) -> Vec<wgpu::BindGroupLayoutEntry> {
+    let entry = layout_entry;
     let texture = |filterable| wgpu::BindingType::Texture {
         sample_type: wgpu::TextureSampleType::Float { filterable },
         view_dimension: wgpu::TextureViewDimension::D2,
@@ -697,23 +773,12 @@ fn layout_entries(plan: &PassPlan, resizes_output: bool) -> Vec<wgpu::BindGroupL
 /// The texture pass `pass` reads as its input.
 fn input_view<'a>(
     pass: usize,
-    input: &'a EffectInput<'_>,
+    input: &'a wgpu::TextureView,
     slots: &'a [wgpu::TextureView],
     slot_of: &[usize],
 ) -> &'a wgpu::TextureView {
     pass.checked_sub(1)
-        .map_or(&input.view, |previous| &slots[slot_of[previous]])
-}
-
-fn shape_view<'a>(
-    input: &'a EffectInput<'_>,
-    shape: ShapeInput,
-) -> Result<&'a wgpu::TextureView, EffectRenderError> {
-    match shape {
-        ShapeInput::Sdf => input.shape.sdf.as_ref(),
-        ShapeInput::Mask => input.shape.mask.as_ref(),
-    }
-    .ok_or(EffectRenderError::MissingShape(shape))
+        .map_or(input, |previous| &slots[slot_of[previous]])
 }
 
 /// Assigns every intermediate (the output of every pass but the last) a
@@ -753,16 +818,23 @@ fn assign_slots(passes: &[PassPlan]) -> (Vec<usize>, usize) {
 }
 
 impl Intermediates {
-    fn new(device: &wgpu::Device, size: (u32, u32), count: usize, last_used: u64) -> Self {
+    fn new(
+        input: &EffectInput<'_>,
+        size: (u32, u32),
+        count: usize,
+        last_used: u64,
+        shape: Option<&ShapeField>,
+    ) -> Self {
         Self {
             size,
             last_used,
             views: (0..count)
                 .map(|_| {
-                    intermediate_texture(device, size)
+                    intermediate_texture(input.device(), size)
                         .create_view(&wgpu::TextureViewDescriptor::default())
                 })
                 .collect(),
+            shape: shape.map(|shape| shape.targets(input.device(), input.queue(), size)),
         }
     }
 }
@@ -779,7 +851,10 @@ fn texture_bytes((width, height): (u32, u32), format: wgpu::TextureFormat) -> u6
         )
 }
 
-fn intermediate_texture(device: &wgpu::Device, (width, height): (u32, u32)) -> wgpu::Texture {
+pub(super) fn intermediate_texture(
+    device: &wgpu::Device,
+    (width, height): (u32, u32),
+) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("filtrate intermediate"),
         size: wgpu::Extent3d {
@@ -893,19 +968,35 @@ pub fn sampler(device: &wgpu::Device, filter: wgpu::FilterMode) -> wgpu::Sampler
 struct Uploader<'a, 'c> {
     ctx: &'a EffectContext<'c>,
     images: Vec<Option<Image>>,
+    /// The first way the filter's visits disagree with its declaration;
+    /// setup fails with it once the visit is over.
+    error: Option<EffectSetupError>,
+}
+
+impl Uploader<'_, '_> {
+    /// Records the first disagreement; later visits are ignored.
+    fn fail(&mut self, reason: String) {
+        self.error
+            .get_or_insert(EffectSetupError::AuxImages(reason));
+    }
 }
 
 impl ImageVisitor for Uploader<'_, '_> {
     fn visit<I: AuxImage + ?Sized>(&mut self, index: usize, image: &I) {
-        assert!(
-            index < self.images.len(),
-            "the filter visited image {index} but declares {} images",
-            self.images.len()
-        );
-        assert!(
-            self.images[index].is_none(),
-            "the filter visited image {index} twice"
-        );
+        if self.error.is_some() {
+            return;
+        }
+        if index >= self.images.len() {
+            self.fail(format!(
+                "the filter visited image {index} but declares {} images",
+                self.images.len()
+            ));
+            return;
+        }
+        if self.images[index].is_some() {
+            self.fail(format!("the filter visited image {index} twice"));
+            return;
+        }
         // A caller-provided texture binds in place — no upload.
         if let Some(image) = image
             .as_any()
@@ -919,9 +1010,12 @@ impl ImageVisitor for Uploader<'_, '_> {
             return;
         }
 
-        let data = image
-            .data()
-            .unwrap_or_else(|| panic!("aux image {index} is neither CPU data nor a GPU texture"));
+        let Some(data) = image.data() else {
+            self.fail(format!(
+                "aux image {index} is neither CPU data nor a GPU texture"
+            ));
+            return;
+        };
         let format = match data.format {
             AuxFormat::Rgba8 => wgpu::TextureFormat::Rgba8Unorm,
             AuxFormat::Rgba16Float => wgpu::TextureFormat::Rgba16Float,

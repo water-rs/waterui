@@ -21,9 +21,10 @@ use std::collections::{HashMap, HashSet};
 
 use cocoa_ui::geometry::EdgeInsets as KitInsets;
 use cocoa_ui::{Retained, view};
-use waterui::animation::Animation;
+use waterui::animation::{Animation, ChangeAnimation};
 use waterui::component::list::{
-    ListConfig, ListItem, ListSection, ListSelection, Move, OnDelete, OnMove,
+    ListConfig, ListItem, ListRowTags, ListSection, ListSections, ListSelection, ListTagId, Move,
+    OnDelete, OnMove,
 };
 use waterui::id::Id as RawId;
 use waterui::layout::padding::EdgeInsets;
@@ -40,7 +41,10 @@ use waterui_backend_core::Environment;
 use waterui_backend_core::scroll::animated_row_scroll_approach;
 use waterui_core::Computed;
 use waterui_core::interaction::Disabled;
-use waterui_core::layout::{Point, ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutDirection, LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis,
+    SubView, UnitPoint, ViewDimensions, layout_direction,
+};
 
 use crate::contract::{NativeLeaf, RenderContext, Renderer};
 use crate::proposal::{self, Placement};
@@ -78,12 +82,6 @@ fn row_height(content_height: f64, insets: KitInsets, minimum: f64) -> f64 {
     (content_height + insets.top + insets.bottom).max(minimum)
 }
 
-/// `peekListItemSection`: the `ListSection` marker `index` carries, when
-/// it starts a section.
-fn peek_section(snapshot: &AnyViewsSnapshot<ListItem>, index: usize) -> Option<ListSection> {
-    snapshot.get_view(index).and_then(ListItem::into_section)
-}
-
 /// A resolved section `Text` as its live styled-string signal.
 fn resolve_text(text: &Text, env: &Environment) -> Computed<StyledStr> {
     text.resolve(env).into_content()
@@ -102,66 +100,38 @@ struct SectionGroup {
     count: usize,
 }
 
-/// `computeListSectionGroups`: a section marker starts a group, items
-/// accumulate into the pending group, and the pending group flushes when
-/// the next marker — or the end — arrives.
+/// `computeListSectionGroups`: consecutive items of one section form a
+/// group carrying that section's chrome. The section comes from each item's
+/// id, so grouping materializes no row, and a section without items forms
+/// no group — it draws neither header nor footer.
 fn compute_section_groups(
-    snapshot: &AnyViewsSnapshot<ListItem>,
-    positions: &HashMap<ItemId, usize>,
+    sections: &ListSections,
     item_ids: &[ItemId],
     env: &Environment,
 ) -> Vec<SectionGroup> {
-    let mut groups = Vec::new();
-    let mut pending: Option<SectionGroup> = None;
+    let mut groups: Vec<SectionGroup> = Vec::new();
+    let mut current = None;
     for &id in item_ids {
-        let index = positions[&id];
-        if let Some(section) = peek_section(snapshot, index) {
-            if let Some(group) = pending.take() {
-                groups.push(group);
+        let section = sections.section_of(id);
+        if current == Some(section) {
+            if let Some(group) = groups.last_mut() {
+                group.count += 1;
             }
-            pending = Some(SectionGroup {
-                label: section.label().map(|text| resolve_text(text, env)),
-                footer: section.get_footer().map(|text| resolve_text(text, env)),
-                count: 0,
-            });
+            continue;
         }
-        match &mut pending {
-            Some(group) => group.count += 1,
-            None => {
-                pending = Some(SectionGroup {
-                    label: None,
-                    footer: None,
-                    count: 1,
-                });
-            }
-        }
-    }
-    if let Some(group) = pending.take() {
-        groups.push(group);
+        current = Some(section);
+        let chrome = sections.section(section);
+        groups.push(SectionGroup {
+            label: chrome
+                .and_then(ListSection::label)
+                .map(|text| resolve_text(text, env)),
+            footer: chrome
+                .and_then(ListSection::get_footer)
+                .map(|text| resolve_text(text, env)),
+            count: 1,
+        });
     }
     groups
-}
-
-/// `resolveListSectionGroups`: with `uses_sections` on, group by the
-/// items' markers; off, one unlabeled group covers everything.
-fn resolve_section_groups(
-    snapshot: &AnyViewsSnapshot<ListItem>,
-    positions: &HashMap<ItemId, usize>,
-    item_ids: &[ItemId],
-    uses_sections: bool,
-    env: &Environment,
-) -> Vec<SectionGroup> {
-    if uses_sections {
-        compute_section_groups(snapshot, positions, item_ids, env)
-    } else if item_ids.is_empty() {
-        Vec::new()
-    } else {
-        vec![SectionGroup {
-            label: None,
-            footer: None,
-            count: item_ids.len(),
-        }]
-    }
 }
 
 /// `isSinglePlainSection`: one group carrying no chrome is the shape batch
@@ -289,15 +259,16 @@ fn is_navigation_scroll_surface(table: &TableView) -> bool {
 }
 
 /// The selection mode `ListConfig` carries — `WuiList`'s
-/// `SelectionController`.
+/// `SelectionController`. The bindings hold row tags (`ListRowTags`), not
+/// row ids.
 enum SelectionMode {
     /// Rows are not selectable.
     None,
-    /// A single selected row; `None` inside the binding means nothing is
+    /// A single selected tag; `None` inside the binding means nothing is
     /// selected.
-    Single(Binding<Option<ItemId>>),
-    /// The set of selected row ids.
-    Multiple(Binding<BTreeSet<ItemId>>),
+    Single(Binding<Option<ListTagId>>),
+    /// The set of selected tags.
+    Multiple(Binding<BTreeSet<ListTagId>>),
 }
 
 impl fmt::Debug for SelectionMode {
@@ -318,8 +289,9 @@ impl SelectionMode {
         matches!(self, Self::Multiple(_))
     }
 
-    /// `SelectionController.selectedIds`: the binding's current selection.
-    fn selected_ids(&self) -> BTreeSet<ItemId> {
+    /// `SelectionController.selectedIds`: the binding's current selection,
+    /// as tags.
+    fn selected_tags(&self) -> BTreeSet<ListTagId> {
         match self {
             Self::None => BTreeSet::new(),
             Self::Single(binding) => {
@@ -333,14 +305,27 @@ impl SelectionMode {
         }
     }
 
-    /// The table's selected ids written back into the binding.
-    fn write(&self, ids: &BTreeSet<ItemId>) {
+    /// The table's selected rows' tags written back into the binding.
+    fn write(&self, tags: &BTreeSet<ListTagId>) {
         match self {
             Self::None => {}
-            Self::Single(binding) => binding.set(ids.iter().next().copied()),
-            Self::Multiple(binding) => binding.set(ids.clone()),
+            Self::Single(binding) => binding.set(tags.iter().next().copied()),
+            Self::Multiple(binding) => binding.set(tags.clone()),
         }
     }
+}
+
+/// The placement a row's content takes in the row's content rect, offered
+/// `proposal`: the List rule positions the content's response at the
+/// leading edge of that rect — the trailing edge in right-to-left, as the
+/// list's layout direction in `env` resolves leading — centred vertically,
+/// while the content keeps the whole rect as its allocation.
+fn row_content_placement(proposal: ProposalSize, env: &Environment) -> Placement {
+    let anchor = match layout_direction(env).snapshot() {
+        LayoutDirection::LeftToRight => UnitPoint::LEADING,
+        LayoutDirection::RightToLeft => UnitPoint::TRAILING,
+    };
+    Placement::platform_hosted(proposal).anchored(anchor)
 }
 
 /// A `waterui` `EdgeInsets` (leading/trailing) as the kit's directional
@@ -367,6 +352,9 @@ enum FlatEntry {
     Ghost(GhostKey),
     /// A section footer for `groups[section]`.
     Footer(usize),
+    /// The platform list's top gap, seated below a leading section header
+    /// (the header sits at the list's top, the gap scrolls with the rows).
+    Spacer,
 }
 
 /// `rebuildFlatLayout`: the section header → rows → section footer
@@ -382,6 +370,9 @@ fn rebuild_flat_layout(state: &mut Shared) {
             && group.label.is_some()
         {
             state.flat_layout.push(FlatEntry::Header(section));
+            if section == 0 && !state.sidebar {
+                state.flat_layout.push(FlatEntry::Spacer);
+            }
         }
         for (member_section, member) in &rows {
             if *member_section == section {
@@ -565,8 +556,14 @@ struct Shared {
     /// `AppKit`: `flatLayout` — the table's flat entry list.
     #[cfg(target_os = "macos")]
     flat_layout: Vec<FlatEntry>,
+    /// `AppKit`: whether the table is a navigation sidebar, which keeps the
+    /// source list's own section bands instead of the platform list's.
+    #[cfg(target_os = "macos")]
+    sidebar: bool,
     /// Selection bookkeeping.
     selection: SelectionMode,
+    /// The tag each row is selected by, by item id.
+    tags: ListRowTags,
     /// `SelectionController.applyingToTable` — guards re-entrancy while a
     /// binding change applies to the table.
     applying_selection: Cell<bool>,
@@ -577,13 +574,17 @@ struct Shared {
     on_delete: Option<OnDelete>,
     /// Reorder callback.
     on_move: Option<OnMove>,
-    /// `uses_sections` — whether item markers group the list.
-    uses_sections: bool,
+    /// The sections the items group into, by item id.
+    sections: ListSections,
     /// The theme's row insets for `None` inputs.
     #[cfg(target_os = "macos")]
     theme_insets: KitInsets,
     /// The resolved minimum row height.
     resolved_min_height: f64,
+    /// Whether the navigation scroll surface's near-zero `tableHeaderView`
+    /// has already been installed — the reserve is reclaimed once.
+    #[cfg(target_os = "ios")]
+    nav_header_applied: Cell<bool>,
     /// `measuredRowHeights`: the row contract the height delegate reports,
     /// refreshed from both `viewFor`/`cellForRow` layout passes.
     measured_heights: HashMap<ItemId, f64>,
@@ -635,13 +636,7 @@ impl Shared {
     /// Regroups over the current `item_ids` — after a local delete or
     /// move mutates them.
     fn regroup(&mut self) {
-        self.groups = resolve_section_groups(
-            &self.snapshot,
-            &self.positions,
-            &self.item_ids,
-            self.uses_sections,
-            &self.env,
-        );
+        self.groups = compute_section_groups(&self.sections, &self.item_ids, &self.env);
     }
 
     /// Whether `flat`'s row resolved under `.disabled` on its last render
@@ -656,20 +651,40 @@ impl Shared {
             .is_some_and(Signal::snapshot)
     }
 
-    /// `writeSelectionFromTable`: `flat` item indexes selected on the
-    /// table written into the binding — skipped while a binding change is
-    /// applying to the table.
+    /// Whether input may select `flat`'s row: it carries a tag and is not
+    /// disabled. A row without a tag is not selectable.
+    fn row_selectable(&self, flat: usize) -> bool {
+        self.tags.tag(self.item_ids[flat]).is_some() && !self.row_disabled(flat)
+    }
+
+    /// Whether `flat`'s row carries a tag in the binding's selection.
+    fn row_selected(&self, flat: usize, selected: &BTreeSet<ListTagId>) -> bool {
+        self.tags
+            .tag(self.item_ids[flat])
+            .is_some_and(|tag| selected.contains(&tag))
+    }
+
+    /// The flat indexes of the rows the binding's selection holds: every row
+    /// carrying a selected tag.
+    fn selected_flats(&self) -> Vec<usize> {
+        let selected = self.selection.selected_tags();
+        (0..self.item_ids.len())
+            .filter(|flat| self.row_selected(*flat, &selected))
+            .collect()
+    }
+
+    /// `writeSelectionFromTable`: the tags of the `flat` item indexes
+    /// selected on the table written into the binding — skipped while a
+    /// binding change is applying to the table.
     fn write_selection(&self, flats: impl Iterator<Item = usize>) {
         if self.applying_selection.get() {
             return;
         }
-        let mut ids = BTreeSet::new();
-        for flat in flats {
-            if let Some(&id) = self.item_ids.get(flat) {
-                ids.insert(id);
-            }
-        }
-        self.selection.write(&ids);
+        let tags = flats
+            .filter_map(|flat| self.item_ids.get(flat))
+            .filter_map(|id| self.tags.tag(*id))
+            .collect();
+        self.selection.write(&tags);
     }
 
     /// Renders `flat`'s item, returning its insets, deletable signal and leaf.
@@ -678,7 +693,7 @@ impl Shared {
             .snapshot
             .get_view(self.positions[&self.item_ids[flat]])
             .expect("list item index is in bounds");
-        let (content, deletable, _, insets) = item.into_parts();
+        let (content, deletable, insets) = item.into_parts();
         // The row's `Disabled` signal comes from the scope this render
         // resolves the content under — the same pass, not a second walk.
         let (leaf, resolved_env) = self.renderer.render_resolved(content);
@@ -996,15 +1011,21 @@ impl Shared {
         insets.map_or(self.theme_insets, kit_insets)
     }
 
-    /// Whether the flat entry at `row` paints the hairline under it —
-    /// every member but its section's last, matching `SwiftUI`'s inset
-    /// list (water-rs/waterui#3592).
+    /// Whether the flat entry at `row` paints the hairline under it. The
+    /// platform list separates every row from whatever follows it, a
+    /// section's last row from the next section's header included, and
+    /// draws none under the list's final row; a sidebar separates only
+    /// rows of one section (water-rs/waterui#3592).
     #[cfg(target_os = "macos")]
     fn shows_separator(&self, row: usize) -> bool {
         let member = |entry: Option<&FlatEntry>| {
             matches!(entry, Some(FlatEntry::Row(_) | FlatEntry::Ghost(_)))
         };
-        member(self.flat_layout.get(row)) && member(self.flat_layout.get(row + 1))
+        if self.sidebar {
+            member(self.flat_layout.get(row)) && member(self.flat_layout.get(row + 1))
+        } else {
+            member(self.flat_layout.get(row)) && row + 1 < self.flat_layout.len()
+        }
     }
 
     /// `id`'s flat index — linear, row lookups are short.
@@ -1044,10 +1065,10 @@ impl fmt::Debug for RowPayload {
     }
 }
 
-/// Whether `metadata` carries an explicit animation — the `setEditing` /
+/// Whether the change names an explicit animation — the `setEditing` /
 /// reload animation switches read it.
 fn metadata_animated(metadata: &Metadata) -> bool {
-    metadata.try_get::<Animation>().is_some()
+    ChangeAnimation::of(metadata).animation().is_some()
 }
 
 /// Coalesced `contents` notifications: each watch event records the newest
@@ -1275,7 +1296,7 @@ fn apply_binding_selection(state: &Rc<RefCell<Shared>>, table: &TableView) {
         return;
     }
     borrowed.applying_selection.set(true);
-    let selected = borrowed.selection.selected_ids();
+    let selected = borrowed.selected_flats();
     #[cfg(target_os = "ios")]
     {
         let current: HashSet<usize> = table
@@ -1286,10 +1307,7 @@ fn apply_binding_selection(state: &Rc<RefCell<Shared>>, table: &TableView) {
                 _ => None,
             })
             .collect();
-        let wanted: HashSet<usize> = selected
-            .iter()
-            .filter_map(|id| borrowed.flat_of_id(*id))
-            .collect();
+        let wanted: HashSet<usize> = selected.into_iter().collect();
         for flat in &current {
             if !wanted.contains(flat)
                 && let Some((section, row)) = borrowed.display_index_of(DisplayRow::Live(*flat))
@@ -1308,8 +1326,7 @@ fn apply_binding_selection(state: &Rc<RefCell<Shared>>, table: &TableView) {
     #[cfg(target_os = "macos")]
     {
         let wanted: Vec<usize> = selected
-            .iter()
-            .filter_map(|id| borrowed.flat_of_id(*id))
+            .into_iter()
             .filter_map(|flat| {
                 borrowed
                     .flat_layout
@@ -1368,10 +1385,13 @@ fn watch_deletable(
 #[cfg(target_os = "ios")]
 fn update_separator_insets(cell: &TableCell) {
     let content_view = cell.contentView();
-    let leaf = leftmost_text_x(&content_view).or_else(|| leftmost_content_x(&content_view));
-    let leading = leaf.map_or(0.0, |view| {
-        view::convert_point(&view, cocoa_ui::geometry::Point::new(0.0, 0.0), cell).x
-    });
+    let leading = leftmost_text_x(&content_view, cell)
+        .or_else(|| {
+            leftmost_content_x(&content_view).map(|view| {
+                view::convert_point(&view, cocoa_ui::geometry::Point::new(0.0, 0.0), cell).x
+            })
+        })
+        .unwrap_or(0.0);
     cell.set_separator_inset(KitInsets {
         top: 0.0,
         left: leading,
@@ -1380,23 +1400,27 @@ fn update_separator_insets(cell: &TableCell) {
     });
 }
 
-/// `leftmostTextX`: the first subview chain that lands on a kit text view
-/// — the label classes — and the view it ends on.
-#[cfg(target_os = "ios")]
-fn leftmost_text_x(view: &cocoa_ui::PlatformView) -> Option<Retained<cocoa_ui::PlatformView>> {
-    for subview in view::subviews(view) {
-        let name = view::class_name(&subview);
-        if matches!(
-            name,
-            "CocoaUiLabel" | "CocoaUiTextField" | "CocoaUiSecureTextField"
-        ) {
-            return Some(subview);
-        }
-        if let Some(found) = leftmost_text_x(&subview) {
-            return Some(found);
-        }
-    }
-    None
+/// `leftmostTextX`: the leading x, in `space`'s coordinates, of the kit
+/// text view — the label and field classes — furthest toward the leading
+/// edge anywhere under `view`. Every text in the row competes, not the
+/// first one the walk meets: a title indented behind an icon does not
+/// pull the separator past detail lines that start at the content edge.
+fn leftmost_text_x(view: &cocoa_ui::PlatformView, space: &cocoa_ui::PlatformView) -> Option<f64> {
+    view::subviews(view)
+        .iter()
+        .filter_map(|subview| {
+            if matches!(
+                view::class_name(subview),
+                "CocoaUiLabel" | "CocoaUiTextField" | "CocoaUiSecureTextField"
+            ) {
+                Some(
+                    view::convert_point(subview, cocoa_ui::geometry::Point::new(0.0, 0.0), space).x,
+                )
+            } else {
+                leftmost_text_x(subview, space)
+            }
+        })
+        .reduce(f64::min)
 }
 
 /// `leftmostContentX`: the same walk restricted to `WaterUI.`/`CocoaUi`
@@ -1429,6 +1453,14 @@ impl fmt::Debug for ListSubView {
 }
 
 impl SubView for ListSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     #[expect(
         clippy::cast_possible_truncation,
         reason = "kit geometry is f64; layout proposals are f32"
@@ -1527,7 +1559,8 @@ mod platform_impl {
                     move |_mtm| table.apply_row_updates(&[], &[], &[], &[], false),
                 );
             }
-            proposal::deliver(child.view(), Placement::platform_hosted(proposal));
+            let placement = row_content_placement(proposal, &self.state.borrow().env);
+            proposal::deliver(child.view(), placement);
             update_separator_insets(cell);
         }
     }
@@ -1572,8 +1605,9 @@ mod platform_impl {
             return;
         };
         // A `.disabled` row is inert — accessibility activation must not
-        // select it, the way a pointer press must not.
-        if state.borrow().row_disabled(flat) {
+        // select it, the way a pointer press must not — and a row without a
+        // tag is not selectable at all.
+        if !state.borrow().row_selectable(flat) {
             return;
         }
         if selected.contains(&flat) {
@@ -1797,9 +1831,32 @@ mod platform_impl {
             // Navigation owns the first scroll surface's top spacing. Later
             // independent lists keep the inset-grouped anonymous-section reserve.
             if is_navigation_scroll_surface(table) {
-                table.set_section_header_top_padding(0.0);
+                // A nil `tableHeaderView` leaves ~1 pt above the first card
+                // that the suppressed section header cannot reclaim —
+                // install a near-zero-height one, once, on the next
+                // main-queue turn so this callback stays read-only (#3913).
+                if !self.state.borrow().nav_header_applied.replace(true) {
+                    let weak = cocoa_ui::objc2::rc::Weak::new(table);
+                    cocoa_ui::main_queue::enqueue_local(
+                        cocoa_ui::MainThreadMarker::new()
+                            .expect("header reserve reclaim runs on the main thread"),
+                        move |mtm| {
+                            let Some(table) = weak.load() else {
+                                return;
+                            };
+                            let header = cocoa_ui::objc2_ui_kit::UIView::new(mtm);
+                            cocoa_ui::view::set_frame(
+                                &header,
+                                cocoa_ui::Rect::new(0.0, 0.0, 0.0, f64::MIN_POSITIVE),
+                            );
+                            table.set_table_header_view(&header);
+                        },
+                    );
+                }
                 // Grouped tables interpret zero as their default header height.
                 // The least positive native height suppresses the header instead.
+                // (`sectionHeaderTopPadding` only applies to `.plain` tables —
+                // it is a no-op here.)
                 f64::MIN_POSITIVE
             } else {
                 35.0
@@ -1884,7 +1941,7 @@ mod platform_impl {
         fn should_select(&self, _table: &TableView, index: IndexPath) -> bool {
             let state = self.state.borrow();
             match state.display_at(index.section, index.row) {
-                Some(DisplayRow::Live(flat)) => !state.row_disabled(flat),
+                Some(DisplayRow::Live(flat)) => state.row_selectable(flat),
                 _ => false,
             }
         }
@@ -1896,9 +1953,8 @@ mod platform_impl {
                 return;
             };
             let state = self.state.borrow();
-            if let Some(&id) = state.item_ids.get(flat)
-                && state.selection.allows_multiple()
-                && state.selection.selected_ids().contains(&id)
+            if state.selection.allows_multiple()
+                && state.row_selected(flat, &state.selection.selected_tags())
             {
                 table.deselect_row(index, false);
             }
@@ -1949,17 +2005,12 @@ mod platform_impl {
             }
         }
 
-        /// A `ResolvedFont` as an `AppKit` font: the system face at the
-        /// resolved size and weight.
+        /// A `ResolvedFont` as an `AppKit` font.
         fn platform_font(
             &self,
             resolved: &waterui::text::font::ResolvedFont,
         ) -> Retained<cocoa_ui::Font> {
-            cocoa_ui::font::system(
-                self.mtm,
-                f64::from(resolved.size()),
-                platform_weight(resolved.weight()),
-            )
+            crate::components::font::platform_font(self.mtm, resolved, false)
         }
 
         /// Builds a section band view for `signal`, styled muted +
@@ -2027,19 +2078,23 @@ mod platform_impl {
             // deliver that width, again on every layout pass, so a
             // proposal-driven child tracks its true slot across
             // resizes and the button's appearance.
-            container.set_layout_handler(move |container| {
-                let Some(content) = container.content() else {
-                    return;
-                };
-                let width = view::bounds(&content).size.width;
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "kit geometry is f64; layout proposals are f32"
-                )]
-                proposal::deliver(
-                    &content,
-                    Placement::platform_hosted(ProposalSize::new(Some(width as f32), None)),
-                );
+            let env = self.state.borrow().env.clone();
+            container.set_layout_handler({
+                let env = env.clone();
+                move |container| {
+                    let Some(content) = container.content() else {
+                        return;
+                    };
+                    let width = view::bounds(&content).size.width;
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "kit geometry is f64; layout proposals are f32"
+                    )]
+                    proposal::deliver(
+                        &content,
+                        row_content_placement(ProposalSize::new(Some(width as f32), None), &env),
+                    );
+                }
             });
             #[expect(
                 clippy::cast_possible_truncation,
@@ -2047,7 +2102,7 @@ mod platform_impl {
             )]
             proposal::deliver(
                 child.view(),
-                Placement::platform_hosted(ProposalSize::new(Some(width as f32), None)),
+                row_content_placement(ProposalSize::new(Some(width as f32), None), &env),
             );
             let cell_row = Rc::new(RefCell::new(Some(child)));
             self.state
@@ -2062,12 +2117,19 @@ mod platform_impl {
             view::retain_base(&*container)
         }
 
+        /// A section band: the platform list's group row for a header (a
+        /// sidebar keeps the source list's).
         fn band_view(
             &self,
             kind: SectionKind,
             signal: &Computed<StyledStr>,
         ) -> Retained<cocoa_ui::PlatformView> {
-            let band = SectionHeader::new(self.mtm, kind);
+            let group_row = kind == SectionKind::Header && !self.state.borrow().sidebar;
+            let band = if group_row {
+                SectionHeader::group_row(self.mtm)
+            } else {
+                SectionHeader::new(self.mtm, kind)
+            };
             let weak = cocoa_ui::objc2::rc::Weak::from_retained(&band);
             let apply = move |styled: &StyledStr| {
                 let Some(band) = weak.load() else {
@@ -2090,15 +2152,20 @@ mod platform_impl {
                 band.set_text_color(&Self::platform_color(ctx.value()));
             });
 
-            let font = match kind {
-                SectionKind::Header => waterui::text::font::Caption
-                    .resolve(&self.state.borrow().env)
-                    .snapshot(),
-                SectionKind::Footer => waterui::text::font::Footnote
-                    .resolve(&self.state.borrow().env)
-                    .snapshot(),
-            };
-            band.set_font(&self.platform_font(&font));
+            // The platform list's group row carries its own bold small
+            // system font (`SectionHeader::group_row`); the sidebar and
+            // footers take the caption/footnote tokens.
+            if !group_row {
+                let font = match kind {
+                    SectionKind::Header => waterui::text::font::Caption
+                        .resolve(&self.state.borrow().env)
+                        .snapshot(),
+                    SectionKind::Footer => waterui::text::font::Footnote
+                        .resolve(&self.state.borrow().env)
+                        .snapshot(),
+                };
+                band.set_font(&self.platform_font(&font));
+            }
             let guards: Vec<BoxWatcherGuard> = vec![Box::new(text_guard), Box::new(color_guard)];
             band.set_payload(Box::new(guards));
             view::retain_base(&*band)
@@ -2165,6 +2232,7 @@ mod platform_impl {
                         .and_then(|group| group.footer.clone());
                     signal.map(|signal| self.band_view(SectionKind::Footer, &signal))
                 }
+                FlatEntry::Spacer => None,
                 FlatEntry::Ghost(key) => {
                     let container = RowContainer::new(self.mtm);
                     {
@@ -2182,23 +2250,31 @@ mod platform_impl {
         }
 
         fn row_view(&self, _table: &TableView, row: usize) -> Option<Retained<TableRowView>> {
-            let shows_separator = {
+            let (shows_separator, group_row) = {
                 let state = self.state.borrow();
                 let entry = *state.flat_layout.get(row)?;
-                if !matches!(entry, FlatEntry::Row(_) | FlatEntry::Ghost(_)) {
+                // The platform list hairlines the group row band under a
+                // section header; a sidebar's bands and footers draw none.
+                let group_row = matches!(entry, FlatEntry::Header(_)) && !state.sidebar;
+                if !group_row && !matches!(entry, FlatEntry::Row(_) | FlatEntry::Ghost(_)) {
                     return None;
                 }
-                state.shows_separator(row)
+                (group_row || state.shows_separator(row), group_row)
             };
             let row_view = TableRowView::new(self.mtm);
             row_view.set_shows_separator(shows_separator);
-            row_view.set_separator_handler(Some(Rc::new(|row_view| {
+            row_view.set_separator_handler(Some(Rc::new(move |row_view| {
+                if group_row {
+                    // A group row band separates edge to edge of the
+                    // content, 16 pt in from both sides.
+                    return (16.0, 16.0);
+                }
                 // `resolvedSeparatorLeading`: the leftmost text x inside
                 // the row's cell view — 16 + the insets' surplus over the
                 // row-content inset.
                 let leading = view::subviews(row_view)
                     .first()
-                    .and_then(|cell| leftmost_text_x_appkit(cell))
+                    .and_then(|cell| leftmost_text_x(cell, cell))
                     .map_or(16.0, |x| 16.0 + (x - 10.0).max(0.0));
                 (leading, 16.0)
             })));
@@ -2209,8 +2285,12 @@ mod platform_impl {
             let (flat, id, insets) = {
                 let state = self.state.borrow();
                 match state.flat_layout.get(row) {
+                    Some(FlatEntry::Header(_)) if !state.sidebar => {
+                        return SectionHeader::GROUP_ROW_HEIGHT;
+                    }
                     Some(FlatEntry::Header(_)) => return 38.0,
                     Some(FlatEntry::Footer(_)) => return 32.0,
+                    Some(FlatEntry::Spacer) => return TableView::TOP_GAP,
                     Some(FlatEntry::Ghost(key)) => {
                         return state.ghosts.get(key).map_or(30.0, |(_, height)| *height);
                     }
@@ -2251,7 +2331,14 @@ mod platform_impl {
         fn is_group_row(&self, _table: &TableView, row: usize) -> bool {
             !matches!(
                 self.state.borrow().flat_layout.get(row),
-                Some(FlatEntry::Row(_) | FlatEntry::Ghost(_))
+                Some(FlatEntry::Row(_) | FlatEntry::Ghost(_) | FlatEntry::Spacer)
+            )
+        }
+
+        fn is_accessibility_element(&self, _table: &TableView, row: usize) -> bool {
+            !matches!(
+                self.state.borrow().flat_layout.get(row),
+                Some(FlatEntry::Spacer)
             )
         }
 
@@ -2259,7 +2346,7 @@ mod platform_impl {
             let state = self.state.borrow();
             state.selection.allows_selection()
                 && match state.flat_layout.get(row) {
-                    Some(&FlatEntry::Row(flat)) => !state.row_disabled(flat),
+                    Some(&FlatEntry::Row(flat)) => state.row_selectable(flat),
                     _ => false,
                 }
         }
@@ -2324,43 +2411,6 @@ mod platform_impl {
             true
         }
     }
-
-    /// `AppKit`'s `leftmostTextX` — the separator leading guide reads the
-    /// leftmost text-bearing view inside the cell view.
-    fn leftmost_text_x_appkit(view: &cocoa_ui::PlatformView) -> Option<f64> {
-        for subview in view::subviews(view) {
-            let name = view::class_name(&subview);
-            if matches!(
-                name,
-                "CocoaUiLabel" | "CocoaUiTextField" | "CocoaUiSecureTextField"
-            ) {
-                return Some(view::frame(&subview).origin.x);
-            }
-            if let Some(found) = leftmost_text_x_appkit(&subview) {
-                return Some(found + view::frame(&subview).origin.x);
-            }
-        }
-        None
-    }
-}
-
-/// Maps a `FontWeight` to the kit's weight scale — the same table
-/// `date_picker` uses.
-#[cfg(target_os = "macos")]
-const fn platform_weight(weight: waterui::text::font::FontWeight) -> f64 {
-    use cocoa_ui::font::weight;
-    use waterui::text::font::FontWeight;
-    match weight {
-        FontWeight::Thin => weight::THIN,
-        FontWeight::UltraLight => weight::ULTRA_LIGHT,
-        FontWeight::Light => weight::LIGHT,
-        FontWeight::Normal => weight::REGULAR,
-        FontWeight::Medium => weight::MEDIUM,
-        FontWeight::SemiBold => weight::SEMI_BOLD,
-        FontWeight::Bold => weight::BOLD,
-        FontWeight::UltraBold => weight::HEAVY,
-        FontWeight::Black => weight::BLACK,
-    }
 }
 
 /// Closes an animated request's distance to the approach bound before
@@ -2423,23 +2473,23 @@ fn wire_controller(
         #[cfg(target_os = "ios")]
         let target = state
             .borrow()
-            .display_index_of(DisplayRow::Live(request.target))
+            .display_index_of(DisplayRow::Live(*request.target()))
             .map(|(section, row)| IndexPath { section, row });
         #[cfg(target_os = "macos")]
         let target = state
             .borrow()
             .flat_layout
             .iter()
-            .position(|entry| *entry == FlatEntry::Row(request.target));
+            .position(|entry| *entry == FlatEntry::Row(*request.target()));
         let Some(target) = target else {
             return;
         };
         #[cfg(target_os = "ios")]
         table.layout_if_needed();
-        if request.animation.is_some() {
-            approach(state, table, request.target);
+        if request.animation().is_some() {
+            approach(state, table, *request.target());
         }
-        match request.animation.as_ref() {
+        match request.animation().as_ref() {
             #[cfg(target_os = "ios")]
             None => table.scroll_to_row(target, false),
             #[cfg(target_os = "ios")]
@@ -2534,20 +2584,25 @@ fn render(mut config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
         groups: Vec::new(),
         #[cfg(target_os = "macos")]
         flat_layout: Vec::new(),
+        #[cfg(target_os = "macos")]
+        sidebar: table.is_sidebar(),
         selection: match &config.selection() {
             ListSelection::None => SelectionMode::None,
             ListSelection::Single(binding) => SelectionMode::Single(binding.clone()),
             ListSelection::Multiple(binding) => SelectionMode::Multiple(binding.clone()),
         },
+        tags: config.row_tags().clone(),
         applying_selection: Cell::new(false),
         #[cfg(target_os = "macos")]
         editing: config.editing().clone(),
         on_delete: config.take_on_delete(),
         on_move: config.take_on_move(),
-        uses_sections: config.uses_sections(),
+        sections: config.sections().clone(),
         #[cfg(target_os = "macos")]
         theme_insets,
         resolved_min_height: min_row_height(config.min_row_height(), stock_height),
+        #[cfg(target_os = "ios")]
+        nav_header_applied: Cell::new(false),
         measured_heights: HashMap::new(),
         disabled_rows: RefCell::new(HashMap::new()),
     }));

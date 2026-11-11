@@ -36,6 +36,7 @@ use core::time::Duration;
 use std::cell::RefCell;
 use std::time::Instant;
 
+use cherenkov_record::{Draw, Recorder};
 use waterui::component::text;
 use waterui::prelude::{Color, ContextMenu};
 use waterui::shape::RoundedRectangle;
@@ -44,9 +45,9 @@ use waterui_controls::button::button;
 use waterui_controls::menu::CommandExt as _;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
-use waterui_graphics::draw::{Draw, Recorder};
+use waterui_graphics::backend::{RecordingResources, SceneContent};
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
-use waterui_graphics::{GpuContent, GpuContentView, RecordingResources, SceneContent};
+use waterui_graphics::{GpuContent, GpuContentView};
 use waterui_layout::frame::Frame;
 use waterui_layout::scroll::scroll;
 use waterui_layout::stack::{VStack, vstack};
@@ -115,10 +116,7 @@ fn secondary_click(x: f32, y: f32) -> [InputEvent; 2] {
 }
 
 fn runtime_with(view: impl View) -> HeadlessRuntime {
-    runtime_with_on(
-        view,
-        crate::platform::OffscreenGpuContext::new_for_tests_blocking(),
-    )
+    runtime_with_on(view, crate::platform::OffscreenGpuContext::new_blocking())
 }
 
 fn runtime_with_on(view: impl View, gpu: crate::platform::OffscreenGpuContext) -> HeadlessRuntime {
@@ -203,7 +201,7 @@ fn nested_clip_blend_opacity_counts() {
 /// alive on the pane: releasing it unregisters the image under a recording
 /// that still names it.
 struct ImagePane {
-    image: Option<waterui_graphics::Registered<waterui_graphics::draw::ImageId>>,
+    image: Option<waterui_graphics::backend::Registered<cherenkov_record::ImageId>>,
 }
 
 impl SceneContent for ImagePane {
@@ -214,8 +212,8 @@ impl SceneContent for ImagePane {
         _width: f32,
         _height: f32,
     ) -> bool {
+        use cherenkov_record::{Extend, ImagePattern, Paint, Sampling};
         use kurbo::Affine;
-        use waterui_graphics::draw::{Extend, ImagePattern, Paint, Sampling};
 
         if self.image.is_none() {
             self.image = Some(
@@ -253,7 +251,11 @@ impl SceneContent for ImagePane {
         false
     }
 
-    fn set_invalidator(&mut self, _invalidator: Option<waterui_graphics::SceneInvalidator>) {}
+    fn set_invalidator(
+        &mut self,
+        _invalidator: Option<waterui_graphics::backend::SceneInvalidator>,
+    ) {
+    }
 
     fn rebuild_for_engine(&mut self) {
         self.image = None;
@@ -262,20 +264,22 @@ impl SceneContent for ImagePane {
 
 /// An opaque red image — semitransparent fixtures read back white over the
 /// window's white clear, so the probe must be opaque to be detectable.
-fn solid_image() -> waterui_graphics::ImageData<waterui_graphics::Rgba8> {
+fn solid_image() -> waterui_graphics::backend::ImageData<waterui_graphics::backend::Rgba8> {
     let mut data = vec![0xFFu8; 16 * 16 * 4];
     for px in data.as_chunks_mut::<4>().0 {
         px[1] = 0x00;
         px[2] = 0x00;
     }
-    waterui_graphics::ImageData::new(16, 16, std::sync::Arc::<[u8]>::from(data))
+    waterui_graphics::backend::ImageData::new(16, 16, std::sync::Arc::<[u8]>::from(data))
         .expect("a well-formed Rgba8 image")
         .premultiplied()
 }
 
 #[test]
 fn transformed_image_brushes_count() {
-    let mut runtime = runtime_with(waterui_graphics::SceneView::new(ImagePane { image: None }));
+    let mut runtime = runtime_with(waterui_graphics::backend::SceneView::new(ImagePane {
+        image: None,
+    }));
     let mut frames = Frames::new();
     let (counters, snapshot) = frames.render(&mut runtime);
     let m = counters.frame_work();

@@ -99,11 +99,11 @@ pub const fn encode_mount<const N: usize>(
 pub struct MountPoint {
     /// The module id: the `.tsx` path relative to the crate's manifest
     /// directory, forward-slashed, extension kept.
-    pub module: String,
+    module: String,
     /// The name of the props struct the module is typed against.
-    pub props: String,
+    props: String,
     /// The props contract hash, which the bundle's manifest must match.
-    pub contract_hash: u64,
+    contract_hash: u64,
 }
 
 impl MountPoint {

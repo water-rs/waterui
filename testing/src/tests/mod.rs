@@ -1,4 +1,6 @@
+mod canvas;
 mod harness;
+mod shape_morph;
 mod transitions;
 
 use super::*;
@@ -15,15 +17,18 @@ use accesskit::{
 use hydrolysis::InputEvent;
 use waterui::Binding;
 use waterui::ViewExt as _;
+use waterui::accessibility::AccessibilityGeometry;
 use waterui::component::list::{List, ListItem};
 use waterui::component::{text, vstack};
+use waterui::graphics::WorkingColor;
+use waterui::graphics::backend::draw::{self, Draw as _, Recorder};
+use waterui::graphics::backend::{
+    RecordingResources, SceneContent, SceneView, SceneViewMergeToParent,
+};
+use waterui::graphics::canvas::Canvas;
 use waterui::graphics::color::Srgb;
-use waterui::graphics::draw::{self, Draw as _, Recorder, kurbo};
-use waterui::graphics::scene_view::SceneViewMergeToParent;
-use waterui::graphics::{RecordingResources, SceneContent, SceneView, WorkingColor};
 use waterui::layout::scroll::ScrollView;
 use waterui::text::Text;
-use waterui_canvas::Canvas;
 use waterui_core::layout::{Point, Rect, Size};
 use waterui_core::{AnyView, ContentLedger, Native, Signal, View};
 
@@ -292,22 +297,22 @@ mod token_probe {
     use std::time::Duration;
 
     use hydrolysis::theme::{
-        BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion,
-        ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle,
-        ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
-        SliderValueIndicatorMetrics, StepperEnd, StepperMetrics, TabItemGeometry, TabItemLayout,
-        TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
-        WidgetInteractionState, WidgetTheme,
+        BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, DividerMetrics, DragMapping,
+        FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionMotion, Knob,
+        Label, LinearProgressLook, ListMetrics, Motion, NavigationMetrics, NavigationMotion,
+        PickerMetrics, PressFeedback, ProgressControl, ProgressSpec, RadioIndicatorState,
+        RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook,
+        StepperSpec, Surface, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics,
+        TextCaretMotion, TextContextMenuMetrics, ToggleSpec, WidgetInteractionState, WidgetTheme,
     };
-    use kurbo::{BezPath, Point, Rect};
+    use hydrolysis::theme::{CheckboxLook, SwitchDrag, SwitchLook};
+    use kurbo::{Point, Rect};
     use waterui::animation::Animation;
     use waterui::color::Srgb;
     use waterui::component::text;
-    use waterui::component::toggle::ToggleStyle;
-    use waterui::component::{ControlSize, button::ButtonStyle};
     use waterui::env::use_env;
     use waterui::form::picker::PickerStyle;
-    use waterui::graphics::draw::{Paint, Recorder};
+    use waterui::graphics::backend::draw::{Paint, Recorder};
     use waterui::reactive::constant;
     use waterui::text::font::Font;
     use waterui::theme::{color as theme_color, install_color_signal, installed_color_signal};
@@ -370,28 +375,6 @@ mod token_probe {
             }
         }
 
-        fn progress_motion(&self) -> ProgressMotion {
-            ProgressMotion {
-                linear_determinate: Animation::bezier(
-                    Duration::from_millis(250),
-                    0.4,
-                    0.0,
-                    0.6,
-                    1.0,
-                ),
-                circular_determinate: Animation::bezier(
-                    Duration::from_millis(500),
-                    0.0,
-                    0.0,
-                    0.2,
-                    1.0,
-                ),
-                linear_indeterminate_cycle: Duration::from_secs(2),
-                loading_cycle: Duration::from_millis(4_666),
-                circular_indeterminate_cycle: Duration::from_millis(5_332),
-            }
-        }
-
         fn text_caret_motion(&self) -> TextCaretMotion {
             TextCaretMotion {
                 fade_cycle_duration: Duration::from_millis(1_060),
@@ -409,76 +392,35 @@ mod token_probe {
             }
         }
 
-        fn button_metrics(&self, _style: ButtonStyle, _size: ControlSize) -> ButtonMetrics {
-            ButtonMetrics {
-                padding_x: 1.0,
-                padding_y: 2.0,
-                min_width: 123.0,
-                min_height: 45.0,
-            }
+        fn button(&self, _spec: &ButtonSpec, _env: &Environment) -> ButtonLook {
+            let chrome = Chrome::new(
+                Surface::clear(CornerShape::radius(0.0)),
+                StateLayer::new(Color::new(theme_color::Foreground)),
+                PressFeedback::new(),
+                FocusIndicator::Tint,
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            )
+            // The theme's `touch_delay`.
+            .hit(HitRegion::NONE.press_delay(Duration::from_millis(150)));
+            ButtonLook::new(chrome, Label::new())
+                .padding(1.0, 2.0)
+                .minimum_size(kurbo::Size::new(123.0, 45.0))
         }
 
-        fn draw_button_chrome(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _style: ButtonStyle,
-            _icon_only: bool,
-            _state: WidgetInteractionState,
-        ) {
+        fn switch(&self, spec: &ToggleSpec, _env: &Environment) -> SwitchLook {
+            SwitchLook::new(
+                hydrolysis::testing::plain_toggle_control(),
+                SwitchDrag::new(6.0, spec.direction()),
+            )
         }
 
-        fn toggle_metrics(&self, _style: ToggleStyle) -> ToggleMetrics {
-            ToggleMetrics {
-                width: 10.0,
-                height: 20.0,
-                label_spacing: 3.0,
-            }
+        fn checkbox(&self, _spec: &ToggleSpec, _env: &Environment) -> CheckboxLook {
+            CheckboxLook::new(hydrolysis::testing::plain_toggle_control())
         }
 
-        fn toggle_value_animation(&self) -> Animation {
-            Animation::linear(Duration::from_millis(100))
+        fn stepper(&self, _spec: &StepperSpec, _env: &Environment) -> StepperLook {
+            hydrolysis::testing::plain_stepper_look()
         }
-
-        fn draw_toggle_switch(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _progress: f32,
-            _selected: bool,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn draw_toggle_checkbox(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _progress: f32,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn stepper_metrics(&self) -> StepperMetrics {
-            StepperMetrics {
-                button_min_size: 12.0,
-                button_max_size: 18.0,
-                button_intrinsic_size: 14.0,
-                button_spacing: 4.0,
-                label_spacing: 8.0,
-            }
-        }
-
-        fn draw_stepper_button(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _end: StepperEnd,
-            _state: WidgetInteractionState,
-        ) {
-        }
-        fn draw_stepper_decrement_icon(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_stepper_increment_icon(&self, _recorder: &mut Recorder, _bounds: Rect) {}
 
         fn input_field_metrics(&self) -> InputFieldMetrics {
             InputFieldMetrics {
@@ -577,130 +519,49 @@ mod token_probe {
         ) {
         }
 
-        fn slider_metrics(&self, _size: ControlSize) -> SliderMetrics {
-            SliderMetrics {
-                horizontal_inset: 12.0,
-                horizontal_spacing: 8.0,
-                vertical_spacing: 6.0,
-                min_track_width: 72.0,
-                track_height: 6.0,
-                handle_width: 4.0,
-                handle_height: 44.0,
-            }
-        }
-
-        fn draw_slider_track(
-            &self,
-            _recorder: &mut Recorder,
-            _track_rect: Rect,
-            _fill_rect: Rect,
-            _size: ControlSize,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn draw_slider_thumb(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _size: ControlSize,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn slider_value_indicator_metrics(&self) -> SliderValueIndicatorMetrics {
-            SliderValueIndicatorMetrics::new(8.0, 4.0, 4.0, 0.0, 0.0)
-        }
-
-        fn slider_value_indicator_color(&self) -> Color {
-            Color::srgb(255, 255, 255)
-        }
-
-        fn slider_value_indicator_font(&self) -> Font {
-            Font::default()
-        }
-
-        fn draw_slider_value_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics {
-            match style {
-                ProgressIndicatorStyle::Loading => ProgressMetrics::loading(48.0, 38.0),
-                ProgressIndicatorStyle::Linear => ProgressMetrics {
-                    label_height: 18.0,
-                    bar_top_offset: 10.0,
-                    bar_height: 8.0,
-                    bar_horizontal_inset: 8.0,
-                    value_label_top_spacing: 6.0,
-                    min_track_width: 72.0,
-                    circular_diameter: 0.0,
-                    circular_stroke_width: 0.0,
-                    loading_indicator_size: 0.0,
+        fn slider(&self, _spec: &SliderSpec, _env: &Environment) -> SliderLook {
+            SliderLook::new(
+                SliderLayout {
+                    row_height: 44.0,
+                    track_inset: 12.0,
+                    label_inset: 12.0,
+                    label_gap: 8.0,
+                    minimum_track: 72.0,
+                    label_spacing: Some(6.0),
                 },
-                ProgressIndicatorStyle::Circular => ProgressMetrics {
-                    label_height: 0.0,
-                    bar_top_offset: 0.0,
-                    bar_height: 0.0,
-                    bar_horizontal_inset: 0.0,
-                    value_label_top_spacing: 0.0,
-                    min_track_width: 0.0,
-                    circular_diameter: 32.0,
-                    circular_stroke_width: 5.0,
-                    loading_indicator_size: 0.0,
+                Knob {
+                    size: kurbo::Size::new(4.0, 44.0),
+                    hit: HitRegion::NONE,
                 },
-            }
+                DragMapping::Absolute,
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            )
         }
 
-        fn draw_progress_linear_track(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _active_end: Option<f64>,
-        ) {
-        }
-        fn draw_progress_linear_fill(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_progress_linear_indeterminate(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _elapsed: Duration,
-            _four_color: bool,
-        ) {
-        }
-        fn draw_progress_circular_track(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _width: f64,
-            _active_turns: Option<f64>,
-        ) {
-        }
-        fn draw_progress_circular_fill(
-            &self,
-            _recorder: &mut Recorder,
-            _path: &BezPath,
-            _width: f64,
-        ) {
-        }
-        fn draw_progress_loading(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _elapsed: Duration,
-            _four_color: bool,
-        ) {
+        fn linear_progress(&self, _spec: &ProgressSpec, _env: &Environment) -> LinearProgressLook {
+            LinearProgressLook::new(
+                ProgressControl::new(
+                    kurbo::Size::new(72.0, 8.0),
+                    Motion::uniform(Animation::linear(Duration::from_millis(15))),
+                ),
+                8.0,
+            )
+            .label_band(18.0, 10.0)
+            .value_label_band(6.0)
         }
 
-        fn draw_progress_circular_indeterminate(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _width: f64,
-            _elapsed: Duration,
-            _four_color: bool,
-        ) {
+        fn circular_progress(&self, _spec: &ProgressSpec, _env: &Environment) -> IndicatorLook {
+            IndicatorLook::new(ProgressControl::new(
+                kurbo::Size::new(32.0, 32.0),
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            ))
+        }
+
+        fn loading_indicator(&self, _spec: &ProgressSpec, _env: &Environment) -> IndicatorLook {
+            IndicatorLook::new(ProgressControl::new(
+                kurbo::Size::new(48.0, 48.0),
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            ))
         }
 
         fn navigation_metrics(&self) -> NavigationMetrics {
@@ -857,13 +718,18 @@ fn styled_semantic_mount_installs_style_tokens_over_framework_defaults() {
 }
 
 /// `UiBuilder<Styled<S>>::mount_app` honours the builder's viewport and scale
-/// factor over the window's declared frame: the full-window content reports
+/// factor over the window's declared frame: the window content is allocated
 /// `320x240` logical points — not the `800x600` `Window::new` declares — and
 /// the scale factor stays a capture concern, so bounds read back in logical
-/// points.
+/// points. A text root reports its centred response by default
+/// (`docs/layout-spec.md` §6), so the label names its allocation (§7.2) to
+/// report the frame the mount assigned.
 #[test]
 fn styled_builder_mount_app_mounts_at_the_builder_viewport() {
-    let app = waterui::app::App::new(|| text("app content").body(), waterui::Environment::new());
+    let app = waterui::app::App::new(
+        || text("app content").a11y_geometry(AccessibilityGeometry::Allocation),
+        waterui::Environment::new(),
+    );
     let mut app = ui()
         .theme(token_probe::TokenProbeStyle)
         .viewport(320, 240)
@@ -875,10 +741,15 @@ fn styled_builder_mount_app_mounts_at_the_builder_viewport() {
 
 /// The free `mount_app(app, style)` convenience is the builder form with the
 /// viewport sized from the window's declared frame — `Window::new`'s default
-/// `800x600` here, not the builder's `390x844` default.
+/// `800x600` here, not the builder's `390x844` default. The label names its
+/// allocation (`docs/layout-spec.md` §7.2) so it reports that frame rather
+/// than the text's centred response.
 #[test]
 fn free_mount_app_mounts_at_the_window_frame() {
-    let app = waterui::app::App::new(|| text("app content").body(), waterui::Environment::new());
+    let app = waterui::app::App::new(
+        || text("app content").a11y_geometry(AccessibilityGeometry::Allocation),
+        waterui::Environment::new(),
+    );
     let mut app = mount_app(app, token_probe::TokenProbeStyle);
     let bounds = app.query().role(Role::LABEL).single().bounds();
     assert_eq!(bounds, NodeBounds::new(0.0, 0.0, 800.0, 600.0));
@@ -1084,16 +955,18 @@ fn tappable_composed_view_exposes_clickable_accessibility_node() {
         .assert_not_exists();
 }
 
-/// A `Canvas` composes to `SceneView`, whose accessibility metadata is a
+/// A `Canvas` composes to `CanvasView`, whose accessibility metadata is a
 /// product of the view tree — the IMAGE role and its label exist on the
 /// semantic pipeline with nothing rendered.
 #[test]
 fn canvas_and_text_expose_accessibility_nodes_semantically() {
     let mut app = ui().viewport(320, 320).mount(|| {
         vstack((
-            Canvas::new(|ctx| {
-                ctx.set_fill_style(Srgb::new(0.0, 0.85, 0.65));
-                ctx.fill_rect(Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)));
+            Canvas::new(|cx| {
+                cx.fill(
+                    Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)),
+                    Srgb::new(0.0, 0.85, 0.65).resolve(),
+                );
             })
             .size(240.0, 180.0)
             .a11y_role(waterui::accessibility::AccessibilityRole::Image)
@@ -1426,6 +1299,36 @@ fn wait_for_frames_observes_the_pump_that_settled_the_runtime() {
 
     let motion = app.expect_exists(Selector::default().role(Role::IMAGE).label("Video content"));
     assert_eq!(app.wait_for_frames(&[motion], 60), WaitResult::Completed);
+}
+
+#[test]
+fn a_focus_only_update_keeps_the_tree() {
+    // An update without `tree` is incremental (water-rs/waterui#2940): a
+    // focus move carries no nodes, and the tree it lands on is unchanged.
+    let focus_move = AccessibilityTreeUpdate {
+        nodes: Vec::new(),
+        tree: None,
+        tree_id: AccessibilityTreeId::ROOT,
+        focus: AccessibilityNodeId(3),
+    };
+    let mut app = mounted_on(
+        EmitThenSettleDriver {
+            pumps: 0,
+            emit_at: 1,
+            update: focus_move,
+        },
+        tree(vec![
+            node(1, Role::LIST, Some("root"), None, true),
+            node(2, Role::BUTTON, Some("Save"), None, true),
+            node(3, Role::BUTTON, Some("Cancel"), None, true),
+        ]),
+    );
+
+    app.settle();
+
+    assert!(app.query().role(Role::BUTTON).label("Save").exists());
+    assert_eq!(app.tree.root, node_id(1));
+    assert_eq!(app.tree.focus, node_id(3));
 }
 
 #[test]

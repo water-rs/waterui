@@ -11,7 +11,7 @@ use crossbeam_channel::Receiver;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use cherenkov_record::Realize;
+use cherenkov_record::{ContentOp, Realize};
 
 use crate::backend::{
     Backend, Display, Frame, FrameRedraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
@@ -20,12 +20,12 @@ use crate::engine::{CompletionWaker, SurfaceWaker};
 use crate::error::{EngineError, ResourceError, SurfaceError, SurfaceRejection};
 use cherenkov_record::RefreshRange;
 
-use crate::frame::{FrameId, FrameStats, Next};
+use crate::frame::{FrameId, FrameStats, FrameTime, Next};
 use crate::image::ImageUpload;
 use cherenkov_record::ResourceId;
 use cherenkov_record::{BackdropShaderId, ChangeSet, LayerId, SurfaceId, SurfaceTree};
 
-use crate::message::{Message, RenderOutcome, RenderedFrame, ResOp};
+use crate::message::{Message, RenderOutcome, RenderedFrame, ResOp, SurfaceNext};
 use crate::paint::ImageId;
 use crate::{BackdropEffect, WorkingColor};
 
@@ -370,7 +370,16 @@ pub fn run<B: Backend>(
     let mut resources = Resources::<B>::default();
     let mut next_frame = 0u64;
     loop {
+        release_idle_due(&mut renderer);
+        // The renderer's idle-release deadline bounds the wait: the timer
+        // fires only while it retains something releasable, and `never`
+        // otherwise. A due deadline is applied by the next iteration's
+        // `release_idle_due`, whichever branch woke the loop.
+        let idle = renderer
+            .idle_release_deadline()
+            .map_or_else(crossbeam_channel::never, crossbeam_channel::at);
         crossbeam_channel::select! {
+            recv(idle) -> _ => {}
             recv(rx) -> message => {
                 // `rx`'s disconnect ends the loop as `recv()` failing
                 // did before the select.
@@ -396,6 +405,18 @@ pub fn run<B: Backend>(
                 }
                 drain_retire::<B>(retire_rx, &mut renderer);
             }
+        }
+    }
+}
+
+/// Hands the renderer its idle release when the deadline it reported has
+/// passed. Checked before every wait, so a stream of messages cannot
+/// postpone a release the timer alone would have made.
+fn release_idle_due<R: Renderer>(renderer: &mut R) {
+    if let Some(deadline) = renderer.idle_release_deadline() {
+        let now = crate::Instant::now();
+        if now >= deadline {
+            renderer.release_idle(now);
         }
     }
 }
@@ -428,6 +449,7 @@ fn apply_message<B: Backend>(
         }
         Message::Display { id, display } => set_display(surfaces, id, display),
         Message::DisplayMoved { id } => set_display_moved(surfaces, id),
+        Message::SetBand { id, window, target } => renderer.set_band(id, window, target),
         Message::Visibility { id, visibility } => {
             set_visibility::<B>(renderer, surfaces, id, visibility);
         }
@@ -454,7 +476,7 @@ fn apply_message<B: Backend>(
         } => {
             let id = FrameId(*next_frame);
             *next_frame += 1;
-            let result = render::<B>(renderer, surfaces, resources, id, time.0, &mut commits);
+            let result = render::<B>(renderer, surfaces, resources, id, time, &mut commits);
             // This frame's queued retirements belong to its batch.
             drain_retire::<B>(retire_rx, renderer);
             reply.send(crate::message::RenderReply { result, commits });
@@ -749,15 +771,27 @@ fn commit<B: Backend>(
     }
     state.content_animating = *animating;
     for op in ops.drain(..) {
-        state.commits = Commits::Other;
-        match state.tree.apply_op(op) {
-            Realize::Remove(layer) => renderer.remove_layer(surface, layer),
+        let invalidates = match state.tree.apply_op(op) {
+            Realize::Remove(layer) => {
+                renderer.remove_layer(surface, layer);
+                true
+            }
             Realize::Content(layer, content) => {
-                if let Some(mut old) = renderer.set_content(surface, layer, content)
+                let replacement = match &content {
+                    Some(ContentOp::Replace(picture)) => Some(picture.clone()),
+                    _ => None,
+                };
+                let previous = renderer.set_content(surface, layer, content);
+                let invalidates = replacement
+                    .as_ref()
+                    .zip(previous.as_ref())
+                    .is_none_or(|(new, old)| new != old);
+                if let Some(mut old) = previous
                     && old.try_recycle()
                 {
                     recycled.push((layer, old));
                 }
+                invalidates
             }
             Realize::Install(layer, install) => {
                 // The install reports its content's declared alpha —
@@ -766,8 +800,12 @@ fn commit<B: Backend>(
                     layer,
                     install.into_inner()(&mut *renderer, surface, layer).unwrap_or(false),
                 );
+                true
             }
-            Realize::Applied => {}
+            Realize::Applied => true,
+        };
+        if invalidates {
+            state.commits = Commits::Other;
         }
     }
 }
@@ -902,7 +940,7 @@ fn finish_frame<B: Backend>(
     time: crate::Instant,
     redraw: &FrameRedraw,
     rejected: &[SurfaceRejection],
-) -> (Next, FxHashMap<SurfaceId, Next>) {
+) -> (Next, FxHashMap<SurfaceId, SurfaceNext>) {
     let mut rate = None;
     // Keyed by surface: one entry per drawn surface, so publication
     // stays linear in the surface count instead of rescanning a Vec.
@@ -929,7 +967,13 @@ fn finish_frame<B: Backend>(
                 Some(crate::backend::union_rate(running, request.clone()))
             }
         };
-        surface_next.insert(*id, mine.map_or(Next::Idle, |rate| next_at(time, rate)));
+        surface_next.insert(
+            *id,
+            SurfaceNext {
+                next: mine.map_or(Next::Idle, |rate| next_at(time, rate)),
+                tracks: state.tree.running_tracks(|layer| owned.contains(&layer)),
+            },
+        );
         match running {
             Some(r) if r == cherenkov_record::tree::RATE_FAST => {
                 rate = Some(cherenkov_record::tree::RATE_FAST);
@@ -971,23 +1015,24 @@ fn render<B: Backend>(
     surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
     resources: &mut Resources<B>,
     id: FrameId,
-    time: crate::Instant,
+    time: FrameTime,
     commits: &mut [(SurfaceId, ChangeSet<B>)],
 ) -> RenderOutcome<B> {
-    sample_owned::<B>(renderer, surfaces, time);
+    let instant = time.instant();
+    sample_owned::<B>(renderer, surfaces, instant);
     let rejected = apply_commits(renderer, surfaces, resources, commits);
-    let frames = sample_frames(surfaces, time, &rejected);
+    let frames = sample_frames(surfaces, instant, &rejected);
     let mut stats = FrameStats::default();
     let (redraw, commit) = renderer.render(
         &Frame {
             id,
-            time: crate::frame::FrameTime(time),
+            time,
             surfaces: &frames,
         },
         &mut stats,
     )?;
     drop(frames);
-    let (next, surface_next) = finish_frame::<B>(renderer, surfaces, time, &redraw, &rejected);
+    let (next, surface_next) = finish_frame::<B>(renderer, surfaces, instant, &redraw, &rejected);
     Ok(RenderedFrame {
         next,
         surface_next,
@@ -1007,25 +1052,26 @@ async fn render_local<B: Backend>(
     surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
     resources: &mut Resources<B>,
     id: FrameId,
-    time: crate::Instant,
+    time: FrameTime,
     commits: &mut [(SurfaceId, ChangeSet<B>)],
 ) -> RenderOutcome<B> {
-    sample_owned::<B>(renderer, surfaces, time);
+    let instant = time.instant();
+    sample_owned::<B>(renderer, surfaces, instant);
     let rejected = apply_commits(renderer, surfaces, resources, commits);
-    let frames = sample_frames(surfaces, time, &rejected);
+    let frames = sample_frames(surfaces, instant, &rejected);
     let mut stats = FrameStats::default();
     let (redraw, commit) = renderer
         .render(
             &Frame {
                 id,
-                time: crate::frame::FrameTime(time),
+                time,
                 surfaces: &frames,
             },
             &mut stats,
         )
         .await?;
     drop(frames);
-    let (next, surface_next) = finish_frame::<B>(renderer, surfaces, time, &redraw, &rejected);
+    let (next, surface_next) = finish_frame::<B>(renderer, surfaces, instant, &redraw, &rejected);
     Ok(RenderedFrame {
         next,
         surface_next,
@@ -1046,6 +1092,7 @@ mod tests {
 
     use crate::testing::{Event, Null, NullConfig};
     use crate::{Draw, Engine, FrameTime, Offscreen, OffscreenFormat, WorkingColor};
+    use std::time::Duration;
 
     #[test]
     fn caller_shared_picture_is_not_recycled() {
@@ -1122,6 +1169,7 @@ mod tests {
             .expect("surface");
         let layer = surface.layer();
         let mut pointers = Vec::new();
+        let mut changed = Vec::new();
         for _ in 0..7 {
             surface.update(|tx| {
                 tx[&layer].record(|_| {});
@@ -1133,9 +1181,25 @@ mod tests {
                     && l == layer.id()
                 {
                     pointers.push(pointer);
+                } else if let Event::Frame(frame) = event {
+                    changed.push(frame.changed);
                 }
             }
         }
+
+        assert_eq!(changed, [true, false, false, false, false, false, false]);
+        surface.update(|tx| {
+            tx[&layer].record(|r| {
+                r.fill(crate::kurbo::Rect::new(0., 0., 1., 1.), WorkingColor::WHITE);
+            });
+        });
+        engine
+            .render(FrameTime::now())
+            .expect("changed content renders");
+        assert!(
+            rx.try_iter()
+                .any(|event| matches!(event, Event::Frame(frame) if frame.changed))
+        );
 
         assert_eq!(pointers.len(), 7, "every frame stored a picture");
         assert_eq!(pointers[0], pointers[2]);
@@ -1144,6 +1208,39 @@ mod tests {
         assert_eq!(pointers[3], pointers[5]);
         assert_eq!(pointers[4], pointers[6]);
         assert_ne!(pointers[0], pointers[1]);
+    }
+
+    /// The render thread wakes for the renderer's idle-release deadline
+    /// with no message pending: after the last frame, `release_idle` runs
+    /// by itself, once, and not before the deadline (`Null` asserts that).
+    #[test]
+    fn render_thread_wakes_for_the_idle_release_deadline() {
+        let (events, rx) = std::sync::mpsc::channel();
+        let engine = Engine::<Null>::new(NullConfig {
+            events,
+            reject: std::collections::HashSet::new(),
+            image_limits: crate::ImageLimits::UNLIMITED,
+        })
+        .expect("init");
+        let surface = engine
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
+            .expect("surface");
+        // The only bound is the test's own failure deadline: the event
+        // arrives as soon as the thread's wait fires.
+        let released = || loop {
+            match rx.recv_timeout(Duration::from_secs(30)) {
+                Ok(Event::IdleRelease) => break,
+                Ok(_) => {}
+                Err(error) => panic!("the render thread never released idle resources: {error}"),
+            }
+        };
+        engine.render(FrameTime::now()).expect("render");
+        released();
+        // A later frame is released after its own interval, again by the
+        // thread's wait alone.
+        engine.render(FrameTime::now()).expect("render again");
+        released();
+        drop(surface);
     }
 }
 
@@ -1168,16 +1265,68 @@ pub(super) async fn local<B: Backend>(
         resources: Resources::default(),
         next_frame: 0,
     })));
+    // The pending idle-release timeout. The executor's handler owns it, so
+    // dropping the engine drops the handler and cancels the timeout.
+    let timer = Rc::new(RefCell::new(None));
     let tx = crate::local::Sender::new(move |message| {
         let mut owned = state.borrow_mut().take().expect("serial local executor");
         let state = Rc::clone(&state);
+        let timer = Rc::clone(&timer);
         Box::pin(async move {
             let live = owned.apply(message).await;
             *state.borrow_mut() = Some(owned);
+            if live {
+                arm_idle_release::<B>(&state, &timer);
+            }
             live
         })
     });
     Ok((tx, info, image_limits))
+}
+
+#[cfg(target_arch = "wasm32")]
+type LocalShared<B> = std::rc::Rc<std::cell::RefCell<Option<LocalState<B>>>>;
+
+/// Schedules a one-shot browser timeout for the renderer's idle-release
+/// deadline, replacing any pending one, so an idle page releases at the
+/// deadline like the native render thread's wait does. The callback applies
+/// the same [`release_idle_due`] and re-arms. While a message is being
+/// applied the state is out of its cell: the callback then does nothing and
+/// the message's own completion re-arms. The callback holds only weak
+/// references, so a dropped engine leaves nothing alive.
+#[cfg(target_arch = "wasm32")]
+fn arm_idle_release<B: Backend>(
+    state: &LocalShared<B>,
+    timer: &std::rc::Rc<std::cell::RefCell<Option<gloo_timers::callback::Timeout>>>,
+) {
+    use std::rc::Rc;
+    let deadline = state
+        .borrow()
+        .as_ref()
+        .and_then(|owned| owned.renderer.idle_release_deadline());
+    let timeout = deadline.map(|deadline| {
+        let millis = deadline
+            .saturating_duration_since(crate::Instant::now())
+            .as_millis()
+            .saturating_add(1);
+        let millis = u32::try_from(millis).unwrap_or(u32::MAX);
+        let (state, timer) = (Rc::downgrade(state), Rc::downgrade(timer));
+        gloo_timers::callback::Timeout::new(millis, move || {
+            let (Some(state), Some(timer)) = (state.upgrade(), timer.upgrade()) else {
+                return;
+            };
+            // This timeout has fired and is running: forgetting it, rather
+            // than dropping it from inside its own call, retires it.
+            if let Some(fired) = timer.borrow_mut().take() {
+                fired.forget();
+            }
+            if let Some(owned) = state.borrow_mut().as_mut() {
+                release_idle_due(&mut owned.renderer);
+            }
+            arm_idle_release::<B>(&state, &timer);
+        })
+    });
+    *timer.borrow_mut() = timeout;
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1200,6 +1349,9 @@ impl<B: Backend> LocalState<B> {
             resources,
             next_frame,
         } = self;
+        // The idle-release timeout (`arm_idle_release`) covers an idle
+        // page; this covers a message that arrives before it ran.
+        release_idle_due(renderer);
         match message {
             Message::CreateSurface {
                 id,
@@ -1217,6 +1369,7 @@ impl<B: Backend> LocalState<B> {
             }
             Message::Display { id, display } => set_display(surfaces, id, display),
             Message::DisplayMoved { id } => set_display_moved(surfaces, id),
+            Message::SetBand { id, window, target } => renderer.set_band(id, window, target),
             Message::Visibility { id, visibility } => {
                 set_visibility::<B>(renderer, surfaces, id, visibility);
             }
@@ -1245,8 +1398,7 @@ impl<B: Backend> LocalState<B> {
                 let id = FrameId(*next_frame);
                 *next_frame += 1;
                 let result =
-                    render_local::<B>(renderer, surfaces, resources, id, time.0, &mut commits)
-                        .await;
+                    render_local::<B>(renderer, surfaces, resources, id, time, &mut commits).await;
                 let _ = reply.send(crate::message::RenderReply { result, commits });
             }
             Message::FinishTimings { reply } => {

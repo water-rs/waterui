@@ -15,14 +15,14 @@ use core::fmt;
 
 use nami::SignalExt;
 use suiteki::Str;
+use waterui_color::{
+    AccentColor, Color, CurrentColorScheme, MutedForegroundColor, SurfaceVariantColor,
+};
 use waterui_core::accessibility::AccessibilityRole;
 use waterui_core::gesture::{GestureObserver, TapGesture};
 use waterui_core::resolve::Resolvable;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, View};
-use waterui_graphics::color::{
-    AccentColor, Color, CurrentColorScheme, MutedForegroundColor, SurfaceVariantColor,
-};
 use waterui_layout::{
     background::background,
     padding::{EdgeInsets, Padding},
@@ -151,15 +151,15 @@ impl Code {
 #[non_exhaustive]
 pub struct CodeConfig {
     /// The fence's info token as written (`mermaid`, `rust`, …), if it had one.
-    pub info: Option<Str>,
+    info: Option<Str>,
     /// The language that token resolved to; [`Language::Plaintext`] when it
     /// resolved to nothing.
-    pub language: Language,
+    language: Language,
     /// The block's text, verbatim.
-    pub content: Str,
+    content: Str,
     /// The caller's feedback for a copy, if it asked for any. Carried so a hook
     /// that declines the fence and renders the default keeps it.
-    pub on_copied: Option<OnCopied>,
+    on_copied: Option<OnCopied>,
 }
 
 impl CodeConfig {

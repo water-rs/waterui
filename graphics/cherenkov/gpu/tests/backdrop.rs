@@ -78,7 +78,7 @@ fn unfiltered_member_samples_what_is_behind_it() -> Result<(), Box<dyn std::erro
     assert_pixel(pixel(&readback, 20, 12), [0.5, 0.5, 1.0, 1.0], 1e-3);
     // Outside the member's clip the surface is untouched.
     assert_pixel(pixel(&readback, 4, 4), [1.0, 0.0, 0.0, 1.0], 1e-3);
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     assert_eq!(memory.backdrop_captures, Bytes(16 * 16 * 8));
     assert_eq!(memory.backdrop_capture_format, Some("rgba16float"));
     Ok(())
@@ -124,7 +124,7 @@ fn blurred_backdrop_keeps_extended_range() -> Result<(), Box<dyn std::error::Err
         (edge[0] - expected).abs() < 1.0 && (edge[1] - expected).abs() < 1.0,
         "edge pixel {edge:?}, expected about {expected}"
     );
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     // footprint = ceil(4 * 3) = 12 → region (8-12..56+12) ∩ 0..64 = 64×64.
     // The filter's input/output intermediates count in `gpu`, not in
     // `backdrop_captures` — only the one capture texture does.
@@ -159,7 +159,7 @@ fn filtered_group_reports_its_chain_targets() -> Result<(), Box<dyn std::error::
             .backdrop(group.sample());
     });
     wait!(engine.render(FrameTime::now()))?;
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     // footprint = ceil(4 * 4) = 16 → region (8-16..56+16) ∩ 0..64 = 64×64.
     // The chain holds an input/output pair at the capture's format plus
     // the one intermediate the blur's two passes share — three
@@ -171,7 +171,7 @@ fn filtered_group_reports_its_chain_targets() -> Result<(), Box<dyn std::error::
     });
     drop(group);
     wait!(engine.render(FrameTime::now()))?;
-    assert_eq!(wait!(engine.memory()).filter_targets, Bytes(0));
+    assert_eq!(wait!(engine.memory())?.filter_targets, Bytes(0));
     Ok(())
 }
 }
@@ -203,11 +203,11 @@ fn trim_drops_the_chain_targets() -> Result<(), Box<dyn std::error::Error>> {
     // footprint = ceil(4 * 4) = 16 → region (8-16..56+16) ∩ 0..64 = 64×64.
     // The io pair alone would be two targets; the blur's shared
     // intermediate puts the chain above it.
-    let held = wait!(engine.memory()).filter_targets;
+    let held = wait!(engine.memory())?.filter_targets;
     assert!(held > Bytes(2 * 64 * 64 * 8), "held {held:?}");
     for (pressure, red) in [(Pressure::Critical, 0.5), (Pressure::Moderate, 1.0)] {
         engine.trim(pressure);
-        assert_eq!(wait!(engine.memory()).filter_targets, Bytes(0));
+        assert_eq!(wait!(engine.memory())?.filter_targets, Bytes(0));
         // A frame with nothing to redraw does not run the chain; new
         // backdrop content does, and the chain recreates its targets.
         surface.update(|tx| {
@@ -219,7 +219,7 @@ fn trim_drops_the_chain_targets() -> Result<(), Box<dyn std::error::Error>> {
             }));
         });
         wait!(engine.render(FrameTime::now()))?;
-        assert_eq!(wait!(engine.memory()).filter_targets, held);
+        assert_eq!(wait!(engine.memory())?.filter_targets, held);
     }
     Ok(())
 }
@@ -387,7 +387,7 @@ fn two_members_share_one_capture() -> Result<(), Box<dyn std::error::Error>> {
     // Both members sample the one capture: the green surface behind them.
     assert_pixel(pixel(&readback, 4, 4), [0.0, 1.0, 0.0, 1.0], 1e-3);
     assert_pixel(pixel(&readback, 28, 4), [0.0, 1.0, 0.0, 1.0], 1e-3);
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     // One capture for the group, bounded to the members' union (x 2..30,
     // y 2..6) — not one per member nor the whole surface.
     assert_eq!(memory.backdrop_captures, Bytes(28 * 4 * 8));
@@ -746,7 +746,7 @@ fn a_bound_shader_effect_change_rerenders_the_member()
     let readback = wait!(surface.readback())?;
     let lit = pixel(&readback, 10, 32);
     assert!(lit[0] > 1.5, "rim pixel {lit:?} under gain 3");
-    let captures = wait!(engine.memory()).backdrop_captures;
+    let captures = wait!(engine.memory())?.backdrop_captures;
 
     gain.set(0.0);
     wait!(engine.render(FrameTime::now()))?;
@@ -755,7 +755,7 @@ fn a_bound_shader_effect_change_rerenders_the_member()
     assert_pixel(pixel(&readback, 10, 32), [1.0, 0.0, 0.0, 1.0], 1e-3);
     assert_pixel(pixel(&readback, 32, 32), [1.0, 0.0, 0.0, 1.0], 1e-3);
     assert_eq!(
-        wait!(engine.memory()).backdrop_captures,
+        wait!(engine.memory())?.backdrop_captures,
         captures,
         "the group keeps its capture"
     );
@@ -984,7 +984,7 @@ fn effect_members_do_not_duplicate_the_capture() -> Result<(), Box<dyn std::erro
         }
     });
     wait!(engine.render(FrameTime::now()))?;
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     // Three members over the same 16x16 union sample one shared capture.
     assert_eq!(memory.backdrop_captures, Bytes(16 * 16 * 8));
     assert_eq!(memory.backdrop_capture_format, Some("rgba16float"));
@@ -1019,7 +1019,7 @@ fn a_shaders_reach_grows_the_capture_region() -> Result<(), Box<dyn std::error::
             .backdrop(group.sample_with(shader.effect(vec![])));
     });
     wait!(engine.render(FrameTime::now()))?;
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     // The 32x32 member union grows by the 8 px reach on every side.
     assert_eq!(memory.backdrop_captures, Bytes(48 * 48 * 8));
     assert_eq!(memory.backdrop_capture_format, Some("rgba16float"));
@@ -1075,9 +1075,9 @@ fn far_members_take_two_regions() -> Result<(), Box<dyn std::error::Error>> {
 
     let (engine_a, _surface_a, readback_a, _group_a, _group_ba) = wait!(render_bars(false))?;
     // Two regions: 512x96 + 512x96 texels at 8 bytes.
-    assert_eq!(wait!(engine_a.memory()).backdrop_captures, Bytes(2 * 512 * 96 * 8));
+    assert_eq!(wait!(engine_a.memory())?.backdrop_captures, Bytes(2 * 512 * 96 * 8));
     let (engine_b, _surface_b, readback_b, _group_c, _group_d) = wait!(render_bars(true))?;
-    assert_eq!(wait!(engine_b.memory()).backdrop_captures, Bytes(2 * 512 * 96 * 8));
+    assert_eq!(wait!(engine_b.memory())?.backdrop_captures, Bytes(2 * 512 * 96 * 8));
     // Inside both bars the two-region one-group render looks the same as
     // the two single-member groups.
     for y in [0..96, 416..512] {
@@ -1119,7 +1119,7 @@ fn reach_merges_aproned_rects() -> Result<(), Box<dyn std::error::Error>> {
     // the 8 px reach (8..32 x -4..20), clipped to [8,0,24,20]. They
     // overlap, so the union region is [4,0,28,20] = 560 texels — not the
     // 64+480 of two separate regions.
-    assert_eq!(wait!(engine.memory()).backdrop_captures, Bytes(28 * 20 * 8));
+    assert_eq!(wait!(engine.memory())?.backdrop_captures, Bytes(28 * 20 * 8));
     Ok(())
 }
 }
@@ -1142,12 +1142,12 @@ fn removing_a_member_drops_its_region() -> Result<(), Box<dyn std::error::Error>
             .backdrop(group.sample());
     });
     wait!(engine.render(FrameTime::now()))?;
-    assert_eq!(wait!(engine.memory()).backdrop_captures, Bytes(2 * 512 * 96 * 8));
+    assert_eq!(wait!(engine.memory())?.backdrop_captures, Bytes(2 * 512 * 96 * 8));
     surface.update(|tx| {
         tx[surface.root()].remove(&bottom);
     });
     wait!(engine.render(FrameTime::now()))?;
-    assert_eq!(wait!(engine.memory()).backdrop_captures, Bytes(512 * 96 * 8));
+    assert_eq!(wait!(engine.memory())?.backdrop_captures, Bytes(512 * 96 * 8));
     Ok(())
 }
 }
@@ -1261,7 +1261,7 @@ fn reduced_capture_resolves_and_samples_bilinearly() -> Result<(), Box<dyn std::
     // The member [8, 24)² is texels [2, 6)², and the bilinear taps of its
     // edge pixels reach one texel further: [1, 7)², 36 texels, not 256
     // pixels.
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     assert_eq!(memory.backdrop_captures, Bytes(6 * 6 * 8));
     Ok(())
 }
@@ -1352,7 +1352,7 @@ fn reduced_blur_counts_its_footprint_in_capture_texels() -> Result<(), Box<dyn s
     );
     // footprint 6 texels around texels [4, 28) → [0, 32)²: the capture
     // holds a quarter of the 1:1 region's 64 × 64 pixels.
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     assert_eq!(memory.backdrop_captures, Bytes(32 * 32 * 8));
     Ok(())
 }
@@ -1556,7 +1556,7 @@ fn staged_resolves_share_the_surface_staging_texture() -> Result<(), Box<dyn std
     // staging: its growth lands there on top of the new captures (the
     // depth-0 scratch has covered the surface since phase 1 — a capture
     // inside an isolation forces it — so nothing else grows).
-    let before = wait!(engine.memory());
+    let before = wait!(engine.memory())?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
             r.fill(
@@ -1590,7 +1590,7 @@ fn staged_resolves_share_the_surface_staging_texture() -> Result<(), Box<dyn std
     assert_pixel(pixel(&readback, 40, 40), [1.0, 0.0, 0.0, 1.0], 1e-3);
     // Only the captures count: 30² + 10² + 32² f16 texels — the empty
     // ancestor's member still captures (clamped to the 32-texel extent).
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     assert_eq!(
         memory.backdrop_captures,
         Bytes(30 * 30 * 8 + 10 * 10 * 8 + 32 * 32 * 8)
@@ -1601,12 +1601,13 @@ fn staged_resolves_share_the_surface_staging_texture() -> Result<(), Box<dyn std
         "MemoryUsage::gpu counts the staging's regrowth"
     );
     // The shared texture is kept across frames: a re-committed frame
-    // grows nothing.
+    // grows nothing. The content differs from the last commit — an
+    // identical replacement skips the frame entirely.
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
             r.fill(
                 Rect::new(0.0, 0.0, 64.0, 64.0),
-                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+                WorkingColor::new([0.75, 0.0, 0.0, 1.0]),
             );
         }));
     });
@@ -1687,7 +1688,7 @@ fn sample_level_mixes_the_pyramid_trilinearly() -> Result<(), Box<dyn std::error
     assert_pixel(pixel(&readback, 15, 16), expected(15), 0.01);
     assert_pixel(pixel(&readback, 16, 16), expected(16), 0.01);
     assert_pixel(pixel(&readback, 17, 16), expected(17), 0.01);
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     // The whole-surface member's 32×32 capture plus its two levels.
     assert_eq!(
         memory.backdrop_captures,
@@ -2134,7 +2135,7 @@ fn anchored_groups_capture_beneath_the_anchor() -> Result<(), Box<dyn std::error
     // Each group's capture reads the anchor's canvas straight from the
     // semantic target — there is no shared copy texture: the memory
     // accounting below is exactly the groups' own captures.
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     // Each group keeps only its own capture: A's 24×24 member union
     // and B's 16×24 member rect.
     assert_eq!(memory.backdrop_captures, Bytes((24 * 24 + 16 * 24) * 8));

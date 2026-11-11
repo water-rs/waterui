@@ -7,14 +7,17 @@
 # ///
 """Compute what the PR/push gate must run for a diff.
 
-Reads the diff between the given base revision and `HEAD`, runs the
-determinator tool on it, then writes `GITHUB_OUTPUT` keys:
+Reads the diff between the given base revision and `HEAD`, takes the shared
+`lexoliu/affected-crates` tool's report of it (run with
+`.github/affected-rules.toml`; it supplies `workspace`, `affected`,
+`members` and `owners`) from the `AFFECTED_REPORT` environment variable, then
+writes `GITHUB_OUTPUT` keys:
 
 - `packages` — the crates the gate checks and lints: space-separated
   package names, or the literal `workspace` when the diff can reach any
   crate (an outside-package path the rules do not map, or a path that
   directory-matches only the root package without belonging to it, selects
-  everything — see the tool's module doc). Empty when nothing can be
+  everything — see the tool's documentation). Empty when nothing can be
   affected — a prose-only change still gets `cargo fmt`, nothing more.
 - `package-args` — `packages` rendered as `-p` flags for cargo.
 - `linux-package-args` — `package-args` without the crates the Linux lint
@@ -46,10 +49,12 @@ determinator tool on it, then writes `GITHUB_OUTPUT` keys:
 - `apple-legs` — JSON list of test.yml's `macos` matrix entries: the Apple
   lint targets with an Apple-gated crate in scope (`apple_gated.py`),
   `[]` when there is none, so no macOS runner starts to find nothing.
+- `wasm` — `true` when a package with a wasm32 lint leg (`wasm_gated.py`) is
+  in scope, so the `wasm32` job starts only when it has work.
 
 Usage:
 
-    affected.py --base <rev> [--tool .github/tools/affected/target/release/affected]
+    AFFECTED_REPORT=<report JSON> affected.py --base <rev>
 
 Any uncertainty — an unresolvable base, an unparsable manifest — widens
 the gate to `workspace`; it never narrows it on a guess.
@@ -65,6 +70,7 @@ import sys
 import tomllib
 
 from apple_gated import legs as apple_legs
+from wasm_gated import legs_in_scope as wasm_legs
 from rust_semantic_diff import changed_entries, git, semantic_differs, source_at
 
 # Cargo.toml tables whose content can move the dependency graph or the
@@ -205,13 +211,8 @@ def emit(outputs):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True, help="base revision or sha")
-    parser.add_argument("--head", default="HEAD")
-    parser.add_argument(
-        "--tool",
-        default=".github/tools/affected/target/release/affected",
-        help="path to the built determinator binary",
-    )
     args = parser.parse_args()
+    head = "HEAD"
 
     outputs = {
         "packages": "workspace",
@@ -221,11 +222,12 @@ def main():
         "comment-only": "false",
         "msrv": "true",
         "apple-legs": json.dumps(apple_legs("workspace"), separators=(",", ":")),
+        "wasm": "true",
     }
     try:
-        base = git("merge-base", args.base, args.head).strip()
-        entries = changed_entries(base, args.head)
-        msrv = msrv_relevant(base, args.head, entries)
+        base = git("merge-base", args.base, head).strip()
+        entries = changed_entries(base, head)
+        msrv = msrv_relevant(base, head, entries)
 
         # The comment-only classification: a modified .rs file is
         # comment-only when its normalised tree is unchanged; prose does
@@ -250,18 +252,14 @@ def main():
             commentable_paths is not None
             and has_rs_change
             and all(
-                not semantic_differs(source_at(base, path), source_at(args.head, path))
+                not semantic_differs(source_at(base, path), source_at(head, path))
                 for path in commentable_paths
             )
         )
 
-        # The tool always runs: its `owners` map is the only path→crate
-        # mapper (the comment-only lane reads it).
-        report = json.loads(
-            subprocess.check_output(
-                [args.tool, "--base", base, "--head", args.head], text=True
-            )
-        ) if entries else None
+        # The shared tool's `owners` map is the only path→crate mapper (the
+        # comment-only lane reads it); a missing report widens below.
+        report = json.loads(os.environ["AFFECTED_REPORT"]) if entries else None
 
         def scene_assets_for(names):
             return "true" if SCENE_ASSET_OWNERS & set(names) else "false"
@@ -272,9 +270,13 @@ def main():
         def apple_legs_for(scope):
             return json.dumps(apple_legs(scope), separators=(",", ":"))
 
+        def wasm_for(scope):
+            return "true" if wasm_legs(scope) else "false"
+
         if not entries:
             outputs.update(
                 {
+                    "wasm": "false",
                     "packages": "",
                     "workspace-wide": "false",
                     "msrv": "false",
@@ -292,6 +294,7 @@ def main():
                     "msrv": "true" if msrv else "false",
                     "scene-assets": "true",
                     "apple-legs": apple_legs_for("workspace"),
+                    "wasm": "true",
                 }
             )
         elif comment_only:
@@ -312,6 +315,7 @@ def main():
                     "msrv": "true" if msrv else "false",
                     "scene-assets": scene_assets_for(owners),
                     "apple-legs": apple_legs_for(" ".join(owners)),
+                    "wasm": wasm_for(" ".join(owners)),
                 }
             )
         else:
@@ -325,6 +329,7 @@ def main():
                     "msrv": "true" if msrv else "false",
                     "scene-assets": scene_assets_for(affected),
                     "apple-legs": apple_legs_for(" ".join(affected)),
+                    "wasm": wasm_for(" ".join(affected)),
                 }
             )
     except Exception as error:  # widen on any failure — never scope on a guess

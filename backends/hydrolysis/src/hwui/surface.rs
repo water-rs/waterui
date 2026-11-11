@@ -26,12 +26,8 @@ impl HwuiSurface {
     /// # Errors
     ///
     /// A description when the empty tree's root node cannot be encoded.
-    pub fn new(
-        id: SurfaceId,
-        api_level: u32,
-        wake: impl Fn() + 'static,
-    ) -> Result<Self, HwuiError> {
-        let encoder = Encoder::new(api_level)?;
+    pub fn new(id: SurfaceId, wake: impl Fn() + 'static) -> Result<Self, HwuiError> {
+        let encoder = Encoder::new()?;
         let queue = HwuiQueue::new(wake);
         let shared = Rc::new(RefCell::new(Shared::new(id, queue.clone())));
         Ok(Self {

@@ -4,6 +4,7 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::theme::live::Operand;
 use kurbo::Shape as _;
 
 #[cfg(hydrolysis_gpu_painter)]
@@ -200,7 +201,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     fn scheduled_semantic_work(&self, perpetual: PerpetualAnimation) -> bool {
         self.has_pending_semantic_update()
             || self.os_file_drop_pending()
-            || self.animations_active_with(perpetual)
+            || self.animations_active()
+            || self.engine_tracks_active(perpetual)
             || self.next_gesture_deadline().is_some()
             || self.has_gliding_smooth_scrolls()
             || self.has_active_touch_fling()
@@ -406,7 +408,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub(crate) fn draw_context(
         &mut self,
         ctx: RenderContext,
-        body: impl FnOnce(&mut waterui_graphics::draw::Recorder),
+        body: impl FnOnce(&mut cherenkov_record::Recorder),
     ) {
         let scope = self
             .material_group_scopes
@@ -591,7 +593,67 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         scope: crate::renderer::ScopeDelta,
         hit: bool,
     ) {
+        self.open_scope_layer(
+            key,
+            ScopeLayerProps {
+                transform: layer,
+                alpha,
+                operands: ScopeOperands::default(),
+            },
+            clip,
+            clip_space,
+            scope,
+            hit,
+        );
+    }
+
+    /// [`Self::open_scope`] whose layer follows `operands` between renders:
+    /// its opacity is the opacity operand's, and the transform operand —
+    /// given in the `paint` space, like `clip` — moves the layer over its
+    /// at-rest place. Children record at rest.
+    pub(crate) fn open_live_scope(
+        &mut self,
+        key: mount::ScopeKey,
+        operands: ScopeOperands,
+        paint: kurbo::Affine,
+        clip: &ScopeClip,
+        scope: crate::renderer::ScopeDelta,
+    ) {
+        self.open_scope_layer(
+            key,
+            ScopeLayerProps {
+                transform: scope.transform,
+                alpha: 1.0,
+                operands,
+            },
+            Some(clip),
+            paint,
+            scope,
+            true,
+        );
+    }
+
+    fn open_scope_layer(
+        &mut self,
+        key: mount::ScopeKey,
+        layer: ScopeLayerProps,
+        clip: Option<&ScopeClip>,
+        clip_space: kurbo::Affine,
+        scope: crate::renderer::ScopeDelta,
+        hit: bool,
+    ) {
+        let ScopeLayerProps {
+            transform: layer,
+            alpha,
+            operands,
+        } = layer;
         let space = self.program().origin() * layer;
+        let live = mount::ScopeLive {
+            opacity: operands.opacity.map(mount::LiveOpacity::new),
+            transform: operands.transform.map(|transform| {
+                mount::LiveTransform::new(transform, space.inverse() * clip_space)
+            }),
+        };
         let shape = clip.map(|clip| clip.in_space(space.inverse() * clip_space));
         self.push_placement_scope(scope, clip.map(ScopeClip::hit_bounds));
         if !hit {
@@ -607,6 +669,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 transform: layer,
                 clip: shape,
                 alpha,
+                live,
             },
             placement,
         );
@@ -637,6 +700,23 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     }
 }
 
+/// The live operands a scope's layer follows.
+#[derive(Default)]
+pub struct ScopeOperands {
+    /// The layer's opacity.
+    pub opacity: Option<Operand<f32>>,
+    /// The layer's transform over its at-rest place, in the space the
+    /// scope's paint transform names.
+    pub transform: Option<Operand<kurbo::Affine>>,
+}
+
+/// A scope layer's at-rest transform and opacity and its live operands.
+struct ScopeLayerProps {
+    transform: kurbo::Affine,
+    alpha: f32,
+    operands: ScopeOperands,
+}
+
 /// A scope's clip silhouette, given in the recording node's space under the
 /// paint transform [`HydrolysisRenderer::open_scope`] receives.
 pub enum ScopeClip {
@@ -650,21 +730,21 @@ pub enum ScopeClip {
 }
 
 impl ScopeClip {
-    pub(crate) fn in_space(&self, transform: kurbo::Affine) -> waterui_graphics::draw::ShapeData {
+    pub(crate) fn in_space(&self, transform: kurbo::Affine) -> cherenkov_record::ShapeData {
         if transform == kurbo::Affine::IDENTITY {
             return match self {
-                Self::Rect(rect) => waterui_graphics::draw::ShapeData::of(rect),
+                Self::Rect(rect) => cherenkov_record::ShapeData::of(rect),
                 Self::Path(path) | Self::RoundedRect { path, .. } => {
-                    waterui_graphics::draw::ShapeData::of(path)
+                    cherenkov_record::ShapeData::of(path)
                 }
             };
         }
         let mut path = match self {
-            Self::Rect(rect) => rect.to_path(waterui_graphics::draw::PATH_TOLERANCE),
+            Self::Rect(rect) => rect.to_path(cherenkov_record::PATH_TOLERANCE),
             Self::Path(path) | Self::RoundedRect { path, .. } => path.clone(),
         };
         path.apply_affine(transform);
-        waterui_graphics::draw::ShapeData::of(&path)
+        cherenkov_record::ShapeData::of(&path)
     }
 
     /// The hit clip in the placement scope's space: the clip's bounds as the

@@ -30,20 +30,20 @@ pub struct WebViewConfig {
     #[cfg(not(target_arch = "wasm32"))]
     /// The server behind the engine's local asset origin, when the view was
     /// opened with one.
-    pub asset_server: Option<AssetServer>,
+    asset_server: Option<AssetServer>,
     #[cfg(not(target_arch = "wasm32"))]
     /// Which documents may reach the bridge, for the view's whole life.
-    pub bridge_origins: OriginPolicy,
+    bridge_origins: OriginPolicy,
     #[cfg(not(target_arch = "wasm32"))]
     /// The policy that decides navigations the page initiates; `None`
     /// allows them all.
-    pub navigation_policy: Option<NavigationPolicy>,
+    navigation_policy: Option<NavigationPolicy>,
     #[cfg(not(target_arch = "wasm32"))]
     /// The application's scripts, in the order they run. Keys are unique.
-    pub scripts: Vec<UserScript>,
+    scripts: Vec<UserScript>,
     #[cfg(not(target_arch = "wasm32"))]
     /// The keys the page mirrors — names and writability, never values.
-    pub state: StateDeclarations,
+    state: StateDeclarations,
 }
 
 impl WebViewConfig {
@@ -266,11 +266,11 @@ impl DocumentScripts {
 #[non_exhaustive]
 pub struct UserScript {
     /// Names the script. Injecting again under the key replaces it.
-    pub key: Str,
+    key: Str,
     /// The program.
-    pub source: Str,
+    source: Str,
     /// When in a document's load it runs.
-    pub time: ScriptInjectionTime,
+    time: ScriptInjectionTime,
 }
 
 #[cfg(not(target_arch = "wasm32"))]

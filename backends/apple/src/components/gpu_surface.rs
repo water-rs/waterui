@@ -24,16 +24,17 @@ use cocoa_ui::metal_presenter::{DrawableFrame, MetalPresenter};
 use objc2::MainThreadMarker;
 use objc2_metal::{MTLPixelFormat, MTLTexture};
 use waterui_core::NativeView;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
-use waterui_graphics::cherenkov::{Display, FrameTime, Next};
-use waterui_graphics::draw::kurbo;
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
+use waterui_graphics::backend::cherenkov::Next;
 use waterui_graphics::gpu::{
-    ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, GpuContentRenderer,
-    GpuContentView, GpuRuntime, HostedLayerError, RedrawHandle, SharedGpuContext,
+    Display, ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, FrameTime,
+    GpuContentRenderer, GpuContentView, GpuRuntime, HostedLayerError, RedrawHandle,
+    SharedGpuContext, wgpu,
 };
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::offscreen::OffscreenSize;
-use waterui_graphics::wgpu;
 
 use crate::contract::NativeLeaf;
 use crate::dispatch::Dispatcher;
@@ -245,8 +246,7 @@ impl HostedView for GpuContentView {
     ) -> Result<Box<dyn HostedRenderer>, HostedError> {
         // `engine_content` answers the same content object every time, so a
         // renderer rebuilt after device loss re-installs it with its state.
-        let producer =
-            waterui_graphics::cherenkov_gpu::interop::GpuContentBox::new(self.engine_content());
+        let producer = waterui_graphics::gpu::interop::GpuContentBox::new(self.engine_content());
         Ok(Box::new(GpuContentRenderer::new(
             runtime,
             context.clone(),
@@ -286,22 +286,24 @@ impl HostedView for ExternalFrameView {
     }
 
     fn wants_input_events(&self) -> bool {
-        false
+        Self::wants_input_events(self)
     }
 
     fn resolved_hdr_preference(&self) -> Option<bool> {
         Self::resolved_hdr_preference(self)
     }
 
-    fn input(&self, _event: &SurfaceInputEvent) {
-        unreachable!("an ExternalFrameView takes no input; hosts check wants_input_events first");
+    fn input(&self, event: &SurfaceInputEvent) {
+        Self::input(self, event);
     }
 
     fn ime_caret(&self) -> Option<kurbo::Rect> {
-        None
+        Self::ime_caret(self)
     }
 
-    fn before_frame(&self) {}
+    fn before_frame(&self) {
+        self.frame();
+    }
 
     fn renderer(
         &mut self,
@@ -330,6 +332,47 @@ impl HostedRenderer for ExternalFrameRenderer {
         target_time: FrameTime,
     ) -> Result<Next, HostedError> {
         Ok(Self::present(self, target, display, target_time)?)
+    }
+}
+
+/// The `Resize` an input-receiving surface's content was last told of, so
+/// one is delivered per change of logical size or scale and never per frame.
+#[derive(Debug, Default)]
+struct DeliveredResize(Cell<Option<(kurbo::Size, f32)>>);
+
+impl DeliveredResize {
+    /// Records `size` at `scale` as the content's current geometry; whether
+    /// it differs from what the content was last told.
+    fn record(&self, size: kurbo::Size, scale: f32) -> bool {
+        let next = Some((size, scale));
+        if self.0.get() == next {
+            return false;
+        }
+        self.0.set(next);
+        true
+    }
+}
+
+/// Tells the content of its geometry when it changed since the content last
+/// heard — before the frame that renders at it.
+///
+/// Called where the surface learns its bounds and scale and again ahead of
+/// every frame's render, so a frame never renders at a geometry the content
+/// was not told of, whichever of the on-screen or capture paths it takes.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a display scale is a small factor that f32 holds exactly"
+)]
+fn deliver_resize(state: &SurfaceState, logical: kurbo::Size, scale: f64) {
+    if !state.wants_input_events {
+        return;
+    }
+    let scale = scale as f32;
+    if state.delivered_resize.record(logical, scale) {
+        state.view.borrow().input(&SurfaceInputEvent::Resize {
+            size: logical,
+            scale,
+        });
     }
 }
 
@@ -402,6 +445,11 @@ struct SurfaceState {
     presentation_format: Cell<Option<MTLPixelFormat>>,
     /// The scale the current bounds were last resolved at.
     current_scale: Cell<f64>,
+    /// The surface's logical size at `current_scale` — the on-screen
+    /// content rectangle, not the pixel size read back through the scale.
+    current_logical: Cell<kurbo::Size>,
+    /// The `Resize` the content was last told of.
+    delivered_resize: DeliveredResize,
     /// Wakers of tasks waiting on the first presented frame.
     ready_waiters: RefCell<Vec<std::task::Waker>>,
     /// Whether content accessibility republishes after the next frame.
@@ -625,6 +673,8 @@ impl SurfaceState {
             configured_range: Cell::new(None),
             presentation_format: Cell::new(None),
             current_scale: Cell::new(1.0),
+            current_logical: Cell::new(kurbo::Size::ZERO),
+            delivered_resize: DeliveredResize::default(),
             ready_waiters: RefCell::new(Vec::new()),
             needs_a11y_refresh: Cell::new(true),
             visibility_watch: RefCell::new(None),
@@ -831,6 +881,14 @@ fn render_to_metal_texture(
     target_time: FrameTime,
 ) -> Result<FrameRender, HostedError> {
     state.assert_declared_format(metal_texture.pixelFormat());
+    // The surface's own geometry, never one read back from this frame's
+    // pixels: a drawable issued before a resize or a capture's texture must
+    // not tell the content it shrank back.
+    deliver_resize(
+        state,
+        state.current_logical.get(),
+        state.current_scale.get(),
+    );
     let format = metal_texture_format(&metal_texture);
     if context.device_lost_reason().is_some() {
         return Ok(FrameRender::PendingRebuild);
@@ -1040,23 +1098,22 @@ fn can_render_frame(view: &Retained<SurfaceView>, first_paint_owed: bool) -> boo
     is_effectively_visible(view) || (first_paint_owed && participates_in_first_paint(view))
 }
 
-/// Positions the presentation layer and tells Core Animation the frames are
-/// already at device-pixel size — `updatePresentationFrame`.
+/// Positions the presentation layer over the surface's response — where a
+/// leaf draws its content (`docs/layout-spec.md` §6) — and tells Core
+/// Animation the frames are already at device-pixel size —
+/// `updatePresentationFrame`.
 fn update_presentation_frame(state: &SurfaceState, view: &Retained<SurfaceView>) {
     let layer = view.presentation_layer();
-    let bounds = view.bounds_size();
+    let frame = view.presentation_frame();
     cocoa_ui::core_animation::without_animation(|| {
-        cocoa_ui::core_animation::set_frame(
-            &layer,
-            cocoa_ui::Rect::new(0.0, 0.0, bounds.width, bounds.height),
-        );
+        cocoa_ui::core_animation::set_frame(&layer, frame);
         cocoa_ui::core_animation::set_contents_scale(&layer, state.current_scale.get());
     });
 }
 
 /// Geometry + deferred allocation — `initializeGpuIfNeeded`.
 fn initialize_gpu(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
-    let bounds = view.bounds_size();
+    let bounds = view.content_rect().size;
     if bounds.width <= 0.0 || bounds.height <= 0.0 {
         // A genuinely empty view cannot present at all: the live epoch
         // drops rather than carry a zero size beside a configured
@@ -1104,7 +1161,7 @@ fn prepare_presentation(
     view: &Retained<SurfaceView>,
     scale: f64,
 ) -> bool {
-    let bounds = view.bounds_size();
+    let bounds = view.content_rect().size;
     if bounds.width <= 0.0 || bounds.height <= 0.0 {
         return false;
     }
@@ -1126,6 +1183,11 @@ fn prepare_presentation(
     }
 
     state.current_scale.set(scale);
+    let logical = kurbo::Size::new(bounds.width, bounds.height);
+    state.current_logical.set(logical);
+    // Ahead of any frame at this geometry: the surface's first frame and
+    // every later one at a changed size or scale find the content told.
+    deliver_resize(state, logical, scale);
     // Device pixels round up: a positive sub-pixel bound still covers a
     // real pixel row, never a truncated zero.
     let width = (bounds.width * scale).ceil() as u32;
@@ -2313,14 +2375,14 @@ impl Drop for MountGuard {
         // queue, after the presentation reset below has cleared the scope.
         // Recording the orphaned depth keeps that late end quiet — and
         // still counted, so an end nobody is owed stays a panic.
-        let orphaned = self
+        let open_scope = self
             .state
             .presentation
             .borrow()
             .capture
             .as_ref()
-            .map_or(0, |external| external.depth.get());
-        if orphaned > 0 {
+            .map(|external| (external.depth.get(), external.redraw.clone()));
+        if let Some((orphaned, _)) = &open_scope {
             self.state
                 .orphaned_external_scopes
                 .set(self.state.orphaned_external_scopes.get() + orphaned);
@@ -2339,6 +2401,12 @@ impl Drop for MountGuard {
         self.view.set_backing_changed_handler(|| {});
         self.view.set_visibility_changed_handler(|| {});
         self.view.capturable_slot().clear();
+        // The capture holding that scope has lost content it may have
+        // deferred on: this surface can never redraw again, so its
+        // departure is the wake the capture's retry waits for.
+        if let Some((_, redraw)) = open_scope {
+            redraw();
+        }
     }
 }
 
@@ -2395,6 +2463,14 @@ struct SurfaceSubView {
 }
 
 impl SubView for SurfaceSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.state.last_proposal.set(Some(proposal));
         let measured = self.state.view.borrow().measure(proposal);
@@ -2418,7 +2494,7 @@ impl SubView for SurfaceSubView {
 pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_native::<GpuContentView>(build_surface);
     dispatcher.register_native::<ExternalFrameView>(build_surface);
-    dispatcher.register_native::<waterui_graphics::scene_view::SceneView>(|view, ctx| {
+    dispatcher.register_native::<waterui_graphics::backend::SceneView>(|view, ctx| {
         build_surface(
             scene::Scene::new(view, crate::gpu_runtime::scene_engine(ctx.env())),
             ctx,
@@ -2584,18 +2660,20 @@ pub mod native_test {
     use std::task::{Wake, Waker};
 
     use waterui_backend_core::Environment;
-    use waterui_graphics::cherenkov::{Display, Draw, Recorder, SurfaceError, WorkingColor};
+    use waterui_graphics::backend::cherenkov::{
+        Display, Draw, Recorder, SurfaceError, WorkingColor,
+    };
+    use waterui_graphics::backend::{RecordingResources, SceneContent, SceneView};
     use waterui_graphics::gpu::runtime::HostedLayerError;
-    use waterui_graphics::resources::RecordingResources;
-    use waterui_graphics::scene_view::{SceneContent, SceneView};
 
     use super::{
         Capturable, Dispatcher, DrawableFrame, FrameTime, GpuRuntime, HostedError,
         MainThreadMarker, NativeLeaf, PresentationTime, Rc, RefCell, Retained, SceneEngine,
-        SurfaceState, SurfaceView, build_surface_parts, defer_unwritten_external_frame, fmt, kurbo,
+        SurfaceState, SurfaceView, build_surface_parts, defer_unwritten_external_frame, fmt,
         park_for_publication, render_drawable, scene, settle_failed, wgpu,
     };
     use crate::contract::RenderContext;
+    use waterui_graphics::input::SurfaceInputEvent;
 
     /// The smallest real `SceneContent`: records one fill — a mounted
     /// scene that runs the true `Scene` → `ScenePart` → engine path.
@@ -2614,6 +2692,38 @@ pub mod native_test {
                 WorkingColor::WHITE,
             );
             false
+        }
+
+        fn rebuild_for_engine(&mut self) {}
+    }
+
+    /// Fixture content that takes input and records every event it is
+    /// handed.
+    struct InputRecordingContent {
+        events: Rc<RefCell<Vec<SurfaceInputEvent>>>,
+    }
+
+    impl SceneContent for InputRecordingContent {
+        fn build_scene(
+            &mut self,
+            recorder: &mut Recorder,
+            _resources: &mut RecordingResources<'_>,
+            width: f32,
+            height: f32,
+        ) -> bool {
+            recorder.fill(
+                kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+                WorkingColor::WHITE,
+            );
+            false
+        }
+
+        fn wants_input_events(&self) -> bool {
+            true
+        }
+
+        fn input(&mut self, event: &SurfaceInputEvent) {
+            self.events.borrow_mut().push(event.clone());
         }
 
         fn rebuild_for_engine(&mut self) {}
@@ -2746,6 +2856,32 @@ pub mod native_test {
             Self::mount_in(mtm, &fixture_env(runtime))
         }
 
+        /// Mounts a surface whose content takes input, through the same
+        /// production path as [`Self::mount`]; the second value is every
+        /// input event the content is handed, in order.
+        ///
+        /// # Errors
+        ///
+        /// When the runner has no GPU adapter.
+        #[expect(
+            clippy::future_not_send,
+            reason = "the mount is a main-thread fixture: Rc<SurfaceState>, the MainThreadMarker and the Objective-C views stay on the trial's main thread"
+        )]
+        pub async fn mount_recording_input(
+            mtm: MainThreadMarker,
+        ) -> Result<(Self, Rc<RefCell<Vec<SurfaceInputEvent>>>), String> {
+            let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let mounted = Self::mount_in_view(
+                mtm,
+                &fixture_env(runtime),
+                SceneView::new(InputRecordingContent {
+                    events: Rc::clone(&events),
+                }),
+            );
+            Ok((mounted, events))
+        }
+
         /// Mounts a surface whose content self-animates — `build_scene`
         /// always answers `true` — through the same production path as
         /// [`Self::mount`].
@@ -2816,7 +2952,7 @@ pub mod native_test {
         ///
         /// When renderer creation or the frame's encode fails.
         pub fn install_scene_renderer(&self) -> Result<(), String> {
-            self.render_scene_frame_at(FrameTime(std::time::Instant::now()))
+            self.render_scene_frame_at(FrameTime::now())
         }
 
         /// Mounts two surfaces into one environment — the same
@@ -3050,14 +3186,15 @@ pub mod native_test {
             );
         }
 
-        /// Sets the view's frame — the logical size `initialize_gpu`
-        /// computes the drawable extent from (bounds follow frame for
-        /// an untransformed view).
+        /// Sets the view's frame and runs the layout pass that follows it,
+        /// which commits the response `initialize_gpu` computes the
+        /// drawable extent from.
         pub fn set_view_frame(&self, width: f64, height: f64) {
             cocoa_ui::view::set_frame(
                 self.view.as_platform_view(),
                 cocoa_ui::Rect::new(0.0, 0.0, width, height),
             );
+            cocoa_ui::view::layout_immediately(self.view.as_platform_view());
         }
 
         /// Drives the production `initialize_gpu` — the geometry and
@@ -3145,9 +3282,15 @@ pub mod native_test {
             condition()
         }
 
-        /// The view's current bounds size — what `initialize_gpu` reads.
+        /// The view's current bounds size.
         pub fn view_bounds(&self) -> cocoa_ui::geometry::Size {
-            self.view.bounds_size()
+            cocoa_ui::view::bounds(self.view.as_platform_view()).size
+        }
+
+        /// Where the surface draws — its committed response — what
+        /// `initialize_gpu` sizes the drawable from.
+        pub fn content_rect(&self) -> cocoa_ui::geometry::Rect {
+            self.view.content_rect()
         }
 
         /// The view's backing scale — the factor `initialize_gpu`
@@ -3315,5 +3458,26 @@ pub mod native_test {
             let size = attached.presenter.layer().drawableSize();
             Some((size.width.max(0.0) as u32, size.height.max(0.0) as u32))
         }
+    }
+}
+
+#[cfg(test)]
+mod delivered_resize_tests {
+    use kurbo::Size;
+
+    use super::DeliveredResize;
+
+    #[test]
+    fn a_geometry_is_delivered_once_and_again_only_when_it_changes() {
+        let delivered = DeliveredResize::default();
+        let size = Size::new(320.0, 200.5);
+        assert!(delivered.record(size, 2.0), "the first geometry is news");
+        assert!(!delivered.record(size, 2.0), "every later frame repeats it");
+        assert!(delivered.record(Size::new(400.0, 200.5), 2.0), "a new size");
+        assert!(
+            delivered.record(Size::new(400.0, 200.5), 3.0),
+            "a new scale"
+        );
+        assert!(!delivered.record(Size::new(400.0, 200.5), 3.0));
     }
 }

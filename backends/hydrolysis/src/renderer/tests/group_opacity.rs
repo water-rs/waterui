@@ -12,21 +12,20 @@
 //! blend, so the pin holds whatever working space the engine composites
 //! in.
 
+use cherenkov_record::{
+    BackdropShaderSource, CaptureClass, CaptureLevels, CaptureScale, Live, MaterialCapture,
+    MaterialEffect, MaterialGrouping, MaterialShader, Paint,
+};
 use waterui::ViewExt as _;
 use waterui::background::Material;
 use waterui::gesture::TapGesture;
 use waterui::graphics::Color;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment};
-use waterui_graphics::draw::{
-    BackdropShaderSource, CaptureClass, CaptureLevels, CaptureScale, Live, MaterialCapture,
-    MaterialEffect, MaterialGrouping, MaterialShader, Paint,
-};
 use waterui_layout::stack::zstack;
 
 use super::{ChromeDraw, ChromePlan, MinimalTestTheme, pumped_test_environment};
 use crate::HeadlessRuntime;
-use crate::theme::{ButtonMetrics, InteractionStyle};
 
 /// The window, in points; `SCALE` device pixels per point.
 const WIDTH: u32 = 160;
@@ -39,8 +38,6 @@ const SCALE_PX: usize = 2;
 const BASE: [u8; 3] = [0, 255, 0];
 /// The opaque piece drawn over the keyed mount: the material test red.
 const LABEL: [u8; 3] = [230, 38, 38];
-/// The gesture body's colour, a third tone distinct from both above.
-const BODY: &str = "#3F3F46";
 
 const GLASS_SHADER: MaterialShader = MaterialShader::new(0);
 const GLASS: CaptureClass = CaptureClass::new(0);
@@ -164,64 +161,58 @@ fn a_translucent_material_and_label_fade_together() {
 }
 
 /// A `draw_context` program holding a keyed mount between scene
-/// segments: the interaction state layer records a backdrop material —
-/// a chrome member — and an opaque fill lands in the segment above it.
+/// segments: the chrome's custom part records a backdrop material — a
+/// chrome member — and an opaque fill lands in the segment above it.
 /// Under `.opacity(0.5)` on a green field the fill pixel must read as
 /// one fade of the fill; a per-piece fade lets the tinted member show
-/// through it.
+/// through it. The tapped content is clear, so nothing of its own covers
+/// the chrome beneath it.
 #[test]
 fn a_translucent_segment_over_a_chrome_member_fades_once() {
-    let env = {
-        let mut env = pumped_test_environment();
-        env.install(InteractionStyle::new(
-            ButtonMetrics::new(16.0, 8.0, 0.0, 0.0),
-            Color::srgb(0, 0, 0),
-            8.0_f64,
-        ));
-        env
+    let plan = ChromePlan {
+        shaders: vec![(GLASS_SHADER, BackdropShaderSource::wgsl(TINT_WGSL))],
+        captures: vec![(
+            GLASS,
+            MaterialCapture {
+                scale: CaptureScale::new(0.5).expect("0.5 is a valid capture scale"),
+                levels: CaptureLevels::ONE,
+                grouping: MaterialGrouping::Solo,
+                blend_space: cherenkov::BlendSpace::Linear,
+            },
+        )],
+        draws: vec![ChromeDraw {
+            shape: Live::from(chrome_rect()).into_shared(),
+            shader: GLASS_SHADER,
+            capture: GLASS,
+            // A blue shift on the captured green: the member's output
+            // cannot pass for the field beneath it.
+            effect: Live::from(MaterialEffect::new(vec![0.0, 0.0, 0.9, 0.0])).into_shared(),
+        }],
+        // An opaque red fill in the segment above the member, covering
+        // the member's whole rect.
+        fills: vec![(
+            chrome_rect(),
+            Paint::Solid(
+                waterui::color::Srgb::new(
+                    f32::from(LABEL[0]) / 255.0,
+                    f32::from(LABEL[1]) / 255.0,
+                    f32::from(LABEL[2]) / 255.0,
+                )
+                .resolve(),
+            ),
+        )],
     };
+    let mut env = pumped_test_environment();
+    env.install(plan.chrome());
     let theme = MinimalTestTheme {
-        chrome: ChromePlan {
-            shaders: vec![(GLASS_SHADER, BackdropShaderSource::wgsl(TINT_WGSL))],
-            captures: vec![(
-                GLASS,
-                MaterialCapture {
-                    scale: CaptureScale::new(0.5).expect("0.5 is a valid capture scale"),
-                    levels: CaptureLevels::ONE,
-                    grouping: MaterialGrouping::Solo,
-                    blend_space: cherenkov::BlendSpace::Linear,
-                },
-            )],
-            draws: vec![ChromeDraw {
-                shape: Live::from(chrome_rect()).into_shared(),
-                shader: GLASS_SHADER,
-                capture: GLASS,
-                // A blue shift on the captured green: the member's output
-                // cannot pass for the field beneath it.
-                effect: Live::from(MaterialEffect::new(vec![0.0, 0.0, 0.9, 0.0])).into_shared(),
-            }],
-            // An opaque red fill in the segment above the member, covering
-            // the member's whole rect.
-            fills: vec![(
-                chrome_rect(),
-                Paint::Solid(
-                    waterui::color::Srgb::new(
-                        f32::from(LABEL[0]) / 255.0,
-                        f32::from(LABEL[1]) / 255.0,
-                        f32::from(LABEL[2]) / 255.0,
-                    )
-                    .resolve(),
-                ),
-            )],
-            stateful_draws: None,
-        },
+        chrome: plan,
         ..Default::default()
     };
     let mut runtime = pumped(
         || {
             AnyView::new(zstack((
                 Color::srgb(BASE[0], BASE[1], BASE[2]),
-                Color::srgb_hex(BODY)
+                Color::transparent()
                     .gesture(TapGesture::new(), || {})
                     .opacity(0.5),
             )))
@@ -234,11 +225,10 @@ fn a_translucent_segment_over_a_chrome_member_fades_once() {
     assert_eq!(
         chrome_members(&runtime),
         1,
-        "the state layer mounted its chrome member"
+        "the custom part mounted its chrome member"
     );
 
-    // (6, 7) is inside the member's rect and the fill above it; (40, 40)
-    // is the gesture's plain body, under the same ancestor.
+    // (6, 7) is inside the member's rect and the fill above it.
     assert_same_fade(
         pixel(&mut runtime, 6, 7),
         faded(LABEL),

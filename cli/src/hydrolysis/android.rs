@@ -65,7 +65,7 @@ pub enum HydrolysisAndroidPainter {
     #[default]
     Gpu,
     /// The `RenderNode` painter drawing through the host view hierarchy.
-    /// Its own minimum is API 29; the generated app uses the maximum of
+    /// Its own minimum is API 34, `Canvas.drawMesh`; the generated app uses the maximum of
     /// that and the framework floor.
     Hwui,
 }
@@ -93,7 +93,7 @@ impl HydrolysisAndroidPainter {
             // Painter minimums, not the framework floor. `template_entry`
             // takes the maximum of these and `android-min-api-level`.
             Self::Gpu => 26,
-            Self::Hwui => 29,
+            Self::Hwui => 34,
         }
     }
 
@@ -113,6 +113,29 @@ impl HydrolysisAndroidPainter {
     pub fn band_class(self) -> Option<String> {
         match self {
             Self::Gpu => Some("HydrolysisGpuBand".to_string()),
+            Self::Hwui => None,
+        }
+    }
+
+    /// The region band `View` this painter's platform-view registry stacks
+    /// after each embedded platform view — the GPU painter's
+    /// `HydrolysisGpuRegionBand` shows the self-drawn content a frame
+    /// paints above that view (water-rs/waterui#2225). A painter that
+    /// draws in order ships none.
+    #[must_use]
+    pub fn region_band_import(self) -> Option<String> {
+        match self {
+            Self::Gpu => Some("dev.waterui.hydrolysis.gpu.HydrolysisGpuRegionBand".to_string()),
+            Self::Hwui => None,
+        }
+    }
+
+    /// The region band class name [`Self::region_band_import`] supplies,
+    /// when set.
+    #[must_use]
+    pub fn region_band_class(self) -> Option<String> {
+        match self {
+            Self::Gpu => Some("HydrolysisGpuRegionBand".to_string()),
             Self::Hwui => None,
         }
     }
@@ -608,6 +631,8 @@ async fn template_entry(
         min_api_level: framework_min.max(painter.min_api_level()),
         painter_band_import: painter.band_import(),
         painter_band_class: painter.band_class(),
+        painter_region_band_import: painter.region_band_import(),
+        painter_region_band_class: painter.region_band_class(),
     })
 }
 
@@ -862,15 +887,23 @@ pub(crate) async fn build_prepared(
 
     let platform = AndroidPlatform::new(abi);
     let triple = platform.triple();
-    let min_api_level = project
-        .resolved_framework()
-        .await?
-        .android_min_api_level()?;
+    let framework = project.resolved_framework().await?;
+    let min_api_level = framework.android_min_api_level()?;
     let context = resolve_android_build_context(host, abi, &triple, min_api_level, kotlin).await?;
 
     // The painter's feature is the launcher's own `gpu`/`hwui` selection —
     // the manifest routes it onto `hydrolysis` and `waterui`, so a `hwui`
-    // painter links no GPU stack at all.
+    // painter links no GPU stack at all. The manifest declares it only where
+    // the framework's `hydrolysis` does; a revision that predates the
+    // painter is an error here, never a Cargo feature error.
+    if !templates::generated_manifest_declares(&backend_path.join("Cargo.toml"), painter.name())? {
+        bail!(
+            "the `{painter}` Android painter is unavailable: the `hydrolysis` that {} resolves \
+             declares no `{painter}` feature. Select a painter that framework revision supports \
+             or move to a framework revision that ships it",
+            framework.origin(),
+        );
+    }
     let rust_build = RustBuild::for_project(project, &backend_path, triple.clone())
         .with_crate_type_override("cdylib")
         .with_rustc_flag(ANDROID_MAX_PAGE_SIZE_LINK_ARG)
@@ -1900,7 +1933,7 @@ mod tests {
             crate::assets::assert_settings_plugin_markers(settings);
 
             let gradle = files["app/build.gradle.kts"].as_str();
-            assert!(gradle.contains("minSdk = 31"), "gpu api floor: {gradle}");
+            assert!(gradle.contains("minSdk = 33"), "gpu api floor: {gradle}");
             crate::assets::assert_module_plugin_markers(gradle);
             assert!(
                 gradle.contains("\"dev.waterui.hydrolysis:host\""),
@@ -2016,9 +2049,11 @@ mod tests {
                     .expect("the launcher context carries Android's answers"),
                 Some("webview-system")
             );
-            let outputs =
-                crate::templates::hydrolysis::rendered_outputs(&ctx, "waterui-test-hydrolysis")
-                    .expect("hydrolysis outputs render");
+            let outputs = crate::templates::hydrolysis::rendered_outputs_with_painters(
+                &ctx,
+                "waterui-test-hydrolysis",
+            )
+            .expect("hydrolysis outputs render");
             let cargo_toml = outputs
                 .iter()
                 .find(|(path, _)| path == Path::new("Cargo.toml"))
@@ -2273,10 +2308,10 @@ mod tests {
     }
 
     /// The hwui painter renders its module and dependency coordinates and
-    /// ships no GPU band view. Its own API 29 requirement sits under the
-    /// framework floor, so the generated `minSdk` is the framework's.
+    /// ships no GPU band view. Its own API 34 requirement sits above the
+    /// framework floor, so the generated `minSdk` is the painter's.
     #[test]
-    fn the_hwui_painter_renders_at_the_framework_floor_and_mounts_no_band() -> std::io::Result<()> {
+    fn the_hwui_painter_renders_at_its_own_floor_and_mounts_no_band() -> std::io::Result<()> {
         smol::block_on(async {
             let (_machine, host) = machine_with_staged_host(Path::new("staged"), &["hwui"]);
             let (_temporary, project) = fixture_project(&host, "").await?;
@@ -2304,8 +2339,8 @@ mod tests {
 
             let gradle = files["app/build.gradle.kts"].as_str();
             assert!(
-                gradle.contains("minSdk = 31"),
-                "framework api floor: {gradle}"
+                gradle.contains("minSdk = 34"),
+                "hwui painter api floor: {gradle}"
             );
             assert!(
                 gradle.contains("\"dev.waterui.hydrolysis:hwui\""),

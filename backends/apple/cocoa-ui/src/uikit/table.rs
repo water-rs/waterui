@@ -54,6 +54,7 @@ use objc2_ui_kit::{
 use crate::EdgeInsets;
 use crate::callback::guarded;
 use crate::geometry::{IndexPath, Point};
+use crate::response::{ReportsResponse, ResponseGeometry};
 use crate::scroll_flight::{FlightPlan, ScrollFlight};
 use crate::uikit::keyboard::KeyboardTracking;
 
@@ -173,6 +174,8 @@ pub struct TableViewIvars {
     /// The hook `layoutSubviews` fires after the system layout: bounds,
     /// content-size and inset changes all land here.
     layout: TableHandler,
+    /// How the list was placed as a leaf, and its response rectangle.
+    geometry: ResponseGeometry,
 }
 
 impl TableViewIvars {
@@ -185,6 +188,7 @@ impl TableViewIvars {
             keyboard: Rc::new(KeyboardTracking::new()),
             scroll: RefCell::new(None),
             layout: RefCell::new(None),
+            geometry: ResponseGeometry::default(),
         }
     }
 
@@ -516,12 +520,16 @@ define_class!(
             });
         }
 
-        /// Keeps `UIKit`'s layout — cells and separators — then
-        /// recomputes the keyboard inset and the focused-field clearance
-        /// from the window's keyboard region (§7.1).
+        /// Commits the list's response geometry, keeps `UIKit`'s layout —
+        /// cells and separators — then recomputes the keyboard inset and
+        /// the focused-field clearance from the window's keyboard region
+        /// (§7.1). The commit opens the pass: resolving the response
+        /// measures the table's own content, which must not re-enter
+        /// `UIKit` from inside its layout.
         #[unsafe(method(layoutSubviews))]
         fn layout_subviews_override(&self) {
             guarded("TableView layoutSubviews", || {
+                self.ivars().geometry.commit(self);
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), layoutSubviews] };
                 self.ivars().keyboard.apply_layout(self);
@@ -532,6 +540,19 @@ define_class!(
                     handler(self);
                 }
             });
+        }
+
+        /// The response rectangle, or what `.a11y_geometry` names, once
+        /// the list's placement committed one.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> CGRect {
+            guarded("TableView accessibilityFrame", || {
+                self.ivars()
+                    .geometry
+                    .accessibility_frame(self)
+                    // SAFETY: see the module safety note.
+                    .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
+            })
         }
 
         /// Any frame change — a parent's layout pass translating or
@@ -563,6 +584,28 @@ define_class!(
 
     }
 );
+
+/// The cell whose self-size is the platform's row floor. On iPhone and
+/// iPad a bare cell already reports the list row floor (52 pt on iOS 27),
+/// and the stock `cell` content configuration overshoots it by its text
+/// line (53 pt). Mac Catalyst's bare cell keeps the legacy 44 pt minimum,
+/// and there the configured cell carries the convention instead (51.5 pt,
+/// #3723).
+fn stock_cell(mtm: MainThreadMarker) -> Retained<TableCell> {
+    let cell = TableCell::new(mtm);
+    if cfg!(target_abi = "macabi") {
+        let configuration = UIListContentConfiguration::cellConfiguration(mtm);
+        configuration.setText(Some(&NSString::from_str("Row")));
+        cell.setContentConfiguration(Some(ProtocolObject::from_ref(&*configuration)));
+    }
+    cell
+}
+
+impl ReportsResponse for TableView {
+    fn response_geometry(&self) -> &ResponseGeometry {
+        &self.ivars().geometry
+    }
+}
 
 impl TableView {
     /// The window's keyboard region marked this surface for a region
@@ -637,10 +680,11 @@ impl TableView {
     /// row takes when `min_row_height` is unset, measured the way a live
     /// table's self-sizing pass measures it: `sizeThatFits` on a detached
     /// cell reports a point less than `systemLayoutSizeFittingSize`, the
-    /// measurement `UITableView` actually applies.
+    /// measurement `UITableView` actually applies. [`stock_cell`] picks the
+    /// cell that carries each platform's own floor (#3723).
     #[must_use]
     pub fn stock_row_height(&self) -> f64 {
-        crate::view::fitting_size(&TableCell::new(self.mtm())).height
+        crate::view::fitting_size(&stock_cell(self.mtm())).height
     }
 
     /// The table's directional layout margins.
@@ -659,10 +703,18 @@ impl TableView {
     }
 
     /// `sectionHeaderTopPadding` (iOS 15+): the padding between the
-    /// adjusted top inset and the first section's header. `0` removes the
-    /// `.insetGrouped` stock reserve above the first card.
+    /// adjusted top inset and the first section's header. Only applies to
+    /// `.plain` tables — a no-op on `.insetGrouped`.
     pub fn set_section_header_top_padding(&self, padding: f64) {
         self.setSectionHeaderTopPadding(padding);
+    }
+
+    /// `tableHeaderView`: a real view laid out before the first section.
+    /// A nil header leaves a ~1 pt top reserve on grouped tables that the
+    /// anonymous-section suppression cannot reclaim — an explicit
+    /// near-zero-height header removes it (#3913).
+    pub fn set_table_header_view(&self, header: &UIView) {
+        self.setTableHeaderView(Some(header));
     }
 
     /// Enters or leaves editing mode.

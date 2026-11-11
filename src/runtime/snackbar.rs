@@ -46,8 +46,8 @@ use waterui_controls::{Button, ButtonStyle, button, label};
 use waterui_core::animation::Animation;
 use waterui_core::extract::State;
 use waterui_core::handler::{
-    AnyViewBuilder, BoxedEventAction, EventHandler, Handler, SharedAction, boxed_event_handler,
-    shared_action,
+    AnyViewBuilder, BoxedEventAction, EventHandler, Handler, ReportExtraction, SharedAction,
+    boxed_event_handler, shared_action,
 };
 use waterui_core::id::Identifiable;
 use waterui_core::plugin::Plugin;
@@ -59,7 +59,8 @@ use waterui_layout::padding::EdgeInsets;
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::{Alignment, hstack};
 use waterui_layout::{
-    AbsoluteLayout, Layout, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement,
+    AbsoluteLayout, Layout, LayoutError, PlacementInput, ProposalSize, Rect, Size, StretchAxis,
+    SubView, SubviewPlacement, UnitPoint,
 };
 use waterui_macros::state;
 use waterui_text::{font::Font, text::text};
@@ -375,7 +376,7 @@ struct DismissalCallback(Rc<RefCell<BoxedEventAction<SnackbarDismissReason>>>);
 
 impl DismissalCallback {
     fn call(&self, reason: SnackbarDismissReason, env: &waterui_core::Environment) {
-        (self.0.borrow_mut())(reason, env);
+        (self.0.borrow_mut())(reason, env).report_extraction();
     }
 }
 
@@ -706,7 +707,8 @@ impl SnackbarManager {
     ///
     /// # Panics
     ///
-    /// Panics if the snackbar presentation id counter overflows.
+    /// Panics if the snackbar presentation id counter overflows, which takes
+    /// more than `u64::MAX` snackbars.
     pub fn show(&self, snackbar: Snackbar) {
         let duration = snackbar.duration;
         let position = snackbar.position;
@@ -715,7 +717,7 @@ impl SnackbarManager {
             state.next_id = state
                 .next_id
                 .checked_add(1)
-                .expect("Snackbar presentation id overflow");
+                .expect("a u64 id advancing once per shown snackbar does not overflow");
             state.next_id
         };
         let item = ActiveSnackbar {
@@ -953,7 +955,7 @@ impl StackedSnackbarView {
             )
             .style(ButtonStyle::Borderless)
             .action(move |env: waterui_core::Environment| {
-                let () = action.handler.call(&captured_env.layered_on(&env));
+                action.handler.run(&captured_env.layered_on(&env));
                 manager.dismiss_presentation(id, SnackbarDismissReason::Action);
             })
         });
@@ -1024,6 +1026,15 @@ impl Layout for HugWidth {
         Size::new(child.width.clamp(self.min, self.max), child.height)
     }
 
+    /// Anchored top-leading: `place` hands the row `bounds` from its origin.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
+    }
+
     fn place(
         &self,
         bounds: Rect,
@@ -1058,8 +1069,8 @@ impl View for StackedSnackbarView {
         let content_padding = if item.snackbar.action.is_some() || item.snackbar.closeable {
             EdgeInsets::new(
                 theme.content_padding.top(),
-                theme.content_padding.bottom(),
                 theme.content_padding.leading(),
+                theme.content_padding.bottom(),
                 theme.action_trailing_padding,
             )
         } else {

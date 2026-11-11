@@ -106,11 +106,11 @@ impl Default for FloatingStyle {
 #[non_exhaustive]
 pub struct Shadow {
     /// The color of the shadow, including alpha for opacity.
-    pub color: Color,
+    color: Color,
     /// The offset of the shadow from the original element.
-    pub offset: Vector<f32>,
+    offset: Vector<f32>,
     /// The blur radius of the shadow in pixels.
-    pub radius: f32,
+    radius: f32,
     /// The shape of the element casting the shadow.
     ///
     /// Backends that rasterize the shadow themselves blur this shape, so it
@@ -118,7 +118,7 @@ pub struct Shadow {
     /// or the shadow will not follow the element's outline. It carries the
     /// shape's [`ShapeKind`](waterui_shape::ShapeKind), so a normalized corner
     /// radius and an absolute one can never be confused.
-    pub silhouette: ClipShape,
+    silhouette: ClipShape,
 }
 
 impl Shadow {
@@ -327,11 +327,11 @@ impl Default for Anchor {
 #[non_exhaustive]
 pub struct Scale {
     /// Scale factor along X axis (1.0 = no scale)
-    pub x: Computed<f32>,
+    x: Computed<f32>,
     /// Scale factor along Y axis (1.0 = no scale)
-    pub y: Computed<f32>,
+    y: Computed<f32>,
     /// Anchor point for the scale transform
-    pub anchor: Anchor,
+    anchor: Anchor,
 }
 
 impl Scale {
@@ -428,9 +428,9 @@ impl Scale {
 #[non_exhaustive]
 pub struct Rotation {
     /// Rotation angle in degrees (positive = clockwise)
-    pub angle: Computed<f32>,
+    angle: Computed<f32>,
     /// Anchor point for the rotation transform
-    pub anchor: Anchor,
+    anchor: Anchor,
 }
 
 impl Rotation {

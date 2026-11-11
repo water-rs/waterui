@@ -104,7 +104,13 @@ impl ImageAsset {
 #[cfg(feature = "media")]
 impl View for ImageAsset {
     fn body(self, env: &Environment) -> impl View {
-        Photo::new(self.url(ResourceContext::from_environment(env)))
+        let Some(resources) = ResourceContext::from_environment(env) else {
+            waterui_core::contract_violation!(
+                "an image asset needs the host's ResourceContext in its environment"
+            );
+            return None;
+        };
+        Some(Photo::new(self.url(resources)))
     }
 
     /// Matches the non-resizable `Photo` constructed by `body`, independent of its URL.
@@ -157,7 +163,13 @@ impl VideoAsset {
 #[cfg(feature = "video")]
 impl View for VideoAsset {
     fn body(self, env: &Environment) -> impl View {
-        self.raw(ResourceContext::from_environment(env))
+        let Some(resources) = ResourceContext::from_environment(env) else {
+            waterui_core::contract_violation!(
+                "a video asset needs the host's ResourceContext in its environment"
+            );
+            return None;
+        };
+        Some(self.raw(resources))
     }
 
     /// Matches the default fit-mode `Video` constructed by `body`, independent of its URL.

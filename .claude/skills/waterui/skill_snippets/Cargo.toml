@@ -24,12 +24,11 @@ compile-gate-tests = []
 [dependencies]
 # `ts` is what SKILL.md's "TypeScript views" snippets compile against:
 # `tsx!`, `TsProps`, and `waterui::ts::schema` exist only under it.
-waterui = { workspace = true, features = ["webview", "flow-markdown", "media", "video", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list", "ts", "dialog"] }
+waterui = { workspace = true, features = ["webview", "flow-markdown", "media", "video", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list", "ts", "dialog", "canvas"] }
 waterui-icons-material-icon.workspace = true
 waterui-icons-lucide.workspace = true
 # Direct-crate dependencies the skill's own snippets name.
 waterui-barcode.workspace = true                             # media.md, Barcode
-waterui-canvas.workspace = true                              # media.md, Canvas
 waterui-chart.workspace = true                               # media.md, charts
 # i18n.md, formatting: dates, numbers and currency.
 waterui-locale = { workspace = true, features = ["datetime", "number"] }

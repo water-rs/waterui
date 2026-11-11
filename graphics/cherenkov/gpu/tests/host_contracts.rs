@@ -41,7 +41,7 @@ fn shared_device()
         _ => wgpu::Features::empty(),
     };
     let (device, queue) = block!(adapter.request_device(&wgpu::DeviceDescriptor {
-        required_features,
+        required_features: required_features | wgpu::Features::SHADER_F16,
         ..wgpu::DeviceDescriptor::default()
     }))?;
     Ok((instance, adapter, device, queue))
@@ -113,13 +113,14 @@ impl Effect for CopyEffect {
         output: &EffectOutput<'_>,
         encoder: &mut wgpu::CommandEncoder,
     ) -> EffectRenderResult {
-        self.0.send(input.timing).expect("timing receiver alive");
+        self.0.send(input.timing()).expect("timing receiver alive");
+        let (width, height) = input.size();
         encoder.copy_texture_to_texture(
-            input.texture.as_image_copy(),
-            output.texture.as_image_copy(),
+            input.texture().as_image_copy(),
+            output.texture().as_image_copy(),
             wgpu::Extent3d {
-                width: input.width,
-                height: input.height,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
         );

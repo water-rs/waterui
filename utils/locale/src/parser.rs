@@ -93,18 +93,18 @@ impl PluralForms {
 pub struct DualPluralForms {
     /// one + one
     #[serde(default)]
-    pub one_one: Option<String>,
+    one_one: Option<String>,
 
     /// one + other
     #[serde(default)]
-    pub one_other: Option<String>,
+    one_other: Option<String>,
 
     /// other + one
     #[serde(default)]
-    pub other_one: Option<String>,
+    other_one: Option<String>,
 
     /// other + other (fallback, required)
-    pub other_other: String,
+    other_other: String,
     // Additional combinations can be added as needed
     // zero_zero, zero_one, etc.
 }

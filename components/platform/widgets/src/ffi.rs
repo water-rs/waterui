@@ -1,6 +1,6 @@
 //! The binary boundary the generated extension calls across.
 //!
-//! [`#[widget]`](macro@crate::widget)-attributed functions are exported as
+//! `#[waterui::widget]`-attributed functions are exported as
 //! `waterui_widget_<crate>_<fn>` C symbols that take a JSON [`WidgetContext`]
 //! and return a [`Buffer`] — an owned, leaked byte buffer carrying the
 //! serialized [`Timeline`]. The extension frees each buffer through
@@ -19,11 +19,11 @@ use crate::schema::{Timeline, WidgetContext};
 #[non_exhaustive]
 pub struct Buffer {
     /// The buffer's first byte.
-    pub ptr: *const u8,
+    ptr: *const u8,
     /// Bytes initialized at `ptr`.
-    pub len: usize,
+    len: usize,
     /// The allocation's capacity.
-    pub cap: usize,
+    cap: usize,
 }
 
 impl Buffer {

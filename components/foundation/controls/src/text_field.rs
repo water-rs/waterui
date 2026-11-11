@@ -24,28 +24,28 @@ pub struct TextFieldConfig {
     /// has a name to announce, even when
     /// [`LabelDisplayMode::Hidden`](crate::label::LabelDisplayMode::Hidden)
     /// removes the visible chrome.
-    pub label: Label,
+    label: Label,
     /// The binding to the text value.
-    pub value: Binding<StyledStr>,
+    value: Binding<StyledStr>,
     /// The placeholder text shown when the field is empty.
-    pub prompt: Text,
+    prompt: Text,
     /// The type of keyboard to use for input.
-    pub keyboard: KeyboardType,
+    keyboard: KeyboardType,
     /// The semantic content type the field declares for autofill.
     ///
     /// `None` declares none — the field is not offered to autofill services.
-    pub content_type: Option<ContentType>,
+    content_type: Option<ContentType>,
     /// Optional selected-text menu items.
     ///
     /// These actions are shown by native text selection UI.
-    pub selection_menu: Computed<Vec<MenuItem>>,
+    selection_menu: Computed<Vec<MenuItem>>,
     /// Maximum number of lines the field renders. `None` removes the limit.
-    pub line_limit: Option<NonZeroUsize>,
+    line_limit: Option<NonZeroUsize>,
     /// The action run when the user submits the field with Return or Enter.
     ///
     /// A field without one leaves Return unconsumed, so it bubbles to the
     /// field's ancestors like any other key it does not use.
-    pub on_submit: Option<SharedAction>,
+    on_submit: Option<SharedAction>,
 }
 
 impl TextFieldConfig {
@@ -125,24 +125,24 @@ impl TextFieldConfig {
 #[non_exhaustive]
 pub struct ResolvedTextFieldConfig {
     /// The label displayed for the text field.
-    pub label: Label,
+    label: Label,
     /// The binding to the text value.
-    pub value: Binding<StyledStr>,
+    value: Binding<StyledStr>,
     /// The resolved placeholder text shown when the field is empty.
-    pub prompt: TextConfig,
+    prompt: TextConfig,
     /// The type of keyboard to use for input.
-    pub keyboard: KeyboardType,
+    keyboard: KeyboardType,
     /// The semantic content type the field declares for autofill.
-    pub content_type: Option<ContentType>,
+    content_type: Option<ContentType>,
     /// Optional selected-text menu items resolved for the effective locale.
-    pub selection_menu: Computed<Vec<ResolvedMenuItem>>,
+    selection_menu: Computed<Vec<ResolvedMenuItem>>,
     /// Maximum number of lines the field renders. `None` removes the limit.
-    pub line_limit: Option<NonZeroUsize>,
+    line_limit: Option<NonZeroUsize>,
     /// The action run when the user submits the field with Return or Enter.
     ///
     /// A field without one leaves Return unconsumed, so it bubbles to the
     /// field's ancestors like any other key it does not use.
-    pub on_submit: Option<SharedAction>,
+    on_submit: Option<SharedAction>,
 }
 
 impl ResolvedTextFieldConfig {

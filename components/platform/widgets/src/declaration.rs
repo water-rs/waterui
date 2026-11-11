@@ -19,16 +19,16 @@ pub struct WidgetDeclaration {
     /// The attributed function's name — the `waterui_widget_*` export's
     /// suffix after the crate name.
     #[serde(rename = "fn")]
-    pub function: String,
+    function: String,
     /// The `WidgetConfiguration` kind string; defaults to `function`.
-    pub kind: String,
+    kind: String,
     /// The name shown in the widget gallery.
-    pub display_name: String,
+    display_name: String,
     /// The description shown in the widget gallery.
-    pub description: String,
+    description: String,
     /// The `WidgetFamily` case names the widget supports
     /// (`systemSmall`, `systemMedium`, …).
-    pub families: Vec<String>,
+    families: Vec<String>,
 }
 
 impl WidgetDeclaration {

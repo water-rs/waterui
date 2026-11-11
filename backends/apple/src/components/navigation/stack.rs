@@ -26,7 +26,9 @@ use waterui::navigation::{
     AnyNavigationTransition, CustomNavigationController, NativeNavigationTransition,
     NavigationController, NavigationStack, NavigationTransaction, resolve_navigation_root,
 };
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 
 use crate::contract::{NativeLeaf, RenderContext};
 use crate::dispatch::Dispatcher;
@@ -187,6 +189,13 @@ fn retire_page(leaf: LiveChild, env: &Environment, ghosts: &Ghosts) {
 struct Fill;
 
 impl SubView for Fill {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(Size::new(0.0, 0.0))
     }
@@ -225,8 +234,8 @@ mod platform {
     use waterui::resolve::Resolvable;
     use waterui::theme::color::Foreground;
 
-    use crate::components::text::platform_color;
     use crate::contract::{KeepAlive, NativeLeaf, RenderContext, Renderer};
+    use crate::theme::platform_color;
     use crate::transition::live::LiveChild;
 
     use super::super::bar::{BarItem, BarState, bar_item_frame, search_prompt};
@@ -455,6 +464,12 @@ mod platform {
             // into a ghost the host must not keep alive.
             crate::primary_content::forward_current(&host, |host| {
                 view::subviews(host).into_iter().next()
+            });
+            // The navigation bar's top-edge tracking surface: the page's
+            // declared scroll view, so large-title collapse and the search
+            // field's pull-down reveal follow the list.
+            controller.set_top_scroll_surface(|controller| {
+                crate::primary_content::declared_scroll_view(controller.view()?.as_ref())
             });
             let root = matches!(mount, Mount::Root);
             let state = Rc::new(RefCell::new(core::mem::take(&mut view.state)));
@@ -798,7 +813,10 @@ mod platform {
             // platform's own `.searchable` presentation; `Stacked` would
             // pin it under the bar.
             placement: None,
-            hides_when_scrolling: Some(false),
+            // A `.searchable` page declares no display mode, so the field
+            // keeps the platform's own behaviour: tucked under the title and
+            // revealed by pulling the content down.
+            hides_when_scrolling: None,
         };
         let binding = search.text().clone();
         controller.set_search_change_handler(move |text| {

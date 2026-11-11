@@ -410,6 +410,20 @@ fn record_ops_static(c: &mut cherenkov::Recorder, ops: &[Op], live: &[LiveRun]) 
     }
 }
 
+/// Records [`record_ops_static`]'s content under the frame's drift, when it
+/// has one.
+fn record_ops_drifted(
+    c: &mut cherenkov::Recorder,
+    ops: &[Op],
+    live: &[LiveRun],
+    drift: Option<kurbo::Affine>,
+) {
+    match drift {
+        Some(drift) => c.transform(Fixed(drift), |c| record_ops_static(c, ops, live)),
+        None => record_ops_static(c, ops, live),
+    }
+}
+
 /// Records `ops` with `live` slot bindings and `motions` animated paint
 /// bindings, reached only on scenes that carry motions.
 #[expect(
@@ -563,7 +577,7 @@ pub struct Cherenkov {
     composition_diag: Option<cherenkov_gpu::composition::Sink>,
     /// The frame the last submit rendered and whether it drew anything,
     /// until [`Engine::completion`] arms its signal.
-    awaiting_completion: Option<(u64, bool)>,
+    awaiting_completion: Option<u64>,
 }
 
 /// `--present` state: the engine runs on a bench-owned shared device so a
@@ -1791,6 +1805,17 @@ impl Engine for Cherenkov {
         &self.info
     }
 
+    fn gpu_timing_unavailable(&self) -> Option<&'static str> {
+        // `GpuConfig::timestamps` enables the queries exactly when the
+        // adapter supports them.
+        (!self
+            .shared_device
+            .device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY))
+        .then_some("the device does not support GPU timestamp queries")
+    }
+
     fn supported(&self) -> BTreeSet<Feature> {
         cherenkov_features().into_iter().collect()
     }
@@ -1936,21 +1961,28 @@ impl Engine for Cherenkov {
             }
             self.motion_committed = true;
         }
-        // Motion and live scenes record their content once: later encodes
-        // only set live bindings and advance the clock. Static scenes keep
-        // re-recording each frame so their numbers stay comparable.
-        if first_frame || !(self.has_motion || self.has_live || input.scroll_offset.is_some()) {
+        // Content is recorded on the first frame and again on every frame
+        // the bench drifts — each frame of a static scene, and a motion
+        // scene's frames once its motion has come to rest — so no frame
+        // repeats the last. Otherwise encodes only set live bindings and
+        // advance the clock.
+        if first_frame || input.drift.is_some() {
             surface.update(|tx| {
                 if self.has_motion {
                     for cl in &self.content_layers {
-                        tx[cl.handle(surface)]
-                            .record(|c| record_ops(c, &cl.ops, &cl.live, &cl.motions));
+                        tx[cl.handle(surface)].record(|c| match input.drift {
+                            Some(drift) => c.transform(Fixed(drift), |c| {
+                                record_ops(c, &cl.ops, &cl.live, &cl.motions);
+                            }),
+                            None => record_ops(c, &cl.ops, &cl.live, &cl.motions),
+                        });
                     }
                 } else {
                     for cl in &self.content_layers {
                         // A motionless scene's record keeps the dev shape:
                         // no motions reach it at all.
-                        tx[cl.handle(surface)].record(|c| record_ops_static(c, &cl.ops, &cl.live));
+                        tx[cl.handle(surface)]
+                            .record(|c| record_ops_drifted(c, &cl.ops, &cl.live, input.drift));
                     }
                 }
             });
@@ -1992,7 +2024,7 @@ impl Engine for Cherenkov {
         )?;
         let stats = self.engine.stats();
         let render_seconds = render_at.elapsed().as_secs_f64();
-        self.awaiting_completion = Some((frame, stats.frame.is_some()));
+        self.awaiting_completion = Some(frame);
         let readback_at = std::time::Instant::now();
         let image = if !readback {
             None
@@ -2027,24 +2059,33 @@ impl Engine for Cherenkov {
         })
     }
 
+    fn animating(&self) -> bool {
+        self.surface
+            .as_ref()
+            .is_some_and(|surface| matches!(surface.next_frame(), cherenkov::Next::At { .. }))
+    }
+
+    fn drew_nothing(&self) -> bool {
+        // A surface marked changed whose content leaves the frame empty
+        // (a pixel-snapped scroll offset that did not move the content) is
+        // reported as rendered but records no pass, so it submits no GPU
+        // work and has no timestamps.
+        let stats = self.engine.stats();
+        stats.frame.is_none() || stats.passes == 0
+    }
+
     fn completion_signal(&self) -> crate::CompletionSignal {
         crate::CompletionSignal::Measured(crate::Completion::WGPU_SIGNAL)
     }
 
     fn completion(&mut self) -> Result<Option<crate::Completion>, BenchError> {
-        let (frame, drew) = self.awaiting_completion.take().ok_or_else(|| {
+        self.awaiting_completion.take().ok_or_else(|| {
             BenchError::Engine("cherenkov: completion requested without a submitted frame".into())
         })?;
-        // A render that drew nothing submitted no work of its own, and the
-        // queue's latest submission would belong to an earlier frame.
-        if !drew {
-            return Err(BenchError::Engine(format!(
-                "cherenkov: frame {frame} drew nothing, so it has no GPU completion to time"
-            )));
-        }
-        // Nothing has been submitted on this device since the frame's
-        // submit returned, so the queue's latest submission is the frame's
-        // last (its readback's when it read back, which completes later).
+        // For changed content this waits for the frame's last submission.
+        // An unchanged frame reuses the existing image: it still depends on
+        // any earlier work producing that image, but has no new GPU timing.
+        // The queue callback observes readiness in both cases.
         Ok(Some(crate::Completion::on_submitted_work_done(
             &self.shared_device.queue,
         )))
@@ -2074,15 +2115,16 @@ impl Engine for Cherenkov {
     fn counters(&self) -> Counters {
         let mut counters = self.counters.clone();
         let stats = self.engine.stats();
-        let memory = self.engine.memory();
         counters.dispatches = Some(stats.draws);
         counters.passes = Some(stats.passes);
-        counters.memory_gpu_bytes = Some(memory.gpu.0);
-        counters.memory_cpu_bytes = Some(memory.cpu.0);
-        counters.memory_backdrop_capture_bytes = Some(memory.backdrop_captures.0);
-        counters.memory_backdrop_capture_format = memory.backdrop_capture_format;
-        counters.memory_filter_target_bytes = Some(memory.filter_targets.0);
-        counters.memory_filter_image_bytes = Some(memory.filter_images.0);
+        if let Ok(memory) = self.engine.memory() {
+            counters.memory_gpu_bytes = Some(memory.gpu.0);
+            counters.memory_cpu_bytes = Some(memory.cpu.0);
+            counters.memory_backdrop_capture_bytes = Some(memory.backdrop_captures.0);
+            counters.memory_backdrop_capture_format = memory.backdrop_capture_format;
+            counters.memory_filter_target_bytes = Some(memory.filter_targets.0);
+            counters.memory_filter_image_bytes = Some(memory.filter_images.0);
+        }
         counters
     }
 
@@ -2110,13 +2152,18 @@ impl Engine for Cherenkov {
         let usage = self.engine.memory();
         let adapter_info = self.shared_device.adapter.get_info();
         AdapterMemory {
-            engine: Reading::Measured(EngineBytes {
-                cpu_bytes: usage.cpu.0,
-                gpu_bytes: usage.gpu.0,
-                backdrop_capture_bytes: usage.backdrop_captures.0,
-                filter_target_bytes: usage.filter_targets.0,
-                filter_image_bytes: usage.filter_images.0,
-            }),
+            engine: usage.map_or_else(
+                |error| Reading::unavailable(error.to_string()),
+                |usage| {
+                    Reading::Measured(EngineBytes {
+                        cpu_bytes: usage.cpu.0,
+                        gpu_bytes: usage.gpu.0,
+                        backdrop_capture_bytes: usage.backdrop_captures.0,
+                        filter_target_bytes: usage.filter_targets.0,
+                        filter_image_bytes: usage.filter_images.0,
+                    })
+                },
+            ),
             wgpu_allocator: wgpu_allocator(&self.shared_device.device, adapter_info.backend),
             skia_budgeted: Reading::unavailable("not a Skia adapter"),
             vk_memory_budget: wgpu_vk_memory_budget(

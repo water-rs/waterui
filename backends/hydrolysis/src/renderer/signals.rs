@@ -301,12 +301,6 @@ impl<T: 'static, G> SubscribedSnapshot<T, G> {
     }
 }
 
-/// The renderer-local animation-key discriminator of a toggle's
-/// thumb-progress slot on its owning node. It must stay disjoint from the
-/// discriminators the interaction engine claims for the same owner address
-/// (`input/interaction.rs`'s `animation_discriminator`).
-const TOGGLE_PROGRESS_KEY: usize = 0x0100_0008;
-
 impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Pushes a watcher guard onto the store the current phase reads into:
     /// the reading node's `subscriptions` while it records, its
@@ -317,6 +311,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             Some(reader) => reader.store.borrow_mut().push(guard),
             None => self.outside_frame_retains.push(guard),
         }
+    }
+
+    /// The frame triggers, for a watcher that outlives the read and only
+    /// needs to wake the pump without re-encoding the tree.
+    pub(crate) fn frame_signals(&self) -> FrameSignals {
+        self.signals.clone()
     }
 
     /// The cell an outside-reader watch marks, shared by the identity-less
@@ -487,57 +487,29 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.signals.set_frame_clock(at);
     }
 
-    pub(crate) const fn frame_instant(&self) -> Instant {
-        self.frame_instant
+    /// Records when the frame about to render will be presented, as the
+    /// platform reported it, or clears it for a platform that reports none.
+    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+    pub(crate) const fn set_presentation_target(&mut self, target: Option<Instant>) {
+        self.presentation_target = target;
     }
 
-    /// Resolves a boolean toggle signal into its animated progress and the
-    /// current target value (the direction the animation is heading).
-    ///
-    /// The slot is keyed on `owner`, the retained toggle state, never on the
-    /// signal (see [`Self::owned_scalar_key`]).
-    pub(crate) fn resolve_toggle_progress<S, T: 'static>(
-        &mut self,
-        signal: &S,
-        owner: &Rc<T>,
-        default_animation: Animation,
-    ) -> (f32, bool)
-    where
-        S: Signal<Output = bool> + Clone + 'static,
-    {
-        let (subscription, selected) = SubscribedSnapshot::new(signal);
-        let now = self.frame_instant;
-        let target = if selected { 1.0 } else { 0.0 };
-        let key = self.owned_scalar_key(owner, TOGGLE_PROGRESS_KEY);
-        let handle = self.animation_controller.bind_scalar_target(
-            key,
-            target,
-            default_animation.clone(),
-            now,
-        );
-        let watcher_handle = handle.clone();
-        let owner = self.mark_owner_for_animation(key, Dirty::PAINT);
-        let clock = self.signals.clone();
-        // A subscription's registration emission echoes the value `bind`
-        // already sampled — only a later fire may mark the owner.
-        let armed = Rc::new(Cell::new(false));
-        let armed_for_watch = Rc::clone(&armed);
-        let guard = subscription.activate(move |update| {
-            let target = if *update.value() { 1.0 } else { 0.0 };
-            let animation = update
-                .metadata()
-                .try_get::<Animation>()
-                .unwrap_or_else(|| default_animation.clone());
-            watcher_handle.apply_target(target, Some(animation), clock.frame_clock());
-            if armed_for_watch.get()
-                && let Some(cell) = owner.upgrade()
-            {
-                cell.mark(Dirty::PAINT);
-            }
-        });
-        armed.set(true);
-        self.push_guard(Retain::new(guard));
-        (handle.sample(now).clamp(0.0, 1.0), selected)
+    /// The time the engine renders the next frame against: the platform's
+    /// reported presentation time, else the frame's own instant — the clock
+    /// every animation Hydrolysis samples reads, so an operand animated
+    /// inside the engine advances with the presented frames rather than
+    /// with the wall clock.
+    #[cfg(hydrolysis_gpu_painter)]
+    pub(crate) const fn frame_time(&self) -> cherenkov::FrameTime {
+        #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+        if let Some(target) = self.presentation_target {
+            return cherenkov::FrameTime::presented_at(target);
+        }
+        cherenkov::FrameTime::unpresented_at(self.frame_instant)
+    }
+
+    pub(crate) const fn frame_instant(&self) -> Instant {
+        self.frame_instant
     }
 
     /// Registers `key`'s animation slot against the node now reading and
@@ -607,19 +579,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             .bind_radio_indicator(key, selected, motion, self.frame_instant)
     }
 
-    /// Samples the free-running repeating phase (an indeterminate progress
-    /// indicator) of the view retained as `owner`, so the phase survives
-    /// frames and structural changes around it.
-    pub(crate) fn sample_repeating_motion<T: 'static>(
-        &mut self,
-        cycle: Duration,
-        owner: &Rc<T>,
-    ) -> Duration {
-        let key = AnimationKey::renderer_local_repeating(self.animation_owner_pins.pin(owner));
-        self.animation_controller
-            .bind_repeating_phase(key, cycle, self.frame_instant)
-    }
-
     fn navigation_animating(&self, now: Instant) -> bool {
         self.navigation.slots.values().any(|slot| {
             slot.transition
@@ -635,7 +594,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Content demand for the host's animation cadence. Input-release and
     /// navigation motion keep the fast range regardless of scalar fades.
     #[cfg(any(test, all(target_os = "android", hydrolysis_gpu_painter)))]
-    pub(crate) fn animation_refresh_range(&self) -> Option<cherenkov::RefreshRange> {
+    pub(crate) fn animation_refresh_range(&self) -> Option<cherenkov_record::RefreshRange> {
         let now = self.frame_instant;
         if self.has_pending_interaction_releases(now)
             || self.navigation_animating(now)
@@ -644,7 +603,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         {
             Some(cherenkov_record::tree::RATE_FAST)
         } else {
-            self.animation_controller.refresh_range(now)
+            self.animation_controller.refresh_range()
         }
     }
 
@@ -671,19 +630,25 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         ticked || pending_releases || self.navigation_animating(now)
     }
 
-    pub fn animations_active(&self) -> bool {
-        self.animations_active_with(PerpetualAnimation::Counts)
+    /// Whether an animation the engine runs — a layer track or an operand of
+    /// a recording — is still running as of the last presented frame.
+    ///
+    /// The engine samples these itself, so they are work for the settle
+    /// queries only and never schedule a host frame. A build without the
+    /// engine never fills them, so they stay at rest.
+    pub(crate) const fn engine_tracks_active(&self, perpetual: PerpetualAnimation) -> bool {
+        match perpetual {
+            PerpetualAnimation::Counts => self.engine_tracks.finite || self.engine_tracks.perpetual,
+            PerpetualAnimation::Ignored => self.engine_tracks.finite,
+        }
     }
 
-    /// [`Self::animations_active`] with a choice of whether repeat-forever
-    /// animations count.
-    pub(crate) fn animations_active_with(&self, perpetual: PerpetualAnimation) -> bool {
+    /// Whether a host-side animation is still running: a controller slot, an
+    /// interaction release or a navigation transition. All of them finish,
+    /// so the answer does not depend on whether perpetual work counts.
+    pub fn animations_active(&self) -> bool {
         let now = self.frame_instant;
-        let controller_active = match perpetual {
-            PerpetualAnimation::Counts => self.animation_controller.has_active(now),
-            PerpetualAnimation::Ignored => self.animation_controller.has_finite_active(now),
-        };
-        controller_active
+        self.animation_controller.has_active()
             || self.has_pending_interaction_releases(now)
             || self.navigation_animating(now)
     }

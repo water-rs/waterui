@@ -23,6 +23,7 @@ use core::fmt;
 use nami::{Signal as _, SignalExt as _};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::time::Duration;
+use waterui_core::handler::ReportExtraction as _;
 use waterui_core::{
     Binding, Computed, Environment, NativeView, SerialDispatch, binding, configurable,
     layout::StretchAxis,
@@ -725,19 +726,19 @@ impl TrackCatalog {
 #[non_exhaustive]
 pub struct PlaybackPolicy {
     /// `true` for realtime streams (low-latency/live), `false` for VOD/static files.
-    pub realtime: bool,
+    realtime: bool,
     /// Minimum buffered duration before starting playback for VOD.
-    pub vod_start_buffer_ms: u32,
+    vod_start_buffer_ms: u32,
     /// Minimum buffered duration to resume after a VOD stall.
-    pub vod_resume_buffer_ms: u32,
+    vod_resume_buffer_ms: u32,
     /// Buffer level below which VOD enters buffering state.
-    pub vod_stall_buffer_ms: u32,
+    vod_stall_buffer_ms: u32,
     /// For realtime mode, drop video frames that are later than this threshold.
-    pub live_max_video_late_ms: u32,
+    live_max_video_late_ms: u32,
     /// Bounded segmented-network and adaptive-selection policy.
-    pub network: NetworkPlaybackPolicy,
+    network: NetworkPlaybackPolicy,
     /// Required platform power path for this session.
-    pub power: PlaybackPowerPolicy,
+    power: PlaybackPowerPolicy,
 }
 
 impl PlaybackPolicy {
@@ -1320,7 +1321,9 @@ impl QueuedVideoEvents {
 
     fn emit(&self, event: Event) {
         self.events.deliver(event, |event| {
-            (self.handler.borrow_mut())(event, &self.env);
+            // An event handler whose extractors fail does not run; the event
+            // is dropped and the failure reported.
+            (self.handler.borrow_mut())(event, &self.env).report_extraction();
         });
     }
 }
@@ -1882,6 +1885,7 @@ mod tests {
                     callback_slot.borrow().as_ref().expect("callback installed")(Event::Ended);
                 }
                 inside.set(false);
+                Ok(())
             }
         });
         let callback = VideoEventHandler::new(handler).bind_callback(Environment::new());
@@ -1920,6 +1924,7 @@ mod tests {
                         .call(Event::Ended);
                 }
                 inside.set(false);
+                Ok(())
             }
         });
         let bound = VideoEventHandler::new(handler).bind(&Environment::new());

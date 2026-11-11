@@ -47,26 +47,63 @@ pub fn artifact_snapshot_path(suite: &str, case: &str, stage: &str) -> PathBuf {
     artifact_case_dir(suite, case).join(format!("{stage}.png"))
 }
 
+/// A toggle control with no parts, 10 by 20 points and 3 points from its
+/// label: what a test style's toggles measure, place and hit-test as.
+#[must_use]
+pub fn plain_toggle_control() -> crate::theme::ToggleControl {
+    crate::theme::ToggleControl::new(
+        kurbo::Size::new(10.0, 20.0),
+        crate::theme::Motion::uniform(waterui::animation::Animation::linear(
+            std::time::Duration::from_millis(100),
+        )),
+    )
+    .label_spacing(3.0)
+}
+
+/// A stepper look with ends 14 by 14 points, 4 points apart and 8 points from
+/// the label, drawing nothing: what a test style's steppers measure, place
+/// and hit-test as.
+#[must_use]
+pub fn plain_stepper_look() -> crate::theme::StepperLook {
+    use crate::theme::{Chrome, CornerShape, FocusIndicator, Motion, PressFeedback, StateLayer};
+    use crate::theme::{StepperLook, Surface};
+    let end = || {
+        Chrome::new(
+            Surface::clear(CornerShape::radius(0.0)),
+            StateLayer::new(waterui::graphics::Color::new(
+                waterui::theme::color::Foreground,
+            )),
+            PressFeedback::new(),
+            FocusIndicator::Tint,
+            Motion::uniform(waterui::animation::Animation::linear(
+                std::time::Duration::from_millis(15),
+            )),
+        )
+    };
+    StepperLook::new(end(), end(), kurbo::Size::new(14.0, 14.0))
+        .spacing(4.0)
+        .label_spacing(8.0)
+}
+
 mod test_style {
     use std::time::Duration;
 
     use crate::theme::{
-        BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion,
-        ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle,
-        ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
-        SliderValueIndicatorMetrics, StepperEnd, StepperMetrics, TabItemGeometry, TabItemLayout,
-        TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
-        WidgetInteractionState, WidgetTheme,
+        BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, DividerMetrics, DragMapping,
+        FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionMotion, Knob,
+        Label, LinearProgressLook, ListMetrics, Motion, NavigationMetrics, NavigationMotion,
+        PickerMetrics, PressFeedback, ProgressControl, ProgressSpec, RadioIndicatorState,
+        RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook,
+        StepperSpec, Surface, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics,
+        TextCaretMotion, TextContextMenuMetrics, ToggleSpec, WidgetInteractionState, WidgetTheme,
     };
-    use kurbo::{BezPath, Point, Rect};
+    use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
+    use cherenkov_record::{Paint, Recorder};
+    use kurbo::{Point, Rect};
     use waterui::animation::Animation;
     use waterui::{Color, EasingCurve, Environment};
-    use waterui_controls::ControlSize;
-    use waterui_controls::button::ButtonStyle;
-    use waterui_controls::toggle::ToggleStyle;
     use waterui_form::picker::PickerStyle;
     use waterui_graphics::color::Srgb;
-    use waterui_graphics::draw::{Paint, Recorder};
     use waterui_text::font::Font;
 
     type TokenInstaller = std::sync::Arc<dyn Fn(&mut Environment) + Send + Sync>;
@@ -149,28 +186,6 @@ mod test_style {
             }
         }
 
-        fn progress_motion(&self) -> ProgressMotion {
-            ProgressMotion {
-                linear_determinate: Animation::bezier(
-                    Duration::from_millis(250),
-                    0.4,
-                    0.0,
-                    0.6,
-                    1.0,
-                ),
-                circular_determinate: Animation::bezier(
-                    Duration::from_millis(500),
-                    0.0,
-                    0.0,
-                    0.2,
-                    1.0,
-                ),
-                linear_indeterminate_cycle: Duration::from_secs(2),
-                loading_cycle: Duration::from_millis(4_666),
-                circular_indeterminate_cycle: Duration::from_millis(5_332),
-            }
-        }
-
         fn text_caret_motion(&self) -> TextCaretMotion {
             TextCaretMotion {
                 fade_cycle_duration: Duration::from_millis(1_060),
@@ -188,76 +203,38 @@ mod test_style {
             }
         }
 
-        fn button_metrics(&self, _style: ButtonStyle, _size: ControlSize) -> ButtonMetrics {
-            ButtonMetrics {
-                padding_x: 1.0,
-                padding_y: 2.0,
-                min_width: 123.0,
-                min_height: 45.0,
-            }
+        /// A button with no visible chrome: a clear surface, a state layer
+        /// with no opacity in any state and no press feedback, so a test
+        /// sees the button's content and layout alone.
+        fn button(&self, _spec: &ButtonSpec, _env: &Environment) -> ButtonLook {
+            let chrome = Chrome::new(
+                Surface::clear(CornerShape::radius(0.0)),
+                StateLayer::new(Color::new(waterui::theme::color::Foreground)),
+                PressFeedback::new(),
+                FocusIndicator::Tint,
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            )
+            // The theme's `touch_delay`.
+            .hit(HitRegion::NONE.press_delay(Duration::from_millis(150)));
+            ButtonLook::new(chrome, Label::new())
+                .padding(1.0, 2.0)
+                .minimum_size(kurbo::Size::new(123.0, 45.0))
         }
 
-        fn draw_button_chrome(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _style: ButtonStyle,
-            _icon_only: bool,
-            _state: WidgetInteractionState,
-        ) {
+        fn switch(&self, spec: &ToggleSpec, _env: &Environment) -> SwitchLook {
+            SwitchLook::new(
+                super::plain_toggle_control(),
+                SwitchDrag::new(6.0, spec.direction()),
+            )
         }
 
-        fn toggle_metrics(&self, _style: ToggleStyle) -> ToggleMetrics {
-            ToggleMetrics {
-                width: 10.0,
-                height: 20.0,
-                label_spacing: 3.0,
-            }
+        fn checkbox(&self, _spec: &ToggleSpec, _env: &Environment) -> CheckboxLook {
+            CheckboxLook::new(super::plain_toggle_control())
         }
 
-        fn toggle_value_animation(&self) -> Animation {
-            Animation::linear(Duration::from_millis(100))
+        fn stepper(&self, _spec: &StepperSpec, _env: &Environment) -> StepperLook {
+            super::plain_stepper_look()
         }
-
-        fn draw_toggle_switch(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _progress: f32,
-            _selected: bool,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn draw_toggle_checkbox(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _progress: f32,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn stepper_metrics(&self) -> StepperMetrics {
-            StepperMetrics {
-                button_min_size: 12.0,
-                button_max_size: 18.0,
-                button_intrinsic_size: 14.0,
-                button_spacing: 4.0,
-                label_spacing: 8.0,
-            }
-        }
-
-        fn draw_stepper_button(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _end: StepperEnd,
-            _state: WidgetInteractionState,
-        ) {
-        }
-        fn draw_stepper_decrement_icon(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_stepper_increment_icon(&self, _recorder: &mut Recorder, _bounds: Rect) {}
 
         fn input_field_metrics(&self) -> InputFieldMetrics {
             InputFieldMetrics {
@@ -355,130 +332,54 @@ mod test_style {
         ) {
         }
 
-        fn slider_metrics(&self, _size: ControlSize) -> SliderMetrics {
-            SliderMetrics {
-                horizontal_inset: 12.0,
-                horizontal_spacing: 8.0,
-                vertical_spacing: 6.0,
-                min_track_width: 72.0,
-                track_height: 6.0,
-                handle_width: 4.0,
-                handle_height: 44.0,
-            }
-        }
-
-        fn draw_slider_track(
-            &self,
-            _recorder: &mut Recorder,
-            _track_rect: Rect,
-            _fill_rect: Rect,
-            _size: ControlSize,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn draw_slider_thumb(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _size: ControlSize,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn slider_value_indicator_metrics(&self) -> SliderValueIndicatorMetrics {
-            SliderValueIndicatorMetrics::new(8.0, 4.0, 4.0, 0.0, 0.0)
-        }
-
-        fn slider_value_indicator_color(&self) -> Color {
-            Color::srgb(255, 255, 255)
-        }
-
-        fn slider_value_indicator_font(&self) -> Font {
-            Font::default()
-        }
-
-        fn draw_slider_value_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics {
-            match style {
-                ProgressIndicatorStyle::Loading => ProgressMetrics::loading(48.0, 38.0),
-                ProgressIndicatorStyle::Linear => ProgressMetrics {
-                    label_height: 18.0,
-                    bar_top_offset: 10.0,
-                    bar_height: 8.0,
-                    bar_horizontal_inset: 8.0,
-                    value_label_top_spacing: 6.0,
-                    min_track_width: 72.0,
-                    circular_diameter: 0.0,
-                    circular_stroke_width: 0.0,
-                    loading_indicator_size: 0.0,
+        fn slider(&self, _spec: &SliderSpec, _env: &Environment) -> SliderLook {
+            SliderLook::new(
+                SliderLayout {
+                    row_height: 44.0,
+                    track_inset: 12.0,
+                    label_inset: 12.0,
+                    label_gap: 8.0,
+                    minimum_track: 72.0,
+                    label_spacing: Some(6.0),
                 },
-                ProgressIndicatorStyle::Circular => ProgressMetrics {
-                    label_height: 0.0,
-                    bar_top_offset: 0.0,
-                    bar_height: 0.0,
-                    bar_horizontal_inset: 0.0,
-                    value_label_top_spacing: 0.0,
-                    min_track_width: 0.0,
-                    circular_diameter: 32.0,
-                    circular_stroke_width: 5.0,
-                    loading_indicator_size: 0.0,
+                Knob {
+                    size: kurbo::Size::new(4.0, 44.0),
+                    hit: HitRegion::NONE,
                 },
-            }
+                DragMapping::Absolute,
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            )
         }
 
-        fn draw_progress_linear_track(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _active_end: Option<f64>,
-        ) {
-        }
-        fn draw_progress_linear_fill(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_progress_linear_indeterminate(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _elapsed: Duration,
-            _four_color: bool,
-        ) {
-        }
-        fn draw_progress_circular_track(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _width: f64,
-            _active_turns: Option<f64>,
-        ) {
-        }
-        fn draw_progress_circular_fill(
-            &self,
-            _recorder: &mut Recorder,
-            _path: &BezPath,
-            _width: f64,
-        ) {
-        }
-        fn draw_progress_loading(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _elapsed: Duration,
-            _four_color: bool,
-        ) {
+        /// A bar with no parts: a 72 wide, 8 tall track inset 8 from each
+        /// side, below a label band 18 tall and 10 away and above a value
+        /// label 6 away.
+        fn linear_progress(&self, _spec: &ProgressSpec, _env: &Environment) -> LinearProgressLook {
+            LinearProgressLook::new(
+                ProgressControl::new(
+                    kurbo::Size::new(72.0, 8.0),
+                    Motion::uniform(Animation::linear(Duration::from_millis(15))),
+                ),
+                8.0,
+            )
+            .label_band(18.0, 10.0)
+            .value_label_band(6.0)
         }
 
-        fn draw_progress_circular_indeterminate(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _width: f64,
-            _elapsed: Duration,
-            _four_color: bool,
-        ) {
+        /// A 32 square with no parts.
+        fn circular_progress(&self, _spec: &ProgressSpec, _env: &Environment) -> IndicatorLook {
+            IndicatorLook::new(ProgressControl::new(
+                kurbo::Size::new(32.0, 32.0),
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            ))
+        }
+
+        /// A 48 square with no parts.
+        fn loading_indicator(&self, _spec: &ProgressSpec, _env: &Environment) -> IndicatorLook {
+            IndicatorLook::new(ProgressControl::new(
+                kurbo::Size::new(48.0, 48.0),
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            ))
         }
 
         fn navigation_metrics(&self) -> NavigationMetrics {

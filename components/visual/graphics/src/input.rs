@@ -31,7 +31,12 @@
 
 pub use keyboard_types::{Code, Key, Location, Modifiers, NamedKey};
 
-use crate::draw::kurbo::Point;
+/// The logical, surface-local geometry the events carry: a pointer's
+/// position and a surface's size.
+pub use crate::draw::kurbo::{Point, Size};
+
+use core::num::NonZeroU32;
+
 use waterui_core::Str;
 
 /// A pointer button, in the W3C UI Events button vocabulary.
@@ -75,6 +80,48 @@ pub enum ScrollUnit {
     Pixel,
 }
 
+/// Where a continuous gesture is in its lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "a closed gesture lifecycle every embedded surface host maps variant by variant; a new phase must fail their build instead of falling into a wildcard arm"
+)]
+pub enum GesturePhase {
+    /// The gesture began. Its delta may be zero.
+    Started,
+    /// The gesture continued.
+    Moved,
+    /// The gesture ended normally.
+    Ended,
+    /// The platform abandoned the gesture; a view rolls back whatever the
+    /// gesture had not committed.
+    Cancelled,
+}
+
+/// Which part of a scroll gesture a [`SurfaceInputEvent::Scroll`] delta
+/// belongs to.
+///
+/// A view that runs its own kinetic scrolling or overscroll needs to tell a
+/// finger on the trackpad from the inertia the platform generates after
+/// lift-off, and both from a delta that is complete on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every embedded surface host maps each scroll phase variant by variant; a new phase must fail their build instead of falling into a wildcard arm"
+)]
+pub enum ScrollPhase {
+    /// A delta complete on its own: a wheel notch, or a platform that reports
+    /// no gesture around its scroll deltas.
+    Discrete,
+    /// The user is touching the input device — fingers on a trackpad.
+    Contact(GesturePhase),
+    /// Inertia the platform generates after the fingers lift. A momentum
+    /// sequence follows a [`ScrollPhase::Contact`] sequence that ended with
+    /// [`GesturePhase::Ended`]; platforms that do not generate momentum never
+    /// deliver it, and the view supplies its own.
+    Momentum(GesturePhase),
+}
+
 /// One input event delivered to a view that asked for input.
 ///
 /// The receiver is a `GpuContentView`'s `on_input` handler or a
@@ -89,6 +136,19 @@ pub enum ScrollUnit {
     reason = "every embedded surface host forwards each input event variant by variant; a new event must fail their build instead of falling into a wildcard arm"
 )]
 pub enum SurfaceInputEvent {
+    /// The surface took on a new size or display scale.
+    ///
+    /// Delivered once before the surface's first frame and again whenever
+    /// its logical size or scale changes, always before the first frame
+    /// rendered at the new size, so a view whose model depends on its size —
+    /// a terminal's columns and rows — recomputes it once instead of
+    /// comparing every frame against the last.
+    Resize {
+        /// The surface's size in logical points.
+        size: Size,
+        /// Pixels per logical point.
+        scale: f32,
+    },
     /// Keyboard focus entered (`true`) or left (`false`) this surface.
     ///
     /// Key, text and composition events only arrive while focused.
@@ -112,6 +172,13 @@ pub enum SurfaceInputEvent {
         button: SurfacePointerButton,
         /// Where the pointer was when it changed.
         position: Point,
+        /// Which click of a multi-click run this is: 1 for a single click, 2
+        /// for a double click, 3 for a triple click, and so on, counted with
+        /// the platform's double-click interval and distance. A release
+        /// carries the count of the press it ends, as the W3C
+        /// [`UIEvent.detail`](https://w3c.github.io/uievents/#dom-uievent-detail)
+        /// of `mousedown` and `mouseup` does.
+        click_count: NonZeroU32,
     },
     /// A scroll gesture over the surface.
     Scroll {
@@ -127,10 +194,8 @@ pub enum SurfaceInputEvent {
         delta_y: f64,
         /// What one unit of the deltas means.
         unit: ScrollUnit,
-        /// `true` on the event that ends a continuous gesture, so a view can
-        /// settle momentum or release a scroll-driven state. Discrete wheel
-        /// notches carry `true` because each notch is complete on its own.
-        finished: bool,
+        /// Which part of the gesture this delta belongs to.
+        phase: ScrollPhase,
     },
     /// A key went down (`pressed`) or up while this surface had focus.
     ///
@@ -160,6 +225,17 @@ pub enum SurfaceInputEvent {
     /// the character the logical key implies. It may also arrive standalone,
     /// for text no key produced (an injected insertion).
     TextInput(Str),
+    /// The platform's paste command targeted this focused surface, carrying
+    /// the clipboard's text.
+    ///
+    /// The paste command is the Edit menu's and the context menu's Paste and
+    /// the platform's paste shortcut (Command-V on Apple platforms, Control-V
+    /// elsewhere). The shortcut's key press is the command: it is delivered
+    /// as this event and never also as a [`SurfaceInputEvent::Key`]. Paste
+    /// is distinct from [`SurfaceInputEvent::TextInput`] so a view can treat
+    /// pasted text differently from typed text — a terminal's bracketed
+    /// paste. A paste with no text on the clipboard is not delivered.
+    Paste(Str),
     /// An input-method composition session began.
     CompositionStart,
     /// The in-progress (pre-edit) composition text changed.

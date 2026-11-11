@@ -2,12 +2,13 @@
 //!
 //! An embedded surface is a rectangle of the window that draws its own
 //! interactive content and therefore owns the input landing on it: a browser
-//! engine, any [`GpuContentView`](waterui_graphics::GpuContentView) whose
-//! view asks for input with
+//! engine, any [`GpuContentView`](waterui_graphics::GpuContentView) or
+//! [`ExternalFrameView`](waterui_graphics::ExternalFrameView) whose view asks
+//! for input with
 //! [`wants_input_events`](waterui_graphics::GpuContentView::wants_input_events),
-//! or any [`SceneView`](waterui_graphics::SceneView) whose content asks the same
+//! or any [`SceneView`](waterui_graphics::backend::SceneView) whose content asks the same
 //! through
-//! [`SceneContent::wants_input_events`](waterui_graphics::SceneContent::wants_input_events).
+//! [`SceneContent::wants_input_events`](waterui_graphics::backend::SceneContent::wants_input_events).
 //!
 //! There is one target list, one hit-test arbitration and one focus/capture
 //! state machine for both, reached through [`EmbeddedInputSink`], and one
@@ -21,11 +22,26 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 #[cfg(hydrolysis_gpu)]
-use crate::gpu_view::GpuContentRuntime;
-use waterui_graphics::SceneContent;
+use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
+use core::future::Future;
+use core::num::NonZeroU32;
+use core::pin::Pin;
+use std::collections::VecDeque;
+use waterui_graphics::backend::SceneContent;
 use waterui_graphics::input::{
-    Code, Key, NamedKey, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
+    Code, Key, NamedKey, ScrollPhase, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
 };
+
+/// Where a surface paste reads the clipboard's text from. The renderer reads
+/// the system clipboard through [`read_clipboard_text_async`], the one reader
+/// the text fields' paste uses too; a test replaces it with a controllable one
+/// ([`SemanticCore::set_clipboard_read`]).
+pub type ClipboardRead = Rc<dyn Fn() -> Pin<Box<dyn Future<Output = Option<String>>>>>;
+
+/// The system clipboard reader every window starts with.
+pub fn system_clipboard_read() -> ClipboardRead {
+    Rc::new(|| Box::pin(read_clipboard_text_async()))
+}
 
 /// One key transition, in the W3C UI Events vocabulary.
 pub struct KeyDelivery<'a> {
@@ -54,16 +70,29 @@ pub trait EmbeddedInputSink {
     fn set_focus(&self, focused: bool);
     fn set_modifiers(&self, modifiers: Modifiers);
     fn pointer_move(&self, position: kurbo::Point);
-    fn pointer_button(&self, pressed: bool, button: PointerButton, position: kurbo::Point);
+    /// A button transition; `click_count` is the press's place in its
+    /// multi-click run, and a release carries the count of the press it ends.
+    fn pointer_button(
+        &self,
+        pressed: bool,
+        button: PointerButton,
+        position: kurbo::Point,
+        click_count: NonZeroU32,
+    );
     fn scroll(
         &self,
         position: kurbo::Point,
         delta_x: f32,
         delta_y: f32,
         unit: ScrollUnit,
-        finished: bool,
+        phase: ScrollPhase,
     );
     fn key(&self, delivery: &KeyDelivery<'_>);
+    /// The platform's paste command: reads the clipboard through `clipboard`
+    /// and delivers its text as a paste, once the read completes. Whatever
+    /// reaches the sink meanwhile waits behind it, so the surface sees its
+    /// events in the order the platform produced them.
+    fn paste(&self, clipboard: &ClipboardRead);
     fn text_input(&self, text: &str);
     fn composition_start(&self);
     fn composition_update(&self, text: &str, caret: Option<usize>);
@@ -142,7 +171,7 @@ pub struct BubbledKeySink {
 
 /// Something that consumes the neutral [`SurfaceInputEvent`] vocabulary: the
 /// runtime of an embedded [`GpuContentView`](waterui_graphics::GpuContentView),
-/// or the content of a self-drawn [`SceneView`](waterui_graphics::SceneView).
+/// or the content of a self-drawn [`SceneView`](waterui_graphics::backend::SceneView).
 pub trait SurfaceInputReceiver {
     fn input(&mut self, event: &SurfaceInputEvent);
     /// The receiver's text caret, in logical surface-local coordinates.
@@ -151,6 +180,17 @@ pub trait SurfaceInputReceiver {
 
 #[cfg(hydrolysis_gpu)]
 impl SurfaceInputReceiver for GpuContentRuntime {
+    fn input(&mut self, event: &SurfaceInputEvent) {
+        self.view.input(event);
+    }
+
+    fn ime_caret(&self) -> Option<kurbo::Rect> {
+        self.view.ime_caret()
+    }
+}
+
+#[cfg(hydrolysis_gpu)]
+impl SurfaceInputReceiver for ExternalFrameRuntime {
     fn input(&mut self, event: &SurfaceInputEvent) {
         self.view.input(event);
     }
@@ -179,15 +219,105 @@ impl SurfaceInputReceiver for Box<dyn SceneContent> {
 /// receiver it drives, which outlives the frame.
 pub struct SurfaceInputSink<R> {
     receiver: Rc<RefCell<R>>,
+    /// The receiver's paste queue — shared by every sink registered for it,
+    /// so a paste started through one frame's sink orders the events of the
+    /// next frame's.
+    pastes: Rc<RefCell<PasteQueue>>,
+}
+
+/// What a surface's input waits behind: the pastes whose clipboard read is
+/// still pending, and every event that reached the surface after the oldest
+/// of them.
+///
+/// The queue is the surface's input in platform order. An empty queue means
+/// nothing waits, and events are delivered at once.
+#[derive(Debug, Default)]
+pub struct PasteQueue {
+    slots: VecDeque<PasteSlot>,
+    next_ticket: u64,
+}
+
+#[derive(Debug)]
+enum PasteSlot {
+    /// A paste whose clipboard read has not finished, by ticket.
+    Reading(u64),
+    /// An event that arrived behind a pending paste, or a finished paste.
+    Ready(SurfaceInputEvent),
+}
+
+impl PasteQueue {
+    /// Whether an event must wait rather than be delivered at once.
+    fn is_holding(&self) -> bool {
+        !self.slots.is_empty()
+    }
+
+    /// Opens a slot for a paste whose read starts now.
+    fn begin(&mut self) -> u64 {
+        let ticket = self.next_ticket;
+        self.next_ticket += 1;
+        self.slots.push_back(PasteSlot::Reading(ticket));
+        ticket
+    }
+
+    /// Takes the next event off the front of the queue, when no unfinished
+    /// paste is in front of it.
+    fn next_ready(&mut self) -> Option<SurfaceInputEvent> {
+        if !matches!(self.slots.front(), Some(PasteSlot::Ready(_))) {
+            return None;
+        }
+        match self.slots.pop_front() {
+            Some(PasteSlot::Ready(event)) => Some(event),
+            _ => unreachable!("the front slot was just matched as an event"),
+        }
+    }
+
+    /// Resolves the paste `ticket` with the clipboard's text: a paste of text
+    /// takes its place in the queue, and a clipboard with none leaves it.
+    fn resolve(&mut self, ticket: u64, text: Option<String>) {
+        let index = self
+            .slots
+            .iter()
+            .position(|slot| matches!(slot, PasteSlot::Reading(open) if *open == ticket))
+            .expect("a paste resolves exactly once, from its own ticket");
+        match text.filter(|text| !text.is_empty()) {
+            Some(text) => {
+                self.slots[index] = PasteSlot::Ready(SurfaceInputEvent::Paste(text.into()));
+            }
+            None => {
+                self.slots.remove(index);
+            }
+        }
+    }
 }
 
 impl<R: SurfaceInputReceiver> SurfaceInputSink<R> {
-    pub(crate) const fn new(receiver: Rc<RefCell<R>>) -> Self {
-        Self { receiver }
+    pub(crate) const fn new(receiver: Rc<RefCell<R>>, pastes: Rc<RefCell<PasteQueue>>) -> Self {
+        Self { receiver, pastes }
     }
 
+    /// Delivers `event` now, or queues it behind a pending paste.
     fn send(&self, event: &SurfaceInputEvent) {
+        if self.pastes.borrow().is_holding() {
+            self.pastes
+                .borrow_mut()
+                .slots
+                .push_back(PasteSlot::Ready(event.clone()));
+            return;
+        }
         self.receiver.borrow_mut().input(event);
+    }
+
+    /// Delivers every event that is no longer behind an unfinished paste. The
+    /// queue is not borrowed while the receiver runs: a handler may send the
+    /// surface more input.
+    fn drain(receiver: &RefCell<R>, pastes: &RefCell<PasteQueue>) {
+        loop {
+            let next = pastes.borrow_mut().next_ready();
+            let Some(event) = next else {
+                return;
+            };
+            receiver.borrow_mut().input(&event);
+        }
     }
 }
 
@@ -205,7 +335,7 @@ const fn surface_pointer_button(button: PointerButton) -> Option<SurfacePointerB
     }
 }
 
-impl<R: SurfaceInputReceiver> EmbeddedInputSink for SurfaceInputSink<R> {
+impl<R: SurfaceInputReceiver + 'static> EmbeddedInputSink for SurfaceInputSink<R> {
     fn identity(&self) -> *const () {
         Rc::as_ptr(&self.receiver).cast()
     }
@@ -222,7 +352,13 @@ impl<R: SurfaceInputReceiver> EmbeddedInputSink for SurfaceInputSink<R> {
         self.send(&SurfaceInputEvent::PointerMove { position });
     }
 
-    fn pointer_button(&self, pressed: bool, button: PointerButton, position: kurbo::Point) {
+    fn pointer_button(
+        &self,
+        pressed: bool,
+        button: PointerButton,
+        position: kurbo::Point,
+        click_count: NonZeroU32,
+    ) {
         let Some(button) = surface_pointer_button(button) else {
             tracing::trace!(
                 target: "waterui::hydrolysis::input",
@@ -235,6 +371,7 @@ impl<R: SurfaceInputReceiver> EmbeddedInputSink for SurfaceInputSink<R> {
             pressed,
             button,
             position,
+            click_count,
         });
     }
 
@@ -244,7 +381,7 @@ impl<R: SurfaceInputReceiver> EmbeddedInputSink for SurfaceInputSink<R> {
         delta_x: f32,
         delta_y: f32,
         unit: ScrollUnit,
-        finished: bool,
+        phase: ScrollPhase,
     ) {
         self.send(&SurfaceInputEvent::Scroll {
             position,
@@ -252,8 +389,21 @@ impl<R: SurfaceInputReceiver> EmbeddedInputSink for SurfaceInputSink<R> {
             delta_x: -f64::from(delta_x),
             delta_y: -f64::from(delta_y),
             unit,
-            finished,
+            phase,
         });
+    }
+
+    fn paste(&self, clipboard: &ClipboardRead) {
+        let ticket = self.pastes.borrow_mut().begin();
+        let read = clipboard();
+        let receiver = Rc::clone(&self.receiver);
+        let pastes = Rc::clone(&self.pastes);
+        spawn_local(async move {
+            let text = read.await;
+            pastes.borrow_mut().resolve(ticket, text);
+            Self::drain(&receiver, &pastes);
+        })
+        .detach();
     }
 
     fn key(&self, delivery: &KeyDelivery<'_>) {
@@ -342,7 +492,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
     /// Registers a surface whose drawing asked for input: an embedded
     /// [`GpuContentView`](waterui_graphics::GpuContentView) runtime or a
-    /// [`SceneView`](waterui_graphics::SceneView)'s content.
+    /// [`SceneView`](waterui_graphics::backend::SceneView)'s content.
     ///
     /// `focus_node` is the surface's semantic node, when the semantic tree
     /// exists.
@@ -353,9 +503,10 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         #[cfg(feature = "accessibility")] focus_node: Option<AccessibilityNodeId>,
     ) {
         let interaction_key = InteractionKey::for_rc(&receiver, 0);
+        let pastes = self.hit_test.paste_queue_of(Rc::as_ptr(&receiver).cast());
         self.register_embedded_input_target(
             local_bounds,
-            Rc::new(SurfaceInputSink::new(receiver)),
+            Rc::new(SurfaceInputSink::new(receiver, pastes)),
             interaction_key,
             #[cfg(feature = "accessibility")]
             focus_node,
@@ -683,5 +834,92 @@ impl<E: crate::text::TextEngine> Clone for EmbeddedInputTarget<E> {
             #[cfg(feature = "accessibility")]
             accessibility_node_id: self.accessibility_node_id,
         }
+    }
+}
+
+impl<E: crate::text::TextEngine> HitTestState<E> {
+    /// The paste queue of the surface whose receiver is `identity`, created
+    /// on first use. Queues of surfaces no sink or pending paste holds any
+    /// more are dropped.
+    pub(crate) fn paste_queue_of(&mut self, identity: *const ()) -> Rc<RefCell<PasteQueue>> {
+        if let Some(queue) = self.paste_queues.get(&identity).and_then(Weak::upgrade) {
+            return queue;
+        }
+        self.paste_queues
+            .retain(|_, queue| queue.strong_count() > 0);
+        let queue = Rc::new(RefCell::new(PasteQueue::default()));
+        self.paste_queues.insert(identity, Rc::downgrade(&queue));
+        queue
+    }
+}
+
+impl<E: crate::text::TextEngine> SemanticCore<E> {
+    /// Handles the platform's paste shortcut for the surface holding
+    /// keyboard focus: the press starts a paste of the clipboard's text, the
+    /// matching release is consumed with it, and neither reaches the surface
+    /// as a key — the shortcut is the paste command.
+    ///
+    /// Returns whether `delivery` was the shortcut's press or release.
+    pub(crate) fn handle_embedded_paste_shortcut(&mut self, delivery: &KeyDelivery<'_>) -> bool {
+        if !delivery.pressed {
+            let Some(index) = self
+                .hit_test
+                .paste_shortcut_keys
+                .iter()
+                .position(|code| *code == delivery.code)
+            else {
+                return false;
+            };
+            self.hit_test.paste_shortcut_keys.remove(index);
+            return true;
+        }
+        let Some(sink) = self.hit_test.focused_embedded_sink.clone() else {
+            return false;
+        };
+        if !self
+            .hit_test
+            .input_conventions
+            .paste_shortcut
+            .matches(delivery.logical, delivery.modifiers)
+        {
+            return false;
+        }
+        sink.paste(&self.hit_test.clipboard_read);
+        if !self.hit_test.paste_shortcut_keys.contains(&delivery.code) {
+            self.hit_test.paste_shortcut_keys.push(delivery.code);
+        }
+        true
+    }
+
+    /// Replaces where surface pastes read the clipboard from, so a test
+    /// controls what the clipboard holds and when its read finishes.
+    #[cfg(test)]
+    pub(crate) fn set_clipboard_read(&mut self, clipboard: ClipboardRead) {
+        self.hit_test.clipboard_read = clipboard;
+    }
+}
+
+/// Remembers the size and scale a surface was last told about, so its
+/// [`SurfaceInputEvent::Resize`] is delivered once per change rather than
+/// once per frame.
+#[derive(Debug)]
+pub struct ResizeTracker {
+    last: Option<(kurbo::Size, f32)>,
+}
+
+impl ResizeTracker {
+    /// A tracker that has told its surface nothing yet.
+    pub(crate) const fn new() -> Self {
+        Self { last: None }
+    }
+
+    /// The [`SurfaceInputEvent::Resize`] a surface of logical `size` at
+    /// display `scale` is owed, or `None` when it already has it.
+    pub(crate) fn changed(&mut self, size: kurbo::Size, scale: f32) -> Option<SurfaceInputEvent> {
+        if self.last == Some((size, scale)) {
+            return None;
+        }
+        self.last = Some((size, scale));
+        Some(SurfaceInputEvent::Resize { size, scale })
     }
 }

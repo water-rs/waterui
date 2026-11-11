@@ -1,8 +1,8 @@
 //! Divider layout primitive shared across `WaterUI` surfaces.
 
+use waterui_color::{BorderColor, Color};
 use waterui_core::View;
 use waterui_core::layout::StretchAxis;
-use waterui_graphics::color::{BorderColor, Color};
 
 use crate::{frame::Frame, stack};
 

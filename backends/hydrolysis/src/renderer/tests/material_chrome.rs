@@ -13,7 +13,11 @@ use std::rc::Rc;
 
 use waterui_core::Binding;
 
-use crate::theme::{ButtonMetrics, InteractionStyle};
+use cherenkov_record::{
+    BackdropEffect, BackdropShaderSource, CaptureClass, CaptureLevels, CaptureScale, Live,
+    MaterialCapture, MaterialEffect, MaterialGrouping, MaterialRegistry, MaterialShader,
+    OuterExtent, ShapeData, UnionSmoothing,
+};
 use kurbo::{Affine, Rect, RoundedRect, Shape as _};
 use nami::SignalExt as _;
 use waterui::FilterViewExt as _;
@@ -23,11 +27,6 @@ use waterui::graphics::Color;
 use waterui::interaction::InteractionState;
 use waterui_core::Environment;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_graphics::draw::{
-    BackdropEffect, BackdropShaderSource, CaptureClass, CaptureLevels, CaptureScale, Live,
-    MaterialCapture, MaterialEffect, MaterialGrouping, MaterialRegistry, MaterialShader,
-    OuterExtent, ShapeData, UnionSmoothing,
-};
 
 use super::mirror::{mirror_engine, no_shader_mount};
 use super::{
@@ -37,6 +36,10 @@ use crate::HeadlessRuntime;
 use crate::platform::{InputEvent, PointerButton, PointerKind};
 use crate::renderer::mount::backdrop::BackdropScope;
 use crate::renderer::mount::target::attach_material_shaders;
+use crate::theme::{
+    Backdrop, Chrome, CornerShape, Corners, Custom, Driven, FocusIndicator, Inputs, PressFeedback,
+    Surface,
+};
 
 /// The window, in points.
 const WIDTH: u32 = 160;
@@ -86,7 +89,6 @@ fn glass_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
         ],
         draws,
         fills: Vec::new(),
-        stateful_draws: None,
     }
 }
 
@@ -124,8 +126,8 @@ fn chrome_draw(class: CaptureClass, shader: MaterialShader, uniforms: Vec<f32>) 
     }
 }
 
-/// A tappable colour: the `draw_interaction_state_layer` hook the chrome
-/// plan replays in, so the theme's materials record every frame.
+/// A tappable colour: the plan's chrome realizes on it, so its custom part
+/// records the plan's materials.
 fn tap_color(hex: &str) -> waterui_core::AnyView {
     waterui_core::AnyView::new(Color::srgb_hex(hex).gesture(TapGesture::new(), || {}))
 }
@@ -134,14 +136,16 @@ fn tap_view() -> waterui_core::AnyView {
     tap_color("#3F3F46")
 }
 
-/// An environment with an `InteractionStyle` so the state-layer hook draws.
-fn chrome_env() -> Environment {
+/// A tappable view that paints nothing itself, so the chrome beneath its
+/// content is what a pixel test sees.
+fn clear_tap() -> waterui_core::AnyView {
+    waterui_core::AnyView::new(Color::transparent().gesture(TapGesture::new(), || {}))
+}
+
+/// An environment presenting every tappable view with `plan`'s chrome.
+fn chrome_env(plan: &ChromePlan) -> Environment {
     let mut env = pumped_test_environment();
-    env.install(InteractionStyle::new(
-        ButtonMetrics::new(16.0, 8.0, 0.0, 0.0),
-        Color::srgb(0, 0, 0),
-        8.0_f64,
-    ));
+    env.install(plan.chrome());
     env
 }
 
@@ -152,8 +156,9 @@ fn rendered(
     scale: f64,
 ) -> HeadlessRuntime {
     let builder = AnyViewBuilder::<waterui_core::AnyView>::new(view);
-    let mut runtime = HeadlessRuntime::new_for_tests(chrome_env(), builder, WIDTH, HEIGHT, theme)
-        .with_scale_factor(scale);
+    let env = chrome_env(&theme.chrome);
+    let mut runtime =
+        HeadlessRuntime::new_for_tests(env, builder, WIDTH, HEIGHT, theme).with_scale_factor(scale);
     let _ = runtime.pump_snapshot();
     runtime
 }
@@ -259,17 +264,27 @@ fn member_group(runtime: &HeadlessRuntime, member: cherenkov::LayerId) -> cheren
         .id()
 }
 
-/// One frame through the mirror mount — `view` only matters on the first.
+/// One frame through the mirror mount under `plan`'s chrome — `view` only
+/// matters on the first.
 fn mirror_frame(
     renderer: &mut crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+    plan: &ChromePlan,
     view: waterui_core::AnyView,
 ) {
-    let env = chrome_env();
+    mirror_frame_in(renderer, &chrome_env(plan), view);
+}
+
+/// One frame through the mirror mount in `env`.
+fn mirror_frame_in(
+    renderer: &mut crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+    env: &Environment,
+    view: waterui_core::AnyView,
+) {
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(
         view,
-        &env,
+        env,
         Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT)),
         Affine::IDENTITY,
         Affine::IDENTITY,
@@ -281,10 +296,11 @@ fn mirror_frame(
 /// One frame through the mirror mount at `scale` device pixels per point.
 fn mirror_frame_at(
     renderer: &mut crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+    plan: &ChromePlan,
     view: waterui_core::AnyView,
     scale: f64,
 ) {
-    let env = chrome_env();
+    let env = chrome_env(plan);
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(
@@ -303,8 +319,9 @@ fn mirrored(
     view: impl waterui_core::View,
     theme: MinimalTestTheme,
 ) -> crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine> {
+    let plan = theme.chrome.clone();
     let mut renderer = test_renderer_with_theme(theme);
-    mirror_frame(&mut renderer, waterui_core::AnyView::new(view));
+    mirror_frame(&mut renderer, &plan, waterui_core::AnyView::new(view));
     renderer
 }
 
@@ -470,7 +487,7 @@ fn scope_program_builder(
 #[test]
 fn a_member_in_a_transformed_scope_draws_in_the_scopes_space() {
     use crate::renderer::mount::program::Item;
-    use crate::renderer::mount::{Placement, PlacementClock, ScopeKey, ScopeProps};
+    use crate::renderer::mount::{Placement, PlacementClock, ScopeKey, ScopeLive, ScopeProps};
 
     let clock = PlacementClock::new();
     let mut builder = scope_program_builder(&clock);
@@ -483,6 +500,7 @@ fn a_member_in_a_transformed_scope_draws_in_the_scopes_space() {
             transform: Affine::translate((30.0, 40.0)),
             clip: None,
             alpha: 1.0,
+            live: ScopeLive::NONE,
         },
         Placement::new(&clock),
     );
@@ -515,7 +533,7 @@ fn a_member_in_a_transformed_scope_draws_in_the_scopes_space() {
 #[test]
 fn a_nested_scope_mounts_with_each_transform_applied_once() {
     use crate::renderer::mount::program::Item;
-    use crate::renderer::mount::{Placement, PlacementClock, ScopeKey, ScopeProps};
+    use crate::renderer::mount::{Placement, PlacementClock, ScopeKey, ScopeLive, ScopeProps};
 
     let outer = Affine::translate((30.0, 40.0));
     let inner = Affine::translate((5.0, 6.0));
@@ -535,6 +553,7 @@ fn a_nested_scope_mounts_with_each_transform_applied_once() {
             transform: outer,
             clip: None,
             alpha: 1.0,
+            live: ScopeLive::NONE,
         },
         Placement::new(&clock),
     );
@@ -547,6 +566,7 @@ fn a_nested_scope_mounts_with_each_transform_applied_once() {
             transform: inner,
             clip: Some(clip.clone()),
             alpha: 1.0,
+            live: ScopeLive::NONE,
         },
         Placement::new(&clock),
     );
@@ -608,18 +628,19 @@ fn a_nested_scope_mounts_with_each_transform_applied_once() {
 /// member layer and the same group — no new layer, group or capture.
 #[test]
 fn a_reflush_reuses_the_member_and_its_group() {
+    let plan = glass_plan(vec![chrome_draw(GLASS, GLASS_SHADER, vec![])]);
     let mut renderer = test_renderer_with_theme(MinimalTestTheme {
-        chrome: glass_plan(vec![chrome_draw(GLASS, GLASS_SHADER, vec![])]),
+        chrome: plan.clone(),
         ..Default::default()
     });
-    mirror_frame(&mut renderer, tap_view());
+    mirror_frame(&mut renderer, &plan, tap_view());
     let before = mirror_chrome_layers(&renderer);
     let group_before = mirrored_node(&renderer, before[0])
         .backdrop
         .as_ref()
         .expect("the member binds a sample")
         .group();
-    mirror_frame(&mut renderer, tap_view());
+    mirror_frame(&mut renderer, &plan, tap_view());
     let after = mirror_chrome_layers(&renderer);
     assert_eq!(before, after, "the re-flush reuses the member layer");
     let group_after = mirrored_node(&renderer, after[0])
@@ -707,11 +728,11 @@ fn a_remount_rebinds_the_clip_from_the_shapes_value_now() {
     );
 }
 
-/// A press re-records the chrome and rebinds shape and effect onto the same
-/// member and the same group — no new layer, group or capture.
+/// A press keeps the chrome's member on the same layer and the same group —
+/// no new layer, group or capture.
 #[test]
-fn a_press_rebinds_the_same_member_and_group() {
-    let theme = MinimalTestTheme {
+fn a_press_keeps_the_same_member_and_group() {
+    let runtime_theme = MinimalTestTheme {
         chrome: glass_plan(vec![chrome_draw(
             GLASS,
             GLASS_SHADER,
@@ -719,10 +740,7 @@ fn a_press_rebinds_the_same_member_and_group() {
         )]),
         ..Default::default()
     };
-    let builder = AnyViewBuilder::<waterui_core::AnyView>::new(tap_view);
-    let mut runtime = HeadlessRuntime::new_for_tests(chrome_env(), builder, WIDTH, HEIGHT, theme)
-        .with_scale_factor(DISPLAY_SCALE);
-    let _ = runtime.pump_snapshot();
+    let mut runtime = rendered(tap_view, runtime_theme, DISPLAY_SCALE);
     let before = chrome_layers(&runtime);
     let group_before = member_group(&runtime, before[0]);
     runtime.push_input_event(InputEvent::PointerDown {
@@ -898,7 +916,7 @@ fn a_scopes_chrome_classes_capture_beneath_its_anchor() {
             ..Default::default()
         }
     };
-    let scoped = || waterui_core::AnyView::new(tap_view().material_group());
+    let scoped = || waterui_core::AnyView::new(clear_tap().material_group());
     // The later member covers the earlier one's whole shape, so a pixel
     // at the shape's centre is the later member's own output.
     let centre = |runtime: &mut HeadlessRuntime| {
@@ -943,7 +961,7 @@ fn a_scopes_chrome_classes_capture_beneath_its_anchor() {
 
     // Outside every scope each member captures at itself, so the earlier
     // member's tint does reach the later capture: the probe is live.
-    let unscoped = || tap_view();
+    let unscoped = clear_tap;
     let mut tinted = rendered(unscoped, theme(0.6), DISPLAY_SCALE);
     assert_eq!(
         chrome_mount(&tinted)
@@ -1100,7 +1118,8 @@ fn the_group_releases_when_its_members_leave() {
             waterui::widget::condition::when(shown.clone(), tap_view),
         )))
     });
-    let mut runtime = HeadlessRuntime::new_for_tests(chrome_env(), builder, WIDTH, HEIGHT, theme)
+    let env = chrome_env(&theme.chrome);
+    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, WIDTH, HEIGHT, theme)
         .with_scale_factor(DISPLAY_SCALE);
     let _ = runtime.pump_snapshot();
     assert_eq!(chrome_mount(&runtime).chrome_group_count(), 1);
@@ -1229,9 +1248,11 @@ fn union_members_share_one_group_on_one_union_field() {
         chrome: union_plan(vec![chrome_draw(UNION_GLASS, GLASS_SHADER, vec![])]),
         ..Default::default()
     };
+    let plan = theme.chrome.clone();
     let mut renderer = test_renderer_with_theme(theme);
     mirror_frame_at(
         &mut renderer,
+        &plan,
         waterui_core::AnyView::new(
             waterui_layout::stack::zstack((tap_color("#18181B"), tap_color("#27272A")))
                 .material_group(),
@@ -1273,8 +1294,9 @@ fn union_members_outside_every_scope_never_share() {
         chrome: union_plan(vec![chrome_draw(UNION_GLASS, GLASS_SHADER, vec![])]),
         ..Default::default()
     };
+    let plan = theme.chrome.clone();
     let mut renderer = test_renderer_with_theme(theme);
-    mirror_frame_at(&mut renderer, ungrouped_pair()(), DISPLAY_SCALE);
+    mirror_frame_at(&mut renderer, &plan, ungrouped_pair()(), DISPLAY_SCALE);
     let members = mirror_chrome_layers(&renderer);
     assert_eq!(members.len(), 2);
     let groups = renderer.mirror().chrome_groups();
@@ -1305,8 +1327,9 @@ fn a_scale_change_rebuilds_union_smoothing_and_member_outer() {
         }]),
         ..Default::default()
     };
+    let plan = theme.chrome.clone();
     let mut renderer = test_renderer_with_theme(theme);
-    mirror_frame_at(&mut renderer, tap_view(), DISPLAY_SCALE);
+    mirror_frame_at(&mut renderer, &plan, tap_view(), DISPLAY_SCALE);
     let member = mirror_chrome_layers(&renderer)[0];
     let sample = mirrored_node(&renderer, member)
         .backdrop
@@ -1324,7 +1347,7 @@ fn a_scale_change_rebuilds_union_smoothing_and_member_outer() {
     );
     drop(sample);
 
-    mirror_frame_at(&mut renderer, tap_view(), 4.0);
+    mirror_frame_at(&mut renderer, &plan, tap_view(), 4.0);
     assert_eq!(
         mirror_chrome_layers(&renderer)[0],
         member,
@@ -1398,8 +1421,9 @@ fn a_union_smoothing_that_overflows_device_pixels_panics_at_group_build() {
         },
         ..Default::default()
     };
+    let plan = theme.chrome.clone();
     let mut renderer = test_renderer_with_theme(theme);
-    mirror_frame_at(&mut renderer, tap_view(), 4.0);
+    mirror_frame_at(&mut renderer, &plan, tap_view(), 4.0);
 }
 
 /// A non-finite or negative logical outer extent is rejected by
@@ -1439,8 +1463,9 @@ fn an_outer_extent_that_overflows_device_pixels_panics_at_bind() {
         }]),
         ..Default::default()
     };
+    let plan = theme.chrome.clone();
     let mut renderer = test_renderer_with_theme(theme);
-    mirror_frame_at(&mut renderer, tap_view(), DISPLAY_SCALE);
+    mirror_frame_at(&mut renderer, &plan, tap_view(), DISPLAY_SCALE);
 }
 
 /// Two members of one shared group carry different uniforms; a display-scale
@@ -1453,14 +1478,15 @@ fn an_outer_extent_that_overflows_device_pixels_panics_at_bind() {
 /// (water-rs/waterui#1788).
 #[test]
 fn a_scale_rebuild_keeps_each_members_own_effect() {
+    let plan = glass_plan(vec![
+        chrome_draw(GLASS, GLASS_SHADER, vec![1.0, 0.0]),
+        chrome_draw(GLASS, GLASS_SHADER, vec![0.0, 1.0]),
+    ]);
     let mut renderer = test_renderer_with_theme(MinimalTestTheme {
-        chrome: glass_plan(vec![
-            chrome_draw(GLASS, GLASS_SHADER, vec![1.0, 0.0]),
-            chrome_draw(GLASS, GLASS_SHADER, vec![0.0, 1.0]),
-        ]),
+        chrome: plan.clone(),
         ..Default::default()
     });
-    mirror_frame_at(&mut renderer, grouped_pair()(), DISPLAY_SCALE);
+    mirror_frame_at(&mut renderer, &plan, grouped_pair()(), DISPLAY_SCALE);
     let members = mirror_chrome_layers(&renderer);
     assert_eq!(members.len(), 4, "the pair mounts both draws per member");
 
@@ -1468,7 +1494,7 @@ fn a_scale_rebuild_keeps_each_members_own_effect() {
     // chrome cell's leaves it COMMIT-marked with no program, so the
     // new-scale commit joins the members without re-lowering any — the
     // rebuild itself is what rebinds each member.
-    let env = chrome_env();
+    let env = chrome_env(&plan);
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(
@@ -1526,11 +1552,12 @@ fn a_scale_rebuild_keeps_each_members_own_effect() {
 /// joiner's (water-rs/waterui#1788).
 #[test]
 fn a_scale_rebuild_rebinds_members_of_other_cells_with_their_own_effect() {
+    let plan = glass_plan(vec![
+        chrome_draw(GLASS, GLASS_SHADER, vec![1.0, 0.0]),
+        chrome_draw(GLASS, GLASS_SHADER, vec![0.0, 1.0]),
+    ]);
     let mut renderer = test_renderer_with_theme(MinimalTestTheme {
-        chrome: glass_plan(vec![
-            chrome_draw(GLASS, GLASS_SHADER, vec![1.0, 0.0]),
-            chrome_draw(GLASS, GLASS_SHADER, vec![0.0, 1.0]),
-        ]),
+        chrome: plan.clone(),
         ..Default::default()
     });
     let view = || {
@@ -1542,7 +1569,7 @@ fn a_scale_rebuild_rebinds_members_of_other_cells_with_their_own_effect() {
             .material_group(),
         )
     };
-    let env = chrome_env();
+    let env = chrome_env(&plan);
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(
@@ -1625,14 +1652,15 @@ fn a_rebound_member_tracks_the_signals_value_after_recording() {
     let effect = Live::from(signal.clone())
         .map(|v: f32| MaterialEffect::new(vec![v]))
         .into_shared();
+    let plan = glass_plan(vec![ChromeDraw {
+        effect,
+        ..chrome_draw(GLASS, GLASS_SHADER, vec![])
+    }]);
     let mut renderer = test_renderer_with_theme(MinimalTestTheme {
-        chrome: glass_plan(vec![ChromeDraw {
-            effect,
-            ..chrome_draw(GLASS, GLASS_SHADER, vec![])
-        }]),
+        chrome: plan.clone(),
         ..Default::default()
     });
-    mirror_frame(&mut renderer, tap_view());
+    mirror_frame(&mut renderer, &plan, tap_view());
     let member = mirror_chrome_layers(&renderer)[0];
     let bound = |renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>| {
         let node = mirrored_node(renderer, member);
@@ -1672,34 +1700,42 @@ fn a_rebound_member_tracks_the_signals_value_after_recording() {
     );
 }
 
-/// A theme whose uniforms depend on `WidgetInteractionState`: a press
-/// re-records the chrome with the pressed uniforms, and the member's
-/// rebound sample carries them (water-rs/waterui#1788). The mirror mount
-/// has no runtime window to dispatch an `InputEvent` through, so the test
-/// calls the renderer entry that dispatch calls for
-/// `InputEvent::PointerDown`; `a_press_rebinds_the_same_member_and_group`
-/// covers the dispatched event on a runtime.
+/// A custom part whose uniforms are a `Driven` over the interaction state:
+/// a press moves the realized operand, and the member's live sample
+/// carries the pressed uniforms with no re-recording and no frame
+/// (water-rs/waterui#1788, water-rs/waterui#2006). The mirror mount has no
+/// runtime window to dispatch an `InputEvent` through, so the test calls
+/// the renderer entry that dispatch calls for `InputEvent::PointerDown`;
+/// `a_press_keeps_the_same_member_and_group` covers the dispatched event
+/// on a runtime.
 #[test]
-fn a_press_rebinds_the_members_new_effect() {
+fn a_press_moves_the_members_effect_live() {
     let mut renderer = test_renderer_with_theme(MinimalTestTheme {
-        chrome: ChromePlan {
-            stateful_draws: Some(std::rc::Rc::new(|state| {
-                vec![chrome_draw(
-                    GLASS,
-                    GLASS_SHADER,
-                    vec![if state.state.contains(InteractionState::PRESSED) {
-                        1.0
-                    } else {
-                        0.0
-                    }],
-                )]
-            })),
-            ..glass_plan(vec![])
-        },
+        chrome: glass_plan(vec![]),
         ..Default::default()
     });
-    mirror_frame(&mut renderer, tap_view());
+    let effect = Driven::new(|inputs: &Inputs<'_, ()>| {
+        MaterialEffect::new(vec![if inputs.state.contains(InteractionState::PRESSED) {
+            1.0
+        } else {
+            0.0
+        }])
+    });
+    let mut env = pumped_test_environment();
+    env.install(super::invisible_chrome().custom(Custom::new(
+        (effect,),
+        |recorder, _frame, (effect,)| {
+            recorder.backdrop_material(chrome_rect(), GLASS_SHADER, GLASS, effect);
+        },
+    )));
+    mirror_frame_in(&mut renderer, &env, tap_view());
     let member = mirror_chrome_layers(&renderer)[0];
+    let chrome = {
+        let chromes = renderer.hit_test.interaction.live_chromes();
+        let [chrome] = <[_; 1]>::try_from(chromes).expect("the tap binds one live chrome");
+        chrome
+    };
+    let recordings = chrome.recordings();
     let bound = |renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>| {
         let node = mirrored_node(renderer, member);
         let Some(BackdropEffect::Shader(effect)) = node
@@ -1722,17 +1758,122 @@ fn a_press_rebinds_the_members_new_effect() {
         80.0,
         60.0,
         PointerButton::Primary,
-        &chrome_env(),
+        &env,
     );
-    mirror_frame(&mut renderer, tap_view());
     assert_eq!(
         bound(&renderer),
         [1.0],
-        "the press re-record rebound the member's new effect",
+        "the press moved the member's effect through its live operand",
+    );
+    mirror_frame_in(&mut renderer, &env, tap_view());
+    assert_eq!(
+        bound(&renderer),
+        [1.0],
+        "the next frame keeps the pressed effect"
     );
     assert_eq!(
         mirror_chrome_layers(&renderer),
         [member],
-        "the press re-record kept the member layer",
+        "the press kept the member layer",
+    );
+    assert_eq!(
+        chrome.recordings(),
+        recordings,
+        "the press recorded no chrome"
+    );
+}
+
+/// A button whose look fills its surface with a backdrop material: a press
+/// moves the member's clip to the pressed corners and its effect to the
+/// pressed uniforms through live operands — the same member, no re-recording
+/// (water-rs/waterui#2006).
+#[test]
+fn a_backdrop_button_press_moves_shape_and_effect_live() {
+    let effect = Driven::new(|inputs: &Inputs<'_, ()>| {
+        MaterialEffect::new(vec![if inputs.state.contains(InteractionState::PRESSED) {
+            1.0
+        } else {
+            0.0
+        }])
+    });
+    let base = super::invisible_chrome();
+    let chrome = Chrome::new(
+        Surface::new(
+            CornerShape::full().pressed(Corners::from(4.0)),
+            Backdrop::new(GLASS_SHADER, GLASS, effect),
+        ),
+        base.state_layer().clone(),
+        PressFeedback::new(),
+        FocusIndicator::Tint,
+        base.motion().clone(),
+    );
+    let mut renderer = test_renderer_with_theme(
+        MinimalTestTheme {
+            chrome: glass_plan(vec![]),
+            ..Default::default()
+        }
+        .with_button_chrome(chrome),
+    );
+    let env = pumped_test_environment();
+    let view =
+        || waterui_core::AnyView::new(waterui_controls::button::button("Glass").action(|| {}));
+    mirror_frame_in(&mut renderer, &env, view());
+    let [member] = <[_; 1]>::try_from(mirror_chrome_layers(&renderer))
+        .expect("the button's backdrop fill mounts one member");
+    let live = {
+        let chromes = renderer.hit_test.interaction.live_chromes();
+        let [chrome] = <[_; 1]>::try_from(chromes).expect("the button binds one live chrome");
+        chrome
+    };
+    let recordings = live.recordings();
+    let bound = |renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>| {
+        let node = mirrored_node(renderer, member);
+        let Some(BackdropEffect::Shader(effect)) = node
+            .backdrop
+            .as_ref()
+            .expect("the member binds a sample")
+            .effect()
+        else {
+            panic!("the member's effect is its shader effect")
+        };
+        (node.clip.clone(), effect.uniforms.clone())
+    };
+    let (rest_clip, rest_uniforms) = bound(&renderer);
+    assert_eq!(rest_uniforms, [0.0]);
+
+    let target = renderer
+        .hit_test
+        .pointer_targets
+        .first()
+        .expect("the button registers a pointer target")
+        .bounds
+        .center();
+    renderer.handle_pointer_down_with_source(
+        9,
+        PointerKind::Mouse,
+        crate::num_cast::f64_as_f32(target.x),
+        crate::num_cast::f64_as_f32(target.y),
+        PointerButton::Primary,
+        &env,
+    );
+    let (pressed_clip, pressed_uniforms) = bound(&renderer);
+    assert_eq!(
+        pressed_uniforms,
+        [1.0],
+        "the press moved the effect through its operand"
+    );
+    assert_ne!(
+        pressed_clip, rest_clip,
+        "the press moved the clip to the pressed corners"
+    );
+    assert_eq!(
+        mirror_chrome_layers(&renderer),
+        [member],
+        "the press kept the member"
+    );
+    assert_eq!(
+        live.recordings(),
+        recordings,
+        "the press recorded no chrome"
     );
 }

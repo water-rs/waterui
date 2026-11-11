@@ -1,7 +1,7 @@
 //! The `UIKit` toggle: a `UISwitch` or a `UIButton` checkbox, together with
 //! the labelled row a toggle lays out.
 //!
-//! `Toggle` owns a plain `UIView` container holding the control and an
+//! `Toggle` owns a [`ToggleRow`] container holding the control and an
 //! optional label, arranged by kind — a checkbox reads box first, then its
 //! label; a switch puts its label at the leading end and the switch at the
 //! trailing end of the row — and carries the platform's animation and action
@@ -9,26 +9,33 @@
 //!
 //! # Safety
 //!
-//! The `unsafe` here constructs framework controls through their designated
-//! initializers and convenience constructors, installs the container's
-//! Auto Layout constraints, and wraps state changes in `UIView` transition
-//! blocks — all documented main-thread APIs, which the [`MainThreadMarker`]
-//! `new` requires guarantees.
+//! The `unsafe` here defines a `UIView` subclass and forwards to `UIView`'s
+//! own implementation of each method it overrides, constructs framework
+//! controls through their designated initializers and convenience
+//! constructors, installs the container's Auto Layout constraints, and wraps
+//! state changes in `UIView` transition blocks — all documented main-thread
+//! APIs, which the [`MainThreadMarker`] `new` requires guarantees.
 
+use std::cell::OnceCell;
 use std::fmt;
 
-use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_foundation::{NSArray, ns_string};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2_core_foundation::CGRect;
+use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, ns_string};
 use objc2_ui_kit::{
-    UIAccessibilityContentSizeCategoryImageAdjusting, UIButton, UIButtonType, UIControl,
-    UIControlState, UIFontTextStyleBody, UIImage, UIImageSymbolConfiguration,
-    UILayoutPriorityDefaultHigh, UILayoutPriorityRequired, UISwitch, UIView,
+    NSLayoutConstraint, UIAccessibilityContentSizeCategoryImageAdjusting, UIButton, UIButtonType,
+    UIColor, UIControl, UIControlState, UIFontTextStyleBody, UIImage, UIImageSymbolConfiguration,
+    UILayoutGuide, UILayoutPriorityDefaultHigh, UILayoutPriorityRequired, UIResponder, UISwitch,
+    UIView,
 };
 
 use crate::action::{ActionTarget, ControlEvents};
+use crate::callback::guarded;
 use crate::core_animation;
-use crate::geometry::Size;
+use crate::geometry::{Rect, Size};
+use crate::response::{ReportsResponse, ResponseGeometry};
+use crate::slider::ControlSize;
 
 /// The gap between the label and the control, in points.
 pub const LABEL_SPACING: f64 = 8.0;
@@ -74,13 +81,159 @@ impl fmt::Debug for Control {
     }
 }
 
-/// A labelled toggle row in a `UIView` container.
+/// The layout guide a [`ToggleRow`] arranges its control and label in, and
+/// the constraints that pin it to the row's content rectangle.
+struct ContentGuide {
+    guide: Retained<UILayoutGuide>,
+    left: Retained<NSLayoutConstraint>,
+    top: Retained<NSLayoutConstraint>,
+    width: Retained<NSLayoutConstraint>,
+    height: Retained<NSLayoutConstraint>,
+}
+
+/// The state a [`ToggleRow`] carries.
+pub struct ToggleRowIvars {
+    /// How the row was placed as a leaf, and its response rectangle.
+    geometry: ResponseGeometry,
+    /// Where the control and label are arranged.
+    content: OnceCell<ContentGuide>,
+}
+
+impl fmt::Debug for ToggleRowIvars {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ToggleRowIvars")
+            .field("geometry", &self.geometry)
+            .finish_non_exhaustive()
+    }
+}
+
+define_class!(
+    // SAFETY: `UIView`'s designated initializer is `initWithFrame:`, which
+    // `ToggleRow::new` calls, and the class does not implement `Drop`.
+    #[unsafe(super(UIView, UIResponder, NSObject))]
+    #[name = "CocoaUiToggleRow"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = ToggleRowIvars]
+    #[derive(Debug)]
+    /// The row a toggle's control and label are arranged in. Its frame is
+    /// the allocation its parent assigned; the control and label are
+    /// arranged in its response rectangle, which it reports as its
+    /// accessibility frame.
+    pub struct ToggleRow;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of a `UIView` subclass.
+    unsafe impl NSObjectProtocol for ToggleRow {}
+
+    impl ToggleRow {
+        // The content guide follows the committed response before the
+        // constraints are solved.
+        // SAFETY: see the module safety note.
+        #[unsafe(method(layoutSubviews))]
+        fn layout_subviews_override(&self) {
+            guarded("ToggleRow layoutSubviews", || {
+                let geometry = &self.ivars().geometry;
+                geometry.commit(self);
+                self.arrange_in(geometry.content_rect(self));
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> CGRect {
+            guarded("ToggleRow accessibilityFrame", || {
+                self.ivars()
+                    .geometry
+                    .accessibility_frame(self)
+                    // SAFETY: see the module safety note.
+                    .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
+            })
+        }
+    }
+);
+
+impl ReportsResponse for ToggleRow {
+    fn response_geometry(&self) -> &ResponseGeometry {
+        &self.ivars().geometry
+    }
+}
+
+impl ToggleRow {
+    /// An empty row.
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(ToggleRowIvars {
+            geometry: ResponseGeometry::default(),
+            content: OnceCell::new(),
+        });
+        // SAFETY: `initWithFrame:` is `UIView`'s designated initializer.
+        let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: CGRect::ZERO] };
+        let guide = UILayoutGuide::new(mtm);
+        this.addLayoutGuide(&guide);
+        let content = ContentGuide {
+            left: guide
+                .leftAnchor()
+                .constraintEqualToAnchor_constant(&this.leftAnchor(), 0.0),
+            top: guide
+                .topAnchor()
+                .constraintEqualToAnchor_constant(&this.topAnchor(), 0.0),
+            width: guide.widthAnchor().constraintEqualToConstant(0.0),
+            height: guide.heightAnchor().constraintEqualToConstant(0.0),
+            guide,
+        };
+        NSLayoutConstraint::activateConstraints(
+            &NSArray::from_slice(&[
+                &*content.left,
+                &*content.top,
+                &*content.width,
+                &*content.height,
+            ]),
+            mtm,
+        );
+        assert!(
+            this.ivars().content.set(content).is_ok(),
+            "a toggle row installs its content guide once"
+        );
+        this
+    }
+
+    /// The guide the control and label are arranged in.
+    fn guide(&self) -> &UILayoutGuide {
+        &self
+            .ivars()
+            .content
+            .get()
+            .expect("a toggle row installs its content guide at creation")
+            .guide
+    }
+
+    /// Pins the content guide to `rect`, in the row's own coordinates.
+    fn arrange_in(&self, rect: Rect) {
+        let content = self
+            .ivars()
+            .content
+            .get()
+            .expect("a toggle row installs its content guide at creation");
+        for (constraint, value) in [
+            (&content.left, rect.origin.x),
+            (&content.top, rect.origin.y),
+            (&content.width, rect.size.width),
+            (&content.height, rect.size.height),
+        ] {
+            if constraint.constant().to_bits() != value.to_bits() {
+                constraint.setConstant(value);
+            }
+        }
+    }
+}
+
+/// A labelled toggle row in a [`ToggleRow`] container.
 ///
 /// The container is what the leaf mounts and lays out; the control is what
 /// user interaction and accessibility target.
 #[derive(Debug, Clone)]
 pub struct Toggle {
-    container: Retained<UIView>,
+    container: Retained<ToggleRow>,
     control: Control,
 }
 
@@ -128,7 +281,7 @@ impl Toggle {
             }
         };
         Self {
-            container: UIView::new(mtm),
+            container: ToggleRow::new(mtm),
             control,
         }
     }
@@ -173,7 +326,7 @@ impl Toggle {
             objc2_ui_kit::UILayoutConstraintAxis::Horizontal,
         );
 
-        let container = &self.container;
+        let container = self.container.guide();
         let centered = [
             control
                 .centerYAnchor()
@@ -209,11 +362,11 @@ impl Toggle {
                     ),
             ],
         };
-        let constraints: Vec<&objc2_ui_kit::NSLayoutConstraint> =
+        let constraints: Vec<&NSLayoutConstraint> =
             centered.iter().chain(&placed).map(|c| &**c).collect();
-        objc2_ui_kit::NSLayoutConstraint::activateConstraints(
+        NSLayoutConstraint::activateConstraints(
             &NSArray::from_slice(&constraints),
-            MainThreadMarker::from(&**container),
+            MainThreadMarker::from(&*self.container),
         );
     }
 
@@ -279,6 +432,27 @@ impl Toggle {
         match &self.control {
             Control::Switch(switch) => switch.isOn(),
             Control::Checkbox(button) => button.isSelected(),
+        }
+    }
+
+    /// How large the control is drawn.
+    ///
+    /// `UIKit` has no size classes for a switch or a checkbox: the platform
+    /// draws one size at every control size, so the value is ignored.
+    pub const fn set_control_size(&self, _size: ControlSize) {}
+
+    /// The colour the control draws its on state with: a switch's track
+    /// when it is on (`onTintColor`), a checkbox's glyph (`tintColor`).
+    ///
+    /// # Panics
+    ///
+    /// When not called on the main thread.
+    pub fn set_tint(&self, color: &UIColor) {
+        match &self.control {
+            Control::Switch(switch) => switch.setOnTintColor(Some(color)),
+            // SAFETY: `setTintColor:` is marked unsafe in the bindings; it is
+            // an ordinary main-thread `UIKit` setter.
+            Control::Checkbox(button) => unsafe { button.setTintColor(Some(color)) },
         }
     }
 

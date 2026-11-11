@@ -166,7 +166,7 @@ fn content_is_retained_clipped_and_wakes_an_idle_host() -> Result<(), Box<dyn st
     wait!(engine.render(FrameTime::now()))?;
     // The last drop retires through the transaction stream: the retire
     // message lands behind the remove.
-    let _ = wait!(engine.memory());
+    let _ = wait!(engine.memory())?;
     assert_eq!(drops.load(Ordering::Relaxed), 1);
     Ok(())
 }
@@ -225,7 +225,7 @@ fn hidden_surface_pulls_no_content_and_shows_current_state()
     wakes.store(0, Ordering::Relaxed);
     surface.visibility(Visibility::Hidden)?;
     // The reply lands only after the render thread applied the hide.
-    let _ = wait!(engine.memory());
+    let _ = wait!(engine.memory())?;
     send.send(wgpu::Color::GREEN)?;
     redraw.request_redraw();
     fill.set(WorkingColor::BLACK);
@@ -350,7 +350,7 @@ use cherenkov::Instant;
         tx[surface.root()].content(producer.at((8, 8)));
     });
     let start = Instant::now();
-    let Next::At { rate, .. } = wait!(engine.render(FrameTime::at(start)))? else {
+    let Next::At { rate, .. } = wait!(engine.render(FrameTime::unpresented_at(start)))? else {
         panic!("producer requests another frame");
     };
     assert_eq!(rate, 30..=120);
@@ -360,7 +360,7 @@ use cherenkov::Instant;
     assert_eq!(first.delta, Duration::ZERO);
     assert_eq!(first.size, (8, 8));
     assert_eq!(
-        wait!(engine.render(FrameTime::at(start + Duration::from_millis(250))))?,
+        wait!(engine.render(FrameTime::unpresented_at(start + Duration::from_millis(250))))?,
         Next::Idle
     );
     let second = times.try_recv()?;
@@ -370,7 +370,7 @@ use cherenkov::Instant;
         scale: 2.0,
         ..cherenkov::Display::default()
     })?;
-    wait!(engine.render(FrameTime::at(start + Duration::from_millis(500))))?;
+    wait!(engine.render(FrameTime::unpresented_at(start + Duration::from_millis(500))))?;
     let third = times.try_recv()?;
     assert_eq!(third.elapsed, Duration::from_millis(500));
     assert_eq!(third.delta, Duration::from_millis(250));
@@ -379,14 +379,14 @@ use cherenkov::Instant;
         // A size change is a new binding of the same producer.
         tx[surface.root()].content(producer.at((4, 4)));
     });
-    wait!(engine.render(FrameTime::at(start + Duration::from_millis(750))))?;
+    wait!(engine.render(FrameTime::unpresented_at(start + Duration::from_millis(750))))?;
     let resized = times.try_recv()?;
     assert_eq!(resized.size, (4, 4));
     assert_eq!(resized.elapsed, Duration::from_millis(750));
     assert_eq!(resized.delta, Duration::from_millis(250));
     assert!(adapters.try_recv().is_err(), "setup is not repeated");
     assert_eq!(
-        wait!(engine.render(FrameTime::at(start + Duration::from_secs(1))))?,
+        wait!(engine.render(FrameTime::unpresented_at(start + Duration::from_secs(1))))?,
         Next::Idle
     );
     assert!(times.try_recv().is_err(), "idle retains producer output");
@@ -457,12 +457,13 @@ impl filtrate::Effect for CallbackEffect {
         output: &filtrate::EffectOutput<'_>,
         encoder: &mut wgpu::CommandEncoder,
     ) -> filtrate::EffectRenderResult {
+        let (width, height) = input.size();
         encoder.copy_texture_to_texture(
-            input.texture.as_image_copy(),
-            output.texture.as_image_copy(),
+            input.texture().as_image_copy(),
+            output.texture().as_image_copy(),
             wgpu::Extent3d {
-                width: input.width,
-                height: input.height,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
         );

@@ -17,7 +17,7 @@ use waterui::animation::Animation;
 use waterui::app::App;
 use waterui::graphics::filtrate::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
-    RetainedMemory,
+    RetainedMemory, TextureViews,
 };
 use waterui::graphics::wgpu;
 use waterui::prelude::slider::slider;
@@ -370,7 +370,10 @@ fn nested_filter_preview() -> impl View {
 /// Where the pixels land is the whole point here, not what they are: the fill
 /// is a colour nothing else in this view draws, so an output showing the
 /// content underneath instead of the fill is an output the capture never read.
-struct FillEffect;
+#[derive(Default)]
+struct FillEffect {
+    views: TextureViews,
+}
 
 impl Effect for FillEffect {
     async fn setup(&mut self, _ctx: &EffectContext<'_>) -> EffectSetupResult {
@@ -379,14 +382,15 @@ impl Effect for FillEffect {
 
     fn encode_render(
         &mut self,
-        _input: &EffectInput,
+        input: &EffectInput,
         output: &EffectOutput,
         encoder: &mut wgpu::CommandEncoder,
     ) -> EffectRenderResult {
+        let target = self.views.view(output.texture(), input.timing().sequence());
         drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("fill effect"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &output.view,
+                view: &target,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
@@ -425,7 +429,9 @@ impl Effect for FillEffect {
 fn view_effect_preview() -> impl View {
     vstack((
         text("View effect").headline(),
-        sample_content().effect(FillEffect).size(220.0, 140.0),
+        sample_content()
+            .effect(FillEffect::default())
+            .size(220.0, 140.0),
     ))
     .padding()
 }
@@ -436,7 +442,7 @@ fn view_effect_preview() -> impl View {
 /// filter has to meet a component boundary, which is how an application writes
 /// it.
 fn self_effecting_content() -> impl View {
-    sample_content().effect(FillEffect)
+    sample_content().effect(FillEffect::default())
 }
 
 /// An `Effect` inside a filter (#579).

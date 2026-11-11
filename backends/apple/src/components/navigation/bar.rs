@@ -214,9 +214,9 @@ fn bar_title(view: &mut waterui_backend_core::AnyView, ctx: &RenderContext<'_>) 
 /// The item renders under the toolbar's environment — the slot's captured
 /// context included — so its labels default to icon-only presentation, as
 /// the platform's toolbars present them, while explicit label preferences
-/// keep precedence. On macOS that environment is also the window
-/// toolbar's, so the item's button styles resolve the way the toolbar
-/// draws them.
+/// keep precedence. That environment is also the toolbar's
+/// ([`ToolbarChrome`](crate::toolbar_chrome::ToolbarChrome)), so the item's
+/// button styles resolve the way the platform's toolbar draws them.
 fn bar_item(item: NavigationToolbarItem, ctx: &RenderContext<'_>) -> BarItem {
     let toolbar_env = toolbar_environment(ctx.env());
     let (placement, content, title, icon) = item.into_parts();
@@ -246,10 +246,7 @@ fn bar_item(item: NavigationToolbarItem, ctx: &RenderContext<'_>) -> BarItem {
 /// `env` with the toolbar defaults added without overriding an explicit
 /// label context.
 fn toolbar_environment(env: &Environment) -> Environment {
-    #[cfg(target_os = "ios")]
-    let mut env = env.clone();
-    #[cfg(target_os = "macos")]
-    let mut env = crate::toolbar::toolbar_environment(env);
+    let mut env = crate::toolbar_chrome::toolbar_environment(env);
     if env
         .get::<LabelDisplayMode>()
         .is_none_or(|mode| matches!(mode, LabelDisplayMode::Automatic))

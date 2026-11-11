@@ -12,11 +12,13 @@ use cocoa_ui::gradient::{
     GradientLayer, GradientPaint, GradientShape, GradientSpace, GradientStop,
 };
 use waterui::graphics::Gradient;
-use waterui::graphics::draw::{
+use waterui::graphics::backend::draw::{
     ColorSpace, ColorStop, Extend, Interpolation, LinearDisplayP3, LinearGradient, Paint,
     RadialGradient, Srgb, SweepGradient, WorkingColor,
 };
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 
 use crate::contract::NativeLeaf;
 use crate::dispatch::Dispatcher;
@@ -211,6 +213,14 @@ impl core::fmt::Debug for GradientSubView {
 }
 
 impl SubView for GradientSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         // Greedy: take the whole proposal on every axis.
         ViewDimensions::new(Size::new(
@@ -266,7 +276,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waterui::graphics::draw::kurbo::Point;
+    use kurbo::Point;
 
     const RED: WorkingColor = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
     const GREEN: WorkingColor = WorkingColor::new([0.0, 1.0, 0.0, 1.0]);

@@ -29,7 +29,7 @@ object NativeBridge {
      * `JNI_OnLoad`; 7 = `nativeSetMetrics` carries the `ViewConfiguration`
      * touch-scroll parameters (slop, min/max fling velocity, scroll
      * friction); 8 = [nativeCreateSession] drops `sdkInt`. The API floor is
-     * 31, so `ANativeWindow_setFrameRate` is linked directly; 9 =
+     * 33, so `ANativeWindow_setFrameRate` is linked directly; 9 =
      * [nativeBackEvent] and `onNativeBackAvailable` carry system back into
      * the navigation stack and report whether a back target is registered;
      * 10 = `nativeSetMetrics` splits the window insets into the container
@@ -64,9 +64,16 @@ object NativeBridge {
      * [nativeCreateSession] carries the configuration's night-mode flag so
      * the session's colour-scheme signal starts on the real `uiMode`, and
      * [nativeSetColorScheme] reports every later change
-     * (water-rs/waterui#3544).
+     * (water-rs/waterui#3544). 25 = the GPU band edge —
+     * [nativeBandAttached] / [nativeBandDetached] carry each band View's
+     * `ImageReader` surface, and `onNativeBandLatch` shows a band's newest
+     * image (water-rs/waterui#2225). 26 = the HWUI `DefineEffect` wire
+     * carries the overscroll stretch stage kind. 27 = [nativeSetMetrics]
+     * carries the `ViewConfiguration` double-tap timeout and slop, and
+     * [nativeOnFrame] carries the vsync callback's expected presentation
+     * time in place of the advisory vsync timestamp.
      */
-    private const val SCHEMA: Int = 24
+    private const val SCHEMA: Int = 27
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
@@ -198,14 +205,24 @@ object NativeBridge {
         minFlingVelocityPx: Float,
         maxFlingVelocityPx: Float,
         scrollFriction: Float,
+        doubleTapTimeoutMs: Int,
+        doubleTapSlopPx: Float,
     )
 
     /**
      * The frame transaction. Returns a bitmask: 1 = wants another vsync frame,
      * 2 = window requested close, 4 = a fallback deadline is available through
-     * [nativeFrameDeadlineInNanos].
+     * [nativeFrameDeadlineInNanos]. `hasPresentation` is set for a frame a
+     * vsync callback started, and `presentationNanos` is then its expected
+     * presentation time on the `System.nanoTime` clock; a delayed deadline
+     * frame has none.
      */
-    @JvmStatic external fun nativeOnFrame(sessionPtr: Long, vsyncNanos: Long): Long
+    @JvmStatic
+    external fun nativeOnFrame(
+        sessionPtr: Long,
+        hasPresentation: Boolean,
+        presentationNanos: Long,
+    ): Long
 
     @JvmStatic external fun nativeFrameDeadlineInNanos(sessionPtr: Long): Long
 
@@ -235,6 +252,27 @@ object NativeBridge {
     )
 
     @JvmStatic external fun nativeSurfaceDestroyed(sessionPtr: Long, generation: Long)
+
+    /**
+     * A band View created the `ImageReader` it shows — `surface` is the
+     * reader's, which the engine presents the self-drawn content above the
+     * platform view whose placement id is `view` into. A resize creates a
+     * new reader under a new [generation][nativeBandDetached]; the base
+     * band's attachment drives the frame cadence.
+     */
+    @JvmStatic
+    external fun nativeBandAttached(
+        sessionPtr: Long,
+        view: Long,
+        surface: Surface,
+        width: Int,
+        height: Int,
+        generation: Long,
+    )
+
+    /** The reader `generation` of the band above `view` is about to close. */
+    @JvmStatic
+    external fun nativeBandDetached(sessionPtr: Long, view: Long, generation: Long)
 
     /**
      * The Activity's started state (`onStart`/`onStop`) — drives the frame

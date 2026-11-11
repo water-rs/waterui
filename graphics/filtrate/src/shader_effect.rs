@@ -120,10 +120,11 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use cherenkov_shader::naga;
 use filtrate_core::{FilterParam, WatchGuard};
+use waterui_contract::contract_violation;
 
 use crate::effect::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRedrawCallback, EffectRenderError,
-    EffectRenderResult, EffectSetupError, EffectSetupResult, RetainedMemory,
+    EffectRenderResult, EffectSetupError, EffectSetupResult, RetainedMemory, TextureViews,
 };
 use crate::executor::{animation::ParamAnimator, filterable, sampler, uniforms::UniformBuffers};
 
@@ -183,6 +184,8 @@ struct Resources {
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     uniforms: UniformBuffers,
+    /// Views of the host's input and output textures.
+    views: TextureViews,
     /// Bind groups of recent encodes, keyed by everything they bind that
     /// varies: the input view and the uniform buffer.
     bind_groups: Vec<CachedBindGroup>,
@@ -337,14 +340,13 @@ impl ShaderEffect {
     /// Adds a constant parameter, readable in the shader as `effect_param(n)`
     /// where `n` counts the parameters added before it.
     ///
-    /// # Panics
-    ///
-    /// Panics when the effect already carries [`SHADER_EFFECT_MAX_PARAMS`]
-    /// parameters.
+    /// An effect that already carries [`SHADER_EFFECT_MAX_PARAMS`] parameters
+    /// breaks the contract: the extra parameter is dropped.
     #[must_use]
     pub fn param(mut self, value: f32) -> Self {
-        self.push_param(value);
-        self.const_params.push(value);
+        if self.push_param(value).is_some() {
+            self.const_params.push(value);
+        }
         self
     }
 
@@ -366,14 +368,15 @@ impl ShaderEffect {
     /// reports is discarded: there is nothing left to render it, and the
     /// host is not woken.
     ///
-    /// # Panics
-    ///
-    /// Panics when the effect already carries [`SHADER_EFFECT_MAX_PARAMS`]
-    /// parameters.
+    /// An effect that already carries [`SHADER_EFFECT_MAX_PARAMS`] parameters
+    /// breaks the contract: the extra parameter is dropped and the returned
+    /// guard subscribes nothing.
     #[must_use]
     pub fn watch_param<P: FilterParam + ?Sized>(mut self, param: &P) -> (Self, WatchGuard) {
-        let index = self.push_param(param.snapshot());
-        let guard = self.animator.sender().watch(index, param);
+        let guard = match self.push_param(param.snapshot()) {
+            Some(index) => self.animator.sender().watch(index, param),
+            None => WatchGuard::new(()),
+        };
         (self, guard)
     }
 
@@ -432,12 +435,17 @@ impl ShaderEffect {
         }
     }
 
-    fn push_param(&mut self, initial: f32) -> usize {
-        assert!(
-            self.animator.param_count() < SHADER_EFFECT_MAX_PARAMS,
-            "a ShaderEffect carries at most {SHADER_EFFECT_MAX_PARAMS} parameters"
-        );
-        self.animator.push_param(initial)
+    /// Appends a parameter and returns its index, or `None` — after
+    /// reporting the broken contract — when the block is full.
+    fn push_param(&mut self, initial: f32) -> Option<usize> {
+        if self.animator.param_count() >= SHADER_EFFECT_MAX_PARAMS {
+            contract_violation!(
+                "a ShaderEffect carries at most {SHADER_EFFECT_MAX_PARAMS} parameters; \
+                 the extra parameter is dropped"
+            );
+            return None;
+        }
+        Some(self.animator.push_param(initial))
     }
 }
 
@@ -553,6 +561,7 @@ async fn build(
             },
         ),
         uniforms: UniformBuffers::new("shader effect uniforms"),
+        views: TextureViews::new(),
         bind_groups: Vec::new(),
     })
 }
@@ -567,16 +576,19 @@ fn uniform_words(
     for (index, value) in animator.current_values().iter().enumerate() {
         params[index / 4][index % 4] = *value;
     }
+    let (output_width, output_height) = output.size();
+    let (input_width, input_height) = input.size();
+    let timing = input.timing();
     bytemuck::cast(ShaderEffectUniforms {
-        resolution: [u32_to_f32(output.width), u32_to_f32(output.height)],
-        input_resolution: [u32_to_f32(input.width), u32_to_f32(input.height)],
-        time: input.timing.presentation_time().as_secs_f32(),
-        time_delta: input.timing.delta().as_secs_f32(),
+        resolution: [u32_to_f32(output_width), u32_to_f32(output_height)],
+        input_resolution: [u32_to_f32(input_width), u32_to_f32(input_height)],
+        time: timing.presentation_time().as_secs_f32(),
+        time_delta: timing.delta().as_secs_f32(),
         #[expect(
             clippy::cast_possible_truncation,
             reason = "the WGSL frame counter is the host sequence wrapping at 2^32"
         )]
-        frame: input.timing.sequence() as u32,
+        frame: timing.sequence() as u32,
         param_count: u32::try_from(animator.param_count())
             .expect("the parameter count is bounded by SHADER_EFFECT_MAX_PARAMS"),
         params,
@@ -686,31 +698,33 @@ impl Effect for ShaderEffect {
             Setup::Failed(error) => return Err(EffectRenderError::SetupFailed(error.clone())),
             Setup::Ready(pipeline) => pipeline,
         };
-        if input.format != pipeline.input_format || output.format != pipeline.output_format {
+        if input.format() != pipeline.input_format || output.format() != pipeline.output_format {
             return Err(EffectRenderError::FormatMismatch {
-                input: input.format,
-                output: output.format,
+                input: input.format(),
+                output: output.format(),
                 setup_input: pipeline.input_format,
                 setup_output: pipeline.output_format,
             });
         }
-        let parameters_animating = self.animator.update(input.timing.delta());
-        let sequence = input.timing.sequence();
+        let parameters_animating = self.animator.update(input.timing().delta());
+        let sequence = input.timing().sequence();
         let uniforms = pipeline.uniforms.select(
-            input.device,
-            input.queue,
+            input.device(),
+            input.queue(),
             uniform_words(&self.animator, input, output).to_vec(),
             sequence,
         );
+        let input_view = pipeline.views.view(input.texture(), sequence);
+        let output_view = pipeline.views.view(output.texture(), sequence);
         // A handle clone: the pass below also borrows the pipeline.
         let bind_group = pipeline
-            .bind_group(input.device, &input.view, uniforms, sequence)
+            .bind_group(input.device(), &input_view, uniforms, sequence)
             .clone();
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("shader effect pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &output.view,
+                    view: &output_view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -886,7 +900,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "at most 16 parameters")]
+    #[cfg_attr(debug_assertions, should_panic(expected = "at most 16 parameters"))]
     fn parameters_are_bounded_by_the_uniform_block() {
         let mut effect = ShaderEffect::new(PASS_THROUGH).expect("valid");
         for value in 0..=SHADER_EFFECT_MAX_PARAMS {
@@ -894,6 +908,19 @@ mod tests {
             let value = value as f32;
             effect = effect.param(value);
         }
+        // Release builds drop the extra parameter and carry on.
+        assert_eq!(effect.param_count(), SHADER_EFFECT_MAX_PARAMS);
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "at most 16 parameters"))]
+    fn a_watched_parameter_beyond_the_block_subscribes_nothing() {
+        let mut effect = ShaderEffect::new(PASS_THROUGH).expect("valid");
+        for _ in 0..SHADER_EFFECT_MAX_PARAMS {
+            effect = effect.param(0.0);
+        }
+        let (effect, _guard) = effect.watch_param(&1.0_f32);
+        assert_eq!(effect.param_count(), SHADER_EFFECT_MAX_PARAMS);
     }
 
     /// A `FilterParam` whose watcher callback the test fires by hand.
@@ -1000,6 +1027,32 @@ mod tests {
         assert!(effect.redraw_hint(), "the change wants a frame");
         effect.animator.update(Duration::ZERO);
         assert_eq!(effect.animator.current_values(), &[0.75]);
+    }
+
+    /// A second host callback breaks the contract and is ignored: the first
+    /// one keeps being woken.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "installed exactly once before setup")
+    )]
+    fn a_second_redraw_callback_is_ignored() {
+        let param = ScriptedParam::constant(0.25);
+        let (mut effect, _subscription) = ShaderEffect::new(PASS_THROUGH)
+            .expect("valid")
+            .watch_param(&param);
+        let redraws = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&redraws);
+        effect.set_redraw_callback(Arc::new(move || {
+            count.fetch_add(1, Ordering::Relaxed);
+        }));
+        effect.set_redraw_callback(Arc::new(|| {}));
+
+        param.fire(AnimatedTarget {
+            value: 0.75,
+            interpolator: None,
+        });
+        assert_eq!(redraws.load(Ordering::Relaxed), 1);
     }
 
     /// Toggling a watched animation flag reaches the render side: the flag

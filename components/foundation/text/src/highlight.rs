@@ -15,8 +15,8 @@ use syntect::{
 #[cfg(feature = "highlight")]
 use two_face::syntax::extra_newlines;
 #[cfg(feature = "highlight")]
-use waterui_graphics::color::ColorScheme;
-use waterui_graphics::color::Srgb;
+use waterui_color::ColorScheme;
+use waterui_color::Srgb;
 
 use crate::styled::{Style, StyledStr};
 
@@ -284,9 +284,9 @@ impl Highlighter for DefaultHighlighter {
 #[non_exhaustive]
 pub struct HighlightChunk<'a> {
     /// The text content.
-    pub text: &'a str,
+    text: &'a str,
     /// The color for this chunk.
-    pub color: Srgb,
+    color: Srgb,
 }
 
 impl<'a> HighlightChunk<'a> {

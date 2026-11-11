@@ -178,7 +178,7 @@ fn shared_device()
         _ => wgpu::Features::empty(),
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        required_features,
+        required_features: required_features | wgpu::Features::SHADER_F16,
         ..wgpu::DeviceDescriptor::default()
     }))?;
     Ok((instance, adapter, device, queue))
@@ -585,5 +585,112 @@ fn frame_producer_shows_each_submitted_frame_on_two_surfaces()
             compare(&surface.readback()?.pixels, |_, _| expected);
         }
     }
+    Ok(())
+}
+
+/// A frame has one release point: a second `on_release` hook is a contract
+/// violation, and a release build drops it unrun while the first still runs.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "ExternalFrame::on_release called twice")
+)]
+fn a_second_release_hook_is_dropped() {
+    let Some((_engine, device, queue)) = engine().expect("engine") else {
+        return;
+    };
+    let (released, release) = std::sync::mpsc::channel();
+    let first = released.clone();
+    let frame = solid(&device, &queue, [255, 0, 0, 255])
+        .expect("a solid frame")
+        .on_release(move || first.send("first").expect("the test receives the release"))
+        .on_release(move || {
+            released
+                .send("second")
+                .expect("the test receives the release");
+        });
+    drop(frame);
+    assert_eq!(release.try_iter().collect::<Vec<_>>(), ["first"]);
+}
+
+/// A wgpu-plane frame's `on_release` hook runs exactly once, when the
+/// engine drops the last copy of the frame: not while the frame is shown,
+/// when a newer submission replaces it, when its producer is detached
+/// and retired, and when the engine is torn down with a frame installed.
+#[test]
+fn release_hook_runs_when_the_engine_drops_the_frame() -> Result<(), Box<dyn std::error::Error>> {
+    let Some((engine, device, queue)) = engine()? else {
+        return Ok(());
+    };
+    let surface = engine.surface(
+        Offscreen::new((SIZE, SIZE), OffscreenFormat::LinearF16),
+        || {},
+    )?;
+    let (released, release) = std::sync::mpsc::channel();
+    let frame = |name: &'static str, rgba: [u8; 4]| {
+        let released = released.clone();
+        solid(&device, &queue, rgba).map(|frame| {
+            frame.on_release(move || {
+                released
+                    .send(name)
+                    .expect("the test receives every release");
+            })
+        })
+    };
+    let layer = surface.layer();
+    let (video, sink) = engine.frame_producer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&layer);
+        tx[&layer].content(video.at((SIZE, SIZE)));
+    });
+
+    let red = frame("red", [255, 0, 0, 255])?;
+    let producer_copy = red.clone();
+    sink.submit(red);
+    engine.render(FrameTime::now())?;
+    drop(producer_copy);
+    assert_eq!(
+        release.try_recv().ok(),
+        None,
+        "a shown frame is not released, whoever else dropped a copy"
+    );
+
+    sink.submit(frame("green", [0, 255, 0, 255])?);
+    engine.render(FrameTime::now())?;
+    assert_eq!(
+        release.try_recv().ok(),
+        Some("red"),
+        "a replaced frame is released"
+    );
+
+    // Detaching the layer and dropping the producer retires it, and its
+    // current frame with it.
+    surface.update(|tx| {
+        tx[&layer].clear_content();
+    });
+    drop(video);
+    drop(sink);
+    engine.render(FrameTime::now())?;
+    assert_eq!(
+        release.try_recv().ok(),
+        Some("green"),
+        "a retired producer's frame is released"
+    );
+
+    let (video, sink) = engine.frame_producer();
+    surface.update(|tx| {
+        tx[&layer].content(video.at((SIZE, SIZE)));
+    });
+    sink.submit(frame("blue", [0, 0, 255, 255])?);
+    engine.render(FrameTime::now())?;
+    assert_eq!(release.try_recv().ok(), None);
+    drop((surface, layer, video, sink));
+    drop(engine);
+    assert_eq!(
+        release.try_recv().ok(),
+        Some("blue"),
+        "engine teardown releases the installed frame"
+    );
+    assert_eq!(release.try_recv().ok(), None, "every hook ran once");
     Ok(())
 }

@@ -11,14 +11,20 @@ use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use waterui_contract::contract_violation;
+
 /// The device types and drawing contexts exposed to custom GPU producers.
 pub mod wgpu {
     pub use ::wgpu::*;
     use std::time::Duration;
 
+    use cherenkov::Instant;
+
     /// Persistent device resources supplied once before rendering content.
     #[derive(Debug)]
     pub struct Context<'a> {
+        /// Instance that created the adapter.
+        pub instance: &'a Instance,
         /// Adapter that owns the engine's device.
         pub adapter: &'a Adapter,
         /// Engine-owned device.
@@ -54,6 +60,9 @@ pub mod wgpu {
         pub elapsed: Duration,
         /// Time since the previous presentation of this content.
         pub delta: Duration,
+        /// The platform's target presentation time for this frame, when its
+        /// frame clock reports one.
+        pub presentation_time: Option<Instant>,
         pub(crate) redraw: bool,
     }
 
@@ -274,6 +283,24 @@ pub const fn memory_hints(backend: wgpu::Backend) -> wgpu::MemoryHints {
     }
 }
 
+/// The largest buffer, in bytes, the allocator [`memory_hints`] selects
+/// suballocates from its device-memory blocks, or `None` where the
+/// backend's allocator takes no hint.
+///
+/// A buffer past it is a dedicated driver allocation, whose release the
+/// driver may keep charged to the process (water-rs/waterui#4108); the
+/// per-frame upload staging chunks are sized within it
+/// (water-rs/waterui#4174).
+#[must_use]
+pub const fn suballocation_limit(backend: wgpu::Backend) -> Option<u64> {
+    match memory_hints(backend) {
+        wgpu::MemoryHints::Manual {
+            suballocated_device_memory_block_size,
+        } => Some(suballocated_device_memory_block_size.end),
+        _ => None,
+    }
+}
+
 /// The compute predicate: wgpu reports the stage as a downlevel flag plus
 /// the workgroup limits it dispatches on.
 const fn supports_compute(flags: wgpu::DownlevelFlags, limits: &wgpu::Limits) -> bool {
@@ -372,6 +399,10 @@ pub fn shader_module(device: &wgpu::Device, label: &str, source: &str) -> wgpu::
 ///
 /// A new frame wakes the surface through the same coalesced waker as
 /// recorded content; the engine never polls the producer.
+///
+/// A producer that reuses its planes — a pool of copy destinations, leased
+/// buffers it must hand back — learns when the engine is done with them
+/// through [`on_release`](Self::on_release).
 #[derive(Debug, Clone)]
 pub struct ExternalFrame {
     /// The textures the fragment stage samples.
@@ -380,10 +411,55 @@ pub struct ExternalFrame {
     pub color: FrameColor,
     /// An optional GPU-side wait the sampled planes are ordered behind.
     pub wait: Option<FrameSync>,
+    /// The release hook of a `Yuv` or `Rgb` frame, shared by every clone
+    /// of the frame; [`on_release`](Self::on_release) installs it. A
+    /// `Native` frame's hook lives in its Vulkan generation instead, so
+    /// this stays `None` for it.
+    pub release: Option<FrameRelease>,
     /// HDR attachments copied from the producer's Core Video pixel buffer.
     /// Preserve these when importing Apple video for native composition.
     #[cfg(target_vendor = "apple")]
     pub attachments: Option<metal::VideoAttachments>,
+}
+
+/// The release hook of an [`ExternalFrame`] whose planes are `wgpu`
+/// textures, installed by [`ExternalFrame::on_release`].
+///
+/// Every clone of the frame shares the one hook, and it runs when the
+/// last clone of this handle is dropped — on the render thread when the
+/// engine replaces or detaches the frame or tears its surface or engine
+/// down, or on the producer's thread when it drops a frame it never
+/// published or one the mailbox superseded.
+#[derive(Clone)]
+pub struct FrameRelease {
+    /// Held only to be dropped: the last clone's drop runs the hook.
+    _hook: Arc<ReleaseOnDrop>,
+}
+
+impl std::fmt::Debug for FrameRelease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FrameRelease").finish_non_exhaustive()
+    }
+}
+
+/// A producer's release callback, run at most once.
+pub(crate) type ReleaseFn = Box<dyn FnOnce() + Send + 'static>;
+
+/// Runs its callback when dropped: the last [`FrameRelease`] clone going
+/// away is the release point.
+struct ReleaseOnDrop(std::sync::Mutex<Option<ReleaseFn>>);
+
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        let release = self
+            .0
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(release) = release {
+            release();
+        }
+    }
 }
 
 /// The planes an [`ExternalFrame`] samples.
@@ -758,6 +834,7 @@ impl ExternalFrame {
             planes: FramePlanes::Yuv { y, uv },
             color,
             wait: None,
+            release: None,
             #[cfg(target_vendor = "apple")]
             attachments: None,
         })
@@ -787,6 +864,7 @@ impl ExternalFrame {
             planes: FramePlanes::Rgb { plane, alpha },
             color,
             wait: None,
+            release: None,
             #[cfg(target_vendor = "apple")]
             attachments: None,
         })
@@ -832,6 +910,7 @@ impl ExternalFrame {
             color: frame.generation.color,
             planes: FramePlanes::Native(frame),
             wait: None,
+            release: None,
             #[cfg(target_vendor = "apple")]
             attachments: None,
         })
@@ -845,6 +924,52 @@ impl ExternalFrame {
     #[must_use]
     pub fn sync(mut self, sync: FrameSync) -> Self {
         self.wait = Some(sync);
+        self
+    }
+
+    /// Runs `release` exactly once, when the engine will never read the
+    /// frame's planes again — the point a producer may reuse or hand back
+    /// the buffers behind them.
+    ///
+    /// - `Yuv` and `Rgb` frames: when the last clone of the frame is
+    ///   dropped, wherever that happens — the render thread replacing or
+    ///   detaching the frame or tearing its surface or engine down, or the
+    ///   producer dropping a frame it never published. Every engine read of
+    ///   the planes has been submitted on the shared queue by then, so
+    ///   producer work submitted on the same queue afterwards — a copy into
+    ///   a pool texture, say — is ordered after those reads.
+    /// - `Native` frames: once the generation's release submission has
+    ///   completed on the GPU and its Vulkan objects are destroyed, not when
+    ///   the frame value is dropped.
+    ///
+    /// A system compositor plane that showed the frame (macOS, iOS) holds
+    /// its own reference to the buffer beyond this point; a producer
+    /// writing into a buffer the system may still display checks the
+    /// buffer's own in-use state.
+    ///
+    /// # Contract
+    /// One frame has one release point: a second hook is a contract
+    /// violation and is dropped unrun. A hook on a `Native` frame whose
+    /// generation has already retired is one too; the frame is already
+    /// released, so the hook runs at once.
+    #[must_use]
+    pub fn on_release(mut self, release: impl FnOnce() + Send + 'static) -> Self {
+        let release: ReleaseFn = Box::new(release);
+        match &self.planes {
+            #[cfg(all(unix, not(target_vendor = "apple")))]
+            FramePlanes::Native(frame) => frame.generation.on_release(release),
+            FramePlanes::Yuv { .. } | FramePlanes::Rgb { .. } => {
+                if self.release.is_some() {
+                    contract_violation!(
+                        "ExternalFrame::on_release called twice: a frame has one release hook; the second hook is dropped"
+                    );
+                    return self;
+                }
+                self.release = Some(FrameRelease {
+                    _hook: Arc::new(ReleaseOnDrop(std::sync::Mutex::new(Some(release)))),
+                });
+            }
+        }
         self
     }
 }
@@ -920,11 +1045,11 @@ pub mod dmabuf {
     #[non_exhaustive]
     pub struct DmabufPlane {
         /// The dma-buf descriptor for this plane.
-        pub fd: OwnedFd,
+        fd: OwnedFd,
         /// Byte offset of the plane inside the buffer.
-        pub offset: u32,
+        offset: u32,
         /// Byte stride between rows of the plane.
-        pub stride: u32,
+        stride: u32,
     }
 
     impl DmabufPlane {
@@ -1024,14 +1149,14 @@ pub mod dmabuf {
     #[non_exhaustive]
     pub struct DmabufFormat {
         /// The DRM fourcc (`DRM_FORMAT_*`) the host imports.
-        pub fourcc: u32,
+        fourcc: u32,
         /// The `DRM_FORMAT_MOD_*` modifiers the host imports, in
         /// preference order.
-        pub modifiers: Vec<u64>,
+        modifiers: Vec<u64>,
         /// The presentation colour encoding the host expects.
-        pub color: OutputColor,
+        color: OutputColor,
         /// The alpha convention the host expects.
-        pub alpha: OutputAlpha,
+        alpha: OutputAlpha,
     }
 
     impl DmabufFormat {
@@ -1169,7 +1294,7 @@ pub mod dmabuf {
 #[cfg(target_os = "android")]
 pub mod android {
     pub use crate::render::surface_control::ffi::{ASurfaceControl, CreateFailed, SurfaceControl};
-    pub use crate::render::surface_control::planes::HostedSurface;
+    pub use crate::render::surface_control::planes::{BandCommit, BandUpdate, HostedSurface};
 
     /// A surface realized as child surface controls of a host's parent
     /// surface control.
@@ -1187,6 +1312,7 @@ pub mod android {
         pub(crate) size: (u32, u32),
         pub(crate) transparent: bool,
         pub(crate) refresh: cherenkov::RefreshRange,
+        pub(crate) band_commits: Option<std::sync::mpsc::Sender<BandCommit>>,
     }
 
     impl SurfaceControlTarget {
@@ -1204,7 +1330,19 @@ pub mod android {
                 size,
                 transparent: false,
                 refresh: cherenkov::DEFAULT_REFRESH,
+                band_commits: None,
             }
+        }
+
+        /// Lets the surface present the regions above its host windows'
+        /// marks in bands (`cherenkov::Engine::set_band`): every frame
+        /// that changes a band reaches `sink` as a [`BandCommit`] once its
+        /// GPU work finished, and the surface presents nothing new until
+        /// the host applies it (water-rs/waterui#2225).
+        #[must_use]
+        pub fn band_commits(mut self, sink: std::sync::mpsc::Sender<BandCommit>) -> Self {
+            self.band_commits = Some(sink);
+            self
         }
 
         /// Lets the host's content show through transparent pixels: the
@@ -1379,22 +1517,36 @@ pub mod metal {
     /// `format` must describe the texels the `MTLTexture` holds exactly — a
     /// format the frame contract accepts, in the plane's role.
     ///
+    /// `usage` is what the wrapper declares to wgpu. It always includes
+    /// `TEXTURE_BINDING`, which the engine samples the plane through; a
+    /// producer that also writes the texture through wgpu — a pool of
+    /// `IOSurface`-backed copy destinations — adds `COPY_DST` or
+    /// `RENDER_ATTACHMENT`.
+    ///
     /// # Safety
     /// `raw` must be a live `MTLTexture` created on the same `MTLDevice` the
     /// `wgpu::Device` wraps, or on another device in its peer group, and
-    /// `format` must be byte-compatible with its pixel format. The texture
+    /// `format` must be byte-compatible with its pixel format. Its own
+    /// `MTLTextureUsage` must allow every use `usage` declares. The texture
     /// must stay alive and unwritten-except-by-the-producer for as long as a
     /// frame referencing it can be in flight.
     ///
     /// # Panics
-    /// When the `MTLTexture`'s dimensions do not fit `u32`.
+    /// When `usage` lacks `TEXTURE_BINDING`, or the `MTLTexture`'s
+    /// dimensions do not fit `u32`.
     #[must_use]
     pub unsafe fn import_texture(
         device: &wgpu::Device,
         raw: objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLTexture>>,
         format: wgpu::TextureFormat,
+        usage: wgpu::TextureUsages,
     ) -> wgpu::Texture {
         use objc2_metal::MTLTexture;
+        assert!(
+            usage.contains(wgpu::TextureUsages::TEXTURE_BINDING),
+            "an external frame plane is sampled: its usage must contain TEXTURE_BINDING, \
+             not {usage:?}"
+        );
         let extent = wgpu::Extent3d {
             width: u32::try_from(raw.width()).expect("plane width fits u32"),
             height: u32::try_from(raw.height()).expect("plane height fits u32"),
@@ -1429,7 +1581,7 @@ pub mod metal {
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
                     format,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    usage,
                     view_formats: &[],
                 },
                 wgpu::wgt::TextureUses::RESOURCE,

@@ -549,7 +549,8 @@ fn transform_paint(paint: &mut Paint, t: Affine) {
                 mesh.rows(),
                 mesh.points().iter().map(|point| t * *point).collect(),
                 mesh.colors().to_vec(),
-            );
+            )
+            .expect("the grid is the one a valid mesh already holds");
         }
         Paint::Image(i) => i.transform = t * i.transform,
         Paint::Transformed { transform, .. } => *transform = t * *transform,
@@ -588,7 +589,8 @@ fn paint_opacity(paint: &mut Paint, alpha: f32) {
                 mesh.rows(),
                 mesh.points().to_vec(),
                 colors,
-            );
+            )
+            .expect("the grid is the one a valid mesh already holds");
             None
         }
         Paint::Image(_) => None,

@@ -38,8 +38,9 @@ waterui-meta = { workspace = true, optional = true }
 executor-core.workspace = true
 futures.workspace = true
 tracing.workspace = true
+thiserror = { version = "2.0.21", default-features = false }
 # `Link` opens its URL in the system handler.
-robius-open.workspace = true
+waterkit-deeplink.workspace = true
 # Grapheme clusters for the avatar monogram: a name's first "letter" is a
 # cluster, not a `char`, wherever a combining mark or an emoji sequence is one.
 unicode-segmentation = "1.13"
@@ -52,7 +53,6 @@ waterui-graphics = { workspace = true, default-features = false }
 waterui-icon.workspace = true
 waterui-shape = { workspace = true, default-features = false }
 waterui-svg = { workspace = true, optional = true }
-waterui-canvas = { workspace = true, optional = true }
 waterui-chart = { workspace = true, optional = true }
 waterui-barcode = { workspace = true, optional = true }
 waterui-particle = { workspace = true, optional = true }
@@ -132,7 +132,6 @@ effects = ["waterui-graphics/effects"]
 gpu = [
     "effects",
     "waterui-graphics/gpu",
-    "waterui-shape/gpu",
     "dep:waterui-svg",
 ]
 # `asset!` expands image-kind assets into `waterui::media::Photo` (`ImageAsset`,
@@ -203,7 +202,9 @@ flow-markdown = [
 # sign in prose stays a dollar sign, exactly as it does today.
 markdown-math = ["flow-markdown", "dep:waterui-math"]
 std = ["dep:waterkit-haptic"]
-canvas = ["dep:waterui-canvas"]
+# `waterui::canvas`: the target-neutral drawing API, `waterui_graphics::canvas`.
+# It costs no dependency; the feature only exposes the re-export.
+canvas = []
 chart = ["dep:waterui-chart"]
 barcode = ["dep:waterui-barcode"]
 particle = ["dep:waterui-particle"]

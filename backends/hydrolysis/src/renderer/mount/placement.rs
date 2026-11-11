@@ -10,6 +10,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use super::stretch::ShownStretch;
+
 /// The per-window epoch that placement resolutions cache against.
 ///
 /// Every [`Placement`] setter bumps it, so any placement change invalidates
@@ -182,11 +184,28 @@ pub struct Placement {
     /// the items took their indices from, so content registered before,
     /// between or after children orders the same as its emission.
     item_cursor: Cell<u32>,
+    /// The overscroll stretch the node's content draws with while it
+    /// shows: a scroll node's viewport placement carries it, so a platform
+    /// view inside resolves the warp its host applies
+    /// ([`resolved_stretches`](Self::resolved_stretches)).
+    stretch: Cell<Option<ShownStretch>>,
     /// The window clock every write bumps.
     clock: Rc<PlacementClock>,
     /// The structural chain's resolution at the epoch it was computed —
     /// recomputed lazily per clock epoch.
     resolved_hit: RefCell<Option<(u64, ChainResolution)>>,
+}
+
+/// One scroll view's overscroll stretch resolved down a placement chain.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResolvedStretch {
+    /// The stretch filter's parameters with the window's logical units as
+    /// its device space ([`ShownStretch::params`]).
+    pub params: [f32; 10],
+    /// The stage's interpolation strength.
+    pub strength: f32,
+    /// The stretching viewport in window space.
+    pub viewport: kurbo::Rect,
 }
 
 /// A chain composed down to one placement.
@@ -212,6 +231,7 @@ impl Placement {
             removes: Cell::new(HitClasses::NONE),
             index: Cell::new(0),
             item_cursor: Cell::new(0),
+            stretch: Cell::new(None),
             clock: Rc::clone(clock),
             resolved_hit: RefCell::new(None),
         })
@@ -372,7 +392,44 @@ impl Placement {
         self.alpha.set(1.0);
         self.removes.set(HitClasses::NONE);
         self.item_cursor.set(0);
+        self.stretch.set(None);
         self.clock.bump();
+    }
+
+    /// Sets the overscroll stretch the node's content draws with, `None`
+    /// at rest. Only a change bumps the clock: a scroll view re-states its
+    /// stretch at every flush.
+    pub(super) fn set_stretch(&self, stretch: Option<ShownStretch>) {
+        if self.stretch.replace(stretch) != stretch {
+            self.clock.bump();
+        }
+    }
+
+    /// Every overscroll stretch on the paint chain down to this placement,
+    /// outermost first, as a platform view at this placement is warped by
+    /// them: the window's logical units are the device space the
+    /// parameters carry.
+    pub fn resolved_stretches(&self) -> Vec<ResolvedStretch> {
+        let ancestors = self.ancestors(false);
+        let mut transform = kurbo::Affine::IDENTITY;
+        let mut stretches = Vec::new();
+        for placement in ancestors
+            .iter()
+            .rev()
+            .map(Rc::as_ref)
+            .chain(std::iter::once(self))
+        {
+            transform *= placement.transform.get();
+            if let Some(shown) = placement.stretch.get() {
+                stretches.push(ResolvedStretch {
+                    params: shown.params(transform),
+                    strength: waterui_graphics::backend::filtrate::filters::STRETCH_INTERPOLATION_STRENGTH,
+                    viewport: crate::renderer::transformed_rect(transform, shown.viewport),
+                });
+            }
+            transform *= kurbo::Affine::translate(placement.content_offset.get());
+        }
+        stretches
     }
 
     /// Resolves a rect from this placement's local space to window space
@@ -415,12 +472,7 @@ impl Placement {
     /// The walk collects `Rc` clones bottom-up then composes top-down, so
     /// no level can disappear mid-resolve.
     fn resolve_chain(&self, hit: bool) -> ChainResolution {
-        let mut ancestors: Vec<Rc<Self>> = Vec::new();
-        let mut parent = self.parent_for(hit);
-        while let Some(placement) = parent {
-            parent = placement.parent_for(hit);
-            ancestors.push(placement);
-        }
+        let ancestors = self.ancestors(hit);
         let mut transform = kurbo::Affine::IDENTITY;
         let mut clip: Option<kurbo::Rect> = None;
         let mut alpha = 1.0f32;
@@ -449,6 +501,18 @@ impl Placement {
             alpha,
             removes,
         }
+    }
+
+    /// The placements above this one, nearest first — `hit` walks the
+    /// structural parents, otherwise the paint parents.
+    fn ancestors(&self, hit: bool) -> Vec<Rc<Self>> {
+        let mut ancestors: Vec<Rc<Self>> = Vec::new();
+        let mut parent = self.parent_for(hit);
+        while let Some(placement) = parent {
+            parent = placement.parent_for(hit);
+            ancestors.push(placement);
+        }
+        ancestors
     }
 
     /// The chain link one level up: `parent`, or `paint_parent` when the

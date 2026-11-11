@@ -17,7 +17,7 @@ use core::fmt;
 pub use keyboard_types::{Code, Key, Modifiers, NamedKey};
 
 use crate::{
-    handler::{BoxedAction, Handler, boxed_action},
+    handler::{BoxedAction, Handler, ReportExtraction, boxed_action},
     metadata::MetadataKey,
 };
 
@@ -29,13 +29,13 @@ use crate::{
 #[non_exhaustive]
 pub struct KeyPress {
     /// What the key means under the current layout and modifiers.
-    pub key: Key,
+    key: Key,
     /// Where the key sits on the keyboard, independent of layout.
-    pub code: Code,
+    code: Code,
     /// The modifiers held with the key.
-    pub modifiers: Modifiers,
+    modifiers: Modifiers,
     /// Whether this press is an auto-repeat of a held key.
-    pub repeat: bool,
+    repeat: bool,
 }
 
 impl KeyPress {
@@ -112,8 +112,14 @@ impl OnKeyPress {
     }
 
     /// Invokes the handler with an environment that carries the [`KeyPress`].
+    ///
+    /// A handler whose parameters cannot be extracted does not run: the
+    /// failure is reported and the key is [`Ignored`](KeyHandling::Ignored),
+    /// so it keeps bubbling.
     pub fn handle(&mut self, env: &crate::Environment) -> KeyHandling {
         (self.handler)(env)
+            .report_extraction()
+            .unwrap_or(KeyHandling::Ignored)
     }
 }
 

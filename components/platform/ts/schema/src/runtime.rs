@@ -67,9 +67,9 @@ impl RuntimePart {
 #[non_exhaustive]
 pub struct RuntimeHalf {
     /// Which half this is.
-    pub part: RuntimePart,
+    part: RuntimePart,
     /// The hash that half carries.
-    pub hash: u64,
+    hash: u64,
 }
 
 impl RuntimeHalf {

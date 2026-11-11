@@ -23,6 +23,8 @@ use waterui_graphics::gpu::{ExternalFrameView, FrameReceiver, GpuContentView};
 /// window's mount (`LayerTarget::mount_gpu_content`).
 pub struct GpuContentRuntime {
     pub(crate) view: GpuContentView,
+    /// The size and scale the view's input handler was last told about.
+    pub(crate) resize: crate::renderer::ResizeTracker,
     /// The engine producer the content was registered as: `Some` once
     /// `take_engine_content` has run, retained so it can be bound again and
     /// retired on drop.
@@ -38,10 +40,42 @@ impl std::fmt::Debug for GpuContentRuntime {
     }
 }
 
+/// What a flush reads off a GPU-backed view's runtime every pass: the
+/// view's accessibility name and value, and whether it takes input. Both
+/// [`GpuContentRuntime`] and [`ExternalFrameRuntime`] answer it, and
+/// both route input and the caret through the renderer's
+/// `SurfaceInputReceiver`.
+pub trait HostedGpuView {
+    /// The accessibility label, the accessibility value, and whether the
+    /// view takes input events.
+    fn semantics(&self) -> (Option<String>, Option<String>, bool);
+}
+
+impl HostedGpuView for GpuContentRuntime {
+    fn semantics(&self) -> (Option<String>, Option<String>, bool) {
+        (
+            self.view.accessibility_label().map(str::to_owned),
+            self.view.accessibility_value().map(str::to_owned),
+            self.view.wants_input_events(),
+        )
+    }
+}
+
+impl HostedGpuView for ExternalFrameRuntime {
+    fn semantics(&self) -> (Option<String>, Option<String>, bool) {
+        (
+            self.view.accessibility_label().map(str::to_owned),
+            self.view.accessibility_value().map(str::to_owned),
+            self.view.wants_input_events(),
+        )
+    }
+}
+
 impl GpuContentRuntime {
     pub(crate) const fn new(view: GpuContentView) -> Self {
         Self {
             view,
+            resize: crate::renderer::ResizeTracker::new(),
             producer: None,
             binding: None,
         }
@@ -58,6 +92,8 @@ impl GpuContentRuntime {
 /// on the window's device (`LayerTarget::mount_external_frame`).
 pub struct ExternalFrameRuntime {
     pub(crate) view: ExternalFrameView,
+    /// The size and scale the view's input handler was last told about.
+    pub(crate) resize: crate::renderer::ResizeTracker,
     /// The mailbox drain end, installed by the node's commit.
     pub(crate) receiver: Option<FrameReceiver>,
     /// The submitted-frame producer/sink pair the compositor created with
@@ -86,6 +122,7 @@ impl ExternalFrameRuntime {
     pub(crate) const fn new(view: ExternalFrameView) -> Self {
         Self {
             view,
+            resize: crate::renderer::ResizeTracker::new(),
             receiver: None,
             producer: None,
             sink: None,

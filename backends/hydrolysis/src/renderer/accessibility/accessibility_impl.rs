@@ -2,6 +2,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::renderer::mount::RetainedScopes;
+use crate::renderer::transformed_rect;
 
 #[cfg(feature = "accessibility")]
 use crate::theme::InteractionFocusBinding;
@@ -438,12 +439,6 @@ pub struct AccessibilityBuilder<E: crate::text::TextEngine> {
     /// without a re-record.
     pub(crate) node_regions:
         std::collections::BTreeMap<AccessibilityNodeId, crate::renderer::mount::Region>,
-    /// Window-space bounds a post-registration edit fixed on a node — the
-    /// single-child collapse's resolved extent, or a suppressed leaf's
-    /// element box — which `finalize_tree_update` reports verbatim instead
-    /// of re-resolving the region (dev's static registration bounds let
-    /// those edits persist; the region model must honour them).
-    node_bounds_overrides: std::collections::BTreeMap<AccessibilityNodeId, kurbo::Rect>,
     /// The cell emissions attribute to — the innermost record's cell; the
     /// semantic walk leaves it dead. Each pushed node id also lands in the
     /// owner's `a11y_emitted`, the set §B.4 diffs at record end — stored on
@@ -454,19 +449,30 @@ pub struct AccessibilityBuilder<E: crate::text::TextEngine> {
     /// Naming scopes ([`ScopedAccessibilitySemantics`]) already claimed by a node
     /// this flush, keyed by scope identity.
     consumed_semantics_scopes: BTreeSet<usize>,
-    /// The bounds a suppressed decorative graphics leaf would have published,
-    /// keyed by the innermost container node above it. A naming container
-    /// whose children all turned out decorative adopts them as its own bounds —
-    /// the element box rather than the frame it was stretched into — the same
-    /// contract `collapse_single_child_container` keeps when a real child
-    /// exists.
-    suppressed_leaf_bounds: BTreeMap<AccessibilityNodeId, kurbo::Rect>,
+    /// The innermost container nodes a suppressed decorative graphics leaf sat
+    /// under. A naming container whose children all turned out decorative is
+    /// itself the picture, so it lends its role to `Image`.
+    suppressed_leaf_parents: BTreeSet<AccessibilityNodeId>,
     /// The content type each text-field node declared this frame, keyed by
     /// the node id it registered under — the side-band that carries the
     /// declaration to platforms whose tree has no property for it
     /// (water-rs/waterui#1874). Cleared and republished with the tree.
     pub(crate) content_types: AccessibilityContentTypes,
     pub(crate) pending_tree_update: Option<AccessibilityTreeUpdate>,
+    /// The numeric values that follow their binding in the published tree
+    /// without their widget re-rendering, by the widget's interaction
+    /// identity. Kept across flushes.
+    live_numeric: BTreeMap<InteractionKey, LiveNumeric>,
+}
+
+/// A widget's numeric accessibility value that follows its binding between
+/// renders: the widget's watcher raises `changed`, and the next publish
+/// writes the binding's value into the node it emitted.
+#[cfg(feature = "accessibility")]
+struct LiveNumeric {
+    changed: Rc<core::cell::Cell<bool>>,
+    value: nami::Binding<f64>,
+    range: core::ops::RangeInclusive<f64>,
 }
 
 #[cfg(feature = "accessibility")]
@@ -495,14 +501,14 @@ impl<E: crate::text::TextEngine> Default for AccessibilityBuilder<E> {
             parent_stack: Vec::new(),
             node_owners: std::collections::BTreeMap::new(),
             node_regions: std::collections::BTreeMap::new(),
-            node_bounds_overrides: std::collections::BTreeMap::new(),
             emit_owner: std::rc::Weak::new(),
             suppression_depth: 0,
             consumed_identifier_scopes: BTreeSet::new(),
             consumed_semantics_scopes: BTreeSet::new(),
-            suppressed_leaf_bounds: BTreeMap::new(),
+            suppressed_leaf_parents: BTreeSet::new(),
             content_types: BTreeMap::new(),
             pending_tree_update: None,
+            live_numeric: BTreeMap::new(),
         }
     }
 }
@@ -534,7 +540,6 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         self.node_index.clear();
         self.node_owners.clear();
         self.node_regions.clear();
-        self.node_bounds_overrides.clear();
         self.root_children.clear();
         self.actions.clear();
         self.focus_bindings.clear();
@@ -550,7 +555,7 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         self.suppression_depth = 0;
         self.consumed_identifier_scopes.clear();
         self.consumed_semantics_scopes.clear();
-        self.suppressed_leaf_bounds.clear();
+        self.suppressed_leaf_parents.clear();
         self.content_types.clear();
     }
 
@@ -590,7 +595,6 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
             self.actions.remove(id);
             self.node_owners.remove(id);
             self.node_regions.remove(id);
-            self.node_bounds_overrides.remove(id);
             self.node_clips.remove(id);
             self.focus_bindings.remove(id);
             self.delegated_activations.remove(id);
@@ -793,9 +797,6 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         if let Some(placement) = placement {
             self.node_regions.insert(node_id, placement.region);
         }
-        // A re-record replaces the node's geometry, so a bounds edit the
-        // collapse or suppressed-leaf path pinned last flush lapses.
-        self.node_bounds_overrides.remove(&node_id);
         self.node_owners.insert(node_id, self.emit_owner.clone());
         if let Some(owner) = self.emit_owner.upgrade() {
             owner.a11y_emitted.borrow_mut().push(node_id);
@@ -907,20 +908,18 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
     /// `accessibilityLabel` overrides the element rather than wrapping it — so
     /// a padding or frame between the metadata and a lone text must not turn
     /// the override into a `Group("name")` around a `Label(content)`. The child
-    /// keeps its identity and its actions; its bounds become the naming
-    /// container's resolved extent when one was recorded at layout — the frame
-    /// the parent assigned to the labelled view routinely exceeds it under the
-    /// placement contract (a window's overlay places its base over the whole
-    /// bounds, so a root `view.size(8, 8)` is laid out in the window while the
-    /// element sits in the resolved 8x8 box). The child takes the scope's
-    /// label, the scope's automation id, and the scope's explicit role. With
-    /// zero or several children the container stands: it is then the only node
-    /// that can say the parts belong together.
+    /// keeps its identity and its actions, and takes the scope's label, the
+    /// scope's automation id, and the scope's explicit role. With zero or
+    /// several children the container stands: it is then the only node that
+    /// can say the parts belong together.
+    ///
+    /// Returns the surviving child, or `None` when the container stands. The
+    /// geometry stays the geometry owner's: a caller that collapses a naming
+    /// scope hands the container's region to the child (§7.2).
     fn collapse_single_child_container(
         &mut self,
         container_id: AccessibilityNodeId,
-        resolved_bounds: Option<kurbo::Rect>,
-    ) {
+    ) -> Option<AccessibilityNodeId> {
         let container_index = self
             .node_index
             .get(&container_id)
@@ -933,7 +932,7 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
             .expect("hydrolysis accessibility container to collapse is not registered");
         let container = &self.nodes[container_index].1;
         let [child_id] = *container.children() else {
-            return;
+            return None;
         };
         // A container carrying semantic state of its own is a distinct
         // element, not a naming wrapper: dissolving it into the child would
@@ -944,7 +943,7 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
             || container.is_disabled()
             || container.is_busy()
         {
-            return;
+            return None;
         }
         let label = container.label().map(str::to_owned);
         let value = container.value().map(str::to_owned);
@@ -993,17 +992,6 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         if role != AccessibilityNodeRole::Group {
             child.set_role(role);
         }
-        // The element reports the scope owner's resolved extent — the size the
-        // container answered to the placement proposal, centred on the
-        // assigned frame — not the assigned frame nor the child's own
-        // placement (water-rs/hydrolysis#51).
-        if let Some(resolved) = resolved_bounds
-            && resolved.width() > 0.0
-            && resolved.height() > 0.0
-        {
-            child.set_bounds(kurbo_rect_to_accesskit_rect(resolved));
-            self.node_bounds_overrides.insert(child_id, resolved);
-        }
         // The child takes the container's place under its parent.
         if let Some(slot) = self
             .root_children
@@ -1035,6 +1023,7 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         if self.focus == container_id {
             self.focus = child_id;
         }
+        Some(child_id)
     }
 
     /// The update `finalize_tree_update` publishes: the synthesized window
@@ -1098,6 +1087,55 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         }
     }
 
+    /// Writes the current value of every live numeric whose binding changed
+    /// since it was last described into the node the widget emitted, and
+    /// queues those nodes as an incremental tree update: no widget
+    /// re-renders for it.
+    pub(crate) fn apply_live_numeric(&mut self) {
+        // A widget that left the tree dropped its watcher, which held the
+        // other reference to `changed`.
+        self.live_numeric
+            .retain(|_, live| Rc::strong_count(&live.changed) > 1);
+        let mut changed = Vec::new();
+        for (key, live) in &self.live_numeric {
+            if !live.changed.replace(false) {
+                continue;
+            }
+            let Some(id) = self.interaction_nodes.get(key).copied() else {
+                continue;
+            };
+            let Some(index) = self.node_index.get(&id).copied() else {
+                continue;
+            };
+            let node = &mut self.nodes[index].1;
+            node.set_numeric_value(
+                nami::Signal::snapshot(&live.value).clamp(*live.range.start(), *live.range.end()),
+            );
+            changed.push((id, node.clone()));
+        }
+        if changed.is_empty() {
+            return;
+        }
+        match &mut self.pending_tree_update {
+            Some(update) => {
+                for (id, node) in changed {
+                    match update.nodes.iter_mut().find(|(known, _)| *known == id) {
+                        Some(entry) => entry.1 = node,
+                        None => update.nodes.push((id, node)),
+                    }
+                }
+            }
+            None => {
+                self.pending_tree_update = Some(AccessibilityTreeUpdate {
+                    nodes: changed,
+                    tree: None,
+                    tree_id: AccessibilityTreeId::ROOT,
+                    focus: self.focus,
+                });
+            }
+        }
+    }
+
     pub(crate) fn finalize_tree_update(&mut self) {
         // §B.4: regions resolve now — a placement moved since the record
         // re-publishes bounds through the same chain the registrations use.
@@ -1106,15 +1144,8 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         // scopes still publish their logical rectangle, and the clip stays
         // out of the reported bounds (water-rs/waterui#1323 §4).
         for (id, region) in &self.node_regions {
-            let bounds = self
-                .node_bounds_overrides
-                .get(id)
-                .copied()
-                .unwrap_or_else(|| {
-                    let (transform, _, _) = region.placement.resolved_chain(false);
-                    crate::renderer::transformed_rect(transform, region.local)
-                });
-            let (_, clip, _) = region.placement.resolved_chain(false);
+            let (transform, clip, _) = region.placement.resolved_chain(false);
+            let bounds = transformed_rect(transform, region.local);
             if let Some(index) = self.node_index.get(id).copied()
                 && let Some((_, node)) = self.nodes.get_mut(index)
             {
@@ -1150,11 +1181,6 @@ pub struct AccessibilityContainerScope<E: crate::text::TextEngine> {
     suppression_pushed: bool,
     /// The node this scope synthesized for the container, when it did.
     container_node: Option<AccessibilityNodeId>,
-    /// The extent the container resolved at layout — the size it answered to
-    /// the placement proposal, centred on the assigned frame — kept so the
-    /// element the scope collapses onto reports it instead of the assigned
-    /// frame or the child's (water-rs/hydrolysis#51).
-    resolved_bounds: Option<kurbo::Rect>,
     /// The naming scope that node's registration claimed — the channel
     /// silenced representatives (a tap gesture whose own node was suppressed)
     /// delegate their activation through, drained when the scope ends.
@@ -1169,7 +1195,6 @@ impl<E: crate::text::TextEngine> AccessibilityContainerScope<E> {
         parent_pushed: false,
         suppression_pushed: false,
         container_node: None,
-        resolved_bounds: None,
         naming_scope: None,
     };
 }
@@ -1201,6 +1226,7 @@ pub fn accessibility_container_child_environment(env: &Environment) -> Option<En
     child_env.remove::<AccessibilityRole>();
     child_env.remove::<AccessibilityHidden>();
     child_env.remove::<AccessibilityChildren>();
+    child_env.remove::<AccessibilityGeometry>();
     child_env.remove::<AccessibilityState>();
     child_env.remove::<AccessibilityStateSignal>();
     // Every claim boundary re-derives text consumption: an enclosing
@@ -1342,10 +1368,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
         const ROOT: AccessibilityNodeId = AccessibilityNodeId(0);
 
+        self.accessibility.apply_live_numeric();
         let main_pending = pending(self);
         let popups: Vec<(&mut Self, Option<AccessibilityTreeUpdate>)> = popups
             .into_iter()
             .map(|popup| {
+                popup.accessibility.apply_live_numeric();
                 let update = pending(popup);
                 (popup, update)
             })
@@ -1365,9 +1393,10 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 content_types,
             });
         }
-        // A focus-only main update carries no root for the popup graft —
-        // rebuild the main window's full emission and keep the moved focus.
-        if merged.nodes.is_empty()
+        // An incremental main update (a focus move, a changed value) carries
+        // no root for the popup graft — rebuild the main window's full
+        // emission and keep the moved focus.
+        if merged.tree.is_none()
             && let Some(mut full) = self.current_accessibility_tree_update()
         {
             full.focus = merged.focus;
@@ -1619,6 +1648,26 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// The map exists only where the semantic tree does — under the
     /// accessibility feature.
     #[cfg(feature = "accessibility")]
+    /// Has the published tree follow `value` between `key`'s renders: when
+    /// `changed` is raised, the node `key` emitted takes the binding's
+    /// current value, clamped to `range`, in an incremental update.
+    pub(crate) fn register_live_numeric(
+        &mut self,
+        key: crate::renderer::InteractionKey,
+        changed: Rc<core::cell::Cell<bool>>,
+        value: nami::Binding<f64>,
+        range: core::ops::RangeInclusive<f64>,
+    ) {
+        self.accessibility.live_numeric.insert(
+            key,
+            LiveNumeric {
+                changed,
+                value,
+                range,
+            },
+        );
+    }
+
     pub(crate) fn register_accessibility_focus_link(
         &mut self,
         key: &crate::renderer::InteractionKey,
@@ -1914,19 +1963,19 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     ///
     /// The caller must have determined the container carries those semantics
     /// ([`accessibility_container_child_environment`] returned `Some`), and must
-    /// flush its children under that returned environment. `resolved_bounds`
-    /// is the extent the container resolved at layout — the size it answered
-    /// to the placement proposal, centred on the assigned frame — the
-    /// bounds the element reports when the scope collapses onto its single
-    /// semantic child (water-rs/hydrolysis#51).
+    /// flush its children under that returned environment. `bounds` is the
+    /// rectangle the element reports in the container's local space — the
+    /// geometry owner's response, or the source a naming modifier chose
+    /// (water-rs/hydrolysis#51, `docs/layout-spec.md` §7.2) — and it stays the
+    /// element's bounds when the scope collapses onto its single semantic
+    /// child.
     #[cfg(feature = "accessibility")]
     pub(crate) fn begin_accessibility_container(
         &mut self,
         bounds: kurbo::Rect,
-        resolved_bounds: Option<kurbo::Rect>,
         env: &Environment,
     ) -> AccessibilityContainerScope<E> {
-        self.begin_accessibility_container_inner(Some(bounds), resolved_bounds, env)
+        self.begin_accessibility_container_inner(Some(bounds), env)
     }
 
     /// The semantic counterpart of [`Self::begin_accessibility_container`]:
@@ -1937,17 +1986,16 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         &mut self,
         env: &Environment,
     ) -> AccessibilityContainerScope<E> {
-        self.begin_accessibility_container_inner(None, None, env)
+        self.begin_accessibility_container_inner(None, env)
     }
 
     #[cfg(feature = "accessibility")]
     fn begin_accessibility_container_inner(
         &mut self,
         bounds: Option<kurbo::Rect>,
-        resolved_bounds: Option<kurbo::Rect>,
         env: &Environment,
     ) -> AccessibilityContainerScope<E> {
-        let scope = self.begin_accessibility_container_impl(bounds, resolved_bounds, env);
+        let scope = self.begin_accessibility_container_impl(bounds, env);
         // §B.3/§B.4: the container's parent/suppression pushes go into the
         // recording node's RetainedScopes for a partial descent to replay,
         // and the record marks this cell an accessibility unit.
@@ -1966,7 +2014,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     fn begin_accessibility_container_impl(
         &mut self,
         bounds: Option<kurbo::Rect>,
-        resolved_bounds: Option<kurbo::Rect>,
         env: &Environment,
     ) -> AccessibilityContainerScope<E> {
         debug_assert!(
@@ -1983,7 +2030,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 parent_pushed: false,
                 suppression_pushed: true,
                 container_node: None,
-                resolved_bounds: None,
                 naming_scope: None,
             };
         }
@@ -2029,7 +2075,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 parent_pushed: false,
                 suppression_pushed: true,
                 container_node: None,
-                resolved_bounds: None,
                 naming_scope: None,
             };
         }
@@ -2063,7 +2108,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             parent_pushed: true,
             suppression_pushed,
             container_node: Some(node_id),
-            resolved_bounds,
             naming_scope: env.get::<ScopedAccessibilitySemantics<E>>().cloned(),
         }
     }
@@ -2166,8 +2210,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// representative.
     #[cfg(feature = "accessibility")]
     pub(crate) fn collapse_synthesized_claim(&mut self, node_id: AccessibilityNodeId) {
-        self.accessibility
-            .collapse_single_child_container(node_id, None);
+        self.accessibility.collapse_single_child_container(node_id);
     }
 
     #[cfg(feature = "accessibility")]
@@ -2202,21 +2245,26 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             // A container that consumed descendant text is a composite — it
             // holds its own name — so it must not dissolve into a surviving
             // control child: the close button would answer as the tab.
-            if !consumed_text {
-                self.accessibility
-                    .collapse_single_child_container(container_id, scope.resolved_bounds);
+            if !consumed_text
+                && let Some(child_id) = self
+                    .accessibility
+                    .collapse_single_child_container(container_id)
+            {
+                // The collapse keeps the child's identity, actions and role,
+                // never the geometry owner: the element reports the
+                // container's region (§7.2). A semantic walk registers none.
+                if let Some(region) = self.accessibility.node_regions.remove(&container_id) {
+                    self.accessibility.node_regions.insert(child_id, region);
+                }
             }
             // No real child ever registered under the container, but suppressed
-            // decorative leaves beneath it still placed their boxes: the
-            // container's node reports the resolved extent its layout recorded
-            // — or, when none was, the element box they left — not the frame
-            // the container itself was stretched into — and, as
+            // decorative leaves beneath it did: as
             // `collapse_single_child_container` keeps the child's role when the
             // container names nothing but `Group`, a suppressed graphics leaf
             // (always `Image`-roled) lends its role too.
-            if let Some(bounds) = self
+            if self
                 .accessibility
-                .suppressed_leaf_bounds
+                .suppressed_leaf_parents
                 .remove(&container_id)
                 && self
                     .accessibility
@@ -2229,18 +2277,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     .nodes
                     .iter_mut()
                     .find(|(id, _)| *id == container_id)
+                && node.role() == AccessibilityNodeRole::Group
             {
-                let element = scope
-                    .resolved_bounds
-                    .filter(|resolved| resolved.width() > 0.0 && resolved.height() > 0.0)
-                    .unwrap_or(bounds);
-                node.set_bounds(kurbo_rect_to_accesskit_rect(element));
-                self.accessibility
-                    .node_bounds_overrides
-                    .insert(container_id, element);
-                if node.role() == AccessibilityNodeRole::Group {
-                    node.set_role(AccessibilityNodeRole::Image);
-                }
+                node.set_role(AccessibilityNodeRole::Image);
             }
         }
     }
@@ -2287,16 +2326,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
     }
 
-    /// Notes the bounds a decorative graphics leaf would have published had it
-    /// carried semantics. The innermost container node may still need them:
-    /// when every child under a naming container is decorative, the container's
-    /// synthesized node adopts these bounds — the placed element's box, not the
-    /// frame the parent assigned — the contract
-    /// `collapse_single_child_container` keeps when a real child exists.
+    /// Notes that a decorative graphics leaf sat under the innermost container
+    /// node. When every child under a naming container is decorative, the
+    /// container's synthesized node is itself the picture and lends its role.
     ///
-    /// A no-op on the semantic walk (no `ctx` to take a rect from), inside a
-    /// suppressed subtree, and above every container node — a leaf outside all
-    /// of them has nothing to lend bounds to.
+    /// A no-op on the semantic walk (no `ctx` to tell a placed leaf from an
+    /// empty one), inside a suppressed subtree, and above every container
+    /// node — a leaf outside all of them has nothing to lend a role to.
     #[cfg(feature = "accessibility")]
     pub(crate) fn note_suppressed_graphics_leaf(
         &mut self,
@@ -2315,11 +2351,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
             return;
         }
-        self.accessibility
-            .suppressed_leaf_bounds
-            .entry(parent)
-            .and_modify(|acc| *acc = acc.union(bounds))
-            .or_insert(bounds);
+        self.accessibility.suppressed_leaf_parents.insert(parent);
     }
 
     /// Records that `node_id` — just registered — is a text field declaring

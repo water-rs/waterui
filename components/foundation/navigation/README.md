@@ -1,6 +1,6 @@
 # WaterUI Navigation
 
-WaterUI navigation keeps route state in Rust and projects it into native platform containers. Apple uses `UINavigationController`, `UITabBarController` or sidebar presentation, and `UISplitViewController`; Android uses fragments, Material navigation chrome, adaptive tab bars or rails, `SlidingPaneLayout`, and predictive back. Hydrolysis provides the retained GPU realization.
+WaterUI navigation keeps route state in Rust and projects it into native platform containers. Apple uses `UINavigationController`, `UITabBarController` or sidebar presentation, and `UISplitViewController`. Hydrolysis provides the retained GPU realization.
 
 ## Typed navigation
 
@@ -210,7 +210,7 @@ NavigationStack::with_path(path, root)
     .transition(navigation_transition::zoom(transition_id))
 ```
 
-Apple and Android execute supported transitions through native transition systems. Hydrolysis executes the same built-ins, interactive edge-pop motion, matched geometry, and custom `NavigationTransition` implementations on the retained GPU scene. A custom transition without a native projection is intentionally applied without animation on native backends and logged as unsupported there.
+Apple executes supported transitions through native transition systems. Hydrolysis executes the same built-ins, interactive edge-pop motion, matched geometry, and custom `NavigationTransition` implementations on the retained GPU scene. A custom transition without a native projection is intentionally applied without animation on native backends and logged as unsupported there.
 
 ## Tabs
 
@@ -261,7 +261,7 @@ let split = NavigationSplitView::new(
 .style(split_style::prominent_detail());
 ```
 
-Use `NavigationSplitView::three_column` for independent sidebar and content selections. Apple maps this to `UISplitViewController`; Android uses adaptive `SlidingPaneLayout`, window size classes, folding features, and predictive back; compact layouts collapse to native stack-like navigation.
+Use `NavigationSplitView::three_column` for independent sidebar and content selections. Apple maps this to `UISplitViewController`; compact layouts collapse to native stack-like navigation.
 
 ## Backend behavior
 

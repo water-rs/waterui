@@ -21,7 +21,10 @@ use kurbo::{
     ParamCurveNearest, PathEl, Point, QuadBez, Rect, Stroke, Vec2,
 };
 
-use super::{GpuBound, GpuPath, encodable, shape_path};
+use super::{
+    DashCost, GpuBound, GpuPath, InputCounts, InputUnit, RowCharge, RowProfile, StraightChords,
+    encodable, shape_path,
+};
 use crate::render::stroke_abi::{
     CAP_BUTT, CAP_END, CAP_ROUND, CAP_SQUARE, CAP_START, CLOSE, JOIN_BEVEL, JOIN_MASK, JOIN_MITER,
     JOIN_ROUND, JOIN_SHARED, JOIN_SHIFT, JOIN_START, LINEAR_END, N_LEN_MAX, N_OFF_MAX, PIECE_CURVE,
@@ -169,6 +172,8 @@ fn empty(origin: Vec2, surface: (f64, f64)) -> GpuPath {
         hull: Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN),
         origin,
         bound: GpuBound::default(),
+        profile: Arc::default(),
+        subpaths: Arc::from([]),
     }
     .placed(origin, surface)
 }
@@ -620,6 +625,11 @@ impl DashPlan {
         self.on_entries
             .saturating_mul(ceil_count(length * (1.0 + POLYGON_MARGIN) / self.period))
     }
+
+    /// The pattern's on-intervals per period, `n_on`.
+    fn on(&self) -> f64 {
+        f64::from(u32::try_from(self.on_entries).expect("dash entries fit u32"))
+    }
 }
 
 /// The join the next piece starts with.
@@ -748,6 +758,17 @@ struct Encoder<'a> {
     bins: usize,
     fragments: usize,
     hull: Rect,
+    /// Each record's bound contribution but its join's and the device
+    /// rows its offsets reach, one per record (water-rs/waterui#4108).
+    charges: Vec<RowCharge>,
+    /// The joins' contributions and the rows around their points.
+    joins: Vec<RowCharge>,
+    /// A dashed stroke's records' shares of its dash starts.
+    dash_charges: Vec<RowCharge>,
+    /// The finished subpaths, and the rows the current one's charges
+    /// reach (water-rs/waterui#4131).
+    subpaths: Vec<InputUnit>,
+    subpath_rows: [f64; 2],
     // Curved records retain one subdivision-rounding allowance when dashed.
     curved_records: usize,
     // The dash capacities.
@@ -783,6 +804,11 @@ impl<'a> Encoder<'a> {
             bins: 0,
             fragments: 0,
             hull: Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN),
+            charges: Vec::new(),
+            joins: Vec::new(),
+            dash_charges: Vec::new(),
+            subpaths: Vec::new(),
+            subpath_rows: [f64::INFINITY, f64::NEG_INFINITY],
             curved_records: 0,
             subpath_polygon: 0.0,
             stage_total: 0,
@@ -1139,7 +1165,7 @@ impl<'a> Encoder<'a> {
         if self.dash.is_some() {
             self.segments += body_chords;
         }
-        self.bound_piece(piece, join);
+        self.bound_piece(piece, join, polygon);
         if code == JOIN_START {
             self.first = i;
         }
@@ -1183,12 +1209,24 @@ impl<'a> Encoder<'a> {
     /// Adds a piece's offset and join groups to the bound, and the piece to
     /// the hull. A join is drawn on either side, so every join row applies to
     /// both.
-    fn bound_piece(&mut self, piece: &Piece, join: Option<JoinRec>) {
+    fn bound_piece(&mut self, piece: &Piece, join: Option<JoinRec>, polygon: f64) {
+        let before = (self.bins, self.fragments);
         let sh = self.s * self.hw;
+        // A line's two offset sides are straight chords parallel to it.
+        let mut straight = None;
         match &piece.body {
             Body::Line => {
                 let (vx, vy) = self.device(piece.p1 - piece.p0);
                 self.add_group(2, 1, vx, vy);
+                let margin = self.s * self.tol;
+                if vy > margin {
+                    straight = Some(StraightChords {
+                        chords: 2,
+                        slope: (vx + margin) / (vy - margin) * (1.0 + VARIATION_MARGIN),
+                        bins: (self.bins - before.0) as u64,
+                        fragments: (self.fragments - before.1) as u64,
+                    });
+                }
             }
             Body::Curve { cubic, n_off, .. } => {
                 self.curved_records += 1;
@@ -1219,6 +1257,7 @@ impl<'a> Encoder<'a> {
             }
             Body::JoinOnly => {}
         }
+        let body_end = (self.bins, self.fragments);
         if let Some(join) = join {
             match join.code {
                 JOIN_BEVEL => {
@@ -1244,6 +1283,130 @@ impl<'a> Encoder<'a> {
                 .union_pt(self.raster * cubic.p2);
         }
         self.hull = self.hull.union(dev);
+        self.charge_record(piece, dev, [before, body_end], straight, polygon);
+    }
+
+    /// Charges the record of `piece` to the rows it reaches
+    /// (water-rs/waterui#4108): its offsets, the bound it added between
+    /// `before` and `body_end` with its straight chords apart, and its join,
+    /// the rest added since. The offsets lie within half the width of the
+    /// centreline `dev`, which for a point arc is its sub-cubic, and so do
+    /// the caps and dashes later charged to it, square ones within `√2` of
+    /// that. The join reaches as far as the miter limit allows, but only
+    /// around the join's point.
+    fn charge_record(
+        &mut self,
+        piece: &Piece,
+        mut dev: Rect,
+        [before, body_end]: [(usize, usize); 2],
+        straight: Option<StraightChords>,
+        polygon: f64,
+    ) {
+        if let Body::PointArc { cubic, .. } = &piece.body {
+            dev = [cubic.p0, cubic.p1, cubic.p2, cubic.p3]
+                .into_iter()
+                .fold(dev, |dev, point| dev.union_pt(self.raster * point));
+        }
+        let margin = self.s * self.tol;
+        let body = self.cap_reach() + margin;
+        let mut rows = [dev.y0 - body, dev.y1 + body];
+        let (lines_bins, lines_fragments) = straight.map_or((0, 0), |s| (s.bins, s.fragments));
+        self.charges.push(RowCharge {
+            top: dev.y0 - body,
+            bottom: dev.y1 + body,
+            bins: (body_end.0 - before.0) as u64 - lines_bins,
+            fragments: (body_end.1 - before.1) as u64 - lines_fragments,
+            straight,
+            dashes: None,
+        });
+        if (self.bins, self.fragments) != body_end {
+            let at = (self.raster * piece.p0).y;
+            let reach = self.outline_reach() + margin;
+            rows = [rows[0].min(at - reach), rows[1].max(at + reach)];
+            self.joins.push(RowCharge {
+                top: at - reach,
+                bottom: at + reach,
+                bins: (self.bins - body_end.0) as u64,
+                fragments: (self.fragments - body_end.1) as u64,
+                ..RowCharge::default()
+            });
+        }
+        // A dashed record's share of the dash starts (`DashCost`), and a
+        // curved record's subdivision-rounding allowance (`finish_path`).
+        if let Some(plan) = &self.dash {
+            let curved = u64::from(matches!(
+                piece.body,
+                Body::Curve { .. } | Body::PointArc { .. }
+            ));
+            self.dash_charges.push(RowCharge {
+                top: dev.y0 - body,
+                bottom: dev.y1 + body,
+                bins: 2 * 3 * curved,
+                fragments: 2 * 4 * curved,
+                straight: None,
+                dashes: Some(plan.on() * polygon * (1.0 + POLYGON_MARGIN) / plan.period),
+            });
+        }
+        // The subpath's outline, caps and dashes lie within its records'
+        // charges, which its unit reaches (water-rs/waterui#4131).
+        self.subpath_rows = [
+            self.subpath_rows[0].min(rows[0]),
+            self.subpath_rows[1].max(rows[1]),
+        ];
+    }
+
+    /// How far a record's offsets, caps and dashes reach from its
+    /// centreline in device space: half the width, `√2` times that with
+    /// square caps.
+    fn cap_reach(&self) -> f64 {
+        let square = if self.stroke.start_cap == Cap::Square || self.stroke.end_cap == Cap::Square {
+            SQRT_2
+        } else {
+            1.0
+        };
+        self.s * self.hw * square
+    }
+
+    /// How far the outline reaches from its centreline in device space:
+    /// the half width, scaled by the miter limit for miter joins and by
+    /// `√2` for square caps.
+    fn outline_reach(&self) -> f64 {
+        let miter = if self.stroke.join == Join::Miter {
+            self.stroke.miter_limit
+        } else {
+            1.0
+        };
+        let square = if self.stroke.start_cap == Cap::Square || self.stroke.end_cap == Cap::Square {
+            SQRT_2
+        } else {
+            1.0
+        };
+        self.s * self.hw * 1.0_f64.max(miter).max(square)
+    }
+
+    /// What one dash start of `plan` adds to the bound, as `finish_path`
+    /// charges it: its extra fragment, one chord and one variation
+    /// rounding per side, and its start cap where it starts; its end cap
+    /// within a period of it.
+    fn dash_cost(&self, plan: &DashPlan) -> DashCost {
+        let cap = |cap| {
+            let row = self.cap_row(cap);
+            self.group(row.chords, row.reach, row.reach)
+        };
+        let (start, end) = (cap(self.stroke.start_cap), cap(self.stroke.end_cap));
+        DashCost {
+            on: plan.on_entries as u64,
+            start: [(2 * 3 + start.0) as u64, (2 * 4 + start.1) as u64],
+            end: [end.0 as u64, end.1 as u64],
+            reach: self.s * plan.period,
+        }
+    }
+
+    /// Charges the bound added since `before` to `record`'s rows.
+    fn charge(&mut self, record: usize, before: (usize, usize)) {
+        let charge = &mut self.charges[record];
+        charge.bins += (self.bins - before.0) as u64;
+        charge.fragments += (self.fragments - before.1) as u64;
     }
 
     /// The device variations of a miter join's two sides (design section
@@ -1315,6 +1478,15 @@ impl<'a> Encoder<'a> {
         }
         let first = self.first;
         let last = self.records.len() - 1;
+        let (start, end) = (
+            self.cap_row(self.stroke.start_cap),
+            self.cap_row(self.stroke.end_cap),
+        );
+        let segments_before = self.segments;
+        let mut counts = InputCounts {
+            records: last + 1 - first,
+            ..InputCounts::default()
+        };
         if let Some(plan) = &self.dash {
             if self.subpath_polygon >= FIXED_LIMIT {
                 return Err(RenderError::Unsupported("dashed subpath too long"));
@@ -1338,19 +1510,42 @@ impl<'a> Encoder<'a> {
                 record.aux[2] = first_rel;
                 record.aux[3] = last_rel;
             }
-            self.dashes = self
-                .dashes
-                .saturating_add(plan.starts(self.subpath_polygon).saturating_add(1));
+            let dashes = plan.starts(self.subpath_polygon).saturating_add(1);
+            self.dashes = self.dashes.saturating_add(dashes);
+            // The subpath's share of what `finish_path` adds for the whole
+            // dashed path: its dashes' allowances and caps, and its curved
+            // records' rounding allowance.
+            let records = &self.records[first..=last];
+            let curved = records
+                .iter()
+                .filter(|record| {
+                    matches!(record.head[0] & PIECE_MASK, PIECE_CURVE | PIECE_POINT_ARC)
+                })
+                .count();
+            counts.stage = records.iter().map(|record| record.head[1] as usize).sum();
+            counts.dashes = dashes;
+            counts.segments = self.body_chords[first..=last].iter().sum::<usize>()
+                + 2 * (dashes + curved)
+                + dashes * (start.chords + end.chords);
+            // A run of the subpath's records can begin at its first record,
+            // and its terminal dot lies on its last (`DashCost`). Every
+            // dashed record has its share, in record order.
+            for (record, starts) in [(first, plan.on()), (last, 1.0)] {
+                *self.dash_charges[record]
+                    .dashes
+                    .as_mut()
+                    .expect("a dashed record's share") += starts;
+            }
         } else {
-            let (start, end) = (
-                self.cap_row(self.stroke.start_cap),
-                self.cap_row(self.stroke.end_cap),
-            );
             if !closed {
                 self.records[first].head[0] |= CAP_START;
                 self.records[last].head[0] |= CAP_END;
+                let before = (self.bins, self.fragments);
                 self.add_group(1, start.chords, start.reach, start.reach);
+                self.charge(first, before);
+                let before = (self.bins, self.fragments);
                 self.add_group(1, end.chords, end.reach, end.reach);
+                self.charge(last, before);
             }
             for i in first..=last {
                 let flags = self.records[i].head[0];
@@ -1365,7 +1560,19 @@ impl<'a> Encoder<'a> {
                 self.records[i].head[3] = count_u32(self.segments, "stroke segment count")?;
                 self.segments += n;
             }
+            counts.segments = self.segments - segments_before;
         }
+        let [top, bottom] =
+            std::mem::replace(&mut self.subpath_rows, [f64::INFINITY, f64::NEG_INFINITY]);
+        self.subpaths.push(InputUnit {
+            top,
+            bottom,
+            inputs: [
+                count_u32(first, "stroke records")?,
+                count_u32(last + 1, "stroke records")?,
+            ],
+            counts,
+        });
         self.has_forward = false;
         self.subpath_polygon = 0.0;
         Ok(())
@@ -1391,7 +1598,7 @@ impl<'a> Encoder<'a> {
     /// Assembles the path: the records, the stroke parameters, the dash table
     /// and the bound (design sections 6.5 and 6.6).
     fn finish_path(mut self, origin: Vec2, surface: (f64, f64)) -> GpuPath {
-        let sh = self.s * self.hw;
+        let dash_cost = self.dash.as_ref().map(|plan| self.dash_cost(plan));
         let (start, end) = (
             self.cap_row(self.stroke.start_cap),
             self.cap_row(self.stroke.end_cap),
@@ -1429,17 +1636,7 @@ impl<'a> Encoder<'a> {
         } else {
             None
         };
-        let miter = if self.stroke.join == Join::Miter {
-            self.stroke.miter_limit
-        } else {
-            1.0
-        };
-        let square = if self.stroke.start_cap == Cap::Square || self.stroke.end_cap == Cap::Square {
-            SQRT_2
-        } else {
-            1.0
-        };
-        let reach = sh * 1.0_f64.max(miter).max(square);
+        let reach = self.outline_reach();
         let hull = self.hull.inflate(reach, reach);
         let bound = GpuBound {
             segments: self.segments,
@@ -1458,7 +1655,7 @@ impl<'a> Encoder<'a> {
             end_cap: cap_code(self.stroke.end_cap),
             k_cap: self.k_cap,
         };
-        GpuPath {
+        let path = GpuPath {
             elements: Arc::from([]),
             strokes: self.records.into(),
             stroke,
@@ -1466,8 +1663,24 @@ impl<'a> Encoder<'a> {
             hull,
             origin,
             bound,
-        }
-        .placed(origin, surface)
+            profile: Arc::new(RowProfile::new(
+                self.charges
+                    .iter()
+                    .chain(&self.joins)
+                    .chain(&self.dash_charges),
+                dash_cost,
+            )),
+            subpaths: self.subpaths.into(),
+        };
+        debug_assert_eq!(
+            path.subpaths
+                .iter()
+                .map(|unit| unit.counts)
+                .sum::<InputCounts>(),
+            path.inputs(),
+            "the subpaths partition the path's inputs"
+        );
+        path.placed(origin, surface)
     }
 }
 

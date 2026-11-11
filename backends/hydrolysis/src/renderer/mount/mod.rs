@@ -30,7 +30,8 @@ pub use cell::{Dirty, NodeCell, NodeCore};
 pub use layers::{Mount, MountStats};
 pub use placement::{HitClasses, HitGate, Placement, PlacementClock, ScopeDelta};
 pub use program::{
-    MaterialRequest, ProducerContent, ProgramBuilder, SceneContentSource, ScopeKey, ScopeProps,
+    LiveOpacity, LiveTransform, MaterialRequest, ProducerContent, ProgramBuilder,
+    SceneContentSource, ScopeKey, ScopeLive, ScopeProps,
 };
 #[cfg(feature = "accessibility")]
 pub use registry::Region;
@@ -59,6 +60,7 @@ impl<E: crate::text::TextEngine> crate::renderer::HydrolysisRenderer<E> {
         host: &T::Host,
         scale: f64,
     ) {
+        T::install_text(host, &self.state.text);
         let roots = self.mount_roots();
         let host_wake = self.host_redraw_handle.clone();
         let window_material = self.core.window_material;

@@ -102,11 +102,13 @@ pub(super) fn mesh_paint(
         .into_iter()
         .map(|position| point(position, "mesh gradient vertex"))
         .collect();
-    MeshGradient::new(columns - 1, rows - 1, points, colors).interpolation(if smooths_colors {
-        MeshColorInterpolation::Smoothstep
-    } else {
-        MeshColorInterpolation::Linear
-    })
+    MeshGradient::new(columns - 1, rows - 1, points, colors)
+        .expect("the asserts above guarantee a non-empty grid with one entry per vertex")
+        .interpolation(if smooths_colors {
+            MeshColorInterpolation::Smoothstep
+        } else {
+            MeshColorInterpolation::Linear
+        })
 }
 
 /// A gradient view: a [`Paint`] in unit space that fills the view's bounds.

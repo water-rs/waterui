@@ -299,8 +299,8 @@ fn reimport(
                 plane.fd().try_clone()?,
                 DmaBufPlane {
                     memory: 0,
-                    offset: plane.offset,
-                    stride: plane.stride,
+                    offset: plane.offset(),
+                    stride: plane.stride(),
                 },
             ))
         })
@@ -367,9 +367,9 @@ fn exported_frame_roundtrips_through_import() -> Result<(), Box<dyn std::error::
         4
     };
     assert!(
-        frame.planes[0].stride >= SIZE * bpp,
+        frame.planes[0].stride() >= SIZE * bpp,
         "plane stride {} covers a {}-bit row",
-        frame.planes[0].stride,
+        frame.planes[0].stride(),
         bpp * 8
     );
     assert!(

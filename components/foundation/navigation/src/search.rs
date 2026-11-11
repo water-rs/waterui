@@ -7,9 +7,9 @@ use waterui_text::{IntoText, Text};
 #[non_exhaustive]
 pub struct NavigationSearch {
     /// Caller-owned query binding.
-    pub text: Binding<Str>,
+    text: Binding<Str>,
     /// Prompt shown when the query is empty.
-    pub prompt: Text,
+    prompt: Text,
 }
 
 impl NavigationSearch {

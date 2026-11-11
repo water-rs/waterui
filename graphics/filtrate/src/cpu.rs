@@ -16,6 +16,7 @@ use filtrate_core::{
     SpatialFilter, WorkingSpace,
     space::{convert, from_srgb, to_srgb},
 };
+use waterui_contract::contract_violation;
 
 use crate::filters::{
     BlendWithImage, Blur, GAUSSIAN_RADIUS_PER_SIGMA, GaussianBlur, OverscrollStretch, SRGB_LUMA,
@@ -266,8 +267,8 @@ fn stretch_axis(position: f32, overscroll: f32, extent: f32) -> f32 {
 /// sample at its warped position, read from the window's input and clamped
 /// like [`CpuImage`] samples; pixels outside the frame keep their value.
 ///
-/// # Panics
-/// If the frame is not invertible.
+/// A frame that is not invertible breaks the stage's contract: the image is
+/// left unchanged.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
@@ -280,10 +281,13 @@ fn stretch_axis(position: f32, overscroll: f32, extent: f32) -> f32 {
 fn overscroll_stretch(params: [f32; 10], image: &mut CpuImage<'_>) {
     let [a, b, c, d, e, f, width, height, stretch_x, stretch_y] = params;
     let determinant = a * d - b * c;
-    assert!(
-        determinant.is_finite() && determinant != 0.0,
-        "OverscrollStretch: the frame [{a}, {b}, {c}, {d}, {e}, {f}] is not invertible"
-    );
+    if !(determinant.is_finite() && determinant != 0.0) {
+        contract_violation!(
+            "OverscrollStretch: the frame [{a}, {b}, {c}, {d}, {e}, {f}] is not invertible; \
+             the image is left unchanged"
+        );
+        return;
+    }
     let columns = image.size.0;
     let rows = image.pixels.len().checked_div(columns).unwrap_or(0);
     if rows == 0 {
@@ -738,7 +742,8 @@ fn hsl_to_rgb(hsl: [f32; 3]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::{
-        GAUSSIAN_RADIUS_PER_SIGMA, gaussian_blur, gaussian_weights, hsl_to_rgb, rgb_to_hsl,
+        GAUSSIAN_RADIUS_PER_SIGMA, gaussian_blur, gaussian_weights, hsl_to_rgb, overscroll_stretch,
+        rgb_to_hsl,
     };
     use crate::FilterImage;
     use crate::filters::{BlendMode, BlendWithImage};
@@ -812,6 +817,22 @@ mod tests {
                 pixels: &mut pixels,
                 top: 0,
                 size: (2, 2),
+            },
+        );
+        assert_eq!(pixels, expected);
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "is not invertible"))]
+    fn overscroll_stretch_leaves_the_image_unchanged_for_a_singular_frame() {
+        let expected = [[0.25, 0.5, 0.75, 1.0], [2.0, 1.0, 0.5, 1.0]];
+        let mut pixels = expected;
+        overscroll_stretch(
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 1.0, 1.0, 1.0],
+            &mut CpuImage {
+                pixels: &mut pixels,
+                top: 0,
+                size: (2, 1),
             },
         );
         assert_eq!(pixels, expected);

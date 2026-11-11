@@ -58,6 +58,7 @@ use objc2_foundation::{
 use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Point};
 use crate::notification::NotificationObserver;
+use crate::response::{ReportsResponse, ResponseGeometry};
 use crate::scroll_flight::{FlightPlan, ScrollFlight};
 
 /// The table's content-bearing column identifier.
@@ -65,7 +66,8 @@ const COLUMN_IDENTIFIER: &str = "content";
 
 /// The space the list gains between its top safe-area edge and the first
 /// row — `SwiftUI`'s breathing room above the first row, which scrolls
-/// away with the rows.
+/// away with the rows. A list opening on a section header puts the gap
+/// below that header instead (see [`TableView::TOP_GAP`]).
 const TOP_GAP: f64 = 10.0;
 
 /// The data the wrapped `NSTableView` reads rows from — the list's model.
@@ -94,6 +96,14 @@ pub trait TableSource {
     fn is_group_row(&self, table: &TableView, row: usize) -> bool {
         let _ = (table, row);
         false
+    }
+
+    /// Whether `row` is content an assistive client may see. A row that
+    /// only reserves space answers `false` and is left out of the table's
+    /// accessibility rows and children.
+    fn is_accessibility_element(&self, table: &TableView, row: usize) -> bool {
+        let _ = (table, row);
+        true
     }
 
     /// Whether a pointer click may select `row`.
@@ -153,6 +163,8 @@ pub struct TableViewIvars {
     flight: Rc<ScrollFlight>,
     /// Ends a flight when the user's live scroll reports a bounds change.
     live_scroll: RefCell<Vec<NotificationObserver>>,
+    /// How the list was placed as a leaf, and its response rectangle.
+    geometry: ResponseGeometry,
 }
 
 impl TableViewIvars {
@@ -168,6 +180,7 @@ impl TableViewIvars {
             sidebar: Cell::new(false),
             flight: ScrollFlight::new(mtm),
             live_scroll: RefCell::new(Vec::new()),
+            geometry: ResponseGeometry::default(),
         }
     }
 }
@@ -282,8 +295,24 @@ impl InnerTable {
     fn exposes_row(&self, row: NSInteger, keep_selected: bool) -> bool {
         row >= 0
             && row < self.numberOfRows()
+            && self.is_content_row(row)
             && (self.rowViewAtRow_makeIfNecessary(row, false).is_some()
                 || (keep_selected && self.isRowSelected(row)))
+    }
+
+    /// Whether the table's source counts `row` as content rather than
+    /// reserved space.
+    fn is_content_row(&self, row: NSInteger) -> bool {
+        let Some(table) = self
+            .enclosingScrollView()
+            .and_then(|scroll| scroll.downcast::<TableView>().ok())
+        else {
+            return true;
+        };
+        table
+            .ivars()
+            .source()
+            .is_none_or(|source| source.is_accessibility_element(&table, row.cast_unsigned()))
     }
 }
 
@@ -487,15 +516,19 @@ define_class!(
             });
         }
 
-        /// Insets the rows by the safe area and the list's top gap, keeps
-        /// `AppKit`'s layout — its clip corrections counted as the
-        /// flight's own writes — then reports it so the consumer can
-        /// track the content width onto the column.
+        /// Commits the list's response geometry, insets the rows by the
+        /// safe area and the list's top gap, keeps `AppKit`'s layout — its
+        /// clip corrections counted as the flight's own writes — then
+        /// reports it so the consumer can track the content width onto the
+        /// column. The commit opens the pass: resolving the response
+        /// measures the table's own content, which must not re-enter
+        /// `AppKit` from inside its layout.
         #[unsafe(method(layout))]
         fn layout_override(&self) {
             guarded("TableView layout", || {
+                self.ivars().geometry.commit(self);
                 self.ivars().flight.own_writes(|| {
-                    super::scroll::layout_with_safe_area_insets(self, TOP_GAP, || {
+                    super::scroll::layout_with_safe_area_insets(self, self.top_gap(), || {
                         // SAFETY: see the module safety note.
                         let _: () = unsafe { msg_send![super(self), layout] };
                     });
@@ -504,6 +537,19 @@ define_class!(
                     handler(self);
                 }
             });
+        }
+
+        /// The response rectangle, or what `.a11y_geometry` names, once
+        /// the list's placement committed one.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> NSRect {
+            guarded("TableView accessibilityFrame", || {
+                self.ivars()
+                    .geometry
+                    .accessibility_frame(self)
+                    // SAFETY: see the module safety note.
+                    .unwrap_or_else(|| unsafe { msg_send![super(self), accessibilityFrame] })
+            })
         }
 
         /// Window changes swap the consumer's key-state observation and
@@ -536,7 +582,30 @@ define_class!(
     }
 );
 
+impl ReportsResponse for TableView {
+    fn response_geometry(&self) -> &ResponseGeometry {
+        &self.ivars().geometry
+    }
+}
+
 impl TableView {
+    /// The breathing room above the list's first row, in points — the
+    /// platform list's top inset. A list that opens on a section header
+    /// seats the header at the very top and leaves the gap to its source
+    /// (a spacer row below the header), as `SwiftUI`'s sectioned list does.
+    pub const TOP_GAP: f64 = TOP_GAP;
+
+    /// The gap this table insets its content by: [`Self::TOP_GAP`], or
+    /// none when a non-sidebar list's first row is a group row.
+    fn top_gap(&self) -> f64 {
+        let opens_on_group_row = !self.ivars().sidebar.get()
+            && self
+                .ivars()
+                .source()
+                .is_some_and(|source| source.rows(self) > 0 && source.is_group_row(self, 0));
+        if opens_on_group_row { 0.0 } else { TOP_GAP }
+    }
+
     /// A list-shaped table: one `content` column, no header, `fullWidth`
     /// rows, zero intercell spacing, text-background fill, autohiding
     /// vertical scroller, and content inset by the safe area plus a top
@@ -1243,9 +1312,41 @@ define_class!(
 );
 
 impl SectionHeader {
+    /// The height of a group row band — the platform list's section
+    /// header, text line and padding — up to and including the hairline
+    /// under it. A platform metric: the `SwiftUI` `List` over `NSTableView`
+    /// on macOS seats its first header in a 28 pt band.
+    pub const GROUP_ROW_HEIGHT: f64 = 28.0;
+
+    /// The label's top margin inside a group row band: places the small
+    /// bold system font's cap height 10 pt below the band's top, as the
+    /// platform list does.
+    const GROUP_ROW_LABEL_TOP: f64 = 7.0;
+
     /// Creates an empty band; `kind` picks the top margin a header (14) or
     /// footer (6) draws.
+    #[must_use]
     pub fn new(mtm: MainThreadMarker, kind: SectionKind) -> Retained<Self> {
+        let top = match kind {
+            SectionKind::Header => 14.0,
+            SectionKind::Footer => 6.0,
+        };
+        Self::with_label_top(mtm, top)
+    }
+
+    /// Creates the platform list's group row band: a [`Self::GROUP_ROW_HEIGHT`]
+    /// band whose label takes the small bold system font `AppKit` gives a
+    /// group row. The gap above a later section is not part of the band:
+    /// `AppKit` adds 20 pt above every group row after the first (measured
+    /// on the sectioned reminders list, whose band otherwise reports 28).
+    #[must_use]
+    pub fn group_row(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::with_label_top(mtm, Self::GROUP_ROW_LABEL_TOP);
+        this.set_font(&NSFont::boldSystemFontOfSize(NSFont::smallSystemFontSize()));
+        this
+    }
+
+    fn with_label_top(mtm: MainThreadMarker, top: f64) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(SectionHeaderIvars::default());
         // SAFETY: `initWithFrame:` is `NSView`'s designated initializer.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
@@ -1253,10 +1354,6 @@ impl SectionHeader {
         let label = NSTextField::labelWithString(&NSString::from_str(""), mtm);
         label.setTranslatesAutoresizingMaskIntoConstraints(false);
         this.addSubview(&label);
-        let top = match kind {
-            SectionKind::Header => 14.0,
-            SectionKind::Footer => 6.0,
-        };
         let constraints = vec![
             label
                 .leadingAnchor()

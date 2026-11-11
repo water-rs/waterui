@@ -24,6 +24,7 @@ use cherenkov_cpu::{Raster, RasterConfig};
 use cherenkov_gpu::{Gpu, GpuConfig};
 use image::ImageEncoder as _;
 
+use crate::canvas::{Drawing, lower_drawing};
 use crate::scene::picture::PictureRecording;
 use crate::scene::resources::{HeldResources, SceneCaps, SceneResources};
 use crate::scene::scene_view::SceneContent;
@@ -78,11 +79,11 @@ pub enum OffscreenError {
 #[non_exhaustive]
 pub struct OffscreenImage {
     /// Width in pixels.
-    pub width: u32,
+    width: u32,
     /// Height in pixels.
-    pub height: u32,
+    height: u32,
     /// `width * height * 4` bytes of straight-alpha sRGB8.
-    pub rgba8: Vec<u8>,
+    rgba8: Vec<u8>,
 }
 
 impl OffscreenImage {
@@ -206,6 +207,19 @@ fn p3_to_srgb(p3: [f32; 3]) -> [f32; 3] {
 )]
 fn pixels_to_points(pixels: u32, scale: f32) -> f32 {
     pixels as f32 / scale
+}
+
+/// The transform that scales `drawing`'s points to fill `size` pixels.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a texture side is far below f32's exact integer range"
+)]
+fn drawing_transform(drawing: &Drawing, size: OffscreenSize) -> Affine {
+    let natural = drawing.size();
+    Affine::scale_non_uniform(
+        f64::from(size.width() as f32 / natural.width),
+        f64::from(size.height() as f32 / natural.height),
+    )
 }
 
 /// An engine that renders scene content into images through backend `B`.
@@ -465,6 +479,80 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
             recorder.picture(picture.picture(), transform);
         });
         let held = resources.finish();
+        self.show(&surface, recorded, held).await
+    }
+
+    /// Renders `drawing` into `size` pixels and reads it back.
+    ///
+    /// The drawing's whole area, `drawing.size()` points, fills the output:
+    /// the drawing is scaled from its own size to `size`. The drawing
+    /// records against this engine's [`SceneResources`] first, so any
+    /// renderer draws any drawing, and the frame holds the registrations it
+    /// names until the pixels are read.
+    ///
+    /// # Errors
+    /// [`OffscreenError`] when the surface cannot be created, the frame does
+    /// not render, or the target cannot be read back.
+    ///
+    /// # Panics
+    /// When the engine refuses a font of the drawing.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn render_drawing(
+        &self,
+        drawing: &Drawing,
+        size: OffscreenSize,
+    ) -> Result<OffscreenImage, OffscreenError> {
+        let surface = self.engine.surface(
+            Offscreen::new((size.width(), size.height()), OffscreenFormat::LinearF16),
+            || {},
+        )?;
+        let (picture, held) = lower_drawing(drawing, &self.resources);
+        let transform = drawing_transform(drawing, size);
+        let recorded = surface.record(|recorder: &mut Recorder| {
+            recorder.picture(&picture, transform);
+        });
+        self.show(&surface, recorded, held)
+    }
+
+    /// Renders `drawing` into `size` pixels and reads it back.
+    ///
+    /// The drawing's whole area, `drawing.size()` points, fills the output:
+    /// the drawing is scaled from its own size to `size`. The drawing
+    /// records against this engine's [`SceneResources`] first, so any
+    /// renderer draws any drawing, and the frame holds the registrations it
+    /// names until the pixels are read.
+    ///
+    /// # Errors
+    /// [`OffscreenError`] when the surface cannot be created, the frame does
+    /// not render, or the target cannot be read back.
+    ///
+    /// # Panics
+    /// When the engine refuses a font of the drawing.
+    #[cfg(target_arch = "wasm32")]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+        )
+    )]
+    pub async fn render_drawing(
+        &self,
+        drawing: &Drawing,
+        size: OffscreenSize,
+    ) -> Result<OffscreenImage, OffscreenError> {
+        let surface = self
+            .engine
+            .surface(
+                Offscreen::new((size.width(), size.height()), OffscreenFormat::LinearF16),
+                || {},
+            )
+            .await?;
+        let (picture, held) = lower_drawing(drawing, &self.resources);
+        let transform = drawing_transform(drawing, size);
+        let recorded = surface.record(|recorder: &mut Recorder| {
+            recorder.picture(&picture, transform);
+        });
         self.show(&surface, recorded, held).await
     }
 

@@ -8,7 +8,7 @@
 //! working space — and conjugated before upload (`P3→sRGB · M · sRGB→P3`)
 //! because the platform shader's `toLinearSrgb`/`fromLinearSrgb` pair bounds
 //! the matrix to sRGB primaries. Registration validates the whole chain
-//! before allocating an id: an unsupported link or API level rejects without
+//! before allocating an id: an unsupported link rejects without
 //! consuming a registration.
 
 use std::cell::RefCell;
@@ -18,12 +18,13 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
-use waterui_graphics::filter_view::{self as fv, AnyEffect};
-use waterui_graphics::filtrate::{
+use waterui_graphics::backend::AnyEffect;
+use waterui_graphics::backend::filtrate::{
     AnimatedTarget, AnimationTrack, ColorFilter, ColorStage, FilterLink, Placed, SpatialStage,
     StageCollector, WatchGuard, filters,
     space::{P3_LUMA, P3_TO_SRGB, SRGB_TO_P3},
 };
+use waterui_graphics::filter_view as fv;
 
 use super::HwuiError;
 use super::buffer::{CommandBuffer, Field};
@@ -47,6 +48,9 @@ enum PlanStep {
     Blur { param: usize },
     /// Contiguous colour links composed into one matrix stage.
     ColorRun(Vec<ColorLink>),
+    /// The overscroll stretch; `param_base` indexes its ten flattened
+    /// parameters.
+    Stretch { param_base: usize },
 }
 
 /// The fixed native shape of a chain, shared across samples.
@@ -71,6 +75,10 @@ struct EffectEntry {
     /// The param watches: dropping them ends wakes.
     _guards: Vec<WatchGuard>,
     plan: Plan,
+    /// Where the drawn node's top-left corner sits in device pixels: the
+    /// stretch stage's frame is carried from device pixels to the node's
+    /// own space by it. Zero until the encoder resolves the node.
+    origin: [f32; 2],
     /// The declared stage names sampled errors carry.
     names: Vec<&'static str>,
     tracks: Vec<AnimationTrack>,
@@ -97,7 +105,6 @@ impl std::fmt::Debug for Effects {
 
 struct EffectStore {
     registry: SharedRegistry,
-    api_level: u32,
     /// Initial definitions not yet emitted; an entry here outlives its
     /// registration, so a register+drop still defines before it releases.
     pending: Vec<(u32, Vec<EffectStage>)>,
@@ -128,11 +135,10 @@ impl Drop for EffectRegistration {
 }
 
 impl Effects {
-    /// Effect state sharing `registry`'s tables, on a device at `api_level`.
-    pub(crate) fn new(registry: SharedRegistry, api_level: u32) -> Self {
+    /// Effect state sharing `registry`'s tables.
+    pub(crate) fn new(registry: SharedRegistry) -> Self {
         Self(Rc::new(RefCell::new(EffectStore {
             registry,
-            api_level,
             pending: Vec::new(),
             entries: BTreeMap::new(),
             last: None,
@@ -147,8 +153,7 @@ impl Effects {
     /// # Errors
     ///
     /// [`HwuiError::Unsupported`] for a GPU effect, an output-size override
-    /// or a link no native stage covers; [`HwuiError::RequiresApi`] for a
-    /// blur below API 31 or a colour stage below API 33.
+    /// or a link no native stage covers.
     pub(crate) fn register(
         &self,
         source: AnyEffect,
@@ -170,19 +175,6 @@ impl Effects {
                 plan.0.len()
             )));
         }
-        let api = self.0.borrow().api_level;
-        // The whole chain must fit the device before the id is allocated.
-        for step in &plan.0 {
-            match step {
-                PlanStep::Blur { .. } if api < 31 => {
-                    return Err(requires_api("a blur filter", 31, api));
-                }
-                PlanStep::ColorRun(_) if api < 33 => {
-                    return Err(requires_api("a colour filter", 33, api));
-                }
-                _ => {}
-            }
-        }
         let params = description.params();
         if params.iter().any(|p| !p.is_finite()) {
             return Err(unsupported(format!(
@@ -192,7 +184,7 @@ impl Effects {
         // Every fallible check precedes the id's allocation and the
         // subscriptions: a rejected registration leaves nothing behind.
         let tracks: Vec<AnimationTrack> = params.iter().map(|&v| AnimationTrack::new(v)).collect();
-        let stages = sample(&plan, &tracks, &names)?;
+        let stages = sample(&plan, &tracks, &names, [0.0; 2])?;
         let mut store = self.0.borrow_mut();
         let wire = store.registry.lock().acquire(Kind::Effect)?;
         let dropped = store.registry.dropped();
@@ -214,6 +206,7 @@ impl Effects {
                 _source: source,
                 _guards: guards,
                 plan,
+                origin: [0.0; 2],
                 names: names.clone(),
                 tracks,
                 events: rx,
@@ -271,13 +264,38 @@ impl Effects {
             for track in &mut entry.tracks {
                 animating |= track.is_active();
             }
-            let stages = sample(&entry.plan, &entry.tracks, &entry.names)?;
+            let stages = sample(&entry.plan, &entry.tracks, &entry.names, entry.origin)?;
             if entry.emitted.as_ref() != Some(&stages) {
                 emit_effect(buffer, wire, &stages)?;
                 entry.emitted = Some(stages);
             }
         }
         Ok(animating)
+    }
+
+    /// Whether the effect `wire` draws in window device pixels, so its
+    /// node's [origin](Self::set_origin) is part of its definition.
+    pub(crate) fn takes_origin(&self, wire: u32) -> bool {
+        self.0.borrow().entries.get(&wire).is_some_and(|entry| {
+            entry
+                .plan
+                .0
+                .iter()
+                .any(|step| matches!(step, PlanStep::Stretch { .. }))
+        })
+    }
+
+    /// Records where the node drawing effect `wire` has its top-left
+    /// corner in device pixels; `true` when that moved the node, so the
+    /// next [`encode`](Self::encode) redefines the effect.
+    pub(crate) fn set_origin(&self, wire: u32, origin: [f32; 2]) -> bool {
+        let mut store = self.0.borrow_mut();
+        let Some(entry) = store.entries.get_mut(&wire) else {
+            return false;
+        };
+        let moved = entry.origin.map(f32::to_bits) != origin.map(f32::to_bits);
+        entry.origin = origin;
+        moved
     }
 }
 
@@ -289,15 +307,6 @@ fn unsupported(what: impl Into<String>) -> HwuiError {
     HwuiError::Unsupported {
         layer: 0,
         what: what.into(),
-    }
-}
-
-const fn requires_api(what: &'static str, needs: u32, device: u32) -> HwuiError {
-    HwuiError::RequiresApi {
-        layer: 0,
-        what,
-        needs,
-        device,
     }
 }
 
@@ -342,6 +351,14 @@ fn plan(
                     param: link.param_base,
                 });
             }
+            Some(Mapped::Stretch) => {
+                if !run.is_empty() {
+                    steps.push(PlanStep::ColorRun(std::mem::take(&mut run)));
+                }
+                steps.push(PlanStep::Stretch {
+                    param_base: link.param_base,
+                });
+            }
             None => {
                 if failure.is_none() {
                     failure = Some(unsupported(format!(
@@ -363,6 +380,7 @@ fn plan(
 enum Mapped {
     Color(fn(&[f32]) -> [[f32; 4]; 4]),
     Blur,
+    Stretch,
 }
 
 /// `link`'s native step: each colour mapping names a concrete `LINEAR`
@@ -438,6 +456,15 @@ fn map_link(link: &FilterLink<'_>) -> Option<Mapped> {
         || link.downcast_ref::<filters::Blur<f32>>().is_some()
     {
         return Some(Mapped::Blur);
+    }
+    if link
+        .downcast_ref::<filters::OverscrollStretch<fv::Reactive>>()
+        .is_some()
+        || link
+            .downcast_ref::<filters::OverscrollStretch<f32>>()
+            .is_some()
+    {
+        return Some(Mapped::Stretch);
     }
     None
 }
@@ -625,11 +652,25 @@ fn conjugate(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
     mul(&mul(&extend(P3_TO_SRGB), m), &extend(SRGB_TO_P3))
 }
 
-/// The current sample as wire stages.
+/// The stretch stage's wire values: the ten filter parameters with the
+/// frame carried from device pixels to the drawn node's own space (the
+/// shader runs in it), then HWUI's interpolation strength.
+fn stretch_values(params: &[f32], origin: [f32; 2]) -> [f32; 12] {
+    let mut values = [0f32; 12];
+    values[..10].copy_from_slice(&params[..10]);
+    values[4] -= origin[0];
+    values[5] -= origin[1];
+    values[10] = filters::STRETCH_INTERPOLATION_STRENGTH;
+    values
+}
+
+/// The current sample as wire stages, for a node whose top-left corner is
+/// at `origin` device pixels.
 fn sample(
     plan: &Plan,
     tracks: &[AnimationTrack],
     names: &[&'static str],
+    origin: [f32; 2],
 ) -> Result<Vec<EffectStage>, HwuiError> {
     let params: Vec<f32> = tracks.iter().map(AnimationTrack::value).collect();
     if params.iter().any(|p| !p.is_finite()) {
@@ -649,6 +690,10 @@ fn sample(
                     values,
                 });
             }
+            PlanStep::Stretch { param_base } => stages.push(EffectStage {
+                kind: effect_kind::OVERSCROLL_STRETCH,
+                values: stretch_values(&params[*param_base..], origin),
+            }),
             PlanStep::ColorRun(links) => {
                 // Links compose in application order: the next link's matrix
                 // left-multiplies the accumulated product.
@@ -743,25 +788,23 @@ mod tests {
     fn blur_radius_is_clamped_nonnegative() {
         let plan = Plan(vec![PlanStep::Blur { param: 0 }]);
         let tracks = vec![AnimationTrack::new(-2.0)];
-        let stages = sample(&plan, &tracks, &[]).unwrap();
+        let stages = sample(&plan, &tracks, &[], [0.0; 2]).unwrap();
         assert_eq!(stages[0].kind, effect_kind::BLUR);
         assert_eq!(stages[0].values[0], 0.0);
     }
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use waterui_graphics::filtrate::{FilterExt, Interpolator};
+    use waterui_graphics::backend::filtrate::{FilterExt, Interpolator};
 
-    fn fixture(
-        api: u32,
-    ) -> (
+    fn fixture() -> (
         SharedRegistry,
         Effects,
         std::sync::Arc<AtomicUsize>,
         EffectWake,
     ) {
         let registry = SharedRegistry::new();
-        let effects = Effects::new(registry.clone(), api);
+        let effects = Effects::new(registry.clone());
         let wakes = std::sync::Arc::new(AtomicUsize::new(0));
         let wake: EffectWake = {
             let wakes = std::sync::Arc::clone(&wakes);
@@ -778,26 +821,6 @@ mod tests {
     }
 
     #[test]
-    fn api_levels_gate_blur_and_colour_at_registration() {
-        let blur = || AnyEffect::filter(filters::Blur(2.0f32));
-        let color = || AnyEffect::filter(filters::Brightness(0.5f32));
-        let (_, e30, _, w30) = fixture(30);
-        assert!(matches!(
-            e30.register(blur(), w30),
-            Err(HwuiError::RequiresApi { needs: 31, .. })
-        ));
-        let (_, e31, _, w31) = fixture(31);
-        assert!(e31.register(blur(), w31).is_ok());
-        let (_, e32, _, w32) = fixture(32);
-        assert!(matches!(
-            e32.register(color(), w32),
-            Err(HwuiError::RequiresApi { needs: 33, .. })
-        ));
-        let (_, e33, _, w33) = fixture(33);
-        assert!(e33.register(color(), w33).is_ok());
-    }
-
-    #[test]
     fn unsupported_links_name_their_declared_stages() {
         let cases = [
             ("Gamma", AnyEffect::filter(filters::Gamma(0.5f32))),
@@ -807,7 +830,7 @@ mod tests {
             ),
         ];
         for (name, source) in cases {
-            let (_, effects, _, wake) = fixture(34);
+            let (_, effects, _, wake) = fixture();
             let error = effects.register(source, wake).map(|_| ()).unwrap_err();
             let message = error.to_string();
             assert!(message.contains(name), "{message}");
@@ -816,7 +839,7 @@ mod tests {
 
     #[test]
     fn a_late_unknown_link_rejects_before_any_id_allocates() {
-        let (_registry, effects, _, wake) = fixture(34);
+        let (_registry, effects, _, wake) = fixture();
         // A supported link followed by an unsupported one: the whole
         // registration must fail before an id is consumed.
         let chain = AnyEffect::filter(filters::Brightness(0.2f32).then(filters::Gamma(0.5f32)));
@@ -834,7 +857,7 @@ mod tests {
 
     #[test]
     fn failed_registrations_consume_no_ids() {
-        let (_, effects, _, wake) = fixture(34);
+        let (_, effects, _, wake) = fixture();
         // A finite parameter producing an infinite matrix fails at sample,
         // before acquire — like an unsupported stage, it leaves no id.
         let infinite = AnyEffect::filter(filters::Exposure(1000f32));
@@ -999,7 +1022,7 @@ mod tests {
             },
         ];
         for case in cases {
-            let (_registry, effects, _, wake) = fixture(34);
+            let (_registry, effects, _, wake) = fixture();
             let mut guards = fv::ParamGuards::default();
             let registration = effects.register((case.build)(&mut guards), wake);
             let registration =
@@ -1027,7 +1050,7 @@ mod tests {
         let binding = nami::binding::<f32>(0.2f32);
         let mut guards = fv::ParamGuards::default();
         let source = AnyEffect::filter(filters::Brightness(guards.bind(binding.clone())));
-        let (_registry, effects, wakes, wake) = fixture(34);
+        let (_registry, effects, wakes, wake) = fixture();
         let registration = effects.register(source, wake).unwrap();
         let mut buffer = CommandBuffer::new();
         buffer.begin_frame();
@@ -1061,7 +1084,7 @@ mod tests {
 
     #[test]
     fn register_and_drop_before_the_first_frame_still_defines_first() {
-        let (registry, effects, _, wake) = fixture(34);
+        let (registry, effects, _, wake) = fixture();
         let registration = effects
             .register(
                 AnyEffect::filter(filters::Brightness(0.5f32)),
@@ -1107,8 +1130,8 @@ mod tests {
 
     #[test]
     fn parameter_animations_sample_deterministically() {
-        use waterui_graphics::filtrate::AnimatedTarget;
-        let (_registry, effects, _, wake) = fixture(34);
+        use waterui_graphics::backend::filtrate::AnimatedTarget;
+        let (_registry, effects, _, wake) = fixture();
         let registration = effects
             .register(AnyEffect::filter(filters::Brightness(0.0f32)), wake)
             .unwrap();
@@ -1205,13 +1228,13 @@ mod tests {
             effect: AnyEffect::filter(filters::Brightness(0.5f32)),
             guards: fv::ParamGuards::default(),
         }
-        .output_size(waterui_graphics::filter_view::OutputSize::Fixed {
+        .output_size(waterui_graphics::backend::OutputSize::Fixed {
             width: 4,
             height: 4,
         });
         let fv::FilteredView { effect, guards, .. } = view;
         assert!(effect.output_size().is_some());
-        let (_registry, effects, _, wake) = fixture(34);
+        let (_registry, effects, _, wake) = fixture();
         assert!(effects.register(effect, Arc::clone(&wake)).is_err());
         drop(guards);
         // The rejection consumed no id: the next registration gets slot 0.
@@ -1225,31 +1248,31 @@ mod tests {
     fn a_custom_stage_is_named_in_its_rejection() {
         // A filter type nobody mapped: its declared stage name reaches the
         // error rather than a guess at the type name.
-        static STAGE: waterui_graphics::filtrate::ColorStage =
-            waterui_graphics::filtrate::ColorStage {
+        static STAGE: waterui_graphics::backend::filtrate::ColorStage =
+            waterui_graphics::backend::filtrate::ColorStage {
                 name: "custom_unsupported",
                 source: "",
                 params: &[],
-                space: waterui_graphics::filtrate::OperatingSpace::Working,
+                space: waterui_graphics::backend::filtrate::OperatingSpace::Working,
             };
         struct Custom;
-        impl waterui_graphics::filtrate::Filter for Custom {
-            type Kind = waterui_graphics::filtrate::kind::Color;
+        impl waterui_graphics::backend::filtrate::Filter for Custom {
+            type Kind = waterui_graphics::backend::filtrate::kind::Color;
             type Params = [f32; 0];
             fn params(&self) -> Self::Params {
                 []
             }
-            fn collect_stages<C: waterui_graphics::filtrate::StageCollector>(
+            fn collect_stages<C: waterui_graphics::backend::filtrate::StageCollector>(
                 &self,
                 collector: &mut C,
             ) {
-                collector.color(waterui_graphics::filtrate::Placed::new(&STAGE));
+                collector.color(waterui_graphics::backend::filtrate::Placed::new(&STAGE));
             }
         }
-        impl waterui_graphics::filtrate::ColorFilter for Custom {
+        impl waterui_graphics::backend::filtrate::ColorFilter for Custom {
             const LINEAR: bool = true;
         }
-        let (_, effects, _, wake) = fixture(34);
+        let (_, effects, _, wake) = fixture();
         let error = effects
             .register(AnyEffect::filter(Custom), wake)
             .map(|_| ())
@@ -1268,13 +1291,59 @@ mod tests {
         };
         let plan = Plan(vec![run(0), PlanStep::Blur { param: 0 }, run(1)]);
         let tracks = vec![AnimationTrack::new(0.5), AnimationTrack::new(0.25)];
-        let stages = sample(&plan, &tracks, &[]).unwrap();
+        let stages = sample(&plan, &tracks, &[], [0.0; 2]).unwrap();
         assert_eq!(
             stages.iter().map(|s| s.kind).collect::<Vec<_>>(),
             vec![
                 effect_kind::LINEAR_COLOR,
                 effect_kind::BLUR,
                 effect_kind::LINEAR_COLOR
+            ]
+        );
+    }
+
+    /// The stretch registers from the same parameters the GPU painter
+    /// draws with; its frame reaches the wire in the node's own space.
+    #[test]
+    fn the_stretch_carries_its_frame_to_the_nodes_space() {
+        let (_, effects, _, wake) = fixture();
+        let stretch = filters::OverscrollStretch {
+            frame: [2.0, 0.0, 0.0, 2.0, 30.0, 54.0],
+            size: [100.0, 200.0],
+            stretch: [0.0, -0.02],
+        };
+        let registration = effects
+            .register(AnyEffect::filter(stretch), wake)
+            .expect("the stretch lowers to a RenderEffect stage");
+        let wire = u32::try_from(wire_of(&registration)).unwrap();
+        assert!(effects.takes_origin(wire));
+        assert!(effects.set_origin(wire, [10.0, 4.0]));
+        assert!(!effects.set_origin(wire, [10.0, 4.0]));
+
+        let mut buffer = CommandBuffer::new();
+        buffer.begin_frame();
+        effects
+            .encode(cherenkov_record::Instant::now(), &mut buffer)
+            .unwrap();
+        let store = effects.0.borrow();
+        let stages = store.entries[&wire].emitted.as_ref().unwrap();
+        assert_eq!(stages.len(), 1);
+        assert_eq!(stages[0].kind, effect_kind::OVERSCROLL_STRETCH);
+        assert_eq!(
+            stages[0].values,
+            [
+                2.0,
+                0.0,
+                0.0,
+                2.0,
+                20.0,
+                50.0,
+                100.0,
+                200.0,
+                0.0,
+                -0.02,
+                filters::STRETCH_INTERPOLATION_STRENGTH,
+                0.0
             ]
         );
     }

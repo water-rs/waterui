@@ -348,6 +348,9 @@ xcodebuild)
         -version | --version)
             printf 'Xcode %s\nBuild version 16F6\n' "${WATERUI_FAKE_XCODE_VERSION:-16.4}"
             ;;
+        "-showComponent MetalToolchain -json")
+            respond XCODEBUILD_SHOW_METAL_TOOLCHAIN
+            ;;
     esac
     exit 0
     ;;
@@ -376,6 +379,12 @@ xcrun)
     case "$*" in
         *--show-sdk-path)
             respond XCRUN_SDK_PATH
+            ;;
+        "--find metal")
+            respond XCRUN_FIND_METAL
+            ;;
+        "metal --version")
+            respond XCRUN_METAL_VERSION
             ;;
         "simctl list --json" | "simctl list devices --json")
             respond XCRUN_SIMCTL_DEVICES

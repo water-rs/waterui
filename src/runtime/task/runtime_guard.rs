@@ -34,7 +34,7 @@ impl RefreshRate {
     /// The rate for a host that drives no display — a test pump, a headless
     /// runner, a preview session. Frames there are paced by the host, not by a
     /// panel, so the budget is the conventional 60 Hz.
-    pub const HEADLESS: Self = Self::from_hz(NonZeroU32::new(60).unwrap());
+    pub const HEADLESS: Self = Self::from_hz(NonZeroU32::new(60).expect("60 is not zero"));
 
     /// A rate in millihertz, the unit windowing systems report
     /// (`winit::monitor::MonitorHandle::refresh_rate_millihertz`).
@@ -45,14 +45,12 @@ impl RefreshRate {
 
     /// A whole-hertz rate.
     ///
-    /// # Panics
-    ///
-    /// Panics if `hz` is too large to express in millihertz as a `u32`.
+    /// A rate too large to express in millihertz as a `u32` (above about
+    /// 4.29 MHz) saturates at the largest rate that fits.
     #[must_use]
     pub const fn from_hz(hz: NonZeroU32) -> Self {
-        match hz.checked_mul(NonZeroU32::new(1000).unwrap()) {
-            Some(millihertz) => Self { millihertz },
-            None => panic!("refresh rate in hertz overflows u32 millihertz"),
+        Self {
+            millihertz: hz.saturating_mul(NonZeroU32::MIN.saturating_add(999)),
         }
     }
 
@@ -107,13 +105,13 @@ const fn cpu_clock_elapsed(_start: CpuClockSample) -> Duration {
 #[non_exhaustive]
 pub struct MainThreadStallProbeConfig {
     /// Emit `info` once this ratio of frame budget is reached.
-    pub info_ratio: f64,
+    info_ratio: f64,
     /// Emit `warn` once this ratio of frame budget is reached.
-    pub warn_ratio: f64,
+    warn_ratio: f64,
     /// Per-task cool-down for `info` logs.
-    pub info_cooldown: Duration,
+    info_cooldown: Duration,
     /// Per-task cool-down for `warn` logs.
-    pub warn_cooldown: Duration,
+    warn_cooldown: Duration,
 }
 
 impl MainThreadStallProbeConfig {
@@ -158,17 +156,17 @@ impl Default for MainThreadStallProbeConfig {
 #[non_exhaustive]
 pub struct TaskPollSample {
     /// Type name of the spawned future.
-    pub task_type: &'static str,
+    task_type: &'static str,
     /// Whether this poll finished the future.
-    pub poll_ready: bool,
+    poll_ready: bool,
     /// Wall-clock duration spent in this poll.
-    pub wall: Duration,
+    wall: Duration,
     /// CPU time consumed by this thread during this poll.
-    pub cpu: Duration,
+    cpu: Duration,
     /// Frame budget used for thresholding.
-    pub frame_budget: Duration,
+    frame_budget: Duration,
     /// Refresh rate used to derive frame budget.
-    pub refresh_hz: f64,
+    refresh_hz: f64,
 }
 
 impl TaskPollSample {
@@ -533,8 +531,18 @@ mod tests {
 
     use executor_core::LocalExecutor;
 
-    use super::{LogLevel, MainThreadStallProbeConfig, classify_level};
+    use super::{LogLevel, MainThreadStallProbeConfig, RefreshRate, classify_level};
     use super::{RuntimeProbe, TaskPollSample};
+
+    #[test]
+    fn a_rate_beyond_u32_millihertz_saturates() {
+        let rate = RefreshRate::from_hz(core::num::NonZeroU32::MAX);
+        assert_eq!(
+            rate,
+            RefreshRate::from_millihertz(core::num::NonZeroU32::MAX)
+        );
+        assert!((RefreshRate::from_hz(core::num::NonZeroU32::MIN).hz() - 1.0).abs() < 1e-9);
+    }
 
     #[derive(Debug, Clone, Copy)]
     struct PollOnceExecutor;

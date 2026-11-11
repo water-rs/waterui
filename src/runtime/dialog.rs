@@ -298,20 +298,25 @@ impl Dialog {
     /// default `NSAlert` draws). The acknowledgement's title is the
     /// [`DIALOG_ACKNOWLEDGE_LABEL_KEY`] catalog entry.
     ///
-    /// # Panics
+    /// # Contract
     ///
-    /// Panics when more than one `Cancel` action was declared — validation
-    /// fails fast at render, not at first presentation.
+    /// Declaring more than one `Cancel` action breaks the contract —
+    /// validation fails fast at render, not at first presentation: a debug
+    /// build panics, and a release build logs the error and keeps every
+    /// declared action, in the order above.
     #[must_use]
     pub fn resolved_actions(&self) -> Vec<DialogAction> {
-        assert!(
-            self.actions
-                .iter()
-                .filter(|action| action.role == DialogRole::Cancel)
-                .count()
-                <= 1,
-            "Dialog declares more than one Cancel action"
-        );
+        if self
+            .actions
+            .iter()
+            .filter(|action| action.role == DialogRole::Cancel)
+            .count()
+            > 1
+        {
+            crate::contract_violation!(
+                "Dialog declares more than one Cancel action; every declared action is kept"
+            );
+        }
         if self.actions.is_empty() {
             return vec![DialogAction::cancel(
                 Text::localized_or(DIALOG_ACKNOWLEDGE_LABEL_KEY, "OK"),
@@ -358,7 +363,10 @@ impl Dialog {
     /// touching the handler directly so every realization answers identically.
     #[doc(hidden)]
     pub fn run_action(&self, action: &DialogAction, env: &Environment) {
-        let () = action.action.call(env);
+        // A handler whose parameters cannot be extracted does not run; the
+        // failure is reported and the dialog still dismisses, as the user
+        // answered it.
+        action.action.run(env);
         self.is_presented.set(false);
     }
 
@@ -478,5 +486,29 @@ impl Dialog {
                 .a11y_hidden(true),
             DialogCard(self.clone()),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nami::Binding;
+
+    use super::{Dialog, DialogAction, DialogRole};
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "more than one Cancel action")
+    )]
+    fn two_cancel_actions_are_all_kept() {
+        let dialog = Dialog::new(&Binding::bool(true), "Title")
+            .action(DialogAction::cancel("First", || {}))
+            .action(DialogAction::cancel("Second", || {}));
+        let roles = dialog
+            .resolved_actions()
+            .iter()
+            .map(DialogAction::role)
+            .collect::<Vec<_>>();
+        assert_eq!(roles, [DialogRole::Cancel, DialogRole::Cancel]);
     }
 }

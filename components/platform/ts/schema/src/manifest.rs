@@ -221,14 +221,14 @@ impl<'de> serde::Deserialize<'de> for ContractHash {
 #[non_exhaustive]
 pub struct BundleFile {
     /// The bundle's location, relative to the manifest's own URL.
-    pub url: String,
+    url: String,
     /// The bundle file's length in bytes. A download is read under this
     /// bound: a response that declares or delivers more is refused without
     /// being buffered, so the signed manifest — not the server — decides how
     /// much memory a fetch may take.
-    pub size: u64,
+    size: u64,
     /// The SHA-256 digest of the bundle file's bytes.
-    pub sha256: Sha256Digest,
+    sha256: Sha256Digest,
 }
 
 impl BundleFile {
@@ -277,18 +277,18 @@ pub struct BundleManifest {
     /// The bundle version. A larger number is newer: the loader prefers the
     /// newest verified bundle, and a published bundle is only ever preferred
     /// to the baseline when its version is greater than the baseline's.
-    pub version: u64,
+    version: u64,
     /// The runtime the bundle was built for.
-    pub runtime: RuntimeFingerprint,
+    runtime: RuntimeFingerprint,
     /// The bundle file.
-    pub bundle: BundleFile,
+    bundle: BundleFile,
     /// Every module the bundle carries, with the props contract hash each was
     /// built against.
-    pub modules: BTreeMap<String, ContractHash>,
+    modules: BTreeMap<String, ContractHash>,
     /// The translation catalog the bundle ships, as locale tag to the TOML
     /// text of that locale's translation file. Empty when it ships none.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub translations: BTreeMap<String, String>,
+    translations: BTreeMap<String, String>,
 }
 
 impl BundleManifest {
@@ -411,9 +411,9 @@ impl BundleManifest {
 #[non_exhaustive]
 pub struct SignedManifest {
     /// The manifest the signature covers.
-    pub manifest: BundleManifest,
+    manifest: BundleManifest,
     /// The ed25519 signature over [`BundleManifest::signed_bytes`].
-    pub signature: SignatureBytes,
+    signature: SignatureBytes,
 }
 
 impl SignedManifest {

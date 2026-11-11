@@ -1,15 +1,21 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::num_cast::f64_as_f32;
+use crate::text::TextEngine;
 use crate::text::TextLayout as _;
-use crate::theme::WidgetTheme;
+use crate::theme::{ListMetrics, WidgetTheme};
+use crate::widgets::layout::container::resolve_lazy_container_extent;
 use crate::widgets::nav::tabs::{tabs_decide_layout, tabs_item_natural_width};
 use std::rc::Rc;
 use waterui::navigation::tab::TabIcon;
 use waterui_core::handler::BoxedAction;
+use waterui_core::layout::{LayoutError, ResolvedExtent, layout_direction, resolve_layout_extent};
 use waterui_core::views::ViewSnapshot;
 use waterui_form::picker::PickerStyle;
 use waterui_form::picker::date::DatePickerConfig;
+use waterui_layout::container::resolve_directional_extent;
+use waterui_layout::padding::EdgeInsets;
 
 pub struct MeasuredTableMetrics {
     pub(crate) column_widths: Vec<f64>,
@@ -344,6 +350,90 @@ fn measure_view_dimensions_with_proposal_with_budget<E: crate::text::TextEngine>
     );
 }
 
+/// The response geometry (water-rs/waterui#1323) of a view the estimator
+/// measures, dispatched like
+/// [`measure_view_dimensions_with_proposal_with_budget`] so the two cannot
+/// drift: environment scopes and passthrough metadata forward to their
+/// content with the same bounds and proposal, and a container answers its
+/// layout's rule over its children.
+///
+/// `None` means a leaf: the caller answers [`ResolvedExtent::centred`] with its
+/// own measured, stretch-applied answer.
+///
+/// # Errors
+///
+/// A [`LayoutError`] when the answer or `bounds` is not valid geometry, or a
+/// layout broke the response-extent identity.
+pub fn resolve_view_extent<E: TextEngine>(
+    view: &AnyView,
+    bounds: LayoutRect,
+    proposal: ProposalSize,
+    state: &mut HydroState<E>,
+    env: &Environment,
+    theme: &Rc<dyn WidgetTheme>,
+) -> Result<Option<ResolvedExtent>, LayoutError> {
+    let (view, scoped_env) = flatten_environment_metadata_ref(view, env);
+
+    if let Some(content) = passthrough_content(view) {
+        return resolve_view_extent(content, bounds, proposal, state, &scoped_env, theme);
+    }
+    // A plain `FixedContainer` has not run `body`, which wraps its layout for
+    // the layout direction; resolve it the way that wrapper does. The Native
+    // form already carries the wrapper.
+    if let Some(container) = view.downcast_ref::<FixedContainer>() {
+        let (layout, children) = container.as_parts();
+        let direction = layout_direction(&scoped_env).snapshot();
+        let state = RefCell::new(state);
+        let subviews: Vec<HydroSubview<'_, E>> = children
+            .iter()
+            .map(|child| HydroSubview::from_view(child, &state, &scoped_env, theme))
+            .collect();
+        let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
+        return resolve_directional_extent(layout, direction, bounds, proposal, &refs).map(Some);
+    }
+    if let Some(container) = view.downcast_ref::<Native<FixedContainer>>() {
+        let (layout, children) = container.as_inner().as_parts();
+        return resolve_layout_view_extent(
+            layout,
+            children.iter(),
+            bounds,
+            proposal,
+            state,
+            &scoped_env,
+            theme,
+        )
+        .map(Some);
+    }
+    if let Some(lazy) = view.downcast_ref::<Native<LazyContainer>>() {
+        return resolve_lazy_container_extent(state, lazy, &scoped_env, theme, bounds, proposal)
+            .map(Some);
+    }
+    Ok(None)
+}
+
+/// [`resolve_layout_extent`] over `children` seen through [`HydroSubview`]s.
+///
+/// # Errors
+///
+/// As [`resolve_layout_extent`].
+pub fn resolve_layout_view_extent<'a, E: TextEngine>(
+    layout: &dyn Layout,
+    children: impl IntoIterator<Item = &'a AnyView>,
+    bounds: LayoutRect,
+    proposal: ProposalSize,
+    state: &mut HydroState<E>,
+    env: &Environment,
+    theme: &Rc<dyn WidgetTheme>,
+) -> Result<ResolvedExtent, LayoutError> {
+    let state = RefCell::new(state);
+    let subviews: Vec<HydroSubview<'_, E>> = children
+        .into_iter()
+        .map(|child| HydroSubview::from_view(child, &state, env, theme))
+        .collect();
+    let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
+    resolve_layout_extent(layout, bounds, proposal, &refs)
+}
+
 pub fn measure_layout_dimensions<'a, E: crate::text::TextEngine>(
     layout: &dyn Layout,
     children: impl IntoIterator<Item = &'a AnyView>,
@@ -499,7 +589,14 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         alignment: HorizontalAlignment,
         env: &Environment,
     ) {
-        self.render_styled_text_limited(ctx, styled, alignment, env, TailMark::None);
+        self.render_styled_text_limited(
+            ctx,
+            ctx.bounds_width_f32(),
+            styled,
+            alignment,
+            env,
+            TailMark::None,
+        );
     }
 
     #[expect(
@@ -509,13 +606,14 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub(crate) fn render_styled_text_limited(
         &mut self,
         ctx: RenderContext,
+        max_width: f32,
         styled: StyledStr,
         alignment: HorizontalAlignment,
         env: &Environment,
         tail: TailMark,
     ) {
         let input = resolve_text_layout_input(&styled, alignment, env);
-        self.record_text_input(ctx, &input, tail);
+        self.record_text_input(ctx, max_width, &input, tail);
     }
 
     /// [`Self::render_styled_text_limited`], also returning the layout the
@@ -526,31 +624,35 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub(crate) fn render_styled_text_with_layout(
         &mut self,
         ctx: RenderContext,
+        max_width: f32,
         styled: &StyledStr,
         alignment: HorizontalAlignment,
         env: &Environment,
         tail: TailMark,
     ) -> E::Layout {
         let input = resolve_text_layout_input(styled, alignment, env);
-        let max_width = self.record_text_input(ctx, &input, tail);
+        self.record_text_input(ctx, max_width, &input, tail);
         let (max_lines, tail_ellipsis) = tail.parts();
         if tail_ellipsis {
-            self.state.text.shape_limited(&input, max_width, max_lines)
+            self.state
+                .text
+                .shape_limited(&input, Some(max_width), max_lines)
         } else {
-            self.state.text.shape(&input, max_width)
+            self.state.text.shape(&input, Some(max_width))
         }
     }
 
-    /// Records `input` at `ctx`'s width and pushes the recording as a live
-    /// source; returns the width it was laid out at.
+    /// Records `input` broken at `max_width` and positioned at `ctx`'s
+    /// origin, and pushes the recording as a live source.
     fn record_text_input(
         &mut self,
         ctx: RenderContext,
+        max_width: f32,
         input: &crate::text::ResolvedTextLayoutInput,
         tail: TailMark,
-    ) -> Option<f32> {
+    ) {
         let state = &mut self.state;
-        let max_width = Some(crate::num_cast::f64_as_f32(ctx.bounds().width()));
+        let max_width = Some(max_width);
         let fragment = state.text.record(
             input,
             max_width,
@@ -569,7 +671,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             },
             &source,
         );
-        max_width
     }
 
     #[expect(
@@ -581,6 +682,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         ctx: RenderContext,
         styled: StyledStr,
         env: &Environment,
+        scale: Option<(&Rc<crate::renderer::chrome::LiveChrome>, kurbo::Affine)>,
+        paint: Option<&nami::Computed<cherenkov_record::Paint>>,
     ) {
         let state = &mut self.state;
         let input = resolve_text_layout_input(&styled, HorizontalAlignment::Leading, env);
@@ -598,22 +701,33 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let height = f64::from(metrics.line_height);
         let x = ((ctx.bounds().width() - width) * 0.5).max(0.0);
         let y = ((ctx.bounds().height() - height) * 0.5).max(0.0);
-        let fragment = state.text.record(
-            &input,
-            None,
-            TailMark::Clip(1),
-            &mut state.counters,
-            &mut state.text_scenes,
-        );
-        let source: Rc<dyn crate::renderer::chrome::LiveSource> = fragment;
-        self.push_live(
-            {
-                let mut literal = ctx;
-                literal.set_local(ctx.local() * kurbo::Affine::translate((x, y)));
-                literal
-            },
-            &source,
-        );
+        let fragment = match paint {
+            Some(paint) => state.text.record_painted(
+                &input,
+                None,
+                TailMark::Clip(1),
+                paint,
+                &mut state.counters,
+            ),
+            None => state.text.record(
+                &input,
+                None,
+                TailMark::Clip(1),
+                &mut state.counters,
+                &mut state.text_scenes,
+            ),
+        };
+        let mut literal = ctx;
+        literal.set_local(ctx.local() * kurbo::Affine::translate((x, y)));
+        let source: Rc<dyn crate::renderer::chrome::LiveSource> = match scale {
+            Some((chrome, widget)) => Rc::new(crate::renderer::chrome::ScaledContent::new(
+                fragment,
+                Rc::clone(chrome),
+                widget.inverse() * literal.local(),
+            )),
+            None => fragment,
+        };
+        self.push_live(literal, &source);
     }
 
     #[expect(
@@ -965,8 +1079,57 @@ pub fn navigation_back_button_rect(
     )
 }
 
+/// The `(left, right)` insets a list row opens its content by: the row's
+/// `insets` replace the theme's row insets edge for edge, and unset the theme's
+/// symmetric horizontal inset applies. `EdgeInsets` is logical, so leading is
+/// the side the layout direction starts from.
+pub fn list_row_horizontal_insets(
+    insets: Option<&EdgeInsets>,
+    metrics: ListMetrics,
+    env: &Environment,
+) -> (f64, f64) {
+    let (leading, trailing) = insets.map_or(
+        (metrics.horizontal_inset, metrics.horizontal_inset),
+        |insets| (f64::from(insets.leading()), f64::from(insets.trailing())),
+    );
+    if layout_direction(env).snapshot().is_right_to_left() {
+        (trailing, leading)
+    } else {
+        (leading, trailing)
+    }
+}
+
+/// Measures a list row's content at the width the row lays it out at: the row
+/// width less the row's horizontal insets, with the height open. A row's
+/// height comes from this answer, so content that wraps is held at the lines it
+/// wraps to there. The content is a view this measurement materialized, so it
+/// goes through the transient path.
+pub fn measure_list_row_content<E: TextEngine>(
+    content: &AnyView,
+    row_width: f64,
+    insets: Option<&EdgeInsets>,
+    state: &mut HydroState<E>,
+    env: &Environment,
+    theme: &Rc<dyn WidgetTheme>,
+) -> LayoutSize {
+    let (left, right) = list_row_horizontal_insets(insets, theme.list_metrics(), env);
+    let content_width = (row_width - left - right).max(0.0);
+    measure_transient_view_with_proposal(
+        content,
+        ProposalSize::new(Some(f64_as_f32(content_width)), None),
+        state,
+        env,
+        theme,
+    )
+}
+
+/// The list's own size. `width` is the width the list is laid out at when one
+/// is proposed: rows are then measured at it, so the height answers the
+/// wrapping that width causes; `None` is the ideal query, rows at their natural
+/// width.
 pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
     list: &ListConfig,
+    width: Option<f32>,
     state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
@@ -984,12 +1147,24 @@ pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
         .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index 0"));
     let first_content = normalize_layout_view(first_item.take_content(), env);
     first_item.set_content(first_content);
-    let content_size = measure_transient_view_intrinsic(first_item.content(), state, env, theme);
     let metrics = theme.list_metrics();
-    let row_height = metrics
-        .vertical_inset
-        .mul_add(2.0, f64::from(content_size.height))
-        .max(metrics.one_line_row_height);
+    let content_size = match width {
+        Some(width) => measure_list_row_content(
+            first_item.content(),
+            f64::from(width),
+            first_item.get_insets(),
+            state,
+            env,
+            theme,
+        ),
+        None => measure_transient_view_intrinsic(first_item.content(), state, env, theme),
+    };
+    let row_height = list_row_height_for_content(
+        f64::from(content_size.height),
+        first_item.get_insets(),
+        list.min_row_height(),
+        metrics,
+    );
 
     let mut row_width = metrics
         .horizontal_inset
@@ -1000,21 +1175,19 @@ pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
     if editing && list.on_delete().is_some() {
         row_width += metrics.delete_control_width + metrics.trailing_control_spacing;
     }
-    // Section chrome is part of the list's own height. Walking every marker is
-    // bounded here because only static section content sets `uses_sections`; a
-    // virtualized `List::for_each` never does.
+    // Section chrome is part of the list's own height: each section holding
+    // rows draws its header and footer once. The sections come from row ids,
+    // so no row is materialized for them.
     let mut section_height = 0.0;
-    if list.uses_sections() {
-        for index in contents.range() {
-            let Some(section) = contents.get_view(index).and_then(ListItem::into_section) else {
-                continue;
-            };
-            if section.label().is_some() {
-                section_height += metrics.section_header_height;
-            }
-            if section.get_footer().is_some() {
-                section_height += metrics.section_footer_height;
-            }
+    for span in list.sections().spans(&contents) {
+        let Some(section) = span.section else {
+            continue;
+        };
+        if section.label().is_some() {
+            section_height += metrics.section_header_height;
+        }
+        if section.get_footer().is_some() {
+            section_height += metrics.section_footer_height;
         }
     }
 
@@ -1048,12 +1221,12 @@ pub fn materialize_list_item(
 /// `ListItem::insets` — `None` uses the theme's `vertical_inset` — and
 /// `min_height` is `ListConfig::min_row_height` — `None` uses the theme's
 /// `one_line_row_height`, so both unset reproduces the theme metrics exactly.
-/// The caller measures the content (a [`measure_transient_view_intrinsic`] on
-/// the materialized `ListItem`) and the section chrome height is added on top
+/// The caller measures the content ([`measure_list_row_content`] on the
+/// materialized `ListItem`) and the section chrome height is added on top
 /// of what this returns.
 pub fn list_row_height_for_content(
     content_height: f64,
-    insets: Option<&waterui_layout::padding::EdgeInsets>,
+    insets: Option<&EdgeInsets>,
     min_height: Option<f32>,
     metrics: crate::theme::ListMetrics,
 ) -> f64 {
@@ -1070,40 +1243,19 @@ pub fn measure_progress_intrinsic<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
-    match progress.style() {
-        ProgressStyle::Linear => {
-            let metrics = theme.progress_metrics(crate::theme::ProgressIndicatorStyle::Linear);
-            let label_height = f64::from(
-                waterui_text::font::Font::default()
-                    .resolve(env)
-                    .snapshot()
-                    .size(),
-            )
-            .max(metrics.label_height);
-            let value_label_height = if state.measure_signal(progress.value()).is_finite() {
-                metrics.value_label_top_spacing + label_height
-            } else {
-                0.0
-            };
-            let width = metrics
-                .bar_horizontal_inset
-                .mul_add(2.0, metrics.min_track_width);
-            let height =
-                label_height + metrics.bar_top_offset + metrics.bar_height + value_label_height;
-            LayoutSize::new(
-                crate::num_cast::f64_as_f32(width),
-                crate::num_cast::f64_as_f32(height),
-            )
-        }
-        ProgressStyle::Circular => {
-            let metrics = theme.progress_metrics(crate::theme::ProgressIndicatorStyle::Circular);
-            LayoutSize::new(
-                crate::num_cast::f64_as_f32(metrics.circular_diameter),
-                crate::num_cast::f64_as_f32(metrics.circular_diameter),
-            )
-        }
-        _ => panic!("hydrolysis ProgressStyle variant is not implemented"),
-    }
+    let determinate = state.measure_signal(progress.value()).is_finite();
+    let labels = (
+        measure_view_intrinsic(progress.label(), state, env, theme),
+        measure_view_intrinsic(progress.value_label(), state, env, theme),
+    );
+    crate::widgets::controls::progress::progress_size(
+        theme,
+        progress.style(),
+        progress.four_color(),
+        determinate,
+        labels,
+        env,
+    )
 }
 
 pub fn measure_text_field_intrinsic<E: crate::text::TextEngine>(
@@ -1363,42 +1515,6 @@ pub fn update_table_slot_visible_cell_widths<E: crate::text::TextEngine>(
     }
 }
 
-pub fn measure_slider_intrinsic<E: crate::text::TextEngine>(
-    slider: &SliderConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> LayoutSize {
-    let metrics = theme.slider_metrics(slider.size());
-    let label_size = measure_label_intrinsic(slider.label(), state, env, theme);
-    let min_label_size = measure_view_intrinsic(slider.min_value_label(), state, env, theme);
-    let max_label_size = measure_view_intrinsic(slider.max_value_label(), state, env, theme);
-
-    let control_row_height = metrics
-        .handle_height
-        .max(f64::from(min_label_size.height))
-        .max(f64::from(max_label_size.height));
-    let label_height = f64::from(label_size.height);
-    let intrinsic_height = if label_height > 0.0 {
-        label_height + metrics.vertical_spacing + control_row_height
-    } else {
-        control_row_height
-    };
-
-    let min_width = f64::from(label_size.width).max(metrics.horizontal_inset.mul_add(
-        2.0,
-        f64::from(min_label_size.width)
-            + metrics.horizontal_spacing
-            + metrics.min_track_width
-            + metrics.horizontal_spacing
-            + f64::from(max_label_size.width),
-    ));
-    LayoutSize::new(
-        crate::num_cast::f64_as_f32(min_width),
-        crate::num_cast::f64_as_f32(intrinsic_height),
-    )
-}
-
 fn resolved_text_styled<E: crate::text::TextEngine>(
     text: &Text,
     env: &Environment,
@@ -1465,18 +1581,13 @@ pub fn measure_button_view_intrinsic<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
-    let metrics = if crate::widgets::controls::button::label_resolves_icon_only(button.label(), env)
-    {
-        theme.icon_button_metrics(button.button_style(), button.button_size())
-    } else {
-        theme.button_metrics(button.button_style(), button.button_size())
-    };
-    let label_size = measure_label_intrinsic(button.label(), state, env, theme);
-    let content_width = f64::mul_add(metrics.padding_x, 2.0, f64::from(label_size.width));
-    let content_height = f64::mul_add(metrics.padding_y, 2.0, f64::from(label_size.height));
-    LayoutSize::new(
-        crate::num_cast::f64_as_f32(content_width.max(metrics.min_width)),
-        crate::num_cast::f64_as_f32(content_height.max(metrics.min_height)),
+    crate::widgets::controls::button::measure_button_look_intrinsic(
+        button.button_style(),
+        button.button_size(),
+        button.label(),
+        state,
+        env,
+        theme,
     )
 }
 

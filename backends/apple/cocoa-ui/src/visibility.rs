@@ -534,10 +534,9 @@ mod imp {
     }
 
     /// `UIKit`: windowed on a foreground-active scene, the ancestor chain
-    /// clear of hidden or transparent links ([`crate::view::has_visible_ancestry`]:
-    /// the window's own alpha is a reveal state, not hidden content), and
-    /// the window-space bounds inside the window and every clipping
-    /// ancestor's window-space bounds.
+    /// clear of hidden or transparent links, the window included
+    /// ([`crate::view::has_visible_ancestry`]), and the window-space bounds
+    /// inside the window and every clipping ancestor's window-space bounds.
     pub fn presentable(view: &UIView) -> bool {
         let Some(window) = view.window() else {
             return false;

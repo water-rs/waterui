@@ -15,19 +15,19 @@ use web_sys::{
 };
 
 use super::{
-    CursorStyle, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow,
-    PointerButton, PointerKind, PresentationSurface as _, ScrollPlatform, TextInputPurpose,
-    TextInputState, TouchScrollConfig, WindowState, WuiWindow,
+    CursorStyle, GpuSurfaceWindow, InputConventions, InputEvent, KeyCode, KeyState, Modifiers,
+    PlatformWindow, PointerButton, PointerKind, PresentationSurface as _, ScrollPlatform,
+    TextInputPurpose, TextInputState, TouchScrollConfig, WindowState, WuiWindow,
 };
 
-/// The touch-scroll physics of the system `window`'s browser runs on, as
-/// its `navigator.userAgent` names it.
-fn touch_scroll_config_for(window: &BrowserHostWindow) -> TouchScrollConfig {
+/// The system `window`'s browser runs on, as its `navigator.userAgent`
+/// names it.
+fn scroll_platform_for(window: &BrowserHostWindow) -> ScrollPlatform {
     let user_agent = window
         .navigator()
         .user_agent()
         .expect("hydrolysis web platform: navigator.userAgent unavailable");
-    TouchScrollConfig::for_platform(ScrollPlatform::from_user_agent(&user_agent))
+    ScrollPlatform::from_user_agent(&user_agent)
 }
 
 #[derive(Clone, Copy)]
@@ -228,7 +228,7 @@ impl BrowserSurface {
     pub(crate) fn render_targets(
         &mut self,
         display_scale: f64,
-        base_color: waterui_graphics::draw::WorkingColor,
+        base_color: cherenkov_record::WorkingColor,
     ) -> (
         crate::renderer::FrameRenderTarget<'_>,
         &HtmlElement,
@@ -244,7 +244,6 @@ impl BrowserSurface {
             crate::renderer::FrameRenderTarget {
                 adapter: &context.shared_device.adapter,
                 device: &context.shared_device.device,
-                queue: &context.shared_device.queue,
                 device_loss: self.handles.clone(),
                 gpu_context_id: context.context_id,
                 shared_device: context.shared_device.clone(),
@@ -286,8 +285,14 @@ pub struct BrowserWindow {
     /// The touch-scroll physics of the system the browser runs on, read
     /// once from `navigator.userAgent`.
     touch_scroll_config: TouchScrollConfig,
+    /// The input conventions of the same system. The browser publishes no
+    /// double-click interval or distance, and `pointerdown` — the event the
+    /// window listens to, whose compatibility `mousedown` its
+    /// `preventDefault` suppresses — carries no click count, so presses are
+    /// counted with the family's data defaults.
+    input_conventions: InputConventions,
     /// The page background last matched to the app's top edge.
-    top_edge_color: Option<waterui_graphics::draw::WorkingColor>,
+    top_edge_color: Option<cherenkov_record::WorkingColor>,
     /// Held for its lifetime: the observer keeps reporting only while
     /// both halves are alive.
     _intersection_observer: (
@@ -343,7 +348,7 @@ impl BrowserWindow {
         let redraw_requested = Rc::new(Cell::new(false));
         let scale_factor = Rc::new(Cell::new(browser_window.device_pixel_ratio()));
         let pending_resize = Rc::new(Cell::new(None));
-        let touch_scroll_config = touch_scroll_config_for(&browser_window);
+        let system = scroll_platform_for(&browser_window);
 
         let initial_resize = measure_root(&browser_window, &root);
         pending_resize.set(Some(initial_resize));
@@ -436,7 +441,8 @@ impl BrowserWindow {
             safe_area,
             schedule_frame,
             current_cursor_style: CursorStyle::Arrow,
-            touch_scroll_config,
+            touch_scroll_config: TouchScrollConfig::for_platform(system),
+            input_conventions: InputConventions::for_platform(system),
             top_edge_color: None,
             _intersection_observer: intersection_observer,
             _listeners: listeners,
@@ -560,6 +566,10 @@ impl PlatformWindow for BrowserWindow {
         Some(self.touch_scroll_config)
     }
 
+    fn input_conventions(&self) -> InputConventions {
+        self.input_conventions
+    }
+
     fn sync_text_input_state(&mut self, state: Option<TextInputState>) {
         if let Some(state) = state {
             self.ime_input.set_type(match state.purpose() {
@@ -612,17 +622,15 @@ impl GpuSurfaceWindow for BrowserWindow {
     /// background to the app's top edge makes the band continue the app.
     const SAMPLES_TOP_EDGE: bool = true;
 
-    fn set_top_edge_color(&mut self, color: waterui_graphics::draw::WorkingColor) {
+    fn set_top_edge_color(&mut self, color: cherenkov_record::WorkingColor) {
         if self.top_edge_color == Some(color) {
             return;
         }
         self.top_edge_color = Some(color);
         let [r, g, b, a] =
-            peniko::color::AlphaColor::<waterui_graphics::draw::LinearDisplayP3>::new(
-                color.components,
-            )
-            .convert::<peniko::color::DisplayP3>()
-            .components;
+            peniko::color::AlphaColor::<cherenkov_record::LinearDisplayP3>::new(color.components)
+                .convert::<peniko::color::DisplayP3>()
+                .components;
         let css = format!("color(display-p3 {r} {g} {b} / {a})");
         let html = self
             .document
@@ -804,8 +812,8 @@ impl Viewport {
         let inset = |property: &str| crate::num_cast::f64_as_f32(length(property));
         waterui_layout::padding::EdgeInsets::new(
             inset("padding-top"),
-            crate::num_cast::f64_as_f32(length("padding-bottom") + extension),
             inset("padding-left"),
+            crate::num_cast::f64_as_f32(length("padding-bottom") + extension),
             inset("padding-right"),
         )
     }

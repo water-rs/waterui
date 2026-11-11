@@ -16,7 +16,7 @@ use waterui::background::Material;
 use waterui::graphics::Color;
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_graphics::filtrate::{
+use waterui_graphics::backend::filtrate::{
     ColorStage, Filter as _, OperatingSpace, Placed, SpatialStage, StageCollector,
 };
 use waterui_layout::stack::{vstack, zstack};
@@ -126,7 +126,11 @@ fn installed(
         .cherenkov_window
         .as_ref()
         .expect("the frame installed into a window");
-    let memory = window.host.engine.memory();
+    let memory = window
+        .host
+        .engine
+        .memory()
+        .expect("the render thread answers memory queries");
     (
         mounts(runtime).backdrop_display_scale(member),
         memory.backdrop_captures.0,

@@ -27,7 +27,7 @@ It is a workspace member with its own release line: `cli/v*` tags and the `cli-d
 - **Fail fast, no fallbacks.** An unresolvable channel, a missing manifest key, a toolchain reporting the wrong shape — each is an error naming what was found and what was required, never a silent substitute. `doctor` classifies a problem as fixable or not; it does not paper over it.
 - Diagnostics go through `tracing` (`RUST_LOG=debug water …` prints to stderr; `--logs` on `water run` is the *device* log level). Structured text is serialized (`serde`) or rendered from a typed `askama` template under `src/templates/`, never concatenated.
 - `tests/doctor_json.rs` runs the built binary with `doctor --json` and checks identity and schema of every item, never status, so it stays deterministic on any machine.
-- Tests that build framework source or hit the network are `#[ignore]`d with the reason and run only in the nightly `cli-ignored` job (`--run-ignored ignored-only`); the per-PR gate passes offline on a clean runner. The nightly `cli-e2e` legs run `doctor --fix`, `create`, `build`, `package` and `run` as a fresh OS user on macOS, Windows and Linux against this checkout — a failure there is a bug, not flakiness to retry.
+- Tests that build framework source or hit the network are `#[ignore]`d with the reason and run only in the nightly's test jobs, on their workspace build (`--run-ignored ignored-only`); the per-PR gate passes offline on a clean runner. The nightly `cli-e2e` legs run `doctor --fix`, `create`, `build`, `package` and `run` as a fresh OS user on macOS, Windows and Linux against this checkout — a failure there is a bug, not flakiness to retry.
 
 ## Framework channels and version selection
 

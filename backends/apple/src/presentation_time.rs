@@ -12,7 +12,7 @@
 use std::rc::Rc;
 use std::time::Duration;
 
-use waterui_graphics::cherenkov::{FrameTime, Instant};
+use waterui_graphics::backend::cherenkov::{FrameTime, Instant};
 
 /// The anchor all presenters under one GPU runtime share.
 #[derive(Debug)]
@@ -37,32 +37,35 @@ impl PresentationTime {
         }
     }
 
-    /// Maps a `CACurrentMediaTime` timestamp — a link update's
-    /// `targetPresentationTimestamp`, or an explicit offscreen capture
-    /// time — onto the shared `Instant` axis.
+    /// Maps a display link's `targetPresentationTimestamp` onto the shared
+    /// `Instant` axis as the frame's reported presentation time.
     #[must_use]
     pub fn map(&self, media_time: f64) -> FrameTime {
+        FrameTime::presented_at(self.instant_at(media_time))
+    }
+
+    /// Maps a `CACurrentMediaTime` timestamp onto the shared `Instant` axis.
+    fn instant_at(&self, media_time: f64) -> Instant {
         let delta = media_time - self.anchor_media;
         let duration = Duration::from_secs_f64(delta.abs());
         // A timestamp behind the anchor is legal (a queued update's target
         // can predate install). One the monotonic `Instant` axis cannot
         // represent is a broken invariant — fail fast rather than mint an
         // invented frame time.
-        let instant = if delta >= 0.0 {
+        if delta >= 0.0 {
             self.anchor_instant.checked_add(duration)
         } else {
             self.anchor_instant.checked_sub(duration)
         }
-        .expect("presentation timestamp outside the representable Instant range");
-        FrameTime::at(instant)
+        .expect("presentation timestamp outside the representable Instant range")
     }
 
     /// The frame time an offscreen capture renders at — the explicit
     /// capture instant, mapped through the same anchor rather than a
-    /// borrowed on-screen future timestamp.
+    /// borrowed on-screen future timestamp. No platform target is reported.
     #[must_use]
     pub fn capture_time(&self) -> FrameTime {
-        self.map(objc2_quartz_core::CACurrentMediaTime())
+        FrameTime::unpresented_at(self.instant_at(objc2_quartz_core::CACurrentMediaTime()))
     }
 
     /// Installs the anchor in `env` — once: [`crate::gpu_runtime::prepare`]

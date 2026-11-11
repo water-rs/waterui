@@ -177,9 +177,9 @@ pub enum TypeSchema {
 #[non_exhaustive]
 pub struct StructSchema {
     /// The Rust type name, which is also the generated TypeScript type name.
-    pub name: &'static str,
+    name: &'static str,
     /// The fields in declaration order.
-    pub fields: &'static [FieldSchema],
+    fields: &'static [FieldSchema],
 }
 
 impl StructSchema {
@@ -209,9 +209,9 @@ impl StructSchema {
 #[non_exhaustive]
 pub struct FieldSchema {
     /// The field name, which is also the generated property name.
-    pub name: &'static str,
+    name: &'static str,
     /// The field type.
-    pub ty: TypeSchema,
+    ty: TypeSchema,
 }
 
 impl FieldSchema {
@@ -241,11 +241,11 @@ impl FieldSchema {
 #[non_exhaustive]
 pub struct EnumSchema {
     /// The Rust type name, which is also the generated TypeScript type name.
-    pub name: &'static str,
+    name: &'static str,
     /// How the variants are laid out on the TypeScript side.
-    pub representation: EnumRepresentation,
+    representation: EnumRepresentation,
     /// The variants in declaration order.
-    pub variants: &'static [VariantSchema],
+    variants: &'static [VariantSchema],
 }
 
 impl EnumSchema {
@@ -324,9 +324,9 @@ impl EnumRepresentation {
 #[non_exhaustive]
 pub struct VariantSchema {
     /// The variant name, which is also its tag value.
-    pub name: &'static str,
+    name: &'static str,
     /// What the variant carries.
-    pub payload: VariantPayload,
+    payload: VariantPayload,
 }
 
 impl VariantSchema {

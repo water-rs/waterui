@@ -10,8 +10,8 @@ use crate::renderer::{
 };
 use crate::renderer::{
     HydroNativeView, HydroState, RenderContext, VisibleSubviewCache, WidgetRenderContext,
-    list_row_height_for_content, local_interaction_state, materialize_list_item,
-    measure_list_intrinsic, measure_transient_view_intrinsic,
+    list_row_height_for_content, list_row_horizontal_insets, local_interaction_state,
+    materialize_list_item, measure_list_intrinsic, measure_list_row_content,
 };
 use crate::scroll::{ScrollHandle, ScrollRun, ScrollRunOutcome};
 #[cfg(feature = "accessibility")]
@@ -21,14 +21,18 @@ use accesskit::{
 };
 #[cfg(feature = "accessibility")]
 use waterui::accessibility::{AccessibilityHidden, AccessibilityStateSignal};
-use waterui::component::list::{ListConfig, ListItem, ListSection, ListSelection, Move};
+use waterui::component::list::{
+    ListConfig, ListItem, ListRowTags, ListSectionSpan, ListSelection, ListTagId, Move,
+};
 use waterui::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
 use waterui_backend_core::scroll::{ScrollPositionReport, animated_row_scroll_approach};
 use waterui_core::animation::Animation;
 use waterui_core::handler::{BoxedAction, boxed_action};
 use waterui_core::id::Id as RawId;
 use waterui_core::interaction::Selected;
-use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
+use waterui_core::layout::{
+    ProposalSize, Size as LayoutSize, UnitPoint, ViewDimensions, layout_direction,
+};
 use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot, Views};
 use waterui_core::{AnyView, Environment, Native};
 use waterui_layout::scroll::Axis as ScrollAxis;
@@ -37,11 +41,11 @@ use waterui_text::Text;
 use crate::platform::Modifiers;
 use crate::renderer::lazy::VirtualExtentIndex;
 use crate::widgets::draw_scroll_indicators;
+use cherenkov_record::Draw as _;
 use nami::watcher::BoxWatcherGuard;
 use nami::{Computed, Signal, SignalExt as _};
 use waterui::theme::color;
 use waterui_core::resolve::Resolvable as _;
-use waterui_graphics::draw::Draw as _;
 
 /// The stable per-row id used to key the retained content sub-view cache, matching
 /// the id `ListConfig::contents` (a `SharedAnyViews<ListItem>`) yields per index.
@@ -138,10 +142,17 @@ impl RowBinding {
 /// `ListSelection` binding under the same rules: a plain click selects, the
 /// toggle modifier toggles the clicked row in multi mode, and Shift extends a
 /// range from the anchor the last non-Shift write set (water-rs/waterui#1226).
+///
+/// The selection holds row *tags*, not row ids: a row is selected when its
+/// tag is in the binding, a write stores the row's tag, and a row without a
+/// tag is not selectable at all.
 pub struct ListRowSelection {
-    /// The erased selection `ListConfig` carries — keyed by the same row ids
-    /// the snapshot's `get_id` reports.
-    selection: ListSelection<ListItemId>,
+    /// The erased selection `ListConfig` carries — keyed by the tags `tags`
+    /// answers for the rows.
+    selection: ListSelection<ListTagId>,
+    /// The tag each row is selected by, keyed by the row ids the snapshot's
+    /// `get_id` reports.
+    tags: ListRowTags,
     /// The list's retained row snapshot — row ids by index, resolved for
     /// Shift-range writes against the membership the list actually rendered.
     snapshot: Rc<RefCell<AnyViewsSnapshot<ListItem>>>,
@@ -155,31 +166,41 @@ impl ListRowSelection {
     /// `ListSelection::None`, so a non-selectable list keeps its old input
     /// behaviour — no row press target, no selected state.
     fn new(
-        selection: &ListSelection<ListItemId>,
+        config: &ListConfig,
         snapshot: Rc<RefCell<AnyViewsSnapshot<ListItem>>>,
     ) -> Option<Rc<Self>> {
-        match selection {
+        match config.selection() {
             ListSelection::None => None,
-            _ => Some(Rc::new(Self {
+            selection => Some(Rc::new(Self {
                 selection: selection.clone(),
+                tags: config.row_tags().clone(),
                 snapshot,
                 anchor: Cell::new(None),
             })),
         }
     }
 
+    /// Whether the row carries a tag, so input may select it.
+    pub(crate) fn selects(&self, id: ListItemId) -> bool {
+        self.tags.tag(id).is_some()
+    }
+
     /// Whether the row is selected, as a signal the flush reads like any other
-    /// row state — a binding write repaints the row's chrome.
+    /// row state — a binding write repaints the row's chrome. A row without a
+    /// tag is never selected.
     pub(crate) fn is_selected(&self, id: ListItemId) -> Computed<bool> {
+        let Some(tag) = self.tags.tag(id) else {
+            return nami::constant(false).computed();
+        };
         match &self.selection {
             ListSelection::None => nami::constant(false).computed(),
             ListSelection::Single(selection) => selection
                 .clone()
-                .map(move |current| current == Some(id))
+                .map(move |current| current == Some(tag))
                 .computed(),
             ListSelection::Multiple(selection) => selection
                 .clone()
-                .map(move |current| current.contains(&id))
+                .map(move |current| current.contains(&tag))
                 .computed(),
         }
     }
@@ -197,12 +218,22 @@ impl ListRowSelection {
     /// Writes a row interaction into the selection binding: plain selects the
     /// row (and anchors the next range), the toggle modifier toggles the row
     /// in multi mode (also anchoring), and Shift writes the whole range
-    /// between the anchor and this row without moving the anchor.
+    /// between the anchor and this row without moving the anchor; the range
+    /// selects only the rows in it that carry a tag.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the row carries no tag: callers offer selection input only
+    /// on rows [`ListRowSelection::selects`].
     pub(crate) fn write(&self, index: usize, id: ListItemId, modifiers: Modifiers) {
+        let tag = self
+            .tags
+            .tag(id)
+            .expect("selection input reached a list row that carries no tag");
         match &self.selection {
             ListSelection::None => {}
             ListSelection::Single(selection) => {
-                selection.set(Some(id));
+                selection.set(Some(tag));
             }
             ListSelection::Multiple(selection) if modifiers.shift => {
                 let anchor = self
@@ -219,18 +250,19 @@ impl ListRowSelection {
                 selection.set(
                     (start..=end)
                         .filter_map(|row| snapshot.get_id(row))
+                        .filter_map(|row| self.tags.tag(row))
                         .collect(),
                 );
             }
             ListSelection::Multiple(selection) => {
                 if modifiers.control || modifiers.super_key {
                     selection.with_mut(|selected| {
-                        if !selected.insert(id) {
-                            selected.remove(&id);
+                        if !selected.insert(tag) {
+                            selected.remove(&tag);
                         }
                     });
                 } else {
-                    selection.set(std::collections::BTreeSet::from([id]));
+                    selection.set(std::collections::BTreeSet::from([tag]));
                 }
                 self.anchor.set(Some(id));
             }
@@ -332,12 +364,15 @@ pub struct ListRenderState<E: crate::text::TextEngine> {
     reorder: Rc<Cell<Option<RowReorder>>>,
     /// Last frame time a settling swipe was advanced at.
     swipe_last_tick: Cell<Option<crate::time::Instant>>,
-    /// Per-row section chrome, resolved once per membership change for a list
-    /// whose rows carry section markers.
-    sections: RefCell<Vec<RowSectionChrome>>,
-    /// Row count the resolved chrome was built for, so a list that renders
-    /// before its rows exist re-resolves once they do.
-    sections_resolved_for: Cell<Option<usize>>,
+    /// The sections holding rows in `rows_snapshot`, resolved once per
+    /// membership change from the list's `ListSections` — row ids only, no
+    /// row is materialized for it.
+    sections: RefCell<Vec<ListSectionSpan>>,
+    /// Set whenever the watcher replaces `rows_snapshot`: the sections are
+    /// resolved again from the new membership. Two sections can change in
+    /// opposite directions between frames, so the row count alone cannot
+    /// tell.
+    sections_stale: Rc<Cell<bool>>,
     /// The list's row-selection state shared by pointer, keyboard and
     /// accessibility input; `None` when the list is not selectable.
     row_selection: Option<Rc<ListRowSelection>>,
@@ -374,11 +409,11 @@ struct RowGestures {
 
 /// The section chrome one row is responsible for drawing.
 ///
-/// A marker opens a section on the row that carries it, so that row owns the
-/// header. The footer closes the section on a *different* row — the last one
-/// before the next marker — which the draw loop cannot discover on its own
-/// while only part of the list is realized. Resolving both onto rows up front
-/// keeps every row's height a local question again.
+/// The row that currently opens a section owns its header, and the row that
+/// currently closes it owns its footer — whichever rows those are after the
+/// last membership change. Resolving both onto rows up front keeps every
+/// row's height a local question, even while only part of the list is
+/// realized.
 ///
 /// The header and footer are semantic text, not strings resolved once: an app
 /// can drive a section title from a signal, and the retained chrome is only
@@ -420,6 +455,8 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
     ) -> Self {
         let rows_dirty = Rc::new(Cell::new(true));
         let rows_dirty_for_watch = Rc::clone(&rows_dirty);
+        let sections_stale = Rc::new(Cell::new(true));
+        let sections_stale_for_watch = Rc::clone(&sections_stale);
         let replaced_row_ids = Rc::new(RefCell::new(std::collections::HashSet::new()));
         let replaced_for_watch = Rc::clone(&replaced_row_ids);
         let rows_snapshot = Rc::new(RefCell::new(config.contents().snapshot()));
@@ -442,6 +479,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
 
         let guard = config.contents().watch(.., move |ctx, change| {
             rows_dirty_for_watch.set(true);
+            sections_stale_for_watch.set(true);
             // Each event hands over an immutable snapshot of the exact row set
             // it reported — retained so every reader below works the same
             // membership instead of the live collection.
@@ -456,7 +494,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
                 cell.mark(crate::renderer::Dirty::STRUCTURE);
             }
         });
-        let row_selection = ListRowSelection::new(config.selection(), Rc::clone(&rows_snapshot));
+        let row_selection = ListRowSelection::new(&config, Rc::clone(&rows_snapshot));
         Self {
             config,
             row_selection,
@@ -477,7 +515,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
             reorder: Rc::new(Cell::new(None)),
             swipe_last_tick: Cell::new(None),
             sections: RefCell::new(Vec::new()),
-            sections_resolved_for: Cell::new(None),
+            sections_stale,
             rows_snapshot,
             transitions,
             owner,
@@ -543,56 +581,57 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         }
     }
 
-    /// Resolves each row's section chrome from the markers the rows carry.
+    /// Resolves the sections the current rows group into, from the row ids
+    /// alone: no row is materialized, so a virtualized collection inside a
+    /// section stays virtualized.
     ///
-    /// Only a list built from static section content is walked: `uses_sections`
-    /// is false for `List::for_each`, whose rows are virtualized and must never
-    /// all be materialized at once.
-    /// Returns whether the chrome changed, which invalidates row extents: a
-    /// row's height includes the chrome it owns.
-    fn resolve_sections(&self, len: usize, env: &Environment) -> bool {
-        if !self.config.uses_sections() {
+    /// Returns whether the rows owning chrome changed, which invalidates row
+    /// extents: a row's height includes the chrome it owns.
+    fn resolve_sections(&self) -> bool {
+        if !self.sections_stale.replace(false) {
             return false;
         }
-        if self.sections_resolved_for.get() == Some(len) {
-            return false;
-        }
-
-        let snapshot = self.rows_snapshot.borrow().clone();
-        let mut chrome = vec![RowSectionChrome::default(); len];
-        // The footer of the section a row opens closes on the row before the
-        // next marker, so each marker settles the *previous* section's footer.
-        let mut open_section: Option<(usize, Option<Text>)> = None;
-        for index in 0..len {
-            let item = materialize_list_item(&snapshot, index, env);
-            let Some((label, footer)) = item.into_section().map(ListSection::into_parts) else {
-                continue;
-            };
-            if let Some((_, footer)) = open_section.take()
-                && index > 0
-            {
-                chrome[index - 1].footer = footer;
-            }
-            chrome[index].header = label;
-            open_section = Some((index, footer));
-        }
-        if let Some((_, footer)) = open_section
-            && len > 0
-        {
-            chrome[len - 1].footer = footer;
-        }
-
-        *self.sections.borrow_mut() = chrome;
-        self.sections_resolved_for.set(Some(len));
-        true
+        let spans = self.config.sections().spans(&*self.rows_snapshot.borrow());
+        let chrome_rows = |spans: &[ListSectionSpan]| {
+            spans
+                .iter()
+                .filter_map(|span| {
+                    let section = span.section.as_ref()?;
+                    Some((
+                        span.rows.clone(),
+                        section.label().is_some(),
+                        section.get_footer().is_some(),
+                    ))
+                })
+                .collect::<Vec<_>>()
+        };
+        let changed = chrome_rows(&spans) != chrome_rows(&self.sections.borrow());
+        *self.sections.borrow_mut() = spans;
+        changed
     }
 
+    /// The chrome row `index` owns: its section's header when it opens the
+    /// section, its footer when it closes it.
     fn section_chrome(&self, index: usize) -> RowSectionChrome {
-        self.sections
-            .borrow()
-            .get(index)
-            .cloned()
-            .unwrap_or_default()
+        let sections = self.sections.borrow();
+        let span = sections
+            .partition_point(|span| span.rows.start <= index)
+            .checked_sub(1)
+            .and_then(|position| sections.get(position))
+            .filter(|span| span.rows.contains(&index));
+        let Some((span, section)) =
+            span.and_then(|span| span.section.as_ref().map(|section| (span, section)))
+        else {
+            return RowSectionChrome::default();
+        };
+        RowSectionChrome {
+            header: (index == span.rows.start)
+                .then(|| section.label().cloned())
+                .flatten(),
+            footer: (index + 1 == span.rows.end)
+                .then(|| section.get_footer().cloned())
+                .flatten(),
+        }
     }
 
     /// Drop the retained sub-views of the rows the collection watcher
@@ -649,7 +688,6 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         let display = self.transitions.display_len(len);
         if dirty || !self.extent_index.borrow().matches(display, estimate, 0.0) {
             self.reset_extents(len, estimate);
-            self.sections_resolved_for.set(None);
             let preserve_anchor_index = self.preserve_anchor_index_once.replace(false);
             let membership_offset = self.viewport_anchor.get().and_then(|anchor| {
                 if len == 0 {
@@ -793,8 +831,8 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
             let request = renderer.read_signal(&controller.request());
             *self.pending_scroll.borrow_mut() = Some(PendingScroll {
                 generation,
-                index: request.target,
-                animation: request.animation,
+                index: *request.target(),
+                animation: request.animation().cloned(),
                 state: PendingScrollState::Unarmed,
             });
         }
@@ -948,7 +986,7 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ListConfig> {
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
-        measure_list_intrinsic(view.as_inner(), state, env, theme)
+        measure_list_intrinsic(view.as_inner(), None, state, env, theme)
     }
 }
 
@@ -1135,6 +1173,13 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
     ctx: Option<RenderContext>,
     theme: Option<&Rc<dyn crate::theme::WidgetTheme>>,
     state: &Rc<RefCell<ListRenderState<E>>>,
+    #[cfg_attr(
+        not(feature = "accessibility"),
+        expect(
+            unused_variables,
+            reason = "only the accessibility emit resolves roles and rows against the environment"
+        )
+    )]
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
@@ -1162,7 +1207,7 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
         // The chrome decides how tall each row's slot is, so it has to be
         // resolved before extents are measured here — exactly as the draw pass
         // does.
-        if state.resolve_sections(row_count, env) {
+        if state.resolve_sections() {
             state.reset_extents(row_count, row_estimate);
         }
     } else {
@@ -1171,7 +1216,7 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
         // indices. It still consumes replaced-row invalidations: the semantic
         // emit reads the same retained rows.
         state.consume_replaced_rows();
-        let _ = state.resolve_sections(row_count, env);
+        let _ = state.resolve_sections();
         let display = state.transitions.display_len(row_count);
         let mut extent_index = state.extent_index.borrow_mut();
         if !extent_index.matches(display, 1.0, 0.0) {
@@ -1277,8 +1322,10 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                         theme.expect("hydrolysis rendered list measurement requires a theme");
                     let list_metrics = list_metrics
                         .expect("hydrolysis rendered list measurement requires list metrics");
-                    let content_size = measure_transient_view_intrinsic(
+                    let content_size = measure_list_row_content(
                         item.content(),
+                        viewport.width(),
+                        item.get_insets(),
                         renderer.state_mut(),
                         &row_env,
                         theme,
@@ -1376,8 +1423,12 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
             }
             row_node.add_action(AccessibilityAction::Focus);
             // The selected state belongs to the list's selection, not the
-            // item: a row exposes it only when the list is selectable.
-            if let Some(selection) = state.row_selection.as_ref() {
+            // item: a row exposes it only when the list can select it.
+            if let Some(selection) = state
+                .row_selection
+                .as_ref()
+                .filter(|selection| selection.selects(row_id))
+            {
                 row_node.set_selected(renderer.read_signal(&selection.is_selected(row_id)));
             }
             let row_node_id = if row_hidden {
@@ -1407,7 +1458,10 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                     selection: if row_disabled {
                         None
                     } else {
-                        state.row_selection.clone()
+                        state
+                            .row_selection
+                            .clone()
+                            .filter(|selection| selection.selects(row_id))
                     },
                 });
                 match ctx {
@@ -1683,7 +1737,7 @@ pub fn measure_list_node<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
-    let intrinsic = measure_list_intrinsic(list, state, env, theme);
+    let intrinsic = measure_list_intrinsic(list, proposal.width, state, env, theme);
     ViewDimensions::new(LayoutSize::new(
         proposal.width.unwrap_or(intrinsic.width),
         proposal.height.unwrap_or(intrinsic.height),
@@ -1758,7 +1812,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
     state
         .borrow()
         .prepare_rows(row_count, row_estimate, frame_instant);
-    if state.borrow().resolve_sections(row_count, env) {
+    if state.borrow().resolve_sections() {
         // Row extents measured before the chrome was known are short by its
         // height, so drop them rather than drawing rows into a stale slot.
         state.borrow().reset_extents(row_count, row_estimate);
@@ -1930,8 +1984,14 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
             let chrome = state.borrow().section_chrome(index);
             // A row's extent covers the section chrome it owns, so scroll offsets,
             // hit testing, and the visible window all account for it.
-            let content_size =
-                measure_transient_view_intrinsic(item.content(), ctx.state_mut(), &row_env, &theme);
+            let content_size = measure_list_row_content(
+                item.content(),
+                viewport.width(),
+                item.get_insets(),
+                ctx.state_mut(),
+                &row_env,
+                &theme,
+            );
             let row_height = list_row_height_for_content(
                 f64::from(content_size.height),
                 item.get_insets(),
@@ -2016,7 +2076,12 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
         // A selectable row carries its selection as `Selected`, so the row's
         // press target reports SELECTED — claims are owner-scoped, so nested
         // controls inside the row do not pick it up.
-        let row_env = match state.borrow().row_selection.clone() {
+        let row_env = match state
+            .borrow()
+            .row_selection
+            .clone()
+            .filter(|selection| selection.selects(row_id))
+        {
             Some(selection) => {
                 let mut env = row_env;
                 env.insert(Selected(selection.is_selected(row_id)));
@@ -2204,6 +2269,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
         );
         if let Some(selection) = state.borrow().row_selection.clone()
             && !row_disabled
+            && selection.selects(row_id)
         {
             let hit_bounds = row_rect;
             let key = crate::renderer::InteractionKey::for_rc(state, row_interaction_base + 3);
@@ -2425,6 +2491,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
                         stretch: subview.stretch_axis(),
                     },
                 );
+                subview.set_content_anchor(row_content_anchor(&row_env));
                 let row = state_ref.transitions.row(row_id);
                 match &row.insertion {
                     Some(insertion) => {
@@ -3004,30 +3071,29 @@ fn list_content_rect(
     // statically classified as stretching, and interactive rows must keep a
     // full-width hit target). The row's `insets` replace the theme's row
     // insets edge for edge; unset, the theme's symmetric inset keeps the
-    // same rect.
-    let (leading_inset, trailing_inset) = insets.map_or(
-        (metrics.horizontal_inset, metrics.horizontal_inset),
-        |insets| (f64::from(insets.leading()), f64::from(insets.trailing())),
-    );
+    // same rect. The row's height was measured at this same width.
     let vertical_insets = insets.map_or(metrics.vertical_inset * 2.0, |insets| {
         f64::from(insets.top() + insets.bottom())
     });
-    // `EdgeInsets` is logical: leading opens the content on the side the
-    // layout direction starts from.
-    let (left_inset, right_inset) = if waterui_core::layout::layout_direction(env)
-        .snapshot()
-        .is_right_to_left()
-    {
-        (trailing_inset, leading_inset)
-    } else {
-        (leading_inset, trailing_inset)
-    };
+    let (left_inset, right_inset) = list_row_horizontal_insets(insets, metrics, env);
     let x0 = row_rect.x0 + left_inset;
     let x1 = row_rect.x1 - right_inset;
     let available_height = (row_rect.height() - vertical_insets).max(0.0);
     let height = f64::from(content_size.height).min(available_height);
     let y0 = (row_rect.height() - height).mul_add(0.5, row_rect.y0);
     kurbo::Rect::new(x0, y0, x1, y0 + height)
+}
+
+/// Where a row positions its content's response (water-rs/waterui#3888): at
+/// the leading edge of the row's content rect — trailing in right-to-left —
+/// centred vertically. The content keeps the whole content rect as its
+/// allocation, so the row's hit target spans it.
+fn row_content_anchor(env: &Environment) -> UnitPoint {
+    if layout_direction(env).snapshot().is_right_to_left() {
+        UnitPoint::TRAILING
+    } else {
+        UnitPoint::LEADING
+    }
 }
 
 /// Emits a retained list's accessibility tree for the semantic walk — the same

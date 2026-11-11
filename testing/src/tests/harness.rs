@@ -18,10 +18,10 @@ use waterui::ViewExt as _;
 use waterui::app::App;
 use waterui::color::WorkingColor;
 use waterui::component::{text, vstack};
+use waterui::graphics::canvas::Canvas;
 use waterui::graphics::color::Srgb;
 use waterui::layout::scroll::ScrollView;
 use waterui::theme;
-use waterui_canvas::Canvas;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::{Point, Rect, Size};
 use waterui_core::{AnyView, Environment};
@@ -170,11 +170,14 @@ fn max_width_derived_from_the_mounted_window_frame_wraps_text() {
 /// from it (water-rs/hydrolysis#128).
 #[test]
 fn mount_app_drives_the_app_window_frame_from_the_viewport() {
+    use waterui::accessibility::AccessibilityGeometry;
     use waterui::window::{Window, WindowState};
 
     let frame = waterui::binding(Rect::new(Point::zero(), Size::new(800.0, 600.0)));
+    // The label names its allocation (`docs/layout-spec.md` §7.2): a text
+    // root otherwise reports its centred response, not the window's width.
     let mut window = Window::new("app", waterui::binding(WindowState::Normal), || {
-        text("app content").body()
+        text("app content").a11y_geometry(AccessibilityGeometry::Allocation)
     });
     window.frame = frame.clone();
     let app = App::new_with_windows([window], Environment::new());
@@ -272,9 +275,11 @@ fn ui_test_snapshot_renders_text_after_canvas() {
         .theme(Material3::defaults())
         .mount_offscreen(|| {
             vstack((
-                Canvas::new(|ctx| {
-                    ctx.set_fill_style(Srgb::new(0.0, 0.85, 0.65));
-                    ctx.fill_rect(Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)));
+                Canvas::new(|cx| {
+                    cx.fill(
+                        Rect::new(Point::new(0.0, 0.0), Size::new(240.0, 180.0)),
+                        Srgb::new(0.0, 0.85, 0.65).resolve(),
+                    );
                 })
                 .size(240.0, 180.0)
                 .a11y_role(waterui::accessibility::AccessibilityRole::Image)
@@ -309,9 +314,11 @@ fn smoke_canvas_snapshot_preserves_accessibility_metadata() {
         .viewport(96, 72)
         .theme(Material3::defaults())
         .mount_offscreen(|| {
-            Canvas::new(|ctx| {
-                ctx.set_fill_style(Srgb::new(1.0, 0.0, 0.0));
-                ctx.fill_rect(Rect::new(Point::new(8.0, 8.0), Size::new(40.0, 24.0)));
+            Canvas::new(|cx| {
+                cx.fill(
+                    Rect::new(Point::new(8.0, 8.0), Size::new(40.0, 24.0)),
+                    Srgb::new(1.0, 0.0, 0.0).resolve(),
+                );
             })
             .a11y_role(waterui::accessibility::AccessibilityRole::Image)
             .a11y_label("Canvas smoke")
@@ -769,5 +776,92 @@ fn a_perpetually_animating_app_is_never_settled_yet_stays_current() {
     assert!(
         !runtime.has_pending_semantic_update(),
         "reading the tree must have applied the update, not merely waited for it"
+    );
+}
+
+/// A headless rendered runtime over `view`, pumped on the clock `at` until
+/// its first tree update lands. Every later pump advances `at`, so animations
+/// run on the frame clock rather than the wall clock.
+fn mounted_runtime(
+    view: impl Fn() -> AnyView + 'static,
+    at: &mut std::time::Instant,
+) -> hydrolysis::HeadlessRuntime {
+    let mut runtime = hydrolysis::HeadlessRuntime::new_for_tests(
+        Environment::new(),
+        AnyViewBuilder::new(view),
+        390,
+        844,
+        Material3::defaults(),
+    );
+    for _ in 0..64 {
+        if runtime.pump_at(false, *at).tree_update().is_some() {
+            return runtime;
+        }
+        *at += FRAME;
+    }
+    panic!("initial pumps produced no accessibility tree");
+}
+
+/// One frame at 60 Hz.
+const FRAME: Duration = Duration::from_millis(16);
+
+/// A linear indeterminate bar moves through repeat-forever operand keyframes
+/// inside its recording. They keep the runtime busy while on screen, and are
+/// the perpetual work `is_settled_except_perpetual` ignores.
+#[test]
+fn a_linear_indeterminate_progress_alone_is_perpetual_work() {
+    let mut at = std::time::Instant::now();
+    let mut runtime = mounted_runtime(
+        || AnyView::new(waterui::component::progress::Progress::infinity().linear()),
+        &mut at,
+    );
+    for _ in 0..8 {
+        at += FRAME;
+        let _ = runtime.pump_at(false, at);
+    }
+    assert!(
+        !runtime.is_settled(),
+        "a repeating operand track is scheduled work for as long as the bar is on screen"
+    );
+    assert!(
+        runtime.is_settled_except_perpetual(),
+        "nothing but repeat-forever work remains"
+    );
+}
+
+/// Flipping a toggle runs the knob's spring as operand tracks inside the
+/// recording: the runtime stays unsettled until the spring finishes.
+#[test]
+fn flipping_a_toggle_keeps_the_runtime_unsettled_until_the_knob_spring_finishes() {
+    let on = waterui::reactive::binding(false);
+    let flipped = on.clone();
+    let mut at = std::time::Instant::now();
+    let mut runtime = mounted_runtime(
+        move || AnyView::new(waterui::component::toggle::toggle("Wi-Fi", &on).switch()),
+        &mut at,
+    );
+    for _ in 0..8 {
+        at += FRAME;
+        let _ = runtime.pump_at(false, at);
+    }
+    assert!(runtime.is_settled(), "a switch at rest is settled");
+
+    flipped.set(true);
+    at += FRAME;
+    let _ = runtime.pump_at(false, at);
+    assert!(
+        !runtime.is_settled(),
+        "the knob spring is still running right after the flip"
+    );
+    let mut frames = 1;
+    while !runtime.is_settled() {
+        assert!(frames < 240, "the knob spring never finished");
+        at += FRAME;
+        let _ = runtime.pump_at(false, at);
+        frames += 1;
+    }
+    assert!(
+        frames > 3,
+        "the spring takes several frames, not the one that applied the flip"
     );
 }

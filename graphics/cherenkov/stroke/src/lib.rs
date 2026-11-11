@@ -22,6 +22,7 @@ mod cusp;
 mod dash;
 
 use kurbo::{BezPath, CubicBez, PathEl, Point, Stroke, StrokeOpts};
+use waterui_contract::contract_violation;
 
 /// Expand `path` stroked with `style` into a fill outline, accurate to
 /// `tolerance`.
@@ -31,11 +32,13 @@ use kurbo::{BezPath, CubicBez, PathEl, Point, Stroke, StrokeOpts};
 /// path. The dash pattern must be valid: finite and non-negative entries
 /// with a positive sum, and a finite offset.
 ///
-/// # Panics
+/// # Contract
 ///
-/// Panics, naming the offending element, if the outline holds a non-finite
-/// point: a finite input and a valid style never produce one, so it marks a
-/// defect in the input or in the expansion.
+/// A finite input and a valid style never produce a non-finite outline point,
+/// so one marks a defect in the input or in the expansion. It is reported as
+/// a contract violation naming the offending element (a panic in a debug
+/// build, an error log in a release build), and the stroke then expands to an
+/// empty outline: nothing is drawn.
 #[must_use]
 pub fn stroke(path: impl IntoIterator<Item = PathEl>, style: &Stroke, tolerance: f64) -> BezPath {
     let outline = stroke_expanded(path, style, tolerance);
@@ -46,10 +49,13 @@ pub fn stroke(path: impl IntoIterator<Item = PathEl>, style: &Stroke, tolerance:
             PathEl::CurveTo(a, b, c) => &[*a, *b, *c],
             PathEl::ClosePath => &[],
         };
-        assert!(
-            points.iter().all(|p| p.x.is_finite() && p.y.is_finite()),
-            "cherenkov_stroke::stroke produced a non-finite point in outline element {ix}: {el:?}"
-        );
+        if !points.iter().all(|p| p.x.is_finite() && p.y.is_finite()) {
+            contract_violation!(
+                "cherenkov_stroke::stroke produced a non-finite point in outline element {ix}: \
+                 {el:?}; the stroke is dropped"
+            );
+            return BezPath::new();
+        }
     }
     outline
 }
@@ -187,13 +193,17 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "non-finite point in outline element")]
-    fn a_non_finite_outline_point_panics() {
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "non-finite point in outline element")
+    )]
+    fn a_non_finite_outline_point_drops_the_stroke() {
         let path = [
             PathEl::MoveTo(Point::new(0.0, 0.0)),
             PathEl::LineTo(Point::new(f64::NAN, 1.0)),
         ];
-        let _ = stroke(path, &Stroke::new(1.0), 0.01);
+        let outline = stroke(path, &Stroke::new(1.0), 0.01);
+        assert_eq!(outline.elements(), []);
     }
 
     #[test]

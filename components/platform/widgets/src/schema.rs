@@ -49,16 +49,16 @@ pub enum Node {
 #[non_exhaustive]
 pub struct Text {
     /// The text to display.
-    pub content: String,
+    content: String,
     /// The font to render with; `None` uses the widget default (`.body`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub font: Option<Font>,
+    font: Option<Font>,
     /// The foreground color; `None` uses the primary label color.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub color: Option<Color>,
+    color: Option<Color>,
     /// A maximum line count, `SwiftUI`'s `lineLimit`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub line_limit: Option<u32>,
+    line_limit: Option<u32>,
 }
 
 impl Text {
@@ -211,11 +211,11 @@ pub enum SemanticColor {
 #[non_exhaustive]
 pub struct Image {
     /// Where the image's pixels come from.
-    pub source: ImageSource,
+    source: ImageSource,
     /// The foreground color for template (monochrome) sources such as SF
     /// Symbols; `None` uses the symbol's own rendering.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub color: Option<Color>,
+    color: Option<Color>,
 }
 
 impl Image {
@@ -261,15 +261,15 @@ pub enum ImageSource {
 #[non_exhaustive]
 pub struct Stack {
     /// Which axis the children are laid out along.
-    pub axis: Axis,
+    axis: Axis,
     /// The children, in order.
-    pub children: Vec<Node>,
+    children: Vec<Node>,
     /// Spacing between children; `None` uses the platform default.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub spacing: Option<f32>,
+    spacing: Option<f32>,
     /// Cross-axis alignment of the children.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub alignment: Option<Alignment>,
+    alignment: Option<Alignment>,
 }
 
 impl Stack {
@@ -369,10 +369,10 @@ impl Stack {
 pub struct Alignment {
     /// The horizontal component, when set.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub horizontal: Option<HorizontalAlignment>,
+    horizontal: Option<HorizontalAlignment>,
     /// The vertical component, when set.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vertical: Option<VerticalAlignment>,
+    vertical: Option<VerticalAlignment>,
 }
 
 impl Alignment {
@@ -419,9 +419,9 @@ impl Alignment {
 #[non_exhaustive]
 pub struct Shape {
     /// The shape's geometry.
-    pub kind: ShapeKind,
+    kind: ShapeKind,
     /// What fills it.
-    pub fill: Color,
+    fill: Color,
 }
 
 impl Shape {
@@ -468,9 +468,9 @@ pub enum ShapeKind {
 #[non_exhaustive]
 pub struct Link {
     /// The URL opened on tap — a deep link into the app or a web URL.
-    pub url: String,
+    url: String,
     /// The rendered label.
-    pub content: Box<Node>,
+    content: Box<Node>,
 }
 
 impl Link {
@@ -556,9 +556,9 @@ pub trait DeclaredWidgetIntent: WidgetIntent {
 pub struct TimelineEntry {
     /// When this entry becomes the widget's rendered content, in seconds
     /// since the Unix epoch.
-    pub date: Date,
+    date: Date,
     /// The snapshot rendered for this entry.
-    pub content: Node,
+    content: Node,
 }
 
 impl TimelineEntry {
@@ -583,9 +583,9 @@ impl TimelineEntry {
 #[non_exhaustive]
 pub struct Timeline {
     /// The dated entries, in chronological order.
-    pub entries: Vec<TimelineEntry>,
+    entries: Vec<TimelineEntry>,
     /// When `WidgetKit` should ask for a new timeline.
-    pub policy: ReloadPolicy,
+    policy: ReloadPolicy,
 }
 
 impl Timeline {
@@ -668,9 +668,9 @@ pub struct Size {
 #[non_exhaustive]
 pub struct WidgetContext {
     /// The widget family being rendered.
-    pub family: WidgetFamily,
+    family: WidgetFamily,
     /// The size the system proposes for the widget's content.
-    pub display_size: Size,
+    display_size: Size,
 }
 
 impl WidgetContext {

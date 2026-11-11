@@ -6,8 +6,8 @@ use super::{
     schedule_animation_update, schedule_redraw_or_refresh, surface_error_requires_reconfigure,
 };
 use crate::platform::{
-    GpuSurfaceWindow as _, InputEvent, OffscreenSurface, PlatformWindow as _, SurfaceError,
-    SurfaceFrame, SurfaceProvider,
+    GpuSurfaceWindow as _, InputEvent, OffscreenGpuContext, OffscreenSurface, PlatformWindow as _,
+    SurfaceError, SurfaceFrame, SurfaceProvider,
 };
 use crate::renderer::tests::{MinimalTestTheme, test_environment};
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, InteractionKey};
@@ -712,13 +712,24 @@ fn an_explicit_maximum_clamps_a_larger_window() {
 
 #[test]
 fn zero_layout_minimum_is_not_replaced_by_ideal_size() {
-    use waterui_core::layout::{Layout, ProposalSize, Rect, Size, SubView, SubviewPlacement};
+    use waterui_core::layout::{
+        Layout, LayoutError, PlacementInput, ProposalSize, Rect, Size, SubView, SubviewPlacement,
+        UnitPoint,
+    };
     use waterui_layout::container::FixedContainer;
 
     #[derive(Debug)]
     struct IdealOnlyLayout;
 
     impl Layout for IdealOnlyLayout {
+        fn resolve_extent(
+            &self,
+            input: PlacementInput,
+            _children: &[&dyn SubView],
+        ) -> Result<Rect, LayoutError> {
+            Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
+        }
+
         fn size_that_fits(&self, proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
             Size::new(
                 proposal.width.unwrap_or(500.0),
@@ -1065,8 +1076,12 @@ fn runtime_window_sized(
     height: u32,
     env: &Environment,
 ) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
-    let platform =
-        HeadlessPlatformWindow::new_for_tests(width, height, wgpu::TextureFormat::Rgba8Unorm);
+    let platform = HeadlessPlatformWindow::on_context(
+        OffscreenGpuContext::new_blocking(),
+        width,
+        height,
+        wgpu::TextureFormat::Rgba8Unorm,
+    );
     runtime_window_with_platform(window, platform, env)
 }
 
@@ -1130,7 +1145,12 @@ fn host_window_pipeline_requires_no_gpu_surface_trait() {
         );
     }
 
-    let platform = HeadlessPlatformWindow::new_for_tests(320, 200, wgpu::TextureFormat::Rgba8Unorm);
+    let platform = HeadlessPlatformWindow::on_context(
+        OffscreenGpuContext::new_blocking(),
+        320,
+        200,
+        wgpu::TextureFormat::Rgba8Unorm,
+    );
     let env = test_environment();
     let mut runtime = construct(
         Window::new(
@@ -1330,8 +1350,12 @@ fn sized_test_runtime_window(
     env: &Environment,
 ) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
     let window = Window::new("", binding(WindowState::Normal), || ());
-    let mut platform =
-        HeadlessPlatformWindow::new_for_tests(width, height, wgpu::TextureFormat::Rgba8Unorm);
+    let mut platform = HeadlessPlatformWindow::on_context(
+        OffscreenGpuContext::new_blocking(),
+        width,
+        height,
+        wgpu::TextureFormat::Rgba8Unorm,
+    );
     platform.apply_properties(&window);
     let renderer = HydrolysisRenderer::with_engine(
         Rc::new(MinimalTestTheme::default()),
@@ -1360,11 +1384,7 @@ struct RecoveringSurface {
 impl RecoveringSurface {
     fn new(first_error: SurfaceError) -> Self {
         Self {
-            inner: pollster::block_on(OffscreenSurface::new_for_tests(
-                16,
-                16,
-                wgpu::TextureFormat::Rgba8Unorm,
-            )),
+            inner: OffscreenSurface::new_blocking(16, 16, wgpu::TextureFormat::Rgba8Unorm),
             first_error: Some(first_error),
             acquire_count: 0,
             resize_count: 0,
@@ -1530,8 +1550,12 @@ fn frame_transaction_gates_wakes_and_renders_the_restore_frame() {
     use super::window::{FrameDemand, FrameTransaction};
 
     let transaction = Rc::new(FrameTransaction::default());
-    let mut platform =
-        HeadlessPlatformWindow::new_for_tests(16, 16, wgpu::TextureFormat::Rgba8Unorm);
+    let mut platform = HeadlessPlatformWindow::on_context(
+        OffscreenGpuContext::new_blocking(),
+        16,
+        16,
+        wgpu::TextureFormat::Rgba8Unorm,
+    );
     platform.frame_transaction = Some(Rc::clone(&transaction));
     let env = test_environment();
     let mut runtime = runtime_window_with_platform(

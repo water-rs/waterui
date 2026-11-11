@@ -30,15 +30,14 @@ impl Effect for CopyEffect {
         output: &EffectOutput<'_>,
         encoder: &mut wgpu::CommandEncoder,
     ) -> EffectRenderResult {
-        assert_eq!(input.texture.width(), input.width);
-        assert_eq!(input.texture.height(), input.height);
-        self.0.send(input.timing).expect("timing receiver alive");
+        self.0.send(input.timing()).expect("timing receiver alive");
+        let (width, height) = input.size();
         encoder.copy_texture_to_texture(
-            input.texture.as_image_copy(),
-            output.texture.as_image_copy(),
+            input.texture().as_image_copy(),
+            output.texture().as_image_copy(),
             wgpu::Extent3d {
-                width: input.width,
-                height: input.height,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
         );
@@ -171,7 +170,7 @@ fn engine_executes_composed_filters_and_effects_after_resize()
     });
     let start = Instant::now();
     assert!(matches!(
-        wait!(engine.render(FrameTime::at(start)))?,
+        wait!(engine.render(FrameTime::unpresented_at(start)))?,
         Next::At { .. }
     ));
     assert_eq!(receive.try_recv()?.presentation_time(), Duration::ZERO);
@@ -186,7 +185,7 @@ fn engine_executes_composed_filters_and_effects_after_resize()
         );
     }
     surface.resize((8, 8))?;
-    wait!(engine.render(FrameTime::at(start + Duration::from_millis(250))))?;
+    wait!(engine.render(FrameTime::unpresented_at(start + Duration::from_millis(250))))?;
     let timing = receive.try_recv()?;
     assert_eq!(timing.presentation_time(), Duration::from_millis(250));
     assert_eq!(timing.delta(), Duration::from_millis(250));
@@ -195,7 +194,7 @@ fn engine_executes_composed_filters_and_effects_after_resize()
         tx[surface.root()].clear_filter();
     });
     assert_eq!(
-        wait!(engine.render(FrameTime::at(start + Duration::from_millis(500))))?,
+        wait!(engine.render(FrameTime::unpresented_at(start + Duration::from_millis(500))))?,
         Next::Idle,
         "a registered effect detached from every layer cannot keep the host awake"
     );
@@ -240,13 +239,14 @@ impl Effect for ObservedEffect {
         output: &EffectOutput<'_>,
         encoder: &mut wgpu::CommandEncoder,
     ) -> EffectRenderResult {
-        self.timings.send(input.timing).expect("timing receiver");
+        self.timings.send(input.timing()).expect("timing receiver");
+        let (width, height) = input.size();
         encoder.copy_texture_to_texture(
-            input.texture.as_image_copy(),
-            output.texture.as_image_copy(),
+            input.texture().as_image_copy(),
+            output.texture().as_image_copy(),
             wgpu::Extent3d {
-                width: input.width,
-                height: input.height,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
         );
@@ -393,9 +393,9 @@ fn shared_effect_consumes_one_delta_per_presentation() -> Result<(), Box<dyn std
         }
     });
     let start = Instant::now();
-    wait!(engine.render(FrameTime::at(start)))?;
+    wait!(engine.render(FrameTime::unpresented_at(start)))?;
     assert_eq!(frames.try_iter().count(), 2);
-    wait!(engine.render(FrameTime::at(start + Duration::from_millis(250))))?;
+    wait!(engine.render(FrameTime::unpresented_at(start + Duration::from_millis(250))))?;
     let a = frames.try_recv()?;
     let b = frames.try_recv()?;
     assert_eq!(a.presentation_time(), b.presentation_time());
@@ -427,7 +427,7 @@ fn layer_filter_reports_its_uploaded_image() -> Result<(), Box<dyn std::error::E
     // Both ends are measured trimmed, so the renderer's grow-only caches
     // (a filtered layer's isolated target among them) cannot tell them apart.
     engine.trim(cherenkov::Pressure::Critical);
-    let before = wait!(engine.memory());
+    let before = wait!(engine.memory())?;
     assert_eq!(before.filter_images, cherenkov::Bytes(0));
     // A filter that uploads nothing gives what a filtered layer costs
     // apart from its chain's own targets and images: the layer's isolated
@@ -437,7 +437,7 @@ fn layer_filter_reports_its_uploaded_image() -> Result<(), Box<dyn std::error::E
         tx[&layer].filter(invert.id());
     });
     wait!(engine.render(FrameTime::now()))?;
-    let plain = wait!(engine.memory());
+    let plain = wait!(engine.memory())?;
     assert_eq!(plain.filter_images, cherenkov::Bytes(0));
     let blend = engine.filter(filtrate::filters::BlendWithImage {
         image: filtrate::FilterImage::from_rgba8(16, 16, vec![128; 16 * 16 * 4]),
@@ -449,7 +449,7 @@ fn layer_filter_reports_its_uploaded_image() -> Result<(), Box<dyn std::error::E
     });
     drop(invert);
     wait!(engine.render(FrameTime::now()))?;
-    let memory = wait!(engine.memory());
+    let memory = wait!(engine.memory())?;
     assert_eq!(memory.filter_images, cherenkov::Bytes(IMAGE_BYTES));
     // The upload joins `gpu` exactly once: with each side's chain targets
     // and images taken out, the two filtered layers cost the same.
@@ -467,7 +467,7 @@ fn layer_filter_reports_its_uploaded_image() -> Result<(), Box<dyn std::error::E
     drop(blend);
     wait!(engine.render(FrameTime::now()))?;
     engine.trim(cherenkov::Pressure::Critical);
-    let after = wait!(engine.memory());
+    let after = wait!(engine.memory())?;
     assert_eq!(after.filter_images, cherenkov::Bytes(0));
     assert_eq!(after.filter_targets, cherenkov::Bytes(0));
     assert_eq!(after.gpu, before.gpu);

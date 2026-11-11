@@ -10,7 +10,8 @@ use core::{fmt, time::Duration};
 
 use crate::animation::Animation;
 use crate::layout::{
-    LayoutDirection, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions,
+    LayoutDirection, LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView,
+    ViewDimensions,
 };
 use crate::metadata::MetadataKey;
 use crate::{AnyView, Binding, Computed, Metadata, Signal, SignalExt, View};
@@ -76,9 +77,9 @@ pub struct ReduceMotion(pub bool);
 #[non_exhaustive]
 pub struct TransitionGeometry {
     /// The untransformed layout slot, in logical pixels.
-    pub size: Size,
+    size: Size,
     /// Resolves leading and trailing edges.
-    pub direction: LayoutDirection,
+    direction: LayoutDirection,
 }
 
 impl TransitionGeometry {
@@ -112,13 +113,13 @@ impl TransitionGeometry {
 #[non_exhaustive]
 pub struct TransitionFrame {
     /// The retained slot in window logical coordinates.
-    pub source: Rect,
+    source: Rect,
     /// The window's full overlay size in logical pixels.
-    pub window: Size,
+    window: Size,
     /// Device pixels per logical pixel.
-    pub scale_factor: f32,
+    scale_factor: f32,
     /// Resolves leading and trailing edges.
-    pub direction: LayoutDirection,
+    direction: LayoutDirection,
 }
 
 impl TransitionFrame {
@@ -177,15 +178,15 @@ impl TransitionFrame {
 #[non_exhaustive]
 pub struct TransitionProperties {
     /// Multiplicative alpha.
-    pub opacity: f32,
+    opacity: f32,
     /// Multiplicative horizontal and vertical scale.
-    pub scale: [f32; 2],
+    scale: [f32; 2],
     /// Physical horizontal and vertical displacement.
-    pub translation: [f32; 2],
+    translation: [f32; 2],
     /// Clockwise rotation in top-left coordinates.
-    pub rotation: f32,
+    rotation: f32,
     /// Gaussian blur radius.
-    pub blur: f32,
+    blur: f32,
 }
 
 impl TransitionProperties {
@@ -263,11 +264,11 @@ impl Default for TransitionProperties {
 #[non_exhaustive]
 pub struct TransitionContext {
     /// Event selecting the insertion or removal effect.
-    pub phase: TransitionPhase,
+    phase: TransitionPhase,
     /// Absence in `[0, 1]`; subscribe instead of rebuilding the effect each frame.
-    pub progress: Computed<f32>,
+    progress: Computed<f32>,
     /// Window-relative geometry, host-updated per placement including scroll/resize.
-    pub frame: Computed<TransitionFrame>,
+    frame: Computed<TransitionFrame>,
 }
 
 impl TransitionContext {
@@ -589,9 +590,9 @@ impl<I: Transition, R: Transition> Transition for Asymmetric<I, R> {
 #[non_exhaustive]
 pub struct TransitionSpec {
     /// Reusable effect declaration.
-    pub transition: AnyTransition,
+    transition: AnyTransition,
     /// Timing shared by all combined effects.
-    pub animation: Animation,
+    animation: Animation,
 }
 
 impl TransitionSpec {
@@ -773,6 +774,13 @@ impl GhostSlot {
 impl SubView for GhostSlot {
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
         self.dimensions.clone()
+    }
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        _proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.dimensions.size)
     }
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::None

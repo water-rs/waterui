@@ -6,7 +6,7 @@ use super::layout::{SignatureHasher, hash_size};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::text::TextLayout as _;
+use crate::text::{TextEngine, TextLayout as _};
 use waterui::gesture::TapGesture;
 use waterui_core::transition::TransitionSpec;
 use waterui_layout::safe_area::IgnoreSafeArea;
@@ -56,6 +56,10 @@ struct BuiltSubview<E: crate::text::TextEngine> {
     /// keyboard inset animating under an unchanged rect) re-runs layout so
     /// the subtree's touch tests and surface facts track it.
     laid_out_area: Option<Box<safe_area::SafeAreaLayout>>,
+    /// Where the host's placement rule puts the root's response inside the
+    /// allocation, when that rule rather than the root's own decides it (a
+    /// list row, water-rs/waterui#3888). `None` keeps the root's own rule.
+    content_anchor: Option<UnitPoint>,
     /// The signal dependencies of the cached layout: every signal the last
     /// layout pass read, kept subscribed for as long as that layout lives —
     /// an update on any of them marks the set dirty so the next flush re-runs
@@ -83,6 +87,30 @@ pub(super) fn store_safe_area(
     } else {
         *slot = safe_area.map(Box::new);
     }
+}
+
+/// The placement bounds that put `root`'s response at `anchor` of its
+/// allocation: the allocation moved by the distance from where the root's own
+/// rule positions its response to where `anchor` puts a rectangle of that
+/// extent. A response query is translation-covariant, so laying the root out
+/// over the moved bounds lands the response exactly there.
+fn anchored_bounds<E: TextEngine>(
+    root: &RenderNode<E>,
+    renderer: &mut HydrolysisRenderer<E>,
+    env: &Environment,
+    proposal: ProposalSize,
+    size: Size,
+    anchor: UnitPoint,
+) -> Rect {
+    let theme = renderer.theme();
+    let cell = RefCell::new(&mut renderer.state);
+    let allocation = Rect::from_size(size);
+    let response = NodeSubView::new(root, &cell, env, &theme)
+        .resolve_extent(allocation, proposal)
+        .unwrap_or_else(|error| panic!("hydrolysis layout: {error}"))
+        .rect;
+    let target = allocation.align(*response.size(), anchor);
+    allocation.translated(target.x() - response.x(), target.y() - response.y())
 }
 
 impl<E: crate::text::TextEngine> BuiltSubview<E> {
@@ -134,8 +162,12 @@ impl<E: crate::text::TextEngine> BuiltSubview<E> {
                  retained sub-view"
             );
             renderer.state.layout_dependencies = Some(dependencies);
+            let bounds = self.content_anchor.map_or_else(
+                || Rect::from_size(size),
+                |anchor| anchored_bounds(&self.node, renderer, env, proposal, size, anchor),
+            );
             self.node
-                .layout(renderer, env, safe_area.clone(), proposal, size);
+                .layout_in(renderer, env, safe_area.clone(), proposal, bounds);
             let mut dependencies =
                 renderer.state.layout_dependencies.take().expect(
                     "hydrolysis renderer: a layout pass emptied the sub-view dependency slot",
@@ -203,6 +235,7 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
             laid_out_proposal: None,
             needs_layout: true,
             laid_out_area: None,
+            content_anchor: None,
             layout_dependencies,
             default_a11y_label,
         }));
@@ -408,6 +441,19 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
         let structural = built.node.patch(renderer);
         built.needs_layout |= structural;
         structural
+    }
+
+    /// Names where the host's placement rule puts the root's response inside
+    /// the allocation. The root keeps the whole allocation; its placement
+    /// bounds move so its response, children and drawing land at `anchor`
+    /// ([`RenderNode::layout_in`]). Set before placing; a change re-lays the
+    /// sub-view out.
+    pub(crate) fn set_content_anchor(&mut self, anchor: UnitPoint) {
+        let built = self.expect_built_mut("set_content_anchor");
+        if built.content_anchor != Some(anchor) {
+            built.content_anchor = Some(anchor);
+            built.needs_layout = true;
+        }
     }
 
     /// Consume the subtree's layout-invalidated mark, keeping it in
@@ -1124,12 +1170,18 @@ pub struct GestureObserverEffect {
     /// `ListRenderState::row_gestures` performs per row; the node's identity is
     /// the key, so the recognizer dies with the view rather than leaking.
     pub(crate) gesture_target: Cell<Option<crate::gesture::GestureTarget>>,
+    /// A tap under a composed control's [`Chrome`](crate::theme::Chrome)
+    /// plugin: its live chrome, kept across flushes while the chrome and the
+    /// bounds stay the same.
+    pub(crate) chrome: RefCell<Option<crate::renderer::chrome::LiveChromeParts>>,
+    /// The state the tap's live chrome reports between flushes.
+    pub(crate) chrome_state: nami::Binding<waterui_core::interaction::InteractionState>,
 }
 
 pub struct ColorNode<E: crate::text::TextEngine> {
     pub(crate) bounds: nami::Binding<kurbo::Rect>,
     pub(crate) core: NodeCore<E>,
-    pub(crate) color: Computed<waterui_graphics::draw::WorkingColor>,
+    pub(crate) color: Computed<cherenkov_record::WorkingColor>,
 }
 
 pub struct TextNode<E: crate::text::TextEngine> {
@@ -1153,6 +1205,11 @@ pub struct TextNode<E: crate::text::TextEngine> {
     /// and re-places its tree: otherwise the leaf keeps the box it measured at
     /// mount while the flush paints the new string wrapped inside it.
     pub(crate) layout_dirty: Rc<Cell<bool>>,
+    /// The geometry this text was committed with at its last
+    /// [`RenderNode::layout`], its response placed by the foundation leaf
+    /// rule. The glyphs draw and the accessibility node reports in the
+    /// response rectangle, not the allocation. `None` until the first layout.
+    pub(crate) geometry: Option<PlacedGeometry>,
     /// The `content` and `alignment` subscriptions that arm `layout_dirty`,
     /// owned by this retained leaf.
     pub(crate) _guards: [BoxWatcherGuard; 2],
@@ -1197,12 +1254,13 @@ pub struct ContainerNode<E: crate::text::TextEngine> {
     /// Child frames cached by [`RenderNode::layout`]; reused by
     /// [`RenderNode::flush`] so a geometry-static frame pays only re-encode.
     pub(crate) placed: Vec<Rect>,
-    /// The extent this container resolved at layout — the size it answered to
-    /// the selected proposal, centred on the assigned frame — kept beside
-    /// `placed` so a naming-scope owner reports its own extent when the
-    /// parent assigned more than it answered (water-rs/hydrolysis#51).
+    /// The geometry this container was committed with at its last layout,
+    /// its response resolved by `place_layout` — kept so a naming-scope
+    /// owner reports its response rectangle when the parent assigned more
+    /// than it answered (water-rs/hydrolysis#51). `None` until the first
+    /// layout.
     #[cfg(feature = "accessibility")]
-    pub(crate) resolved: Rect,
+    pub(crate) geometry: Option<PlacedGeometry>,
     /// Set by this container's `Layout::watch_invalidation` subscription when a
     /// layout input signal changes (shared with the watcher closure). An outer
     /// `RetainedSubview` consumes it through [`RenderNode::take_layout_dirty`]
@@ -1304,17 +1362,19 @@ pub struct SceneViewNode<E: crate::text::TextEngine> {
     /// The owned scene content, re-drawn each flush (it reads its own reactive
     /// inputs in `build_scene`). `RefCell` because `build_scene` needs `&mut` but
     /// `flush` takes `&self`.
-    pub(super) content: Rc<RefCell<Box<dyn waterui_graphics::SceneContent>>>,
+    pub(super) content: Rc<RefCell<Box<dyn waterui_graphics::backend::SceneContent>>>,
     /// The semantic invalidator installed at build — the compositor re-installs
     /// it after a `rebuild_for_engine` clears the content's engine-bound hooks,
     /// so signal-driven frame requests keep working across a device swap.
-    pub(super) invalidator: waterui_graphics::SceneInvalidator,
+    pub(super) invalidator: waterui_graphics::backend::SceneInvalidator,
     /// The engine resource-table identity `content` last recorded against —
     /// `None` until its first mount, a `Weak` that expires with the pooled
     /// engine's table. Shared into the node's recorded run so every commit
     /// sees the same recorded identity.
     pub(super) association:
         Rc<RefCell<Option<std::rc::Weak<crate::renderer::recording::SceneResources>>>>,
+    /// The size and scale `content`'s input handler was last told about.
+    pub(super) resize: Rc<RefCell<crate::renderer::ResizeTracker>>,
     /// The `(proposal, answer)` this leaf last measured at — the mark
     /// [`RenderNode::take_layout_dirty`] reads through
     /// [`Self::size_drifted`]: a scene whose natural size changes after
@@ -1327,7 +1387,7 @@ impl<E: crate::text::TextEngine> SceneViewNode<E> {
     /// The leaf's natural-size answer under `proposal` — the
     /// `measure_body` arm's own computation.
     pub(super) fn intrinsic_dimensions(&self, proposal: ProposalSize) -> ViewDimensions {
-        let resolved = waterui_graphics::resolve_scene_proposal(
+        let resolved = waterui_graphics::backend::resolve_scene_proposal(
             self.content.borrow().intrinsic_size(),
             proposal,
         );
@@ -1947,6 +2007,7 @@ impl<E: crate::text::TextEngine> TextNode<E> {
                             move |runtime_env: &Environment| {
                                 let slot = slot.borrow();
                                 slot.span.activate(&slot.env.layered_on(runtime_env));
+                                Ok(())
                             }
                         });
                         let target = renderer.register_gesture_target(
@@ -1996,12 +2057,12 @@ impl<E: crate::text::TextEngine> TextNode<E> {
 /// Suppressed when the subtree is accessibility-hidden.
 ///
 /// `default_label` is what the drawing says about itself
-/// ([`SceneContent::accessibility_label`](waterui_graphics::SceneContent::accessibility_label)):
+/// ([`SceneContent::accessibility_label`](waterui_graphics::backend::SceneContent::accessibility_label)):
 /// a formula's `MathML`, say. It names the node only when the application named
 /// nothing, so `.a11y_label(…)` still wins.
 ///
 /// `default_value` is the drawing's spoken content beside its name
-/// ([`SceneContent::accessibility_value`](waterui_graphics::SceneContent::accessibility_value)),
+/// ([`SceneContent::accessibility_value`](waterui_graphics::backend::SceneContent::accessibility_value)),
 /// emitted under the same precedence: a scoped `.a11y_value(…)` wins it.
 #[cfg(feature = "accessibility")]
 pub(super) fn emit_graphics_image_accessibility<E: crate::text::TextEngine>(

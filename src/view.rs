@@ -12,10 +12,12 @@
 use executor_core::spawn_local;
 use nami::{Binding, Signal, SignalExt as _, signal::IntoComputed};
 use waterui_core::IntoSignalF32;
+#[cfg(feature = "std")]
+use waterui_core::handler::ReportExtraction;
 pub use waterui_core::view::*;
 use waterui_core::{
     AnyView, Environment, IgnorableMetadata, Retain,
-    env::{With, use_env},
+    env::{UseEnv, With},
     extract::State,
     handler::{EventHandler, Handler, HandlerOnce},
     layout::{HorizontalAlignment, VerticalAlignment, ViewDimensions},
@@ -43,8 +45,9 @@ use waterui_navigation::NavigationView;
 
 use crate::{
     accessibility::{
-        self, AccessibilityChildren, AccessibilityHidden, AccessibilityIdentifier,
-        AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityValue,
+        self, AccessibilityChildren, AccessibilityGeometry, AccessibilityHidden,
+        AccessibilityIdentifier, AccessibilityLabel, AccessibilityRole, AccessibilityState,
+        AccessibilityValue,
     },
     background::IntoBackground,
     border::Border,
@@ -349,6 +352,27 @@ pub trait ViewExt: View + Sized {
         self.foreground(theme::color::MutedForeground)
     }
 
+    /// Sets the tint the controls in this view's subtree draw with.
+    ///
+    /// A control's tint is the nearest enclosing `tint`, and the theme's
+    /// `Accent` token when none is set. Buttons, switches, sliders and other
+    /// controls draw their emphasis with it. The colour may be a signal; a
+    /// change updates the controls in place.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// vstack((
+    ///     button("Delete").action(|| {}).tint(Color::red()),
+    ///     button("Save").action(|| {}),
+    /// ));
+    /// ```
+    fn tint(self, color: impl Into<Color>) -> impl View {
+        self.with(theme::Tint::new(color))
+    }
+
     /// Adds an overlay to this view.
     ///
     /// Unlike `ZStack`, `Overlay` will not affect the size of the base view.
@@ -615,7 +639,7 @@ pub trait ViewExt: View + Sized {
     /// Adds padding to this view with custom edge insets.
     ///
     /// `EdgeInsets` converts from a single `f32` (every edge), a
-    /// `(vertical, horizontal)` pair and a `[top, bottom, leading, trailing]`
+    /// `(vertical, horizontal)` pair and a `[top, leading, bottom, trailing]`
     /// array, so the common shapes need no constructor:
     ///
     /// ```rust
@@ -623,7 +647,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// text!("a").padding_with(16.0);
     /// text!("b").padding_with((8.0, 16.0));
-    /// text!("c").padding_with([4.0, 12.0, 16.0, 16.0]);
+    /// text!("c").padding_with([4.0, 16.0, 12.0, 16.0]);
     /// ```
     ///
     /// # Arguments
@@ -739,6 +763,21 @@ pub trait ViewExt: View + Sized {
     /// Overrides whether this view is hidden from assistive technologies.
     fn a11y_hidden(self, hidden: bool) -> IgnorableMetadata<AccessibilityHidden> {
         IgnorableMetadata::new(self, accessibility::AccessibilityHidden::new(hidden))
+    }
+
+    /// Chooses which rectangle this view's accessibility element reports.
+    ///
+    /// An element reports the view's own answer, positioned in its assigned
+    /// frame, by default. `AccessibilityGeometry::Allocation` reports the
+    /// whole assigned frame — a canvas whose drawing fills it, or a gap a
+    /// stack allocated to a spacer — and `AccessibilityGeometry::Region`
+    /// an explicit rectangle in the view's own coordinates. Hit testing,
+    /// focus and drawing are unaffected.
+    fn a11y_geometry(
+        self,
+        geometry: AccessibilityGeometry,
+    ) -> IgnorableMetadata<AccessibilityGeometry> {
+        IgnorableMetadata::new(self, geometry)
     }
 
     /// Controls how descendants contribute semantics for this view.
@@ -863,7 +902,7 @@ pub trait ViewExt: View + Sized {
         let mut action = action;
         self.gesture(TapGesture::new(), move |env: Environment| {
             trigger_impact_haptic(intensity);
-            action.call(&env);
+            action.call(&env).report_extraction();
         })
     }
 
@@ -892,7 +931,7 @@ pub trait ViewExt: View + Sized {
             LongPressGesture::new(minimum_duration_ms),
             move |env: Environment| {
                 trigger_impact_haptic(intensity);
-                action.call(&env);
+                action.call(&env).report_extraction();
             },
         )
     }
@@ -1281,7 +1320,8 @@ pub trait ViewExt: View + Sized {
 
     /// Installs a plugin into the environment.
     fn install(self, plugin: impl Plugin) -> impl View {
-        use_env(move |mut env: Environment| {
+        UseEnv::new(move |env: &Environment| {
+            let mut env = env.clone();
             plugin.install(&mut env);
             Metadata::new(self, env)
         })
@@ -1448,7 +1488,8 @@ pub trait ViewExt: View + Sized {
         let hittable_value = is_disabled.map(|d| !d);
         let scope = is_disabled;
 
-        use_env(move |mut env: Environment| {
+        UseEnv::new(move |env: &Environment| {
+            let mut env = env.clone();
             waterui_core::interaction::Disabled::install(&mut env, scope);
             Metadata::new(
                 self.a11y_state_signal(accessibility_state)

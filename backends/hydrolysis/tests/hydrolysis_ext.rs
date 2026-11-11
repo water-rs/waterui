@@ -20,12 +20,11 @@ use waterui::prelude::zstack;
 use waterui::shape::RoundedRectangle;
 use waterui::{FilterViewExt, ViewExt};
 use waterui_core::AnyView;
-use waterui_graphics::FilteredView;
+use waterui_graphics::backend::{FilteredView, SceneViewMergeToParent};
 use waterui_graphics::filtrate::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
     RetainedMemory,
 };
-use waterui_graphics::scene_view::SceneViewMergeToParent;
 
 #[derive(Clone)]
 struct CloneableRect;
@@ -129,12 +128,13 @@ impl Effect for CopyTextureEffect {
         output: &EffectOutput<'_>,
         encoder: &mut wgpu::CommandEncoder,
     ) -> EffectRenderResult {
+        let (width, height) = input.size();
         encoder.copy_texture_to_texture(
-            input.texture.as_image_copy(),
-            output.texture.as_image_copy(),
+            input.texture().as_image_copy(),
+            output.texture().as_image_copy(),
             wgpu::Extent3d {
-                width: input.width,
-                height: input.height,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
         );
@@ -299,7 +299,7 @@ fn render(view: impl View, width: u32, height: u32) -> Snapshot {
     let fonts = hydrolysis::native_collection(&env);
     fonts.clone().install(&mut env);
 
-    let gpu = OffscreenGpuContext::new_for_tests_blocking();
+    let gpu = OffscreenGpuContext::new_blocking();
     let mut platform =
         OffscreenWindow::on_context(gpu.clone(), width, height, wgpu::TextureFormat::Rgba8Unorm);
     let mut renderer =
@@ -459,8 +459,7 @@ fn hydrolysis_ext_captures_gpu_surface_inside_applied_filter() {
 fn offscreen_window_scale_factor_scales_the_surface_only() {
     use hydrolysis::PlatformWindow as _;
 
-    let window =
-        hydrolysis::OffscreenWindow::new_for_tests(320, 200, wgpu::TextureFormat::Rgba8Unorm);
+    let window = hydrolysis::OffscreenWindow::new(320, 200, wgpu::TextureFormat::Rgba8Unorm);
     assert_eq!(window.surface_ref().size(), (320, 200));
     assert!((window.scale_factor() - 1.0).abs() < f64::EPSILON);
 

@@ -163,6 +163,96 @@ if ! compare_tool="$(command -v compare-screenshots)" || [[ ! -x "${compare_tool
   exit 1
 fi
 
+# The shard simulator's CoreSimulator state (Booted, Shutdown, ...).
+simulator_state() {
+  xcrun simctl list devices --json | python3 -c '
+import json, sys
+for group in json.load(sys.stdin)["devices"].values():
+    for device in group:
+        if device.get("udid") == sys.argv[1]:
+            print(device["state"])
+' "${SIMULATOR_UDID}"
+}
+
+# When a supervised iOS command is killed at its deadline the receipts say
+# WHICH command and how long it ran — they cannot say WHY the simulator
+# channel wedged. The runs behind #1539 showed the app's first paint, then
+# screenshot, terminate and uninstall all timing out: the evidence needed is
+# the app's own stack, the host simulator services' state, and the device's
+# recent log, collected while the wedge still stands rather than after a
+# clean retry. The samples self-limit at 3 s and both `log show` reads run
+# under DIAG_DEADLINE_S — a wedged channel must not stall the collection —
+# and the output lands in logs_dir, which the e2e-logs artifact bundle
+# already ships. It is defined ahead of the simulator setup because a failed
+# status-bar override calls it before any example is selected.
+collect_simulator_stall_diagnostics() {
+  local reason="$1"
+  local label="${example:-setup}"
+  local diag="${logs_dir}/${platform}-${label}-stall-diagnostics.log"
+  local diag_deadline_at
+  diag_deadline_at="$("${command_deadline}" deadline --seconds "${DIAG_DEADLINE_S}")"
+  {
+    echo "=== simulator stall diagnostics: ${reason} ($(date -u '+%Y-%m-%dT%H:%M:%SZ')) ==="
+    echo "--- simulator runtime registry and device state ---"
+    # The iOS runtime image is mounted under cryptexd; a runtime that went
+    # unavailable under a booted device (#4101) shows here as a missing or
+    # malformed mount and an absent runtime entry.
+    echo "device ${SIMULATOR_UDID} state: $(simulator_state 2>&1 || true)"
+    "${command_deadline}" run --label "diag:simctl-runtime-list" \
+      --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
+      -- xcrun simctl runtime list 2>&1 | tail -40 || true
+    "${command_deadline}" run --label "diag:simctl-list-runtimes" \
+      --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
+      -- xcrun simctl list runtimes 2>&1 | tail -40 || true
+    # shellcheck disable=SC2012 # a human-read listing with modes and owners, not parsed
+    ls -la /private/var/run/com.apple.security.cryptexd/mnt/ 2>&1 | head -40 || true
+    echo "--- shard app process (pid ${app_pid:-unset}) ---"
+    # Every lookup and sample below tolerates its process being absent: a
+    # pgrep without a match exits 1, which under errexit and pipefail would
+    # end the shard mid-collection — and a missing process (a device that is
+    # no longer booted) is itself the finding.
+    if [[ -n "${app_pid:-}" ]] && kill -0 "${app_pid}" 2>/dev/null; then
+      sample "${app_pid}" 3 1 2>&1 | head -60 || true
+    else
+      echo "app pid ${app_pid:-unset} is not running"
+    fi
+    # A stuck screenshot's render path is also sampled in flight by the stall
+    # sampler; the other callers (a failed install, a failed status-bar
+    # override, a command killed at the cleanup deadline) have only this
+    # collection, so it records host load, the render path and the simulator
+    # services itself.
+    echo "--- host load ---"
+    ps -Axo pid,pcpu,stat,etime,command | sort -k2 -rn | sed -n '1,12p' || true
+    echo "--- host memory pressure level ---"
+    sysctl kern.memorystatus_vm_pressure_level || true
+    echo "--- simulator render processes (sample 3s each) ---"
+    sample_render_processes
+    echo "--- host simulator service state ---"
+    local svc_pids
+    svc_pids="$(pgrep -f "CoreSimulator|SimulatorTrampoline|simctl" 2>/dev/null | tr '\n' ',' | sed 's/,$//')" || true
+    [[ -n "${svc_pids}" ]] && ps -o pid,stat,etime,command -p "${svc_pids}" || true
+    echo "--- host simulator service stacks (sample 3s each) ---"
+    local svc
+    for svc in $(pgrep -f "CoreSimulatorService|SimulatorTrampoline" 2>/dev/null); do
+      sample "${svc}" 3 1 2>&1 | sed -n '1,40p' || true
+    done
+    echo "--- host log, simulator domain, last 5m ---"
+    # `log show` can take tens of seconds on a loaded host — supervised so
+    # the collection keeps its own bound even when the log is slow.
+    "${command_deadline}" run --label "diag:host-log-show" \
+      --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
+      -- log show --last 5m --style compact \
+      --predicate 'process CONTAINS[c] "simulator" OR subsystem CONTAINS[c] "CoreSimulator"' \
+      2>/dev/null | tail -80 || true
+    echo "--- device log, last 3m ---"
+    "${command_deadline}" run --label "diag:simctl-log-show" \
+      --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
+      -- xcrun simctl spawn "${SIMULATOR_UDID}" log show --last 3m --style compact \
+      2>/dev/null | tail -60 || true
+  } >> "${diag}" 2>&1
+  echo "::notice::${label}: simulator stall diagnostics written to ${diag} (uploaded with e2e-logs)."
+}
+
 if [[ "${platform}" == "ios" ]]; then
   # A `simctl launch` opens the app over whatever is currently frontmost, and
   # iOS answers with the status-bar "back to <app>" breadcrumb — pixels the
@@ -177,6 +267,124 @@ if [[ "${platform}" == "ios" ]]; then
     exit 1
   fi
   xcrun simctl bootstatus "${SIMULATOR_UDID}" -b
+
+  # A screenshot command still running this long is mid-stall, not slow —
+  # a healthy answer lands in ~0.5 s. The sampler fires inside the command
+  # bound, so the wedge's stacks land in the log while the guilty process is
+  # still alive (#1539). A 30 s scoped capture leaves ~15 s of collection
+  # headroom after the sample fires.
+  # Diagnostic collectors share one bounded budget — defined before the
+  # sampler because its subshell inherits it at launch time.
+  DIAG_DEADLINE_S=30
+  # Samples the simulator's render processes. backboardd runs inside the
+  # simulator as a child of this device's launchd_sim (whose command line
+  # names the UDID); SimRenderServer and SimMetalHost are host processes
+  # (parent launchd) that name no device, so they are matched by name — this
+  # shard boots the only simulator on the runner. Each sample is supervised
+  # under its own diagnostics deadline and keeps enough of its call graph to
+  # show every thread's wait. A missing process is reported, never fatal.
+  sample_render_processes() {
+    local render_deadline_at launchd_sim_pid render_name render_pid render_pids
+    render_deadline_at="$("${command_deadline}" deadline --seconds "${DIAG_DEADLINE_S}")"
+    launchd_sim_pid="$(pgrep -f "launchd_sim .*/Devices/${SIMULATOR_UDID}/" 2>/dev/null | head -1)" || true
+    for render_name in backboardd SimRenderServer SimMetalHost; do
+      render_pids=""
+      if [[ "${render_name}" == "backboardd" ]]; then
+        if [[ -n "${launchd_sim_pid}" ]]; then
+          render_pids="$(pgrep -P "${launchd_sim_pid}" -x "${render_name}" 2>/dev/null)" || true
+        fi
+      else
+        render_pids="$(pgrep -x "${render_name}" 2>/dev/null)" || true
+      fi
+      if [[ -z "${render_pids}" ]]; then
+        echo "${render_name} not found for simulator ${SIMULATOR_UDID}"
+        continue
+      fi
+      for render_pid in ${render_pids}; do
+        echo "--- sample ${render_name} (pid ${render_pid}) ---"
+        "${command_deadline}" run --label "diag:sample-${render_name}-${render_pid}" \
+          --deadline-at "${render_deadline_at}" --receipt "${receipts_file}" \
+          -- sample "${render_pid}" 3 1 2>&1 | sed -n '1,200p' || true
+      done
+    done
+  }
+  stall_sampler_start() {
+    local diag="$1"
+    (
+      # Each sampler marks itself with a per-invocation file, so a later
+      # capture's sleep cannot be mistaken for an earlier one's collection.
+      sleep 15
+      touch "${diag}.fired.${BASHPID}"
+      {
+        echo "=== screenshot stall sample $(date -u '+%Y-%m-%dT%H:%M:%SZ') ==="
+        # Host load and memory pressure first: neither needs a process lookup,
+        # so they land even when the host is starved enough that the pgrep and
+        # sample commands below take tens of seconds (#4147).
+        echo "--- host load ---"
+        ps -Axo pid,pcpu,stat,etime,command | sort -k2 -rn | sed -n '1,12p' || true
+        echo "--- host memory pressure level ---"
+        sysctl kern.memorystatus_vm_pressure_level || true
+        echo "--- simctl / CoreSimulator processes ---"
+        pgrep -fl "simctl|CoreSimulatorService|SimulatorTrampoline" || true
+        # The wedged `simctl` itself goes first: on a 30 s scoped capture the
+        # bound may kill it while service stacks are still being collected.
+        # Anchored on the path separator so only the simctl process matches,
+        # not the run-with-deadline.py supervisor whose argv carries the same
+        # words after `-- xcrun simctl io`.
+        for p in $(pgrep -f "/simctl io .* screenshot"); do
+          echo "--- sample ${p} ---"
+          sample "${p}" 3 1 2>&1 | sed -n '1,50p' || true
+        done
+        # What a slow screenshot waits on lives in the simulator's render
+        # path, sampled here while the capture is still stuck.
+        sample_render_processes
+        for p in $(pgrep -f "CoreSimulatorService|SimulatorTrampoline"); do
+          echo "--- sample ${p} ---"
+          sample "${p}" 3 1 2>&1 | sed -n '1,50p' || true
+        done
+        echo "--- CoreSimulator log, last 2m ---"
+        "${command_deadline}" run --label "diag:stall-log-show" \
+          --deadline-at "$("${command_deadline}" deadline --seconds "${DIAG_DEADLINE_S}")" \
+          --receipt "${receipts_file}" \
+          -- log show --last 2m --style compact \
+          --predicate 'subsystem CONTAINS[c] "CoreSimulator"' \
+          2>/dev/null | tail -40 || true
+      } >> "${diag}" 2>&1
+    ) </dev/null >/dev/null 2>&1 &
+    echo $!
+  }
+  # Every pid under a root, leaves first — enumerated while the tree's
+  # parentage is still intact.
+  subtree_pids() {
+    local p
+    for p in $(pgrep -P "$1" 2>/dev/null); do
+      subtree_pids "$p"
+      echo "$p"
+    done
+  }
+  # A sampler that already fired for a capture that then failed is
+  # mid-collection — give it a bounded grace to finish writing; a
+  # still-sleeping one is cancelled. A capture that returned successfully
+  # ($3 = 0) ended the wedge being sampled, so its sampler is cancelled at
+  # once rather than spending the shared settle budget on a grace. The stop
+  # signals the whole tree at once: a grandchild the deadline supervisor
+  # spawned (`log show`) is enumerated before it could reparent, and a
+  # `pkill -P` sweep alone would never reach it.
+  stall_sampler_stop() {
+    local pid="$1" diag="${2:-}" capture_rc="$3"
+    if kill -0 "${pid}" 2>/dev/null; then
+      if (( capture_rc != 0 )) && [[ -e "${diag}.fired.${pid}" ]]; then
+        local deadline=$(( SECONDS + 20 ))
+        while kill -0 "${pid}" 2>/dev/null && (( SECONDS < deadline )); do
+          sleep 0.5
+        done
+      fi
+      local tree
+      tree="$(subtree_pids "${pid}")"
+      kill ${tree} "${pid}" 2>/dev/null || true
+    fi
+    rm -f "${diag}.fired.${pid}"
+  }
 
   # An iOS capture is the whole display (macOS captures the app's own window),
   # so a SpringBoard notification banner lands in the frame and reads as a
@@ -197,6 +405,7 @@ if [[ "${platform}" == "ios" ]]; then
     --cellularMode active --cellularBars 4 \
     --dataNetwork wifi; then
     echo "::error::Failed to set the status bar override on ${SIMULATOR_UDID}."
+    collect_simulator_stall_diagnostics "status bar override failed"
     exit 1
   fi
   trap 'xcrun simctl status_bar "${SIMULATOR_UDID}" clear >/dev/null 2>&1 || true' EXIT
@@ -227,46 +436,79 @@ if [[ "${platform}" == "macos" ]]; then
   fi
 fi
 
+# Every macOS app the shard captures, example and SwiftUI twin alike, starts
+# with these argument-domain defaults. AppKit blinks the insertion point of a
+# focused text field, and a window focuses its first key view as it orders
+# in, so any first screen with a text field alternates between two frames
+# forever: typography-rtl never settled, on either side, and each side was
+# photographed in whichever phase the deadline hit. Holding the insertion
+# point on (the on period is in milliseconds; ~28 h outlasts any capture)
+# keeps the caret in the frame, where the comparison sees it.
+macos_capture_args=(
+  -NSTextInsertionPointBlinkPeriodOn 100000000
+  -NSTextInsertionPointBlinkPeriodOff 0
+)
+
 # One frame from the current platform target. macOS captures need the pid that
 # owns the window; the running example is the default, the SwiftUI reference
 # host passes its own. Every native command runs supervised under the caller's
 # shared deadline ($2): a hung simctl/screenshot/screencapture used to block
 # the settle loop unbounded between deadline checks — measured at 451 s for a
 # single screenshot in the Actions run behind #1539 — and a failed command
-# used to be silently retried or replaced by an earlier frame. Each command
-# also carries COMMAND_BOUND_S of its own: a healthy capture answers in
-# seconds, so a command still running at the bound is hung — killed there,
-# while shared budget remains, which is what separates a hung command from
-# ordinary settle-budget exhaustion in capture_settled below.
+# used to be silently retried or replaced by an earlier frame. The other
+# capture commands (the window-id lookup, the settle compare) also carry
+# COMMAND_BOUND_S of their own: a healthy one answers in seconds, so one still
+# running at the bound is hung — killed there, while shared budget remains,
+# which is what separates a hung command from ordinary settle-budget
+# exhaustion in capture_settled below. The screenshot commands (simctl io
+# screenshot, screencapture) carry no bound of their own: a shard's first
+# screenshots after the simulator reboot measured 27.6–35.7 s while the
+# simulator finishes its post-boot work (#4083), so a fixed per-command bound
+# killed healthy captures. A hung screenshot is still killed at the shared
+# deadline and fails the example there.
 COMMAND_BOUND_S=30
 capture_frame() {
   local target="$1"
   local deadline_at="$2"
   local pid="${3:-${app_pid}}"
+  # The command writes a staging file that replaces the target only once it
+  # exited 0 and produced an image: a capture killed mid-way leaves the
+  # previous successful frame in place, and a command that exits 0 without
+  # writing cannot let a stale staging frame pass as this capture. It lives in
+  # a hidden directory beside the shots, so no shot glob or artifact upload
+  # reads it as a frame; the file itself keeps an ordinary name with the .png
+  # extension — simctl picks the format from it, and screencapture exited 0
+  # without writing a dot-prefixed name (run 42760685670).
+  local staging
+  staging="$(dirname "${target}")/.staging/$(basename "${target}")"
+  mkdir -p "$(dirname "${staging}")"
+  rm -f "${staging}"
   if [[ "${platform}" == "ios" ]]; then
-    # Removing the prior file first means a command that exits 0 without
-    # writing cannot let a stale frame pass as this capture.
-    rm -f "${target}"
+    local sampler_pid capture_rc
+    sampler_pid="$(stall_sampler_start "${logs_dir}/${platform}-${example}-stall-sample.log")"
     "${command_deadline}" run --label "capture:simctl-io-screenshot" \
       --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
-      --max-seconds "${COMMAND_BOUND_S}" \
-      -- xcrun simctl io "${SIMULATOR_UDID}" screenshot "${target}" >/dev/null || return
+      -- xcrun simctl io "${SIMULATOR_UDID}" screenshot "${staging}" >/dev/null
+    capture_rc=$?
+    stall_sampler_stop "${sampler_pid}" "${logs_dir}/${platform}-${example}-stall-sample.log" "${capture_rc}"
+    # The supervisor's status (124 at a deadline kill) is what the settle
+    # loop classifies, so it is returned as is.
+    (( capture_rc == 0 )) || return "${capture_rc}"
   else
     local window_id
     window_id="$("${command_deadline}" run --label "capture:window-id" \
       --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
       --max-seconds "${COMMAND_BOUND_S}" \
       -- "${swift_tools_dir}/window-id" "${pid}")" || return
-    rm -f "${target}"
     "${command_deadline}" run --label "capture:screencapture" \
       --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
-      --max-seconds "${COMMAND_BOUND_S}" \
-      -- screencapture -x -o "-l${window_id}" "${target}" || return
+      -- screencapture -x -o "-l${window_id}" "${staging}" || return
   fi
-  if [[ ! -f "${target}" ]]; then
-    echo "::error::${example}: the capture command exited 0 but produced no image at ${target}."
+  if [[ ! -f "${staging}" ]]; then
+    echo "::error::${example}: the capture command exited 0 but produced no image at ${staging}."
     return 1
   fi
+  mv -f "${staging}" "${target}" || return
 }
 
 # Captures until every frame across SETTLE_WINDOW_S seconds agrees with the
@@ -319,6 +561,9 @@ capture_settled() {
   local window_start=0
   local deadline_at frame_rc compare_rc remaining_s
   deadline_at="$("${command_deadline}" deadline --seconds "${CAPTURE_DEADLINE_S}")"
+  # capture_frame leaves the previous frame in place when a capture dies, so a
+  # target from before this call must not count as one of its frames.
+  rm -f "${target}"
   if [[ -f "${baselines_dir}/${platform}/${example}.skip" ]]; then
     # A `.skip` first screen cannot be made deterministic by construction —
     # continuous animation, live media — so the gate asks for exactly one
@@ -393,8 +638,10 @@ capture_settled() {
       # retrying it or falling back to an earlier frame would substitute a
       # state the harness never verified (#1539). The same two 124 cases
       # as the compare apply — a kill at the scoped bound while budget
-      # remains is a hung command; a kill at the shared deadline is the
-      # loop's ordinary exhaustion, settled below.
+      # remains is a hung command (only the window-id lookup carries one
+      # here); a kill at the shared deadline, which is the only way a
+      # screenshot is killed, is the loop's ordinary exhaustion, settled
+      # below.
       frame_rc=$?
       if (( frame_rc == 124 )) && \
          ! "${command_deadline}" remaining --deadline-at "${deadline_at}" >/dev/null; then
@@ -402,7 +649,7 @@ capture_settled() {
       fi
       rm -f "${anchor}"
       if (( frame_rc == 124 )); then
-        echo "::error::${example}: a capture command exceeded its ${COMMAND_BOUND_S}s command bound with shared budget remaining — a hung command, not settle progress; last receipt in ${receipts_file}."
+        echo "::error::${example}: the window-id lookup exceeded its ${COMMAND_BOUND_S}s command bound with shared budget remaining — a hung command, not settle progress; last receipt in ${receipts_file}."
       else
         echo "::error::${example}: a capture command failed (exit ${frame_rc}); last receipt in ${receipts_file}."
       fi
@@ -419,6 +666,11 @@ capture_settled() {
   done
   rm -f "${anchor}"
   if [[ ! -f "${target}" ]]; then
+    # The target was cleared on entry and only a completed capture writes
+    # it, so this is no capture finishing before the shared deadline killed
+    # one (a screenshot has no bound of its own) or the budget was spent
+    # before any frame landed.
+    echo "::error::${example}: no frame was captured within the shared settle budget (a capture command killed at the shared deadline, or the budget spent before one started); last receipt in ${receipts_file}."
     return 1
   fi
   echo "::warning::${example} never settled to a stable frame; using the last capture. A first screen that cannot be made deterministic declares a .skip marker."
@@ -437,15 +689,14 @@ capture_settled() {
 # hiding.
 simctl_cleanup() {
   local what="$1" bundle="$2"
-  local deadline_at child_err rc=0
+  local child_err rc=0
   # The child's stderr goes to an owned per-invocation file — the helper's
   # command_started/receipt records stay on the inherited live stderr, so a
   # stuck cleanup is attributable in the step log instead of vanishing into
   # a captured variable nobody reads until the command settles.
   child_err="$(mktemp "${logs_dir}/.cleanup-${what}-stderr.XXXXXX")"
-  deadline_at="$("${command_deadline}" deadline --seconds "${CLEANUP_DEADLINE_S}")"
   "${command_deadline}" run --label "cleanup:simctl-${what}" \
-    --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
+    --max-seconds "${CLEANUP_DEADLINE_S}" --receipt "${receipts_file}" \
     --child-stderr-file "${child_err}" \
     -- xcrun simctl "${what}" "${SIMULATOR_UDID}" "${bundle}" \
     >/dev/null || rc=$?
@@ -478,54 +729,37 @@ simctl_cleanup() {
   return 1
 }
 
-# When a supervised iOS command is killed at its deadline the receipts say
-# WHICH command and how long it ran — they cannot say WHY the simulator
-# channel wedged. The runs behind #1539 showed the app's first paint, then
-# screenshot, terminate and uninstall all timing out: the evidence needed is
-# the app's own stack, the host simulator services' state, and the device's
-# recent log, collected while the wedge still stands rather than after a
-# clean retry. The samples self-limit at 3 s and both `log show` reads run
-# under DIAG_DEADLINE_S — a wedged channel must not stall the collection —
-# and the output lands in logs_dir, which the e2e-logs artifact bundle
-# already ships.
-DIAG_DEADLINE_S=30
-collect_simulator_stall_diagnostics() {
-  local reason="$1"
-  local diag="${logs_dir}/${platform}-${example}-stall-diagnostics.log"
+# A live simulator app that never reports `waterui_first_paint_ms` leaves no
+# evidence behind on its own — collect process state, crash reports and the
+# device log while the wedge still stands, the way the capture-stall
+# diagnostics do.
+collect_no_first_paint_diagnostics() {
+  local diag="${logs_dir}/${platform}-${example}-no-first-paint.log"
   local diag_deadline_at
   diag_deadline_at="$("${command_deadline}" deadline --seconds "${DIAG_DEADLINE_S}")"
   {
-    echo "=== simulator stall diagnostics: ${reason} ($(date -u '+%Y-%m-%dT%H:%M:%SZ')) ==="
+    echo "=== no-first-paint diagnostics ($(date -u '+%Y-%m-%dT%H:%M:%SZ')) ==="
     echo "--- shard app process (pid ${app_pid:-unset}) ---"
     if [[ -n "${app_pid:-}" ]] && kill -0 "${app_pid}" 2>/dev/null; then
-      sample "${app_pid}" 3 1 2>&1 | head -60
+      ps -o pid,stat,etime,command -p "${app_pid}" || true
+      sample "${app_pid}" 3 1 2>&1 | sed -n '1,60p' || true
     else
       echo "app pid ${app_pid:-unset} is not running"
     fi
-    echo "--- host simulator service state ---"
-    local svc_pids
-    svc_pids="$(pgrep -f "CoreSimulator|SimulatorTrampoline|simctl" 2>/dev/null | tr '\n' ',' | sed 's/,$//')"
-    [[ -n "${svc_pids}" ]] && ps -o pid,stat,etime,command -p "${svc_pids}" || true
-    echo "--- host simulator service stacks (sample 3s each) ---"
-    local svc
-    for svc in $(pgrep -f "CoreSimulatorService|SimulatorTrampoline" 2>/dev/null); do
-      sample "${svc}" 3 1 2>&1 | sed -n '1,40p'
-    done
-    echo "--- host log, simulator domain, last 5m ---"
-    # `log show` can take tens of seconds on a loaded host — supervised so
-    # the collection keeps its own bound even when the log is slow.
-    "${command_deadline}" run --label "diag:host-log-show" \
+    echo "--- crash reports mentioning ${bundle_id} ---"
+    "${command_deadline}" run --label "diag:crash-log-show" \
       --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
-      -- log show --last 5m --style compact \
-      --predicate 'process CONTAINS[c] "simulator" OR subsystem CONTAINS[c] "CoreSimulator"' \
-      2>/dev/null | tail -80 || true
+      -- xcrun simctl spawn "${SIMULATOR_UDID}" \
+      log show --last 10m --style compact \
+      --predicate 'process == "ReportCrash" OR eventMessage CONTAINS[c] "crashed"' \
+      2>/dev/null | tail -40 || true
     echo "--- device log, last 3m ---"
     "${command_deadline}" run --label "diag:simctl-log-show" \
       --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
       -- xcrun simctl spawn "${SIMULATOR_UDID}" log show --last 3m --style compact \
       2>/dev/null | tail -60 || true
   } >> "${diag}" 2>&1
-  echo "::notice::${example}: simulator stall diagnostics written to ${diag} (uploaded with e2e-logs)."
+  echo "::notice::${example}: no-first-paint diagnostics written to ${diag} (uploaded with e2e-logs)."
 }
 
 # Sends SIGTERM to a LaunchServices-launched pid and waits for it to actually
@@ -607,10 +841,22 @@ build_reference_host() {
 # the launch-failure bug #147 fixed above, one step later in the sequence.
 # Waiting on the host's own signal removes the race rather than widening the
 # constant.
+#
+# A marker counts only from the process this launch started. The stream and
+# the replay below read the whole `dev.waterui` subsystem, and the replay's
+# window holds the previous example's and twin's markers too: an app that
+# never painted used to inherit the previous app's marker and be captured as
+# if it had (stress reported reminders' 8554 ms in nightly 42694488366, then
+# captured a black screen). Compact style tags each line `Process[PID:TID]`.
+marker_value() {
+  local log="$1" key="$2" pid="$3"
+  sed -n "s/.*\[${pid}:[0-9a-f]*\] .*${key}=\([0-9][0-9]*\).*/\1/p" "${log}" 2>/dev/null | head -1
+}
+
 wait_for_reference_first_paint() {
-  local marker_log="$1"
+  local marker_log="$1" pid="$2"
   for _ in $(seq 1 60); do
-    if grep -q "waterui_reference_first_paint_ms=" "${marker_log}" 2>/dev/null; then
+    if [[ -n "$(marker_value "${marker_log}" waterui_reference_first_paint_ms "${pid}")" ]]; then
       return 0
     fi
     sleep 1
@@ -625,7 +871,7 @@ wait_for_reference_first_paint() {
     log show --last 2m --predicate 'subsystem == "dev.waterui"' \
       --style compact >> "${marker_log}" 2>/dev/null || true
   fi
-  grep -q "waterui_reference_first_paint_ms=" "${marker_log}" 2>/dev/null
+  [[ -n "$(marker_value "${marker_log}" waterui_reference_first_paint_ms "${pid}")" ]]
 }
 
 # Launches the reference host for `example`, waits for its first paint,
@@ -646,13 +892,15 @@ capture_reference() {
       > "${ref_marker_log}" 2>/dev/null &
     local ref_stream_pid=$!
     sleep 1
-    xcrun simctl launch "${SIMULATOR_UDID}" dev.waterui.E2EReference \
-      -E2EExample "${example}" -E2ETitle "${title}" >/dev/null || {
+    local ref_pid
+    ref_pid="$(xcrun simctl launch "${SIMULATOR_UDID}" dev.waterui.E2EReference \
+      -E2EExample "${example}" -E2ETitle "${title}" | awk -F': ' '{print $2}')"
+    if [[ -z "${ref_pid}" ]]; then
       kill "${ref_stream_pid}" 2>/dev/null || true
       return 1
-    }
+    fi
     local rc=0
-    if wait_for_reference_first_paint "${ref_marker_log}"; then
+    if wait_for_reference_first_paint "${ref_marker_log}" "${ref_pid}"; then
       capture_settled "${target}"
       rc=$?
     else
@@ -670,17 +918,16 @@ capture_reference() {
     # Launched through LaunchServices so the twin is activated — a direct exec
     # leaves its window non-key. Its stdout/stderr are gone with the direct
     # exec: the twin logs through Logger, which the stream above captures.
-    local launch_deadline_at ref_pid
-    launch_deadline_at="$("${command_deadline}" deadline --seconds "${LAUNCH_DEADLINE_S}")"
+    local ref_pid
     if ! ref_pid="$("${command_deadline}" run --label "launch:reference" \
-        --deadline-at "${launch_deadline_at}" --receipt "${receipts_file}" \
+        --max-seconds "${LAUNCH_DEADLINE_S}" --receipt "${receipts_file}" \
         -- "${swift_tools_dir}/launch-app" "${reference_app}" \
-        -E2EExample "${example}" -E2ETitle "${title}")"; then
+        -E2EExample "${example}" -E2ETitle "${title}" "${macos_capture_args[@]}")"; then
       kill "${ref_stream_pid}" 2>/dev/null || true
       return 1
     fi
     local rc=0
-    if wait_for_reference_first_paint "${ref_marker_log}"; then
+    if wait_for_reference_first_paint "${ref_marker_log}" "${ref_pid}"; then
       capture_settled "${target}" "${ref_pid}"
       rc=$?
     else
@@ -739,9 +986,7 @@ fi
 run_comparison() {
   local label="$1" output="$2"
   shift 2
-  local deadline_at
-  deadline_at="$("${command_deadline}" deadline --seconds "${COMMAND_BOUND_S}")" || return
-  "${command_deadline}" run --label "${label}" --deadline-at "${deadline_at}" \
+  "${command_deadline}" run --label "${label}" \
     --receipt "${receipts_file}" --max-seconds "${COMMAND_BOUND_S}" \
     --child-stderr-file "${output%.json}.log" \
     -- "${compare_tool}" "$@" > "${output}"
@@ -764,6 +1009,8 @@ json.dump({key: comparison[key] for key in ("metric", "flip_mean", "flip_max", "
 find_packaged_app() {
   local log_file="$1" app_path
   app_path="$(sed -n 's/.*Packaged at //p' "${log_file}" | tail -1 | sed 's/\x1b\[[0-9;]*m//g' | tr -d '\r')"
+  # An empty or missing path returns non-zero; callers decide what a package
+  # run that names no bundle means, so errexit never ends the shard here.
   [[ -n "${app_path}" && -d "${app_path}" ]] && echo "${app_path}"
 }
 
@@ -846,7 +1093,9 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       done
 
       if (( built == 1 )); then
-        app_path="$(find_packaged_app "${run_log}")"
+        # No bundle named in the log leaves app_path empty: a package failure,
+        # classified below with the log tail.
+        app_path="$(find_packaged_app "${run_log}")" || true
       fi
     }
   fi
@@ -918,10 +1167,9 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     sleep 1
     # The app must come up through LaunchServices: a direct exec leaves it
     # unactivated, so its window never becomes key (#2636).
-    launch_deadline_at="$("${command_deadline}" deadline --seconds "${LAUNCH_DEADLINE_S}")"
     if ! app_pid="$("${command_deadline}" run --label "launch:app" \
-        --deadline-at "${launch_deadline_at}" --receipt "${receipts_file}" \
-        -- "${swift_tools_dir}/launch-app" "${app_path}")"; then
+        --max-seconds "${LAUNCH_DEADLINE_S}" --receipt "${receipts_file}" \
+        -- "${swift_tools_dir}/launch-app" "${app_path}" "${macos_capture_args[@]}")"; then
       kill "${stream_pid}" 2>/dev/null || true
       echo "::error::${example} packaged app failed to launch (${platform})."
       failures+=("${example}: launch")
@@ -944,7 +1192,10 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     fi
   else
     if ! xcrun simctl install "${SIMULATOR_UDID}" "${app_path}"; then
-      echo "::error::${example} packaged app failed to install in the simulator."
+      # A device that left the booted state is evidence of what stopped it;
+      # the host CoreSimulator log is read while that window is recent.
+      echo "::error::${example} packaged app failed to install in the simulator (device state: $(simulator_state))."
+      collect_simulator_stall_diagnostics "simctl install failed for ${example}"
       failures+=("${example}: install")
       report+=("| \`${example}\` | install failed | — | — | ${size_cell} | ${mem_cell} |")
       printf '  "%s": null,\n' "${example}" >> "${startup_entries}"
@@ -973,7 +1224,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
   startup_ms=""
   no_first_paint=0
   for _ in $(seq 1 30); do
-    startup_ms="$(sed -n 's/.*waterui_first_paint_ms=\([0-9][0-9]*\).*/\1/p' "${marker_log}" | head -1)"
+    startup_ms="$(marker_value "${marker_log}" waterui_first_paint_ms "${app_pid}")"
     [[ -n "${startup_ms}" ]] && break
     sleep 1
   done
@@ -989,7 +1240,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       log show --last 2m --predicate 'subsystem == "dev.waterui"' \
         --style compact >> "${marker_log}" 2>/dev/null || true
     fi
-    startup_ms="$(sed -n 's/.*waterui_first_paint_ms=\([0-9][0-9]*\).*/\1/p' "${marker_log}" | head -1)"
+    startup_ms="$(marker_value "${marker_log}" waterui_first_paint_ms "${app_pid}")"
   fi
   if [[ -n "${startup_ms}" ]]; then
     echo "::notice::${example} first paint in ${startup_ms} ms (${platform}, release)"
@@ -1028,6 +1279,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     kill "${stream_pid}" 2>/dev/null || true
     failures+=("${example}: no first paint")
     if [[ "${platform}" == "ios" ]]; then
+      collect_no_first_paint_diagnostics
       simctl_cleanup terminate "${bundle_id}" || failures+=("${example}: cleanup terminate")
       simctl_cleanup uninstall "${bundle_id}" || failures+=("${example}: cleanup uninstall")
     else

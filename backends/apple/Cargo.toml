@@ -24,6 +24,8 @@ default = [
     "accessibility_metadata",
     "badge",
     "button",
+    "calendar",
+    "canvas",
     "clip_shape",
     "gpu_surface",
     "color_picker",
@@ -86,6 +88,9 @@ accessibility_metadata = []
 badge = []
 border = []
 button = []
+calendar = []
+# The Core Animation realization of `Canvas`.
+canvas = ["dep:block2", "dep:skrifa"]
 clip_shape = []
 gpu_surface = ["dep:block2", "objc2-metal/block2"]
 color_picker = []
@@ -180,6 +185,7 @@ native-test = [
     "preview",
     "webview",
     "waterui-webview/conformance",
+    "dep:blocking",
 ]
 
 
@@ -189,8 +195,12 @@ waterui-core = { workspace = true }
 thiserror.workspace = true
 waterui-backend-core = { workspace = true, default-features = true, features = [
     "overlay",
+    "log",
 ] }
 waterui-locale = { workspace = true }
+# Sets the user's first-weekday preference as a Unicode locale keyword on
+# the system locale.
+icu_locale = { version = "2.4", default-features = false }
 waterui-map = { workspace = true, optional = true }
 waterui-meta = { workspace = true, optional = true }
 # The GPU components the backend owns (`gpu_surface`, `view_effect`,
@@ -229,9 +239,16 @@ waterkit-audio = { workspace = true, default-features = true, features = [
 waterui-video = { workspace = true, optional = true }
 executor-core = { workspace = true }
 async-channel = { workspace = true }
+# `native_test_support`'s readiness gate warms the suite's blocking pool —
+# production code never sees it (native-test only).
+blocking = { workspace = true, optional = true }
 futures = { workspace = true }
 native-executor = { workspace = true }
 kurbo = { workspace = true }
+# Reads a variable font's `fvar` and `avar` so a glyph run's normalized
+# variation coordinates reach Core Text as the user-space values it takes.
+# Already linked through `waterui-graphics`, with the same features.
+skrifa = { workspace = true, optional = true }
 dispatch2 = "0.3"
 libc = "0.2"
 tracing = { workspace = true }
@@ -303,6 +320,10 @@ executor-core = { workspace = true, features = ["async-task"] }
 # The webview trials drive the shared conformance cases; the crate's own
 # edge is optional behind the `webview` feature, so this carries it too.
 waterui-webview = { workspace = true, features = ["conformance"] }
+# The capture-colour and capture-order trials measure the composited
+# columns with the oracle's LDR-FLIP — the metric the engine tests judge
+# renders by.
+cherenkov-oracle = { path = "../../graphics/cherenkov/oracle" }
 
 # `preview`'s protocol types arrive only where the preview entry exists —
 # macOS for the AppKit realization, Mac Catalyst for the UIKit one — and an
@@ -327,10 +348,6 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSRunningApplication",
     "NSWorkspace",
 ] }
-# The capture-colour trial measures the composited columns with the
-# oracle's LDR-FLIP — the metric the engine tests judge renders by. The
-# case mounts only on macOS, so the edge lives under this target.
-cherenkov-oracle = { path = "../../graphics/cherenkov/oracle" }
 
 # The native tests create real `AppKit`/`UIKit` objects, which are only
 # legal on the process's actual main thread — libtest's worker threads can

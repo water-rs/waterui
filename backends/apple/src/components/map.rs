@@ -16,19 +16,21 @@ use core::cell::RefCell;
 
 use cocoa_ui::map::{AnnotationMarker, LoadStatus, MapView, Style as KitStyle, SuppliedLocation};
 use waterui::Str;
-use waterui::animation::Animation;
+use waterui::animation::ChangeAnimation;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 use waterui_map::{Annotation, Coordinate, MapConfig, MapStatus, MapStyle, Region};
 
 use crate::contract::NativeLeaf;
 use crate::dispatch::Dispatcher;
 
-/// Whether this watcher callback animates: the metadata carries an
+/// Whether this watcher callback animates: the change names an
 /// `Animation`, the same check `metadata.animation != nil` performed.
 fn animated(metadata: &Metadata) -> bool {
-    metadata.try_get::<Animation>().is_some()
+    ChangeAnimation::of(metadata).animation().is_some()
 }
 
 /// A `waterui_map::Coordinate` as the kit's degree-pair.
@@ -115,6 +117,14 @@ impl core::fmt::Debug for MapSubView {
 }
 
 impl SubView for MapSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         ViewDimensions::new(Size::new(
             proposal.width.unwrap_or(320.0),

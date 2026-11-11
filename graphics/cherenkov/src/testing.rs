@@ -19,7 +19,7 @@ use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
 use crate::frame::Readback;
 use crate::glyph::FontId;
 use crate::image::{ImageUpload, Rgba8, Rgba16F};
-use cherenkov_record::{ContentOp, LayerId, ResourceId, SurfaceId};
+use cherenkov_record::{ContentOp, LayerId, ResourceId, SurfaceId, TextLayoutId};
 
 use crate::message::FontData;
 use crate::paint::{ImageId, ShaderId};
@@ -39,6 +39,10 @@ pub enum Event {
     AddFont(FontId),
     /// `remove_font` ran.
     RemoveFont(FontId),
+    /// `add_text_layout` ran.
+    AddTextLayout(TextLayoutId),
+    /// `remove_text_layout` ran.
+    RemoveTextLayout(TextLayoutId),
     /// `add_image` ran.
     AddImage(ImageId),
     /// `replace_image` ran, with the new dimensions.
@@ -71,6 +75,8 @@ pub enum Event {
     Visibility(SurfaceId, Visibility),
     /// One rendered surface, in `frame.surfaces` order.
     Frame(FrameRecord),
+    /// `release_idle` ran, [`NULL_IDLE_RELEASE`] after the last frame.
+    IdleRelease,
 }
 
 /// One surface's sampled tree, recorded per rendered frame.
@@ -181,6 +187,7 @@ pub struct NullRenderer {
     /// The surfaces the host announced hidden.
     hidden: HashSet<SurfaceId>,
     fonts: HashSet<FontId>,
+    text_layouts: crate::TextLayouts,
     images: HashSet<ImageId>,
     shaders: HashSet<ShaderId>,
     pictures: FxHashMap<(SurfaceId, LayerId), Picture>,
@@ -192,7 +199,14 @@ pub struct NullRenderer {
     /// producer's own retire queue can beat its add; the add skips an
     /// id found here.
     pending_retire: HashSet<crate::ProducerId>,
+    /// When the last frame rendered, until [`Renderer::release_idle`]
+    /// releases the stand-in for retained scratch it models.
+    last_render: Option<crate::Instant>,
 }
+
+/// How long after a frame [`Null`] reports its stand-in for retained
+/// scratch due for release ([`Renderer::idle_release_deadline`]).
+pub const NULL_IDLE_RELEASE: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// A [`Null`] producer: rendered (`content` `Some`) or submitted-frame.
 #[derive(Debug)]
@@ -246,12 +260,14 @@ impl NullRenderer {
             surfaces: HashSet::new(),
             hidden: HashSet::new(),
             fonts: HashSet::new(),
+            text_layouts: crate::TextLayouts::default(),
             images: HashSet::new(),
             shaders: HashSet::new(),
             pictures: FxHashMap::default(),
             removed: HashSet::new(),
             producers: FxHashMap::default(),
             pending_retire: HashSet::new(),
+            last_render: None,
         }
     }
 
@@ -386,6 +402,17 @@ impl Renderer for NullRenderer {
         let _ = self.events.send(Event::RemoveFont(id));
     }
 
+    fn add_text_layout(&mut self, id: TextLayoutId, layout: crate::TextLayoutData) {
+        self.text_layouts.add(id, layout);
+        let _ = self.events.send(Event::AddTextLayout(id));
+    }
+
+    fn remove_text_layout(&mut self, id: TextLayoutId) {
+        self.text_layouts.remove(id);
+        self.removed.insert(ResourceId::TextLayout(id));
+        let _ = self.events.send(Event::RemoveTextLayout(id));
+    }
+
     fn image_limits(&self) -> crate::ImageLimits {
         self.image_limits
     }
@@ -422,7 +449,7 @@ impl Renderer for NullRenderer {
 
     fn samples(&self, surface: SurfaceId, resource: ResourceId) -> bool {
         self.pictures.iter().any(|((owner, _), picture)| {
-            *owner == surface && picture.display_list().references(resource)
+            *owner == surface && self.text_layouts.samples(picture.display_list(), resource)
         })
     }
 
@@ -460,6 +487,13 @@ impl Renderer for NullRenderer {
                     .apply(updates);
                 None
             }
+            Some(ContentOp::Edit(edit)) => {
+                self.pictures
+                    .get_mut(&(surface, layer))
+                    .expect("a structural edit targets a layer without content")
+                    .edit(*edit);
+                None
+            }
             None => self.pictures.remove(&(surface, layer)),
         };
         self.unbind(surface, layer);
@@ -480,6 +514,7 @@ impl Renderer for NullRenderer {
         _stats: &mut crate::FrameStats,
     ) -> Result<(FrameRedraw, Self::FrameCommit), RenderError> {
         self.assert_frame_contract(frame);
+        self.last_render = Some(crate::Instant::now());
         for surface in frame.surfaces {
             let layers = surface
                 .tree
@@ -517,6 +552,7 @@ impl Renderer for NullRenderer {
     ) -> impl core::future::Future<Output = Result<(FrameRedraw, Self::FrameCommit), RenderError>>
     {
         self.assert_frame_contract(frame);
+        self.last_render = Some(crate::Instant::now());
         for surface in frame.surfaces {
             let layers = surface
                 .tree
@@ -574,6 +610,20 @@ impl Renderer for NullRenderer {
     }
 
     fn trim(&mut self, _pressure: Pressure) {}
+
+    fn idle_release_deadline(&self) -> Option<crate::Instant> {
+        self.last_render
+            .map(|rendered| rendered + NULL_IDLE_RELEASE)
+    }
+
+    fn release_idle(&mut self, now: crate::Instant) {
+        let due = self
+            .idle_release_deadline()
+            .expect("release_idle runs only while a deadline is reported");
+        assert!(now >= due, "released before the deadline");
+        self.last_render = None;
+        let _ = self.events.send(Event::IdleRelease);
+    }
 
     /// `Null` imports no native frames — nothing to submit.
     fn submit_native_releases(&mut self) {}
@@ -881,24 +931,24 @@ fn the_last_image_drop_frees_its_memory() {
                     .expect("surface");
                 // A first render settles one-off allocations so the
                 // baseline is stable.
-                $crate::__engine_wait!(engine.render(FrameTime::at(Instant::now()))).expect("render");
-                let before = $crate::__engine_wait!(engine.memory()).gpu.0 + $crate::__engine_wait!(engine.memory()).cpu.0;
+                $crate::__engine_wait!(engine.render(FrameTime::unpresented_at(Instant::now()))).expect("render");
+                let before = $crate::__engine_wait!(engine.memory()).expect("memory").gpu.0 + $crate::__engine_wait!(engine.memory()).expect("memory").cpu.0;
                 let data = vec![255u8; 64 * 64 * 4];
                 let image = engine
                     .image(ImageData::<Rgba8>::new(64, 64, data).expect("image data"))
                     .expect("image");
                 let clone = image.clone();
                 $crate::__engine_wait!(engine
-                    .render(FrameTime::at(Instant::now() + TICK)))
+                    .render(FrameTime::unpresented_at(Instant::now() + TICK)))
                     .expect("render");
-                let with_image = $crate::__engine_wait!(engine.memory()).gpu.0 + $crate::__engine_wait!(engine.memory()).cpu.0;
+                let with_image = $crate::__engine_wait!(engine.memory()).expect("memory").gpu.0 + $crate::__engine_wait!(engine.memory()).expect("memory").cpu.0;
                 assert!(with_image > before, "memory {with_image} <= {before}");
                 drop(image);
                 drop(clone);
                 $crate::__engine_wait!(engine
-                    .render(FrameTime::at(Instant::now() + TICK * 2)))
+                    .render(FrameTime::unpresented_at(Instant::now() + TICK * 2)))
                     .expect("render");
-                let after = $crate::__engine_wait!(engine.memory()).gpu.0 + $crate::__engine_wait!(engine.memory()).cpu.0;
+                let after = $crate::__engine_wait!(engine.memory()).expect("memory").gpu.0 + $crate::__engine_wait!(engine.memory()).expect("memory").cpu.0;
                 assert!(after < with_image, "memory {after} >= {with_image}");
             }
             }
@@ -937,21 +987,21 @@ fn replace_redraws_the_recorded_image(width: u32, height: u32) {
                     tx[surface.root()].push(&layer);
                     tx[&layer].content(content);
                 });
-                $crate::__engine_wait!(engine.render(FrameTime::at(t0))).expect("render");
+                $crate::__engine_wait!(engine.render(FrameTime::unpresented_at(t0))).expect("render");
                 let a = centre(&$crate::__engine_wait!(surface.readback()).expect("readback"));
                 assert!(a[0] > 0.5 && a[2] < 0.1, "frame A {a:?} is not the red image");
 
                 image.replace(solid(width, height, BLUE)).expect("replace");
-                $crate::__engine_wait!(engine.render(FrameTime::at(t0 + TICK))).expect("render");
+                $crate::__engine_wait!(engine.render(FrameTime::unpresented_at(t0 + TICK))).expect("render");
                 let b = centre(&$crate::__engine_wait!(surface.readback()).expect("readback"));
                 assert!(b[2] > 0.5 && b[0] < 0.1, "frame B {b:?} is not the blue replacement");
 
                 drop(layer);
-                $crate::__engine_wait!(engine.render(FrameTime::at(t0 + TICK * 2))).expect("render");
-                let with_image = $crate::__engine_wait!(engine.memory()).gpu.0 + $crate::__engine_wait!(engine.memory()).cpu.0;
+                $crate::__engine_wait!(engine.render(FrameTime::unpresented_at(t0 + TICK * 2))).expect("render");
+                let with_image = $crate::__engine_wait!(engine.memory()).expect("memory").gpu.0 + $crate::__engine_wait!(engine.memory()).expect("memory").cpu.0;
                 drop(image);
-                $crate::__engine_wait!(engine.render(FrameTime::at(t0 + TICK * 3))).expect("render");
-                let after = $crate::__engine_wait!(engine.memory()).gpu.0 + $crate::__engine_wait!(engine.memory()).cpu.0;
+                $crate::__engine_wait!(engine.render(FrameTime::unpresented_at(t0 + TICK * 3))).expect("render");
+                let after = $crate::__engine_wait!(engine.memory()).expect("memory").gpu.0 + $crate::__engine_wait!(engine.memory()).expect("memory").cpu.0;
                 assert!(after < with_image, "memory {after} >= {with_image}");
             }
             }
@@ -982,8 +1032,9 @@ use $crate::Instant;
             use ::nami::SignalExt as _;
             use $crate::kurbo::{Affine, Rect, Vec2};
             use $crate::{
-                Animation, Curve, Decay, Draw as _, Engine, FrameTime, ImageData, Layer, Next,
-                Offscreen, OffscreenFormat, Readback, Rgba8, Spring, Surface, WorkingColor,
+                Animation, Curve, Decay, Draw as _, Engine, FrameTime, ImageData, KeyframeAnimation,
+                Keyframes, Layer, Next, Offscreen, OffscreenFormat, Paint, Readback, Repeat, Rgba8,
+                Spring, Surface, WorkingColor,
             };
 
             /// The backend under test.
@@ -1058,7 +1109,7 @@ fn surface(engine: &Engine<B>) -> Surface<B> {
             /// Renders at `t` and returns the `Next`.
             $crate::__engine_fn! {
 fn render_at(engine: &Engine<B>, t: Instant) -> Next {
-                $crate::__engine_wait!(engine.render(FrameTime::at(t))).expect("render")
+                $crate::__engine_wait!(engine.render(FrameTime::unpresented_at(t))).expect("render")
             }
             }
 
@@ -1425,6 +1476,240 @@ fn a_recorded_operand_animates_between_paints() {
             }
 
             $crate::__engine_test! {
+fn a_keyframed_operand_renders_the_sampled_frames() {
+                let Some(engine) = $crate::__engine_wait!(engine()) else { return };
+                let surface = $crate::__engine_wait!(surface(&engine));
+                let solid = |r, g, b| Paint::Solid(WorkingColor::new([r, g, b, 1.0]));
+                let cycle = Duration::from_millis(400);
+                let keyframes = Keyframes::new(cycle, solid(1.0, 0.0, 0.0))
+                    .then(0.5, Curve::linear(cycle), solid(0.0, 1.0, 0.0))
+                    .then(1.0, Curve::ease_in_out(cycle), solid(0.0, 0.0, 1.0));
+                let paint = ::nami::binding(solid(0.0, 0.0, 0.0));
+                let animated = surface.layer();
+                let content = surface.record(|c| {
+                    c.fill(
+                        Rect::new(8.0, 8.0, 24.0, 56.0),
+                        paint.clone().with(KeyframeAnimation::new(
+                            keyframes.clone(),
+                            Repeat::Forever,
+                        )),
+                    );
+                });
+                let reference = surface.layer();
+                surface.update(|tx| {
+                    tx[surface.root()].push(&animated).push(&reference);
+                    tx[&animated].content(content);
+                });
+                let t0 = Instant::now();
+                $crate::__engine_wait!(render_at(&engine, t0));
+
+                // The track starts at the frame that first samples it.
+                paint.set(solid(1.0, 1.0, 1.0));
+                let start = t0 + TICK;
+                $crate::__engine_wait!(render_at(&engine, start));
+                // Frames across both segments of three cycles, each compared
+                // against a fixed recording of the record-side sample.
+                for frame in [7u32, 20, 31, 55, 101, 140] {
+                    let t = start + TICK * frame;
+                    let expected = keyframes
+                        .sample(t - start, Repeat::Forever)
+                        .expect("a forever track runs");
+                    let fixed = surface.record(|c| {
+                        c.fill(Rect::new(64.0, 8.0, 80.0, 56.0), expected.clone());
+                    });
+                    surface.update(|tx| {
+                        tx[&reference].content(fixed);
+                    });
+                    let next = $crate::__engine_wait!(render_at(&engine, t));
+                    assert!(
+                        matches!(next, Next::At { .. }),
+                        "a forever track keeps the frame loop awake: {next:?}"
+                    );
+                    let rb = $crate::__engine_wait!(surface.readback()).expect("readback");
+                    let got = rb.pixels[(16 * rb.width + 16) as usize];
+                    let want = rb.pixels[(16 * rb.width + 72) as usize];
+                    assert!(
+                        got.iter().zip(want).all(|(got, want)| (got - want).abs() < 0.01),
+                        "frame {frame}: the engine drew {got:?}, the sampler {want:?}"
+                    );
+                }
+
+                // Removing the keyframed layer stops sampling its content
+                // while its handle lives: the window idles.
+                surface.update(|tx| {
+                    tx[surface.root()].remove(&animated);
+                });
+                let mut t = start + TICK * 141;
+                let mut idle = false;
+                for _ in 0..4 {
+                    if $crate::__engine_wait!(render_at(&engine, t)) == Next::Idle {
+                        idle = true;
+                        break;
+                    }
+                    t += TICK;
+                }
+                assert!(idle, "a detached track leaves nothing to sample");
+
+                // Re-attached, the track shows where its clock is, not
+                // where it stopped.
+                let t = start + TICK * 173;
+                let expected = keyframes
+                    .sample(t - start, Repeat::Forever)
+                    .expect("a forever track runs");
+                let fixed = surface.record(|c| {
+                    c.fill(Rect::new(64.0, 8.0, 80.0, 56.0), expected.clone());
+                });
+                surface.update(|tx| {
+                    tx[surface.root()].push(&animated);
+                    tx[&reference].content(fixed);
+                });
+                let next = $crate::__engine_wait!(render_at(&engine, t));
+                assert!(
+                    matches!(next, Next::At { .. }),
+                    "a re-attached forever track wakes the frame loop: {next:?}"
+                );
+                let rb = $crate::__engine_wait!(surface.readback()).expect("readback");
+                let got = rb.pixels[(16 * rb.width + 16) as usize];
+                let want = rb.pixels[(16 * rb.width + 72) as usize];
+                assert!(
+                    got.iter().zip(want).all(|(got, want)| (got - want).abs() < 0.01),
+                    "re-attached: the engine drew {got:?}, the clock's sample {want:?}"
+                );
+            }
+            }
+
+            $crate::__engine_test! {
+fn keyframed_layer_properties_render_the_sampled_frames() {
+                let Some(engine) = $crate::__engine_wait!(engine()) else { return };
+                let surface = $crate::__engine_wait!(surface(&engine));
+                let cycle = Duration::from_millis(600);
+                let spin = Keyframes::new(cycle, 0.0_f64)
+                    .then(0.5, Curve::ease_in(cycle), std::f64::consts::PI)
+                    .then(1.0, Spring::bouncy(), std::f64::consts::TAU);
+                let fade = Keyframes::new(cycle, 1.0_f32)
+                    .then(0.5, Curve::linear(cycle), 0.25)
+                    .then(1.0, Curve::ease_out(cycle), 1.0);
+                let rotation = ::nami::binding(0.0_f64);
+                let opacity = ::nami::binding(1.0_f32);
+                // A square centred on the layer origin, so the rotation turns
+                // it about its centre.
+                let square = |surface: &Surface<B>| {
+                    surface.record(|c| c.fill(Rect::new(-12.0, -12.0, 12.0, 12.0), WHITE))
+                };
+                let animated = surface.layer();
+                let reference = surface.layer();
+                surface.update(|tx| {
+                    tx[surface.root()].push(&animated).push(&reference);
+                    tx[&animated]
+                        .content(square(&surface))
+                        .transform(Affine::translate((32.0, 32.0)))
+                        .rotation(rotation.clone().with(KeyframeAnimation::new(
+                            spin.clone(),
+                            Repeat::Forever,
+                        )))
+                        .opacity(opacity.clone().with(KeyframeAnimation::new(
+                            fade.clone(),
+                            Repeat::Forever,
+                        )));
+                    tx[&reference]
+                        .content(square(&surface))
+                        .transform(Affine::translate((160.0, 32.0)));
+                });
+                let t0 = Instant::now();
+                $crate::__engine_wait!(render_at(&engine, t0));
+
+                // The tracks start at the frame that first samples them.
+                rotation.set(0.0);
+                opacity.set(1.0);
+                let start = t0 + TICK;
+                $crate::__engine_wait!(render_at(&engine, start));
+                for frame in [9u32, 30, 47, 66, 101, 150] {
+                    let t = start + TICK * frame;
+                    let angle = spin.sample(t - start, Repeat::Forever).expect("forever");
+                    let alpha = fade.sample(t - start, Repeat::Forever).expect("forever");
+                    surface.update(|tx| {
+                        tx[&reference].rotation(angle).opacity(alpha);
+                    });
+                    let next = $crate::__engine_wait!(render_at(&engine, t));
+                    assert!(
+                        matches!(next, Next::At { .. }),
+                        "forever tracks keep the frame loop awake: {next:?}"
+                    );
+                    let rb = $crate::__engine_wait!(surface.readback()).expect("readback");
+                    let mut worst = 0.0_f32;
+                    for y in 0..64 {
+                        for x in 0..64 {
+                            let got = rb.pixels[(y * rb.width + x) as usize];
+                            let want = rb.pixels[(y * rb.width + x + 128) as usize];
+                            for (got, want) in got.iter().zip(want) {
+                                worst = worst.max((got - want).abs());
+                            }
+                        }
+                    }
+                    assert!(
+                        worst < 0.02,
+                        "frame {frame}: the keyframed layer differs from the sampled one by {worst}"
+                    );
+                    assert!(
+                        (alpha_at(&rb, 32, 32) - f64::from(alpha)).abs() < 0.02,
+                        "frame {frame}: opacity {alpha}"
+                    );
+                }
+
+                // Detaching the keyframed layer lets the window idle while
+                // its handle lives.
+                surface.update(|tx| {
+                    tx[surface.root()].remove(&animated);
+                });
+                let mut t = start + TICK * 151;
+                let mut idle = false;
+                for _ in 0..4 {
+                    if $crate::__engine_wait!(render_at(&engine, t)) == Next::Idle {
+                        idle = true;
+                        break;
+                    }
+                    t += TICK;
+                }
+                assert!(idle, "a detached track leaves nothing to sample");
+
+                // Re-attached, the tracks show where their clock is, not
+                // where they stopped.
+                let t = start + TICK * 187;
+                let angle = spin.sample(t - start, Repeat::Forever).expect("forever");
+                let alpha = fade.sample(t - start, Repeat::Forever).expect("forever");
+                surface.update(|tx| {
+                    tx[surface.root()].push(&animated);
+                    tx[&reference].rotation(angle).opacity(alpha);
+                });
+                let next = $crate::__engine_wait!(render_at(&engine, t));
+                assert!(
+                    matches!(next, Next::At { .. }),
+                    "re-attached forever tracks wake the frame loop: {next:?}"
+                );
+                let rb = $crate::__engine_wait!(surface.readback()).expect("readback");
+                assert!(
+                    (alpha_at(&rb, 32, 32) - f64::from(alpha)).abs() < 0.02,
+                    "re-attached: opacity {alpha}, drawn {}",
+                    alpha_at(&rb, 32, 32)
+                );
+                let mut worst = 0.0_f32;
+                for y in 0..64 {
+                    for x in 0..64 {
+                        let got = rb.pixels[(y * rb.width + x) as usize];
+                        let want = rb.pixels[(y * rb.width + x + 128) as usize];
+                        for (got, want) in got.iter().zip(want) {
+                            worst = worst.max((got - want).abs());
+                        }
+                    }
+                }
+                assert!(
+                    worst < 0.02,
+                    "re-attached: the keyframed layer differs from the clock's sample by {worst}"
+                );
+            }
+            }
+
+            $crate::__engine_test! {
 fn next_schedules_the_frame_rate() {
                 let Some(engine) = $crate::__engine_wait!(engine()) else { return };
                 let surface = $crate::__engine_wait!(surface(&engine));
@@ -1498,6 +1783,8 @@ mod balance {
                 Event::RemoveImage(id) => ("image", id.raw(), false),
                 Event::AddShader(id) => ("shader", id.raw(), true),
                 Event::RemoveShader(id) => ("shader", id.raw(), false),
+                Event::AddTextLayout(id) => ("text layout", id.raw(), true),
+                Event::RemoveTextLayout(id) => ("text layout", id.raw(), false),
                 Event::CreateSurface(id) => ("surface", id.raw(), true),
                 Event::DestroySurface(id) => ("surface", id.raw(), false),
                 _ => continue,
@@ -1733,7 +2020,7 @@ mod tests {
         let mut t = t0;
         loop {
             t += Duration::from_millis(8);
-            let next = engine.render(FrameTime::at(t)).expect("render");
+            let next = engine.render(FrameTime::unpresented_at(t)).expect("render");
             if matches!(next, Next::Idle) {
                 break;
             }
@@ -1762,7 +2049,7 @@ mod tests {
         // Unbounded decay: position = v/k = 600/4 = 150, then Idle.
         loop {
             t += Duration::from_millis(8);
-            let next = engine.render(FrameTime::at(t)).expect("render");
+            let next = engine.render(FrameTime::unpresented_at(t)).expect("render");
             if matches!(next, Next::Idle) {
                 break;
             }
@@ -2048,9 +2335,58 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "a hosted extent is a finite, non-negative size")]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a hosted extent is a finite, non-negative size")
+    )]
     fn a_hosted_extent_must_be_finite() {
-        let _ = crate::Hosted::<Null>::new(()).at(kurbo::Size::new(f64::NAN, 1.0));
+        let (engine, rx) = engine();
+        let surface = engine
+            .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
+            .expect("surface");
+        let web = surface.layer();
+        let content = crate::Hosted::<Null>::new(()).at(kurbo::Size::new(f64::NAN, 1.0));
+        surface.update(|tx| {
+            tx[surface.root()].push(&web);
+            tx[&web].content(content);
+        });
+        engine.render(FrameTime::now()).expect("render");
+        let events: Vec<_> = rx.try_iter().collect();
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                Event::BindHosted(_, _, size) if *size == kurbo::Size::ZERO
+            )),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "refresh range must be positive and ordered")
+    )]
+    fn an_invalid_refresh_range_keeps_the_previous_one() {
+        let target = Offscreen::new((8, 8), OffscreenFormat::LinearF16);
+        let before = target.refresh.clone();
+        let target = target.rate(0..=30);
+        assert_eq!(target.refresh, before);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "this renderer cannot present host window 3's band")
+    )]
+    fn a_renderer_without_bands_drops_the_band() {
+        let (events, rx) = std::sync::mpsc::channel();
+        let mut renderer = NullRenderer::new(NullConfig {
+            events,
+            reject: HashSet::default(),
+            image_limits: crate::ImageLimits::UNLIMITED,
+        });
+        renderer.set_band(SurfaceId::new(1), 3, None);
+        assert!(rx.try_iter().next().is_none(), "no band event");
     }
 
     #[test]
@@ -2128,7 +2464,9 @@ mod tests {
             tx[&drawing].opacity(opacity.clone()).content(content);
         });
         let t0 = Instant::now();
-        engine.render(FrameTime::at(t0)).expect("render");
+        engine
+            .render(FrameTime::unpresented_at(t0))
+            .expect("render");
         let target = Affine::translate((40.0, 0.0));
         surface.update(|tx| {
             tx[&moving]
@@ -2136,7 +2474,7 @@ mod tests {
                 .animation(Curve::linear(Duration::from_millis(400)));
         });
         let next = engine
-            .render(FrameTime::at(t0 + Duration::from_millis(8)))
+            .render(FrameTime::unpresented_at(t0 + Duration::from_millis(8)))
             .expect("render");
         assert!(
             matches!(next, Next::At { .. }),
@@ -2245,7 +2583,7 @@ mod tests {
         );
         assert!(
             matches!(
-                engine.render(FrameTime::at(t0 + Duration::from_millis(16))),
+                engine.render(FrameTime::unpresented_at(t0 + Duration::from_millis(16))),
                 Err(RenderError::Hidden)
             ),
             "rendering while every surface is hidden is an error"
@@ -2262,7 +2600,7 @@ mod tests {
             .expect("announcing the same visibility again");
         assert_eq!(wakes.load(Ordering::Relaxed), 1, "no second wake");
         let next = engine
-            .render(FrameTime::at(t0 + Duration::from_secs(10)))
+            .render(FrameTime::unpresented_at(t0 + Duration::from_secs(10)))
             .expect("render");
         assert_eq!(
             next,
@@ -2341,7 +2679,9 @@ mod tests {
             tx[&spinning].rotation(std::f64::consts::TAU);
         });
         let t0 = Instant::now();
-        let next = engine.render(FrameTime::at(t0)).expect("render");
+        let next = engine
+            .render(FrameTime::unpresented_at(t0))
+            .expect("render");
         assert!(matches!(next, Next::At { .. }), "the spring runs: {next:?}");
         hidden.visibility(Visibility::Hidden).expect("hide");
         let _ = frames(&rx);
@@ -2356,7 +2696,7 @@ mod tests {
             "the visible surface wakes"
         );
         let next = engine
-            .render(FrameTime::at(t0 + Duration::from_millis(8)))
+            .render(FrameTime::unpresented_at(t0 + Duration::from_millis(8)))
             .expect("render");
         assert_eq!(
             next,
@@ -2449,7 +2789,7 @@ mod tests {
         let shown = Instant::now() + Duration::from_secs(10);
         surface.visibility(Visibility::Visible).expect("show");
         let next = engine
-            .render(FrameTime::at(shown))
+            .render(FrameTime::unpresented_at(shown))
             .expect("the shown frame draws what was committed while hidden");
         assert!(
             matches!(next, Next::At { .. }),
@@ -2464,7 +2804,9 @@ mod tests {
             "an animation committed while hidden starts on the frame that shows the surface"
         );
         engine
-            .render(FrameTime::at(shown + Duration::from_millis(200)))
+            .render(FrameTime::unpresented_at(
+                shown + Duration::from_millis(200),
+            ))
             .expect("render");
         let records = frames(&rx);
         let [record] = records.as_slice() else {
@@ -2686,9 +3028,9 @@ mod tests {
         let rejected = engine.surface(offscreen(), || {}).expect("surface");
         let unrelated = engine.surface(offscreen(), || {}).expect("surface");
         let rect = kurbo::Rect::new(0., 0., 8., 8.);
-        let fill = |surface: &crate::Surface<Null>| {
+        let fill = |surface: &crate::Surface<Null>, color| {
             surface.update(|tx| {
-                tx[surface.root()].record(|c| c.fill(rect, crate::WorkingColor::WHITE));
+                tx[surface.root()].record(|c| c.fill(rect, color));
             });
         };
         let drawn = || -> Vec<SurfaceId> {
@@ -2705,8 +3047,8 @@ mod tests {
         rejected.update(|tx| {
             tx[rejected.root()].record(|c| c.image(image.id(), rect, Sampling::Nearest));
         });
-        fill(&unrelated);
-        for _ in 0..2 {
+        fill(&unrelated, crate::WorkingColor::WHITE);
+        for color in [crate::WorkingColor::BLACK, crate::WorkingColor::WHITE] {
             match engine.render(FrameTime::now()) {
                 Err(RenderError::Rejected { surfaces, .. }) => {
                     let [rejection] = surfaces.as_slice() else {
@@ -2722,11 +3064,11 @@ mod tests {
                 "the surface drawing the rejected image is left out"
             );
             // The unrelated surface keeps rendering its changes.
-            fill(&unrelated);
+            fill(&unrelated, color);
         }
         assert_eq!(rejected.next_frame(), crate::Next::Idle);
 
-        fill(&rejected);
+        fill(&rejected, crate::WorkingColor::WHITE);
         engine
             .render(FrameTime::now())
             .expect("content that no longer draws the image renders");
@@ -2859,6 +3201,88 @@ mod tests {
             removed < freed && freed < frame,
             "the font is removed with the layer that drew it, before the frame: {events:?}"
         );
+    }
+
+    /// A text layout expands in lowering, holds its fonts, and is released
+    /// with the layer that drew it, ahead of the fonts it held; dropping
+    /// the handles earlier frees nothing the installed content still names.
+    #[test]
+    fn a_text_layout_is_released_with_the_content_that_draws_it() {
+        use crate::text::{TextCommand, TextLayout};
+        use crate::{Draw as _, WorkingColor};
+
+        let (engine, rx) = engine();
+        let surface = engine
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
+            .expect("surface");
+        let font = engine.font(FontSource::bytes(vec![0u8; 8])).expect("font");
+        let font_id = font.id();
+        let layout = engine
+            .text_layout(TextLayout::from_commands(
+                vec![TextCommand::Glyphs(
+                    one_glyph(font_id),
+                    WorkingColor::WHITE.into(),
+                )],
+                vec![font],
+            ))
+            .expect("text layout");
+        let layout_id = layout.id();
+        let text = surface.layer();
+        surface.update(|tx| {
+            tx[surface.root()].push(&text);
+            tx[&text].record(|c| c.text(layout_id, Affine::IDENTITY));
+        });
+        engine.render(FrameTime::now()).expect("render");
+        drop(layout);
+        engine
+            .render(FrameTime::now())
+            .expect("the installed content still draws the released layout and its font");
+        let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::AddTextLayout(id) if *id == layout_id)),
+            "the layout was registered: {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::RemoveTextLayout(_) | Event::RemoveFont(_))),
+            "a layout or font the installed text names was removed: {events:?}"
+        );
+
+        drop(text);
+        engine.render(FrameTime::now()).expect("render");
+        let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let layout_removed = position(
+            &events,
+            |e| matches!(e, Event::RemoveTextLayout(id) if *id == layout_id),
+        )
+        .unwrap_or_else(|| panic!("no text layout removal in {events:?}"));
+        let font_removed = position(
+            &events,
+            |e| matches!(e, Event::RemoveFont(id) if *id == font_id),
+        )
+        .unwrap_or_else(|| panic!("no font removal in {events:?}"));
+        let frame = position(&events, |e| matches!(e, Event::Frame(_))).expect("frame");
+        assert!(
+            layout_removed < frame && font_removed < frame,
+            "both are freed before the frame: {events:?}"
+        );
+    }
+
+    /// An unused text layout releases its registration, balanced.
+    #[test]
+    fn a_text_layout_releases_on_drop() {
+        use crate::text::TextLayout;
+
+        let (engine, rx) = engine();
+        let layout = engine
+            .text_layout(TextLayout::from_commands(Vec::new(), Vec::new()))
+            .expect("text layout");
+        drop(layout);
+        let _ = engine.memory();
+        balance::assert_balanced(&rx);
     }
 
     /// Content installed after the handle dropped that names a pending
