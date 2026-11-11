@@ -1,8 +1,9 @@
 //! Link component for `WaterUI`
 //!
 //! This module provides a Link component that displays clickable text that opens a URL.
-//! Link is implemented as a Button with link style, using `robius-open` to open URLs.
+//! Link is implemented as a Button with link style, using `waterkit-deeplink` to open URLs.
 
+use executor_core::spawn_local;
 use nami::Computed;
 use nami::Signal;
 use nami::signal::IntoComputed;
@@ -15,9 +16,13 @@ use waterui_core::{Environment, Str, View};
 
 /// Opens a URL in the system's default browser/handler.
 fn open_url(url: &str) {
-    if let Err(e) = robius_open::Uri::new(url).open() {
-        tracing::error!("Failed to open URL '{}': {:?}", url, e);
-    }
+    let url = url.to_owned();
+    spawn_local(async move {
+        if let Err(e) = waterkit_deeplink::open_url(&url).await {
+            tracing::error!("Failed to open URL '{}': {:?}", url, e);
+        }
+    })
+    .detach();
 }
 
 /// A tappable text link that opens a URL.
