@@ -39,6 +39,24 @@ fn waterui_crate_path() -> syn::Result<TokenStream2> {
     }
 }
 
+/// The crate a macro expansion names its framework items through: `waterui-core`
+/// when the crate depends on it, else the `waterui` facade. Both expose the
+/// items such expansions use at the same paths; core is tried first because a
+/// component crate may list the facade only as a dev-dependency, which
+/// `proc_macro_crate` also reports but the library build cannot link.
+fn core_or_facade_path(macro_name: &str) -> syn::Result<TokenStream2> {
+    view_builder::dependency_path("waterui-core")
+        .or_else(|| view_builder::dependency_path("waterui"))
+        .ok_or_else(|| {
+            syn::Error::new(
+                Span::call_site(),
+                format!(
+                    "{macro_name} requires the `waterui` or `waterui-core` crate as a dependency"
+                ),
+            )
+        })
+}
+
 /// Selects between two realizations of a component by Apple OS version.
 ///
 /// `apple_available!(27.0)` is `objc2::available!` with that one version for
