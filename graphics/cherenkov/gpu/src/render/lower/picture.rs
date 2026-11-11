@@ -1,7 +1,7 @@
 //! Picture-local raster retention, using the shared local-image cache.
 use super::{
-    Affine, Emission, EmissionStorage, GlyphContext, LayerId, LocalKey, Lowering, Op, PathCoverage,
-    Placement, Range, Realization, Rect, RenderError, Target,
+    Affine, Emission, EmissionStorage, GlyphContext, LayerId, LocalKey, Lowering, Op, Placement,
+    Range, Realization, Rect, RenderError, Target,
 };
 use crate::render::projective::{Key, LocalFormat, PictureId, PictureImage, Realize};
 use cherenkov::lowering::projective::{Homography, LocalImage, mip_levels};
@@ -450,7 +450,6 @@ impl Lowering<'_> {
                 self.clip,
                 self.member_outer_clip,
                 self.root_target,
-                self.path_coverage,
                 self.semantic_target,
                 self.animating,
             );
@@ -459,7 +458,6 @@ impl Lowering<'_> {
             self.set_clip(None);
             self.member_outer_clip = None;
             self.root_target = Target::Projected(key);
-            self.path_coverage = PathCoverage::of(self.root_target);
             self.semantic_target = self.root_target;
             self.transform = image.local_to_texel * local.inverse();
             self.animating = false;
@@ -480,7 +478,6 @@ impl Lowering<'_> {
                 _,
                 self.member_outer_clip,
                 self.root_target,
-                self.path_coverage,
                 self.semantic_target,
                 self.animating,
             ) = saved;
