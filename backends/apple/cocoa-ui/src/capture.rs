@@ -245,6 +245,20 @@ const BLEND_COLOR: ShaderColor = ShaderColor {
 /// colour is composited through, and the resolve's intermediate images.
 const BLEND_FORMAT: MTLPixelFormat = MTLPixelFormat::RGBA16Float;
 
+/// Whether a texture of `format` stores colour past [0, 1]. A target that
+/// does not clamps each premultiplied channel on store, so what is drawn
+/// into it is clipped to its gamut first ([`CompositeConversion::between`]).
+fn stores_extended_range(format: MTLPixelFormat) -> bool {
+    match format {
+        MTLPixelFormat::RGBA16Float | MTLPixelFormat::RGBA32Float => true,
+        MTLPixelFormat::BGRA8Unorm
+        | MTLPixelFormat::RGBA8Unorm
+        | MTLPixelFormat::BGRA8Unorm_sRGB
+        | MTLPixelFormat::RGBA8Unorm_sRGB => false,
+        other => panic!("{other:?} is not a format a capture composites into"),
+    }
+}
+
 /// The colour conversion handed to the composite fragment shaders — mirrors
 /// `CaptureCompositeConversion` in `capture_composite.metal`: `float4`
 /// fields are `f32` quadruples, and `align(16)` pads the struct to the
@@ -264,12 +278,16 @@ struct CompositeConversion {
     identity: u32,
     decode_source: u32,
     encode_target: u32,
+    clip_target: u32,
 }
 
 impl CompositeConversion {
     /// The conversion from what a source samples as to what the target's
-    /// store expects.
-    fn between(source: ShaderColor, target: ShaderColor) -> Self {
+    /// store expects. `clip` marks a target that stores only [0, 1]
+    /// ([`stores_extended_range`]): the straight colour is clipped into
+    /// it before premultiplying, so a colour outside the target's gamut
+    /// never leaves a channel above its alpha.
+    fn between(source: ShaderColor, target: ShaderColor, clip: bool) -> Self {
         let matrix = match (source.primaries, target.primaries) {
             (Primaries::DisplayP3, Primaries::Srgb) => P3_TO_SRGB,
             (Primaries::Srgb, Primaries::DisplayP3) => SRGB_TO_P3,
@@ -286,9 +304,10 @@ impl CompositeConversion {
                 SRGB_ENCODED_BREAK,
                 0.0,
             ],
-            identity: u32::from(source == target),
+            identity: u32::from(source == target && !clip),
             decode_source: u32::from(source.encoded),
             encode_target: u32::from(target.encoded),
+            clip_target: u32::from(clip),
         }
     }
 
@@ -815,9 +834,8 @@ impl DeviceResources {
         texture
     }
 
-    /// The [`BLEND_FORMAT`] texture a target that does not store
-    /// [`BLEND_COLOR`] is composited through — reused while the size
-    /// matches.
+    /// The [`BLEND_FORMAT`] texture every capture target is composited
+    /// through — reused while the size matches.
     ///
     /// # Panics
     ///
@@ -1167,11 +1185,13 @@ impl CompositorGuard<'_> {
     /// The sources blend in [`BLEND_COLOR`], the encoded space Core
     /// Animation composites a window's layers in, whatever `target`
     /// stores: a translucent native layer over a GPU surface must come out
-    /// as it does on screen. A target that stores [`BLEND_COLOR`] is
-    /// composed into directly; any other is composed into a
-    /// [`BLEND_FORMAT`] texture first, then converted into `target`'s
-    /// colour in one more pass — the half-float blend texture keeps
-    /// extended range, so nothing clips on the way.
+    /// as it does on screen. The composition lands in a [`BLEND_FORMAT`]
+    /// texture first, whose extended range keeps wide-gamut and HDR
+    /// content intact through the blend, then converts into `target`'s
+    /// colour in one more pass. That pass clips to the gamut of a target
+    /// that stores only [0, 1] — even one whose colour is [`BLEND_COLOR`]:
+    /// composing into it directly would let its store clamp each
+    /// premultiplied channel on its own, leaving channels above alpha.
     ///
     /// # Panics
     ///
@@ -1191,15 +1211,11 @@ impl CompositorGuard<'_> {
             .map(|cluster| resources.encode_levels(cluster, base, surfaces, command_buffer))
             .collect();
         let target_color = shader_color(target.pixelFormat());
-        if target_color == BLEND_COLOR {
-            resources.encode_main(surfaces, base, clusters, &finals, target, command_buffer);
-        } else {
-            let blend = resources.blend_texture(target.width(), target.height());
-            resources.encode_main(surfaces, base, clusters, &finals, &blend, command_buffer);
-            let pass = begin_pass(command_buffer, target, MTLLoadAction::Clear);
-            resources.draw_overlay(&pass, &blend, BLEND_COLOR, target_color, target);
-            pass.endEncoding();
-        }
+        let blend = resources.blend_texture(target.width(), target.height());
+        resources.encode_main(surfaces, base, clusters, &finals, &blend, command_buffer);
+        let pass = begin_pass(command_buffer, target, MTLLoadAction::Clear);
+        resources.draw_overlay(&pass, &blend, BLEND_COLOR, target_color, target);
+        pass.endEncoding();
         resources.settle_scratch();
     }
 }
@@ -1313,7 +1329,12 @@ impl DeviceResources {
             width: target.width(),
             height: target.height(),
         });
-        CompositeConversion::between(source_color, target_color).bind(encoder, 0);
+        CompositeConversion::between(
+            source_color,
+            target_color,
+            !stores_extended_range(target.pixelFormat()),
+        )
+        .bind(encoder, 0);
         let sampler = self.composite_sampler();
         // SAFETY: `encoder` is a live render encoder; index 0 is the
         // texture and sampler slot the composite fragment binds.
@@ -1428,7 +1449,7 @@ impl DeviceResources {
         );
         encoder.setRenderPipelineState(&self.resolve_pipeline(output.pixelFormat()));
         let sampler = self.composite_sampler();
-        CompositeConversion::between(transparent.color, BLEND_COLOR).bind(encoder, 0);
+        CompositeConversion::between(transparent.color, BLEND_COLOR, false).bind(encoder, 0);
         // SAFETY: `encoder` is a live render encoder; slots 1–3 are the
         // level images and sampler 0 the surface sampler
         // `capture_resolve_fragment` binds.
@@ -1472,6 +1493,7 @@ impl DeviceResources {
                 Some(CompositeConversion::between(
                     shader_color(surface.spec.pixel_format),
                     BLEND_COLOR,
+                    false,
                 )),
             );
         }
@@ -1488,7 +1510,7 @@ fn draw_resolve(
     conversion: Option<CompositeConversion>,
 ) {
     let conversion =
-        conversion.unwrap_or_else(|| CompositeConversion::between(BLEND_COLOR, BLEND_COLOR));
+        conversion.unwrap_or_else(|| CompositeConversion::between(BLEND_COLOR, BLEND_COLOR, false));
     conversion.bind(encoder, 2);
     // SAFETY: `encoder` is a live render encoder; buffer 1 and texture 0
     // are the parameter and surface slots the resolve fragment binds, and
@@ -3735,7 +3757,7 @@ mod tests {
             uv_scale: [1.0, 1.0],
         };
         let half_float = crate::metal::shader_color(MTLPixelFormat::RGBA16Float);
-        CompositeConversion::between(half_float, half_float).bind(&encoder, 0);
+        CompositeConversion::between(half_float, half_float, false).bind(&encoder, 0);
         // SAFETY: `encoder` is a live render encoder; index 0 is the
         // vertex-constant, texture and sampler slots the shader binds, and
         // `setVertexBytes` copies `region`'s bytes into the command.
@@ -4149,6 +4171,138 @@ mod tests {
                     "pixel ({x}, {y}) resolved to {got:?}, the tree composites {expected:?}"
                 );
             }
+        }
+    }
+
+    /// A translucent surface colour outside the sRGB gamut — Display P3
+    /// red at half alpha — captured into an 8-bit target clips to the
+    /// gamut as a straight colour: every channel stays within its alpha,
+    /// as a premultiplied store requires, instead of the store clamping
+    /// the out-of-range red on its own.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one end-to-end fixture: the surface, its probe rasters, the composition and the check"
+    )]
+    fn an_out_of_gamut_surface_keeps_every_channel_within_alpha_in_an_8_bit_capture() {
+        /// The target's edge; the surface covers all of it.
+        const EDGE: usize = 2;
+        /// f16 0.5.
+        const HALF: u16 = 0x3800;
+
+        let Some(device) = MTLCreateSystemDefaultDevice() else {
+            return; // No Metal on this runner — nothing to check.
+        };
+        let float_texture = |value: [f32; 4]| {
+            let bytes: Vec<u8> = (0..EDGE * EDGE)
+                .flat_map(|_| value.iter().flat_map(|c| c.to_ne_bytes()))
+                .collect();
+            filled_texture(
+                &device,
+                MTLPixelFormat::RGBA32Float,
+                (EDGE, EDGE),
+                &bytes,
+                EDGE * 16,
+            )
+        };
+        let base = Placed {
+            texture: float_texture([0.0; 4]),
+            origin: [0, 0],
+            color: BLEND_COLOR,
+        };
+        // Premultiplied linear Display P3 red at alpha 0.5, the colour a
+        // half-float surface stores.
+        let red: Vec<u8> = (0..EDGE * EDGE)
+            .flat_map(|_| [HALF, 0, 0, HALF])
+            .flat_map(u16::to_ne_bytes)
+            .collect();
+        let edge = f64::from(u32::try_from(EDGE).expect("a small edge"));
+        let surfaces = [RenderedSurface {
+            spec: surface_spec(
+                0,
+                [[0.0, 0.0], [edge, 0.0], [0.0, edge]],
+                || MTLPixelFormat::RGBA16Float,
+                EDGE,
+                EDGE,
+            )
+            .expect("the surface lands in the target"),
+            texture: filled_texture(
+                &device,
+                MTLPixelFormat::RGBA16Float,
+                (EDGE, EDGE),
+                &red,
+                EDGE * 8,
+            ),
+        }];
+        let plans = plan_clusters(&surfaces.each_ref().map(|s| s.spec));
+        let [plan] = plans.as_slice() else {
+            panic!("one surface forms one cluster: {plans:?}");
+        };
+        // Nothing lies over or under the surface: its black and white
+        // probes show through unchanged.
+        let clusters = [ClusterImages {
+            region: plan.region,
+            slots: plan.slots,
+            probes: vec![float_texture([0.0, 0.0, 0.0, 1.0]), float_texture([1.0; 4])],
+            members: plan.members.clone(),
+        }];
+        let target = filled_texture(
+            &device,
+            MTLPixelFormat::RGBA8Unorm,
+            (EDGE, EDGE),
+            &[0; EDGE * EDGE * 4],
+            EDGE * 4,
+        );
+        let state = Mutex::new(CompositorState { resources: None });
+        let mut guard = CompositorGuard {
+            state: state.lock().expect("an unpoisoned state"),
+        };
+        let command_buffer = guard.make_command_buffer(&device);
+        guard.encode_composition(
+            &surfaces,
+            &base,
+            &clusters,
+            &target,
+            &command_buffer,
+            &device,
+        );
+        drop(guard);
+        command_buffer.commit();
+        command_buffer.waitUntilCompleted();
+        assert_eq!(command_buffer.status(), MTLCommandBufferStatus::Completed);
+
+        let mut stored = [0_u8; EDGE * EDGE * 4];
+        // SAFETY: `stored` holds the whole RGBA8 target, `EDGE * 4` bytes
+        // a row.
+        unsafe {
+            target.getBytes_bytesPerRow_fromRegion_mipmapLevel(
+                std::ptr::NonNull::from(&mut stored).cast::<core::ffi::c_void>(),
+                EDGE * 4,
+                MTLRegion {
+                    origin: MTLOrigin { x: 0, y: 0, z: 0 },
+                    size: MTLSize {
+                        width: EDGE,
+                        height: EDGE,
+                        depth: 1,
+                    },
+                },
+                0,
+            );
+        }
+        for texel in stored.as_chunks::<4>().0 {
+            let [r, g, b, a] = *texel;
+            assert!(
+                (127..=128).contains(&a),
+                "half alpha survives the capture: {texel:?}"
+            );
+            assert!(
+                r <= a && g <= a && b <= a,
+                "a premultiplied channel exceeds its alpha: {texel:?}"
+            );
+            assert!(
+                a - r <= 1 && g == 0 && b == 0,
+                "P3 red clips to sRGB red at the same alpha: {texel:?}"
+            );
         }
     }
 
