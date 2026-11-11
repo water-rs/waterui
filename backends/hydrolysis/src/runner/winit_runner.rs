@@ -779,8 +779,10 @@ pub fn run(
     // system's fonts for itself.
     let fonts = crate::text::fonts::native_collection(&env);
     fonts.clone().install(&mut env);
+    // `native_collection` above reports an environment without a
+    // `ResourceContext`; with none there is no bundle to stage an icon in.
     let window_icon =
-        load_staged_window_icon(waterui_core::ResourceContext::from_environment(&env));
+        waterui_core::ResourceContext::from_environment(&env).and_then(load_staged_window_icon);
     // The machine installs `Quit` into the composition-root environment and
     // hands its hooks that environment as it stands now; their futures run
     // on the local executor the first `resumed` installs.

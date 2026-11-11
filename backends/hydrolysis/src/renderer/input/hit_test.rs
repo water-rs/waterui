@@ -3525,7 +3525,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 .and_then(|node| self.accessibility.focus_bindings.get(&node))
                 .and_then(|binding| binding.escape_action_handle().cloned())
             {
-                action.call(env);
+                action.run(env);
                 return true;
             }
             if let Some(focused) = self.hit_test.keyboard_focus.as_ref()
@@ -3538,7 +3538,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     .find(|slot| &slot.key == focused)
                     .and_then(|slot| slot.escape_action.clone())
             {
-                action.call(env);
+                action.run(env);
                 return true;
             }
         }

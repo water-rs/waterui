@@ -2007,6 +2007,7 @@ impl<E: crate::text::TextEngine> TextNode<E> {
                             move |runtime_env: &Environment| {
                                 let slot = slot.borrow();
                                 slot.span.activate(&slot.env.layered_on(runtime_env));
+                                Ok(())
                             }
                         });
                         let target = renderer.register_gesture_target(

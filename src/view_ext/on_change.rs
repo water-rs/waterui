@@ -1,7 +1,9 @@
 use std::{cell::RefCell, fmt, rc::Rc};
 
 use nami::Signal;
-use waterui_core::handler::{BoxedEventAction, EventHandler, boxed_event_handler};
+use waterui_core::handler::{
+    BoxedEventAction, EventHandler, ReportExtraction, boxed_event_handler,
+};
 use waterui_core::{Environment, LatestDispatch, Metadata, Retain, View};
 
 /// A view that runs an [`EventHandler`] whenever a signal's value changes.
@@ -85,7 +87,7 @@ where
                         .replace(next.clone())
                         .is_none_or(|cached| cached != next);
                     if changed {
-                        handler.borrow_mut()(next, &env);
+                        handler.borrow_mut()(next, &env).report_extraction();
                     }
                 });
             }

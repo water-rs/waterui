@@ -22,8 +22,8 @@ impl Api {
 #[preview]
 fn main() -> impl View {
     use_env(|env: Environment| {
-        let resources = ResourceContext::from_environment(&env);
-        include_web!(resources, "{{ ctx.web_arg() }}").serve(Api)
+        ResourceContext::from_environment(&env)
+            .map(|resources| include_web!(resources, "{{ ctx.web_arg() }}").serve(Api))
     })
 }
 

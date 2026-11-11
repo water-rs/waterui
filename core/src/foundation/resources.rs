@@ -89,14 +89,14 @@ impl ResourceContext {
         &self.fonts
     }
 
-    /// The resource context explicitly installed by the host.
+    /// The resource context explicitly installed by the host, or `None` when
+    /// the host constructed the view tree without one.
     ///
-    /// # Panics
-    /// Panics if the host constructed the view tree without a resource context.
+    /// A host installs it before constructing the app, so an absent context is
+    /// a host contract violation for the caller to report where it matters.
     #[must_use]
-    pub fn from_environment(env: &crate::Environment) -> &Self {
+    pub fn from_environment(env: &crate::Environment) -> Option<&Self> {
         env.get()
-            .expect("host must install ResourceContext before constructing the app")
     }
 }
 
@@ -126,12 +126,20 @@ mod tests {
         let mut second = first.clone();
         second.insert(ResourceContext::new("/second/assets", "/second/fonts"));
         assert_eq!(
-            ResourceContext::from_environment(&first).assets(),
-            Path::new("/first/assets")
+            ResourceContext::from_environment(&first).map(ResourceContext::assets),
+            Some(Path::new("/first/assets"))
         );
         assert_eq!(
-            ResourceContext::from_environment(&second).fonts(),
-            Path::new("/second/fonts")
+            ResourceContext::from_environment(&second).map(ResourceContext::fonts),
+            Some(Path::new("/second/fonts"))
+        );
+    }
+
+    #[test]
+    fn an_environment_without_a_resource_context_has_none() {
+        assert_eq!(
+            ResourceContext::from_environment(&crate::Environment::new()),
+            None
         );
     }
 }

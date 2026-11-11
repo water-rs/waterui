@@ -24,7 +24,7 @@ use waterui::gesture::{
     PointerButton, PointerButtons, RotationEvent, TapEvent,
 };
 use waterui_core::Environment;
-use waterui_core::handler::BoxedAction;
+use waterui_core::handler::{BoxedAction, ReportExtraction};
 
 use crate::input::TouchPhase;
 use crate::time::Instant;
@@ -216,7 +216,9 @@ impl GestureBinding {
             GesturePayload::Magnification(event) => local_env.insert(event),
             GesturePayload::Rotation(event) => local_env.insert(event),
         }
-        (self.action.borrow_mut())(&local_env);
+        // A gesture action whose parameters cannot be extracted does not run;
+        // the failure is reported and the gesture is still consumed.
+        (self.action.borrow_mut())(&local_env).report_extraction();
         true
     }
 

@@ -757,7 +757,7 @@ where
     H: Handler<Args, ()>,
 {
     let action = shared_action(handler);
-    Box::new(move |env, index| action.call(&env.extending(ListDelete(index))))
+    Box::new(move |env, index| action.run(&env.extending(ListDelete(index))))
 }
 
 fn list_move_action<H, Args>(handler: H) -> OnMove
@@ -765,7 +765,7 @@ where
     H: Handler<Args, ()>,
 {
     let action = shared_action(handler);
-    Box::new(move |env, movement| action.call(&env.extending(ListMove(movement))))
+    Box::new(move |env, movement| action.run(&env.extending(ListMove(movement))))
 }
 
 // ============================================================================

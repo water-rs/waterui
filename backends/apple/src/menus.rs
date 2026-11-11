@@ -269,7 +269,7 @@ pub fn menu_tree(
                 Some(cocoa_ui::menu::MenuTreeNode::Command(
                     kit_command(command),
                     Rc::new(move || {
-                        action.call(&env);
+                        action.run(&env);
                     }),
                 ))
             }

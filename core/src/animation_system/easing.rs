@@ -15,6 +15,8 @@
 
 use core::time::Duration;
 
+use super::animation::{bezier_is_valid, spring_is_valid};
+
 /// Declarative easing curve with only two variants.
 ///
 /// Standard curves (linear, ease-in, ease-out, ease-in-out) are cubic bezier
@@ -71,15 +73,52 @@ impl EasingCurve {
     pub const EASE: Self = Self::CubicBezier(0.25, 0.1, 0.25, 1.0);
 
     /// Creates a custom cubic bezier curve.
+    ///
+    /// Every control point must be finite and `x1` and `x2` must lie in
+    /// `[0, 1]`. A debug build asserts this; a consumer calls
+    /// [`validated`](Self::validated) to turn an invalid curve into the
+    /// default one.
     #[must_use]
     pub const fn bezier(x1: f32, y1: f32, x2: f32, y2: f32) -> Self {
+        debug_assert!(
+            bezier_is_valid(x1, y1, x2, y2),
+            "EasingCurve::bezier requires finite control points with x1/x2 in [0, 1]"
+        );
         Self::CubicBezier(x1, y1, x2, y2)
     }
 
     /// Creates a spring animation with the given stiffness and damping.
+    ///
+    /// Stiffness must be finite and greater than zero and damping finite and
+    /// not negative. A debug build asserts this; a consumer calls
+    /// [`validated`](Self::validated) to turn an invalid curve into the
+    /// default one.
     #[must_use]
     pub const fn spring(stiffness: f32, damping: f32) -> Self {
+        debug_assert!(
+            spring_is_valid(stiffness, damping),
+            "EasingCurve::spring requires finite stiffness > 0 and finite damping >= 0"
+        );
         Self::Spring { stiffness, damping }
+    }
+
+    /// This curve when its parameters are valid, otherwise the default curve.
+    ///
+    /// A consumer calls it where it takes an `EasingCurve` from app code. An
+    /// invalid curve is a contract violation: a debug build panics and a
+    /// release build logs it and uses [`EasingCurve::default`].
+    #[must_use]
+    pub fn validated(self) -> Self {
+        let valid = match self {
+            Self::CubicBezier(x1, y1, x2, y2) => bezier_is_valid(x1, y1, x2, y2),
+            Self::Spring { stiffness, damping } => spring_is_valid(stiffness, damping),
+        };
+        if valid {
+            self
+        } else {
+            crate::contract_violation!("invalid easing curve parameters: {self:?}");
+            Self::default()
+        }
     }
 
     /// Apply easing to a normalized time value t in [0, 1].
@@ -358,6 +397,30 @@ mod tests {
         let curve = EasingCurve::spring(100.0, 10.0);
         assert!((curve.ease(0.0) - 0.0).abs() < 0.001);
         assert!((curve.ease(1.0) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn validated_keeps_valid_curves() {
+        assert_eq!(EasingCurve::EASE.validated(), EasingCurve::EASE);
+        let spring = EasingCurve::spring(100.0, 10.0);
+        assert_eq!(spring.validated(), spring);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "invalid easing curve parameters")]
+    fn validated_reports_an_invalid_curve_in_debug() {
+        let _ = EasingCurve::CubicBezier(1.5, 0.0, 0.5, 1.0).validated();
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn validated_replaces_an_invalid_curve_with_the_default_in_release() {
+        let invalid = EasingCurve::Spring {
+            stiffness: f32::NAN,
+            damping: 1.0,
+        };
+        assert_eq!(invalid.validated(), EasingCurve::default());
     }
 
     #[test]

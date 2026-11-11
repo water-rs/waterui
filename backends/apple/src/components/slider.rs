@@ -271,7 +271,10 @@ impl SubView for SliderSubView {
 /// timed animation of an estimated duration, matching
 /// `withPlatformAnimation`.
 fn value_animation(metadata: &Metadata) -> Option<ValueAnimation> {
-    match ChangeAnimation::of(metadata).animation() {
+    match ChangeAnimation::of(metadata)
+        .animation()
+        .map(Animation::validated)
+    {
         None => None,
         Some(Animation::Default) => Some(ValueAnimation::Duration(0.25)),
         Some(Animation::Bezier {

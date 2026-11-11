@@ -447,7 +447,7 @@ pub fn navigation_window_builder_prose() {
     window.handle().set_background(Material::UltraThin);
     background.set(WindowBackground::Material(Material::Thin));
     background.set(WindowBackground::Color(Color::transparent()));
-    let icon = WindowIcon::new(1, 1, vec![255_u8, 0, 0, 255]);
+    let icon = WindowIcon::new(1, 1, vec![255_u8, 0, 0, 255]).expect("a one-pixel RGBA icon");
     let themed_icon = binding(None::<WindowIcon>);
     let _ = Window::new("W", binding(WindowState::Closed), || text("c")).icon(icon.clone());
     let window =

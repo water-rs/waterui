@@ -136,7 +136,7 @@ pub(super) fn tree_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<M
                 nodes.push(MenuTreeNode::Command(
                     kit_command(command),
                     Rc::new(move || {
-                        action.call(&env);
+                        action.run(&env);
                     }),
                 ));
             }
@@ -196,7 +196,7 @@ fn command_item(
     let action = command.action.clone();
     let env = env.clone();
     item.with_action(move || {
-        action.call(&env);
+        action.run(&env);
     })
 }
 
@@ -300,7 +300,7 @@ fn menu_elements(
                 let env = env.clone();
                 Some(platform::MenuElement::Action(
                     platform::MenuAction::command(mtm, key_commands, &kit, move || {
-                        action.call(&env);
+                        action.run(&env);
                     }),
                 ))
             }

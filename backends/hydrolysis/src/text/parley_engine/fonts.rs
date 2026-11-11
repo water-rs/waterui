@@ -295,25 +295,32 @@ fn staged_fonts_dir(resources: &waterui_core::ResourceContext) -> std::path::Pat
 /// locale the platform declares. The application's half is the same on
 /// every target.
 ///
-/// The fonts directory is `staged_fonts_dir` of the environment's required
+/// The fonts directory is `staged_fonts_dir` of the environment's
 /// [`waterui_core::ResourceContext`] and is never probed from the process's
 /// working directory or executable location, so an embedded host's fonts come
-/// from the roots it installed.
+/// from the roots it installed. An environment without one breaks the host's
+/// contract: a debug build panics, a release build logs it and loads only the
+/// declared and system fonts.
 ///
 /// # Panics
 ///
-/// Panics if the environment carries no `ResourceContext`, or if the fonts
-/// directory or a declared font file cannot be read, naming the path.
+/// Panics if the fonts directory or a declared font file cannot be read,
+/// naming the path.
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub fn native_collection(env: &waterui_core::Environment) -> FontCollection {
-    let root = staged_fonts_dir(waterui_core::ResourceContext::from_environment(env));
+    let root = waterui_core::ResourceContext::from_environment(env).map(staged_fonts_dir);
+    if root.is_none() {
+        waterui_core::contract_violation!(
+            "the host installed no ResourceContext, so only the declared and system fonts load"
+        );
+    }
     let mut resource_fonts = ResourceFontFamilies::default();
     #[cfg(target_os = "android")]
     let mut font_cx = super::android_fonts::platform_font_context();
     #[cfg(not(target_os = "android"))]
     let mut font_cx = parley::FontContext::new();
-    if root.is_dir() {
+    if let Some(root) = root.filter(|root| root.is_dir()) {
         let entries = std::fs::read_dir(&root).unwrap_or_else(|error| {
             panic!(
                 "hydrolysis native font loader failed to read `{}`: {error}",
