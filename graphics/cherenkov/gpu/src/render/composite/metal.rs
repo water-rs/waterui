@@ -531,7 +531,7 @@ pub fn encode(
         pass.set_bind_group(
             0,
             resources.bind0,
-            &[(surf.globals_base + u32::try_from(op.pass).unwrap()) * 256],
+            &[(surf.globals_base + u32::try_from(op.pass).expect("pass index")) * 256],
         );
         for (range, source) in canonical.ranges.iter().zip(&op.sources) {
             let variant = match range.variant {

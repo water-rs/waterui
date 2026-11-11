@@ -18,6 +18,7 @@ use std::sync::Arc;
 use ash::vk;
 use ash::vk::Handle as _;
 use rustc_hash::FxHashMap;
+use waterui_contract::contract_violation;
 
 use super::{Native, NativeError, QueueFamily, ReleaseSync, Shared, Wait, ycbcr};
 
@@ -744,17 +745,27 @@ impl Generation {
     /// frame's objects are destroyed — `ExternalFrame::on_release` for a
     /// native frame.
     ///
-    /// # Panics
-    /// When the generation already has a hook, or has already retired.
+    /// # Contract
+    /// A second hook is a contract violation and is dropped unrun. A hook
+    /// installed after the generation has retired is one too; the frame is
+    /// already released, so the hook runs at once.
     pub(crate) fn on_release(&self, release: crate::interop::ReleaseFn) {
         let mut guard = self.parts.lock().expect("release parts");
-        let parts = guard
-            .as_mut()
-            .expect("ExternalFrame::on_release on a native frame the engine already retired");
-        assert!(
-            parts.hook.is_none(),
-            "ExternalFrame::on_release called twice: a frame has one release hook"
-        );
+        let Some(parts) = guard.as_mut() else {
+            drop(guard);
+            contract_violation!(
+                "ExternalFrame::on_release on a native frame the engine already retired; the hook runs now"
+            );
+            release();
+            return;
+        };
+        if parts.hook.is_some() {
+            drop(guard);
+            contract_violation!(
+                "ExternalFrame::on_release called twice: a frame has one release hook; the second hook is dropped"
+            );
+            return;
+        }
         parts.hook = Some(ReleaseHook(release));
         drop(guard);
     }

@@ -22,6 +22,7 @@ use ash::vk;
 use cherenkov::kurbo::Affine;
 use cherenkov::{LayerId, RenderError, ShapeData, SurfaceError};
 use rustc_hash::FxHashMap;
+use waterui_contract::contract_violation;
 
 use super::buffer::{self, Buffer, State};
 use super::ffi::{ExtendedRangeBrightness, SurfaceControl, Transaction};
@@ -465,23 +466,21 @@ impl Band {
     /// A band presenting through `window`'s swapchain, showing nothing
     /// yet.
     ///
-    /// # Panics
-    /// When the swapchain's negotiated format is not 8-bit RGBA: the
+    /// # Errors
+    /// The swapchain's negotiated format when it is not 8-bit RGBA: the
     /// band's `ImageReader` holds `RGBA_8888` buffers.
-    #[must_use]
-    pub fn new(window: WindowSurface) -> Self {
+    pub fn new(window: WindowSurface) -> Result<Self, wgpu::TextureFormat> {
         let format = window.selection().format;
-        assert!(
-            matches!(
-                format,
-                wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb
-            ),
-            "a band's RGBA_8888 reader cannot hold the swapchain's {format:?} images"
-        );
-        Self {
+        if !matches!(
+            format,
+            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb
+        ) {
+            return Err(format);
+        }
+        Ok(Self {
             window,
             shown: None,
-        }
+        })
     }
 }
 
@@ -1322,10 +1321,15 @@ impl Planes {
                     completion.as_fd(),
                     ndk::looper::FdEvent::INPUT,
                     move |_, events| {
-                        assert!(
-                            events.contains(ndk::looper::FdEvent::INPUT),
-                            "GPU completion fence reported {events:?}"
-                        );
+                        // An error or hang-up leaves the fence unsignalled for
+                        // good; the frame is still completed so the surface
+                        // does not stall on it.
+                        if !events.contains(ndk::looper::FdEvent::INPUT) {
+                            tracing::error!(
+                                ?events,
+                                "GPU completion fence did not signal; the frame is completed anyway"
+                            );
+                        }
                         for wait in std::mem::take(&mut waits) {
                             // SAFETY: the submission's sync fence has signalled,
                             // so no queue still waits on these semaphores.
@@ -1572,16 +1576,19 @@ impl Planes {
     /// mark carries (water-rs/waterui#2225). A new band shows its region
     /// from the next frame on; `None` leaves the region unshown.
     ///
-    /// # Panics
-    /// For a band on a surface whose target registered no band-commit
-    /// sink ([`SurfaceControlTarget::band_commits`]).
+    /// # Contract
+    /// A band on a surface whose target registered no band-commit sink
+    /// ([`SurfaceControlTarget::band_commits`]) is a contract violation;
+    /// the band is dropped and its region stays unshown.
     pub fn set_band(&mut self, window: u64, band: Option<Band>) {
         match band {
             Some(band) => {
-                assert!(
-                    self.band_commits.is_some(),
-                    "a surface presenting bands needs a band-commit sink"
-                );
+                if self.band_commits.is_none() {
+                    contract_violation!(
+                        "a surface presenting bands needs a band-commit sink; the band for host window {window} is dropped and its region is not shown"
+                    );
+                    return;
+                }
                 self.bands.insert(window, band);
             }
             None => {

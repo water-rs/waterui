@@ -3815,7 +3815,7 @@ impl Renderer for GpuRenderer {
                 // Only Apple windows complete work after a render: a
                 // promoted plane's attach on the main queue.
                 #[cfg(target_vendor = "apple")]
-                let surface = self.open_window(id, window, size, waker.clone());
+                let surface = self.open_window(id, window, size, waker.clone())?;
                 #[cfg(not(target_vendor = "apple"))]
                 let surface = self.open_window(id, window, size)?;
                 (surface, None, refresh, true)
@@ -3987,8 +3987,16 @@ impl Renderer for GpuRenderer {
                     window.size,
                     window.output,
                     None,
-                ) {
-                    Ok(swapchain) => Some(surface_control::planes::Band::new(swapchain)),
+                )
+                .map_err(|error| error.to_string())
+                .and_then(|swapchain| {
+                    surface_control::planes::Band::new(swapchain).map_err(|format| {
+                        format!(
+                            "a band's RGBA_8888 reader cannot hold the swapchain's {format:?} images"
+                        )
+                    })
+                }) {
+                    Ok(band) => Some(band),
                     Err(error) => {
                         tracing::error!(
                             "surface {id:?}: host window {window_id}'s band swapchain: {error}; the band is cleared and its content is not shown"
@@ -5988,13 +5996,13 @@ impl GpuRenderer {
         window: crate::WindowTarget,
         size: (u32, u32),
         waker: cherenkov::CompletionWaker,
-    ) -> Option<present::WindowSurface> {
+    ) -> Result<Option<present::WindowSurface>, SurfaceError> {
         let system = planes::apple::LayerPlanes::new(
             &self.instance,
             &self.adapter,
             &self.device,
             &self.queue,
-            window.parent,
+            window.parent?,
             size,
             window.output,
             window.probe,
@@ -6008,7 +6016,7 @@ impl GpuRenderer {
                 self.pipeline_cache.clone(),
             )
         });
-        None
+        Ok(None)
     }
 
     /// Opens a window target: one swapchain the surface's target is blitted
