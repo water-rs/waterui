@@ -1885,6 +1885,59 @@ fn setup_error<F: Filter>(gpu: &TestGpu, executor: &mut Executor<F>) -> EffectSe
     pollster::block_on(executor.setup(&ctx)).expect_err("setup should fail")
 }
 
+/// `ReadAux` whose `visit_images` visits each of the given indices with the
+/// image, breaking the declaration of one image.
+struct VisitsImages {
+    image: crate::FilterImage,
+    visits: &'static [usize],
+}
+
+impl Filter for VisitsImages {
+    type Kind = kind::Spatial;
+    type Params = [f32; 0];
+    const IMAGES: usize = 1;
+
+    fn params(&self) -> [f32; 0] {
+        []
+    }
+
+    fn collect_stages<C: StageCollector>(&self, collector: &mut C) {
+        collector.spatial(Placed::new(&READ_AUX));
+    }
+
+    fn visit_images<V: ImageVisitor>(&self, visitor: &mut V) {
+        for &index in self.visits {
+            visitor.visit(index, &self.image);
+        }
+    }
+}
+
+impl SpatialFilter for VisitsImages {
+    fn footprint_of(_params: &[f32; 0]) -> Footprint {
+        Footprint::ZERO
+    }
+}
+
+#[test]
+fn gpu_filter_visiting_images_against_its_declaration_fails_setup() {
+    let gpu = create_test_device();
+    for (visits, reason) in [
+        (&[][..], "never visited image 0"),
+        (&[1][..], "visited image 1 but declares 1 images"),
+        (&[0, 0][..], "visited image 0 twice"),
+    ] {
+        let mut executor = Executor::new(VisitsImages {
+            image: crate::FilterImage::from_rgba8(1, 1, vec![0; 4]),
+            visits,
+        });
+        let error = setup_error(&gpu, &mut executor);
+        assert!(
+            matches!(&error, EffectSetupError::AuxImages(message) if message.contains(reason)),
+            "{visits:?}: {error}"
+        );
+    }
+}
+
 #[test]
 fn gpu_texture_aux_rejects_cpu_images() {
     let gpu = create_test_device();
@@ -1960,11 +2013,15 @@ fn output_size_defaults_and_chain_policy() {
 }
 
 #[test]
-#[should_panic(expected = "effect declared a zero output dimension")]
-fn output_size_rejects_zero_dimensions() {
-    Executor::new(filters::Brightness(0.0_f32))
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "effect declared a zero output dimension")
+)]
+fn output_size_raises_zero_dimensions_to_one() {
+    let size = Executor::new(filters::Brightness(0.0_f32))
         .with_output_size(|_, height| (0, height))
         .output_size(6, 4);
+    assert_eq!(size, (1, 4));
 }
 
 #[test]

@@ -30,6 +30,7 @@ use filtrate_core::{
     Chain, ColorStage, Filter, ParamArray, ParamSource, Placed, SpatialFilter, SpatialStage,
     StageCollector, WatchGuard,
 };
+use waterui_contract::contract_violation;
 
 use crate::effect::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRedrawCallback, EffectRenderError,
@@ -317,10 +318,12 @@ impl<F: Filter, S: Fn(u32, u32) -> (u32, u32) + 'static> Executor<F, S> {
 impl<F: Filter, S: Fn(u32, u32) -> (u32, u32) + 'static> Effect for Executor<F, S> {
     fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
         let size = (self.output_size)(input_width, input_height);
-        assert!(
-            size.0 > 0 && size.1 > 0,
-            "effect declared a zero output dimension: {size:?}"
-        );
+        if size.0 == 0 || size.1 == 0 {
+            contract_violation!(
+                "effect declared a zero output dimension: {size:?}; each zero dimension is raised to 1"
+            );
+            return (size.0.max(1), size.1.max(1));
+        }
         size
     }
 

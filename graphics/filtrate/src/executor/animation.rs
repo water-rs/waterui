@@ -20,6 +20,8 @@ use filtrate_core::{
     AnimatedTarget, AnimationTrack, FilterParam, Interpolator, SignalVisitor, WatchGuard,
 };
 
+use waterui_contract::contract_violation;
+
 use crate::effect::EffectRedrawCallback;
 
 pub const PARAM_EPSILON: f32 = 0.000_01;
@@ -233,12 +235,16 @@ impl ParamAnimator {
         &self.sender
     }
 
-    /// Installs the host wake callback. Must run exactly once, before setup.
+    /// Installs the host wake callback. Must run exactly once, before setup;
+    /// a second installation breaks the contract and is ignored, keeping the
+    /// first callback.
     pub fn install_redraw_callback(&self, callback: EffectRedrawCallback) {
-        assert!(
-            self.sender.redraw_callback.set(callback).is_ok(),
-            "filtrate redraw callback must be installed exactly once before setup"
-        );
+        if self.sender.redraw_callback.set(callback).is_err() {
+            contract_violation!(
+                "filtrate redraw callback must be installed exactly once before setup; \
+                 the new callback is ignored"
+            );
+        }
     }
 
     /// Fills in a no-op wake callback when the host never installed one, so
