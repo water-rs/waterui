@@ -1422,7 +1422,7 @@ async fn gpu_readiness_trip(
     salt: u32,
     deadline: std::time::Instant,
 ) -> Result<(), TripFail> {
-    use waterui_graphics::wgpu;
+    use waterui_graphics::gpu::wgpu;
     {
         let runtime = waterui_graphics::gpu::GpuRuntime::new()
             .await

@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use waterui_graphics::draw::kurbo::Rect;
+use cherenkov_record::kurbo::Rect;
 
 use crate::hwui::HwuiError;
 use crate::hwui::buffer::{CommandBuffer, Field};
@@ -187,8 +187,8 @@ impl TextLayoutResource {
     }
 
     /// The draw-tree id `Draw::text` names.
-    pub(crate) fn id(&self) -> waterui_graphics::draw::TextLayoutId {
-        waterui_graphics::draw::TextLayoutId::new(u64::from(self.id))
+    pub(crate) fn id(&self) -> cherenkov_record::TextLayoutId {
+        cherenkov_record::TextLayoutId::new(u64::from(self.id))
     }
 }
 

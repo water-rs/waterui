@@ -16,14 +16,14 @@
 
 use std::collections::BTreeMap;
 
-use waterui_graphics::draw::color::WorkingColor;
-use waterui_graphics::draw::kurbo::{Affine, Point, Rect, Vec2};
-use waterui_graphics::draw::tree::Sampling;
-use waterui_graphics::draw::{
+use cherenkov_record::color::WorkingColor;
+use cherenkov_record::kurbo::{Affine, Point, Rect, Vec2};
+use cherenkov_record::tree::Sampling;
+use cherenkov_record::{
     BlendMode, ChangeSet, ContentOp, LayerId, LayerNode, LayerOp, Op as TreeOp, Picture, Realize,
     ShapeData, SurfaceTree,
 };
-use waterui_graphics::draw::{ResourceId, TextLayoutId};
+use cherenkov_record::{ResourceId, TextLayoutId};
 
 use super::buffer::{CommandBuffer, Field};
 use super::effects::Effects;
@@ -657,7 +657,7 @@ impl Encoder {
     /// call, not inputs.
     pub fn frame(
         &mut self,
-        time: waterui_graphics::draw::Instant,
+        time: cherenkov_record::Instant,
         scale: f64,
     ) -> Result<Frame<'_>, HwuiError> {
         if !scale.is_finite() || scale <= 0.0 {
@@ -870,10 +870,7 @@ impl Encoder {
     /// [`HwuiError::Unsupported`] when the world transform is not a
     /// translation and scale: the platform filters in a scale-only layer
     /// space, in which the stretch's device-space frame no longer holds.
-    fn resolve_effect_origins(
-        &mut self,
-        time: waterui_graphics::draw::Instant,
-    ) -> Result<(), HwuiError> {
+    fn resolve_effect_origins(&mut self, time: cherenkov_record::Instant) -> Result<(), HwuiError> {
         let mut moved = false;
         for (&raw, state) in &self.layers {
             let Some(wire) = state.sent.effect.filter(|wire| *wire != u32::MAX) else {

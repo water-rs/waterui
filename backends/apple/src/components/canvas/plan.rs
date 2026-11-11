@@ -27,7 +27,7 @@
 use core::ops::Range;
 
 use kurbo::{Affine, Stroke};
-use waterui_graphics::draw::{
+use waterui_graphics::backend::draw::{
     BlendMode, Command, GlyphRun, GlyphStyle, Group, ImageId, MeshGradient, Paint, Picture,
     Sampling, Shadow, ShapeData, TextLayoutId, WorkingColor,
 };
@@ -443,7 +443,7 @@ pub fn children(commands: &[Command], scope: Option<usize>) -> Vec<usize> {
 /// The layer tree `list` lowers to.
 #[cfg(test)]
 #[must_use]
-pub fn outline(list: &waterui_graphics::draw::DisplayList) -> Vec<Outline> {
+pub fn outline(list: &waterui_graphics::backend::draw::DisplayList) -> Vec<Outline> {
     outline_scope(list.commands(), None)
 }
 

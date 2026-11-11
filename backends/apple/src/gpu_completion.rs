@@ -30,7 +30,7 @@ use objc2::MainThreadMarker;
 use objc2::runtime::ProtocolObject;
 use objc2_metal::{MTLCommandBuffer, MTLCommandBufferHandler};
 use waterui_graphics::gpu::SharedGpuContext;
-use waterui_graphics::wgpu;
+use waterui_graphics::gpu::wgpu;
 use wgpu_hal::api::Metal as MetalApi;
 
 /// The submission's pixels were never vouched for.

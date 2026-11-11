@@ -12,13 +12,13 @@ mod support;
 use std::cell::Cell;
 use std::rc::Rc;
 
+use hydrolysis::draw::{Draw, Recorder};
 use kurbo::Rect;
 use support::{mount_rendered, node_bounds_with_role};
 use waterui::View;
 use waterui::ViewExt as _;
 use waterui::component::hstack;
-use waterui::graphics::draw::{Draw, Recorder};
-use waterui::graphics::{RecordingResources, SceneContent, SceneView};
+use waterui::graphics::backend::{RecordingResources, SceneContent, SceneView};
 use waterui::layout::frame::Frame;
 use waterui::layout::scroll::ScrollView;
 use waterui::text::text;
@@ -41,7 +41,7 @@ impl SceneContent for TestSceneContent {
                 kurbo::Point::new(8.0, 8.0),
                 kurbo::Size::new(f64::from(width.min(40.0)), f64::from(height.min(24.0))),
             ),
-            waterui::graphics::draw::Paint::Solid(waterui::graphics::draw::WorkingColor::new([
+            hydrolysis::draw::Paint::Solid(hydrolysis::draw::WorkingColor::new([
                 1.0, 0.0, 0.0, 1.0,
             ])),
         );
@@ -76,7 +76,7 @@ impl SceneContent for NaturallySizedContent {
                 kurbo::Point::ZERO,
                 kurbo::Size::new(f64::from(width), f64::from(height)),
             ),
-            waterui::graphics::draw::Paint::Solid(waterui::graphics::draw::WorkingColor::new([
+            hydrolysis::draw::Paint::Solid(hydrolysis::draw::WorkingColor::new([
                 0.0, 0.4, 1.0, 1.0,
             ])),
         );

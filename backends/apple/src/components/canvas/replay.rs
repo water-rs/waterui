@@ -19,7 +19,7 @@ use core::ops::Range;
 use cocoa_ui::objc2_core_foundation::CGSize;
 use cocoa_ui::objc2_core_graphics::{CGBlendMode, CGContext};
 use kurbo::{Affine, BezPath, PathEl, Rect, Shape as _, Stroke, Vec2};
-use waterui_graphics::draw::{
+use waterui_graphics::backend::draw::{
     BlendMode, Command, FillRule, GlyphStyle, Paint, Shadow, ShapeData, WorkingColor,
 };
 

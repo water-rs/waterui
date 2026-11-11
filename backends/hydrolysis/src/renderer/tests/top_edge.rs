@@ -3,11 +3,11 @@
 //! whole edge, composited over the window's clear colour, and the clear
 //! colour when nothing spans it.
 
+use cherenkov_record::WorkingColor;
 use kurbo::{Affine, Rect};
 use waterui::ViewExt as _;
 use waterui::prelude::*;
 use waterui_core::AnyView;
-use waterui_graphics::draw::WorkingColor;
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::vstack;
 

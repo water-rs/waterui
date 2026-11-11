@@ -2,7 +2,7 @@
 //! text engine, the one every `Text` leaf goes through.
 
 use waterui_core::layout::Size;
-use waterui_graphics::TextRequest;
+use waterui_graphics::backend::TextRequest;
 
 use super::engine::{TextEngine, TextLayout};
 use super::input::resolve_text_layout_input;

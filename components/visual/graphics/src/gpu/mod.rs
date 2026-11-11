@@ -30,6 +30,30 @@ pub use runtime::{
     HostedLayerError, SharedGpuContext, preferred_surface_format,
 };
 
+/// The rectangle an IME caret query ([`CaretQuery`]) answers with.
+pub use crate::draw::kurbo::Rect;
+/// The display a frame is composited for and the presentation time it
+/// targets, which [`GpuContentRenderer`] and [`ExternalFrameRenderer`] take
+/// per frame, and the offscreen target and readback a content author renders
+/// a frame into to read it back.
+pub use cherenkov::{Display, FrameTime, Offscreen, OffscreenFormat, Readback};
+/// The GPU backend [`OffscreenRenderer`](crate::OffscreenRenderer) and
+/// [`GpuRuntime`]'s engines run on.
+pub use cherenkov_gpu::Gpu;
+/// Importing frames that already live in GPU memory — a decoder's, a
+/// camera's or a browser compositor's planes, shader modules, platform
+/// textures — onto the engine's device, with the colour description each
+/// frame carries.
+pub use cherenkov_gpu::interop;
+
+/// The exact `wgpu` this build links: [`Context`] and [`Frame`] hand content
+/// its device, queue and target in its types.
+pub use wgpu;
+
+/// Plain-bytes casts for the uniform and vertex data content writes to its
+/// buffers, so a content author uses the version the framework links.
+pub use bytemuck;
+
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::string::String;

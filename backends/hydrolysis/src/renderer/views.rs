@@ -285,7 +285,7 @@ pub fn render_shape_parts<E: crate::text::TextEngine>(
             resolved.fill().clone(),
         )
     };
-    let fill = waterui_graphics::draw::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
+    let fill = cherenkov_record::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
     let transform = ctx.local;
     ctx.renderer_mut()
         .scene_mut()
@@ -413,7 +413,7 @@ pub fn emit_graphics_leaf_accessibility<T, E: crate::text::TextEngine>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waterui_graphics::draw::WorkingColor;
+    use cherenkov_record::WorkingColor;
 
     #[test]
     fn radial_gradient_radii_use_the_shorter_side_of_a_200x100_box() {

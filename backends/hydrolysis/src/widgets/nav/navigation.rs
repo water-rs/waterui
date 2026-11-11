@@ -14,6 +14,7 @@ use crate::renderer::{
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
+use cherenkov_record::{Paint, WorkingColor};
 use nami::{Computed, Signal};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -31,7 +32,6 @@ use waterui_core::id::Id;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Metadata, Native};
 use waterui_graphics::color::Color;
-use waterui_graphics::draw::{Paint, WorkingColor};
 
 #[derive(Clone, Copy)]
 struct NavigationLeadingReserve(f64);

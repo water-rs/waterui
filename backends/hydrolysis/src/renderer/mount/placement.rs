@@ -423,7 +423,7 @@ impl Placement {
             if let Some(shown) = placement.stretch.get() {
                 stretches.push(ResolvedStretch {
                     params: shown.params(transform),
-                    strength: waterui_graphics::filtrate::filters::STRETCH_INTERPOLATION_STRENGTH,
+                    strength: waterui_graphics::backend::filtrate::filters::STRETCH_INTERPOLATION_STRENGTH,
                     viewport: crate::renderer::transformed_rect(transform, shown.viewport),
                 });
             }

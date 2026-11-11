@@ -4,6 +4,7 @@ extern crate alloc;
 
 /// The bridge from the framework's animations to the engine's.
 pub mod animation;
+pub mod backend;
 pub mod canvas;
 #[cfg(feature = "effects")]
 mod effects;

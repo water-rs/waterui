@@ -12,7 +12,7 @@ use crate::theme::WidgetTheme;
 use waterui_core::layout::{
     Layout, LayoutError, LayoutPlacement, ResolvedExtent, place_layout, resolve_layout_extent,
 };
-use waterui_graphics::scene_stretch_axis;
+use waterui_graphics::backend::scene_stretch_axis;
 use waterui_layout::scroll::scroll_stretch_axis;
 
 impl<E: crate::text::TextEngine> RenderNode<E> {

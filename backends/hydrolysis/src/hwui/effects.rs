@@ -18,12 +18,13 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
-use waterui_graphics::filter_view::{self as fv, AnyEffect};
-use waterui_graphics::filtrate::{
+use waterui_graphics::backend::AnyEffect;
+use waterui_graphics::backend::filtrate::{
     AnimatedTarget, AnimationTrack, ColorFilter, ColorStage, FilterLink, Placed, SpatialStage,
     StageCollector, WatchGuard, filters,
     space::{P3_LUMA, P3_TO_SRGB, SRGB_TO_P3},
 };
+use waterui_graphics::filter_view as fv;
 
 use super::HwuiError;
 use super::buffer::{CommandBuffer, Field};
@@ -794,7 +795,7 @@ mod tests {
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use waterui_graphics::filtrate::{FilterExt, Interpolator};
+    use waterui_graphics::backend::filtrate::{FilterExt, Interpolator};
 
     fn fixture() -> (
         SharedRegistry,
@@ -1129,7 +1130,7 @@ mod tests {
 
     #[test]
     fn parameter_animations_sample_deterministically() {
-        use waterui_graphics::filtrate::AnimatedTarget;
+        use waterui_graphics::backend::filtrate::AnimatedTarget;
         let (_registry, effects, _, wake) = fixture();
         let registration = effects
             .register(AnyEffect::filter(filters::Brightness(0.0f32)), wake)
@@ -1227,7 +1228,7 @@ mod tests {
             effect: AnyEffect::filter(filters::Brightness(0.5f32)),
             guards: fv::ParamGuards::default(),
         }
-        .output_size(waterui_graphics::filter_view::OutputSize::Fixed {
+        .output_size(waterui_graphics::backend::OutputSize::Fixed {
             width: 4,
             height: 4,
         });
@@ -1247,28 +1248,28 @@ mod tests {
     fn a_custom_stage_is_named_in_its_rejection() {
         // A filter type nobody mapped: its declared stage name reaches the
         // error rather than a guess at the type name.
-        static STAGE: waterui_graphics::filtrate::ColorStage =
-            waterui_graphics::filtrate::ColorStage {
+        static STAGE: waterui_graphics::backend::filtrate::ColorStage =
+            waterui_graphics::backend::filtrate::ColorStage {
                 name: "custom_unsupported",
                 source: "",
                 params: &[],
-                space: waterui_graphics::filtrate::OperatingSpace::Working,
+                space: waterui_graphics::backend::filtrate::OperatingSpace::Working,
             };
         struct Custom;
-        impl waterui_graphics::filtrate::Filter for Custom {
-            type Kind = waterui_graphics::filtrate::kind::Color;
+        impl waterui_graphics::backend::filtrate::Filter for Custom {
+            type Kind = waterui_graphics::backend::filtrate::kind::Color;
             type Params = [f32; 0];
             fn params(&self) -> Self::Params {
                 []
             }
-            fn collect_stages<C: waterui_graphics::filtrate::StageCollector>(
+            fn collect_stages<C: waterui_graphics::backend::filtrate::StageCollector>(
                 &self,
                 collector: &mut C,
             ) {
-                collector.color(waterui_graphics::filtrate::Placed::new(&STAGE));
+                collector.color(waterui_graphics::backend::filtrate::Placed::new(&STAGE));
             }
         }
-        impl waterui_graphics::filtrate::ColorFilter for Custom {
+        impl waterui_graphics::backend::filtrate::ColorFilter for Custom {
             const LINEAR: bool = true;
         }
         let (_, effects, _, wake) = fixture();

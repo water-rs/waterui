@@ -3,8 +3,8 @@ use crate::renderer::{HydrolysisRenderer, tree::RenderNode};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use waterui::{AnyView, Color, Environment, View, ViewExt};
-use waterui_graphics::FilteredView;
-use waterui_graphics::filtrate::{
+use waterui_graphics::backend::FilteredView;
+use waterui_graphics::backend::filtrate::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
     RetainedMemory,
 };
@@ -401,11 +401,11 @@ struct Drifting {
     natural: Rc<Cell<f32>>,
 }
 
-impl waterui_graphics::SceneContent for Drifting {
+impl waterui_graphics::backend::SceneContent for Drifting {
     fn build_scene(
         &mut self,
-        _recorder: &mut waterui_graphics::draw::Recorder,
-        _resources: &mut waterui_graphics::RecordingResources<'_>,
+        _recorder: &mut cherenkov_record::Recorder,
+        _resources: &mut waterui_graphics::backend::RecordingResources<'_>,
         _width: f32,
         _height: f32,
     ) -> bool {
@@ -477,7 +477,7 @@ impl Layout for RecordingRow {
 
 /// `[scene | color]` — the row's first frame is the scene's laid-out box.
 struct DriftingRow {
-    scene: waterui_graphics::SceneView,
+    scene: waterui_graphics::backend::SceneView,
     trace: Trace,
 }
 
@@ -500,7 +500,7 @@ impl View for DriftingRow {
 fn retained_subview_relayouts_when_a_scene_leaves_natural_size_moves() {
     use crate::renderer::{RenderContext, tree::RetainedSubview};
     use kurbo::{Affine, Rect as SceneRect};
-    use waterui_graphics::SceneView;
+    use waterui_graphics::backend::SceneView;
 
     let env = test_environment();
     let mut renderer = test_renderer();

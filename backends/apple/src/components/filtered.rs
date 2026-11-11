@@ -26,13 +26,12 @@ use waterui_backend_core::{AnyView, View};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
-use waterui_graphics::filter_view::{AnyEffect, ErasedEffect, FilteredView, ParamGuards};
-use waterui_graphics::filtrate::{
+use waterui_graphics::backend::filtrate::{
     EffectContext, EffectFrameClock, EffectFrameTiming, EffectInput, EffectOutput,
     EffectRedrawCallback,
 };
-use waterui_graphics::gpu::{GpuRuntime, SharedGpuContext};
-use waterui_graphics::wgpu;
+use waterui_graphics::backend::{AnyEffect, ErasedEffect, FilteredView, ParamGuards};
+use waterui_graphics::gpu::{GpuRuntime, SharedGpuContext, wgpu};
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
 use crate::dispatch::{Dispatcher, is_native_boundary};
@@ -2761,7 +2760,7 @@ impl FrozenEffect {
         input: Retained<MetalTexture>,
     ) -> Self {
         let mut guards = ParamGuards::default();
-        let effect = AnyEffect::filter(waterui_graphics::filtrate::filters::Blur(
+        let effect = AnyEffect::filter(waterui_graphics::backend::filtrate::filters::Blur(
             guards.bind(radius),
         ));
         Self::new(
@@ -3067,7 +3066,7 @@ pub mod native_test {
     use std::pin::Pin;
 
     use futures::channel::oneshot;
-    use waterui_graphics::filtrate::{
+    use waterui_graphics::backend::filtrate::{
         EffectContext, EffectInput, EffectOutput, EffectRedrawCallback, EffectRenderResult,
         EffectSetupResult, RetainedMemory,
     };

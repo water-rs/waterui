@@ -25,7 +25,7 @@ use core::ops::Range;
 use cocoa_ui::objc2::rc::Retained;
 use cocoa_ui::objc2_foundation::NSArray;
 use cocoa_ui::objc2_quartz_core::CALayer;
-use waterui_graphics::draw::{Command, DisplayList, Edit, SlotUpdate, Splice};
+use waterui_graphics::backend::draw::{Command, DisplayList, Edit, SlotUpdate, Splice};
 
 use super::layers::{self, Built, Ctx, container};
 use super::plan::{self, Node};

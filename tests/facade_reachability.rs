@@ -53,6 +53,15 @@ use waterui::graphics::{
 #[cfg(feature = "gpu")]
 use waterui::graphics::wgpu;
 
+// A `GpuContent` author's whole vocabulary answers at `graphics::gpu`: the
+// device crates, the frame timing and readback types, the external-frame
+// interop and the engine backend `OffscreenRenderer` is generic over.
+#[cfg(feature = "gpu")]
+use waterui::graphics::gpu::{
+    Display, FrameTime, Gpu, Offscreen, OffscreenFormat, Readback, bytemuck, interop,
+    wgpu as gpu_wgpu,
+};
+
 #[test]
 fn public_capabilities_are_reachable_through_the_facade() {
     // Reaching this point means every import above resolved.

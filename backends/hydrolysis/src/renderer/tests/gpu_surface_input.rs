@@ -16,6 +16,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
+use cherenkov_record::Recorder;
 use nami::Signal as _;
 use waterui::ViewExt as _;
 use waterui::component::text;
@@ -24,7 +25,7 @@ use waterui_core::AnyView;
 use waterui_core::Binding;
 use waterui_core::View;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_graphics::draw::Recorder;
+use waterui_graphics::backend::{RecordingResources, SceneContent, SceneInvalidator, SceneView};
 use waterui_graphics::gpu::{
     Context as GpuContext, ExternalFrameSource, ExternalFrameView, Frame as GpuFrame, FrameOutput,
 };
@@ -32,9 +33,7 @@ use waterui_graphics::input::{
     Code, GesturePhase, Key, Modifiers as W3cModifiers, NamedKey, ScrollPhase, ScrollUnit,
     SurfaceInputEvent, SurfacePointerButton,
 };
-use waterui_graphics::{
-    GpuContent, GpuContentView, RecordingResources, SceneContent, SceneInvalidator, SceneView,
-};
+use waterui_graphics::{GpuContent, GpuContentView};
 use waterui_layout::scroll::scroll;
 use waterui_layout::stack::{vstack, zstack};
 

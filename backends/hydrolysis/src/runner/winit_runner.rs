@@ -704,7 +704,7 @@ pub fn run(
         .as_ref()
         .map(waterui::inspector::InspectorRuntime::observe_signals);
 
-    let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+    let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
     waterui_core::install_application_resources(&mut env);
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));

@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use cherenkov_record::{FilterId, Fixed, Layer, LayerId, ShapeData, Shared, Transaction};
 
-use waterui_graphics::HeldResources;
+use waterui_graphics::backend::HeldResources;
 
 use super::backdrop::{
     BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, MaterialBackdropGroups,
@@ -1402,14 +1402,14 @@ fn mount_scene<T: LayerTarget<E>, E: crate::text::TextEngine>(
     let update = (!stale).then(|| {
         source.content.borrow_mut().update_scene(
             resources.waterui(),
-            waterui_graphics::SceneFrame {
+            waterui_graphics::backend::SceneFrame {
                 width,
                 height,
                 time: source.time,
             },
         )
     });
-    if let Some(waterui_graphics::SceneUpdate::Retained { again }) = update {
+    if let Some(waterui_graphics::backend::SceneUpdate::Retained { again }) = update {
         if again {
             cell.mark(super::Dirty::PAINT);
         }

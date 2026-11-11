@@ -40,11 +40,12 @@ use waterui::resolve::Resolvable as _;
 use waterui::text::StyledStr;
 use waterui::theme::color::Foreground;
 use waterui_core::layout::{HorizontalAlignment, Size};
-use waterui_graphics::draw::{
+use waterui_graphics::backend::draw::{
     Draw as _, Fixed, FontId, Glyph, GlyphRun, GlyphStyle, Paint, Picture,
 };
-use waterui_graphics::resources::Handle;
-use waterui_graphics::{ResourceError, TextBackend, TextRegistration, TextRequest};
+use waterui_graphics::backend::{
+    Handle, ResourceError, TextBackend, TextRegistration, TextRequest,
+};
 
 use super::resources::{Registry, TextHandle};
 use crate::components::font::platform_font;
