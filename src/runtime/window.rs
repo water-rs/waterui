@@ -1137,13 +1137,18 @@ impl Window {
     /// after the last window closed. For window presentation tied to a
     /// mounted view, see [`conditional_window`].
     ///
-    /// # Panics
+    /// # Contract
     ///
-    /// Panics if `WindowManager` is not found in the environment.
+    /// An environment without a `WindowManager` breaks the contract: a debug
+    /// build panics, and a release build logs the error and shows nothing.
     pub fn show(self, env: &Environment) {
-        env.get::<WindowManager>()
-            .expect("WindowManager not found in environment")
-            .show(self);
+        let Some(manager) = env.get::<WindowManager>() else {
+            crate::contract_violation!(
+                "WindowManager not found in environment, so the window is not shown"
+            );
+            return;
+        };
+        manager.show(self);
     }
 }
 
@@ -1442,6 +1447,15 @@ mod tests {
         accent.set(red);
         assert_eq!(color(last()), red);
         assert_eq!(color(resolved.snapshot()), red);
+    }
+
+    /// Showing a window in an environment without a manager shows nothing.
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "WindowManager not found"))]
+    fn showing_a_window_without_a_manager_is_dropped() {
+        let state = Binding::container(WindowState::Closed);
+        Window::new("Orphan", state.clone(), || ()).show(&Environment::new());
+        assert_eq!(state.snapshot(), WindowState::Closed);
     }
 
     /// The icon validates its pixel buffer against its size.

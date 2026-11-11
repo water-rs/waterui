@@ -579,19 +579,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             .bind_radio_indicator(key, selected, motion, self.frame_instant)
     }
 
-    /// Samples the free-running repeating phase (an indeterminate progress
-    /// indicator) of the view retained as `owner`, so the phase survives
-    /// frames and structural changes around it.
-    pub(crate) fn sample_repeating_motion<T: 'static>(
-        &mut self,
-        cycle: Duration,
-        owner: &Rc<T>,
-    ) -> Duration {
-        let key = AnimationKey::renderer_local_repeating(self.animation_owner_pins.pin(owner));
-        self.animation_controller
-            .bind_repeating_phase(key, cycle, self.frame_instant)
-    }
-
     fn navigation_animating(&self, now: Instant) -> bool {
         self.navigation.slots.values().any(|slot| {
             slot.transition
@@ -616,7 +603,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         {
             Some(cherenkov_record::tree::RATE_FAST)
         } else {
-            self.animation_controller.refresh_range(now)
+            self.animation_controller.refresh_range()
         }
     }
 
@@ -643,19 +630,25 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         ticked || pending_releases || self.navigation_animating(now)
     }
 
-    pub fn animations_active(&self) -> bool {
-        self.animations_active_with(PerpetualAnimation::Counts)
+    /// Whether an animation the engine runs — a layer track or an operand of
+    /// a recording — is still running as of the last presented frame.
+    ///
+    /// The engine samples these itself, so they are work for the settle
+    /// queries only and never schedule a host frame. A build without the
+    /// engine never fills them, so they stay at rest.
+    pub(crate) const fn engine_tracks_active(&self, perpetual: PerpetualAnimation) -> bool {
+        match perpetual {
+            PerpetualAnimation::Counts => self.engine_tracks.finite || self.engine_tracks.perpetual,
+            PerpetualAnimation::Ignored => self.engine_tracks.finite,
+        }
     }
 
-    /// [`Self::animations_active`] with a choice of whether repeat-forever
-    /// animations count.
-    pub(crate) fn animations_active_with(&self, perpetual: PerpetualAnimation) -> bool {
+    /// Whether a host-side animation is still running: a controller slot, an
+    /// interaction release or a navigation transition. All of them finish,
+    /// so the answer does not depend on whether perpetual work counts.
+    pub fn animations_active(&self) -> bool {
         let now = self.frame_instant;
-        let controller_active = match perpetual {
-            PerpetualAnimation::Counts => self.animation_controller.has_active(now),
-            PerpetualAnimation::Ignored => self.animation_controller.has_finite_active(now),
-        };
-        controller_active
+        self.animation_controller.has_active()
             || self.has_pending_interaction_releases(now)
             || self.navigation_animating(now)
     }

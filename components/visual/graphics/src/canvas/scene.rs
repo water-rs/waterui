@@ -8,7 +8,6 @@ use alloc::string::{String, ToString as _};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
-use core::time::Duration;
 use std::collections::HashMap;
 
 use nami::watcher::{BoxWatcherGuard, Context, Metadata};
@@ -439,9 +438,8 @@ impl CanvasScene {
             intrinsic,
             label,
             value,
-            size,
         } = canvas;
-        let shared = Shared::new(env.clone(), size);
+        let shared = Shared::new(env.clone());
         let mut cx = Cx::new(Rc::clone(&shared));
         body(&mut cx);
         let root = Part::new(cx.finish());
@@ -468,12 +466,8 @@ impl CanvasScene {
     fn follow(&mut self, width: f32, height: f32, time: Option<Instant>) {
         if let Some(time) = time {
             let mounted = *self.mounted.get_or_insert(time);
-            if self.shared.clock.observed() {
-                let elapsed: Duration = time.saturating_duration_since(mounted);
-                if self.shared.clock.snapshot() != elapsed {
-                    self.shared.clock.set(&Context::from(elapsed));
-                }
-            }
+            self.shared
+                .advance_clocks(time.saturating_duration_since(mounted));
         }
         let size = Size::new(width, height);
         if self.shared.size.snapshot() != size {
@@ -511,7 +505,7 @@ impl SceneContent for CanvasScene {
             session.record(part, recorder);
         });
         session.publish_statuses();
-        self.shared.clock.observed()
+        self.shared.clocks_running()
     }
 
     fn update_scene(&mut self, resources: &SceneResources, frame: SceneFrame) -> SceneUpdate {
@@ -545,7 +539,7 @@ impl SceneContent for CanvasScene {
         }
         session.publish_statuses();
         SceneUpdate::Retained {
-            again: self.shared.clock.observed(),
+            again: self.shared.clocks_running(),
         }
     }
 

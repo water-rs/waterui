@@ -121,13 +121,13 @@ fn offsets_sharing_a_signal_identity_slide_independently() {
     approx::assert_relative_eq!(settled[1], rest[1] + 48.0);
 }
 
-/// A target-driven widget scalar (the progress fill and the text-field label
-/// float): each indicator fills to its own value.
+/// A widget scalar (the progress value and the text-field label float):
+/// each indicator reads its own value.
 #[test]
 fn progress_indicators_sharing_a_signal_identity_fill_to_their_own_values() {
-    let track_draws = Rc::new(RefCell::new(Vec::new()));
+    let realizations = Rc::new(RefCell::new(Vec::new()));
     let mut renderer = test_renderer_with_theme(MinimalTestTheme {
-        progress_linear_track_draws: Rc::clone(&track_draws),
+        progress_bar_realizations: Rc::clone(&realizations),
         ..Default::default()
     });
     let source = Binding::container(1_i32);
@@ -149,16 +149,10 @@ fn progress_indicators_sharing_a_signal_identity_fill_to_their_own_values() {
         Rect::new(0.0, 0.0, 200.0, 200.0),
     );
 
-    let mut draws = track_draws.borrow_mut().drain(..).collect::<Vec<_>>();
-    draws.sort_by(|a, b| a.0.y0.total_cmp(&b.0.y0));
-    let filled = draws
-        .iter()
-        .map(|(track, end)| {
-            let end = end.expect("a determinate indicator resolves its active end");
-            (end - track.x0) / track.width()
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(filled.len(), 2, "both indicators must draw a track");
+    let mut bars = realizations.borrow_mut().drain(..).collect::<Vec<_>>();
+    bars.sort_by(|a, b| a.0.y0.total_cmp(&b.0.y0));
+    let filled = bars.iter().map(|(_, value)| *value).collect::<Vec<_>>();
+    assert_eq!(filled.len(), 2, "both indicators must realize a bar");
     approx::assert_relative_eq!(filled[0], 0.8, epsilon = 1e-6);
     approx::assert_relative_eq!(filled[1], 0.2, epsilon = 1e-6);
 }

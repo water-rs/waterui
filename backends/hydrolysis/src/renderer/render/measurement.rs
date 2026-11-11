@@ -1243,40 +1243,19 @@ pub fn measure_progress_intrinsic<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
-    match progress.style() {
-        ProgressStyle::Linear => {
-            let metrics = theme.progress_metrics(crate::theme::ProgressIndicatorStyle::Linear);
-            let label_height = f64::from(
-                waterui_text::font::Font::default()
-                    .resolve(env)
-                    .snapshot()
-                    .size(),
-            )
-            .max(metrics.label_height);
-            let value_label_height = if state.measure_signal(progress.value()).is_finite() {
-                metrics.value_label_top_spacing + label_height
-            } else {
-                0.0
-            };
-            let width = metrics
-                .bar_horizontal_inset
-                .mul_add(2.0, metrics.min_track_width);
-            let height =
-                label_height + metrics.bar_top_offset + metrics.bar_height + value_label_height;
-            LayoutSize::new(
-                crate::num_cast::f64_as_f32(width),
-                crate::num_cast::f64_as_f32(height),
-            )
-        }
-        ProgressStyle::Circular => {
-            let metrics = theme.progress_metrics(crate::theme::ProgressIndicatorStyle::Circular);
-            LayoutSize::new(
-                crate::num_cast::f64_as_f32(metrics.circular_diameter),
-                crate::num_cast::f64_as_f32(metrics.circular_diameter),
-            )
-        }
-        _ => panic!("hydrolysis ProgressStyle variant is not implemented"),
-    }
+    let determinate = state.measure_signal(progress.value()).is_finite();
+    let labels = (
+        measure_view_intrinsic(progress.label(), state, env, theme),
+        measure_view_intrinsic(progress.value_label(), state, env, theme),
+    );
+    crate::widgets::controls::progress::progress_size(
+        theme,
+        progress.style(),
+        progress.four_color(),
+        determinate,
+        labels,
+        env,
+    )
 }
 
 pub fn measure_text_field_intrinsic<E: crate::text::TextEngine>(

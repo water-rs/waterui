@@ -174,15 +174,15 @@ impl<T, C, R> ViewDispatcher<T, C, R> {
             raw: Box::new(move |state, ctx, slot: &mut dyn Any, env| {
                 let v = slot
                     .downcast_mut::<Option<V>>()
-                    .expect("type mismatch in raw dispatch")
+                    .expect("the handler is stored under TypeId::of::<V>() and dispatched a slot holding Option<V>")
                     .take()
-                    .expect("view already taken from slot");
+                    .expect("each dispatch fills its slot with Some(view) and calls the handler once");
                 h_raw(state, ctx, v, env)
             }),
             boxed: Box::new(move |state, ctx, view: AnyView, env| {
                 let v = *view
                     .downcast::<V>()
-                    .expect("type mismatch in boxed dispatch");
+                    .expect("the handler is stored under the TypeId of V and dispatched an AnyView holding a V");
                 h_boxed(state, ctx, v, env)
             }),
         };
@@ -212,9 +212,11 @@ impl<T, C, R> ViewDispatcher<T, C, R> {
             let mut slot = Some(view);
             let any_view = (&mut slot as &mut dyn Any)
                 .downcast_mut::<Option<AnyView>>()
-                .expect("AnyView downcast should succeed")
+                .expect(
+                    "the TypeId check above proved V is AnyView, so the slot is an Option<AnyView>",
+                )
                 .take()
-                .expect("AnyView option should contain a value");
+                .expect("the slot was just filled with Some(view)");
 
             return self.dispatch_boxed(any_view, env, context);
         }

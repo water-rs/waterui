@@ -239,9 +239,12 @@ struct ItemView {
 
 impl View for ItemView {
     fn body(self, _env: &Environment) -> impl View {
-        self.state
-            .realize(&self.key)
-            .unwrap_or_else(|error| panic!("a <For> item could not be rendered: {error}"))
+        self.state.realize(&self.key).unwrap_or_else(|error| {
+            crate::contract_violation!(
+                "a <For> item could not be rendered, so it renders nothing: {error}"
+            );
+            AnyView::default()
+        })
     }
 }
 
@@ -370,10 +373,12 @@ pub fn each(
             let Some(bridge) = bridge.upgrade() else {
                 return;
             };
-            let next = state
-                .reconcile(&bridge, &context.into_value())
-                .unwrap_or_else(|error| panic!("a <For> list could not be reconciled: {error}"));
-            keys.set(next);
+            match state.reconcile(&bridge, &context.into_value()) {
+                Ok(next) => keys.set(next),
+                Err(error) => crate::contract_violation!(
+                    "a <For> list could not be reconciled, so it keeps its last rows: {error}"
+                ),
+            }
         }
     });
 

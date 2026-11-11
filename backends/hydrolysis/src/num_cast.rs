@@ -160,17 +160,6 @@ pub const fn f64_as_i32(v: f64) -> i32 {
     v as i32
 }
 
-/// Converts a `f32` extent to `u64` with `as` saturating truncation — see
-/// [`f64_as_u32`].
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "the values are non-negative extents within u64 range; saturating truncation is the intended conversion"
-)]
-pub const fn f32_as_u64(v: f32) -> u64 {
-    v as u64
-}
-
 /// Truncates a `u64` to `usize`; only narrows on 32-bit targets, and the
 /// values are byte counts/sizes that fit the target's address space.
 #[expect(

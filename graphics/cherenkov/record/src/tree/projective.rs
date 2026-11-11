@@ -45,6 +45,11 @@ impl State {
         set_prop(&mut self.depth_track, &mut self.depth, prop);
     }
 
+    pub(super) const fn note_running(&self, running: &mut super::RunningTracks) {
+        running.note_track(self.tilt_track.as_ref());
+        running.note_track(self.depth_track.as_ref());
+    }
+
     /// Steps both tracks; returns `(stepped, still running)`.
     pub(super) fn sample(&mut self, time: Instant) -> (bool, bool) {
         let tilt = sample(&mut self.tilt_track, &mut self.tilt, time);

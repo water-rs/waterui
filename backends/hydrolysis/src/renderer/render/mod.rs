@@ -28,7 +28,7 @@ pub use state::HydroState;
 pub use subview::HydroSubview;
 pub use view_helpers::*;
 pub use view_helpers::{
-    anchor_point, circle_arc_path, effective_stretch_axis, estimate_layout_intrinsic,
-    gesture_group_identity, normalize_layout_view, normalize_view_for_render, passthrough_content,
-    path_commands_to_path, resolved_shape_to_path, transformed_rect, working_color_to_rgba8,
+    anchor_point, effective_stretch_axis, estimate_layout_intrinsic, gesture_group_identity,
+    normalize_layout_view, normalize_view_for_render, passthrough_content, path_commands_to_path,
+    resolved_shape_to_path, transformed_rect, working_color_to_rgba8,
 };

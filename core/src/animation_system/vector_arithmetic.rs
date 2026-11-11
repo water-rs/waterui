@@ -136,9 +136,9 @@ impl Mul<f64> for Point2 {
     type Output = Self;
 
     fn mul(self, scalar: f64) -> Self {
-        let s = scalar
-            .to_f32()
-            .expect("Point2 scaling requires an f64 representable as f32");
+        let s = scalar.to_f32().expect(
+            "`ToPrimitive::to_f32` is total for f64: it saturates to infinity rather than failing",
+        );
         Self([self.0[0] * s, self.0[1] * s])
     }
 }
