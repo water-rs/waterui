@@ -105,6 +105,6 @@ pub use params::ParamArray;
 pub use space::{OperatingSpace, WorkingSpace};
 pub use stage::{
     AuxSource, ColorStage, FilterLink, LinkVisitor, ParamSource, Placed, ShapeInput, SpatialStage,
-    StageCollector,
+    StageCollector, visit_lengths,
 };
 pub use visitor::SignalVisitor;

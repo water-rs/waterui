@@ -463,7 +463,8 @@ fn box_blur(radius: f32, image: &mut CpuImage<'_>) {
     }
     let height = image.pixels.len() / width;
     debug_assert_eq!(height * width, image.pixels.len());
-    let radius = radius.round().max(0.0) as usize;
+    // WGSL's `round`, which the stage uses, rounds half to even.
+    let radius = radius.round_ties_even().max(0.0) as usize;
     if radius == 0 {
         return;
     }
@@ -562,7 +563,7 @@ fn blend_with_image(
     }
 }
 
-fn aux_pixel(data: AuxData<'_>, index: usize) -> [f32; 4] {
+pub fn aux_pixel(data: AuxData<'_>, index: usize) -> [f32; 4] {
     match data.format {
         AuxFormat::Rgba8 => {
             let start = index * 4;

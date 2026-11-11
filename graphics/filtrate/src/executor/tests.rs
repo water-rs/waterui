@@ -11,10 +11,8 @@ use cherenkov_shader::{
 };
 use image::RgbaImage;
 
-use super::{
-    Executor, entry,
-    plan::{PassAux, Plan},
-};
+use super::{Executor, entry};
+use crate::plan::{PassAux, Plan, PlanError};
 use crate::{
     AnimatedCallback, AnimatedTarget, AuxSource, ColorFilter, ColorStage, CpuFilter, CpuImage,
     CpuKernel, Effect, EffectContext, EffectFrameTiming, EffectInput, EffectOutput,
@@ -588,7 +586,7 @@ fn a_stage_declares_the_shape_input_its_snippet_takes() {
             false,
             cherenkov_shader::Precision::F32
         ),
-        Err(EffectSetupError::StageMismatch {
+        Err(PlanError::StageMismatch {
             stage: "median",
             ..
         })

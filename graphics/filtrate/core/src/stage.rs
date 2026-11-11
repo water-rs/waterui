@@ -162,6 +162,39 @@ pub trait StageCollector {
     fn spatial(&mut self, stage: Placed<SpatialStage>);
 }
 
+/// Visits every parameter index `filter`'s stages declare a
+/// [`ParamSource::Length`].
+///
+/// The indices are into the flattened [`Filter::Params`](crate::Filter::Params):
+/// the values an executor scales from points into device pixels before any
+/// consumer reads them. An index several stages share — a two-pass blur's
+/// halves reading one radius — is visited once per declaration.
+pub fn visit_lengths<F: Filter>(filter: &F, visit: impl FnMut(usize)) {
+    struct Lengths<V>(V);
+
+    impl<V: FnMut(usize)> Lengths<V> {
+        fn collect(&mut self, params: &[ParamSource], param_base: usize) {
+            for source in params {
+                if let ParamSource::Length(offset) = source {
+                    (self.0)(param_base + offset);
+                }
+            }
+        }
+    }
+
+    impl<V: FnMut(usize)> StageCollector for Lengths<V> {
+        fn color(&mut self, stage: Placed<ColorStage>) {
+            self.collect(stage.stage.params, stage.param_base);
+        }
+
+        fn spatial(&mut self, stage: Placed<SpatialStage>) {
+            self.collect(stage.stage.params, stage.param_base);
+        }
+    }
+
+    filter.collect_stages(&mut Lengths(visit));
+}
+
 /// One link of a filter chain, as a backend sees it: the concrete filter,
 /// erased so it can be downcast, and the offsets that place its parameter
 /// and image indices in the flattened chain.

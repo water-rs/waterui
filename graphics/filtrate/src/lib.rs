@@ -85,8 +85,13 @@ pub mod effect;
 #[cfg(feature = "gpu")]
 mod executor;
 pub mod filters;
+#[cfg(feature = "lanes")]
+mod lanes;
 #[cfg(feature = "gpu")]
 mod pipeline_cache;
+#[cfg(any(feature = "gpu", feature = "lanes"))]
+mod plan;
+mod reach;
 #[cfg(feature = "gpu")]
 pub mod shader_effect;
 
@@ -108,8 +113,11 @@ pub use filtrate_core::{
     OperatingSpace, ParamArray, ParamSource, Placed, ShapeInput, SignalVisitor, SpatialFilter,
     SpatialStage, StageCollector, WatchGuard, WorkingSpace, kind, space,
 };
+#[cfg(feature = "lanes")]
+pub use lanes::{LaneFilterError, LaneProgram};
 #[cfg(feature = "gpu")]
 pub use pipeline_cache::PipelineCache;
+pub use reach::{KindReach, Reach};
 
 #[cfg(feature = "gpu")]
 pub use shader_effect::{SHADER_EFFECT_MAX_PARAMS, ShaderEffect, ShaderEffectError};
