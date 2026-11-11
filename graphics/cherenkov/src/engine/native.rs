@@ -510,12 +510,15 @@ impl<B: Backend> Engine<B> {
         waker: Arc<SurfaceWaker>,
     ) -> Surface<B> {
         let surface = Surface::new(id, info, self.tx.clone(), waker);
-        self.frontend.surfaces.borrow_mut().push(super::SurfaceEntry {
-            shared: Rc::downgrade(&surface.shared),
-            waker: Arc::clone(&surface.waker),
-            next_frame: Rc::downgrade(&surface.next_frame),
-            running_tracks: Rc::downgrade(&surface.running_tracks),
-        });
+        self.frontend
+            .surfaces
+            .borrow_mut()
+            .push(super::SurfaceEntry {
+                shared: Rc::downgrade(&surface.shared),
+                waker: Arc::clone(&surface.waker),
+                next_frame: Rc::downgrade(&surface.next_frame),
+                running_tracks: Rc::downgrade(&surface.running_tracks),
+            });
         surface
     }
 
