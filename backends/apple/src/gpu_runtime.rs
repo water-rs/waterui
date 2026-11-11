@@ -98,17 +98,61 @@ pub fn install_owners(env: &mut Environment, mtm: objc2::MainThreadMarker) {
     env.insert(cocoa_ui::capture::CapturePass::new(mtm));
 }
 
-/// The environment's GPU runtime.
-///
-/// # Panics
-///
-/// When no runtime was installed — [`prepare`] runs before any surface or
-/// effect can render, so a missing runtime is a launch error.
+/// The environment's GPU runtime — `None` when the device refused to create
+/// one ([`prepare`] logged it and launched the app without GPU services), in
+/// which case every GPU-backed view mounts through [`unavailable_leaf`].
 #[cfg(feature = "gpu_surface")]
-pub fn runtime(env: &Environment) -> GpuRuntime {
-    env.get::<GpuRuntime>()
-        .expect("GPU runtime is not installed in the WaterUI environment")
-        .clone()
+#[must_use]
+pub fn runtime(env: &Environment) -> Option<GpuRuntime> {
+    env.get::<GpuRuntime>().cloned()
+}
+
+/// The leaf a GPU-backed view mounts as when the process has no GPU runtime:
+/// an empty view that takes its proposed size and draws nothing, reported
+/// once through `tracing` for `view`. The mount is final — nothing retries
+/// the runtime per frame, and views that need no GPU are unaffected.
+#[cfg(feature = "gpu_surface")]
+#[must_use]
+pub fn unavailable_leaf(mtm: objc2::MainThreadMarker, view: &str) -> crate::contract::NativeLeaf {
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::appkit::HostView;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::uikit::HostView;
+    use waterui_core::layout::{
+        LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+    };
+
+    /// The proposed-size, drawing-nothing layout face of an unavailable view.
+    struct UnavailableSubView;
+
+    impl SubView for UnavailableSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
+
+        fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(Size::new(
+                proposal.width.unwrap_or(0.0),
+                proposal.height.unwrap_or(0.0),
+            ))
+        }
+
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::Both
+        }
+
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    tracing::error!("GPU runtime unavailable; the {view} view is not drawn");
+    let host = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+    crate::contract::NativeLeaf::new(&*host, UnavailableSubView)
 }
 
 /// The display's maximum frame rate for the view's current screen —
@@ -668,18 +712,12 @@ impl SceneEngine {
     }
 }
 
-/// The environment's shared scene engine owner.
-///
-/// # Panics
-///
-/// When no owner was installed — [`prepare`] installs it beside the runtime
-/// before any mount can render.
+/// The environment's shared scene engine owner — `None` exactly when
+/// [`runtime`] is, since [`prepare`] installs it beside the runtime.
 #[cfg(feature = "gpu_surface")]
 #[must_use]
-pub fn scene_engine(env: &Environment) -> Rc<SceneEngine> {
-    env.get::<Rc<SceneEngine>>()
-        .expect("scene engine is not installed in the WaterUI environment")
-        .clone()
+pub fn scene_engine(env: &Environment) -> Option<Rc<SceneEngine>> {
+    env.get::<Rc<SceneEngine>>().cloned()
 }
 
 /// The filter pipeline cache owner installed beside the runtime.
@@ -720,33 +758,23 @@ impl FilterPipelines {
     }
 }
 
-/// The environment's shared filter pipeline cache owner.
-///
-/// # Panics
-///
-/// When no owner was installed — [`prepare`] installs it beside the runtime
-/// before any filtered view mounts.
+/// The environment's shared filter pipeline cache owner — `None` exactly
+/// when [`runtime`] is, since [`prepare`] installs it beside the runtime.
 #[cfg(feature = "gpu_surface")]
 #[must_use]
-pub fn filter_pipelines(env: &Environment) -> Rc<FilterPipelines> {
-    env.get::<Rc<FilterPipelines>>()
-        .expect("filter pipelines are not installed in the WaterUI environment")
-        .clone()
+pub fn filter_pipelines(env: &Environment) -> Option<Rc<FilterPipelines>> {
+    env.get::<Rc<FilterPipelines>>().cloned()
 }
 
 /// The capture pass every display-driven view capture under `env` queues
 /// into, so one run-loop turn's captures commit once.
 ///
-/// # Panics
-///
-/// When no pass was installed — [`prepare`] installs it beside the
-/// runtime before any effect view can render.
+/// `None` exactly when [`runtime`] is, since [`prepare`] installs the pass
+/// beside the runtime.
 #[cfg(feature = "gpu_surface")]
 #[must_use]
-pub fn capture_pass(env: &Environment) -> cocoa_ui::capture::CapturePass {
-    env.get::<cocoa_ui::capture::CapturePass>()
-        .expect("the capture pass is not installed in the WaterUI environment")
-        .clone()
+pub fn capture_pass(env: &Environment) -> Option<cocoa_ui::capture::CapturePass> {
+    env.get::<cocoa_ui::capture::CapturePass>().cloned()
 }
 
 #[cfg(all(test, target_os = "macos", feature = "gpu_surface"))]

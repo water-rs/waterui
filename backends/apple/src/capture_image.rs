@@ -47,12 +47,20 @@ pub struct CapturedRgba {
     pub height: u32,
 }
 
+/// The capture needs a GPU runtime and the process has none — the device
+/// refused to create it at launch.
+#[derive(Debug, thiserror::Error)]
+#[error("the process has no GPU runtime")]
+pub struct GpuRuntimeUnavailable;
+
 /// Why [`capture_rgba`] produced no raster.
 #[derive(Debug)]
 pub enum CaptureFailure {
-    /// A GPU surface inside the captured subtree reported a terminal
-    /// failure — no recapture on its context generation can produce the
-    /// frame. Carries the surface's own `Arc`'d cause.
+    /// The GPU work behind the capture failed for good: a GPU surface
+    /// inside the captured subtree reported a terminal failure — no
+    /// recapture on its context generation can produce the frame — or the
+    /// process has no GPU runtime ([`GpuRuntimeUnavailable`]). Carries the
+    /// cause, `Arc`'d.
     GpuSurfaceFailed(Arc<dyn std::error::Error + Send + Sync>),
     /// The native-view composition command buffer ended in a status other
     /// than `Completed`, so the composited frame never landed.
@@ -78,9 +86,7 @@ pub enum CaptureFailure {
 impl core::fmt::Display for CaptureFailure {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::GpuSurfaceFailed(_) => {
-                f.write_str("a GPU surface in the captured subtree failed")
-            }
+            Self::GpuSurfaceFailed(_) => f.write_str("the GPU work behind the capture failed"),
             Self::CompositionFailed { status, error } => {
                 write!(
                     f,
@@ -433,7 +439,8 @@ pub async fn capture_rgba(
     // Context, device and destination resolve per attempt: a context
     // replacement mid-wait makes the old-generation target obsolete, and
     // the readback must come from the successfully fenced current one.
-    let runtime = crate::gpu_runtime::runtime(env);
+    let runtime = crate::gpu_runtime::runtime(env)
+        .ok_or_else(|| CaptureFailure::GpuSurfaceFailed(Arc::new(GpuRuntimeUnavailable)))?;
     let target = capture_attempts(&runtime, guard.capture(), &redraw, width, height, mtm).await?;
     drop(guard);
     drop(host);
@@ -512,7 +519,9 @@ pub struct CaptureDrive {
     /// The mounted root every pass lays out and captures.
     root: Retained<cocoa_ui::PlatformView>,
     /// The environment's GPU runtime — the context resolves per pass.
-    runtime: waterui_graphics::gpu::GpuRuntime,
+    /// `None` when the process has none: no pass can run and the terminal
+    /// capture fails with [`GpuRuntimeUnavailable`].
+    runtime: Option<waterui_graphics::gpu::GpuRuntime>,
     /// The capture window's backing scale — the scratch and readback
     /// targets' point-to-pixel factor.
     scale: f64,
@@ -597,13 +606,17 @@ impl CaptureDrive {
     /// owed content changed are the bounds the collection sees.
     fn pump(self: &Rc<Self>) {
         self.queued.set(false);
-        let context = self.runtime.context();
+        // Without a runtime no GPU surface exists to join: nothing to pump.
+        let Some(runtime) = &self.runtime else {
+            return;
+        };
+        let context = runtime.context();
         if context.device_lost_reason().is_some() {
             // A dead context produces no frame: the pass re-requests on
             // the rebuilt context's publication — the same wake the
             // parked surfaces take.
             let generation = context.generation();
-            let runtime = self.runtime.clone();
+            let runtime = runtime.clone();
             let drive = Rc::downgrade(self);
             executor_core::spawn_local(async move {
                 runtime.context_after(generation).await;
@@ -643,7 +656,8 @@ impl CaptureDrive {
     /// # Errors
     ///
     /// [`CaptureFailure::GpuSurfaceFailed`] with the `Arc`'d cause a
-    /// surface's terminal `CaptureError::Failed` reported, or
+    /// surface's terminal `CaptureError::Failed` reported — or
+    /// [`GpuRuntimeUnavailable`] when the process has no GPU runtime — or
     /// [`CaptureFailure::CompositionFailed`] when the native-view
     /// composition command buffer did not complete.
     #[expect(
@@ -659,6 +673,11 @@ impl CaptureDrive {
                 height: 0,
             });
         }
+        let Some(runtime) = &self.runtime else {
+            return Err(CaptureFailure::GpuSurfaceFailed(Arc::new(
+                GpuRuntimeUnavailable,
+            )));
+        };
         let (width, height) = pixel_extent(bounds.size, self.scale);
         // The redraw contract the retry loop waits on — surface requests
         // now wake a recapture instead of queueing a pump pass.
@@ -670,15 +689,8 @@ impl CaptureDrive {
                  the later capture takes over the redraw signal"
             );
         }
-        let target = capture_attempts(
-            &self.runtime,
-            &self.capture,
-            &redraw,
-            width,
-            height,
-            self.mtm,
-        )
-        .await?;
+        let target =
+            capture_attempts(runtime, &self.capture, &redraw, width, height, self.mtm).await?;
         Ok(read_target(&target, width, height))
     }
 }

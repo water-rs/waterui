@@ -180,11 +180,12 @@ pub struct InsertionRun {
     env: waterui_backend_core::Environment,
     /// The lazy blur effect (§2.6) — created on the first sample whose
     /// `blur > 0`, kept when the radius returns to 0. The run's drop
-    /// tears it down.
+    /// tears it down. The effect is `None` when the process has no GPU
+    /// runtime — reported once at creation and never retried.
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
     blur: Option<(
         waterui::reactive::Binding<f32>,
-        crate::components::filtered::LiveEffect,
+        Option<crate::components::filtered::LiveEffect>,
     )>,
     /// The `captures_content` realization (§2.7): the window overlay and
     /// its live-capture effect — built when the run arms. The run's drop

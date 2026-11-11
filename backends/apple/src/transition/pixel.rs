@@ -350,8 +350,16 @@ impl PixelRemoval {
     /// installs on its texture, a `Deferred` outcome waits a tick and a
     /// `Failed` one ends the run (§10).
     fn attempt(this: &Rc<Self>, visual: &RetiredVisual, weak_run: Weak<GhostRun>) {
+        // No GPU runtime: nothing can capture or draw the effect, so the
+        // removal ends at once instead of retrying every tick.
+        let Some(runtime) = crate::gpu_runtime::runtime(&this.env) else {
+            tracing::error!("GPU runtime unavailable; a pixel removal's effect is not drawn");
+            if let Some(run) = weak_run.upgrade() {
+                run.complete();
+            }
+            return;
+        };
         this.pending.set(true);
-        let runtime = crate::gpu_runtime::runtime(&this.env);
         let weak_this = Rc::downgrade(this);
         *this.input.borrow_mut() = Some(FrozenInput::start(visual, &runtime, move |outcome| {
             let Some(this) = weak_this.upgrade() else {

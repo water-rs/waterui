@@ -1621,7 +1621,7 @@ impl CapturableSurface for NativeFilterCapturable {
         // The exact context that issued this frame — its `Arc` is the
         // identity, carried so completion never re-fetches a replacement
         // issue of the same generation.
-        let context = crate::gpu_runtime::runtime(&owner.env).context();
+        let context = capture_runtime(&owner.env).context();
         if !std::ptr::eq(
             &raw const *retained.device(),
             &raw const *crate::gpu_runtime::raw_metal_device(&context),
@@ -1713,7 +1713,8 @@ impl CapturableSurface for NativeFilterCapturable {
         // A parent's frame drives this render: the capture joins the
         // turn's shared pass, one transaction commit for every
         // display-driven capture of the turn (#4074).
-        let captures = crate::gpu_runtime::capture_pass(&owner.env);
+        let captures = crate::gpu_runtime::capture_pass(&owner.env)
+            .expect("the capture pass is installed with the GPU runtime that drives this capture");
         captures.capture(&owner.capture, &input, generation, move |captured| {
             let work = Arc::clone(&work);
             cocoa_ui::main_queue::enqueue(move |mtm| {
@@ -1764,6 +1765,15 @@ impl CapturableSurface for NativeFilterCapturable {
     }
 }
 
+/// The GPU runtime an enclosing capture of this view runs under. The
+/// native filter itself mounts without one, but every capture entry point
+/// (`capture_rgba`, the shared capture pass) requires the runtime, so an
+/// external render only ever arrives where it is installed.
+fn capture_runtime(env: &waterui_backend_core::Environment) -> waterui_graphics::gpu::GpuRuntime {
+    crate::gpu_runtime::runtime(env)
+        .expect("an external render is driven by a capture, which needs the GPU runtime")
+}
+
 /// The main-thread half of the external render: builds the `CIImage`
 /// pipeline, runs the capture chain and submits the `CIContext` encode
 /// on the issued-context-owned queue — `Ok` settles only when Metal reports
@@ -1790,7 +1800,7 @@ fn finish_capture(work: &Shared<CaptureWork>, captured: bool, mtm: MainThreadMar
     // capture publishes under a stale context — deferred, never rebound
     // onto the new one.
     if !Arc::ptr_eq(
-        &crate::gpu_runtime::runtime(&owner.env).context(),
+        &capture_runtime(&owner.env).context(),
         &work_inner.prepared.context,
     ) {
         settle!(Err(CaptureError::Deferred));
@@ -1927,7 +1937,7 @@ fn finish_capture(work: &Shared<CaptureWork>, captured: bool, mtm: MainThreadMar
                 };
                 let completed = status == objc2_metal::MTLCommandBufferStatus::Completed
                     && Arc::ptr_eq(
-                        &crate::gpu_runtime::runtime(&owner.env).context(),
+                        &capture_runtime(&owner.env).context(),
                         &work_inner.prepared.context,
                     )
                     && work_inner.prepared.context.device_lost_reason().is_none();

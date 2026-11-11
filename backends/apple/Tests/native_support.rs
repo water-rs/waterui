@@ -1576,6 +1576,7 @@ async fn present_readiness_frame(
     let armed_slot = armed.clone();
     let pool_queue = render_queue.clone();
     let presenter = cocoa_ui::metal_presenter::MetalPresenter::new(
+        mtm,
         layer,
         std::rc::Rc::new(move |frame| {
             // The probe fires exactly once: the first frame encodes,

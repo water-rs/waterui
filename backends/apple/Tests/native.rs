@@ -3564,6 +3564,13 @@ mod gpu_surface {
                 a_deferred_external_frame_requests_a_redraw,
             ),
             Trial::test(
+                "gpu_surface::a_gpu_view_mounts_empty_without_a_runtime",
+                || {
+                    a_gpu_view_mounts_empty_without_a_runtime();
+                    Ok(())
+                },
+            ),
+            Trial::test(
                 "gpu_surface::view_render_answers_gpu_failure_over_a_failed_child",
                 view_render_answers_gpu_failure_over_a_failed_child,
             ),
@@ -4190,6 +4197,35 @@ mod gpu_surface {
         Ok(())
     }
 
+    /// A GPU-backed view under an environment with no GPU runtime — the
+    /// device refused it at launch — mounts as an empty view of its
+    /// proposed size instead of panicking.
+    pub fn a_gpu_view_mounts_empty_without_a_runtime() {
+        use waterui_apple::dispatch;
+        use waterui_apple::native_test_support::gpu_surface::fixture_scene_view;
+        use waterui_backend_core::{AnyView, Environment};
+        use waterui_core::layout::{ProposalSize, Size};
+
+        let mut env = Environment::new();
+        dispatch::install(&mut env);
+        let leaf = dispatch::render(AnyView::new(fixture_scene_view()), &env);
+        let size = leaf
+            .layout()
+            .measure(ProposalSize::new(Some(120.0), Some(80.0)))
+            .size;
+        assert_eq!(
+            size,
+            Size::new(120.0, 80.0),
+            "the unavailable view takes the proposed size"
+        );
+        let unspecified = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        assert_eq!(
+            unspecified,
+            Size::zero(),
+            "an unspecified proposal measures zero"
+        );
+    }
+
     /// `ViewRenderer::render` over a GPU child on a sealed-failure
     /// generation resolves `Err(RenderError::Gpu(_))` — the Arc'd
     /// `HostedLayerError` stays in `source()` — instead of hanging or
@@ -4219,9 +4255,12 @@ mod gpu_surface {
         // Seal the shared generation the rendered leaf's `SceneView`
         // mounts on — the same typed carrier a real surface rejection
         // produces.
-        let generation =
-            pollster::block_on(scene_engine(&env).generation(&runtime, &runtime.context()))
-                .map_err(|error| format!("the shared engine generation: {error}"))?;
+        let generation = pollster::block_on(
+            scene_engine(&env)
+                .ok_or("the fixture environment installs the scene engine")?
+                .generation(&runtime, &runtime.context()),
+        )
+        .map_err(|error| format!("the shared engine generation: {error}"))?;
         let max = runtime.context().device().limits().max_texture_dimension_2d;
         generation.seal_failure_for_test(HostedLayerError::Surface(SurfaceError::TooLarge {
             width: u32::MAX,

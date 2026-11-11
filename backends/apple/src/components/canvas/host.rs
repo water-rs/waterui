@@ -65,8 +65,9 @@ pub struct Host {
     sample: SampleFlag,
     /// A pass is queued on the main queue.
     queued: Cell<bool>,
-    /// The mesh gradient pass, opened by the first mesh.
-    mesh: OnceCell<Rc<MeshPass>>,
+    /// The mesh gradient pass, opened by the first mesh — `None` when the
+    /// device refused it, so the canvas draws no mesh.
+    mesh: OnceCell<Option<Rc<MeshPass>>>,
     /// Shows finished mesh paints, from the GPU's completion thread.
     wake: Wake,
     clock: FrameClock,

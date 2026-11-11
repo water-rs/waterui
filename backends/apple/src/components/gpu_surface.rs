@@ -1450,7 +1450,12 @@ fn attach(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
             let _ = render_drawable(&state, &frame_view, frame);
         }
     });
-    let presenter = MetalPresenter::new(layer, on_frame, state.armed.is_some());
+    let presenter = MetalPresenter::new(
+        objc2::MainThreadOnly::mtm(&**view),
+        layer,
+        on_frame,
+        state.armed.is_some(),
+    );
     let context = state.runtime.context();
     let device = crate::gpu_runtime::raw_metal_device(&context);
     presenter.set_device(&device);
@@ -2805,34 +2810,42 @@ impl SubView for SurfaceSubView {
 /// Installs the `gpu_surface` handlers — `Native<GpuContentView>` and
 /// `Native<ExternalFrameView>` and `Native<SceneView>` share presentation.
 pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<GpuContentView>(build_surface);
-    dispatcher.register_native::<ExternalFrameView>(build_surface);
+    dispatcher
+        .register_native::<GpuContentView>(|view, ctx| build_surface(view, "GPU content", ctx));
+    dispatcher.register_native::<ExternalFrameView>(|view, ctx| {
+        build_surface(view, "external frame", ctx)
+    });
     dispatcher.register_native::<waterui_graphics::backend::SceneView>(|view, ctx| {
-        build_surface(
-            scene::Scene::new(view, crate::gpu_runtime::scene_engine(ctx.env())),
-            ctx,
-        )
+        let Some(engines) = crate::gpu_runtime::scene_engine(ctx.env()) else {
+            return crate::gpu_runtime::unavailable_leaf(ctx.mtm(), "scene");
+        };
+        build_surface(scene::Scene::new(view, engines), "scene", ctx)
     });
 }
 
 /// The leaf construction the dispatcher's GPU-surface claims share —
-/// `GpuContentView`, `ExternalFrameView`, and `SceneView`.
+/// `GpuContentView`, `ExternalFrameView`, and `SceneView`. Without a GPU
+/// runtime the view (named `kind` in the report) mounts empty instead.
 fn build_surface<V: HostedView + 'static>(
     view: V,
+    kind: &str,
     ctx: &crate::contract::RenderContext<'_>,
 ) -> NativeLeaf {
-    build_surface_parts(view, ctx).0
+    let Some(runtime) = crate::gpu_runtime::runtime(ctx.env()) else {
+        return crate::gpu_runtime::unavailable_leaf(ctx.mtm(), kind);
+    };
+    build_surface_parts(view, runtime, ctx).0
 }
 
 /// The single production mount path and its typed capture owner.
 fn build_surface_parts<V: HostedView + 'static>(
     view: V,
+    runtime: GpuRuntime,
     ctx: &crate::contract::RenderContext<'_>,
 ) -> (NativeLeaf, Rc<Capturable>) {
     {
         let mtm = ctx.mtm();
         let platform_view = SurfaceView::new(mtm);
-        let runtime = crate::gpu_runtime::runtime(ctx.env());
         let state = Rc::new_cyclic(|weak| {
             SurfaceState::new(
                 weak,
@@ -3196,7 +3209,7 @@ pub mod native_test {
                 SceneView::new(InputRecordingContent {
                     events: Rc::clone(&events),
                 }),
-            );
+            )?;
             Ok((mounted, events))
         }
 
@@ -3213,11 +3226,11 @@ pub mod native_test {
         )]
         pub async fn mount_animating(mtm: MainThreadMarker) -> Result<Self, String> {
             let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
-            Ok(Self::mount_in_view(
+            Self::mount_in_view(
                 mtm,
                 &fixture_env(runtime),
                 SceneView::new(AnimatingFixtureContent),
-            ))
+            )
         }
 
         /// Mounts the surface under an environment the caller prepared —
@@ -3230,33 +3243,36 @@ pub mod native_test {
         ///
         /// When `env` carries no `GpuRuntime` or `SceneEngine`.
         pub fn mount_in(mtm: MainThreadMarker, env: &Environment) -> Result<Self, String> {
-            Ok(Self::mount_in_view(
-                mtm,
-                env,
-                SceneView::new(FixtureContent),
-            ))
+            Self::mount_in_view(mtm, env, SceneView::new(FixtureContent))
         }
 
         /// Mounts a surface around the caller's `SceneView` under `env` —
         /// the body [`Self::mount_in`] shares with mounts whose content
         /// differs (self-animating fixture content).
         ///
-        /// # Panics
+        /// # Errors
         ///
         /// When `env` carries no `GpuRuntime` or `SceneEngine`.
-        fn mount_in_view(mtm: MainThreadMarker, env: &Environment, view: SceneView) -> Self {
-            let runtime = crate::gpu_runtime::runtime(env);
-            let engines = crate::gpu_runtime::scene_engine(env);
+        fn mount_in_view(
+            mtm: MainThreadMarker,
+            env: &Environment,
+            view: SceneView,
+        ) -> Result<Self, String> {
+            let runtime =
+                crate::gpu_runtime::runtime(env).ok_or("the environment carries no GpuRuntime")?;
+            let engines = crate::gpu_runtime::scene_engine(env)
+                .ok_or("the environment carries no SceneEngine")?;
             let ctx = RenderContext::new(env, Rc::new(Dispatcher::new()), mtm);
-            let (leaf, capturable) = build_surface_parts(scene::Scene::new(view, engines), &ctx);
-            Self {
+            let (leaf, capturable) =
+                build_surface_parts(scene::Scene::new(view, engines), runtime.clone(), &ctx);
+            Ok(Self {
                 state: capturable.state.clone(),
                 view: capturable.view.clone(),
                 capturable,
                 leaf,
                 runtime,
                 fixture_window: RefCell::new(None),
-            }
+            })
         }
 
         /// Installs the hosted scene renderer through the real

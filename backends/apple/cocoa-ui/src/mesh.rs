@@ -161,26 +161,60 @@ impl core::fmt::Debug for MeshPass {
     }
 }
 
-impl Default for MeshPass {
-    fn default() -> Self {
-        Self::new()
-    }
+/// Why the mesh pass could not paint: the system or its Metal device
+/// refused something a mesh needs. Operational, never a caller's mistake —
+/// the caller logs it and the mesh is not drawn.
+#[derive(Debug, thiserror::Error)]
+pub enum MeshError {
+    /// The system has no Metal device.
+    #[error("the system has no Metal device")]
+    NoDevice,
+    /// The device refused a command queue.
+    #[error("the Metal device refused a command queue")]
+    CommandQueue,
+    /// The device refused to compile the mesh gradient pipeline.
+    #[error("the Metal device refused the mesh gradient pipeline: {0}")]
+    Pipeline(String),
+    /// The queue refused a command buffer.
+    #[error("the Metal queue refused a command buffer")]
+    CommandBuffer,
+    /// The command buffer refused a render encoder.
+    #[error("the Metal command buffer refused a render encoder")]
+    RenderEncoder,
+    /// `IOSurface` refused the mesh surface.
+    #[error("IOSurface refused a {width}x{height} half-float mesh surface")]
+    Surface {
+        /// The requested width in pixels.
+        width: usize,
+        /// The requested height in pixels.
+        height: usize,
+    },
+    /// The device refused a texture over the mesh surface.
+    #[error("the Metal device refused a texture over the {width}x{height} mesh surface")]
+    SurfaceTexture {
+        /// The surface's width in pixels.
+        width: usize,
+        /// The surface's height in pixels.
+        height: usize,
+    },
 }
 
 impl MeshPass {
     /// Opens the system's Metal device and builds the pass.
     ///
+    /// # Errors
+    ///
+    /// [`MeshError::NoDevice`] when the system has no Metal device,
+    /// [`MeshError::CommandQueue`] when the device refuses a queue, and
+    /// [`MeshError::Pipeline`] when it refuses the pipeline.
+    ///
     /// # Panics
     ///
-    /// When the system has no Metal device, or the in-tree shader fails to
-    /// load: neither is a condition an app recovers from.
-    #[must_use]
-    pub fn new() -> Self {
-        let device = objc2_metal::MTLCreateSystemDefaultDevice()
-            .expect("a mesh gradient needs a Metal device");
-        let queue = device
-            .newCommandQueue()
-            .expect("a Metal device makes a command queue");
+    /// When the in-tree shader fails to load or lacks an entry point: the
+    /// metallib is compiled into the binary by `build.rs`.
+    pub fn new() -> Result<Self, MeshError> {
+        let device = objc2_metal::MTLCreateSystemDefaultDevice().ok_or(MeshError::NoDevice)?;
+        let queue = device.newCommandQueue().ok_or(MeshError::CommandQueue)?;
         let library = device
             .newLibraryWithData_error(&dispatch2::DispatchData::from_static_bytes(
                 MESH_GRADIENT_METALLIB,
@@ -202,12 +236,12 @@ impl MeshPass {
         attachment.setBlendingEnabled(false);
         let pipeline = device
             .newRenderPipelineStateWithDescriptor_error(&descriptor)
-            .expect("the mesh gradient pipeline compiles");
-        Self {
+            .map_err(|error| MeshError::Pipeline(error.localizedDescription().to_string()))?;
+        Ok(Self {
             device,
             queue,
             pipeline,
-        }
+        })
     }
 
     /// The device meshes paint on, for a layer's own `device`.
@@ -296,7 +330,7 @@ impl MeshPass {
         mesh: &Mesh,
         placement: Placement,
         target: &ProtocolObject<dyn MTLTexture>,
-    ) {
+    ) -> Result<(), MeshError> {
         let descriptor = MTLRenderPassDescriptor::new();
         // SAFETY: index 0 is the single color attachment.
         let attachment = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(0) };
@@ -311,7 +345,7 @@ impl MeshPass {
         });
         let encoder = command_buffer
             .renderCommandEncoderWithDescriptor(&descriptor)
-            .expect("a render encoder");
+            .ok_or(MeshError::RenderEncoder)?;
         #[expect(
             clippy::cast_precision_loss,
             reason = "texture extents are far below f64's integer range"
@@ -338,24 +372,27 @@ impl MeshPass {
             encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 3);
         }
         encoder.endEncoding();
+        Ok(())
     }
 
     /// Paints `mesh` into `target` and returns once the GPU is done: a
     /// render a test or a one-off export reads back.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// When the device cannot make a command buffer.
+    /// [`MeshError::CommandBuffer`] when the queue cannot make a command
+    /// buffer, [`MeshError::RenderEncoder`] when it cannot make an encoder.
     pub fn paint_to_texture(
         &self,
         mesh: &Mesh,
         placement: Placement,
         target: &ProtocolObject<dyn MTLTexture>,
-    ) {
-        let command_buffer = self.queue.commandBuffer().expect("a command buffer");
-        self.encode(&command_buffer, mesh, placement, target);
+    ) -> Result<(), MeshError> {
+        let command_buffer = self.queue.commandBuffer().ok_or(MeshError::CommandBuffer)?;
+        self.encode(&command_buffer, mesh, placement, target)?;
         command_buffer.commit();
         command_buffer.waitUntilCompleted();
+        Ok(())
     }
 
     /// A `width` by `height` pixel surface for meshes, tagged extended
@@ -365,11 +402,17 @@ impl MeshPass {
     /// A zero `width` or `height` breaks the contract: it is reported and
     /// the side is one pixel.
     ///
+    /// # Errors
+    ///
+    /// [`MeshError::Surface`] when `IOSurface` refuses the surface and
+    /// [`MeshError::SurfaceTexture`] when the device refuses a texture over
+    /// it.
+    ///
     /// # Panics
     ///
-    /// When the system refuses the surface or a texture over it.
-    #[must_use]
-    pub fn surface(&self, width: usize, height: usize) -> MeshSurface {
+    /// Never in practice: a surface side fits `i64`, and a named colour
+    /// space has a property list.
+    pub fn surface(&self, width: usize, height: usize) -> Result<MeshSurface, MeshError> {
         if width == 0 || height == 0 {
             contract_violation!(
                 "a mesh surface has pixels, got {width}x{height}; a zero side is one pixel"
@@ -401,7 +444,7 @@ impl MeshPass {
         let properties = CFDictionary::from_slices(&keys, &values);
         // SAFETY: every key is an IOSurface property whose value is a number.
         let surface = unsafe { IOSurfaceRef::new(properties.as_opaque()) }
-            .expect("IOSurface makes a half-float surface");
+            .ok_or(MeshError::Surface { width, height })?;
         let space = crate::metal::color_space(PIXEL_FORMAT)
             .property_list()
             .expect("a named colour space has a property list");
@@ -422,8 +465,8 @@ impl MeshPass {
         let texture = self
             .device
             .newTextureWithDescriptor_iosurface_plane(&descriptor, &surface, 0)
-            .expect("Metal wraps a half-float IOSurface as a texture");
-        MeshSurface { surface, texture }
+            .ok_or(MeshError::SurfaceTexture { width, height })?;
+        Ok(MeshSurface { surface, texture })
     }
 
     /// Paints `mesh` into `target` and commits; `done` runs on a Metal
@@ -431,18 +474,25 @@ impl MeshPass {
     /// shown. The returned command buffer is the paint, for a capture
     /// that must wait for it.
     ///
+    /// # Errors
+    ///
+    /// [`MeshError::CommandBuffer`] when the queue cannot make a command
+    /// buffer, [`MeshError::RenderEncoder`] when it cannot make an encoder;
+    /// nothing is committed and `done` never runs.
+    ///
     /// # Panics
     ///
-    /// When the device cannot make a command buffer.
+    /// Never in practice: the completion slot's lock is never held across a
+    /// panic.
     pub fn paint_to_surface(
         &self,
         mesh: &Mesh,
         placement: Placement,
         target: &MeshSurface,
         done: impl FnOnce() + Send + 'static,
-    ) -> Retained<ProtocolObject<dyn MTLCommandBuffer>> {
-        let command_buffer = self.queue.commandBuffer().expect("a command buffer");
-        self.encode(&command_buffer, mesh, placement, &target.texture);
+    ) -> Result<Retained<ProtocolObject<dyn MTLCommandBuffer>>, MeshError> {
+        let command_buffer = self.queue.commandBuffer().ok_or(MeshError::CommandBuffer)?;
+        self.encode(&command_buffer, mesh, placement, &target.texture)?;
         let done = Mutex::new(Some(done));
         let handler = RcBlock::new(move |_: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
             let done = done
@@ -457,6 +507,6 @@ impl MeshPass {
         // before `commit`; Metal copies it.
         unsafe { command_buffer.addCompletedHandler(RcBlock::as_ptr(&handler)) };
         command_buffer.commit();
-        command_buffer
+        Ok(command_buffer)
     }
 }

@@ -516,6 +516,7 @@ fn attach_if_needed(
     // `CAMetalDisplayLink` bound to the current context's device and the
     // drawable size this attach measures.
     let presenter = MetalPresenter::new(
+        objc2::MainThreadOnly::mtm(&*state.view),
         state.presentation_layer.clone(),
         Rc::clone(&state.frame_sink),
         state.armed.is_some(),
@@ -2447,7 +2448,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
         {
             return crate::components::native_filter::mount(mtm, ctx, content, chained, &plan);
         }
-        let services = services(ctx.env());
+        let Some(services) = services(ctx.env()) else {
+            return crate::gpu_runtime::unavailable_leaf(mtm, "filtered");
+        };
         let (sources, guard_list): (Vec<AnyEffect>, Vec<ParamGuards>) = chained.into_iter().unzip();
         // The chain presents outermost-last: effects render content-adjacent
         // first, so reverse the collection order.
@@ -2789,13 +2792,14 @@ fn wire_filtered_state(
 }
 
 /// The runtime, pipeline caches and capture pass `env`'s GPU installation
-/// hands every filtered realization.
-fn services(env: &waterui_backend_core::Environment) -> GpuServices {
-    GpuServices {
-        runtime: crate::gpu_runtime::runtime(env),
-        pipelines: crate::gpu_runtime::filter_pipelines(env),
-        captures: crate::gpu_runtime::capture_pass(env),
-    }
+/// hands every filtered realization — `None` when the process has no GPU
+/// runtime, the caller reports it and realizes nothing.
+fn services(env: &waterui_backend_core::Environment) -> Option<GpuServices> {
+    Some(GpuServices {
+        runtime: crate::gpu_runtime::runtime(env)?,
+        pipelines: crate::gpu_runtime::filter_pipelines(env)?,
+        captures: crate::gpu_runtime::capture_pass(env)?,
+    })
 }
 
 /// A transition's blur effect over an already-realized input — the
@@ -2830,12 +2834,13 @@ impl fmt::Debug for FrozenEffect {
 
 impl FrozenEffect {
     /// The blur realization (§2.6): one `filtrate::filters::Blur` fed
-    /// by `radius` over the frozen `input` frame.
+    /// by `radius` over the frozen `input` frame. `None` (reported) when the
+    /// process has no GPU runtime.
     pub fn blur(
         radius: waterui_core::reactive::Binding<f32>,
         env: &waterui_backend_core::Environment,
         input: Retained<MetalTexture>,
-    ) -> Self {
+    ) -> Option<Self> {
         let mut guards = ParamGuards::default();
         let effect = AnyEffect::filter(waterui_graphics::backend::filtrate::filters::Blur(
             guards.bind(radius),
@@ -2858,20 +2863,21 @@ impl FrozenEffect {
         input: Retained<MetalTexture>,
     ) -> Option<Self> {
         let effects = effects_from_body(body, env)?;
-        Some(Self::new(
-            effects,
-            FilteredInput::Frozen { texture: input },
-            env,
-        ))
+        Self::new(effects, FilteredInput::Frozen { texture: input }, env)
     }
 
     /// Builds the filtered pipeline over `input` — the construction the
-    /// effect and the mounted leaf share, minus the leaf.
+    /// effect and the mounted leaf share, minus the leaf. `None` (reported)
+    /// when the process has no GPU runtime: no effect is drawn.
     fn new(
         effects: Vec<(AnyEffect, ParamGuards)>,
         input: FilteredInput,
         env: &waterui_backend_core::Environment,
-    ) -> Self {
+    ) -> Option<Self> {
+        let Some(services) = services(env) else {
+            tracing::error!("GPU runtime unavailable; the transition effect is not drawn");
+            return None;
+        };
         let mtm = MainThreadMarker::new().expect("a transition effect builds on the main thread");
         let view = HostView::new(mtm, cocoa_ui::Rect::ZERO);
         #[cfg(target_os = "macos")]
@@ -2884,14 +2890,14 @@ impl FrozenEffect {
             .map(|(effect, guards)| (effect.build(), guards))
             .unzip();
         let (state, guard, capturable) =
-            wire_filtered_state(mtm, services(env), &view, input, built, env);
-        Self {
+            wire_filtered_state(mtm, services, &view, input, built, env);
+        Some(Self {
             view,
             state,
             capturable,
             guards,
             guard,
-        }
+        })
     }
 
     /// The output view — added to the host as a plain subview over the
@@ -2961,14 +2967,26 @@ impl LiveEffect {
     /// Captures `content_view` in place and adds the effect output to
     /// `output_parent`, covering the same area. The content is never
     /// reparented; it hides only once the effect's first frame
-    /// presents, so no frame shows a gap.
+    /// presents, so no frame shows a gap. `None` (reported) when the process
+    /// has no GPU runtime: no effect is drawn.
     pub fn attach(
         effects: Vec<(AnyEffect, ParamGuards)>,
         content_view: &PlatformView,
         output_parent: &PlatformView,
         env: &waterui_backend_core::Environment,
-    ) -> Self {
-        Self::build(effects, content_view, output_parent, output_parent, env)
+    ) -> Option<Self> {
+        let Some(services) = services(env) else {
+            tracing::error!("GPU runtime unavailable; the transition effect is not drawn");
+            return None;
+        };
+        Some(Self::build(
+            effects,
+            services,
+            content_view,
+            output_parent,
+            output_parent,
+            env,
+        ))
     }
 
     /// Whether the effect's first frame has presented — the captured
@@ -3015,6 +3033,10 @@ impl LiveEffect {
         env: &waterui_backend_core::Environment,
     ) -> Option<Self> {
         let effects = effects_from_body(body, env)?;
+        let Some(services) = services(env) else {
+            tracing::error!("GPU runtime unavailable; the transition effect is not drawn");
+            return None;
+        };
         // The output lives in the window overlay, but invalidations from
         // the captured subtree rise through the content's own ancestors —
         // the transition host — so that is where the sink must sit.
@@ -3022,6 +3044,7 @@ impl LiveEffect {
             .expect("a transition's content view is mounted inside its host");
         Some(Self::build(
             effects,
+            services,
             content_view,
             output_parent,
             &sink_view,
@@ -3035,6 +3058,7 @@ impl LiveEffect {
     /// itself when the output sits beside the content, as a blur does).
     fn build(
         effects: Vec<(AnyEffect, ParamGuards)>,
+        services: GpuServices,
         content_view: &PlatformView,
         output_parent: &PlatformView,
         sink_view: &PlatformView,
@@ -3063,7 +3087,7 @@ impl LiveEffect {
             .map(|(effect, guards)| (effect.build(), guards))
             .unzip();
         let (state, mut guard, capturable) =
-            wire_filtered_state(mtm, services(env), &output, input, built, env);
+            wire_filtered_state(mtm, services, &output, input, built, env);
         // The content hides only when the effect's first frame lands —
         // until then it keeps painting, so no frame shows a gap.
         if let FilteredInput::Captured { content_view, .. } = &state.input {
