@@ -1384,7 +1384,10 @@ impl Built {
                 .stage_flags(fragment),
         ];
         // Group 1 mirrors `ENGINE_GROUP1`: source, backdrop, image and
-        // mask. A tile draw binds the dummy for the first two.
+        // mask. A tile draw binds the dummy for the first two. The linear
+        // sampler is left out: only a backdrop effect's
+        // `backdrop_sample_blur` reads through it, and no tile family
+        // carries a backdrop effect.
         let group1 = [sampled(0), sampled(1), sampled(2), sampled(3)];
         // Group 2 is the executor's own: the two input attachments
         // `build_tile_spirv.rs` rewrote the attachment reads onto.
