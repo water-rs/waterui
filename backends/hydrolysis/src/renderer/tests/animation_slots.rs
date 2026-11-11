@@ -20,7 +20,9 @@ fn slide(source: &Binding<i32>, index: i32) -> impl Signal<Output = f32> {
 /// An opacity fade is an engine-run motion (water-rs/waterui#2203): the
 /// host asks for no refresh of its own, and the engine's sample of the
 /// fade's layer track reports the slow rate until the fade finishes — a
-/// fade moves no geometry, so 30–60 Hz reads smooth.
+/// fade moves no geometry, so 30–60 Hz reads smooth. The sample is the GPU
+/// mirror's.
+#[cfg(hydrolysis_gpu_painter)]
 #[test]
 fn opacity_fade_refreshes_at_the_slow_rate_until_the_fade_finishes() {
     let mut renderer = test_renderer();

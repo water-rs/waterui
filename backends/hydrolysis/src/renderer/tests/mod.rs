@@ -38,6 +38,8 @@ mod dynamic_remeasure;
 // (water-rs/waterui#4065); that issue lifts the painter gate.
 #[cfg(all(hydrolysis_gpu_painter, not(target_arch = "wasm32")))]
 mod emoji_atlas;
+// Drives the GPU mirror's `SurfaceTree`, the sampler the GPU painter runs.
+#[cfg(hydrolysis_gpu_painter)]
 mod engine_motion;
 mod gesture_buttons;
 mod gesture_capture;
