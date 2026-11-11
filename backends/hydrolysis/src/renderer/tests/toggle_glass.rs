@@ -207,6 +207,7 @@ fn plan() -> ChromePlan {
             MaterialCapture {
                 scale: CaptureScale::new(0.5).expect("0.5 is a valid capture scale"),
                 levels: CaptureLevels::ONE,
+                pyramid: cherenkov::CapturePyramid::Box,
                 grouping: MaterialGrouping::Solo,
                 blend_space: cherenkov::BlendSpace::Linear,
             },

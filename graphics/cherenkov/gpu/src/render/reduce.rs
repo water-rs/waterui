@@ -1,8 +1,9 @@
 //! Backdrop capture levels: the reduce pipeline (`reduce.wgsl`) that
 //! halves a pyramid level into the next — level `k` texel `(i, j)` is the
 //! mean of level `k − 1` texels `(2i..=2i+1, 2j..=2j+1)`, a partial box
-//! at the spec edge averaging the texels present — and the parameters it
-//! reads.
+//! at the spec edge averaging the texels present, or for a Gaussian
+//! pyramid the `[1, 5, 10, 10, 5, 1] / 32` kernel centred on it — and the
+//! parameters it reads.
 
 use bytemuck::{Pod, Zeroable};
 
@@ -13,21 +14,33 @@ use bytemuck::{Pod, Zeroable};
 pub struct Params {
     /// The source level's spec extent, in its own texels.
     pub source_extent: [f32; 2],
+    /// The reduction kernel: [`KERNEL_BOX`] or [`KERNEL_GAUSSIAN`].
+    pub kernel: u32,
     /// Padding to the uniform alignment.
-    pub pad0: [f32; 2],
+    pub pad0: u32,
     /// Padding to the uniform alignment.
     pub pad1: [f32; 4],
 }
 
+/// The exact 2×2 box mean.
+const KERNEL_BOX: u32 = 0;
+/// The `[1, 5, 10, 10, 5, 1] / 32` binomial kernel (`KERNEL_GAUSSIAN` in
+/// `reduce.wgsl`).
+const KERNEL_GAUSSIAN: u32 = 1;
+
 /// The reduce parameters of one pyramid step: `source` is the spec
-/// extent of the level being halved.
+/// extent of the level being reduced, `pyramid` the group's kernel.
 #[expect(
     clippy::cast_precision_loss,
     reason = "capture extents are well within f32"
 )]
-pub fn params(source: (u32, u32)) -> Params {
+pub fn params(source: (u32, u32), pyramid: cherenkov::CapturePyramid) -> Params {
     Params {
         source_extent: [source.0 as f32, source.1 as f32],
+        kernel: match pyramid {
+            cherenkov::CapturePyramid::Box => KERNEL_BOX,
+            cherenkov::CapturePyramid::Gaussian => KERNEL_GAUSSIAN,
+        },
         ..Params::default()
     }
 }
