@@ -6531,8 +6531,8 @@ impl GpuRenderer {
                 .map_or(WORKING_FORMAT, |surf| surf.format);
             self.ensure_projective(&[surface, self.scratch_format, WORKING_FORMAT])?;
         }
-        for r in &realize {
-            self.ensure_projective(&[r.key.format.texture()])?;
+        if !realize.is_empty() {
+            self.ensure_projective(&[WORKING_FORMAT])?;
         }
         let available = self.projective_available();
         let Some(surf) = self.surfaces.get_mut(&id) else {
@@ -6559,7 +6559,7 @@ impl GpuRenderer {
                 .projective
                 .get(&r.key.layer)
                 .and_then(|entries| entries.iter().find(|entry| entry.matches(r.key)));
-            if old.is_some_and(|entry| entry.fits(r.levels[0], r.key.format)) {
+            if old.is_some_and(|entry| entry.fits(r.levels[0])) {
                 continue;
             }
             let growth = r
@@ -6579,7 +6579,7 @@ impl GpuRenderer {
             let entries = surf.projective.entry(r.key.layer).or_default();
             let slot = entries.iter().position(|e| e.matches(r.key));
             if let Some(entry) = slot.map(|i| &mut entries[i])
-                && entry.fits(r.levels[0], r.key.format)
+                && entry.fits(r.levels[0])
             {
                 entry.key = None;
                 entry.picture.clone_from(&r.picture);
@@ -6587,14 +6587,8 @@ impl GpuRenderer {
             }
             let pipelines = self.projective.as_ref().expect("built above");
             surf.command_damage.forget();
-            let mut entry = projective::Entry::new(
-                &self.device,
-                pipelines,
-                r.key.bucket,
-                &r.levels,
-                r.key.format,
-                r.bytes(),
-            );
+            let mut entry =
+                projective::Entry::new(&self.device, pipelines, r.key.bucket, &r.levels, r.bytes());
             if r.picture.is_some() {
                 // The share admitted what the driver said it would commit;
                 // a texture committing more would overrun it unseen.
@@ -7784,7 +7778,6 @@ impl GpuRenderer {
             let key = projective::LocalKey {
                 layer: plan.layer,
                 picture: None,
-                format: projective::LocalFormat::Working,
                 bucket: projective::bucket(image.density),
             };
             let cache =
@@ -7817,7 +7810,7 @@ impl GpuRenderer {
                     picture: None,
                     key,
                     cache,
-                    bytes: projective::mip_bytes(key.format.texture(), &image.levels),
+                    bytes: projective::mip_bytes(&image.levels),
                     levels: image.levels.clone(),
                     deps,
                 });

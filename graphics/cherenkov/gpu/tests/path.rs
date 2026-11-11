@@ -1114,3 +1114,56 @@ fn retained_picture_reuses_pixels_across_fractional_translation() -> Result<(), 
     Ok(())
 }
 }
+
+split_test! {
+/// A retained standard-range picture keeps the working precision: its
+/// gradient and solid fill read back as the same commands drawn without a
+/// picture, not quantized to an 8-bit store.
+fn a_retained_picture_keeps_working_precision() -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::kurbo::{Affine, Rect};
+    use cherenkov::{LinearGradient, Picture};
+    use nami::Binding;
+    let band = Rect::new(0.0, 0.0, 40.0, 20.0);
+    let block = Rect::new(4.0, 4.0, 16.0, 16.0);
+    let blue_to_yellow = || {
+        LinearGradient::new((0.0, 0.0), (40.0, 0.0))
+            .stop(0.0, WorkingColor::new([0.0, 0.2, 1.0, 1.0]))
+            .stop(1.0, WorkingColor::new([1.0, 0.8, 0.0, 1.0]))
+    };
+    let red = WorkingColor::new([0.9, 0.0, 0.0, 1.0]);
+    let scale = Affine::scale(4.0);
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let direct = wait!(engine.surface(Offscreen::new((160, 80), OffscreenFormat::LinearF16), || {}))?;
+    direct.update(|tx| {
+        tx[direct.root()].content(direct.record(|c| {
+            c.transform(scale, |c| {
+                c.fill(band, blue_to_yellow());
+                c.fill(block, red);
+            });
+        }));
+    });
+    let retained = wait!(engine.surface(Offscreen::new((160, 80), OffscreenFormat::LinearF16), || {}))?;
+    let picture = Picture::record(|c| {
+        c.fill(band, blue_to_yellow());
+        c.fill(block, red);
+    });
+    let placement = Binding::container(scale);
+    retained.update(|tx| {
+        tx[retained.root()].content(retained.record(|c| c.picture(&picture, placement.clone())));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    // A fractional move that rasterizes nothing shows the picture's pixels
+    // come from its retained image; back on the texel grid they are read
+    // unresampled.
+    for place in [Affine::translate((0.5, 0.0)) * scale, scale] {
+        placement.set(place);
+        wait!(engine.render(cherenkov::FrameTime::now()))?;
+        assert_eq!(engine.stats().paths_rasterized, 0, "the picture must draw from its retained image");
+    }
+    assert_images_match(
+        &crop(&wait!(direct.readback())?, 0..160, 0..80),
+        &crop(&wait!(retained.readback())?, 0..160, 0..80),
+    );
+    Ok(())
+}
+}
