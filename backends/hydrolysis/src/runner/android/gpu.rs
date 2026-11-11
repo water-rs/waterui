@@ -483,10 +483,21 @@ impl AndroidSurface {
         let Some(window) = self.engine_window.as_ref() else {
             return;
         };
-        window
+        // A gone render thread is not recoverable here: the band stays
+        // undelivered, and the next frame's render reports the same loss
+        // through its own terminal outcome.
+        if let Err(error) = window
             .surface
             .set_band(view, band.map(BandAttachment::target))
-            .expect("hydrolysis android: engine render thread is gone");
+        {
+            tracing::error!(
+                target: "waterui::hydrolysis::android",
+                view,
+                %error,
+                "the engine render thread is gone; the band is not delivered"
+            );
+            return;
+        }
         if band.is_some() {
             self.bands_delivered.insert(view, window.surface.id());
         }

@@ -31,6 +31,7 @@ use waterui::Environment;
 use waterui::cursor::CursorStyle;
 use waterui::theme::ColorScheme;
 use waterui::window::WindowState;
+use waterui_core::contract_violation;
 use waterui_core::layout::LayoutDirection;
 #[cfg(hydrolysis_gpu_painter)]
 use waterui_graphics::gpu::RedrawHandle;
@@ -256,10 +257,15 @@ impl HostBridge {
                 }?
                 .z()
             })
-            .expect(
-                "the frame's focus pull runs on the attached UI thread, \
-                 and onNativePlatformViewFocus must not throw",
-            )
+            .unwrap_or_else(|error| {
+                tracing::error!(
+                    target: "waterui::hydrolysis::android",
+                    %error,
+                    "the platform-view focus pull failed on the UI thread, or \
+                     onNativePlatformViewFocus threw; focus is reported outside the platform views"
+                );
+                false
+            })
     }
 
     /// `call` for a single `String` argument — the JSON pushes serialize
@@ -387,23 +393,26 @@ impl HostBridge {
 /// bitmap is tagged with for images its swapchain encoded in `space`
 /// (water-rs/waterui#2225).
 ///
-/// # Panics
-/// For a space `ColorSpace.Named` cannot name: the band would
-/// show its pixels in the wrong space.
+/// `None` for a space `ColorSpace.Named` cannot name — a broken contract,
+/// since the band would show its pixels in the wrong space; the caller
+/// shows nothing for the band then.
 #[cfg(hydrolysis_gpu_painter)]
-fn color_space_name(space: wgpu::SurfaceColorSpace) -> &'static str {
+fn color_space_name(space: wgpu::SurfaceColorSpace) -> Option<&'static str> {
     match space {
-        wgpu::SurfaceColorSpace::Srgb => "SRGB",
-        wgpu::SurfaceColorSpace::DisplayP3 => "DISPLAY_P3",
-        wgpu::SurfaceColorSpace::ExtendedSrgb => "EXTENDED_SRGB",
-        wgpu::SurfaceColorSpace::ExtendedSrgbLinear => "LINEAR_EXTENDED_SRGB",
+        wgpu::SurfaceColorSpace::Srgb => Some("SRGB"),
+        wgpu::SurfaceColorSpace::DisplayP3 => Some("DISPLAY_P3"),
+        wgpu::SurfaceColorSpace::ExtendedSrgb => Some("EXTENDED_SRGB"),
+        wgpu::SurfaceColorSpace::ExtendedSrgbLinear => Some("LINEAR_EXTENDED_SRGB"),
         wgpu::SurfaceColorSpace::Auto
         | wgpu::SurfaceColorSpace::Bt2100Pq
         | wgpu::SurfaceColorSpace::Bt2100Hlg
-        | wgpu::SurfaceColorSpace::ExtendedDisplayP3 => panic!(
-            "a band's swapchain negotiated {space:?}, which android.graphics.ColorSpace.Named \
-             cannot name"
-        ),
+        | wgpu::SurfaceColorSpace::ExtendedDisplayP3 => {
+            contract_violation!(
+                "a band's swapchain negotiated {space:?}, which android.graphics.ColorSpace.Named \
+                 cannot name; the band shows nothing"
+            );
+            None
+        }
     }
 }
 
@@ -834,7 +843,10 @@ impl ExecutorWake {
     /// looper — must be the UI thread (its main looper exists already). The
     /// executor has no other wake fd, so a wake written while the looper
     /// idles is always observed on the registered fd.
-    fn register(executor: &AndroidMainThreadExecutor) -> Result<Self, JniError> {
+    fn register(
+        executor: &AndroidMainThreadExecutor,
+        vm: &'static JavaVM,
+    ) -> Result<Self, JniError> {
         let fd = Arc::clone(executor.wake_fd());
         let looper = ThreadLooper::for_thread().ok_or_else(|| {
             JniError("hydrolysis android: no ALooper on the UI thread".to_owned())
@@ -854,12 +866,20 @@ impl ExecutorWake {
                 // JNI calls create would never be freed. One frame around the
                 // drain gives these tasks the scope a JNI entry gives the
                 // frame callback's drain.
-                let drained = super::jni::java_vm()
+                let drained = vm
                     .with_local_frame(WAKE_DRAIN_LOCALS, |_env| Ok::<_, JniError>(drain.drain()))
-                    .expect(
-                        "hydrolysis android: the looper callback runs on the attached UI thread, \
-                         and PushLocalFrame around the executor drain cannot fail there",
-                    );
+                    .unwrap_or_else(|error| {
+                        // The looper callback runs on the attached UI
+                        // thread, where PushLocalFrame fails only when the
+                        // VM is out of memory. The queued tasks stay queued
+                        // until the next wake.
+                        tracing::error!(
+                            target: "waterui::hydrolysis::android",
+                            ?error,
+                            "executor wake: the local-reference frame around the drain could not be pushed"
+                        );
+                        0
+                    });
                 tracing::debug!(
                     target: "waterui::hydrolysis::android",
                     count,
@@ -999,7 +1019,7 @@ pub struct UiThreadServices {
 impl UiThreadServices {
     /// Runs at `nativeUiThreadServices` — the load hook, once per process on
     /// the UI thread (its main looper must already exist).
-    pub(crate) fn init() -> Result<Self, JniError> {
+    pub(crate) fn init(vm: &'static JavaVM) -> Result<Self, JniError> {
         let inspector = init_main_thread_executors();
         let inspector_probe = inspector
             .as_ref()
@@ -1015,7 +1035,7 @@ impl UiThreadServices {
         }
         // SAFETY: fd >= 0 checked above.
         let executor = AndroidMainThreadExecutor::new(unsafe { OwnedFd::from_raw_fd(fd) });
-        let wake = ExecutorWake::register(&executor)?;
+        let wake = ExecutorWake::register(&executor, vm)?;
         executor_core::try_init_local_executor(
             waterui::task::monitored_local_executor_with_probes(
                 executor.clone(),
@@ -1078,6 +1098,9 @@ struct SessionMounts {
 /// theme, fonts and platform-view state, and mints the window's registry
 /// id — everything `create` then wires into the platform host and the
 /// runtime window.
+///
+/// `None` after a reported contract violation (no registered app, no
+/// seeded shortcut registry, no or several windows).
 #[cfg_attr(
     not(hydrolysis_android_system_webview),
     expect(
@@ -1090,8 +1113,10 @@ fn session_mounts(
     night: bool,
     #[cfg(hydrolysis_android_system_webview)] jni_env: &mut Env,
     #[cfg(hydrolysis_android_system_webview)] bridge: &HostBridge,
-) -> Result<SessionMounts, JniError> {
-    let (app, style) = super::instantiate_app();
+) -> Result<Option<SessionMounts>, JniError> {
+    let Some((app, style)) = super::instantiate_app() else {
+        return Ok(None);
+    };
     let waterui::app::AppParts {
         windows,
         menu_bar,
@@ -1130,10 +1155,16 @@ fn session_mounts(
     let fonts = crate::text::fonts::native_collection(&env);
     #[cfg(hydrolysis_gpu_painter)]
     fonts.clone().install(&mut env);
-    let shortcuts = env
+    let Some(shortcuts) = env
         .get::<MenuShortcutRegistry<super::AndroidTextEngine>>()
-        .expect("install_headless_window_managers seeds MenuShortcutRegistry")
-        .clone();
+        .cloned()
+    else {
+        contract_violation!(
+            "hydrolysis android: install_headless_window_managers did not seed \
+             MenuShortcutRegistry; no session is created"
+        );
+        return Ok(None);
+    };
     let safe_area = nami::binding(waterui_layout::padding::EdgeInsets::default());
     env.insert(crate::platform::WindowSafeArea(safe_area.clone()));
     let keyboard_area = nami::binding(waterui_layout::padding::EdgeInsets::default());
@@ -1165,15 +1196,20 @@ fn session_mounts(
     install_view_renderer(&mut env, &theme);
 
     let mut windows = VecDeque::from(windows);
-    let window = windows
-        .pop_front()
-        .unwrap_or_else(|| panic!("hydrolysis android: the app registered no window to mount"));
-    assert!(
-        windows.is_empty(),
-        "hydrolysis android: multiple windows are unsupported — the host mounts exactly one window per session"
-    );
+    let Some(window) = windows.pop_front() else {
+        contract_violation!(
+            "hydrolysis android: the app registered no window to mount; no session is created"
+        );
+        return Ok(None);
+    };
+    if !windows.is_empty() {
+        contract_violation!(
+            "hydrolysis android: multiple windows are unsupported — the host mounts exactly one window per session; no session is created"
+        );
+        return Ok(None);
+    }
 
-    Ok(SessionMounts {
+    Ok(Some(SessionMounts {
         env,
         window,
         theme,
@@ -1186,7 +1222,7 @@ fn session_mounts(
         safe_area,
         keyboard_area,
         color_scheme,
-    })
+    }))
 }
 
 /// The GPU build's runtime window: the Parley-engine renderer under
@@ -1235,16 +1271,20 @@ fn hwui_runtime_window(
     window_id: crate::renderer::WindowId,
     env: &Environment,
 ) -> Result<
-    (
+    Option<(
         super::hwui::HwuiWindow,
         RuntimeWindow<AndroidHostWindow, super::AndroidTextEngine>,
-    ),
+    )>,
     JniError,
 > {
     let ordinal = match window_id {
         crate::renderer::WindowId::Runner(id) => id,
         crate::renderer::WindowId::Orphan => {
-            unreachable!("the Android window registry minted an orphan")
+            contract_violation!(
+                "hydrolysis android: the Android window registry minted an orphan window id; \
+                 no session is created"
+            );
+            return Ok(None);
         }
     };
     let redraw = platform.content_redraw_handle();
@@ -1260,7 +1300,7 @@ fn hwui_runtime_window(
     renderer.set_window_id(window_id);
     renderer.set_window_closable(window.closable);
     renderer.set_host_redraw_handle(platform.content_redraw_handle());
-    Ok((
+    Ok(Some((
         hwui,
         RuntimeWindow::new(
             window,
@@ -1269,7 +1309,7 @@ fn hwui_runtime_window(
             RenderDiagnosticsConfig::from_env(),
             env,
         ),
-    ))
+    )))
 }
 
 impl AndroidSession {
@@ -1282,6 +1322,9 @@ impl AndroidSession {
     /// scale exist from the start, before the surface band attaches. `night`
     /// is the configuration's real `uiMode` at the same instant, so the
     /// colour-scheme signal never starts on a Light default.
+    ///
+    /// `None` after a reported contract violation (no registered app, no or
+    /// several windows, an orphan window id): no session exists then.
     pub(crate) fn create(
         jni_env: &mut Env,
         vm: JavaVM,
@@ -1290,13 +1333,13 @@ impl AndroidSession {
         metrics: MetricsSnapshot,
         night: bool,
         services: &'static UiThreadServices,
-    ) -> Result<Box<Self>, JniError> {
+    ) -> Result<Option<Box<Self>>, JniError> {
         let bridge = HostBridge::new(jni_env, vm, host_view)?;
         let executor = services.executor.clone();
 
         waterui_locale::start_system_locale_listener();
 
-        let SessionMounts {
+        let Some(SessionMounts {
             env,
             window,
             theme,
@@ -1309,14 +1352,17 @@ impl AndroidSession {
             safe_area,
             keyboard_area,
             color_scheme,
-        } = session_mounts(
+        }) = session_mounts(
             services,
             night,
             #[cfg(hydrolysis_android_system_webview)]
             jni_env,
             #[cfg(hydrolysis_android_system_webview)]
             &bridge,
-        )?;
+        )?
+        else {
+            return Ok(None);
+        };
 
         #[cfg(hydrolysis_gpu_painter)]
         let gpu = AndroidGpuContext::request().map_err(JniError::from)?;
@@ -1348,14 +1394,17 @@ impl AndroidSession {
         let mut runtime =
             gpu_runtime_window(window, platform, theme, &fonts, window_id, painter, &env)?;
         #[cfg(hydrolysis_hwui)]
-        let (hwui, mut runtime) =
-            hwui_runtime_window(jni_env, painter, window, platform, theme, window_id, &env)?;
+        let Some((hwui, mut runtime)) =
+            hwui_runtime_window(jni_env, painter, window, platform, theme, window_id, &env)?
+        else {
+            return Ok(None);
+        };
         // The session mounts parked: the activity's `onStart` and the
         // surface band's attach are the reports that unpark it.
         runtime.set_hidden(runtime.platform.is_occluded());
         runtime.platform.sync_frame_wake_gate();
 
-        Ok(Box::new(Self {
+        Ok(Some(Box::new(Self {
             env,
             runtime,
             executor,
@@ -1379,7 +1428,7 @@ impl AndroidSession {
             ready_logged: Cell::new(false),
             back_navigation_available: false,
             _not_send: std::marker::PhantomData,
-        }))
+        })))
     }
 
     /// Pushes a metrics snapshot from the host: size/density/refresh/insets
@@ -1577,10 +1626,15 @@ impl AndroidSession {
         // Popup windows mounting mid-frame land on the pending queue: the
         // host has no second band to put one on, so this is the explicit
         // unsupported-component error the repository contract wants.
-        assert!(
-            self.pending_window_queue.borrow().is_empty(),
-            "hydrolysis android: secondary windows are unsupported — the host mounts exactly one window per session"
-        );
+        let secondary_windows = self.pending_window_queue.borrow().len();
+        if secondary_windows != 0 {
+            // The windows are dropped unmounted so the violation is not
+            // reported again by every later frame.
+            self.pending_window_queue.borrow_mut().clear();
+            contract_violation!(
+                "hydrolysis android: secondary windows are unsupported — the host mounts exactly one window per session; {secondary_windows} popup window(s) dropped"
+            );
+        }
 
         // The redraw latch now holds only requests raised after this
         // frame's render — an animation asking for its next frame; the
@@ -1859,10 +1913,8 @@ impl AndroidSession {
                 if !platform.bands.contains_key(&update.window) {
                     continue;
                 }
-                match update.image {
-                    Some(space) => platform
-                        .bridge
-                        .band_show(update.window, color_space_name(space)),
+                match update.image.and_then(color_space_name) {
+                    Some(name) => platform.bridge.band_show(update.window, name),
                     None => platform.bridge.band_clear(update.window),
                 }
             }

@@ -136,9 +136,14 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
     ) {
         // The window map leaves `self` for the call, as in the render, so the
         // profiler mark may borrow the renderer.
-        let mut window = self.cherenkov_window.take().expect(
-            "hydrolysis renderer: the engine frame's window left the renderer before its present",
-        );
+        let Some(mut window) = self.cherenkov_window.take() else {
+            // The `EngineFrame` is proof its window rendered it; a host that
+            // replaced the window in between presents nothing this frame.
+            waterui_core::contract_violation!(
+                "hydrolysis renderer: the engine frame's window left the renderer before its present; the frame is not presented"
+            );
+            return;
+        };
         window
             .surface
             .present_into(device, queue, texture, color, alpha, headroom);
