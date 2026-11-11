@@ -1812,6 +1812,7 @@ dependencies = [
  "tracing-subscriber",
  "wasm-bindgen",
  "wasm-bindgen-test",
+ "waterui-contract",
  "web-sys",
  "wgpu",
 ]
