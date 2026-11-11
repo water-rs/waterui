@@ -17,7 +17,7 @@ use crate::error::ResourceError;
 use crate::glyph::FontId;
 use crate::image::{Format, ImageData, ImageUpload};
 use cherenkov_record::{
-    BackdropEffect, BackdropId, BackdropSample, BackdropShaderId, LayerContent,
+    BackdropEffect, BackdropId, BackdropSample, BackdropShaderId, LayerContent, TextLayoutId,
 };
 
 use crate::paint::ImageId;
@@ -200,6 +200,47 @@ impl Font {
     /// The identifier glyph runs reference.
     #[must_use]
     pub fn id(&self) -> FontId {
+        self.inner.id
+    }
+}
+
+/// A text layout registered with an engine.
+///
+/// Its laid-out glyph runs are what [`Command::Text`](crate::Command::Text)
+/// expands to. It holds the fonts its runs draw with, so they stay
+/// registered as long as the layout is. Dropping the last clone unregisters
+/// the layout once no installed content draws it, and its fonts with it.
+#[derive(Debug)]
+pub struct TextLayoutHandle {
+    inner: Rc<Inner<TextLayoutId>>,
+    /// Dropped after `inner`, whose release must be queued first.
+    fonts: Rc<[Font]>,
+}
+
+impl Clone for TextLayoutHandle {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Rc::clone(&self.inner),
+            fonts: Rc::clone(&self.fonts),
+        }
+    }
+}
+
+impl TextLayoutHandle {
+    pub(crate) fn new(
+        id: TextLayoutId,
+        fonts: Vec<Font>,
+        on_drop: impl FnOnce() + 'static,
+    ) -> Self {
+        Self {
+            inner: handle(id, on_drop),
+            fonts: fonts.into(),
+        }
+    }
+
+    /// The identifier [`Command::Text`](crate::Command::Text) names.
+    #[must_use]
+    pub fn id(&self) -> TextLayoutId {
         self.inner.id
     }
 }

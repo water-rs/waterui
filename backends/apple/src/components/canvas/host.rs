@@ -30,6 +30,7 @@ use waterui_graphics::{SceneFrame, SceneUpdate};
 
 use super::layers::{Ctx, Wake};
 use super::resources::{Backend, Registry};
+use super::text::CoreText;
 use super::tree::Tree;
 use crate::contract::NativeLeaf;
 use crate::main_queue_owned::shared;
@@ -312,8 +313,12 @@ pub fn mount(view: CanvasView, ctx: &crate::contract::RenderContext<'_>) -> Nati
             view: host_view.clone(),
             published: Cell::new(scene.borrow().intrinsic_size()),
             scene: Rc::clone(&scene),
-            registry,
-            resources: SceneResources::new(backend),
+            registry: Rc::clone(&registry),
+            resources: {
+                let resources = SceneResources::new(backend);
+                resources.set_text(Rc::new(CoreText::new(mtm, Rc::clone(&registry))));
+                resources
+            },
             layout: LayoutSize::new(),
             held: RefCell::new(HeldResources::empty()),
             content: RefCell::new(None),

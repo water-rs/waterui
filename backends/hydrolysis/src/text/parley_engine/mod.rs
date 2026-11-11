@@ -31,7 +31,9 @@ use waterui_text::FontCollection;
 use cherenkov_record::Paint;
 use nami::Computed;
 
-use crate::renderer::{FrameWorkCounters, Glyph, GlyphRun, Recording, rgba8_to_peniko};
+use crate::renderer::{
+    FrameWorkCounters, Glyph, GlyphRun, Recording, rgba8_to_peniko, working_color,
+};
 
 use super::engine::{
     Affinity, CARET_WIDTH, FontFamilyResolution, LineMetrics, TextEngine, TextLayout, TextPosition,
@@ -280,6 +282,42 @@ impl TextEngine for ParleyEngine {
         counters: &mut FrameWorkCounters,
     ) {
         encode_text_layout(scene, counters, layout, max_lines, x_shift, paint);
+    }
+
+    fn cherenkov_text(
+        &self,
+        layout: &Self::Layout,
+        font: &mut dyn FnMut(
+            &parley::FontData,
+        ) -> Result<cherenkov::Font, cherenkov::ResourceError>,
+    ) -> Result<cherenkov::TextLayout, cherenkov::ResourceError> {
+        let solid = |rgba: [u8; 4]| Paint::Solid(working_color(rgba8_to_peniko(rgba)));
+        let mut text =
+            cherenkov::TextLayout::new(&layout.0.layout, |brush| solid(brush.rgba), font)?;
+        let default = layout
+            .0
+            .layout
+            .lines()
+            .flat_map(|line| line.items().collect::<Vec<_>>())
+            .find_map(|item| match item {
+                parley::PositionedLayoutItem::GlyphRun(run) => {
+                    Some(run.style().brush).filter(|brush| brush.default)
+                }
+                parley::PositionedLayoutItem::InlineBox(_) => None,
+            });
+        if let Some(default) = default {
+            text = text.with_default_paint(solid(default.rgba));
+        }
+        let mut backgrounds = Vec::new();
+        for line in layout.0.layout.lines() {
+            line_backgrounds(&line, layout, 0.0, |start, end, top, bottom, colour| {
+                backgrounds.push((
+                    kurbo::Rect::new(f64::from(start), top, f64::from(end), bottom),
+                    solid(colour),
+                ));
+            });
+        }
+        Ok(text.with_underlay(backgrounds))
     }
 }
 
@@ -753,7 +791,9 @@ fn encode_text_layout(
             break;
         }
         if paint_backgrounds {
-            encode_line_backgrounds(scene, &line, layout, x_shift);
+            line_backgrounds(&line, layout, x_shift, |start, end, top, bottom, colour| {
+                fill_span_background(scene, start, end, top, bottom, colour);
+            });
         }
         for item in line.items() {
             if let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item {
@@ -799,19 +839,20 @@ fn encode_text_layout(
     }
 }
 
-/// Fill each backgrounded span's glyph extent on `line` — the full line
-/// box (`block_min_coord..block_max_coord`) tall — under the text.
+/// Calls `fill(start, end, top, bottom, colour)` for each backgrounded
+/// span's glyph extent on `line` — the full line box
+/// (`block_min_coord..block_max_coord`) tall — to fill under the text.
 ///
 /// The horizontal cursor accumulates cluster advances over `runs()` in
 /// display order, the same sequence parley's own glyph-run iterator places
 /// left-to-right (both are driven by `Run::visual_clusters`). These layouts
 /// come from a ranged builder, which emits no inline boxes, so runs are
 /// the whole item sequence.
-fn encode_line_backgrounds(
-    scene: &mut Recording,
+fn line_backgrounds(
     line: &parley::Line<'_, RunBrush>,
     layout: &ParleyLayout,
     x_shift: f32,
+    mut fill: impl FnMut(f32, f32, f64, f64, [u8; 4]),
 ) {
     let metrics = line.metrics();
     let (top, bottom) = (
@@ -836,7 +877,7 @@ fn encode_line_backgrounds(
             );
             if !extends {
                 if let Some((start, colour)) = open.take() {
-                    fill_span_background(scene, start, cursor, top, bottom, colour);
+                    fill(start, cursor, top, bottom, colour);
                 }
                 open = background.map(|colour| (cursor, colour));
             }
@@ -844,7 +885,7 @@ fn encode_line_backgrounds(
         }
     }
     if let Some((start, colour)) = open {
-        fill_span_background(scene, start, cursor, top, bottom, colour);
+        fill(start, cursor, top, bottom, colour);
     }
 }
 

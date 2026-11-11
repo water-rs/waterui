@@ -1268,7 +1268,7 @@ impl Atlas {
                 PendingRaster::MaskTexture { .. }
                 | PendingRaster::Colr { .. }
                 | PendingRaster::Bitmap { .. }
-                | PendingRaster::GpuPath(_) => {}
+                | PendingRaster::GpuPath { .. } => {}
             }
         }
     }
@@ -2669,7 +2669,7 @@ impl PendingRaster {
             Self::MaskTexture { .. }
             | Self::Colr { .. }
             | Self::Bitmap { .. }
-            | Self::GpuPath(_) => 0,
+            | Self::GpuPath { .. } => 0,
         }
     }
 }
@@ -2768,7 +2768,12 @@ pub enum PendingRaster {
     /// array supplies the drawing state the vertex stage joins to each
     /// emitted geometry record (water-rs/waterui#3081). The record is
     /// shared with the retained emission that drew it.
-    GpuPath(Arc<GpuDraw>),
+    GpuPath {
+        draw: Arc<GpuDraw>,
+        /// Ordinary draws retain coverage; picture generation only needs it
+        /// until every surface in this frame has been encoded.
+        retain: bool,
+    },
 }
 
 /// A GPU-routed path's draw record (water-rs/waterui#3081): the
@@ -3943,7 +3948,9 @@ mod tests {
             &mut raster_scratch,
             Some(crate::render::gpu_cov::CoverageLimit::new(&device.limits())),
         );
-        lowering.prepare(&mut caches, &glyphs).expect("prepared");
+        lowering
+            .prepare(&mut caches, &glyphs, &cherenkov::TextLayouts::default())
+            .expect("prepared");
         let plan = crate::render::planes::Plan {
             planes: Vec::new(),
             rejected: Vec::new(),

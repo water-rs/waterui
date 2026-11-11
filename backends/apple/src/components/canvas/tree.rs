@@ -96,15 +96,18 @@ impl core::fmt::Debug for Tree {
 fn lower(command: &Command, ctx: Ctx<'_>) -> Entry {
     let node = plan::describe(command).expect("only a scope's End has no layer");
     let built = Built::new(&node, ctx);
-    let picture = if let Node::Picture { picture, .. } = &node {
+    let frozen = match &node {
+        Node::Picture { picture, .. } => Some(picture.clone()),
+        Node::Text { layout, paint, .. } => Some(ctx.registry.text(*layout, paint.as_ref())),
+        _ => None,
+    };
+    let picture = frozen.map(|picture| {
         // A shared picture is frozen: its layers hang under the command's
         // layer and nothing updates them again.
         let tree = Tree::new(picture.display_list(), ctx);
         built.add_sublayer(tree.root());
-        Some(tree)
-    } else {
-        None
-    };
+        tree
+    });
     Entry {
         node,
         built,

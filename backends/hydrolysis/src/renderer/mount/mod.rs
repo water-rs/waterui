@@ -60,6 +60,7 @@ impl<E: crate::text::TextEngine> crate::renderer::HydrolysisRenderer<E> {
         host: &T::Host,
         scale: f64,
     ) {
+        T::install_text(host, &self.state.text);
         let roots = self.mount_roots();
         let host_wake = self.host_redraw_handle.clone();
         let window_material = self.core.window_material;

@@ -1660,6 +1660,208 @@ mod render {
         );
     }
 
+    /// The canvas the text test draws: the three alignments about one
+    /// anchor, a width that wraps, and `label` as live text.
+    fn text_gallery(
+        label: &waterui::reactive::Binding<String>,
+    ) -> waterui::graphics::canvas::Canvas {
+        use waterui::SignalExt as _;
+        use waterui::graphics::canvas::{Canvas, Path, StrokeStyle, TextPlacement};
+        use waterui::text::StyledStr;
+        use waterui_core::layout::{HorizontalAlignment, Point as P, Rect as R};
+
+        let styled = |text: &str| StyledStr::from(text.to_owned());
+        Canvas::new({
+            let label = label.clone();
+            move |cx| {
+                cx.fill(cx.size().map(R::from_size), rgb(0.08, 0.08, 0.1));
+                cx.stroke(
+                    Path::builder()
+                        .move_to(P::new(180.0, 8.0))
+                        .line_to(P::new(180.0, 150.0))
+                        .build(),
+                    StrokeStyle::new(1.0),
+                    rgb(0.9, 0.3, 0.3),
+                );
+                let rows = [
+                    (HorizontalAlignment::Leading, "Leading 左对齐"),
+                    (HorizontalAlignment::Center, "Center 中央揃え"),
+                    (HorizontalAlignment::Trailing, "Trailing 오른쪽"),
+                ];
+                for (index, (alignment, text)) in rows.into_iter().enumerate() {
+                    let y = f32::from(u8::try_from(index).expect("three rows")).mul_add(30.0, 12.0);
+                    cx.text(
+                        styled(text),
+                        TextPlacement::at(P::new(180.0, y)).aligned(alignment),
+                    );
+                }
+                cx.stroke(
+                    Path::builder()
+                        .move_to(P::new(20.0, 110.0))
+                        .line_to(P::new(160.0, 110.0))
+                        .build(),
+                    StrokeStyle::new(1.0),
+                    rgb(0.3, 0.8, 0.5),
+                );
+                cx.text(
+                    styled("Wrapped text 自动换行的中文、日本語の折り返し、한국어 줄바꿈"),
+                    TextPlacement::at(P::new(90.0, 114.0))
+                        .aligned(HorizontalAlignment::Center)
+                        .width(140.0),
+                );
+                cx.text(
+                    label.map(move |text| styled(&text)),
+                    TextPlacement::at(P::new(20.0, 250.0)),
+                );
+            }
+        })
+    }
+    /// Canvas text through Core Text, rendered: Latin, Chinese, Japanese
+    /// and Korean, the three alignments about one anchor, a width that
+    /// wraps, and a live text update that edits the installed layer tree.
+    #[test]
+    fn canvas_text_draws_anchored_aligned_wrapped_and_live() {
+        use std::any::Any;
+
+        use cocoa_ui::MainThreadMarker;
+        use waterui::View as _;
+        use waterui::graphics::canvas::CanvasView;
+        use waterui::reactive::binding;
+        use waterui_graphics::resources::SceneResources;
+        use waterui_graphics::{SceneFrame, SceneUpdate};
+
+        use super::super::text::CoreText;
+
+        // SAFETY: the case lays text out and renders layers offscreen. It
+        // creates fonts, attributed strings and `CALayer`s, none of which
+        // belongs to a view; no view or window is touched.
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let mut env = waterui::Environment::new();
+        let _theme = crate::theme::install(&mut env, cocoa_ui::ColorScheme::Dark);
+        let label = binding::<String>(String::from("Live"));
+        let canvas = text_gallery(&label);
+        let boxed: Box<dyn Any> = Box::new(canvas.body(&env));
+        let mut view = *boxed
+            .downcast::<CanvasView>()
+            .expect("a canvas's body is its view");
+
+        let registry = Rc::new(Registry::default());
+        let resources = SceneResources::new(Rc::new(Backend::new(Rc::clone(&registry), u64::MAX)));
+        resources.set_text(Rc::new(CoreText::new(mtm, Rc::clone(&registry))));
+        let (width, height) = (360_u16, 300_u16);
+        let mut names = resources.recording();
+        let mut content = Content::record(&LayoutSize::new(), |recorder| {
+            let _ = view.build_scene(recorder, &mut names, f32::from(width), f32::from(height));
+        });
+        let _held = names.finish();
+        let fixture = Fixture::new(Rc::clone(&registry));
+        let ctx = fixture.at(px(SCALE));
+        let mut tree = Tree::new(&first_list(&mut content), ctx);
+        tree.settle();
+        let (w, h) = (usize::from(width), usize::from(height));
+        save(
+            "canvas_text_before",
+            &pixels(tree.root(), w, h, SCALE),
+            w,
+            h,
+            SCALE,
+        );
+
+        label.set(String::from("Updated 更新 更新済み 업데이트"));
+        let now = waterui_graphics::draw::Instant::now();
+        let update = view.update_scene(
+            &resources,
+            SceneFrame {
+                width: f32::from(width),
+                height: f32::from(height),
+                time: now,
+            },
+        );
+        assert!(
+            matches!(update, SceneUpdate::Retained { .. }),
+            "a live text edits the installed recording"
+        );
+        let _ = content.sample(now);
+        let Some(ContentChange::Edit(edit)) = content.take_change() else {
+            panic!("a changed text is a structural edit of its region");
+        };
+        tree.edit(&edit, ctx);
+        tree.settle();
+        save(
+            "canvas_text_after",
+            &pixels(tree.root(), w, h, SCALE),
+            w,
+            h,
+            SCALE,
+        );
+    }
+
+    /// A styled text keeps its chunks' colours, background, underline,
+    /// strikethrough, weight and italics through Core Text.
+    #[test]
+    fn canvas_text_keeps_its_styles() {
+        use cocoa_ui::MainThreadMarker;
+        use waterui::graphics::canvas::TextPlacement;
+        use waterui::graphics::color::Srgb;
+        use waterui::text::StyledStr;
+        use waterui_core::layout::Point as P;
+        use waterui_graphics::resources::SceneResources;
+
+        use super::super::text::CoreText;
+
+        // SAFETY: the case lays text out and renders layers offscreen; it
+        // touches no view or window.
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let mut env = waterui::Environment::new();
+        let _theme = crate::theme::install(&mut env, cocoa_ui::ColorScheme::Dark);
+        let text = StyledStr::from("plain ")
+            + StyledStr::from("bold").bold()
+            + " "
+            + StyledStr::from("italic")
+                .italic(true)
+                .foreground(Srgb::new(0.4, 0.8, 1.0))
+            + " "
+            + StyledStr::from("underlined").underline(true)
+            + " "
+            + StyledStr::from("struck").strikethrough(true)
+            + " "
+            + StyledStr::from("highlighted")
+                .background_color(Srgb::new(0.8, 0.2, 0.2))
+                .foreground(Srgb::new(1.0, 1.0, 1.0));
+
+        let registry = Rc::new(Registry::default());
+        let resources = SceneResources::new(Rc::new(Backend::new(Rc::clone(&registry), u64::MAX)));
+        resources.set_text(Rc::new(CoreText::new(mtm, Rc::clone(&registry))));
+        let registered = resources
+            .text(text, TextPlacement::at(P::new(0.0, 0.0)), env)
+            .expect("Core Text lays the text out")
+            .expect("a text with lines draws");
+        let mut names = resources.recording();
+        let layout = names.name(registered.layout());
+        let mut content = record(|r| {
+            r.fill(Rect::new(0., 0., 480., 40.), rgb(0.08, 0.08, 0.1));
+            r.text(layout, Affine::translate((10., 8.)));
+        });
+        let _held = names.finish();
+        assert_eq!(
+            plan::outline(&first_list(&mut content)),
+            vec![leaf(LayerKind::Shape), leaf(LayerKind::Picture)],
+            "a text is a picture layer beside the fill"
+        );
+        let mut content = record(|r| {
+            r.fill(Rect::new(0., 0., 480., 40.), rgb(0.08, 0.08, 0.1));
+            r.text(layout, Affine::translate((10., 8.)));
+        });
+        let tree = lower(&mut content, &registry, SCALE);
+        save(
+            "canvas_text_styles",
+            &pixels(tree.root(), 480, 40, SCALE),
+            480,
+            40,
+            SCALE,
+        );
+    }
+
     /// The `CanvasView` a canvas-composed view mounts as.
     fn canvas_view(view: impl waterui_core::View) -> waterui_graphics::canvas::CanvasView {
         use waterui_core::{AnyView, Environment, View as _};

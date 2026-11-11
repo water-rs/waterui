@@ -60,7 +60,12 @@ use core::ptr;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 
-use crate::draw::{FontId, ImageId, ResourceId, ShaderId};
+use waterui_core::Environment;
+use waterui_core::layout::Size;
+use waterui_text::styled::StyledStr;
+
+use crate::canvas::TextPlacement;
+use crate::draw::{FontId, ImageId, ResourceId, ShaderId, TextLayoutId};
 use crate::scene::source::{
     FontSource, Format, ImageColorSpace, ImageData, ResourceError, Rgba8, Rgba16F, ShaderLanguage,
     ShaderSource,
@@ -213,6 +218,8 @@ enum EntryKey {
     Rgba8(Key<ImageShape>),
     Rgba16F(Key<ImageShape>),
     Shader(Key<ShaderShape>),
+    /// A laid-out text: never shared, so it occupies no listing.
+    Text,
 }
 
 /// The registration a render target always provides: fonts and image
@@ -284,6 +291,82 @@ pub trait ShaderBackend: SceneBackend {
     /// target draws or fails its validation, [`ResourceError::Lost`] when
     /// the renderer is gone.
     fn register_shader(&self, source: ShaderSource) -> Result<Handle<ShaderId>, ResourceError>;
+}
+
+/// The registration only a target that lays text out provides.
+///
+/// The target lays the text out with its own text stack — the one every
+/// other `Text` on the screen goes through — so canvas text matches them.
+/// The canvas never measures: it asks, and the registration reports the
+/// box the target made.
+pub trait TextBackend: 'static {
+    /// Lays `request`'s text out and registers the result; `None` when
+    /// the text has nothing to draw.
+    ///
+    /// # Errors
+    ///
+    /// [`ResourceError::Font`] when a font of the text cannot be used,
+    /// [`ResourceError::Lost`] when the renderer is gone.
+    fn register_text(
+        &self,
+        request: TextRequest,
+    ) -> Result<Option<TextRegistration>, ResourceError>;
+}
+
+/// The text a canvas asks its target to lay out, and how.
+///
+/// The environment is the canvas's own, so the target resolves the text's
+/// theme colours, locale and default font in the same context as the other
+/// text under it.
+#[derive(Debug)]
+pub struct TextRequest {
+    text: StyledStr,
+    placement: TextPlacement,
+    env: Environment,
+}
+
+impl TextRequest {
+    pub(crate) const fn new(text: StyledStr, placement: TextPlacement, env: Environment) -> Self {
+        Self {
+            text,
+            placement,
+            env,
+        }
+    }
+
+    /// The text: its runs carry the font, size, weight, colour and
+    /// decorations.
+    #[must_use]
+    pub const fn text(&self) -> &StyledStr {
+        &self.text
+    }
+
+    /// The alignment lines are laid out in and the width they break at.
+    #[must_use]
+    pub const fn placement(&self) -> &TextPlacement {
+        &self.placement
+    }
+
+    /// The environment the text resolves in.
+    #[must_use]
+    pub const fn environment(&self) -> &Environment {
+        &self.env
+    }
+}
+
+/// What a target made of a [`TextRequest`].
+#[derive(Debug)]
+pub struct TextRegistration {
+    handle: Handle<TextLayoutId>,
+    size: Size,
+}
+
+impl TextRegistration {
+    /// The registered layout, and the size of the box it filled, in points.
+    #[must_use]
+    pub const fn new(handle: Handle<TextLayoutId>, size: Size) -> Self {
+        Self { handle, size }
+    }
 }
 
 /// A target's own handle to a registered resource — what [`Handle::new`]
@@ -359,6 +442,15 @@ impl ResourceHandle for cherenkov::Shader {
     type Id = ShaderId;
 
     fn id(&self) -> ShaderId {
+        Self::id(self)
+    }
+}
+
+#[cfg(any(feature = "cherenkov", test))]
+impl ResourceHandle for cherenkov::TextLayoutHandle {
+    type Id = TextLayoutId;
+
+    fn id(&self) -> TextLayoutId {
         Self::id(self)
     }
 }
@@ -481,6 +573,7 @@ mod sealed {
     impl Sealed for crate::draw::FontId {}
     impl Sealed for crate::draw::ImageId {}
     impl Sealed for crate::draw::ShaderId {}
+    impl Sealed for crate::draw::TextLayoutId {}
 
     /// The erased target handle a [`Handle`](super::Handle) owns: dropping
     /// the object releases the registration. A marker only — the wrapper
@@ -557,6 +650,19 @@ impl PlainId for ShaderId {
     }
 }
 
+impl PlainId for TextLayoutId {
+    fn into_resource_id(self) -> ResourceId {
+        ResourceId::TextLayout(self)
+    }
+
+    fn from_resource_id(id: ResourceId) -> Self {
+        match id {
+            ResourceId::TextLayout(id) => id,
+            _ => unreachable!("the entry stores a text layout id"),
+        }
+    }
+}
+
 /// A resource registered through [`SceneResources`], shared by everyone who
 /// asked for the same source while it was held.
 ///
@@ -599,6 +705,31 @@ impl<I: PlainId> fmt::Debug for Registered<I> {
         f.debug_tuple("Registered")
             .field(&self.entry.handle.id())
             .finish()
+    }
+}
+
+/// A text laid out and registered through [`SceneResources::text`].
+///
+/// Name [`layout`](Self::layout) in the recording that draws it, with
+/// [`RecordingResources::name`].
+#[derive(Debug, Clone)]
+pub struct RegisteredText {
+    layout: Registered<TextLayoutId>,
+    size: Size,
+}
+
+impl RegisteredText {
+    /// The registered layout.
+    #[must_use]
+    pub const fn layout(&self) -> &Registered<TextLayoutId> {
+        &self.layout
+    }
+
+    /// The box the target laid the text out in, in points: as wide as the
+    /// requested width, or as its longest line when there was none.
+    #[must_use]
+    pub const fn size(&self) -> Size {
+        self.size
     }
 }
 
@@ -763,6 +894,20 @@ impl RecordingResources<'_> {
         self.resources.shader(source)
     }
 
+    /// Lays text out and registers it; see [`SceneResources::text`].
+    ///
+    /// # Errors
+    ///
+    /// As [`SceneResources::text`].
+    pub fn text(
+        &self,
+        text: StyledStr,
+        placement: TextPlacement,
+        env: Environment,
+    ) -> Result<Option<RegisteredText>, ResourceError> {
+        self.resources.text(text, placement, env)
+    }
+
     /// The largest image the target admits; see
     /// [`SceneResources::image_limits`].
     #[must_use]
@@ -846,6 +991,8 @@ impl<S: Copy + Eq + Hash> Listing<S> {
 struct Table {
     backend: Rc<dyn SceneBackend>,
     shaders: Option<Rc<dyn ShaderBackend>>,
+    /// Installed by the host once its text stack exists.
+    text: RefCell<Option<Rc<dyn TextBackend>>>,
     fonts: RefCell<Listing<FontShape>>,
     images_rgba8: RefCell<Listing<ImageShape>>,
     images_rgba16f: RefCell<Listing<ImageShape>>,
@@ -860,6 +1007,7 @@ impl Table {
             EntryKey::Rgba8(key) => self.images_rgba8.borrow_mut().unlist(key),
             EntryKey::Rgba16F(key) => self.images_rgba16f.borrow_mut().unlist(key),
             EntryKey::Shader(key) => self.shaders_cache.borrow_mut().unlist(key),
+            EntryKey::Text => {}
         }
     }
 }
@@ -933,6 +1081,7 @@ impl SceneResources {
             table: Rc::new(Table {
                 backend,
                 shaders,
+                text: RefCell::new(None),
                 fonts: Listing::new(),
                 images_rgba8: Listing::new(),
                 images_rgba16f: Listing::new(),
@@ -1144,6 +1293,52 @@ impl SceneResources {
             EntryKey::Shader,
             move |_| backend.register_shader(source),
         )
+    }
+
+    /// Installs the registry laid-out text registers through, replacing
+    /// any earlier one. A host calls it once its text stack exists; until
+    /// then a text request reports [`ResourceError::Unsupported`].
+    pub fn set_text<B: TextBackend>(&self, backend: Rc<B>) {
+        *self.table.text.borrow_mut() = Some(backend);
+    }
+
+    /// Lays `text` out in `placement` and registers the result.
+    ///
+    /// Every call lays out and registers anew: a laid-out text is not
+    /// shared. The registration holds the fonts the layout draws with.
+    /// `None` when the text has nothing to draw.
+    ///
+    /// # Errors
+    ///
+    /// [`ResourceError::Unsupported`] when no text registry is installed,
+    /// otherwise as [`TextBackend::register_text`].
+    pub fn text(
+        &self,
+        text: StyledStr,
+        placement: TextPlacement,
+        env: Environment,
+    ) -> Result<Option<RegisteredText>, ResourceError> {
+        let backend = self
+            .table
+            .text
+            .borrow()
+            .clone()
+            .ok_or(ResourceError::Unsupported("canvas text"))?;
+        let registration = backend.register_text(TextRequest::new(text, placement, env))?;
+        Ok(registration.map(|TextRegistration { handle, size }| {
+            let entry = Rc::new(Entry {
+                handle: Box::new(handle),
+                key: EntryKey::Text,
+                table: Rc::downgrade(&self.table),
+            });
+            RegisteredText {
+                layout: Registered {
+                    entry,
+                    marker: PhantomData,
+                },
+                size,
+            }
+        }))
     }
 
     /// How many registrations the table lists across every kind — dead
