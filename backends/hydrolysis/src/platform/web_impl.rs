@@ -15,9 +15,9 @@ use web_sys::{
 };
 
 use super::{
-    CursorStyle, GpuSurfaceWindow, InputConventions, InputEvent, KeyCode, KeyState, Modifiers,
-    PlatformWindow, PointerButton, PointerKind, PresentationSurface as _, ScrollPlatform,
-    TextInputPurpose, TextInputState, TouchScrollConfig, WindowState, WuiWindow,
+    CursorStyle, GpuSurfaceWindow, GpuUnavailable, InputConventions, InputEvent, KeyCode, KeyState,
+    Modifiers, PlatformWindow, PointerButton, PointerKind, PresentationSurface as _,
+    ScrollPlatform, TextInputPurpose, TextInputState, TouchScrollConfig, WindowState, WuiWindow,
 };
 
 /// The system `window`'s browser runs on, as its `navigator.userAgent`
@@ -75,11 +75,7 @@ impl BrowserSurface {
         clippy::future_not_send,
         reason = "the future runs on the browser main thread via spawn_local; wgpu handles' Send bound varies with Cargo feature unification"
     )]
-    pub async fn new(
-        root: HtmlElement,
-        width: u32,
-        height: u32,
-    ) -> Result<Self, BrowserGpuUnavailable> {
+    pub async fn new(root: HtmlElement, width: u32, height: u32) -> Result<Self, GpuUnavailable> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let generation = Self::open_generation(&instance).await?;
         Ok(Self {
@@ -96,7 +92,7 @@ impl BrowserSurface {
     /// it on the lost generation's own instance (water-rs/waterui#2742).
     async fn open_generation(
         instance: &wgpu::Instance,
-    ) -> Result<crate::platform::DeviceLoss, BrowserGpuUnavailable> {
+    ) -> Result<crate::platform::DeviceLoss, GpuUnavailable> {
         // Every adapter a browser hands out presents to a canvas, so the
         // request names no surface: the engine creates its canvases on
         // this device itself.
@@ -108,16 +104,20 @@ impl BrowserSurface {
                 apply_limit_buckets: false,
             })
             .await
-            .map_err(BrowserGpuUnavailable::NoAdapter)?;
+            .map_err(GpuUnavailable::NoWebGpu)?;
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("hydrolysis-web-device"),
-                required_features: super::required_media_features(adapter.features()),
+                required_features: super::required_media_features(&adapter)?,
                 ..Default::default()
             })
             .await
-            .map_err(BrowserGpuUnavailable::NoDevice)?;
+            .map_err(|source| GpuUnavailable::Device {
+                context: "hydrolysis web surface",
+                adapter: adapter.get_info().name,
+                source: source.into(),
+            })?;
         let context_id = super::next_gpu_context_id();
         Ok(crate::platform::DeviceLoss::observe(
             cherenkov_gpu::interop::SharedDevice {
@@ -135,9 +135,10 @@ impl BrowserSurface {
     /// came out of it (water-rs/waterui#2742). `false` means a failed
     /// recreation left the dead generation in place: the caller reports
     /// the surface lost and the next frame retries under the loss budget,
-    /// which panics once it runs out. The engine window is left for the
-    /// next render's `renders_on` check to replace — the retained mount
-    /// must unmount under the chain that created it.
+    /// which leaves the dead generation in place once it runs out. The
+    /// engine window is left for the next render's `renders_on` check to
+    /// replace — the retained mount must unmount under the chain that
+    /// created it.
     #[allow(
         clippy::future_not_send,
         reason = "the future runs on the browser main thread via spawn_local; wgpu handles' Send bound varies with Cargo feature unification"
@@ -156,16 +157,6 @@ impl BrowserSurface {
         }
         !self.handles.is_lost()
     }
-}
-
-/// Why the page cannot host a Hydrolysis window: Hydrolysis renders through
-/// WebGPU, and this browser does not provide it.
-#[derive(Debug, thiserror::Error)]
-pub enum BrowserGpuUnavailable {
-    #[error("This browser does not provide WebGPU, which this app needs to render.")]
-    NoAdapter(#[source] wgpu::RequestAdapterError),
-    #[error("This browser refused to open a WebGPU device, which this app needs to render.")]
-    NoDevice(#[source] wgpu::RequestDeviceError),
 }
 
 /// The event the page's bootstrap shows as its startup error: the runtime
@@ -323,9 +314,9 @@ impl BrowserWindow {
     ///
     /// # Errors
     ///
-    /// [`BrowserGpuUnavailable`] when the browser provides no WebGPU
-    /// adapter or device: the page cannot host a window at all, and the
-    /// caller reports that to the page.
+    /// [`GpuUnavailable`] when the browser provides no WebGPU adapter or
+    /// device: the page cannot host a window at all, and the caller
+    /// reports that to the page.
     #[expect(
         clippy::future_not_send,
         reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
@@ -333,7 +324,7 @@ impl BrowserWindow {
     pub async fn new(
         schedule_frame: Rc<dyn Fn()>,
         occlusion_wake: Rc<dyn Fn()>,
-    ) -> Result<Self, BrowserGpuUnavailable> {
+    ) -> Result<Self, GpuUnavailable> {
         let browser_window =
             web_sys::window().expect("hydrolysis web platform: browser window unavailable");
         let document = browser_window

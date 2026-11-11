@@ -366,6 +366,23 @@ fn install_headless_window_managers<E: crate::text::TextEngine>(
     let _ = env.get_or_insert_with::<MenuShortcutRegistry<E>, _>(MenuShortcutRegistry::default);
 }
 
+/// The exit status of an app that cannot start because the host has no GPU
+/// Hydrolysis can render on.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+const GPU_UNAVAILABLE_EXIT_CODE: i32 = 1;
+
+/// Ends a native app whose host has no GPU Hydrolysis can render on: the app
+/// cannot show anything, so the error is logged and the process exits with a
+/// failure status instead of running without a window.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+fn exit_without_gpu(error: crate::platform::GpuUnavailable) -> ! {
+    tracing::error!(
+        "{:#}; the app does not start",
+        waterui_core::Error::from(error)
+    );
+    std::process::exit(GPU_UNAVAILABLE_EXIT_CODE)
+}
+
 // The headless offscreen `run` never exists on Android: `hydrolysis::run`
 // must not silently dispatch an app to the one-shot offscreen pump there.
 // The Android host's entry point is `runner::android` — a missing `run` is a
@@ -382,6 +399,9 @@ fn install_headless_window_managers<E: crate::text::TextEngine>(
 /// `app` is a factory, not a built value: the subscriber and executors are
 /// installed before it runs, so events the application emits while building
 /// its `App` reach the log (water-rs/waterui#2513).
+///
+/// When the host has no GPU Hydrolysis can render on, the error is logged and
+/// the process exits with a failure status.
 ///
 /// # Panics
 /// Panics when the seeded environment lost its `MenuShortcutRegistry`.
@@ -469,6 +489,7 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
         let width = crate::num_cast::f32_as_u32(frame.width().max(1.0));
         let height = crate::num_cast::f32_as_u32(frame.height().max(1.0));
         let mut platform = OffscreenWindow::new(width, height, wgpu::TextureFormat::Rgba8Unorm)
+            .unwrap_or_else(|error| exit_without_gpu(error))
             .with_scale_factor(offscreen_scale_factor());
         platform.apply_properties(&window);
         let mut renderer = HydrolysisRenderer::with_engine(

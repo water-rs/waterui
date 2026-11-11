@@ -1107,7 +1107,7 @@ fn runtime_window_sized(
     env: &Environment,
 ) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
     let platform = HeadlessPlatformWindow::on_context(
-        OffscreenGpuContext::new_blocking(),
+        OffscreenGpuContext::for_tests(),
         width,
         height,
         wgpu::TextureFormat::Rgba8Unorm,
@@ -1176,7 +1176,7 @@ fn host_window_pipeline_requires_no_gpu_surface_trait() {
     }
 
     let platform = HeadlessPlatformWindow::on_context(
-        OffscreenGpuContext::new_blocking(),
+        OffscreenGpuContext::for_tests(),
         320,
         200,
         wgpu::TextureFormat::Rgba8Unorm,
@@ -1381,7 +1381,7 @@ fn sized_test_runtime_window(
 ) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
     let window = Window::new("", binding(WindowState::Normal), || ());
     let mut platform = HeadlessPlatformWindow::on_context(
-        OffscreenGpuContext::new_blocking(),
+        OffscreenGpuContext::for_tests(),
         width,
         height,
         wgpu::TextureFormat::Rgba8Unorm,
@@ -1414,7 +1414,12 @@ struct RecoveringSurface {
 impl RecoveringSurface {
     fn new(first_error: SurfaceError) -> Self {
         Self {
-            inner: OffscreenSurface::new_blocking(16, 16, wgpu::TextureFormat::Rgba8Unorm),
+            inner: OffscreenSurface::on_context(
+                OffscreenGpuContext::for_tests(),
+                16,
+                16,
+                wgpu::TextureFormat::Rgba8Unorm,
+            ),
             first_error: Some(first_error),
             acquire_count: 0,
             resize_count: 0,
@@ -1454,7 +1459,7 @@ impl SurfaceProvider for RecoveringSurface {
         self.acquire_count += 1;
         self.first_error
             .take()
-            .map_or_else(|| Ok(self.inner.acquire()), Err)
+            .map_or_else(|| SurfaceProvider::acquire(&mut self.inner), Err)
     }
 
     fn present(&mut self, frame: SurfaceFrame) {
@@ -1581,7 +1586,7 @@ fn frame_transaction_gates_wakes_and_renders_the_restore_frame() {
 
     let transaction = Rc::new(FrameTransaction::default());
     let mut platform = HeadlessPlatformWindow::on_context(
-        OffscreenGpuContext::new_blocking(),
+        OffscreenGpuContext::for_tests(),
         16,
         16,
         wgpu::TextureFormat::Rgba8Unorm,

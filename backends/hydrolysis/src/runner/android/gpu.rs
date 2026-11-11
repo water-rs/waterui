@@ -208,7 +208,8 @@ impl AndroidGpuContext {
     ) -> Result<crate::platform::DeviceLoss, GpuError> {
         let adapter = Self::pick_adapter(instance).await?;
         let required_limits = crate::platform::required_device_limits(&adapter);
-        let required_features = crate::platform::required_media_features(adapter.features())
+        let required_features = crate::platform::required_media_features(&adapter)
+            .map_err(|error| GpuError::new(format!("hydrolysis android: {error}")))?
             | (adapter.features()
                 & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
         // The device is opened through the engine's creation path, not

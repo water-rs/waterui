@@ -139,18 +139,22 @@ fn poll_device(
 /// same hard `Engine::new` failure the engine documents. Normalized 16-bit
 /// textures feed HDR media paths wherever the adapter provides them.
 /// Indirect first instances enable the engine's optional GPU path coverage.
-#[must_use]
+///
+/// # Errors
+/// [`GpuUnavailable::MissingFeatures`] on Apple platforms when `adapter`
+/// lacks normalized 16-bit textures or shader passthrough, which the Apple
+/// GPU backend requires: such an adapter is an unsupported device.
 #[cfg(hydrolysis_gpu_painter)]
-pub fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Features {
+pub fn required_media_features(adapter: &wgpu::Adapter) -> Result<wgpu::Features, GpuUnavailable> {
+    let adapter_features = adapter.features();
     if cfg!(target_vendor = "apple") {
-        assert!(
-            adapter_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM),
-            "the Apple GPU backend requires normalized 16-bit textures for HDR media"
-        );
-        assert!(
-            adapter_features.contains(wgpu::Features::PASSTHROUGH_SHADERS),
-            "the Apple GPU backend requires native shader passthrough for the engine's precompiled shaders"
-        );
+        let missing = APPLE_REQUIRED_FEATURES - adapter_features;
+        if !missing.is_empty() {
+            return Err(GpuUnavailable::MissingFeatures {
+                adapter: adapter.get_info().name,
+                missing,
+            });
+        }
     }
 
     let mut required = adapter_features
@@ -161,7 +165,138 @@ pub fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Featur
     if adapter_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM) {
         required |= wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
     }
-    required
+    Ok(required)
+}
+
+/// The adapter features the Apple GPU backend cannot run without: normalized
+/// 16-bit textures for HDR media and native shader passthrough for the
+/// engine's precompiled shaders.
+#[cfg(hydrolysis_gpu_painter)]
+const APPLE_REQUIRED_FEATURES: wgpu::Features =
+    wgpu::Features::TEXTURE_FORMAT_16BIT_NORM.union(wgpu::Features::PASSTHROUGH_SHADERS);
+
+/// This host has no GPU Hydrolysis can render on.
+///
+/// Hydrolysis renders through one GPU backend per platform
+/// ([`cherenkov_gpu::REQUIRED_BACKEND`], WebGPU in a browser); a host
+/// without a usable adapter of it, or whose adapter refuses the device the
+/// engine needs, is an unsupported device. The application cannot show
+/// anything on it: every runner logs this error and does not start.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+#[cfg(hydrolysis_gpu_painter)]
+pub enum GpuUnavailable {
+    /// No adapter of the platform's GPU backend can drive the engine.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("{}", no_adapter_message(context, inspected_adapters, *backends))]
+    NoAdapter {
+        /// The host step that asked for the adapter.
+        context: &'static str,
+        /// The surface-compatible adapters that were inspected, described
+        /// as `'name' (backend, device type)`.
+        inspected_adapters: Vec<String>,
+        /// The backends probed.
+        backends: wgpu::Backends,
+    },
+    /// The browser provides no WebGPU adapter.
+    #[cfg(target_arch = "wasm32")]
+    #[error("This browser does not provide WebGPU, which this app needs to render.")]
+    NoWebGpu(#[source] wgpu::RequestAdapterError),
+    /// The adapter lacks features the platform's GPU backend requires.
+    #[error(
+        "the GPU adapter '{adapter}' lacks {missing:?}, which the Apple GPU backend requires \
+         (normalized 16-bit textures for HDR media, native shader passthrough for the \
+         engine's precompiled shaders)"
+    )]
+    MissingFeatures {
+        /// The adapter's name.
+        adapter: String,
+        /// The required features the adapter lacks.
+        missing: wgpu::Features,
+    },
+    /// The adapter refused to open the device the engine needs.
+    #[error(
+        "{context}: the GPU adapter '{adapter}' refused to open the device this app needs to render"
+    )]
+    Device {
+        /// The host step that opened the device.
+        context: &'static str,
+        /// The adapter's name.
+        adapter: String,
+        /// Why the device could not be opened.
+        #[source]
+        source: OpenDeviceError,
+    },
+    /// The window's presentation surface could not be created.
+    #[cfg(hydrolysis_winit)]
+    #[error("{context}: failed to create the window's GPU surface")]
+    Surface {
+        /// The host step that created the surface.
+        context: &'static str,
+        /// Why the surface could not be created.
+        #[source]
+        source: wgpu::CreateSurfaceError,
+    },
+    /// The window's surface offers no output configuration the engine can
+    /// present through on this adapter.
+    #[cfg(hydrolysis_winit)]
+    #[error(
+        "{context}: the window's surface cannot present on the GPU adapter '{adapter}': {reason}"
+    )]
+    Output {
+        /// The host step that negotiated the output.
+        context: &'static str,
+        /// The adapter's name.
+        adapter: String,
+        /// What the surface lacks.
+        reason: String,
+    },
+}
+
+/// The [`GpuUnavailable::NoAdapter`] message: what was probed, what was
+/// found, and what the user installs to fix it.
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(hydrolysis_gpu_painter)]
+fn no_adapter_message(
+    context: &str,
+    inspected_adapters: &[String],
+    backends: wgpu::Backends,
+) -> String {
+    match (
+        cherenkov_gpu::REQUIRED_BACKEND,
+        inspected_adapters.is_empty(),
+    ) {
+        (Some(required), true) => {
+            format!("{context}: no surface-compatible adapter was found. {required}")
+        }
+        (None, true) => format!(
+            "{context}: failed to find a surface-compatible wgpu adapter on the backends \
+             {backends:?}. Install or update the platform GPU driver."
+        ),
+        (_, false) => format!(
+            "{context}: this host has no GPU Hydrolysis can use. \
+             Surface-compatible adapters inspected: {}. {GPU_REQUIRED_GUIDANCE}",
+            inspected_adapters.join("; ")
+        ),
+    }
+}
+
+/// The GPU device a surface rendered on was lost and could not be
+/// recreated, so the surface has no frame to hand out.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("the GPU device was lost: {reason}")]
+#[cfg(hydrolysis_gpu_painter)]
+pub struct DeviceLostError {
+    reason: String,
+}
+
+#[cfg(hydrolysis_gpu_painter)]
+impl DeviceLostError {
+    /// The reason the driver gave for the loss.
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
 }
 
 /// The GPU context a [`DeviceLoss`] handle was taken on: the device-creation
@@ -190,12 +325,13 @@ pub struct GpuContextHandle {
 ///
 /// The handle also carries the context it was created on, so a caller that
 /// only sees surface handles — adapter, device, queue and this handle —
-/// still reaches the device's full creation chain.
-#[derive(Clone, Debug, Default)]
+/// still reaches the device's full creation chain. It exists only for an
+/// observed device: [`Self::observe`] is its one constructor.
+#[derive(Clone, Debug)]
 #[cfg(hydrolysis_gpu_painter)]
 pub struct DeviceLoss {
     reason: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-    gpu_context: Option<GpuContextHandle>,
+    gpu_context: GpuContextHandle,
 }
 
 #[cfg(hydrolysis_gpu_painter)]
@@ -218,11 +354,11 @@ impl DeviceLoss {
     ) -> Self {
         let handle = Self {
             reason: std::sync::Arc::new(std::sync::Mutex::new(None)),
-            gpu_context: Some(GpuContextHandle {
+            gpu_context: GpuContextHandle {
                 context_id,
                 shared_device: shared_device.clone(),
                 presented: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            }),
+            },
         };
         // The callback must be `Send` — a `DeviceLoss` clone is not, since it
         // carries the device's `SharedDevice` — so capture only the reason
@@ -241,17 +377,13 @@ impl DeviceLoss {
     }
 
     /// The GPU context this handle was taken on.
-    ///
-    /// # Panics
-    /// When the handle was built without a context (`DeviceLoss::default`) —
-    /// only [`SurfaceProvider`] device-loss handles can drive the engine pool.
-    pub(crate) fn gpu_context(&self) -> &GpuContextHandle {
-        self.gpu_context.as_ref().unwrap_or_else(|| {
-            panic!(
-                "hydrolysis: a DeviceLoss outside a hydrolysis surface carries no GPU context; \
-                 take the handle from the surface's device_loss()"
-            )
-        })
+    pub(crate) const fn gpu_context(&self) -> &GpuContextHandle {
+        &self.gpu_context
+    }
+
+    /// The loss as an error, once the driver reported one.
+    pub(crate) fn lost_error(&self) -> Option<DeviceLostError> {
+        self.reason().map(|reason| DeviceLostError { reason })
     }
 
     /// The driver-reported loss line, once a loss was reported; a
@@ -2194,9 +2326,9 @@ impl OffscreenGpuContext {
     /// software adapter is used only when the host has no hardware GPU (or
     /// `WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER` is set).
     ///
-    /// # Panics
-    /// Panics when the host has no eligible adapter at all, or the device
-    /// request fails.
+    /// # Errors
+    /// [`GpuUnavailable`] when the host has no eligible adapter at all, or
+    /// the adapter refuses the device.
     #[cfg_attr(
         target_arch = "wasm32",
         allow(
@@ -2211,37 +2343,50 @@ impl OffscreenGpuContext {
             reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
         )
     )]
-    pub async fn new() -> Self {
-        let (instance, adapter, backends) =
-            request_instance_and_adapter("hydrolysis offscreen surface").await;
+    pub async fn new() -> Result<Self, GpuUnavailable> {
+        const CONTEXT: &str = "hydrolysis offscreen surface";
+        let (instance, adapter, backends) = request_instance_and_adapter(CONTEXT).await?;
         #[cfg(target_arch = "wasm32")]
         let _ = backends;
-        let generation = Self::open_device(&instance, &adapter)
-            .await
-            .expect("hydrolysis offscreen surface: failed to request wgpu device");
+        let generation = Self::open_device(CONTEXT, &instance, &adapter).await?;
 
-        Self {
+        Ok(Self {
             inner: std::sync::Arc::new(OffscreenGpuContextInner {
                 gpu: RecoverableGpu::new(generation),
                 #[cfg(not(target_arch = "wasm32"))]
                 backends,
             }),
-        }
+        })
     }
 
     /// Blocking [`Self::new`], for synchronous hosts and test harnesses.
+    ///
+    /// # Errors
+    /// [`GpuUnavailable`], as [`Self::new`].
+    #[cfg(any(test, feature = "testing"))]
+    pub fn new_blocking() -> Result<Self, GpuUnavailable> {
+        pollster::block_on(Self::new())
+    }
+
+    /// [`Self::new_blocking`] for a test host, which cannot run without a
+    /// GPU.
+    ///
+    /// # Panics
+    /// Panics naming the [`GpuUnavailable`] when the host has no GPU
+    /// Hydrolysis can render on.
     #[cfg(any(test, feature = "testing"))]
     #[must_use]
-    pub fn new_blocking() -> Self {
-        pollster::block_on(Self::new())
+    pub(crate) fn for_tests() -> Self {
+        Self::new_blocking().expect("hydrolysis test host: no GPU Hydrolysis can render on")
     }
 
     /// Opens the context's device generation on `adapter`: the shared
     /// tail of the first request and of a lost device's recreation.
     async fn open_device(
+        context: &'static str,
         instance: &wgpu::Instance,
         adapter: &wgpu::Adapter,
-    ) -> Result<DeviceLoss, OpenDeviceError> {
+    ) -> Result<DeviceLoss, GpuUnavailable> {
         let required_limits = required_device_limits(adapter);
         // PIPELINE_CACHE is requested wherever the adapter has it: without the
         // feature `create_pipeline_cache` errors, so the persistent store in
@@ -2250,7 +2395,7 @@ impl OffscreenGpuContext {
         // Metal and Vulkan (water-rs/cherenkov#57); adapters that lack it get
         // the same hard Engine::new failure the engine documents.
         #[cfg(not(feature = "frame-profile"))]
-        let required_features = crate::platform::required_media_features(adapter.features())
+        let required_features = required_media_features(adapter)?
             | (adapter.features()
                 & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
         // The frame profiler timestamps GPU work through timestamp queries
@@ -2258,7 +2403,7 @@ impl OffscreenGpuContext {
         // request them where the adapter has them and report absent where it
         // does not — the feature never fails a device request over this.
         #[cfg(feature = "frame-profile")]
-        let required_features = crate::platform::required_media_features(adapter.features())
+        let required_features = required_media_features(adapter)?
             | (adapter.features()
                 & (wgpu::Features::TIMESTAMP_QUERY
                     | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
@@ -2275,7 +2420,12 @@ impl OffscreenGpuContext {
                 trace: wgpu::Trace::default(),
             },
         )
-        .await?;
+        .await
+        .map_err(|source| GpuUnavailable::Device {
+            context,
+            adapter: adapter.get_info().name,
+            source,
+        })?;
         let context_id = next_gpu_context_id();
         let shared_device = cherenkov_gpu::interop::SharedDevice {
             instance: instance.clone(),
@@ -2292,13 +2442,9 @@ impl OffscreenGpuContext {
     /// (water-rs/waterui#2742).
     #[cfg(not(target_arch = "wasm32"))]
     async fn recreate(&self, instance: &wgpu::Instance) -> Result<DeviceLoss, String> {
-        let (adapter, inspected) = probe_adapters(
-            instance,
-            None,
-            "hydrolysis offscreen surface",
-            self.inner.backends,
-        )
-        .await;
+        const CONTEXT: &str = "hydrolysis offscreen surface";
+        let (adapter, inspected) =
+            probe_adapters(instance, None, CONTEXT, self.inner.backends).await;
         let adapter = adapter.ok_or_else(|| {
             format!(
                 "no surface-compatible adapter on the live instance \
@@ -2306,9 +2452,9 @@ impl OffscreenGpuContext {
                 inspected.join("; ")
             )
         })?;
-        Self::open_device(instance, &adapter)
+        Self::open_device(CONTEXT, instance, &adapter)
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| format!("{:#}", waterui_core::Error::from(error)))
     }
 }
 
@@ -2494,6 +2640,34 @@ mod adapter_selection_tests {
         assert!(!GPU_REQUIRED_GUIDANCE.contains("FORCE_FALLBACK_ADAPTER"));
     }
 
+    #[test]
+    fn a_host_without_an_adapter_is_an_unsupported_device_error() {
+        let none_found = super::GpuUnavailable::NoAdapter {
+            context: "probe",
+            inspected_adapters: Vec::new(),
+            backends: wgpu::Backends::all(),
+        }
+        .to_string();
+        assert!(none_found.starts_with("probe: "), "{none_found}");
+        match cherenkov_gpu::REQUIRED_BACKEND {
+            Some(required) => assert!(none_found.contains(&required.to_string())),
+            None => assert!(none_found.contains("Install or update the platform GPU driver")),
+        }
+
+        let none_usable = super::GpuUnavailable::NoAdapter {
+            context: "probe",
+            inspected_adapters: vec!["'noop' (Noop, Cpu)".to_owned()],
+            backends: wgpu::Backends::all(),
+        }
+        .to_string();
+        assert!(
+            none_usable.contains("this host has no GPU Hydrolysis can use"),
+            "{none_usable}"
+        );
+        assert!(none_usable.contains("'noop' (Noop, Cpu)"));
+        assert!(none_usable.contains(GPU_REQUIRED_GUIDANCE));
+    }
+
     /// The compute fields of a `wgpu::Limits` with every other field at its
     /// default: `check_limits` is whole-set, and the raster floor
     /// legitimately exceeds what a compute-free adapter offers elsewhere, so
@@ -2593,7 +2767,7 @@ fn hydrolysis_instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDes
 /// surface-compatible and not `Noop`. Software adapters are eligible and
 /// rank last, so one is returned only when no hardware adapter qualifies.
 /// `None` means no adapter qualified; the inspected list comes back either
-/// way for the no-adapter panic.
+/// way for the no-adapter error.
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(hydrolysis_gpu_painter)]
 async fn probe_adapters(
@@ -2643,29 +2817,6 @@ async fn probe_adapters(
     )
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(hydrolysis_gpu_painter)]
-fn fail_no_adapter(context: &str, inspected_adapters: &[String], backends: wgpu::Backends) -> ! {
-    if let Some(required) = cherenkov_gpu::REQUIRED_BACKEND {
-        assert!(
-            !inspected_adapters.is_empty(),
-            "{context}: no surface-compatible adapter was found. {required}"
-        );
-    }
-    assert!(
-        !inspected_adapters.is_empty(),
-        "{context}: failed to find a surface-compatible wgpu adapter on the backends {backends:?}. \
-Install or update the platform GPU driver."
-    );
-
-    panic!(
-        "{context}: this host has no GPU Hydrolysis can use. \
-Surface-compatible adapters inspected: {}. \
-{GPU_REQUIRED_GUIDANCE}",
-        inspected_adapters.join("; ")
-    );
-}
-
 /// Probe the target's backend on a fresh instance for an adapter Hydrolysis
 /// can use. The instance is returned because a wgpu `Surface` must
 /// be created on the instance that produced its adapter — the caller keeps
@@ -2679,8 +2830,8 @@ Surface-compatible adapters inspected: {}. \
 )]
 #[cfg(hydrolysis_gpu_painter)]
 async fn request_instance_and_adapter(
-    context: &str,
-) -> (wgpu::Instance, wgpu::Adapter, wgpu::Backends) {
+    context: &'static str,
+) -> Result<(wgpu::Instance, wgpu::Adapter, wgpu::Backends), GpuUnavailable> {
     // WebGPU is the only wgpu backend wasm can reach, so the adapter is
     // requested rather than enumerated on every wasm build shape.
     #[cfg(target_arch = "wasm32")]
@@ -2695,9 +2846,9 @@ async fn request_instance_and_adapter(
                 apply_limit_buckets: false,
             })
             .await
-            .expect("hydrolysis adapter selection: failed to find web adapter");
+            .map_err(GpuUnavailable::NoWebGpu)?;
         log_selected_adapter(context, &adapter);
-        (instance, adapter, backends)
+        Ok((instance, adapter, backends))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2707,12 +2858,16 @@ async fn request_instance_and_adapter(
         let (adapter, inspected_adapters) =
             probe_adapters(&instance, None, context, backends).await;
         let Some(adapter) = adapter else {
-            fail_no_adapter(context, &inspected_adapters, backends);
+            return Err(GpuUnavailable::NoAdapter {
+                context,
+                inspected_adapters,
+                backends,
+            });
         };
         log_selected_adapter(context, &adapter);
         // The mask records which backend the instance was created on — a
         // lost device's recreation probes this instance under the same mask.
-        (instance, adapter, backends)
+        Ok((instance, adapter, backends))
     }
 }
 
@@ -2723,24 +2878,32 @@ async fn request_instance_and_adapter(
 #[cfg(not(target_os = "macos"))]
 #[cfg(hydrolysis_gpu_painter)]
 async fn request_instance_surface_adapter(
-    context: &str,
-    make_surface: impl Fn(&wgpu::Instance) -> wgpu::Surface<'static>,
-) -> (
-    wgpu::Instance,
-    wgpu::Surface<'static>,
-    wgpu::Adapter,
-    wgpu::Backends,
-) {
+    context: &'static str,
+    make_surface: impl Fn(&wgpu::Instance) -> Result<wgpu::Surface<'static>, wgpu::CreateSurfaceError>,
+) -> Result<
+    (
+        wgpu::Instance,
+        wgpu::Surface<'static>,
+        wgpu::Adapter,
+        wgpu::Backends,
+    ),
+    GpuUnavailable,
+> {
     let backends = hydrolysis_backends();
     let instance = wgpu::Instance::new(hydrolysis_instance_descriptor(backends));
-    let surface = make_surface(&instance);
+    let surface =
+        make_surface(&instance).map_err(|source| GpuUnavailable::Surface { context, source })?;
     let (adapter, inspected_adapters) =
         probe_adapters(&instance, Some(&surface), context, backends).await;
     let Some(adapter) = adapter else {
-        fail_no_adapter(context, &inspected_adapters, backends);
+        return Err(GpuUnavailable::NoAdapter {
+            context,
+            inspected_adapters,
+            backends,
+        });
     };
     log_selected_adapter(context, &adapter);
-    (instance, surface, adapter, backends)
+    Ok((instance, surface, adapter, backends))
 }
 
 #[cfg(hydrolysis_gpu_painter)]
@@ -2794,19 +2957,19 @@ impl OffscreenSurface {
 
     /// The wgpu adapter this surface renders through.
     #[must_use]
-    pub fn adapter(&self) -> &wgpu::Adapter {
+    pub const fn adapter(&self) -> &wgpu::Adapter {
         &self.handles.gpu_context().shared_device.adapter
     }
 
     /// The wgpu device this surface renders through.
     #[must_use]
-    pub fn device(&self) -> &wgpu::Device {
+    pub const fn device(&self) -> &wgpu::Device {
         &self.handles.gpu_context().shared_device.device
     }
 
     /// The submission queue this surface renders through.
     #[must_use]
-    pub fn queue(&self) -> &wgpu::Queue {
+    pub const fn queue(&self) -> &wgpu::Queue {
         &self.handles.gpu_context().shared_device.queue
     }
 
@@ -2838,18 +3001,21 @@ impl OffscreenSurface {
     /// The next frame to render into: the texture the last [`Self::present`]
     /// returned, or a fresh one at the surface's current size.
     ///
-    /// # Panics
-    /// Panics when the surface's device is lost and the recreation
-    /// `PresentationSurface::ensure_live` runs could not restore it —
-    /// a caller reaching this inherent `acquire` has no `SurfaceError`
-    /// channel to report the loss through (water-rs/waterui#2742).
-    pub fn acquire(&mut self) -> SurfaceFrame {
+    /// # Errors
+    /// [`DeviceLostError`] when the surface's device is lost and the
+    /// recreation `PresentationSurface::ensure_live` runs could not restore
+    /// it (water-rs/waterui#2742).
+    pub fn acquire(&mut self) -> Result<SurfaceFrame, DeviceLostError> {
         PresentationSurface::ensure_live(self);
-        assert!(
-            !self.handles.is_lost(),
-            "hydrolysis offscreen surface: {}",
-            self.handles.describe_loss()
-        );
+        if let Some(lost) = self.handles.lost_error() {
+            return Err(lost);
+        }
+        Ok(self.frame())
+    }
+
+    /// The frame texture on the live generation: the last presented one,
+    /// or a fresh one at the surface's current size.
+    fn frame(&mut self) -> SurfaceFrame {
         let texture = self.last_presented.take().unwrap_or_else(|| {
             self.handles
                 .gpu_context()
@@ -2910,9 +3076,21 @@ impl OffscreenSurface {
             reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
         )
     )]
-    /// Creates an offscreen surface synchronously.
-    pub async fn new(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
-        Self::on_context(OffscreenGpuContext::new().await, width, height, format)
+    /// Creates an offscreen surface on a GPU context of its own.
+    ///
+    /// # Errors
+    /// [`GpuUnavailable`], as [`OffscreenGpuContext::new`].
+    pub async fn new(
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> Result<Self, GpuUnavailable> {
+        Ok(Self::on_context(
+            OffscreenGpuContext::new().await?,
+            width,
+            height,
+            format,
+        ))
     }
 
     /// Creates a surface on an already-requested [`OffscreenGpuContext`].
@@ -2937,9 +3115,15 @@ impl OffscreenSurface {
         }
     }
 
-    #[must_use]
     /// Creates an offscreen surface synchronously, polling the async setup to completion.
-    pub fn new_blocking(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
+    ///
+    /// # Errors
+    /// [`GpuUnavailable`], as [`OffscreenGpuContext::new`].
+    pub fn new_blocking(
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> Result<Self, GpuUnavailable> {
         pollster::block_on(Self::new(width, height, format))
     }
 
@@ -3024,15 +3208,17 @@ pub async fn open_engine_device(
     Ok(adapter.request_device(descriptor).await?)
 }
 
-/// Why [`open_engine_device`] could not open the shared device.
+/// Why [`open_engine_device`] could not open the shared device — the
+/// source of [`GpuUnavailable::Device`].
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 #[cfg(hydrolysis_gpu_painter)]
 pub enum OpenDeviceError {
     /// The backend refused the request.
-    #[error("{0}")]
+    #[error(transparent)]
     Request(#[from] wgpu::RequestDeviceError),
     /// The engine's Vulkan creation path failed.
-    #[error("{0}")]
+    #[error(transparent)]
     Engine(#[from] cherenkov::EngineError),
 }
 
@@ -3106,7 +3292,7 @@ impl SurfaceProvider for OffscreenSurface {
             // frame retries the recovery under its budget.
             return Err(SurfaceError::Lost);
         }
-        Ok(Self::acquire(self))
+        Self::acquire(self).map_err(|_| SurfaceError::Lost)
     }
 
     fn present(&mut self, frame: SurfaceFrame) {
@@ -3149,18 +3335,17 @@ impl OffscreenSceneSurface {
         /// Creates the host on the adapter `WaterUI` would render an
         /// application on, at `width × height` sRGB pixels.
         ///
-        /// # Panics
-        /// Panics when no usable adapter exists or the engine cannot
-        /// be created — same failure contract as [`OffscreenGpuContext::new`].
         /// Async on wasm32, where the engine surface creation inside awaits
         /// the browser's GPU device.
-        #[must_use]
-        pub fn new(width: u32, height: u32) -> Self {
-            crate::engine::engine_await!(Self::on_context(
-                pollster::block_on(OffscreenGpuContext::new()),
-                width,
-                height,
-            ))
+        ///
+        /// # Errors
+        /// [`GpuUnavailable`], as [`OffscreenGpuContext::new`].
+        ///
+        /// # Panics
+        /// Panics when the engine cannot be created on the device.
+        pub fn new(width: u32, height: u32) -> Result<Self, GpuUnavailable> {
+            let gpu = pollster::block_on(OffscreenGpuContext::new())?;
+            Ok(crate::engine::engine_await!(Self::on_context(gpu, width, height)))
         }
     }
 
@@ -3221,22 +3406,20 @@ impl OffscreenSceneSurface {
     /// Call after `engine.render(..)`; a call before the engine produces its
     /// first texture panics through the surface's presentation contract.
     ///
-    /// # Panics
-    /// Panics when the readback fails, and when the GPU device was lost:
-    /// `ensure_live` can rebuild the presentation target but not the
-    /// engine surface and mounts the caller holds through
-    /// [`Self::surface`], so this host reports the loss explicitly instead
-    /// of mixing device generations (water-rs/waterui#2742).
-    #[must_use]
-    pub fn readback_rgba8(&mut self) -> Vec<u8> {
-        assert!(
-            !self.target.device_loss().is_lost(),
-            "hydrolysis offscreen scene surface: the GPU device was lost; the \
-             caller-held engine surface cannot be rebuilt — recreate the \
-             OffscreenSceneSurface on a fresh context"
-        );
+    /// # Errors
+    /// [`ReadbackError`](crate::ReadbackError) when the readback fails, and
+    /// [`ReadbackError::DeviceLost`](crate::ReadbackError::DeviceLost) when
+    /// the GPU device was lost: `ensure_live` can rebuild the presentation
+    /// target but not the engine surface and mounts the caller holds through
+    /// [`Self::surface`], so this host reports the loss instead of mixing
+    /// device generations (water-rs/waterui#2742) — recreate the
+    /// `OffscreenSceneSurface` on a fresh context.
+    pub fn readback_rgba8(&mut self) -> Result<Vec<u8>, crate::readback::ReadbackError> {
+        if let Some(lost) = self.target.device_loss().lost_error() {
+            return Err(lost.into());
+        }
         let (width, height) = self.target.size();
-        let frame = self.target.acquire();
+        let frame = self.target.acquire()?;
         let texture = frame.texture().clone();
         self.cherenkov.present_into(
             self.target.device(),
@@ -3247,12 +3430,6 @@ impl OffscreenSceneSurface {
             1.0,
         );
         crate::readback::readback_texture_rgba8(&self.target, &texture, width, height)
-            .unwrap_or_else(|error| {
-                panic!(
-                    "hydrolysis offscreen scene surface: readback failed: {:#}",
-                    waterui_core::Error::from(error)
-                )
-            })
     }
 }
 
@@ -3273,14 +3450,21 @@ pub struct OffscreenWindow {
 
 #[cfg(hydrolysis_gpu_painter)]
 impl OffscreenWindow {
-    #[must_use]
-    /// Creates an offscreen surface synchronously.
-    pub fn new(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
-        Self {
-            surface: OffscreenSurface::new_blocking(width, height, format),
+    /// Creates an offscreen window on a GPU context of its own,
+    /// synchronously.
+    ///
+    /// # Errors
+    /// [`GpuUnavailable`], as [`OffscreenGpuContext::new`].
+    pub fn new(
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> Result<Self, GpuUnavailable> {
+        Ok(Self {
+            surface: OffscreenSurface::new_blocking(width, height, format)?,
             scale_factor: 1.0,
             size_limits: None,
-        }
+        })
     }
 
     /// Creates a window on an already-requested [`OffscreenGpuContext`], so
@@ -3499,10 +3683,10 @@ mod winit_impl {
     };
 
     use super::{
-        CursorStyle, DeviceLoss, GpuSurfaceWindow, InputConventions, InputEvent, KeyCode, KeyState,
-        Modifiers, MultiClickConfig, PlatformWindow, PointerButton, PointerKind, RedrawHandle,
-        TextInputPurpose, TextInputState, TouchPhase, TouchScrollConfig, enabled_window_buttons,
-        validated_window_frame,
+        CursorStyle, DeviceLoss, GpuSurfaceWindow, GpuUnavailable, InputConventions, InputEvent,
+        KeyCode, KeyState, Modifiers, MultiClickConfig, PlatformWindow, PointerButton, PointerKind,
+        RedrawHandle, TextInputPurpose, TextInputState, TouchPhase, TouchScrollConfig,
+        enabled_window_buttons, validated_window_frame,
     };
     #[cfg(not(target_os = "macos"))]
     use super::{SurfaceError, SurfaceFrame, SurfaceProvider, reclaim_device};
@@ -3525,22 +3709,16 @@ mod winit_impl {
         /// `wgpu::Surface` was created alongside (host-acquired) or the
         /// engine presents instead (macOS). `backends` records the tier
         /// for the recreation a later device loss runs.
-        ///
-        /// # Panics
-        /// Panics when the device request fails — the same failure contract
-        /// as the windowed surface that constructs it.
         async fn open(
             instance: wgpu::Instance,
             adapter: wgpu::Adapter,
             backends: wgpu::Backends,
-        ) -> Self {
-            let generation = Self::open_on(&instance, &adapter)
-                .await
-                .expect("hydrolysis winit surface: failed to request device");
-            Self {
+        ) -> Result<Self, GpuUnavailable> {
+            let generation = Self::open_on(&instance, &adapter).await?;
+            Ok(Self {
                 gpu: Arc::new(super::RecoverableGpu::new(generation)),
                 backends,
-            }
+            })
         }
 
         /// Opens a device generation on `adapter` over `instance` — the
@@ -3549,9 +3727,9 @@ mod winit_impl {
         async fn open_on(
             instance: &wgpu::Instance,
             adapter: &wgpu::Adapter,
-        ) -> Result<DeviceLoss, super::OpenDeviceError> {
+        ) -> Result<DeviceLoss, GpuUnavailable> {
             let required_limits = super::required_device_limits(adapter);
-            let required_features = crate::platform::required_media_features(adapter.features())
+            let required_features = super::required_media_features(adapter)?
                 | (adapter.features()
                     & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
             let (device, queue) = super::open_engine_device(
@@ -3565,7 +3743,12 @@ mod winit_impl {
                     trace: wgpu::Trace::default(),
                 },
             )
-            .await?;
+            .await
+            .map_err(|source| GpuUnavailable::Device {
+                context: CONTEXT,
+                adapter: adapter.get_info().name,
+                source,
+            })?;
             let context_id = super::next_gpu_context_id();
             Ok(DeviceLoss::observe(
                 cherenkov_gpu::interop::SharedDevice {
@@ -3587,13 +3770,8 @@ mod winit_impl {
             instance: &wgpu::Instance,
             compatible_surface: Option<&wgpu::Surface<'_>>,
         ) -> Result<DeviceLoss, String> {
-            let (adapter, inspected) = super::probe_adapters(
-                instance,
-                compatible_surface,
-                "hydrolysis winit surface",
-                self.backends,
-            )
-            .await;
+            let (adapter, inspected) =
+                super::probe_adapters(instance, compatible_surface, CONTEXT, self.backends).await;
             let adapter = adapter.ok_or_else(|| {
                 format!(
                     "no surface-compatible adapter on the live instance \
@@ -3603,9 +3781,12 @@ mod winit_impl {
             })?;
             Self::open_on(instance, &adapter)
                 .await
-                .map_err(|error| error.to_string())
+                .map_err(|error| format!("{:#}", waterui_core::Error::from(error)))
         }
     }
+
+    /// The host step every winit GPU error names.
+    const CONTEXT: &str = "hydrolysis winit surface";
 
     /// The window's presentation state. On macOS the window is
     /// engine-presented (water-rs/waterui#2223): no `wgpu::Surface` exists
@@ -3793,15 +3974,17 @@ mod winit_impl {
             adapter: &wgpu::Adapter,
             transparent: bool,
             content_range: cherenkov_gpu::interop::ColorRange,
-        ) -> cherenkov_gpu::interop::OutputSelection {
-            super::negotiate_host_output(surface, adapter, transparent, content_range)
-                .unwrap_or_else(|error| {
+        ) -> Result<cherenkov_gpu::interop::OutputSelection, GpuUnavailable> {
+            super::negotiate_host_output(surface, adapter, transparent, content_range).map_err(
+                |error| {
                     let info = adapter.get_info();
-                    panic!(
-                        "hydrolysis winit surface: {error} (adapter {:?}, {:?})",
-                        info.name, info.backend
-                    )
-                })
+                    GpuUnavailable::Output {
+                        context: CONTEXT,
+                        adapter: info.name,
+                        reason: format!("{error} ({:?})", info.backend),
+                    }
+                },
+            )
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -3813,21 +3996,25 @@ mod winit_impl {
             requires_transparency: bool,
             on_x11: bool,
             window: Arc<NativeWindow>,
-        ) -> Self {
+        ) -> Result<Self, GpuUnavailable> {
             let handles = gpu.gpu.generation();
             let adapter_info = handles.gpu_context().shared_device.adapter.get_info();
             if requires_transparency
                 && on_x11
-                && let Some(cause) = Self::mesa_x11_transparency_blocker(&adapter_info)
+                && let Some(reason) = Self::mesa_x11_transparency_blocker(&adapter_info)
             {
-                panic!("hydrolysis winit surface: {cause}");
+                return Err(GpuUnavailable::Output {
+                    context: CONTEXT,
+                    adapter: adapter_info.name,
+                    reason,
+                });
             }
             let selection = Self::negotiate_surface_output(
                 &surface,
                 &handles.gpu_context().shared_device.adapter,
                 requires_transparency,
                 cherenkov_gpu::interop::ColorRange::WideGamut,
-            );
+            )?;
             let config = wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 format: selection.format,
@@ -3840,7 +4027,7 @@ mod winit_impl {
                 desired_maximum_frame_latency: 2,
             };
             surface.configure(&handles.gpu_context().shared_device.device, &config);
-            Self {
+            Ok(Self {
                 surface,
                 gpu,
                 handles,
@@ -3849,16 +4036,23 @@ mod winit_impl {
                 selection,
                 content_range: cherenkov_gpu::interop::ColorRange::WideGamut,
                 window,
-            }
+            })
         }
 
-        /// Creates an offscreen surface synchronously.
+        /// Creates the surface presenting into `window`, on `shared_gpu`'s
+        /// device chain when given and on a GPU context of its own
+        /// otherwise; returns it with the context in use.
+        ///
+        /// # Errors
+        /// [`GpuUnavailable`] when the host has no usable adapter, the
+        /// adapter refuses the device, or the window's surface cannot be
+        /// created or present on the adapter.
         #[cfg(not(target_os = "macos"))]
         pub async fn new(
             window: Arc<NativeWindow>,
             shared_gpu: Option<&WinitGpuContext>,
             requires_transparency: bool,
-        ) -> (Self, WinitGpuContext) {
+        ) -> Result<(Self, WinitGpuContext), GpuUnavailable> {
             let (gpu, surface) = if let Some(gpu) = shared_gpu {
                 // The instance lives inside the context's live generation —
                 // a surface must be created on the instance that produced
@@ -3870,28 +4064,26 @@ mod winit_impl {
                     .shared_device
                     .instance
                     .create_surface(window.clone())
-                    .expect("hydrolysis winit surface: failed to create shared surface");
+                    .map_err(|source| GpuUnavailable::Surface {
+                        context: CONTEXT,
+                        source,
+                    })?;
                 (gpu.clone(), surface)
             } else {
                 let (instance, surface, adapter, backends) =
-                    super::request_instance_surface_adapter(
-                        "hydrolysis winit surface",
-                        |instance| {
-                            instance
-                                .create_surface(window.clone())
-                                .expect("hydrolysis winit surface: failed to create surface")
-                        },
-                    )
-                    .await;
+                    super::request_instance_surface_adapter(CONTEXT, |instance| {
+                        instance.create_surface(window.clone())
+                    })
+                    .await?;
 
                 (
-                    WinitGpuContext::open(instance, adapter, backends).await,
+                    WinitGpuContext::open(instance, adapter, backends).await?,
                     surface,
                 )
             };
 
             let size = window.inner_size();
-            (
+            Ok((
                 Self::from_surface(
                     surface,
                     gpu.clone(),
@@ -3900,9 +4092,9 @@ mod winit_impl {
                     requires_transparency,
                     Self::window_is_x11(&window),
                     window,
-                ),
+                )?,
                 gpu,
-            )
+            ))
         }
 
         /// The macOS variant: no `wgpu::Surface` exists on the winit view —
@@ -3910,18 +4102,22 @@ mod winit_impl {
         /// surface is the GPU context plus the `WindowTarget` inputs the next
         /// frame's engine surface is built from. Adapter selection uses no
         /// compatible surface.
+        ///
+        /// # Errors
+        /// [`GpuUnavailable`] when the host has no usable adapter or the
+        /// adapter refuses the device.
         #[cfg(target_os = "macos")]
         pub async fn new(
             window: Arc<NativeWindow>,
             shared_gpu: Option<&WinitGpuContext>,
             requires_transparency: bool,
-        ) -> (Self, WinitGpuContext) {
+        ) -> Result<(Self, WinitGpuContext), GpuUnavailable> {
             let gpu = if let Some(gpu) = shared_gpu {
                 gpu.clone()
             } else {
                 let (instance, adapter, backends) =
-                    super::request_instance_and_adapter("hydrolysis winit surface").await;
-                WinitGpuContext::open(instance, adapter, backends).await
+                    super::request_instance_and_adapter(CONTEXT).await?;
+                WinitGpuContext::open(instance, adapter, backends).await?
             };
             let size = window.inner_size();
             let display_moved = std::rc::Rc::new(std::cell::Cell::new(false));
@@ -3929,7 +4125,7 @@ mod winit_impl {
                 Arc::clone(&window),
                 std::rc::Rc::clone(&display_moved),
             );
-            (
+            Ok((
                 Self {
                     handles: gpu.gpu.generation(),
                     gpu: gpu.clone(),
@@ -3941,14 +4137,17 @@ mod winit_impl {
                     _screen_observer: screen_observer,
                 },
                 gpu,
-            )
+            ))
         }
 
         /// Adopts the context's live device generation — rebuilding it
         /// when the adopted one was lost — and reconfigures the swapchain
         /// on the new device (water-rs/waterui#2742). The `wgpu::Surface`
         /// belongs to the instance, which recreation keeps, so a
-        /// reconfigure, not a re-attach, is enough.
+        /// reconfigure, not a re-attach, is enough. When the rebuilt
+        /// adapter offers no output the engine can present through, the
+        /// error is logged and the swapchain is reconfigured with the
+        /// previous generation's selection.
         #[cfg(not(target_os = "macos"))]
         fn ensure_live(&mut self) {
             let gpu = self.gpu.clone();
@@ -3960,18 +4159,24 @@ mod winit_impl {
             }
             self.handles = generation;
             let shared = &self.handles.gpu_context().shared_device;
-            let selection = Self::negotiate_surface_output(
+            match Self::negotiate_surface_output(
                 &self.surface,
                 &shared.adapter,
                 self.transparent,
                 self.content_range,
-            );
-            self.config.alpha_mode = selection.alpha_mode;
-            self.config.format = selection.format;
-            self.config.color_space = selection.color_space;
-            self.config.present_mode = selection.present_mode;
+            ) {
+                Ok(selection) => {
+                    self.config.alpha_mode = selection.alpha_mode;
+                    self.config.format = selection.format;
+                    self.config.color_space = selection.color_space;
+                    self.config.present_mode = selection.present_mode;
+                    self.selection = selection;
+                }
+                Err(error) => tracing::error!(
+                    "{error}; the rebuilt device keeps the previous output configuration"
+                ),
+            }
             self.surface.configure(&shared.device, &self.config);
-            self.selection = selection;
         }
 
         /// Adopts the context's live device generation — rebuilding it
@@ -3993,15 +4198,22 @@ mod winit_impl {
         /// selection actually changes. The negotiation is the one creation
         /// uses, so a surface that offers no transparency-capable mode fails
         /// the same way — on X11 that is a window created opaque, whose
-        /// visual cannot gain an alpha channel afterwards.
+        /// visual cannot gain an alpha channel afterwards: the error is
+        /// logged and the window keeps its current transparency.
         #[cfg(not(target_os = "macos"))]
         fn set_transparent(&mut self, transparent: bool) {
-            let selection = Self::negotiate_surface_output(
+            let selection = match Self::negotiate_surface_output(
                 &self.surface,
                 &self.handles.gpu_context().shared_device.adapter,
                 transparent,
                 self.content_range,
-            );
+            ) {
+                Ok(selection) => selection,
+                Err(error) => {
+                    tracing::error!("{error}; the window keeps its current transparency");
+                    return;
+                }
+            };
             if selection.alpha_mode != self.selection.alpha_mode
                 || selection.format != self.selection.format
                 || selection.color_space != self.selection.color_space
@@ -4468,14 +4680,19 @@ mod winit_impl {
         ///
         /// `wake` is the host's request for another frame of this window;
         /// see [`Self::new_with_shared_gpu`] for its contract.
+        ///
+        /// # Errors
+        /// [`GpuUnavailable`], as [`Self::new_with_shared_gpu`].
         pub async fn new(
             window: Arc<NativeWindow>,
             wake: RedrawHandle,
             requires_transparency: bool,
-        ) -> Self {
-            Self::new_with_shared_gpu(window, wake, None, requires_transparency, None)
-                .await
-                .0
+        ) -> Result<Self, GpuUnavailable> {
+            Ok(
+                Self::new_with_shared_gpu(window, wake, None, requires_transparency, None)
+                    .await?
+                    .0,
+            )
         }
 
         /// Queues a close request on the same path the OS close button
@@ -4505,17 +4722,19 @@ mod winit_impl {
         /// creation: `apply_properties` restores it when the declaration's
         /// `icon` binding reads `None`.
         ///
-        /// # Panics
-        /// Propagates panics from surface and device creation.
+        /// # Errors
+        /// [`GpuUnavailable`] when the host has no usable adapter, the
+        /// adapter refuses the device, or the window's surface cannot be
+        /// created or present on the adapter.
         pub async fn new_with_shared_gpu(
             window: Arc<NativeWindow>,
             wake: RedrawHandle,
             shared_gpu: Option<&WinitGpuContext>,
             requires_transparency: bool,
             application_icon: Option<winit::window::Icon>,
-        ) -> (Self, WinitGpuContext) {
+        ) -> Result<(Self, WinitGpuContext), GpuUnavailable> {
             let (surface, gpu) =
-                WinitSurface::new(window.clone(), shared_gpu, requires_transparency).await;
+                WinitSurface::new(window.clone(), shared_gpu, requires_transparency).await?;
             let size = window.inner_size();
             let minimized = window.is_minimized().unwrap_or(false);
             let zero_sized = size.width == 0 || size.height == 0;
@@ -4523,7 +4742,7 @@ mod winit_impl {
             let cloaked = window_is_cloaked(&window);
             #[cfg(not(target_os = "windows"))]
             let cloaked = false;
-            (
+            Ok((
                 Self {
                     #[cfg(target_os = "macos")]
                     frame_rate_demand: super::macos_display_link::FrameRateDemandLink::attach(
@@ -4560,7 +4779,7 @@ mod winit_impl {
                     blur_effect_view: None,
                 },
                 gpu,
-            )
+            ))
         }
 
         /// The winit [`WindowId`] identifying this window to the event loop.
@@ -7104,7 +7323,7 @@ mod recovery_tests {
     const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
     fn test_surface() -> (OffscreenGpuContext, OffscreenSurface) {
-        let context = OffscreenGpuContext::new_blocking();
+        let context = OffscreenGpuContext::for_tests();
         let surface = OffscreenSurface::on_context(context.clone(), 4, 4, FORMAT);
         (context, surface)
     }
@@ -7168,6 +7387,32 @@ mod recovery_tests {
         PresentationSurface::ensure_live(&mut surface);
         assert_eq!(surface.device_loss().gpu_context().context_id, dead);
         assert!(surface.device_loss().is_lost());
+        // A caller asking for a frame gets the loss as an error.
+        let lost = surface
+            .acquire()
+            .expect_err("an unrecoverable surface hands out no frame");
+        assert!(
+            lost.reason().contains("gone before presenting"),
+            "{}",
+            lost.reason()
+        );
+    }
+
+    #[test]
+    fn a_lost_scene_surface_reports_the_loss_from_its_readback() {
+        let context = OffscreenGpuContext::for_tests();
+        let mut scene = super::OffscreenSceneSurface::on_context(context, 4, 4);
+        scene
+            .target
+            .device_loss()
+            .simulate_loss("gone under the scene");
+        let error = scene
+            .readback_rgba8()
+            .expect_err("a lost device reads back no frame");
+        assert!(
+            matches!(&error, crate::ReadbackError::DeviceLost(lost) if lost.reason().contains("gone under the scene")),
+            "{error}"
+        );
     }
 
     #[test]

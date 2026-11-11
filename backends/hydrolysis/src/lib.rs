@@ -111,8 +111,8 @@ pub use platform::{
 };
 #[cfg(hydrolysis_gpu_painter)]
 pub use platform::{
-    DeviceLoss, OffscreenGpuContext, OffscreenSceneSurface, OffscreenSurface, OffscreenWindow,
-    SurfaceFrame,
+    DeviceLoss, DeviceLostError, GpuUnavailable, OffscreenGpuContext, OffscreenSceneSurface,
+    OffscreenSurface, OffscreenWindow, OpenDeviceError, SurfaceFrame,
 };
 #[cfg(hydrolysis_runtime)]
 pub use platform_view::{

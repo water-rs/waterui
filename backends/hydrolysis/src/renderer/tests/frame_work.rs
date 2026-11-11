@@ -115,7 +115,7 @@ fn secondary_click(x: f32, y: f32) -> [InputEvent; 2] {
 }
 
 fn runtime_with(view: impl View) -> HeadlessRuntime {
-    runtime_with_on(view, crate::platform::OffscreenGpuContext::new_blocking())
+    runtime_with_on(view, crate::platform::OffscreenGpuContext::for_tests())
 }
 
 fn runtime_with_on(view: impl View, gpu: crate::platform::OffscreenGpuContext) -> HeadlessRuntime {

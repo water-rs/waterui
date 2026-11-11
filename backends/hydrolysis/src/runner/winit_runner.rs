@@ -1245,11 +1245,17 @@ impl WinitRunner {
     /// The window's wake — what GPU content and the engine call for another
     /// frame — posts [`RunnerEvent::RedrawWindow`] to this loop. It owns no
     /// part of the winit window, so it may run and drop on any thread.
+    ///
+    /// `None` when the window's surface cannot present on the shared
+    /// context: the error is logged and the window is not mounted. Without
+    /// a context yet — the host has no GPU Hydrolysis can render on — the
+    /// app cannot show anything: the error is logged and the process exits
+    /// with a failure status.
     fn create_platform_window(
         &mut self,
         native_window: Arc<NativeWindow>,
         window: &Window,
-    ) -> WinitWindow {
+    ) -> Option<WinitWindow> {
         let wake = {
             let event_proxy = self.event_proxy.clone();
             let window_id = native_window.id();
@@ -1258,17 +1264,28 @@ impl WinitRunner {
                 let _ = event_proxy.send_event(RunnerEvent::RedrawWindow(window_id));
             })
         };
-        let (platform, gpu_context) = pollster::block_on(WinitWindow::new_with_shared_gpu(
+        let created = pollster::block_on(WinitWindow::new_with_shared_gpu(
             native_window,
             wake,
             self.gpu_context.as_ref(),
             super::window_requires_transparency(window, &self.env),
             self.window_icon.clone(),
         ));
+        let (platform, gpu_context) = match created {
+            Ok(created) => created,
+            Err(error) if self.gpu_context.is_some() => {
+                tracing::error!(
+                    "{:#}; the window is not mounted",
+                    waterui_core::Error::from(error)
+                );
+                return None;
+            }
+            Err(error) => super::exit_without_gpu(error),
+        };
         if self.gpu_context.is_none() {
             self.gpu_context = Some(gpu_context);
         }
-        platform
+        Some(platform)
     }
 
     fn create_runtime_window(
@@ -1329,7 +1346,7 @@ impl WinitRunner {
         if activates {
             self.attach_windows_chrome(&native_window);
         }
-        let mut platform = self.create_platform_window(native_window, &window);
+        let mut platform = self.create_platform_window(native_window, &window)?;
         platform.apply_properties(&window);
         let text = ParleyEngine::from_collection(&self.fonts, FontFamilyResolution::Lenient);
         let renderer = HydrolysisRenderer::with_engine(Rc::clone(&self.theme), text);

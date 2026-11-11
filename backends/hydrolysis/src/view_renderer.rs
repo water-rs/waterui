@@ -62,26 +62,19 @@ impl HydrolysisViewRenderer {
     /// Ensures the offscreen surface exists at `width`×`height`, acquires
     /// its next frame and returns the GPU handles the capture renders
     /// through.
+    ///
+    /// A host without a usable GPU or a device lost beyond recovery fails
+    /// the capture with [`RenderError::Gpu`].
     #[expect(
         clippy::future_not_send,
         reason = "view rendering runs on the main thread; the future borrows non-Send GPU state"
     )]
-    async fn acquire_frame(
-        &self,
-        width: u32,
-        height: u32,
-    ) -> (
-        SurfaceFrame,
-        wgpu::Adapter,
-        wgpu::Device,
-        wgpu::Queue,
-        DeviceLoss,
-        wgpu::TextureFormat,
-    ) {
+    async fn acquire_frame(&self, width: u32, height: u32) -> Result<AcquiredFrame, RenderError> {
         let cell = &self.surface;
         if cell.borrow().is_none() {
-            let offscreen =
-                OffscreenSurface::new(width, height, wgpu::TextureFormat::Rgba8Unorm).await;
+            let offscreen = OffscreenSurface::new(width, height, wgpu::TextureFormat::Rgba8Unorm)
+                .await
+                .map_err(gpu_failure)?;
             *cell.borrow_mut() = Some(offscreen);
         }
 
@@ -93,17 +86,27 @@ impl HydrolysisViewRenderer {
             .as_mut()
             .expect("hydrolysis view renderer surface must initialize before rendering");
         surface.resize(width, height);
-        let frame = surface.acquire();
-        (
+        let frame = surface.acquire().map_err(gpu_failure)?;
+        Ok((
             frame,
             surface.adapter().clone(),
             surface.device().clone(),
             surface.queue().clone(),
             surface.device_loss().clone(),
             surface.format(),
-        )
+        ))
     }
 }
+
+/// An acquired capture frame and the GPU handles it renders through.
+type AcquiredFrame = (
+    SurfaceFrame,
+    wgpu::Adapter,
+    wgpu::Device,
+    wgpu::Queue,
+    DeviceLoss,
+    wgpu::TextureFormat,
+);
 
 impl CustomViewRenderer for HydrolysisViewRenderer {
     #[expect(
@@ -130,7 +133,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
         let height = request.size().height.max(1.0).round() as u32;
 
         let (frame, adapter, device, queue, device_loss, format) =
-            self.acquire_frame(width, height).await;
+            self.acquire_frame(width, height).await?;
 
         // The capture's text engine shapes against the collection the runner
         // installed — `FontCollection::from_env` names the host's obligation

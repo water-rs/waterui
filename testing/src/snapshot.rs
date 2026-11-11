@@ -115,6 +115,11 @@ impl core::fmt::Debug for TestHost {
 impl TestHost {
     /// Creates a test host with a fixed render size, installing the style's
     /// tokens into `env` the way a rendered runtime does.
+    ///
+    /// # Panics
+    ///
+    /// Panics with the cause when the host has no GPU Hydrolysis can render
+    /// on.
     #[must_use]
     pub fn new(env: Environment, width: u32, height: u32, style: impl Style) -> Self {
         let mut env = env;
@@ -128,7 +133,8 @@ impl TestHost {
         fonts.clone().install(&mut env);
         Self {
             env,
-            gpu: OffscreenGpuContext::new_blocking(),
+            gpu: OffscreenGpuContext::new_blocking()
+                .unwrap_or_else(|error| snapshot_failed("requesting the GPU", error)),
             width,
             height,
             theme: Rc::new(style),
@@ -174,7 +180,9 @@ impl TestHost {
         );
         renderer.finish_rebuild_frame();
 
-        let frame = surface.acquire();
+        let frame = surface
+            .acquire()
+            .unwrap_or_else(|error| snapshot_failed("acquiring the frame", error));
         renderer
             .render_scene_to_texture(hydrolysis::HydrolysisRenderTarget {
                 adapter: surface.adapter(),
