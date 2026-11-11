@@ -126,10 +126,10 @@ pub use platform_view::{
 };
 #[cfg(hydrolysis_gpu_painter)]
 pub use readback::{ReadbackError, readback_texture_rgba8};
+#[cfg(hydrolysis_gpu_painter)]
+pub use renderer::FrameError;
 #[cfg(all(feature = "accessibility", hydrolysis_runtime))]
 pub use renderer::accessibility::{AccessibilityActivationPointError, AccessibilityContentTypes};
-#[cfg(hydrolysis_gpu_painter)]
-pub use renderer::{FrameError, HydrolysisRenderTarget};
 #[cfg(all(feature = "frame-profile", hydrolysis_gpu_painter))]
 pub use renderer::{FrameStageTimes, GpuIdentity};
 #[cfg(hydrolysis_runtime)]

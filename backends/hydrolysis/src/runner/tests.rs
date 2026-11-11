@@ -1,9 +1,10 @@
 use super::headless::HeadlessPlatformWindow;
 use super::{
-    FrameMode, FrameReader, RenderDiagnosticsConfig, RuntimeWindow, acquire_surface_frame,
-    advance_runtime, axes_whose_limits_changed, clamp_window_size, handle_input_events,
-    pump_window_semantics, render_window, render_window_with_capture, reports_ui_idle,
-    schedule_animation_update, schedule_redraw_or_refresh, surface_error_requires_reconfigure,
+    FrameMode, FrameReader, RenderDiagnosticsConfig, RuntimeWindow, WindowFrame,
+    acquire_surface_frame, advance_runtime, axes_whose_limits_changed, clamp_window_size,
+    handle_input_events, pump_window_semantics, render_window, render_window_with_capture,
+    reports_ui_idle, schedule_animation_update, schedule_redraw_or_refresh,
+    surface_error_requires_reconfigure,
 };
 use crate::platform::{
     GpuSurfaceWindow as _, InputEvent, OffscreenGpuContext, OffscreenSurface, PlatformWindow as _,
@@ -185,12 +186,12 @@ fn hidden_window_parks_the_pump_and_restores_exactly_one_frame() {
         "a hidden window reports no wake deadline"
     );
     assert!(
-        !render_window(&mut runtime, &env, &mut || false),
+        !render_window(&mut runtime, &env, &mut || false).presented(),
         "a hidden window presents no frame"
     );
     runtime.platform.request_redraw();
     assert!(
-        !render_window(&mut runtime, &env, &mut || false),
+        !render_window(&mut runtime, &env, &mut || false).presented(),
         "a stale in-flight wake renders nothing either"
     );
     assert_eq!(
@@ -215,11 +216,61 @@ fn hidden_window_parks_the_pump_and_restores_exactly_one_frame() {
         if !wake {
             break;
         }
-        if render_window(&mut runtime, &env, &mut || false) {
+        if render_window(&mut runtime, &env, &mut || false).presented() {
             rendered += 1;
         }
     }
     assert_eq!(rendered, 1, "un-hiding must render exactly one frame");
+}
+
+/// A surface that fails for good — here, a device whose recovery budget ran
+/// out — ends the window's rendering: the frame reports the failure and the
+/// pump asks for no further frame, instead of spinning on redraws that would
+/// fail the same way forever.
+#[test]
+fn a_terminal_frame_failure_requests_no_further_frame() {
+    let env = test_environment();
+    let gpu = OffscreenGpuContext::for_tests();
+    let platform =
+        HeadlessPlatformWindow::on_context(gpu.clone(), 16, 16, wgpu::TextureFormat::Rgba8Unorm);
+    let mut runtime = runtime_window_with_platform(
+        Window::new("", binding(WindowState::Normal), || ()),
+        platform,
+        &env,
+    );
+    let mut now = Instant::now();
+    assert!(
+        drive_until_idle(&mut runtime, &env, &mut now, 60) < 60,
+        "the window never went idle"
+    );
+
+    // The device dies and every rebuild fails until the budget runs out.
+    runtime
+        .platform
+        .surface()
+        .device_loss()
+        .simulate_loss("gone for good");
+    let unrecoverable = (0..=crate::platform::MAX_UNPRODUCTIVE_LOSSES)
+        .find_map(|_| {
+            gpu.recoverable()
+                .ensure_live(|_| Err("no adapter".to_owned()))
+                .err()
+        })
+        .expect("failed rebuilds exhaust the recovery budget");
+
+    runtime.request_refresh();
+    let _ = runtime.platform.take_redraw_request();
+    match render_window(&mut runtime, &env, &mut || false) {
+        WindowFrame::Failed(crate::renderer::FrameError::DeviceUnrecoverable(error)) => {
+            assert_eq!(error.reason(), unrecoverable.reason());
+        }
+        other => panic!("an unrecoverable device must end the window's rendering, got {other:?}"),
+    }
+    assert!(!runtime.mode.is_pending(), "a failed frame arms no refresh");
+    assert!(
+        !runtime.platform.take_redraw_request(),
+        "a failed frame posts no redraw"
+    );
 }
 
 /// An animation in flight does not wake a hidden pump: no gesture
@@ -257,7 +308,7 @@ fn hidden_window_reports_no_deadline_for_an_armed_animation() {
         "an armed caret animation must not post a redraw while hidden"
     );
     assert!(
-        !render_window(&mut runtime, &env, &mut || false),
+        !render_window(&mut runtime, &env, &mut || false).presented(),
         "a hidden window presents no frame"
     );
 }
@@ -1333,7 +1384,7 @@ fn an_open_context_menu_presentation_builds_once_through_the_build_path() {
         "the menu must be open before the first build"
     );
 
-    assert!(render_window(&mut runtime, &env, &mut || false));
+    assert!(render_window(&mut runtime, &env, &mut || false).presented());
     assert!(runtime.renderer.has_render_tree());
     assert!(
         runtime
@@ -1349,7 +1400,7 @@ fn an_open_context_menu_presentation_builds_once_through_the_build_path() {
     // build frame registered exactly what it does.
     runtime.renderer.root_cell().mark_layout();
     runtime.request_refresh();
-    assert!(render_window(&mut runtime, &env, &mut || false));
+    assert!(render_window(&mut runtime, &env, &mut || false).presented());
     assert!(
         runtime
             .renderer
@@ -1428,10 +1479,6 @@ impl RecoveringSurface {
 }
 
 impl crate::platform::PresentationSurface for RecoveringSurface {
-    fn adapter(&self) -> &wgpu::Adapter {
-        self.inner.adapter()
-    }
-
     fn device(&self) -> &wgpu::Device {
         self.inner.device()
     }
@@ -1440,8 +1487,8 @@ impl crate::platform::PresentationSurface for RecoveringSurface {
         self.inner.queue()
     }
 
-    fn device_loss(&self) -> &crate::platform::DeviceLoss {
-        self.inner.device_loss()
+    fn generation(&self) -> &crate::platform::GpuGeneration {
+        self.inner.generation()
     }
 
     fn size(&self) -> (u32, u32) {
@@ -1821,7 +1868,7 @@ fn a_frame_transaction_serves_redraws_raised_before_its_render() {
         surface_attached,
         HeadlessPlatformWindow::take_redraw_request,
     ));
-    assert!(render_window(&mut runtime, &env, &mut || false));
+    assert!(render_window(&mut runtime, &env, &mut || false).presented());
     runtime.request_redraw();
     assert!(
         transaction.finish(
@@ -1855,7 +1902,7 @@ fn pump_frame_transaction(
         surface_attached,
         HeadlessPlatformWindow::take_redraw_request,
     ) {
-        assert!(render_window(runtime, env, &mut || false));
+        assert!(render_window(runtime, env, &mut || false).presented());
     }
     transaction.finish(
         runtime.platform.is_occluded(),

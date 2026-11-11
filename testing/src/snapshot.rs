@@ -183,17 +183,7 @@ impl TestHost {
             .acquire()
             .unwrap_or_else(|error| snapshot_failed("acquiring the frame", error));
         renderer
-            .render_scene_to_texture(hydrolysis::HydrolysisRenderTarget {
-                adapter: surface.adapter(),
-                device: surface.device(),
-                queue: surface.queue(),
-                device_loss: surface.device_loss().clone(),
-                texture: frame.texture(),
-                format: surface.format(),
-                width: self.width.max(1),
-                height: self.height.max(1),
-                base_color: WorkingColor::TRANSPARENT,
-            })
+            .render_scene_to_texture(surface, frame.texture(), WorkingColor::TRANSPARENT)
             .unwrap_or_else(|error| snapshot_failed("rendering the frame", error));
         let rgba8 = readback_texture_rgba8(
             &*surface,

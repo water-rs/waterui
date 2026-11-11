@@ -321,11 +321,12 @@ impl DeviceLostError {
 }
 
 /// The GPU context a [`DeviceLoss`] handle was taken on: the device-creation
-/// chain and its engine-pool identity.
+/// chain and its identity.
 #[derive(Clone, Debug)]
 #[cfg(hydrolysis_gpu_painter)]
 pub struct GpuContextHandle {
-    /// Identity of this device creation chain for the engine pool.
+    /// Identity of this device creation chain: a window's engine surface
+    /// renders on the chain it was created on until this changes.
     pub(crate) context_id: u64,
     /// The instance/adapter/device/queue of that chain, which the shared
     /// Cherenkov engine requires of its `SharedDevice`.
@@ -359,8 +360,7 @@ pub struct DeviceLoss {
 impl DeviceLoss {
     /// Starts observing a device: installs its device-lost callback so the
     /// returned handle reports the loss the moment the driver announces it.
-    /// `context_id` identifies the creation chain `shared_device` names for
-    /// the engine pool.
+    /// `context_id` identifies the creation chain `shared_device` names.
     ///
     /// wgpu keeps one lost callback per device, so this belongs to whoever
     /// owns the device and is called once, right after the device is created.
@@ -469,21 +469,85 @@ impl DeviceLoss {
 #[cfg(hydrolysis_gpu_painter)]
 pub const MAX_UNPRODUCTIVE_LOSSES: usize = 3;
 
-/// Whether a recovery streak ran out of budget: `losses` counts generations
-/// that died before ever presenting and rebuild attempts that failed. Logs
-/// an error naming every recorded loss when it did.
+/// The terminal error of a recovery streak that ran out of budget: `losses`
+/// counts generations that died before ever presenting and rebuild attempts
+/// that failed. `None` while the budget holds.
 #[cfg(hydrolysis_gpu_painter)]
-fn recovery_budget_exhausted(losses: &[String]) -> bool {
-    let exhausted = losses.len() > MAX_UNPRODUCTIVE_LOSSES;
-    if exhausted {
-        tracing::error!(
-            "hydrolysis: GPU device is unrecoverable — {} consecutive generations \
-             died before presenting a frame: {}; the context stays lost and is not rebuilt again",
+fn recovery_budget_exhausted(losses: &[String]) -> Option<DeviceLostError> {
+    (losses.len() > MAX_UNPRODUCTIVE_LOSSES).then(|| DeviceLostError {
+        reason: format!(
+            "the device is unrecoverable — {} consecutive generations died before \
+             presenting a frame: {}",
             losses.len(),
             losses.join("; ")
-        );
+        ),
+    })
+}
+
+/// One GPU device generation: its device-creation chain, observed for loss,
+/// and the Cherenkov engine created on it when it opened.
+///
+/// The engine belongs to the generation: creating it can only fail the same
+/// way on every retry against one device, so a generation that opens has a
+/// working engine, and every surface on it renders through that engine. The
+/// generation that replaces a lost one opens a fresh engine.
+#[derive(Clone)]
+#[cfg(hydrolysis_gpu_painter)]
+pub struct GpuGeneration {
+    loss: DeviceLoss,
+    engine: std::rc::Rc<crate::engine::SharedEngineState>,
+}
+
+#[cfg(hydrolysis_gpu_painter)]
+impl core::fmt::Debug for GpuGeneration {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GpuGeneration")
+            .field("loss", &self.loss)
+            .finish_non_exhaustive()
     }
-    exhausted
+}
+
+#[cfg(hydrolysis_gpu_painter)]
+crate::engine::cfg_async_fn! {
+    impl GpuGeneration {
+        /// Opens the generation `loss` observes: creates its engine,
+        /// configured by `config`.
+        ///
+        /// Async on wasm32, where `Engine::new` awaits the browser's GPU
+        /// device.
+        ///
+        /// # Errors
+        /// [`GpuUnavailable::ShaderDelivery`] or [`GpuUnavailable::Engine`]
+        /// when the engine cannot run on the device.
+        pub(crate) fn open(
+            loss: DeviceLoss,
+            config: cherenkov_gpu::GpuConfig,
+        ) -> Result<Self, GpuUnavailable> {
+            let engine = crate::engine::engine_await!(crate::engine::SharedEngineState::new(
+                loss.gpu_context().shared_device.clone(),
+                config,
+            ))?;
+            Ok(Self { loss, engine })
+        }
+    }
+}
+
+#[cfg(hydrolysis_gpu_painter)]
+impl GpuGeneration {
+    /// The generation's device-loss observation and creation chain.
+    pub(crate) const fn loss(&self) -> &DeviceLoss {
+        &self.loss
+    }
+
+    /// The engine every surface on this generation renders through.
+    pub(crate) const fn engine(&self) -> &std::rc::Rc<crate::engine::SharedEngineState> {
+        &self.engine
+    }
+
+    /// The generation's device-creation chain.
+    pub(crate) const fn gpu_context(&self) -> &GpuContextHandle {
+        self.loss.gpu_context()
+    }
 }
 
 /// The swappable core of a recoverable GPU context: the live device
@@ -492,13 +556,13 @@ fn recovery_budget_exhausted(losses: &[String]) -> bool {
 ///
 /// A surface renders on a *clone* of the generation, so a live frame keeps
 /// naming the device it was taken on while the context's live generation
-/// moves on through a rebuild. Rebuilds run on the frame thread under the
-/// lock; the driver-side loss callback only writes the generation's own
-/// reason cell, which needs no lock.
+/// moves on through a rebuild. Rebuilds run on the frame thread, which owns
+/// the context — the generation's engine is main-thread state; the
+/// driver-side loss callback only writes the generation's own reason cell.
 #[derive(Debug)]
 #[cfg(hydrolysis_gpu_painter)]
 pub struct RecoverableGpu {
-    inner: std::sync::Mutex<RecoverableGpuInner>,
+    inner: std::cell::RefCell<RecoverableGpuInner>,
 }
 
 #[derive(Debug)]
@@ -506,7 +570,7 @@ pub struct RecoverableGpu {
 struct RecoverableGpuInner {
     /// The live generation; [`RecoverableGpu::ensure_live`] replaces it
     /// wholesale when the driver reported its device lost.
-    generation: DeviceLoss,
+    generation: GpuGeneration,
     /// Losses and failed rebuilds since the last generation that
     /// presented — the record the exhaustion error reports.
     unproductive_losses: Vec<String>,
@@ -514,11 +578,11 @@ struct RecoverableGpuInner {
 
 #[cfg(hydrolysis_gpu_painter)]
 impl RecoverableGpu {
-    /// A recoverable context holding `generation` — taken right after the
-    /// first device is opened.
-    pub(crate) const fn new(generation: DeviceLoss) -> Self {
+    /// A recoverable context holding `generation` — opened right after the
+    /// first device is.
+    pub(crate) const fn new(generation: GpuGeneration) -> Self {
         Self {
-            inner: std::sync::Mutex::new(RecoverableGpuInner {
+            inner: std::cell::RefCell::new(RecoverableGpuInner {
                 generation,
                 unproductive_losses: Vec::new(),
             }),
@@ -526,12 +590,8 @@ impl RecoverableGpu {
     }
 
     /// The generation currently live in the context.
-    pub(crate) fn generation(&self) -> DeviceLoss {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .generation
-            .clone()
+    pub(crate) fn generation(&self) -> GpuGeneration {
+        self.inner.borrow().generation.clone()
     }
 
     /// Restores the context to a live device generation.
@@ -539,24 +599,28 @@ impl RecoverableGpu {
     /// No-op while the live generation is. When the driver reported it
     /// lost, the dead generation is recorded against the recovery budget
     /// — cleared when it had presented, counted otherwise — `rebuild`
-    /// re-runs the host's adapter pick and device open on the context's
-    /// instance, and its result becomes the live generation. A failed
-    /// rebuild joins the budget and leaves the dead generation in place,
-    /// so the frame still reports the surface lost and the next one
-    /// retries; once [`MAX_UNPRODUCTIVE_LOSSES`] consecutive losses run
-    /// out, an error naming every recorded loss is logged and the dead
-    /// generation stays live, never rebuilt again.
+    /// re-runs the host's adapter pick, device open and engine creation on
+    /// the context's instance, and its result becomes the live generation.
+    /// A failed rebuild joins the budget and leaves the dead generation in
+    /// place, so the frame still reports the surface lost and the next one
+    /// retries.
     ///
     /// Returns the context's live generation; the caller adopts it when
     /// its context id differs from the one it holds — another surface on
     /// this context may already have rebuilt.
+    ///
+    /// # Errors
+    /// [`DeviceLostError`] naming every recorded loss once
+    /// [`MAX_UNPRODUCTIVE_LOSSES`] consecutive losses ran out the budget:
+    /// the device is never rebuilt again, and every later call reports the
+    /// same terminal failure.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn ensure_live(
         &self,
-        rebuild: impl FnOnce(&wgpu::Instance) -> Result<DeviceLoss, String>,
-    ) -> DeviceLoss {
-        let Some(dead) = self.take_lost() else {
-            return self.generation();
+        rebuild: impl FnOnce(&wgpu::Instance) -> Result<GpuGeneration, String>,
+    ) -> Result<GpuGeneration, DeviceLostError> {
+        let Some(dead) = self.take_lost()? else {
+            return Ok(self.generation());
         };
         let new_generation = rebuild(&dead.gpu_context().shared_device.instance);
         self.finish_recovery(&dead, new_generation)
@@ -564,24 +628,21 @@ impl RecoverableGpu {
 
     /// The live generation when the driver reported it lost — the first
     /// half of a recovery whose rebuild must `await` (WebGPU's device
-    /// request cannot block). [`Self::finish_recovery`] completes it; the
-    /// lock is never held across the rebuild.
+    /// request cannot block). [`Self::finish_recovery`] completes it; no
+    /// borrow is held across the rebuild.
     ///
-    /// `None` once the recovery budget ran out: the dead generation stays
-    /// live and is not rebuilt again.
-    pub(crate) fn take_lost(&self) -> Option<DeviceLoss> {
-        let generation = self.generation();
-        (generation.is_lost() && !self.budget_exhausted()).then_some(generation)
-    }
-
-    /// Whether the consecutive-unproductive loss budget ran out.
-    fn budget_exhausted(&self) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .unproductive_losses
-            .len()
-            > MAX_UNPRODUCTIVE_LOSSES
+    /// # Errors
+    /// The terminal [`DeviceLostError`] once the recovery budget ran out.
+    pub(crate) fn take_lost(&self) -> Result<Option<GpuGeneration>, DeviceLostError> {
+        let inner = self.inner.borrow();
+        if let Some(unrecoverable) = recovery_budget_exhausted(&inner.unproductive_losses) {
+            return Err(unrecoverable);
+        }
+        Ok(inner
+            .generation
+            .loss
+            .is_lost()
+            .then(|| inner.generation.clone()))
     }
 
     /// Completes the recovery `take_lost` started: records `dead` against
@@ -589,21 +650,21 @@ impl RecoverableGpu {
     /// installs `rebuilt` as the live generation, and returns whatever is
     /// live (another surface may already have rebuilt past `dead`). A
     /// failed rebuild joins the budget and leaves the dead generation in
-    /// place; once [`MAX_UNPRODUCTIVE_LOSSES`] consecutive losses run out,
-    /// an error naming every recorded loss is logged and the dead generation
-    /// stays live, never rebuilt again.
+    /// place.
+    ///
+    /// # Errors
+    /// The terminal [`DeviceLostError`] naming every recorded loss once
+    /// [`MAX_UNPRODUCTIVE_LOSSES`] consecutive losses ran out the budget;
+    /// the dead generation stays, never rebuilt again.
     pub(crate) fn finish_recovery(
         &self,
-        dead: &DeviceLoss,
-        rebuilt: Result<DeviceLoss, String>,
-    ) -> DeviceLoss {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        dead: &GpuGeneration,
+        rebuilt: Result<GpuGeneration, String>,
+    ) -> Result<GpuGeneration, DeviceLostError> {
+        let mut inner = self.inner.borrow_mut();
         if inner.generation.gpu_context().context_id != dead.gpu_context().context_id {
             // Another surface already recovered past this generation.
-            return inner.generation.clone();
+            return Ok(inner.generation.clone());
         }
         if dead
             .gpu_context()
@@ -612,10 +673,10 @@ impl RecoverableGpu {
         {
             inner.unproductive_losses.clear();
         } else {
-            inner.unproductive_losses.push(dead.describe_loss());
+            inner.unproductive_losses.push(dead.loss.describe_loss());
         }
-        if recovery_budget_exhausted(&inner.unproductive_losses) {
-            return inner.generation.clone();
+        if let Some(unrecoverable) = recovery_budget_exhausted(&inner.unproductive_losses) {
+            return Err(unrecoverable);
         }
         match rebuilt {
             Ok(generation) => inner.generation = generation,
@@ -623,10 +684,12 @@ impl RecoverableGpu {
                 inner
                     .unproductive_losses
                     .push(format!("device recreation failed: {error}"));
-                recovery_budget_exhausted(&inner.unproductive_losses);
+                if let Some(unrecoverable) = recovery_budget_exhausted(&inner.unproductive_losses) {
+                    return Err(unrecoverable);
+                }
             }
         }
-        inner.generation.clone()
+        Ok(inner.generation.clone())
     }
 }
 
@@ -1892,18 +1955,21 @@ pub fn acquire_surface_texture(
 ///
 /// Whichever way a surface's frame reaches the display — a host-acquired
 /// [`SurfaceProvider`] or the macOS winit engine target — the pump, the
-/// resize path and the engine pool consume only this; acquire, copy and
+/// resize path and the frame's engine consume only this; acquire, copy and
 /// present exist only on the host-acquired kind.
 #[cfg(hydrolysis_gpu_painter)]
 pub trait PresentationSurface {
-    /// The wgpu adapter this surface renders through.
-    fn adapter(&self) -> &wgpu::Adapter;
     /// The wgpu device this surface renders through.
     fn device(&self) -> &wgpu::Device;
     /// The submission queue this surface renders through.
     fn queue(&self) -> &wgpu::Queue;
+    /// The device generation this surface renders on: its device-creation
+    /// chain and the engine created on it.
+    fn generation(&self) -> &GpuGeneration;
     /// Reports this surface's device lost; taken when the device was opened.
-    fn device_loss(&self) -> &DeviceLoss;
+    fn device_loss(&self) -> &DeviceLoss {
+        self.generation().loss()
+    }
     /// The surface's current pixel size `(width, height)`.
     fn size(&self) -> (u32, u32);
     /// Reconfigures the surface for a new pixel size.
@@ -1916,11 +1982,14 @@ pub trait PresentationSurface {
     /// whose recreation cannot run synchronously — the browser surface
     /// recovers inside its async render path instead.
     ///
-    /// Once [`MAX_UNPRODUCTIVE_LOSSES`] consecutive generations die before
-    /// presenting, implementations log an error naming every recorded loss
-    /// and keep the dead generation: a permanently failing device is an
-    /// explicit error, never an infinite retry.
-    fn ensure_live(&mut self) {}
+    /// # Errors
+    /// [`DeviceLostError`] once [`MAX_UNPRODUCTIVE_LOSSES`] consecutive
+    /// generations died before presenting: the error names every recorded
+    /// loss and the dead generation is kept — a permanently failing device
+    /// is a terminal failure of the surface, never an infinite retry.
+    fn ensure_live(&mut self) -> Result<(), DeviceLostError> {
+        Ok(())
+    }
 }
 
 /// Rendering surface abstraction consumed by hydrolysis runner/renderer:
@@ -1990,7 +2059,6 @@ pub struct EngineWindowTarget<'a> {
 #[cfg(target_os = "android")]
 #[cfg(hydrolysis_gpu_painter)]
 pub struct EngineAndroidTarget<'a> {
-    pub state: &'a std::rc::Rc<crate::engine::SharedEngineState>,
     pub window: &'a ndk::native_window::NativeWindow,
     pub window_slot: &'a mut Option<
         crate::renderer::CherenkovWindow<
@@ -2284,6 +2352,9 @@ pub trait GpuSurfaceWindow: PlatformWindow {
 /// This owns the device to the end of the last clone's life, so it drains it on
 /// the way out — see `drain_device_before_teardown`. Every headless test builds
 /// one of these, and on a runner without a GPU they were the ones dying on drop.
+///
+/// Each device generation owns its Cherenkov engine, created when the
+/// generation opens, so the context is main-thread state.
 #[derive(Clone, Debug)]
 #[cfg(hydrolysis_gpu_painter)]
 pub struct OffscreenGpuContext {
@@ -2291,24 +2362,28 @@ pub struct OffscreenGpuContext {
     /// goes away. `drain_device_before_teardown` blocks until the device is
     /// idle with no timeout, so running it per clone would make every surface's
     /// drop wait out the work of every *other* surface still on that device.
-    inner: std::sync::Arc<OffscreenGpuContextInner>,
+    inner: Rc<OffscreenGpuContextInner>,
 }
 
 #[derive(Debug)]
 #[cfg(hydrolysis_gpu_painter)]
 struct OffscreenGpuContextInner {
     /// The live device generation and its recovery budget; surfaces adopt
-    /// a clone of its `DeviceLoss` and this swaps it after a loss.
+    /// a clone of it and this swaps it after a loss.
     gpu: RecoverableGpu,
     /// The backend mask the context's instance was created on — the tier
     /// its probe found an adapter in, so recreation probes the same
     /// instance, never a new one.
     #[cfg(not(target_arch = "wasm32"))]
     backends: wgpu::Backends,
+    /// The engine configuration every generation of this context opens its
+    /// engine with; the generation fills in the device and pipeline cache.
+    #[cfg(not(target_arch = "wasm32"))]
+    engine_config: cherenkov_gpu::GpuConfig,
 }
 
 /// One id per device creation chain — instances, adapters, devices and
-/// queues are only shared inside one, so it is also the Cherenkov engine key.
+/// queues are only shared inside one.
 #[cfg(hydrolysis_gpu_painter)]
 static NEXT_GPU_CONTEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
@@ -2348,15 +2423,8 @@ impl OffscreenGpuContext {
     /// `WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER` is set).
     ///
     /// # Errors
-    /// [`GpuUnavailable`] when the host has no eligible adapter at all, or
-    /// the adapter refuses the device.
-    #[cfg_attr(
-        target_arch = "wasm32",
-        allow(
-            clippy::arc_with_non_send_sync,
-            reason = "the context is shared by reference count on every target; on wasm the page's single-threaded event loop never crosses it with a thread, and the handles' Send/Sync bound varies with Cargo feature unification"
-        )
-    )]
+    /// [`GpuUnavailable`] when the host has no eligible adapter at all, the
+    /// adapter refuses the device, or the engine cannot be created on it.
     #[cfg_attr(
         target_arch = "wasm32",
         allow(
@@ -2365,17 +2433,40 @@ impl OffscreenGpuContext {
         )
     )]
     pub async fn new() -> Result<Self, GpuUnavailable> {
+        Self::with_engine_config(cherenkov_gpu::GpuConfig::default()).await
+    }
+
+    /// [`Self::new`] whose generations create their engines with `config`
+    /// (device and pipeline cache filled in per generation).
+    #[cfg_attr(
+        target_arch = "wasm32",
+        allow(
+            clippy::future_not_send,
+            reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
+        )
+    )]
+    async fn with_engine_config(
+        engine_config: cherenkov_gpu::GpuConfig,
+    ) -> Result<Self, GpuUnavailable> {
         const CONTEXT: &str = "hydrolysis offscreen surface";
         let (instance, adapter, backends) = request_instance_and_adapter(CONTEXT).await?;
+        // A native context keeps the configuration for the generations a
+        // lost device's recreation opens; wasm cannot rebuild one.
         #[cfg(target_arch = "wasm32")]
         let _ = backends;
-        let generation = Self::open_device(CONTEXT, &instance, &adapter).await?;
+        #[cfg(target_arch = "wasm32")]
+        let generation = Self::open_device(CONTEXT, &instance, &adapter, engine_config).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let generation =
+            Self::open_device(CONTEXT, &instance, &adapter, engine_config.clone()).await?;
 
         Ok(Self {
-            inner: std::sync::Arc::new(OffscreenGpuContextInner {
+            inner: Rc::new(OffscreenGpuContextInner {
                 gpu: RecoverableGpu::new(generation),
                 #[cfg(not(target_arch = "wasm32"))]
                 backends,
+                #[cfg(not(target_arch = "wasm32"))]
+                engine_config,
             }),
         })
     }
@@ -2401,13 +2492,42 @@ impl OffscreenGpuContext {
         Self::new_blocking().expect("hydrolysis test host: no GPU Hydrolysis can render on")
     }
 
-    /// Opens the context's device generation on `adapter`: the shared
-    /// tail of the first request and of a lost device's recreation.
+    /// [`Self::for_tests`] whose generations create their engines with
+    /// `engine_config` — a test that reads the engine's diagnostics sinks
+    /// configures them here.
+    ///
+    /// # Panics
+    /// As [`Self::for_tests`].
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn for_tests_with_engine_config(engine_config: cherenkov_gpu::GpuConfig) -> Self {
+        pollster::block_on(Self::with_engine_config(engine_config))
+            .expect("hydrolysis test host: no GPU Hydrolysis can render on")
+    }
+
+    /// The context's live generation and its recovery budget, for tests
+    /// that drive a recovery streak directly.
+    #[cfg(test)]
+    pub(crate) fn recoverable(&self) -> &RecoverableGpu {
+        &self.inner.gpu
+    }
+
+    /// Opens the context's device generation on `adapter`, with its engine:
+    /// the shared tail of the first request and of a lost device's
+    /// recreation.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        allow(
+            clippy::future_not_send,
+            reason = "the browser uses the page event loop; the engine's Rc handles never cross a thread"
+        )
+    )]
     async fn open_device(
         context: &'static str,
         instance: &wgpu::Instance,
         adapter: &wgpu::Adapter,
-    ) -> Result<DeviceLoss, GpuUnavailable> {
+        engine_config: cherenkov_gpu::GpuConfig,
+    ) -> Result<GpuGeneration, GpuUnavailable> {
         let required_limits = required_device_limits(adapter);
         // PIPELINE_CACHE is requested wherever the adapter has it: without the
         // feature `create_pipeline_cache` errors, so the persistent store in
@@ -2454,15 +2574,22 @@ impl OffscreenGpuContext {
             device,
             queue,
         };
-        Ok(DeviceLoss::observe(shared_device, context_id))
+        crate::engine::engine_await!(GpuGeneration::open(
+            DeviceLoss::observe(shared_device, context_id),
+            engine_config,
+        ))
     }
 
-    /// Re-runs the context's adapter pick and device open on `instance` —
-    /// the lost generation's own — so a recreated device keeps the surface
-    /// objects and resources the chain already holds
+    /// Re-runs the context's adapter pick, device open and engine creation
+    /// on `instance` — the lost generation's own — so a recreated device
+    /// keeps the surface objects and resources the chain already holds
     /// (water-rs/waterui#2742).
     #[cfg(not(target_arch = "wasm32"))]
-    async fn recreate(&self, instance: &wgpu::Instance) -> Result<DeviceLoss, String> {
+    #[expect(
+        clippy::future_not_send,
+        reason = "the generation's engine is main-thread Rc state; the caller drives this future with pollster::block_on on its own thread"
+    )]
+    async fn recreate(&self, instance: &wgpu::Instance) -> Result<GpuGeneration, String> {
         const CONTEXT: &str = "hydrolysis offscreen surface";
         let (adapter, inspected) =
             probe_adapters(instance, None, CONTEXT, self.inner.backends).await;
@@ -2473,9 +2600,14 @@ impl OffscreenGpuContext {
                 inspected.join("; ")
             )
         })?;
-        Self::open_device(CONTEXT, instance, &adapter)
-            .await
-            .map_err(|error| format!("{:#}", waterui_core::Error::from(error)))
+        Self::open_device(
+            CONTEXT,
+            instance,
+            &adapter,
+            self.inner.engine_config.clone(),
+        )
+        .await
+        .map_err(|error| format!("{:#}", waterui_core::Error::from(error)))
     }
 }
 
@@ -2492,7 +2624,7 @@ pub struct OffscreenSurface {
     gpu: OffscreenGpuContext,
     /// The device generation this surface renders on — a clone of the
     /// context's live generation, adopted in [`PresentationSurface::ensure_live`].
-    handles: DeviceLoss,
+    generation: GpuGeneration,
     /// New logical width, in pixels.
     width: u32,
     /// New logical height, in pixels.
@@ -2979,35 +3111,40 @@ impl OffscreenSurface {
     /// The wgpu adapter this surface renders through.
     #[must_use]
     pub const fn adapter(&self) -> &wgpu::Adapter {
-        &self.handles.gpu_context().shared_device.adapter
+        &self.generation.gpu_context().shared_device.adapter
     }
 
     /// The wgpu device this surface renders through.
     #[must_use]
     pub const fn device(&self) -> &wgpu::Device {
-        &self.handles.gpu_context().shared_device.device
+        &self.generation.gpu_context().shared_device.device
     }
 
     /// The submission queue this surface renders through.
     #[must_use]
     pub const fn queue(&self) -> &wgpu::Queue {
-        &self.handles.gpu_context().shared_device.queue
+        &self.generation.gpu_context().shared_device.queue
     }
 
     /// Reports this surface's device lost; taken when the device was opened.
     #[must_use]
     pub const fn device_loss(&self) -> &DeviceLoss {
-        &self.handles
+        self.generation.loss()
+    }
+
+    /// The device generation this surface renders on, with its engine.
+    pub(crate) const fn generation(&self) -> &GpuGeneration {
+        &self.generation
     }
 
     /// Swaps the surface to `generation` when the context handed down a
     /// new device creation chain, dropping the frame texture the lost
     /// device owned (water-rs/waterui#2742).
-    fn adopt_generation(&mut self, generation: DeviceLoss) {
-        if generation.gpu_context().context_id == self.handles.gpu_context().context_id {
+    fn adopt_generation(&mut self, generation: GpuGeneration) {
+        if generation.gpu_context().context_id == self.generation.gpu_context().context_id {
             return;
         }
-        self.handles = generation;
+        self.generation = generation;
         // The retained frame texture was allocated on the dead device;
         // the next acquire builds a fresh one on the live device.
         self.last_presented = None;
@@ -3027,8 +3164,8 @@ impl OffscreenSurface {
     /// recreation `PresentationSurface::ensure_live` runs could not restore
     /// it (water-rs/waterui#2742).
     pub fn acquire(&mut self) -> Result<SurfaceFrame, DeviceLostError> {
-        PresentationSurface::ensure_live(self);
-        if let Some(lost) = self.handles.lost_error() {
+        PresentationSurface::ensure_live(self)?;
+        if let Some(lost) = self.generation.loss().lost_error() {
             return Err(lost);
         }
         Ok(self.frame())
@@ -3038,7 +3175,7 @@ impl OffscreenSurface {
     /// or a fresh one at the surface's current size.
     fn frame(&mut self) -> SurfaceFrame {
         let texture = self.last_presented.take().unwrap_or_else(|| {
-            self.handles
+            self.generation
                 .gpu_context()
                 .shared_device
                 .device
@@ -3079,7 +3216,7 @@ impl OffscreenSurface {
                 // against the recovery budget (water-rs/waterui#2742). The
                 // pump path marks it again on `SurfaceProvider` — the flag
                 // is idempotent.
-                self.handles.note_frame_presented();
+                self.generation.loss().note_frame_presented();
             }
             #[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
             SurfaceFrame::Window { .. } => {
@@ -3125,10 +3262,10 @@ impl OffscreenSurface {
         height: u32,
         format: wgpu::TextureFormat,
     ) -> Self {
-        let handles = gpu.inner.gpu.generation();
+        let generation = gpu.inner.gpu.generation();
         Self {
             gpu,
-            handles,
+            generation,
             width: width.max(1),
             height: height.max(1),
             format,
@@ -3245,10 +3382,6 @@ pub enum OpenDeviceError {
 
 #[cfg(hydrolysis_gpu_painter)]
 impl PresentationSurface for OffscreenSurface {
-    fn adapter(&self) -> &wgpu::Adapter {
-        Self::adapter(self)
-    }
-
     fn device(&self) -> &wgpu::Device {
         Self::device(self)
     }
@@ -3257,8 +3390,8 @@ impl PresentationSurface for OffscreenSurface {
         Self::queue(self)
     }
 
-    fn device_loss(&self) -> &DeviceLoss {
-        Self::device_loss(self)
+    fn generation(&self) -> &GpuGeneration {
+        Self::generation(self)
     }
 
     fn size(&self) -> (u32, u32) {
@@ -3281,33 +3414,34 @@ impl PresentationSurface for OffscreenSurface {
     /// a lost generation is still counted against the recovery budget —
     /// the dead device ends in the explicit unrecoverable error rather
     /// than livelocking the pump.
-    fn ensure_live(&mut self) {
+    fn ensure_live(&mut self) -> Result<(), DeviceLostError> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let gpu = self.gpu.clone();
             let generation = gpu
                 .inner
                 .gpu
-                .ensure_live(|instance| pollster::block_on(gpu.recreate(instance)));
+                .ensure_live(|instance| pollster::block_on(gpu.recreate(instance)))?;
             self.adopt_generation(generation);
         }
         #[cfg(target_arch = "wasm32")]
-        if let Some(dead) = self.gpu.inner.gpu.take_lost() {
+        if let Some(dead) = self.gpu.inner.gpu.take_lost()? {
             let generation = self.gpu.inner.gpu.finish_recovery(
                 &dead,
                 Err("WebGPU device requests are async-only; the offscreen pump \
                      cannot rebuild a lost device"
                     .to_owned()),
-            );
+            )?;
             self.adopt_generation(generation);
         }
+        Ok(())
     }
 }
 
 #[cfg(hydrolysis_gpu_painter)]
 impl SurfaceProvider for OffscreenSurface {
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
-        if self.handles.is_lost() {
+        if self.generation.loss().is_lost() {
             // A dead generation a failed recreation left in place: the
             // surface reports lost so the pump reschedules and the next
             // frame retries the recovery under its budget.
@@ -3360,9 +3494,8 @@ impl OffscreenSceneSurface {
         /// the browser's GPU device.
         ///
         /// # Errors
-        /// [`GpuUnavailable`], as [`OffscreenGpuContext::new`], and
-        /// [`Self::on_context`] when the engine cannot be created on the
-        /// device.
+        /// [`GpuUnavailable`], as [`OffscreenGpuContext::new`], and as
+        /// [`Self::on_context`] when the engine cannot create the surface.
         pub fn new(width: u32, height: u32) -> Result<Self, GpuUnavailable> {
             let gpu = pollster::block_on(OffscreenGpuContext::new())?;
             crate::engine::engine_await!(Self::on_context(gpu, width, height))
@@ -3373,13 +3506,12 @@ impl OffscreenSceneSurface {
         /// Creates the host on an already-requested [`OffscreenGpuContext`],
         /// so every surface built on one context shares its device and engine.
         ///
-        /// Async on wasm32, where `shared_engine` and the texture surface
-        /// await the browser's GPU device.
+        /// Async on wasm32, where the texture surface awaits the browser's
+        /// GPU device.
         ///
         /// # Errors
-        /// [`GpuUnavailable::Engine`] when the engine cannot be created on
-        /// the device, [`GpuUnavailable::EngineSurface`] or
-        /// [`GpuUnavailable::ShaderDelivery`] when its surface cannot.
+        /// [`GpuUnavailable::EngineSurface`] when the context's engine
+        /// cannot create the surface.
         pub fn on_context(
             gpu: OffscreenGpuContext,
             width: u32,
@@ -3391,20 +3523,16 @@ impl OffscreenSceneSurface {
                 height,
                 wgpu::TextureFormat::Rgba8UnormSrgb,
             );
-            let state = crate::engine::engine_await!(crate::engine::shared_engine_state(
-                target.device_loss().gpu_context().context_id,
-                target.adapter(),
-                target.device_loss().gpu_context().shared_device.clone(),
-            ))?;
+            let state = Rc::clone(target.generation().engine());
             // The caller drives `engine.render` itself: no host loop exists
             // for the surface to wake.
             let cherenkov = crate::engine::engine_await!(crate::engine::TextureCherenkovSurface::new(
-                std::rc::Rc::clone(&state.engine),
+                &state,
                 target.device(),
-                target.adapter().get_info().backend,
                 (width.max(1), height.max(1)),
                 || {},
-            ))?;
+            ))
+            .map_err(GpuUnavailable::EngineSurface)?;
             Ok(Self {
                 target,
                 cherenkov,
@@ -3711,10 +3839,10 @@ mod winit_impl {
     };
 
     use super::{
-        CursorStyle, DeviceLoss, GpuSurfaceWindow, GpuUnavailable, InputConventions, InputEvent,
-        KeyCode, KeyState, Modifiers, MultiClickConfig, PlatformWindow, PointerButton, PointerKind,
-        RedrawHandle, TextInputPurpose, TextInputState, TouchPhase, TouchScrollConfig,
-        enabled_window_buttons, validated_window_frame,
+        CursorStyle, DeviceLoss, DeviceLostError, GpuGeneration, GpuSurfaceWindow, GpuUnavailable,
+        InputConventions, InputEvent, KeyCode, KeyState, Modifiers, MultiClickConfig,
+        PlatformWindow, PointerButton, PointerKind, RedrawHandle, TextInputPurpose, TextInputState,
+        TouchPhase, TouchScrollConfig, enabled_window_buttons, validated_window_frame,
     };
     #[cfg(not(target_os = "macos"))]
     use super::{SurfaceError, SurfaceFrame, SurfaceProvider, reclaim_device};
@@ -3722,9 +3850,10 @@ mod winit_impl {
     #[derive(Clone, Debug)]
     pub struct WinitGpuContext {
         /// The live device generation and its loss budget; every surface
-        /// on the context adopts a clone of its `DeviceLoss`, and this
-        /// swaps it after a loss (water-rs/waterui#2742).
-        gpu: Arc<super::RecoverableGpu>,
+        /// on the context adopts a clone of the generation, and this
+        /// swaps it after a loss (water-rs/waterui#2742). The generation
+        /// owns the engine, so the context lives on the event-loop thread.
+        gpu: Rc<super::RecoverableGpu>,
         /// The backend tier the context was created on — a lost device's
         /// recreation re-runs the adapter pick on the live instance.
         backends: wgpu::Backends,
@@ -3744,18 +3873,18 @@ mod winit_impl {
         ) -> Result<Self, GpuUnavailable> {
             let generation = Self::open_on(&instance, &adapter).await?;
             Ok(Self {
-                gpu: Arc::new(super::RecoverableGpu::new(generation)),
+                gpu: Rc::new(super::RecoverableGpu::new(generation)),
                 backends,
             })
         }
 
-        /// Opens a device generation on `adapter` over `instance` — the
-        /// shared tail of the first request and of a lost device's
-        /// recreation.
+        /// Opens a device generation on `adapter` over `instance`, with its
+        /// engine — the shared tail of the first request and of a lost
+        /// device's recreation.
         async fn open_on(
             instance: &wgpu::Instance,
             adapter: &wgpu::Adapter,
-        ) -> Result<DeviceLoss, GpuUnavailable> {
+        ) -> Result<GpuGeneration, GpuUnavailable> {
             let required_limits = super::required_device_limits(adapter);
             let required_features = super::required_media_features(adapter)?
                 | (adapter.features()
@@ -3778,26 +3907,33 @@ mod winit_impl {
                 source,
             })?;
             let context_id = super::next_gpu_context_id();
-            Ok(DeviceLoss::observe(
-                cherenkov_gpu::interop::SharedDevice {
-                    instance: instance.clone(),
-                    adapter: adapter.clone(),
-                    device,
-                    queue,
-                },
-                context_id,
-            ))
+            GpuGeneration::open(
+                DeviceLoss::observe(
+                    cherenkov_gpu::interop::SharedDevice {
+                        instance: instance.clone(),
+                        adapter: adapter.clone(),
+                        device,
+                        queue,
+                    },
+                    context_id,
+                ),
+                cherenkov_gpu::GpuConfig::default(),
+            )
         }
 
-        /// Re-runs the context's adapter pick and device open on
-        /// `instance` — the lost generation's own — so a recreated device
-        /// keeps the surfaces and engine resources the chain already
-        /// holds (water-rs/waterui#2742).
+        /// Re-runs the context's adapter pick, device open and engine
+        /// creation on `instance` — the lost generation's own — so a
+        /// recreated device keeps the surfaces the chain already holds
+        /// (water-rs/waterui#2742).
+        #[expect(
+            clippy::future_not_send,
+            reason = "the generation's engine is main-thread Rc state; the caller drives this future with pollster::block_on on its own thread"
+        )]
         async fn recreate(
             &self,
             instance: &wgpu::Instance,
             compatible_surface: Option<&wgpu::Surface<'_>>,
-        ) -> Result<DeviceLoss, String> {
+        ) -> Result<GpuGeneration, String> {
             let (adapter, inspected) =
                 super::probe_adapters(instance, compatible_surface, CONTEXT, self.backends).await;
             let adapter = adapter.ok_or_else(|| {
@@ -3828,7 +3964,7 @@ mod winit_impl {
         /// The device generation this surface renders on — a clone of the
         /// context's live generation, adopted in `ensure_live`
         /// (water-rs/waterui#2742).
-        handles: DeviceLoss,
+        handles: GpuGeneration,
         /// Whether the window composites with what lies behind it —
         /// kept on host-acquired platforms so a rebuilt generation's
         /// output renegotiation keeps the same answer.
@@ -3909,19 +4045,13 @@ mod winit_impl {
             crate::renderer::FrameRenderTarget<'_>,
             super::EngineWindowTarget<'_>,
         ) {
-            let context = self.handles.gpu_context();
             (
-                crate::renderer::FrameRenderTarget {
-                    adapter: &context.shared_device.adapter,
-                    device: &context.shared_device.device,
-                    device_loss: self.handles.clone(),
-                    gpu_context_id: context.context_id,
-                    shared_device: context.shared_device.clone(),
+                crate::renderer::FrameRenderTarget::new(
+                    &self.handles,
                     display_scale,
-                    width: self.size.0,
-                    height: self.size.1,
+                    self.size,
                     base_color,
-                },
+                ),
                 super::EngineWindowTarget {
                     window: &self.window,
                     window_slot: &mut self.engine_window,
@@ -4077,6 +4207,10 @@ mod winit_impl {
         /// adapter refuses the device, or the window's surface cannot be
         /// created or present on the adapter.
         #[cfg(not(target_os = "macos"))]
+        #[expect(
+            clippy::future_not_send,
+            reason = "the GPU context's engine is main-thread Rc state; the winit runner drives this future with pollster::block_on on the main thread"
+        )]
         pub async fn new(
             window: Arc<NativeWindow>,
             shared_gpu: Option<&WinitGpuContext>,
@@ -4136,6 +4270,10 @@ mod winit_impl {
         /// [`GpuUnavailable`] when the host has no usable adapter or the
         /// adapter refuses the device.
         #[cfg(target_os = "macos")]
+        #[expect(
+            clippy::future_not_send,
+            reason = "the GPU context's engine is main-thread Rc state; the winit runner drives this future with pollster::block_on on the main thread"
+        )]
         pub async fn new(
             window: Arc<NativeWindow>,
             shared_gpu: Option<&WinitGpuContext>,
@@ -4177,14 +4315,18 @@ mod winit_impl {
         /// adapter offers no output the engine can present through, the
         /// error is logged and the swapchain is reconfigured with the
         /// previous generation's selection.
+        ///
+        /// # Errors
+        /// The terminal [`DeviceLostError`] once the context's recovery
+        /// budget ran out.
         #[cfg(not(target_os = "macos"))]
-        fn ensure_live(&mut self) {
+        fn ensure_live(&mut self) -> Result<(), DeviceLostError> {
             let gpu = self.gpu.clone();
             let generation = gpu.gpu.ensure_live(|instance| {
                 pollster::block_on(gpu.recreate(instance, Some(&self.surface)))
-            });
+            })?;
             if generation.gpu_context().context_id == self.handles.gpu_context().context_id {
-                return;
+                return Ok(());
             }
             self.handles = generation;
             let shared = &self.handles.gpu_context().shared_device;
@@ -4206,20 +4348,26 @@ mod winit_impl {
                 ),
             }
             self.surface.configure(&shared.device, &self.config);
+            Ok(())
         }
 
         /// Adopts the context's live device generation — rebuilding it
         /// when the adopted one was lost. The engine's `WindowTarget` is
         /// rebuilt on the new context id, so nothing here reconfigures.
+        ///
+        /// # Errors
+        /// The terminal [`DeviceLostError`] once the context's recovery
+        /// budget ran out.
         #[cfg(target_os = "macos")]
-        fn ensure_live(&mut self) {
+        fn ensure_live(&mut self) -> Result<(), DeviceLostError> {
             let gpu = self.gpu.clone();
             let generation = gpu
                 .gpu
-                .ensure_live(|instance| pollster::block_on(gpu.recreate(instance, None)));
+                .ensure_live(|instance| pollster::block_on(gpu.recreate(instance, None)))?;
             if generation.gpu_context().context_id != self.handles.gpu_context().context_id {
                 self.handles = generation;
             }
+            Ok(())
         }
 
         /// Re-runs output negotiation for a window whose background switched
@@ -4272,10 +4420,6 @@ mod winit_impl {
 
     #[cfg(target_os = "macos")]
     impl super::PresentationSurface for WinitSurface {
-        fn adapter(&self) -> &wgpu::Adapter {
-            &self.handles.gpu_context().shared_device.adapter
-        }
-
         fn device(&self) -> &wgpu::Device {
             &self.handles.gpu_context().shared_device.device
         }
@@ -4284,7 +4428,7 @@ mod winit_impl {
             &self.handles.gpu_context().shared_device.queue
         }
 
-        fn device_loss(&self) -> &DeviceLoss {
+        fn generation(&self) -> &GpuGeneration {
             &self.handles
         }
 
@@ -4296,18 +4440,13 @@ mod winit_impl {
             self.size = (width.max(1), height.max(1));
         }
 
-        fn ensure_live(&mut self) {
-            Self::ensure_live(self);
+        fn ensure_live(&mut self) -> Result<(), DeviceLostError> {
+            Self::ensure_live(self)
         }
     }
 
     #[cfg(not(target_os = "macos"))]
     impl super::PresentationSurface for WinitSurface {
-        /// The wgpu adapter this surface renders through.
-        fn adapter(&self) -> &wgpu::Adapter {
-            &self.handles.gpu_context().shared_device.adapter
-        }
-
         /// The wgpu device this surface renders through.
         fn device(&self) -> &wgpu::Device {
             &self.handles.gpu_context().shared_device.device
@@ -4318,7 +4457,7 @@ mod winit_impl {
             &self.handles.gpu_context().shared_device.queue
         }
 
-        fn device_loss(&self) -> &DeviceLoss {
+        fn generation(&self) -> &GpuGeneration {
             &self.handles
         }
 
@@ -4327,9 +4466,13 @@ mod winit_impl {
             (self.config.width, self.config.height)
         }
 
-        /// Reconfigures the surface for a new pixel size.
+        /// Reconfigures the surface for a new pixel size. An unrecoverable
+        /// device is left for the next frame's `ensure_live` to report; the
+        /// swapchain is reconfigured on the generation the surface holds.
         fn resize(&mut self, width: u32, height: u32) {
-            self.ensure_live();
+            if let Err(error) = self.ensure_live() {
+                tracing::debug!(%error, "hydrolysis winit surface resized on an unrecoverable device");
+            }
             self.config.width = width.max(1);
             self.config.height = height.max(1);
             self.surface.configure(
@@ -4338,15 +4481,15 @@ mod winit_impl {
             );
         }
 
-        fn ensure_live(&mut self) {
-            Self::ensure_live(self);
+        fn ensure_live(&mut self) -> Result<(), DeviceLostError> {
+            Self::ensure_live(self)
         }
     }
 
     #[cfg(not(target_os = "macos"))]
     impl SurfaceProvider for WinitSurface {
         fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
-            if self.handles.is_lost() {
+            if self.handles.loss().is_lost() {
                 // A dead generation a failed recreation left in place:
                 // report lost so the pump reschedules and the next frame
                 // retries the recovery under its budget.
@@ -4712,6 +4855,10 @@ mod winit_impl {
         ///
         /// # Errors
         /// [`GpuUnavailable`], as [`Self::new_with_shared_gpu`].
+        #[expect(
+            clippy::future_not_send,
+            reason = "the GPU context's engine is main-thread Rc state; the winit runner drives this future with pollster::block_on on the main thread"
+        )]
         pub async fn new(
             window: Arc<NativeWindow>,
             wake: RedrawHandle,
@@ -4755,6 +4902,10 @@ mod winit_impl {
         /// [`GpuUnavailable`] when the host has no usable adapter, the
         /// adapter refuses the device, or the window's surface cannot be
         /// created or present on the adapter.
+        #[expect(
+            clippy::future_not_send,
+            reason = "the GPU context's engine is main-thread Rc state; the winit runner drives this future with pollster::block_on on the main thread"
+        )]
         pub async fn new_with_shared_gpu(
             window: Arc<NativeWindow>,
             wake: RedrawHandle,
@@ -7366,7 +7517,7 @@ mod recovery_tests {
         surface
             .device_loss()
             .simulate_loss("driver reported the device gone");
-        PresentationSurface::ensure_live(&mut surface);
+        PresentationSurface::ensure_live(&mut surface).expect("one loss stays within the budget");
         let live = surface.device_loss();
         assert_ne!(
             live.gpu_context().context_id,
@@ -7389,12 +7540,13 @@ mod recovery_tests {
         let live = context
             .inner
             .gpu
-            .ensure_live(|_| Err("no adapter".to_owned()));
+            .ensure_live(|_| Err("no adapter".to_owned()))
+            .expect("one failed rebuild stays within the budget");
         assert!(
-            live.is_lost(),
+            live.loss().is_lost(),
             "a failed rebuild keeps the dead generation in place"
         );
-        PresentationSurface::ensure_live(&mut surface);
+        PresentationSurface::ensure_live(&mut surface).expect("the retry stays within the budget");
         assert!(
             !surface.device_loss().is_lost(),
             "the next frame's rebuild succeeds and is adopted"
@@ -7406,16 +7558,28 @@ mod recovery_tests {
         let (_context, mut surface) = test_surface();
         // Every generation dies before presenting a frame; the budget is
         // consecutive, so one loss past MAX_UNPRODUCTIVE_LOSSES exhausts it.
-        for _ in 0..=MAX_UNPRODUCTIVE_LOSSES {
+        for _ in 0..MAX_UNPRODUCTIVE_LOSSES {
             surface
                 .device_loss()
                 .simulate_loss("gone before presenting");
-            PresentationSurface::ensure_live(&mut surface);
+            PresentationSurface::ensure_live(&mut surface).expect("the budget still holds");
         }
-        // The dead generation stays live, and later frames do not rebuild it.
+        surface
+            .device_loss()
+            .simulate_loss("gone before presenting");
+        let exhausted = PresentationSurface::ensure_live(&mut surface)
+            .expect_err("the loss past the budget is terminal");
+        assert!(
+            exhausted.reason().contains("gone before presenting"),
+            "{}",
+            exhausted.reason()
+        );
+        // The dead generation stays live, and later frames do not rebuild it:
+        // each reports the same terminal failure.
         let dead = surface.device_loss().gpu_context().context_id;
         assert!(surface.device_loss().is_lost());
-        PresentationSurface::ensure_live(&mut surface);
+        PresentationSurface::ensure_live(&mut surface)
+            .expect_err("an exhausted budget stays terminal");
         assert_eq!(surface.device_loss().gpu_context().context_id, dead);
         assert!(surface.device_loss().is_lost());
         // A caller asking for a frame gets the loss as an error.
@@ -7459,7 +7623,8 @@ mod recovery_tests {
                 .presented
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             surface.device_loss().simulate_loss("gone after presenting");
-            PresentationSurface::ensure_live(&mut surface);
+            PresentationSurface::ensure_live(&mut surface)
+                .expect("a productive generation's loss never exhausts the budget");
             assert!(!surface.device_loss().is_lost());
         }
     }

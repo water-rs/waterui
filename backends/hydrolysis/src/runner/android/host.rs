@@ -51,12 +51,12 @@ use crate::renderer::{HydrolysisTextContextMenuMode, MenuShortcutRegistry};
 use crate::runner::android_executor::{AndroidMainThreadExecutor, UiThreadPoster};
 use crate::runner::android_methods::{HOST_METHODS, HostMethodId};
 use crate::runner::android_metrics::InsetsMetrics;
-#[cfg(hydrolysis_gpu_painter)]
-use crate::runner::window::render_window;
 use crate::runner::window::{
     FrameDemand, FrameTransaction, RuntimeWindow, advance_runtime, handle_input_events,
     reports_ui_idle,
 };
+#[cfg(hydrolysis_gpu_painter)]
+use crate::runner::window::{WindowFrame, render_window};
 use crate::runner::{
     RenderDiagnosticsConfig, init_main_thread_executors, install_headless_window_managers,
     install_native_component_hooks, menu_bar,
@@ -959,6 +959,9 @@ pub struct AndroidSession {
     /// `wants_next_frame` it arms the one-shot readiness log the device's
     /// idle-CPU sampling waits on.
     presented_once: Cell<bool>,
+    /// A frame failed for good: the surface cannot render again, so the
+    /// session draws and asks for no further frame.
+    rendering_failed: bool,
     /// The readiness line was already logged — it fires exactly once per
     /// session so a later busy window cannot re-arm it.
     ready_logged: Cell<bool>,
@@ -1372,6 +1375,7 @@ impl AndroidSession {
             insets_direction: LayoutDirection::default(),
             color_scheme,
             presented_once: Cell::new(false),
+            rendering_failed: false,
             ready_logged: Cell::new(false),
             back_navigation_available: false,
             _not_send: std::marker::PhantomData,
@@ -1560,9 +1564,9 @@ impl AndroidSession {
         let flushed = self.render_due_frame();
         // A lost device is recreated inside the frame above
         // (`PresentationSurface::ensure_live`, water-rs/waterui#2742); a
-        // recreation that exhausts its loss budget panics there, which the
-        // JNI `guard` raises as `IllegalStateException` — the same explicit
-        // error surface a fatal host callback would have been.
+        // recreation that exhausts its loss budget, like any other terminal
+        // frame failure, ends the session's rendering there: it is logged
+        // once and no further frame is drawn or asked for.
         if should_close {
             self.runtime.platform.bridge.close_requested();
         }
@@ -1589,6 +1593,8 @@ impl AndroidSession {
         // this transaction after the pump drained the flags: its wake was
         // suppressed by the gate, so this is its only path to the frame it
         // needs. One raised while hidden stays armed for the restore frame.
+        // A session whose rendering failed for good draws nothing again, so
+        // it owes no frame whatever work is armed.
         let wants_next_frame = self.runtime.platform.frame_transaction.finish(
             self.runtime.platform.is_occluded(),
             FrameDemand {
@@ -1596,7 +1602,7 @@ impl AndroidSession {
                 redraw_pending,
                 signals_pending: self.runtime.renderer.has_pending_frame_request(),
             },
-        );
+        ) && !self.rendering_failed;
         if reports_ui_idle(
             self.presented_once.get(),
             wants_next_frame
@@ -1647,6 +1653,9 @@ impl AndroidSession {
     /// asking for its next frame, still counts toward the transaction's
     /// continuation. Answers whether the pump flushed content.
     fn render_due_frame(&mut self) -> bool {
+        if self.rendering_failed {
+            return false;
+        }
         let surface_attached = self.runtime.platform.presentation_attached();
         #[cfg(hydrolysis_hwui)]
         if self.hwui.surface.has_pending() {
@@ -1664,19 +1673,46 @@ impl AndroidSession {
         }
         let executor = self.executor.clone();
         #[cfg(hydrolysis_gpu_painter)]
-        let presented = render_window(&mut self.runtime, &self.env, &mut || executor.drain());
+        let presented = match render_window(&mut self.runtime, &self.env, &mut || executor.drain())
+        {
+            WindowFrame::Failed(error) => {
+                self.end_rendering(&format!("{:#}", waterui_core::Error::from(error)));
+                false
+            }
+            frame => frame.presented(),
+        };
         #[cfg(hydrolysis_gpu_painter)]
         self.commit_bands();
         #[cfg(hydrolysis_hwui)]
-        let presented = self
+        let presented = match self
             .hwui
             .render(&mut self.runtime, &self.env, &mut || executor.drain())
-            .unwrap_or_else(|e| panic!("hydrolysis HWUI: frame render failed: {}", e.0));
+        {
+            Ok(presented) => presented,
+            Err(error) => {
+                self.end_rendering(&format!(
+                    "hydrolysis HWUI: frame render failed: {}",
+                    error.0
+                ));
+                false
+            }
+        };
         if presented {
             self.presented_once.set(true);
         }
         self.sync_back_navigation_available();
         true
+    }
+
+    /// Ends the session's rendering after a frame failed for good: the
+    /// surface cannot render again, so `message` is logged once and no
+    /// further frame is drawn or asked for.
+    fn end_rendering(&mut self, message: &str) {
+        tracing::error!(
+            target: "waterui::hydrolysis::android",
+            "{message}; the window cannot render and draws no further frame"
+        );
+        self.rendering_failed = true;
     }
 
     /// The Kotlin GPU band created or replaced its surface; `generation`

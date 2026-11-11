@@ -47,7 +47,7 @@ use crate::renderer::{
 #[cfg(hydrolysis_wayland_platform)]
 use crate::runner::x11_state_watch::{self, X11StateWatch};
 use crate::runner::{
-    RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events_with,
+    RenderDiagnosticsConfig, RuntimeWindow, WindowFrame, advance_runtime, handle_input_events_with,
     pump_window_semantics, render_window, runtime_window_origin,
 };
 use crate::text::ParleyEngine;
@@ -1589,6 +1589,26 @@ impl WinitRunner {
         }
     }
 
+    /// Ends a window whose surface failed for good: it can never render
+    /// again, so the error is logged and the window closed. When no window
+    /// on the runner's GPU context ever presented a frame, the app has shown
+    /// nothing and cannot — the same ending as a host without a usable GPU:
+    /// the process exits with a failure status.
+    fn end_failed_window(&mut self, window_id: WindowId, error: crate::renderer::FrameError) {
+        if self
+            .windows
+            .values()
+            .all(|runtime| runtime.presented_frames == 0)
+        {
+            super::exit_without_gpu(error);
+        }
+        tracing::error!(
+            "{:#}; the window cannot render and is closed",
+            waterui_core::Error::from(error)
+        );
+        self.reap_closed_window(window_id);
+    }
+
     /// Removes a window whose close ran: its native bar attachment, adapter
     /// and cached tree go with it, and the last-window policy answers
     /// whether the app exits.
@@ -1776,9 +1796,16 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             let Some(runtime) = self.windows.get_mut(&window_id) else {
                 return;
             };
-            render_window(runtime, &self.env, &mut || {
+            let frame = render_window(runtime, &self.env, &mut || {
                 Self::drain_runnable_queue(&self.local_runnable_rx)
             });
+            if let WindowFrame::Failed(error) = frame {
+                self.end_failed_window(window_id, error);
+                return;
+            }
+            let Some(runtime) = self.windows.get_mut(&window_id) else {
+                return;
+            };
             if let Some(adapter) = self.accesskit_adapters.get_mut(&window_id) {
                 if let Some(update) = runtime.renderer.take_accessibility_tree_update() {
                     self.last_accessibility_updates

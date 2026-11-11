@@ -740,7 +740,7 @@ fn live_colour_updates_without_layout_or_recording() {
 fn short_text_signal_repaints_only_its_changed_region() {
     let value = Binding::container(10u32);
     let label = value.clone();
-    let (gpu, diagnostics, _state) = super::diagnostic_gpu();
+    let (gpu, diagnostics) = super::diagnostic_gpu();
     let mut runtime = runtime_with_on(
         vstack((
             text("Unchanged heading"),

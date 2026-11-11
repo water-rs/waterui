@@ -160,7 +160,7 @@ fn run_scenario(
         let value = value.clone();
         AnyViewBuilder::<AnyView>::new(move || make_view(&value))
     };
-    let (gpu, diagnostics, _state) = super::diagnostic_gpu();
+    let (gpu, diagnostics) = super::diagnostic_gpu();
     let mut runtime = HeadlessRuntime::new_for_tests_on_context(
         gpu,
         pumped_test_environment(),

@@ -252,6 +252,8 @@ pub struct HeadlessPumpResult {
     content_types: AccessibilityContentTypes,
     /// The captured frame snapshot, when capture was requested.
     snapshot: Option<HeadlessSnapshot>,
+    /// The terminal failure that ended a window's rendering in this pump.
+    failure: Option<crate::renderer::FrameError>,
     #[cfg(feature = "accessibility")]
     /// The accessibility node holding UI focus.
     ui_focus: Option<accesskit::NodeId>,
@@ -316,6 +318,19 @@ impl HeadlessPumpResult {
     /// Takes the captured frame snapshot out of the result, leaving none.
     pub const fn take_snapshot(&mut self) -> Option<HeadlessSnapshot> {
         self.snapshot.take()
+    }
+
+    /// The terminal failure that ended a window's rendering in this pump —
+    /// the reason a requested snapshot is missing. A window that failed
+    /// this way never renders again.
+    #[must_use]
+    pub const fn failure(&self) -> Option<&crate::renderer::FrameError> {
+        self.failure.as_ref()
+    }
+
+    /// Takes the terminal frame failure out of the result, leaving none.
+    pub const fn take_failure(&mut self) -> Option<crate::renderer::FrameError> {
+        self.failure.take()
     }
 
     /// The accessibility node holding UI focus.
@@ -1244,6 +1259,11 @@ impl HeadlessRuntime {
         // on the same queue — and the popup passes below only composite their
         // snapshots into it.
         let rendered_profile = render_result.as_ref().map(|result| result.profile);
+        // A window whose surface failed for good reports it here, so a
+        // missing snapshot names its cause.
+        let mut failure = render_result
+            .as_mut()
+            .and_then(|result| result.failed.take());
         // A popup window pumps its scene the way the main window does: the
         // scene pump is where its retained tree — and with it the window's
         // accessibility update — is built. A popup that only ever rendered on
@@ -1268,6 +1288,9 @@ impl HeadlessRuntime {
                 &mut || self.local_executor.drain(),
             );
             rebuilt |= popup_result.rebuilt;
+            if failure.is_none() {
+                failure = popup_result.failed;
+            }
             if let Some(popup_snapshot) = popup_result.snapshot {
                 popup_snapshots.push((
                     popup_index,
@@ -1337,6 +1360,7 @@ impl HeadlessRuntime {
             #[cfg(feature = "accessibility")]
             content_types,
             snapshot: render_result.and_then(|result| result.snapshot),
+            failure,
             #[cfg(feature = "accessibility")]
             ui_focus: self.runtime.renderer.focused_ui_node(),
         }
@@ -1516,7 +1540,7 @@ mod generation_tests {
     };
 
     /// Replaces `runtime`'s GPU context: the platform window is rebuilt on
-    /// `gpu`'s own context id (fresh pooled `SharedEngineState`, fresh
+    /// `gpu`'s own context id (its generation's own `SharedEngineState`, fresh
     /// `SceneResources` table) while the retained `HydrolysisRenderer` and
     /// view tree — including every `Weak` table association — carry over
     /// unchanged. Returns the replaced context so the test can drop it last,

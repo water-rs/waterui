@@ -123,7 +123,7 @@ pub struct BrowserSurface {
     gpu: crate::platform::RecoverableGpu,
     /// The device generation this surface renders on — a clone of the
     /// context's live generation, adopted in `ensure_live`.
-    handles: crate::platform::DeviceLoss,
+    handles: crate::platform::GpuGeneration,
     /// The element the engine's stacking root is appended to.
     root: HtmlElement,
     /// The drawable size in device pixels.
@@ -164,11 +164,16 @@ impl BrowserSurface {
     }
 
     /// Opens a device generation on `instance` — adapter pick, device
-    /// request and loss observation. A lost device's recreation re-runs
-    /// it on the lost generation's own instance (water-rs/waterui#2742).
+    /// request, loss observation and the generation's engine. A lost
+    /// device's recreation re-runs it on the lost generation's own
+    /// instance (water-rs/waterui#2742).
+    #[allow(
+        clippy::future_not_send,
+        reason = "the future runs on the browser main thread via spawn_local; the engine's Rc handles never cross a thread"
+    )]
     async fn open_generation(
         instance: &wgpu::Instance,
-    ) -> Result<crate::platform::DeviceLoss, GpuUnavailable> {
+    ) -> Result<crate::platform::GpuGeneration, GpuUnavailable> {
         // Every adapter a browser hands out presents to a canvas, so the
         // request names no surface: the engine creates its canvases on
         // this device itself.
@@ -195,43 +200,51 @@ impl BrowserSurface {
                 source: source.into(),
             })?;
         let context_id = super::next_gpu_context_id();
-        Ok(crate::platform::DeviceLoss::observe(
-            cherenkov_gpu::interop::SharedDevice {
-                instance: instance.clone(),
-                adapter,
-                device,
-                queue,
-            },
-            context_id,
-        ))
+        crate::platform::GpuGeneration::open(
+            crate::platform::DeviceLoss::observe(
+                cherenkov_gpu::interop::SharedDevice {
+                    instance: instance.clone(),
+                    adapter,
+                    device,
+                    queue,
+                },
+                context_id,
+            ),
+            cherenkov_gpu::GpuConfig::default(),
+        )
+        .await
     }
 
     /// Adopts the context's live device generation — rebuilding it when
     /// the adopted one was lost — and reports whether a live generation
     /// came out of it (water-rs/waterui#2742). `false` means a failed
     /// recreation left the dead generation in place: the caller reports
-    /// the surface lost and the next frame retries under the loss budget,
-    /// which leaves the dead generation in place once it runs out. The
-    /// engine window is left for the next render's `renders_on` check to
-    /// replace — the retained mount must unmount under the chain that
+    /// the surface lost and the next frame retries under the loss budget.
+    /// The engine window is left for the next render's `renders_on` check
+    /// to replace — the retained mount must unmount under the chain that
     /// created it.
+    ///
+    /// # Errors
+    /// The terminal [`DeviceLostError`](crate::platform::DeviceLostError)
+    /// once the recovery budget ran out: the dead generation is never
+    /// rebuilt again.
     #[allow(
         clippy::future_not_send,
         reason = "the future runs on the browser main thread via spawn_local; wgpu handles' Send bound varies with Cargo feature unification"
     )]
-    pub(crate) async fn ensure_live(&mut self) -> bool {
-        let Some(dead) = self.gpu.take_lost() else {
+    pub(crate) async fn ensure_live(&mut self) -> Result<bool, crate::platform::DeviceLostError> {
+        let Some(dead) = self.gpu.take_lost()? else {
             self.handles = self.gpu.generation();
-            return true;
+            return Ok(true);
         };
         let rebuilt = Self::open_generation(&dead.gpu_context().shared_device.instance)
             .await
             .map_err(|error| error.to_string());
-        let generation = self.gpu.finish_recovery(&dead, rebuilt);
+        let generation = self.gpu.finish_recovery(&dead, rebuilt)?;
         if generation.gpu_context().context_id != self.handles.gpu_context().context_id {
             self.handles = generation;
         }
-        !self.handles.is_lost()
+        Ok(!self.handles.loss().is_lost())
     }
 }
 
@@ -262,10 +275,6 @@ pub fn report_fatal_error(message: &str) {
 }
 
 impl crate::platform::PresentationSurface for BrowserSurface {
-    fn adapter(&self) -> &wgpu::Adapter {
-        &self.handles.gpu_context().shared_device.adapter
-    }
-
     fn device(&self) -> &wgpu::Device {
         &self.handles.gpu_context().shared_device.device
     }
@@ -274,7 +283,7 @@ impl crate::platform::PresentationSurface for BrowserSurface {
         &self.handles.gpu_context().shared_device.queue
     }
 
-    fn device_loss(&self) -> &crate::platform::DeviceLoss {
+    fn generation(&self) -> &crate::platform::GpuGeneration {
         &self.handles
     }
 
@@ -306,19 +315,13 @@ impl BrowserSurface {
             >,
         >,
     ) {
-        let context = self.handles.gpu_context();
         (
-            crate::renderer::FrameRenderTarget {
-                adapter: &context.shared_device.adapter,
-                device: &context.shared_device.device,
-                device_loss: self.handles.clone(),
-                gpu_context_id: context.context_id,
-                shared_device: context.shared_device.clone(),
+            crate::renderer::FrameRenderTarget::new(
+                &self.handles,
                 display_scale,
-                width: self.size.0,
-                height: self.size.1,
+                self.size,
                 base_color,
-            },
+            ),
             &self.root,
             &mut self.engine_window,
         )

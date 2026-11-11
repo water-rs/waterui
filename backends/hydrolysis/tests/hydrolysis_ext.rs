@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use hydrolysis::testing::TestStyle;
 use hydrolysis::{
-    FontFamilyResolution, HydrolysisRenderTarget, HydrolysisRenderer, OffscreenGpuContext,
-    OffscreenWindow, readback_texture_rgba8,
+    FontFamilyResolution, HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow,
+    readback_texture_rgba8,
 };
 use waterui::Color;
 use waterui::View;
@@ -324,17 +324,7 @@ fn render(view: impl View, width: u32, height: u32) -> Snapshot {
         .acquire()
         .unwrap_or_else(|error| panic!("offscreen frame acquisition failed: {error}"));
     renderer
-        .render_scene_to_texture(HydrolysisRenderTarget {
-            adapter: surface.adapter(),
-            device: surface.device(),
-            queue: surface.queue(),
-            device_loss: surface.device_loss().clone(),
-            texture: frame.texture(),
-            format: surface.format(),
-            width,
-            height,
-            base_color: WorkingColor::TRANSPARENT,
-        })
+        .render_scene_to_texture(surface, frame.texture(), WorkingColor::TRANSPARENT)
         .unwrap_or_else(|error| panic!("offscreen render failed: {error}"));
     let rgba8 = readback_texture_rgba8(&*surface, frame.texture(), width, height)
         .unwrap_or_else(|error| panic!("frame readback failed: {error}"));

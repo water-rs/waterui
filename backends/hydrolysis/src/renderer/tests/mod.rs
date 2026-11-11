@@ -4296,26 +4296,18 @@ fn a_labelled_container_that_stands_reports_its_response_rectangle() {
     );
 }
 
+/// A GPU context whose generations' engines report their composition
+/// decisions into the returned sink.
 fn diagnostic_gpu() -> (
     crate::platform::OffscreenGpuContext,
     cherenkov_gpu::composition::Sink,
-    Rc<crate::engine::SharedEngineState>,
 ) {
-    let gpu = crate::platform::OffscreenGpuContext::for_tests();
-    let probe = crate::platform::OffscreenSurface::on_context(
-        gpu.clone(),
-        1,
-        1,
-        wgpu::TextureFormat::Rgba8UnormSrgb,
-    );
-    let context = probe.device_loss().gpu_context();
     let diagnostics = cherenkov_gpu::composition::Sink::new();
-    let engine = crate::engine::GpuEngine::new(cherenkov_gpu::GpuConfig {
-        device: Some(context.shared_device.clone()),
-        composition_diag: Some(diagnostics.clone()),
-        ..cherenkov_gpu::GpuConfig::default()
-    })
-    .expect("diagnostic engine");
-    let state = crate::engine::SharedEngineState::register(context.context_id, Rc::new(engine));
-    (gpu, diagnostics, state)
+    let gpu = crate::platform::OffscreenGpuContext::for_tests_with_engine_config(
+        cherenkov_gpu::GpuConfig {
+            composition_diag: Some(diagnostics.clone()),
+            ..cherenkov_gpu::GpuConfig::default()
+        },
+    );
+    (gpu, diagnostics)
 }

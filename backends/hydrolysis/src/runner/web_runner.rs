@@ -35,7 +35,8 @@ use crate::renderer::{
 };
 use crate::runner::web_accessibility::WebAccessibilityBridge;
 use crate::runner::{
-    RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events, render_window,
+    RenderDiagnosticsConfig, RuntimeWindow, WindowFrame, advance_runtime, handle_input_events,
+    render_window,
 };
 use crate::text::ParleyEngine;
 use crate::time::Instant;
@@ -232,6 +233,9 @@ struct BrowserRunner {
     /// Whether the page has been told its first frame is up, which ends the
     /// launch screen the page shows until then.
     first_frame_announced: bool,
+    /// Set once the page's surface failed for good and the page reported
+    /// it: the pump runs no further frame, whatever wakes it.
+    stopped: bool,
     /// The page's fonts; the faces the first frame did not wait for register
     /// into it as they arrive.
     fonts: Rc<RefCell<WebFonts>>,
@@ -282,6 +286,9 @@ impl BrowserRunner {
         reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
     )]
     async fn frame(&mut self) -> bool {
+        if self.stopped {
+            return false;
+        }
         let _ = self.drain_local_executor_queue();
         if self.fonts_arrived.take() {
             self.runtime.renderer.fonts_changed();
@@ -315,11 +322,20 @@ impl BrowserRunner {
         if !self.runtime.is_hidden()
             && (self.runtime.mode.is_pending() || self.runtime.renderer.take_redraw_request())
         {
-            let presented = render_window(&mut self.runtime, &self.env, &mut || {
+            let frame = render_window(&mut self.runtime, &self.env, &mut || {
                 Self::drain_runnable_queue(&self.runnable_queue)
             })
             .await;
-            if presented && !self.first_frame_announced {
+            if let WindowFrame::Failed(error) = frame {
+                // The page's surface cannot render again: the page shows
+                // why in place of the app, and the pump stops.
+                let error = waterui_core::Error::from(error);
+                tracing::error!("hydrolysis web runner: {error:#}; the app stops rendering");
+                crate::platform::report_fatal_error(&format!("{error:#}"));
+                self.stopped = true;
+                return false;
+            }
+            if frame.presented() && !self.first_frame_announced {
                 self.first_frame_announced = true;
                 self.runtime.platform.announce_first_frame();
                 load_deferred_web_fonts(
@@ -594,6 +610,7 @@ pub fn run(app: App, style: impl crate::Style) {
             accessibility_actions,
             accessibility_bridge,
             first_frame_announced: false,
+            stopped: false,
             fonts: Rc::new(RefCell::new(fonts)),
             deferred_fonts,
             fonts_arrived: Rc::new(Cell::new(false)),

@@ -6,7 +6,7 @@ use waterui_core::{AnyView, ContentLedger, Environment};
 use waterui_graphics::backend::SceneViewMergeToParent;
 use waterui_text::FontCollection;
 
-use crate::platform::{DeviceLoss, OffscreenSurface, PresentationSurface as _, SurfaceFrame};
+use crate::platform::{GpuGeneration, OffscreenSurface, PresentationSurface as _, SurfaceFrame};
 use crate::readback::readback_texture_rgba8;
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer};
 
@@ -87,26 +87,13 @@ impl HydrolysisViewRenderer {
             .expect("hydrolysis view renderer surface must initialize before rendering");
         surface.resize(width, height);
         let frame = surface.acquire().map_err(gpu_failure)?;
-        Ok((
-            frame,
-            surface.adapter().clone(),
-            surface.device().clone(),
-            surface.queue().clone(),
-            surface.device_loss().clone(),
-            surface.format(),
-        ))
+        Ok((frame, surface.generation().clone(), surface.format()))
     }
 }
 
-/// An acquired capture frame and the GPU handles it renders through.
-type AcquiredFrame = (
-    SurfaceFrame,
-    wgpu::Adapter,
-    wgpu::Device,
-    wgpu::Queue,
-    DeviceLoss,
-    wgpu::TextureFormat,
-);
+/// An acquired capture frame, the device generation it renders through and
+/// the frame's format.
+type AcquiredFrame = (SurfaceFrame, GpuGeneration, wgpu::TextureFormat);
 
 impl CustomViewRenderer for HydrolysisViewRenderer {
     #[expect(
@@ -132,8 +119,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
         )]
         let height = request.size().height.max(1.0).round() as u32;
 
-        let (frame, adapter, device, queue, device_loss, format) =
-            self.acquire_frame(width, height).await?;
+        let (frame, generation, format) = self.acquire_frame(width, height).await?;
 
         // The capture's text engine shapes against the collection the runner
         // installed — `FontCollection::from_env` names the host's obligation
@@ -181,18 +167,12 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                 },
             )
             .await?;
-        crate::engine::engine_await!(renderer.render_scene_to_texture(
-            crate::renderer::HydrolysisRenderTarget {
-                adapter: &adapter,
-                device: &device,
-                queue: &queue,
-                device_loss,
-                texture: frame.texture(),
-                format,
-                width,
-                height,
-                base_color: cherenkov_record::WorkingColor::TRANSPARENT,
-            }
+        crate::engine::engine_await!(renderer.render_generation_to_texture(
+            &generation,
+            frame.texture(),
+            format,
+            (width, height),
+            cherenkov_record::WorkingColor::TRANSPARENT,
         ))
         .map_err(gpu_failure)?;
         renderer.frame_work_counters_mut().gpu_submissions += 1;

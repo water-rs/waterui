@@ -241,7 +241,7 @@ fn form_runtime_on(
 
 #[test]
 fn caret_blink_reuses_recording_without_layout() {
-    let (gpu, diagnostics, _state) = super::diagnostic_gpu();
+    let (gpu, diagnostics) = super::diagnostic_gpu();
     let (mut runtime, _value, _submitted) = form_runtime_on(gpu);
     let start = runtime.renderer().frame_instant() + Duration::from_millis(16);
     let initial = runtime

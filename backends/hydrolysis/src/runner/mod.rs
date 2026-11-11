@@ -145,7 +145,7 @@ use window::{advance_runtime, handle_input_events};
     all(not(target_arch = "wasm32"), not(target_os = "android")),
     all(target_arch = "wasm32", feature = "web")
 ))]
-use window::render_window;
+use window::{WindowFrame, render_window};
 // Only the native headless/capture paths read frames back; the browser surface presents directly.
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use window::{FrameReader, render_window_with_capture};
@@ -371,11 +371,13 @@ fn install_headless_window_managers<E: crate::text::TextEngine>(
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 const GPU_UNAVAILABLE_EXIT_CODE: i32 = 1;
 
-/// Ends a native app whose host has no GPU Hydrolysis can render on: the app
-/// cannot show anything, so the error is logged and the process exits with a
-/// failure status instead of running without a window.
+/// Ends a native app whose host has no GPU Hydrolysis can render on — no
+/// usable device or engine, or a first window whose surface failed for good
+/// before it ever presented: the app cannot show anything, so the error is
+/// logged and the process exits with a failure status instead of running
+/// without a window.
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-fn exit_without_gpu(error: crate::platform::GpuUnavailable) -> ! {
+fn exit_without_gpu(error: impl core::error::Error + Send + Sync + 'static) -> ! {
     tracing::error!(
         "{:#}; the app does not start",
         waterui_core::Error::from(error)
@@ -500,7 +502,13 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
         renderer.set_window_closable(window.closable);
         let mut runtime =
             RuntimeWindow::new_gpu(window, platform, renderer, render_diagnostics_config, &env);
-        render_window(&mut runtime, &env, &mut || local_executor.drain());
+        // The one offscreen frame is the window's only one: a surface that
+        // failed for good has shown nothing and never can.
+        if let WindowFrame::Failed(error) =
+            render_window(&mut runtime, &env, &mut || local_executor.drain())
+        {
+            exit_without_gpu(error);
+        }
         pending_windows.extend(pending_window_queue.borrow_mut().drain(..));
     }
 }
