@@ -39,6 +39,11 @@ impl<T: Clone + 'static> SignalCell<T> {
     pub(crate) fn observed(&self) -> bool {
         !self.0.watchers.is_empty()
     }
+
+    /// Whether a handle other than this one still exists.
+    pub(crate) fn shared(&self) -> bool {
+        Rc::strong_count(&self.0) > 1
+    }
 }
 
 impl<T: Clone + 'static> Signal for SignalCell<T> {

@@ -93,6 +93,7 @@ extern crate alloc;
 mod macros;
 mod animation_system;
 mod components;
+mod contract;
 mod foundation;
 mod state;
 mod ui;
@@ -102,6 +103,8 @@ pub use animation_system::{animation, easing, vector_arithmetic};
 pub use anyhow::Error;
 pub use anyview::AnyView;
 pub use components::*;
+#[doc(hidden)]
+pub use contract::__private;
 pub use easing::{EasingCurve, Interpolatable};
 pub use env::Environment;
 #[cfg(feature = "std")]

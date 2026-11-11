@@ -17,6 +17,7 @@ keyboard-types.workspace = true
 suiteki.workspace = true
 smallvec.workspace = true
 nami.workspace = true
+tracing.workspace = true
 waterui-macros.workspace = true
 
 [dependencies.anyhow]

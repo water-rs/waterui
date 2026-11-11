@@ -795,10 +795,6 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Ok(shape) => return Self::build_shape(renderer, (*shape).into_inner(), env),
             Err(view) => view,
         };
-        let view = match view.downcast::<Native<ResolvedMorphShape>>() {
-            Ok(shape) => return Self::build_morph_shape(renderer, (*shape).into_inner(), env),
-            Err(view) => view,
-        };
         let Err(view) = view.downcast::<Native<MapConfig>>() else {
             unsupported_map()
         };

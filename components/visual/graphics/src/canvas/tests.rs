@@ -464,6 +464,45 @@ fn time_is_the_presented_frames_clock() {
 }
 
 #[test]
+fn time_until_holds_at_its_end_and_stops_asking_for_frames() {
+    let end = core::time::Duration::from_millis(100);
+    let mut scene = mount(Canvas::new(move |cx| {
+        let time = cx.time_until(end);
+        cx.transform(
+            time.map(|t| Affine2::translate(t.as_secs_f32() * 1000.0, 0.0)),
+            |cx| cx.fill(Rect::from_size(Size::new(1.0, 1.0)), red()),
+        );
+    }));
+    let start = crate::draw::Instant::now();
+    assert_eq!(update_at(&mut scene, start), SceneUpdate::Record);
+    let mut content = record(&mut scene);
+    let _ = content.take_change();
+
+    assert_eq!(
+        update_at(&mut scene, start + core::time::Duration::from_millis(48)),
+        SceneUpdate::Retained { again: true },
+        "before its end the clock keeps asking for frames"
+    );
+    let _ = content.take_change();
+    assert_eq!(
+        update_at(&mut scene, start + core::time::Duration::from_millis(500)),
+        SceneUpdate::Retained { again: false },
+        "at its end the clock stops asking for frames"
+    );
+    let Some(ContentChange::Update(updates)) = content.take_change() else {
+        panic!("the last frame updates the time operand in place");
+    };
+    let Operand::Transform(held) = updates[0].value else {
+        panic!("the transform scope's operand");
+    };
+    assert!(
+        (held.translation().x - 100.0).abs() < 1e-3,
+        "the clock holds at its end, not at the frame's time: {}",
+        held.translation().x
+    );
+}
+
+#[test]
 fn size_follows_the_box() {
     let seen = Rc::new(Cell::new(Size::zero()));
     let mut scene = mount(Canvas::new({
@@ -475,4 +514,56 @@ fn size_follows_the_box() {
     }));
     let _ = record(&mut scene);
     assert_eq!(seen.get(), Size::new(100.0, 50.0));
+}
+
+#[test]
+fn canvas_size_before_mounting_reports_the_built_size() {
+    let canvas = Canvas::new(|_| {});
+    let size = canvas.size();
+    assert_eq!(size.snapshot(), Size::zero(), "no layout has run yet");
+    let mut scene = mount(canvas);
+    let _ = record(&mut scene);
+    assert_eq!(size.snapshot(), Size::new(100.0, 50.0));
+    let _ = update(&mut scene);
+    assert_eq!(size.snapshot(), Size::new(100.0, 50.0));
+}
+
+#[test]
+fn canvas_size_follows_a_resize() {
+    let canvas = Canvas::new(|_| {});
+    let size = canvas.size();
+    let seen = Rc::new(Cell::new(Size::zero()));
+    let _guard = size.watch({
+        let seen = Rc::clone(&seen);
+        move |change| seen.set(*change.value())
+    });
+    let mut scene = mount(canvas);
+    let _ = record(&mut scene);
+    assert_eq!(seen.get(), Size::new(100.0, 50.0));
+
+    let (resources, _events) = null_resources();
+    let mut names = resources.recording();
+    let _ = Content::record(&LayoutSize::new(), |recorder| {
+        scene.build_scene(recorder, &mut names, 200.0, 80.0);
+    });
+    drop(names.finish());
+    assert_eq!(size.snapshot(), Size::new(200.0, 80.0));
+    assert_eq!(seen.get(), Size::new(200.0, 80.0));
+}
+
+#[test]
+fn canvas_size_is_the_signal_the_closure_reads() {
+    let inside = Rc::new(Cell::new(Size::zero()));
+    let canvas = Canvas::new({
+        let inside = Rc::clone(&inside);
+        move |cx| {
+            let size = cx.size();
+            cx.keep(size.watch(move |change| inside.set(*change.value())));
+        }
+    });
+    let size = canvas.size();
+    let mut scene = mount(canvas);
+    let _ = record(&mut scene);
+    assert_eq!(inside.get(), size.snapshot());
+    assert_eq!(inside.get(), Size::new(100.0, 50.0));
 }

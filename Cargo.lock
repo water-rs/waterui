@@ -13019,6 +13019,7 @@ dependencies = [
  "smallvec",
  "suiteki",
  "thiserror 2.0.21",
+ "tracing",
  "waterui-macros",
 ]
 
@@ -13514,15 +13515,9 @@ dependencies = [
 name = "waterui-shape"
 version = "0.5.1"
 dependencies = [
- "async-channel",
- "executor-core",
- "futures-lite",
  "nami",
- "native-executor",
- "num-traits",
  "waterui-core",
  "waterui-graphics",
- "web-time",
 ]
 
 [[package]]

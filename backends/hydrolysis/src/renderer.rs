@@ -97,8 +97,7 @@ pub use render::WidgetRenderContext;
 pub use render::*;
 pub use render::{
     anchor_point, estimate_layout_intrinsic, gesture_group_identity, normalize_layout_view,
-    normalize_view_for_render, path_commands_to_path, resolved_morph_shape_to_path,
-    resolved_shape_to_path, transformed_rect,
+    normalize_view_for_render, path_commands_to_path, resolved_shape_to_path, transformed_rect,
 };
 use rustc_hash::FxHashSet;
 use signals::LayoutDependencies;
@@ -199,7 +198,7 @@ use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_map::MapConfig;
-use waterui_shape::{ClipShape, PathCommand, ResolvedMorphShape, ResolvedShape, ShapeKind};
+use waterui_shape::{ClipShape, PathCommand, ResolvedShape, ShapeKind};
 use waterui_text::styled::StyledStr;
 use waterui_text::{Text, TextConfig};
 use waterui_webview::WebView;
@@ -227,7 +226,6 @@ const SCALE_Y_ANIMATION_KEY: usize = 0x0100_0003;
 const ROTATION_ANIMATION_KEY: usize = 0x0100_0004;
 const OFFSET_X_ANIMATION_KEY: usize = 0x0100_0005;
 const OFFSET_Y_ANIMATION_KEY: usize = 0x0100_0006;
-const MORPH_PROGRESS_ANIMATION_KEY: usize = 0x0100_0007;
 
 #[cfg(feature = "accessibility")]
 pub use accessibility::{

@@ -20,8 +20,9 @@
 //! A static row becomes selectable by tagging it with the value that selects
 //! it — `(|| ListItem::new(…)).tag(value)` through
 //! [`ViewExt::tag`](crate::ViewExt::tag), or [`Row::tag`] — and a `ForEach`
-//! row is selected by its item's id. [`TaggedBy`] states, per selection
-//! type, which content a list may select by it.
+//! row is selected by its item's id. [`ContentTags`] states, per selection
+//! type, which content a list may select by it and whether any of its rows
+//! is selected by it; [`TaggedBy`] names content that is.
 
 use alloc::vec::Vec;
 
@@ -81,15 +82,76 @@ pub trait ListContent<Scope = ListScope> {
     fn collect_items(self, sink: &mut ListItemSink);
 }
 
-/// List content whose selectable rows are all selected by values of `T`.
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for super::Tagged {}
+    impl Sealed for super::Untagged {}
+}
+
+/// Whether list content holds a row selected by the list's selection type:
+/// [`Tagged`] or [`Untagged`].
+pub trait TagPresence: sealed::Sealed {
+    /// [`Tagged`] when `Self` or `Other` is: the presence of content that
+    /// holds both.
+    type Or<Other: TagPresence>: TagPresence;
+}
+
+/// The content holds at least one row selected by the selection type.
+#[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a marker type that carries no data"
+)]
+pub struct Tagged;
+
+/// The content holds no row selected by the selection type: only untagged
+/// rows, which are not selectable.
+#[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a marker type that carries no data"
+)]
+pub struct Untagged;
+
+impl TagPresence for Tagged {
+    type Or<Other: TagPresence> = Self;
+}
+
+impl TagPresence for Untagged {
+    type Or<Other: TagPresence> = Other;
+}
+
+/// A [`TagPresence`] that holds a selectable row: only [`Tagged`].
+///
+/// A list built by [`List::content`](super::List::content) is selectable
+/// by `T` only when its content's [`ContentTags<T>`] presence is `HoldsTag`,
+/// so a selection over rows none of which can be selected fails to compile.
+#[diagnostic::on_unimplemented(
+    message = "this list has no selectable row: every row is untagged",
+    label = "a selection over untagged rows could never select one",
+    note = "tag a static row with the value that selects it, `.tag(value)` with `value` of the selection's type, or add a `ForEach`, whose rows are selected by their items' ids; an untagged row is not selectable"
+)]
+pub trait HoldsTag: TagPresence {}
+
+impl HoldsTag for Tagged {}
+
+/// What the rows of list content are selected by, checked against the
+/// selection type `T`.
+///
+/// Content is `ContentTags<T>` when every selectable row in it is selected
+/// by `T`: a static row tagged with `.tag(value)` is `ContentTags` of the
+/// value's type, a [`ForEach`] row of its item's id type, and an untagged
+/// static row of every type, because it is not selectable. Sections, tuples,
+/// arrays, vectors and `Option` are `ContentTags<T>` when everything they
+/// hold is. [`Presence`](Self::Presence) records whether any row is selected
+/// by `T`: a tagged row and a `ForEach` are [`Tagged`], an untagged row is
+/// [`Untagged`], and content holding several parts is `Tagged` when any part
+/// is.
 ///
 /// A list built by [`List::content`](super::List::content) accepts a
-/// selection of `T` only when its content is `TaggedBy<T>`, so a selection
-/// type the rows do not carry fails to compile. A static row tagged with
-/// `.tag(value)` is `TaggedBy` the value's type; a [`ForEach`] row is
-/// `TaggedBy` its item's id type; an untagged static row is `TaggedBy`
-/// every type, because it is not selectable. Sections, tuples, arrays,
-/// vectors and `Option` are `TaggedBy<T>` when everything they hold is.
+/// selection of `T` only when its content is `ContentTags<T>` with a
+/// [`Tagged`] presence (see [`TaggedBy`]), so a selection type the rows do
+/// not carry, or rows that carry none, fail to compile.
 ///
 /// An implementation for custom [`ListContent`] must agree with the rows it
 /// collects: a row tagged by another type panics when the list's selection
@@ -99,7 +161,22 @@ pub trait ListContent<Scope = ListScope> {
     label = "rows not selected by `{T}`",
     note = "a `ForEach` row is selected by its item's id and a static row by the value given to `.tag(…)`; every selectable row of one list is selected by the same type"
 )]
-pub trait TaggedBy<T> {}
+pub trait ContentTags<T> {
+    /// [`Tagged`] when the content holds a row selected by `T`, otherwise
+    /// [`Untagged`].
+    type Presence: TagPresence;
+}
+
+/// List content a list can select by `T`: every selectable row is selected
+/// by `T`, and at least one row is.
+///
+/// It names such content where its type cannot be spelled, as in
+/// `fn album_row(album: Album) -> impl ListContent<SectionScope> + TaggedBy<Album>`;
+/// every [`ContentTags<T>`] content with a [`Tagged`] presence is
+/// `TaggedBy<T>`.
+pub trait TaggedBy<T>: ContentTags<T, Presence = Tagged> {}
+
+impl<T, C: ContentTags<T, Presence = Tagged> + ?Sized> TaggedBy<T> for C {}
 
 // ----------------------------------------------------------------------------
 // Leaf impls
@@ -109,7 +186,9 @@ impl<S> ListContent<S> for () {
     fn collect_items(self, _sink: &mut ListItemSink) {}
 }
 
-impl<T> TaggedBy<T> for () {}
+impl<T> ContentTags<T> for () {
+    type Presence = Untagged;
+}
 
 impl<S, C: ListContent<S>> ListContent<S> for Option<C> {
     fn collect_items(self, sink: &mut ListItemSink) {
@@ -119,7 +198,9 @@ impl<S, C: ListContent<S>> ListContent<S> for Option<C> {
     }
 }
 
-impl<T, C: TaggedBy<T>> TaggedBy<T> for Option<C> {}
+impl<T, C: ContentTags<T>> ContentTags<T> for Option<C> {
+    type Presence = C::Presence;
+}
 
 impl<S, C: ListContent<S>> ListContent<S> for Vec<C> {
     fn collect_items(self, sink: &mut ListItemSink) {
@@ -129,7 +210,9 @@ impl<S, C: ListContent<S>> ListContent<S> for Vec<C> {
     }
 }
 
-impl<T, C: TaggedBy<T>> TaggedBy<T> for Vec<C> {}
+impl<T, C: ContentTags<T>> ContentTags<T> for Vec<C> {
+    type Presence = C::Presence;
+}
 
 impl<S, C: ListContent<S>, const N: usize> ListContent<S> for [C; N] {
     fn collect_items(self, sink: &mut ListItemSink) {
@@ -139,7 +222,9 @@ impl<S, C: ListContent<S>, const N: usize> ListContent<S> for [C; N] {
     }
 }
 
-impl<T, C: TaggedBy<T>, const N: usize> TaggedBy<T> for [C; N] {}
+impl<T, C: ContentTags<T>, const N: usize> ContentTags<T> for [C; N] {
+    type Presence = C::Presence;
+}
 
 /// Closures that return a fresh [`ListItem`] are valid leaf content. This is
 /// the escape hatch for embedding arbitrary [`ListItem`] producers — e.g.
@@ -156,8 +241,13 @@ where
 }
 
 /// An untagged row builder is not selectable, so it fits a list selected by
-/// any type.
-impl<T, F> TaggedBy<T> for F where F: Fn() -> ListItem + 'static {}
+/// any type and gives it nothing to select.
+impl<T, F> ContentTags<T> for F
+where
+    F: Fn() -> ListItem + 'static,
+{
+    type Presence = Untagged;
+}
 
 /// A row builder tagged with [`ViewExt::tag`](crate::ViewExt::tag) is
 /// selected by its tag: `(|| ListItem::new(…)).tag(value)`.
@@ -171,7 +261,12 @@ where
     }
 }
 
-impl<T, F> TaggedBy<T> for TaggedView<T, F> where F: Fn() -> ListItem + 'static {}
+impl<T, F> ContentTags<T> for TaggedView<T, F>
+where
+    F: Fn() -> ListItem + 'static,
+{
+    type Presence = Tagged;
+}
 
 /// A [`ForEach`] over a reactive collection contributes one row per item,
 /// keyed and selected by the item's id. The rows follow the collection:
@@ -189,11 +284,12 @@ where
     }
 }
 
-impl<C, F> TaggedBy<C::Id> for ForEach<C, F, ListItem>
+impl<C, F> ContentTags<C::Id> for ForEach<C, F, ListItem>
 where
     C: Collection,
     F: Fn(C::Item) -> ListItem,
 {
+    type Presence = Tagged;
 }
 
 // ----------------------------------------------------------------------------
@@ -234,7 +330,20 @@ macro_rules! impl_tuple_list_content {
             }
         }
 
-        impl<Tag, $($T: TaggedBy<Tag>),+> TaggedBy<Tag> for ($($T,)+) {}
+        impl<Tag, $($T: ContentTags<Tag>),+> ContentTags<Tag> for ($($T,)+) {
+            type Presence = any_tagged!(Tag; $($T),+);
+        }
+    };
+}
+
+/// The [`TagPresence`] of a tuple of `$T`s selected by `$Tag`: [`Tagged`]
+/// when any element is.
+macro_rules! any_tagged {
+    ($Tag:ident; $T:ident) => {
+        <$T as ContentTags<$Tag>>::Presence
+    };
+    ($Tag:ident; $T:ident, $($rest:ident),+) => {
+        <<$T as ContentTags<$Tag>>::Presence as TagPresence>::Or<any_tagged!($Tag; $($rest),+)>
     };
 }
 
@@ -365,8 +474,10 @@ impl<S> ListContent<S> for Row {
 }
 
 /// An untagged [`Row`] is not selectable, so it fits a list selected by any
-/// type.
-impl<T> TaggedBy<T> for Row {}
+/// type and gives it nothing to select.
+impl<T> ContentTags<T> for Row {
+    type Presence = Untagged;
+}
 
 /// A [`Row`] tagged with [`Row::tag`] is selected by its tag.
 impl<S, T: 'static> ListContent<S> for TaggedView<T, Row> {
@@ -375,7 +486,9 @@ impl<S, T: 'static> ListContent<S> for TaggedView<T, Row> {
     }
 }
 
-impl<T> TaggedBy<T> for TaggedView<T, Row> {}
+impl<T> ContentTags<T> for TaggedView<T, Row> {
+    type Presence = Tagged;
+}
 
 /// Builds a single-line key/value [`Row`].
 ///
