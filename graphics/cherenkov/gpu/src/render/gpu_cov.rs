@@ -1278,13 +1278,15 @@ impl GpuCoverage {
     }
 
     /// Releases the generation scratch when no commit has needed it for
-    /// `interval` as of `now`. The retained arena is output, not scratch,
-    /// and stays.
-    pub fn release_idle(&mut self, now: Instant, interval: Duration) {
-        if self.idle_deadline(interval).is_some_and(|due| now >= due) {
+    /// `interval` as of `now`, returning whether it did. The retained arena
+    /// is output, not scratch, and stays.
+    pub fn release_idle(&mut self, now: Instant, interval: Duration) -> bool {
+        let due = self.idle_deadline(interval).is_some_and(|due| now >= due);
+        if due {
             self.buffers = None;
             self.scratch_used = None;
         }
+        due
     }
 
     pub fn trim(&mut self) {
@@ -2988,13 +2990,13 @@ mod tests {
         assert_eq!(scratch(&frame), grown, "a replaying frame keeps scratch");
         assert_eq!(frame.idle_deadline(interval), Some(last + interval));
         // No frame follows: scratch survives until the interval elapses.
-        frame.release_idle(last + Duration::from_millis(999), interval);
+        assert!(!frame.release_idle(last + Duration::from_millis(999), interval));
         assert_eq!(
             scratch(&frame),
             grown,
             "released only once the idle time is up"
         );
-        frame.release_idle(last + interval, interval);
+        assert!(frame.release_idle(last + interval, interval));
         assert!(frame.buffers.is_none(), "an idle interval releases scratch");
         assert_eq!(
             frame.idle_deadline(interval),

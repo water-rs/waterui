@@ -4510,7 +4510,14 @@ impl Renderer for GpuRenderer {
     }
 
     fn release_idle(&mut self, now: cherenkov::Instant) {
-        self.gpu_cov.release_idle(now, self.scratch_idle);
+        // The last submission that used the scratch still holds it until the
+        // device triages completed submissions, which otherwise waits for the
+        // next submit: an idle renderer would keep the memory it released.
+        if self.gpu_cov.release_idle(now, self.scratch_idle)
+            && let Err(error) = self.device.poll(wgpu::PollType::Poll)
+        {
+            tracing::error!(%error, "releasing idle coverage scratch failed");
+        }
     }
 
     fn memory(&self) -> MemoryUsage {
