@@ -39,7 +39,7 @@ executor-core.workspace = true
 futures.workspace = true
 tracing.workspace = true
 # `Link` opens its URL in the system handler.
-robius-open.workspace = true
+waterkit-deeplink.workspace = true
 # Grapheme clusters for the avatar monogram: a name's first "letter" is a
 # cluster, not a `char`, wherever a combining mark or an emoji sequence is one.
 unicode-segmentation = "1.13"
