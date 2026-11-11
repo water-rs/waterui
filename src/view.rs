@@ -169,7 +169,16 @@ pub trait ViewExt: View + Sized {
     /// * `visible` - A reactive boolean indicating whether the view should be visible
     fn visible(self, visible: impl IntoComputed<bool>) -> impl View {
         let visible = visible.into_computed();
-        let accessibility_state = visible.map(|visible| AccessibilityState::new().hidden(!visible));
+        // A visible scope says nothing about hiding: like the opacity it
+        // multiplies, `.visible(true)` never reveals what an enclosing
+        // `.visible(false)` hid, so it leaves the flag to the enclosing scope.
+        let accessibility_state = visible.map(|visible| {
+            if visible {
+                AccessibilityState::new()
+            } else {
+                AccessibilityState::new().hidden(true)
+            }
+        });
         let opacity_value = visible.map(|visible| if visible { 1.0 } else { 0.0 });
         let hittable_value = visible;
 
@@ -1483,8 +1492,15 @@ pub trait ViewExt: View + Sized {
     fn disabled(self, is_disabled: impl IntoComputed<bool>) -> impl View {
         let is_disabled = is_disabled.into_computed();
 
-        let accessibility_state =
-            is_disabled.map(|disabled| AccessibilityState::new().disabled(disabled));
+        // Disabled scopes OR-combine (`Disabled::install`), so an enabled
+        // scope leaves the flag to the enclosing scope rather than claim it.
+        let accessibility_state = is_disabled.map(|disabled| {
+            if disabled {
+                AccessibilityState::new().disabled(true)
+            } else {
+                AccessibilityState::new()
+            }
+        });
         let hittable_value = is_disabled.map(|d| !d);
         let scope = is_disabled;
 
