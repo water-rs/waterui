@@ -341,6 +341,8 @@ fn trials() -> Vec<Trial> {
         tests.extend(gesture_events::trials());
         #[cfg(all(feature = "scale", feature = "rotation"))]
         tests.extend(transform_modifiers::trials());
+        #[cfg(all(target_os = "macos", feature = "border"))]
+        tests.extend(border_modifier::trials());
         #[cfg(feature = "gpu_surface")]
         {
             tests.extend(gpu_surface::trials());
@@ -16726,5 +16728,51 @@ mod transform_modifiers {
             Point::new(0.25, 0.75),
             Rect::new(0.0, 0.0, 400.0, 300.0),
         );
+    }
+}
+
+/// A `Border` strokes its edge and never clips what it wraps: a rounded
+/// border leaves its host layer unmasked, as Hydrolysis does, so content
+/// that extends past the rounded outline stays visible (#4277).
+#[cfg(all(target_os = "macos", feature = "border"))]
+mod border_modifier {
+    use cocoa_ui::objc2::rc::autoreleasepool;
+    use cocoa_ui::{layer, view};
+    use libtest_mimic::Trial;
+    use waterui::ViewExt as _;
+    use waterui::border::Border;
+    use waterui::component::label::label;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "border_modifier::a_rounded_border_does_not_clip_its_content",
+            || {
+                a_rounded_border_does_not_clip_its_content();
+                Ok(())
+            },
+        )]
+    }
+
+    fn a_rounded_border_does_not_clip_its_content() {
+        let leaf = autoreleasepool(|_| {
+            super::resolve::render(label("content").border_with(
+                Border::new(waterui::graphics::color::Color::red(), 2.0).corner_radius(8.0),
+            ))
+        });
+        let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
+        let _window = autoreleasepool(|_| super::mount_and_order_front(&wrapper));
+        autoreleasepool(|_| {
+            let host_layer = layer::layer_of(&wrapper).expect("a border's host is layer-backed");
+            assert_eq!(host_layer.borderWidth(), 2.0, "the border strokes its edge");
+            assert_eq!(
+                host_layer.cornerRadius(),
+                8.0,
+                "the stroke follows the corner radius"
+            );
+            assert!(
+                !host_layer.masksToBounds(),
+                "a border strokes only and never clips its content"
+            );
+        });
     }
 }
