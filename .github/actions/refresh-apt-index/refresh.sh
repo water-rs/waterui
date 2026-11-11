@@ -50,7 +50,10 @@ sudo sed -i -E \
 # apt retries a failed fetch on the same mirror before the mirror method
 # moves on, so one retry per mirror keeps the next mirror inside the
 # deadline: ten retries of an unreachable host spent all five minutes on it.
-if ! timeout 300 sudo apt-get update \
+# `--error-on=any` fails the refresh when an index cannot be fetched from
+# any mirror; apt otherwise exits 0 with an empty index, and the job dies
+# later at the install with "Unable to locate package".
+if ! timeout 300 sudo apt-get update --error-on=any \
   -o Acquire::Retries=1 \
   -o Acquire::http::Timeout=30 \
   -o Acquire::https::Timeout=30 \
