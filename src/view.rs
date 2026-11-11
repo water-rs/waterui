@@ -1512,7 +1512,7 @@ pub trait ViewExt: View + Sized {
     /// let outline = state.map(|s: InteractionState| if s.contains(InteractionState::FOCUSED) { 3.0 } else { 1.0 });
     /// let chip = button("Filter").action(|| {}).interaction_state(&state);
     /// ```
-    fn interaction_state(self, state: &Binding<InteractionState>) -> impl View {
+    fn interaction_state(self, state: &Binding<InteractionState>) -> impl View + use<Self> {
         self.install(InteractionReport(state.clone()))
     }
 
@@ -1577,3 +1577,23 @@ pub trait ViewExt: View + Sized {
 }
 
 impl<V: View + Sized> ViewExt for V {}
+
+#[cfg(test)]
+mod tests {
+    use waterui_core::{AnyView, Binding, View, interaction::InteractionState};
+
+    use super::ViewExt;
+
+    /// `interaction_state` clones the binding it reports into, so the view it
+    /// returns must not borrow it: the binding is usually a local the body
+    /// also reads.
+    #[test]
+    fn interaction_state_does_not_borrow_the_binding() {
+        fn reported(content: AnyView) -> impl View {
+            let state = Binding::container(InteractionState::empty());
+            content.interaction_state(&state)
+        }
+
+        let _ = reported;
+    }
+}
