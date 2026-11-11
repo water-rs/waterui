@@ -103,8 +103,6 @@ pub use cherenkov_record as draw;
 /// The W3C UI Events key vocabulary this backend speaks, re-exported so hosts
 /// that synthesize key events use the same version of it.
 pub use keyboard_types;
-#[cfg(all(target_arch = "wasm32", feature = "web"))]
-pub use platform::BrowserWindow;
 #[cfg(hydrolysis_winit)]
 pub use platform::WinitWindow;
 #[cfg(hydrolysis_runtime)]
@@ -115,6 +113,8 @@ pub use platform::{
     SpringBack, SurfaceError, TextInputPurpose, TextInputState, TouchPhase, TouchScrollConfig,
     WindowKeyboardArea, WindowSafeArea,
 };
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub use platform::{BrowserWindow, BrowserWindowError};
 #[cfg(hydrolysis_gpu_painter)]
 pub use platform::{
     DeviceLoss, DeviceLostError, GpuUnavailable, OffscreenGpuContext, OffscreenSceneSurface,
@@ -126,10 +126,10 @@ pub use platform_view::{
 };
 #[cfg(hydrolysis_gpu_painter)]
 pub use readback::{ReadbackError, readback_texture_rgba8};
-#[cfg(hydrolysis_gpu_painter)]
-pub use renderer::HydrolysisRenderTarget;
 #[cfg(all(feature = "accessibility", hydrolysis_runtime))]
 pub use renderer::accessibility::{AccessibilityActivationPointError, AccessibilityContentTypes};
+#[cfg(hydrolysis_gpu_painter)]
+pub use renderer::{FrameError, HydrolysisRenderTarget};
 #[cfg(all(feature = "frame-profile", hydrolysis_gpu_painter))]
 pub use renderer::{FrameStageTimes, GpuIdentity};
 #[cfg(hydrolysis_runtime)]

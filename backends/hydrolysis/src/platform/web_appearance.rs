@@ -24,6 +24,13 @@ const CHANGE_EVENT: &str = "change";
 /// long as this value lives.
 pub struct SystemAppearance {
     scheme: Binding<ColorScheme>,
+    /// The observed media query and its change listener; `None` when the page
+    /// offers no media query, leaving the scheme at its Light seed.
+    observation: Option<Observation>,
+}
+
+/// A live media query and the listener registered on it.
+struct Observation {
     media_query: MediaQueryList,
     listener: Closure<dyn FnMut(Event)>,
 }
@@ -39,16 +46,16 @@ impl core::fmt::Debug for SystemAppearance {
 impl SystemAppearance {
     /// Reads the page's preferred colour scheme and observes its changes.
     ///
-    /// # Panics
-    ///
-    /// Panics when the page exposes no `window` or no `matchMedia` — a
-    /// browser without it cannot host the runner.
+    /// A page with no `window`, no `matchMedia`, or one that rejects the
+    /// query exposes no preference: the failure is logged and the scheme
+    /// stays Light.
     pub fn observe() -> Self {
-        let media_query = web_sys::window()
-            .expect("hydrolysis web appearance: browser window unavailable")
-            .match_media(DARK_SCHEME_QUERY)
-            .expect("hydrolysis web appearance: matchMedia rejected the prefers-color-scheme query")
-            .expect("hydrolysis web appearance: the page exposes no matchMedia");
+        let Some(media_query) = dark_scheme_query() else {
+            return Self {
+                scheme: nami::binding(ColorScheme::Light),
+                observation: None,
+            };
+        };
         let scheme = nami::binding(color_scheme_of(&media_query));
         // The event's own `matches` is the list's, re-read here; the
         // binding takes it only when it moved, so a redundant delivery
@@ -65,8 +72,10 @@ impl SystemAppearance {
         });
         Self {
             scheme,
-            media_query,
-            listener,
+            observation: Some(Observation {
+                media_query,
+                listener,
+            }),
         }
     }
 
@@ -78,14 +87,41 @@ impl SystemAppearance {
 
 impl Drop for SystemAppearance {
     fn drop(&mut self) {
-        self.media_query
-            .remove_event_listener_with_callback(
-                CHANGE_EVENT,
-                self.listener.as_ref().unchecked_ref(),
-            )
-            .expect(
-                "hydrolysis web appearance: failed to remove the prefers-color-scheme listener",
+        let Some(observation) = &self.observation else {
+            return;
+        };
+        if let Err(error) = observation.media_query.remove_event_listener_with_callback(
+            CHANGE_EVENT,
+            observation.listener.as_ref().unchecked_ref(),
+        ) {
+            tracing::error!(
+                ?error,
+                "hydrolysis web appearance: failed to remove the prefers-color-scheme listener"
             );
+        }
+    }
+}
+
+/// The page's dark-scheme media query; `None`, logged, when the page exposes
+/// no `window` or `matchMedia` or rejects the query.
+fn dark_scheme_query() -> Option<MediaQueryList> {
+    let Some(window) = web_sys::window() else {
+        tracing::error!("hydrolysis web appearance: browser window unavailable");
+        return None;
+    };
+    match window.match_media(DARK_SCHEME_QUERY) {
+        Ok(Some(query)) => Some(query),
+        Ok(None) => {
+            tracing::error!("hydrolysis web appearance: the page exposes no matchMedia");
+            None
+        }
+        Err(error) => {
+            tracing::error!(
+                ?error,
+                "hydrolysis web appearance: matchMedia rejected the prefers-color-scheme query"
+            );
+            None
+        }
     }
 }
 

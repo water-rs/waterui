@@ -25,6 +25,7 @@ use skrifa::instance::{LocationRef, NormalizedCoord, Size};
 use skrifa::metrics::GlyphMetrics;
 use skrifa::{GlyphId, MetadataProvider};
 use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
+use waterui_core::contract_violation;
 use waterui_core::layout::HorizontalAlignment;
 use waterui_text::FontCollection;
 
@@ -543,9 +544,9 @@ fn build_parley_layout(
 ) -> parley::Layout<RunBrush> {
     if family_resolution.is_strict() {
         let collection = &mut scratch.font_cx.collection;
-        assert_family_list_installed(collection, input.default_font.family.as_deref());
+        report_uninstalled_families(collection, input.default_font.family.as_deref());
         for (_, style) in &input.spans {
-            assert_family_list_installed(collection, style.font.family.as_deref());
+            report_uninstalled_families(collection, style.font.family.as_deref());
         }
     }
     let mut builder =
@@ -567,16 +568,13 @@ fn build_parley_layout(
     builder.push_default(parley::StyleProperty::LetterSpacing(
         input.default_font.letter_spacing,
     ));
-    let locale = input
-        .locale
-        .parse::<parley::Language>()
-        .unwrap_or_else(|error| {
-            panic!(
-                "WaterUI locale `{}` is not a valid BCP 47 language tag: {error}",
-                input.locale
-            )
-        });
-    builder.push_default(parley::StyleProperty::Locale(Some(locale)));
+    match input.locale.parse::<parley::Language>() {
+        Ok(locale) => builder.push_default(parley::StyleProperty::Locale(Some(locale))),
+        Err(error) => contract_violation!(
+            "WaterUI locale `{}` is not a valid BCP 47 language tag: {error}; the text shapes with no locale",
+            input.locale
+        ),
+    }
     builder.push_default(parley::StyleProperty::FontFamily(font_family(
         input.default_font.family.as_deref(),
     )));
@@ -679,9 +677,12 @@ fn push_text_style(
 /// every *named* entry must resolve in the collection — generic families
 /// always resolve, so they are skipped, as is the generic fallback a missing
 /// family list defaults to. A named family that is neither installed on the
-/// host nor provided by a declared font file is a missing declaration;
-/// panic naming it rather than measuring a substitute face.
-fn assert_family_list_installed(
+/// host nor provided by a declared font file is a missing declaration:
+/// reported naming it rather than measuring a substitute face silently. A
+/// debug build panics; a release build logs, and the shape resolves the
+/// entry leniently, falling through to the next list entry. An entry that
+/// is not a CSS family name is reported and skipped.
+fn report_uninstalled_families(
     collection: &mut parley::fontique::Collection,
     family: Option<&str>,
 ) {
@@ -689,17 +690,24 @@ fn assert_family_list_installed(
         return;
     };
     for name in parley::FontFamilyName::parse_css_list(family) {
-        let name = name.unwrap_or_else(|error| {
-            panic!("font family {family:?} is not a CSS family list: {error:?}")
-        });
+        let name = match name {
+            Ok(name) => name,
+            Err(error) => {
+                contract_violation!(
+                    "font family {family:?} is not a CSS family list: {error:?}; the entry is skipped"
+                );
+                continue;
+            }
+        };
         if let parley::FontFamilyName::Named(name) = name
             && collection.family_by_name(&name).is_none()
         {
-            panic!(
+            contract_violation!(
                 "font family `{name}` is neither installed on this host nor provided by a \
                  declared font file; declare it with `local_path` under \
                  `[[package.metadata.waterui.assets.font]]` in the crate that names it (fonts \
-                 declared by registry name or `remote_path` are staged only by the `water` CLI)"
+                 declared by registry name or `remote_path` are staged only by the `water` CLI); \
+                 the shape falls through to the next family"
             );
         }
     }
@@ -716,21 +724,22 @@ fn font_family(family: Option<&str>) -> parley::FontFamily<'static> {
 /// `emoji` generic family first, then the family list the range's own style
 /// resolved — `sans-serif` when nothing more specific applied.
 fn emoji_font_family(family: Option<&str>) -> parley::FontFamily<'static> {
-    let own = family.map_or_else(
-        || {
-            vec![parley::FontFamilyName::Generic(
-                parley::GenericFamily::SansSerif,
-            )]
-        },
-        |family| {
-            parley::FontFamilyName::parse_css_list(family)
-                .map(|name| name.map(parley::FontFamilyName::into_owned))
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap_or_else(|error| {
-                    panic!("font family {family:?} is not a CSS family list: {error:?}")
-                })
-        },
-    );
+    let sans_serif = || {
+        vec![parley::FontFamilyName::Generic(
+            parley::GenericFamily::SansSerif,
+        )]
+    };
+    let own = family.map_or_else(sans_serif, |family| {
+        parley::FontFamilyName::parse_css_list(family)
+            .map(|name| name.map(parley::FontFamilyName::into_owned))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_else(|error| {
+                contract_violation!(
+                    "font family {family:?} is not a CSS family list: {error:?}; the emoji range falls back to sans-serif"
+                );
+                sans_serif()
+            })
+    });
     let mut names = Vec::with_capacity(own.len() + 1);
     names.push(parley::FontFamilyName::Generic(
         parley::GenericFamily::Emoji,
@@ -1106,12 +1115,17 @@ impl TextLayout for ParleyLayout {
     }
 
     fn line_metrics(&self, line: usize) -> LineMetrics {
-        let line = self.0.layout.get(line).unwrap_or_else(|| {
-            panic!(
-                "line {line} is out of bounds for a layout with {} lines",
+        let Some(line) = self.0.layout.get(line) else {
+            contract_violation!(
+                "line {line} is out of bounds for a layout with {} lines; the line measures zero",
                 self.0.layout.len()
-            )
-        });
+            );
+            return LineMetrics {
+                advance: 0.0,
+                line_height: 0.0,
+                baseline: 0.0,
+            };
+        };
         let metrics = line.metrics();
         LineMetrics {
             advance: metrics.advance,

@@ -91,10 +91,10 @@ pub use lifecycle::*;
 pub use navigation::*;
 #[cfg(hydrolysis_gpu_painter)]
 pub use render::FrameRenderTarget;
-#[cfg(hydrolysis_gpu_painter)]
-pub use render::HydrolysisRenderTarget;
 pub use render::WidgetRenderContext;
 pub use render::*;
+#[cfg(hydrolysis_gpu_painter)]
+pub use render::{FrameError, HydrolysisRenderTarget};
 pub use render::{
     anchor_point, estimate_layout_intrinsic, gesture_group_identity, normalize_layout_view,
     normalize_view_for_render, path_commands_to_path, resolved_shape_to_path, transformed_rect,

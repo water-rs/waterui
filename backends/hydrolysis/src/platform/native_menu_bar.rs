@@ -58,6 +58,7 @@ use waterui::app::Quit;
 #[cfg(target_os = "macos")]
 use waterui_controls::menu::CloseWindowPlacement;
 use waterui_controls::menu::{ResolvedCommand, ResolvedMenuItem, ResolvedNestedMenu, Shortcut};
+use waterui_core::contract_violation;
 use waterui_core::handler::SharedAction;
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::HWND;
@@ -150,14 +151,14 @@ impl BarRef {
         let slot = self.slot.borrow();
         let bar = slot
             .as_ref()
-            .expect("a menu-bar state watch outlived its bar");
+            .expect("a state watch is owned by the bar it updates, so the slot holds that bar");
         #[cfg(target_os = "macos")]
         update(&bar.native);
         #[cfg(target_os = "windows")]
         update(
             &bar.windows
                 .get(&self.hwnd)
-                .expect("a window bar's state watch outlived the window's bar")
+                .expect("a state watch is owned by the window bar it updates, so the bar holds that window")
                 .bar,
         );
     }
@@ -210,7 +211,8 @@ impl<'a> Builder<'a> {
 /// Control key), and named keys map in the crate — `Delete` is
 /// `NSDeleteFunctionKey` (⌦) and `Backspace` `NSDeleteCharacter` (⌫) on
 /// macOS, `VK_DELETE`/`VK_BACK` on Windows. A key with no platform
-/// equivalent fails `MenuBar::new` with `UnmappableKey`, which panics.
+/// equivalent fails `MenuBar::new` with `UnmappableKey`, which the bar
+/// builders report as a contract violation.
 fn menu_shortcut(shortcut: &Shortcut) -> MenuShortcut {
     let mut mods = Modifiers::empty();
     if shortcut.modifiers().command() {
@@ -313,7 +315,9 @@ fn extend_submenu(mut submenu: Submenu, items: &[ResolvedMenuItem], ctx: &mut Bu
                 }
             }
             ResolvedMenuItem::CloseWindow => {
-                submenu = submenu.entry(close_window_item(ctx));
+                if let Some(item) = close_window_item(ctx) {
+                    submenu = submenu.entry(item);
+                }
             }
             ResolvedMenuItem::Divider => {
                 submenu = submenu.entry(Entry::Separator);
@@ -332,11 +336,19 @@ fn extend_submenu(mut submenu: Submenu, items: &[ResolvedMenuItem], ctx: &mut Bu
 /// runs the action, which asks the focused window to close through
 /// [`WindowCloser`](crate::renderer::WindowCloser) — the one close path
 /// the registry's chords share.
+///
+/// `None` when the environment carries no `WindowCloser`: the winit runner
+/// installs one before the menu bar builds, so that is reported and the item
+/// is omitted.
 #[cfg(target_os = "macos")]
-fn close_window_item(ctx: &mut Builder) -> Command {
-    let command = close_window_command(ctx.env, true)
-        .expect("the winit runner installs a WindowCloser before the menu bar builds");
-    declared_command(&command_title(&command), &command, ctx)
+fn close_window_item(ctx: &mut Builder) -> Option<Command> {
+    let Some(command) = close_window_command(ctx.env, true) else {
+        contract_violation!(
+            "the winit runner installs a WindowCloser before the menu bar builds; the Close Window item is omitted"
+        );
+        return None;
+    };
+    Some(declared_command(&command_title(&command), &command, ctx))
 }
 
 /// The standard Close Window item on Windows — titled `&Close` (the `&`
@@ -347,16 +359,24 @@ fn close_window_item(ctx: &mut Builder) -> Command {
 /// the menu belongs to" exact, the target `WM_CLOSE` on that window would
 /// name. The application's decided close chord still answers through the
 /// chord registry.
+///
+/// `None` when the environment carries no `WindowCloser`: the winit runner
+/// installs one before the menu bar builds, so that is reported and the item
+/// is omitted.
 #[cfg(target_os = "windows")]
-fn close_window_item(ctx: &mut Builder) -> Command {
-    let command = close_window_command(ctx.env, true)
-        .expect("the winit runner installs a WindowCloser before the menu bar builds");
-    build_command(
+fn close_window_item(ctx: &mut Builder) -> Option<Command> {
+    let Some(command) = close_window_command(ctx.env, true) else {
+        contract_violation!(
+            "the winit runner installs a WindowCloser before the menu bar builds; the Close Window item is omitted"
+        );
+        return None;
+    };
+    Some(build_command(
         "&Close",
         &command,
         Some(MenuShortcut::new(Key::Named(NamedKey::F4), Modifiers::ALT)),
         ctx,
-    )
+    ))
 }
 
 /// The product name the macOS application menu and its named items are
@@ -485,8 +505,10 @@ fn build_app_menu(
 #[cfg(target_os = "macos")]
 fn build_window_menu(items: &[ResolvedMenuItem], ctx: &mut Builder) -> Submenu {
     let mut window_menu = Submenu::new("Window").windows_menu();
-    if CloseWindowPlacement::for_declared(items) == CloseWindowPlacement::WindowMenu {
-        window_menu = window_menu.entry(close_window_item(ctx));
+    if CloseWindowPlacement::for_declared(items) == CloseWindowPlacement::WindowMenu
+        && let Some(item) = close_window_item(ctx)
+    {
+        window_menu = window_menu.entry(item);
     }
     window_menu
         .entry(StandardItem::Minimize)
@@ -495,25 +517,19 @@ fn build_window_menu(items: &[ResolvedMenuItem], ctx: &mut Builder) -> Submenu {
         .entry(StandardItem::BringAllToFront)
 }
 
-/// Turns the walked menus into a `MenuBar`. Building the app's own menu
-/// tree cannot fail — a `MenuError` is a bug and panics.
-fn new_menu_bar(menus: Vec<Submenu>) -> MenuBar {
-    MenuBar::new(menus).unwrap_or_else(|error| {
-        panic!("the resolved menu bar cannot be expressed on this platform: {error}")
-    })
-}
-
-/// Builds the macOS bar — the standard application menu first (the
-/// declared application menu, the first top-level menu titled by the
-/// product name, folded into it), the other declared top-level menus, then
-/// the marked Window menu — and installs it as `NSApp.mainMenu`.
+/// Builds the macOS `MenuBar` for `items` — the standard application menu
+/// first (the declared application menu, the first top-level menu titled by
+/// the product name, folded into it), the other declared top-level menus,
+/// then the marked Window menu — with the builder holding its actions.
+///
+/// # Errors
+/// The platform's `MenuError` when it cannot express the declared menus.
 #[cfg(target_os = "macos")]
-fn build_bar(
+fn native_bar<'a>(
     items: &[ResolvedMenuItem],
-    env: &Environment,
+    env: &'a Environment,
     slot: &Slot,
-    structure_watches: Vec<BoxWatcherGuard>,
-) -> Bar {
+) -> Result<(MenuBar, Builder<'a>), waterkit_menu::MenuError> {
     let product_name = product_name();
     let mut ctx = Builder::new(
         env,
@@ -536,11 +552,32 @@ fn build_bar(
         menus.push(build_nested(menu, &mut ctx));
     }
     menus.push(build_window_menu(items, &mut ctx));
-    let bar = new_menu_bar(menus);
-    bar.install(
-        objc2::MainThreadMarker::new()
-            .expect("the winit runner builds the menu bar on the main thread"),
-    );
+    Ok((MenuBar::new(menus)?, ctx))
+}
+
+/// Builds the macOS bar and installs it as `NSApp.mainMenu`.
+///
+/// Menus the platform cannot express — a shortcut key with no menu
+/// equivalent, more items than the bar holds — are the application's
+/// contract violation: it is reported and the bar carries only the standard
+/// application and Window menus.
+#[cfg(target_os = "macos")]
+fn build_bar(
+    items: &[ResolvedMenuItem],
+    env: &Environment,
+    slot: &Slot,
+    structure_watches: Vec<BoxWatcherGuard>,
+) -> Bar {
+    let (bar, ctx) = native_bar(items, env, slot).unwrap_or_else(|error| {
+        contract_violation!(
+            "the resolved menu bar cannot be expressed on this platform: {error}; the bar carries only the standard menus"
+        );
+        native_bar(&[], env, slot)
+            .expect("the standard menus are fixed items the platform expresses")
+    });
+    bar.install(objc2::MainThreadMarker::new().expect(
+        "the winit event loop exists only on the main thread, and the runner builds the menu bar inside it",
+    ));
     Bar {
         dispatch: ctx.into_dispatch(&bar),
         native: bar,
@@ -560,21 +597,26 @@ fn build_bar(
     Bar {
         windows: windows
             .iter()
-            .map(|&(hwnd, window)| (hwnd, build_window_bar(items, hwnd, window, env, slot)))
+            .filter_map(|&(hwnd, window)| {
+                Some((hwnd, build_window_bar(items, hwnd, window, env, slot)?))
+            })
             .collect(),
         _structure_watches: structure_watches,
     }
 }
 
-/// Builds one window's bar on Windows and attaches it to `hwnd`.
+/// Builds the `MenuBar` of the window `hwnd` for `items`, with the builder
+/// holding its actions.
+///
+/// # Errors
+/// The platform's `MenuError` when it cannot express the declared menus.
 #[cfg(target_os = "windows")]
-fn build_window_bar(
+fn window_menu_bar<'a>(
     items: &[ResolvedMenuItem],
     hwnd: isize,
-    window: WindowId,
-    env: &Environment,
+    env: &'a Environment,
     slot: &Slot,
-) -> WindowBar {
+) -> Result<(MenuBar, Builder<'a>), waterkit_menu::MenuError> {
     let mut ctx = Builder::new(
         env,
         BarRef {
@@ -582,27 +624,56 @@ fn build_window_bar(
             hwnd,
         },
     );
-    let menus = top_level_menus(items)
+    let menus: Vec<Submenu> = top_level_menus(items)
         .map(|menu| build_nested(menu, &mut ctx))
         .collect();
-    let bar = Rc::new(new_menu_bar(menus));
+    Ok((MenuBar::new(menus)?, ctx))
+}
+
+/// Builds one window's bar on Windows and attaches it to `hwnd`.
+///
+/// Menus the platform cannot express — a shortcut key with no menu
+/// equivalent, more items than the bar holds — are the application's
+/// contract violation: it is reported and the window's bar is empty. `None`
+/// when the platform refuses to attach the bar to the window: the failure
+/// is logged and the window has no menu bar.
+#[cfg(target_os = "windows")]
+fn build_window_bar(
+    items: &[ResolvedMenuItem],
+    hwnd: isize,
+    window: WindowId,
+    env: &Environment,
+    slot: &Slot,
+) -> Option<WindowBar> {
+    let (bar, ctx) = window_menu_bar(items, hwnd, env, slot).unwrap_or_else(|error| {
+        contract_violation!(
+            "the resolved menu bar cannot be expressed on this platform: {error}; the window's bar is empty"
+        );
+        window_menu_bar(&[], hwnd, env, slot)
+            .expect("an empty bar holds nothing the platform rejects")
+    });
+    let bar = Rc::new(bar);
     // SAFETY: the reference points at the `MenuBar` inside the `Rc`
     // allocation, which `WindowBar::bar` keeps alive and never clones or
     // hands out mutably. `_attachment`, the only holder of the extended
     // borrow, is declared before `bar` in `WindowBar`, so it drops — and
     // stops using the borrow — before the `Rc` frees the bar.
     let bar_ref: &'static MenuBar = unsafe { &*Rc::as_ptr(&bar) };
-    // `hwnd` is the live window the runner just created on this thread;
-    // `attach` itself rejects anything else.
-    let attachment = bar_ref
-        .attach(HWND(hwnd as *mut _))
-        .expect("attaching the menu bar to a live HWND failed");
-    WindowBar {
+    let attachment = match bar_ref.attach(HWND(hwnd as *mut _)) {
+        Ok(attachment) => attachment,
+        Err(error) => {
+            tracing::error!(
+                "hydrolysis: attaching the menu bar to window {hwnd:#x} failed: {error}; the window has no menu bar"
+            );
+            return None;
+        }
+    };
+    Some(WindowBar {
         _attachment: attachment,
         dispatch: ctx.into_dispatch(&bar),
         bar,
         window,
-    }
+    })
 }
 
 /// Rebuilds the whole native bar in `slot` from a fresh `top_items`
@@ -648,8 +719,9 @@ impl NativeMenuBar {
     pub(crate) fn install(items: &Computed<Vec<ResolvedMenuItem>>, env: &Environment) -> Self {
         #[cfg(target_os = "macos")]
         {
-            let _ = objc2::MainThreadMarker::new()
-                .expect("the winit runner installs the menu bar on the main thread");
+            let _ = objc2::MainThreadMarker::new().expect(
+                "the winit event loop exists only on the main thread, and the runner installs the menu bar inside it",
+            );
         }
 
         let bar: Slot = Rc::new(RefCell::new(None));
@@ -674,24 +746,38 @@ impl NativeMenuBar {
     /// `WM_COMMAND` subclass). `window` is the window its commands act on.
     /// Called by the runner for each application window as it is created;
     /// a later rebuild re-attaches to every recorded `HWND`.
+    ///
+    /// Attaching a `HWND` that already carries a bar is the runner's
+    /// contract violation: it is reported and the first bar stays, because
+    /// a replaced bar's attachment would detach the new one on drop.
     #[cfg(target_os = "windows")]
     pub(crate) fn attach_hwnd(&self, hwnd: isize, window: WindowId) {
-        let window_bar = build_window_bar(
+        if self
+            .bar
+            .borrow()
+            .as_ref()
+            .expect("install fills the slot and a rebuild refills it before releasing it")
+            .windows
+            .contains_key(&hwnd)
+        {
+            contract_violation!("HWND {hwnd:#x} attached twice; the first bar stays attached");
+            return;
+        }
+        let Some(window_bar) = build_window_bar(
             &self.top_items.snapshot(),
             hwnd,
             window,
             &self.env,
             &self.bar,
-        );
-        let replaced = self
-            .bar
+        ) else {
+            return;
+        };
+        self.bar
             .borrow_mut()
             .as_mut()
-            .expect("the menu bar is installed for the runner's lifetime")
+            .expect("install fills the slot and a rebuild refills it before releasing it")
             .windows
             .insert(hwnd, window_bar);
-        // A replaced bar's attachment would detach the new one on drop.
-        assert!(replaced.is_none(), "HWND {hwnd:#x} attached twice");
     }
 
     /// Forgets a Windows window's `HWND` — the runner calls it before the
@@ -705,7 +791,7 @@ impl NativeMenuBar {
             .bar
             .borrow_mut()
             .as_mut()
-            .expect("the menu bar is installed for the runner's lifetime")
+            .expect("install fills the slot and a rebuild refills it before releasing it")
             .windows
             .remove(&hwnd);
         // Dropping the window's bar detaches it.
@@ -726,18 +812,20 @@ impl NativeMenuBar {
             // The action may mutate menu state (which rebuilds the bar and
             // borrows this cell again) — clone it under the borrow, then
             // dispatch after releasing.
-            let action = {
+            let dispatched = {
                 let mut slot = self.bar.borrow_mut();
                 let dispatch = &mut slot
                     .as_mut()
-                    .expect("the menu bar is installed for the runner's lifetime")
+                    .expect("install fills the slot and a rebuild refills it before releasing it")
                     .dispatch;
                 let Some(id) = dispatch.events.next().now_or_never().flatten() else {
                     break;
                 };
                 dispatch_action(&dispatch.actions, id)
             };
-            call_action_discarding_result(&action, &env);
+            if let Some(action) = dispatched {
+                call_action_discarding_result(&action, &env);
+            }
         }
     }
 
@@ -757,32 +845,42 @@ impl NativeMenuBar {
                 .bar
                 .borrow_mut()
                 .as_mut()
-                .expect("the menu bar is installed for the runner's lifetime")
+                .expect("install fills the slot and a rebuild refills it before releasing it")
                 .windows
                 .values_mut()
                 .find_map(|window_bar| {
                     let dispatch = &mut window_bar.dispatch;
                     let id = dispatch.events.next().now_or_never().flatten()?;
-                    Some((dispatch_action(&dispatch.actions, id), window_bar.window))
+                    Some(
+                        dispatch_action(&dispatch.actions, id)
+                            .map(|action| (action, window_bar.window)),
+                    )
                 });
-            let Some((action, window)) = dispatched else {
+            let Some(dispatched) = dispatched else {
                 break;
             };
-            call_action_discarding_result(&action, &self.env.extending(window));
+            if let Some((action, window)) = dispatched {
+                call_action_discarding_result(&action, &self.env.extending(window));
+            }
         }
     }
 }
 
 /// The action of a reported `CommandId`. A bar reports only the ids its
-/// builder allocated, and every allocated id has an action.
+/// builder allocated, and every allocated id has an action; an id the
+/// platform reports without one is the platform's contract violation, and
+/// the activation runs nothing.
 fn dispatch_action(
     actions: &HashMap<CommandId, SharedAction<()>>,
     id: CommandId,
-) -> SharedAction<()> {
-    actions
-        .get(&id)
-        .unwrap_or_else(|| panic!("the menu bar reported {id:?}, which it never built"))
-        .clone()
+) -> Option<SharedAction<()>> {
+    let action = actions.get(&id).cloned();
+    if action.is_none() {
+        contract_violation!(
+            "the menu bar reported {id:?}, which it never built; the activation runs nothing"
+        );
+    }
+    action
 }
 
 // `MenuBar::attach` checks `IsWindow`, so the attach/detach bookkeeping runs

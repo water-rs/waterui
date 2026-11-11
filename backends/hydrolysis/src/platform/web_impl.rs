@@ -14,19 +14,95 @@ use web_sys::{
     PointerEvent, WheelEvent, Window as BrowserHostWindow,
 };
 
+use waterui_core::contract_violation;
+
 use super::{
     CursorStyle, GpuSurfaceWindow, GpuUnavailable, InputConventions, InputEvent, KeyCode, KeyState,
     Modifiers, PlatformWindow, PointerButton, PointerKind, PresentationSurface as _,
     ScrollPlatform, TextInputPurpose, TextInputState, TouchScrollConfig, WindowState, WuiWindow,
 };
 
+/// Why the page cannot host a [`BrowserWindow`].
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum BrowserWindowError {
+    /// The browser provides no WebGPU adapter or device.
+    #[error(transparent)]
+    Gpu(#[from] GpuUnavailable),
+    /// The page exposes no object the host needs.
+    #[error("the page exposes no {0}, which this app needs to run")]
+    Missing(&'static str),
+    /// The page refused a call the host needs to set itself up.
+    #[error("the page refused to {step}: {reason}")]
+    Refused {
+        /// What the host was setting up.
+        step: &'static str,
+        /// The browser's reason.
+        reason: String,
+    },
+}
+
+/// `option`, or the page's missing `what`.
+fn present<T>(option: Option<T>, what: &'static str) -> Result<T, BrowserWindowError> {
+    option.ok_or(BrowserWindowError::Missing(what))
+}
+
+/// `result`, or the page's refusal of `step`.
+fn accepted<T>(
+    result: Result<T, wasm_bindgen::JsValue>,
+    step: &'static str,
+) -> Result<T, BrowserWindowError> {
+    result.map_err(|reason| BrowserWindowError::Refused {
+        step,
+        reason: format!("{reason:?}"),
+    })
+}
+
+/// `node` as the `T` the page was asked to create or hold, or the page's
+/// missing `what`.
+fn element_as<T: JsCast>(node: impl JsCast, what: &'static str) -> Result<T, BrowserWindowError> {
+    node.dyn_into::<T>()
+        .map_err(|_| BrowserWindowError::Missing(what))
+}
+
+/// Logs a browser call the page refused and carries on without its effect:
+/// a refused style or attribute write leaves that one property unset.
+fn browser_call<T>(result: Result<T, wasm_bindgen::JsValue>, call: &str) -> Option<T> {
+    result
+        .map_err(|error| {
+            tracing::error!(?error, "hydrolysis web platform: failed to {call}");
+        })
+        .ok()
+}
+
+/// Sets the CSS `property` on `style`, logging a refusal.
+fn set_style(style: &web_sys::CssStyleDeclaration, property: &str, value: &str) {
+    browser_call(
+        style.set_property(property, value),
+        &format!("set the {property} style"),
+    );
+}
+
+/// A window extent the browser reported as a number, `None` — logged — when
+/// the query failed or the value is not numeric.
+fn window_extent(
+    value: Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>,
+    name: &str,
+) -> Option<f64> {
+    let value = browser_call(value, &format!("query the window {name}"))?;
+    let extent = value.as_f64();
+    if extent.is_none() {
+        tracing::error!("hydrolysis web platform: the window {name} is not numeric");
+    }
+    extent
+}
+
 /// The system `window`'s browser runs on, as its `navigator.userAgent`
-/// names it.
+/// names it. A browser that withholds the user agent is logged and read as
+/// naming no system.
 fn scroll_platform_for(window: &BrowserHostWindow) -> ScrollPlatform {
-    let user_agent = window
-        .navigator()
-        .user_agent()
-        .expect("hydrolysis web platform: navigator.userAgent unavailable");
+    let user_agent = browser_call(window.navigator().user_agent(), "read navigator.userAgent")
+        .unwrap_or_default();
     ScrollPlatform::from_user_agent(&user_agent)
 }
 
@@ -285,11 +361,12 @@ pub struct BrowserWindow {
     /// The page background last matched to the app's top edge.
     top_edge_color: Option<cherenkov_record::WorkingColor>,
     /// Held for its lifetime: the observer keeps reporting only while
-    /// both halves are alive.
-    _intersection_observer: (
+    /// both halves are alive. `None` when the browser refused to create it:
+    /// the root is then never reported off-screen.
+    _intersection_observer: Option<(
         web_sys::IntersectionObserver,
         Closure<dyn FnMut(js_sys::Array, web_sys::IntersectionObserver)>,
-    ),
+    )>,
     _listeners: Vec<Closure<dyn FnMut(Event)>>,
 }
 
@@ -306,17 +383,12 @@ impl BrowserWindow {
     /// objects; the returned future is `!Send` by design — wasm32 is
     /// single-threaded and every handle it holds is a JS object.
     ///
-    /// # Panics
-    ///
-    /// When the page exposes no window, document, root or input element
-    /// the host cannot function, so the constructor panics naming the
-    /// missing object rather than failing the first paint later.
-    ///
     /// # Errors
     ///
-    /// [`GpuUnavailable`] when the browser provides no WebGPU adapter or
-    /// device: the page cannot host a window at all, and the caller
-    /// reports that to the page.
+    /// [`BrowserWindowError`] when the browser provides no WebGPU adapter
+    /// or device, or the page exposes no window, document or body, or
+    /// refuses to create the root, input or probe element: the page cannot
+    /// host a window at all, and the caller reports that to the page.
     #[expect(
         clippy::future_not_send,
         reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
@@ -324,17 +396,14 @@ impl BrowserWindow {
     pub async fn new(
         schedule_frame: Rc<dyn Fn()>,
         occlusion_wake: Rc<dyn Fn()>,
-    ) -> Result<Self, GpuUnavailable> {
-        let browser_window =
-            web_sys::window().expect("hydrolysis web platform: browser window unavailable");
-        let document = browser_window
-            .document()
-            .expect("hydrolysis web platform: document unavailable");
-        let root = find_or_create_root(&document);
+    ) -> Result<Self, BrowserWindowError> {
+        let browser_window = present(web_sys::window(), "browser window")?;
+        let document = present(browser_window.document(), "document")?;
+        let root = find_or_create_root(&document)?;
         prepare_root(&root);
-        let ime_input = find_or_create_ime_input(&document);
-        let viewport = Viewport::new(&document);
-        let safe_area = nami::binding(viewport.fit(&browser_window, &root));
+        let ime_input = find_or_create_ime_input(&document)?;
+        let viewport = Viewport::new(&document)?;
+        let safe_area = nami::binding(viewport.fit(&browser_window, &root).unwrap_or_default());
         let pending_events = Rc::new(RefCell::new(Vec::new()));
         let redraw_requested = Rc::new(Cell::new(false));
         let scale_factor = Rc::new(Cell::new(browser_window.device_pixel_ratio()));
@@ -371,8 +440,9 @@ impl BrowserWindow {
             let redraw_requested = redraw_requested.clone();
             let schedule_frame = schedule_frame.clone();
             move |_event| {
-                let insets = viewport.fit(&browser_window, &root);
-                if insets != safe_area.snapshot() {
+                if let Some(insets) = viewport.fit(&browser_window, &root)
+                    && insets != safe_area.snapshot()
+                {
                     safe_area.set(insets);
                 }
                 let resize = measure_root(&browser_window, &root);
@@ -411,10 +481,14 @@ impl BrowserWindow {
                         occlusion_wake();
                     },
                 ));
-            let observer = web_sys::IntersectionObserver::new(callback.as_ref().unchecked_ref())
-                .expect("hydrolysis web platform: failed to create IntersectionObserver");
-            observer.observe(&root);
-            (observer, callback)
+            browser_call(
+                web_sys::IntersectionObserver::new(callback.as_ref().unchecked_ref()),
+                "create the IntersectionObserver; the root is never reported off-screen",
+            )
+            .map(|observer| {
+                observer.observe(&root);
+                (observer, callback)
+            })
         };
 
         Ok(Self {
@@ -446,11 +520,16 @@ impl BrowserWindow {
     pub(crate) fn announce_first_frame(&self) {
         let init = web_sys::CustomEventInit::new();
         init.set_bubbles(true);
-        let event = web_sys::CustomEvent::new_with_event_init_dict("waterui:first-frame", &init)
-            .expect("hydrolysis web platform: failed to build the first-frame event");
-        self.root
-            .dispatch_event(&event)
-            .expect("hydrolysis web platform: failed to dispatch the first-frame event");
+        let Some(event) = browser_call(
+            web_sys::CustomEvent::new_with_event_init_dict("waterui:first-frame", &init),
+            "build the first-frame event",
+        ) else {
+            return;
+        };
+        browser_call(
+            self.root.dispatch_event(&event),
+            "dispatch the first-frame event",
+        );
     }
 
     /// The page's safe area: the binding the runner installs as the
@@ -479,37 +558,30 @@ impl PlatformWindow for BrowserWindow {
             .set_title(window.display_title().snapshot().as_str());
 
         match window.state.snapshot() {
-            WindowState::Normal => {
-                self.root
-                    .style()
-                    .set_property("display", "block")
-                    .expect("hydrolysis web platform: failed to show the root element");
-            }
+            WindowState::Normal => set_style(&self.root.style(), "display", "block"),
             WindowState::Minimized | WindowState::Closed => {
-                self.root
-                    .style()
-                    .set_property("display", "none")
-                    .expect("hydrolysis web platform: failed to hide the root element");
+                set_style(&self.root.style(), "display", "none");
                 return;
             }
             WindowState::Fullscreen => {
-                panic!("hydrolysis web platform does not support fullscreen window state yet")
+                contract_violation!(
+                    "hydrolysis web platform does not support fullscreen window state yet; the window keeps its state"
+                );
+                return;
             }
             WindowState::Maximized => {
-                panic!("hydrolysis web platform does not support maximized window state yet")
+                contract_violation!(
+                    "hydrolysis web platform does not support maximized window state yet; the window keeps its state"
+                );
+                return;
             }
         }
 
         if self.root.client_width() == 0 || self.root.client_height() == 0 {
             let frame = window.frame.snapshot();
-            self.root
-                .style()
-                .set_property("width", &format!("{}px", frame.width().max(1.0)))
-                .expect("hydrolysis web platform: failed to set the fallback root width");
-            self.root
-                .style()
-                .set_property("height", &format!("{}px", frame.height().max(1.0)))
-                .expect("hydrolysis web platform: failed to set the fallback root height");
+            let style = self.root.style();
+            set_style(&style, "width", &format!("{}px", frame.width().max(1.0)));
+            set_style(&style, "height", &format!("{}px", frame.height().max(1.0)));
 
             let resize = measure_root(&self.host_window, &self.root);
             self.pending_resize.set(Some(resize));
@@ -568,18 +640,10 @@ impl PlatformWindow for BrowserWindow {
                 TextInputPurpose::Password => "password",
             });
             let style = self.ime_input.style();
-            style
-                .set_property("left", &format!("{}px", state.x()))
-                .expect("hydrolysis web platform: failed to place IME input");
-            style
-                .set_property("top", &format!("{}px", state.y()))
-                .expect("hydrolysis web platform: failed to place IME input");
-            style
-                .set_property("width", &format!("{}px", state.width().max(1.0)))
-                .expect("hydrolysis web platform: failed to size IME input width");
-            style
-                .set_property("height", &format!("{}px", state.height().max(1.0)))
-                .expect("hydrolysis web platform: failed to size IME input height");
+            set_style(&style, "left", &format!("{}px", state.x()));
+            set_style(&style, "top", &format!("{}px", state.y()));
+            set_style(&style, "width", &format!("{}px", state.width().max(1.0)));
+            set_style(&style, "height", &format!("{}px", state.height().max(1.0)));
             let _ = self.ime_input.focus();
         } else {
             self.ime_input.set_value("");
@@ -593,10 +657,7 @@ impl PlatformWindow for BrowserWindow {
             return;
         }
         self.current_cursor_style = style;
-        self.root
-            .style()
-            .set_property("cursor", map_cursor_style(style))
-            .expect("hydrolysis web platform: failed to update cursor style");
+        set_style(&self.root.style(), "cursor", map_cursor_style(style));
     }
 }
 
@@ -626,18 +687,15 @@ impl GpuSurfaceWindow for BrowserWindow {
         let html = self
             .document
             .document_element()
-            .expect("hydrolysis web platform: document has no root element")
-            .dyn_into::<HtmlElement>()
-            .expect("hydrolysis web platform: the document element is not an HTML element");
-        let body = self
-            .document
-            .body()
-            .expect("hydrolysis web platform: document body unavailable");
-        for element in [&html, &body] {
-            element
-                .style()
-                .set_property("background-color", &css)
-                .expect("hydrolysis web platform: failed to set the page background");
+            .and_then(|element| element.dyn_into::<HtmlElement>().ok());
+        let body = self.document.body();
+        if html.is_none() || body.is_none() {
+            tracing::error!(
+                "hydrolysis web platform: the page lost its document element or body; its background is matched where it remains"
+            );
+        }
+        for element in html.iter().chain(body.iter()) {
+            set_style(&element.style(), "background-color", &css);
         }
     }
 }
@@ -645,25 +703,21 @@ impl GpuSurfaceWindow for BrowserWindow {
 /// The id of the page's root element, which the CLI's page template carries.
 const ROOT_ID: &str = "waterui-root";
 
-fn find_or_create_root(document: &Document) -> HtmlElement {
+fn find_or_create_root(document: &Document) -> Result<HtmlElement, BrowserWindowError> {
     if let Some(element) = document.get_element_by_id(ROOT_ID) {
-        return element
-            .dyn_into::<HtmlElement>()
-            .expect("hydrolysis web platform: #waterui-root is not an HTML element");
+        return element_as(element, "HTML element as #waterui-root");
     }
 
-    let root = document
-        .create_element("div")
-        .expect("hydrolysis web platform: failed to create the root element")
-        .dyn_into::<HtmlElement>()
-        .expect("hydrolysis web platform: created node is not an HTML element");
+    let root: HtmlElement = element_as(
+        accepted(document.create_element("div"), "create the root element")?,
+        "HTML element for the root",
+    )?;
     root.set_id(ROOT_ID);
-    document
-        .body()
-        .expect("hydrolysis web platform: document body unavailable")
-        .append_child(&root)
-        .expect("hydrolysis web platform: failed to append the root element to body");
-    root
+    accepted(
+        present(document.body(), "document body")?.append_child(&root),
+        "append the root element to the body",
+    )?;
+    Ok(root)
 }
 
 /// Makes the page's root element the runtime's surface, whether the page
@@ -696,9 +750,7 @@ fn prepare_root(root: &HtmlElement) {
         ("touch-action", "none"),
         ("outline", "none"),
     ] {
-        style
-            .set_property(property, value)
-            .expect("hydrolysis web platform: failed to style the root element");
+        set_style(&style, property, value);
     }
 }
 
@@ -711,15 +763,15 @@ struct Viewport {
 }
 
 impl Viewport {
-    fn new(document: &Document) -> Self {
-        let probe = document
-            .create_element("div")
-            .expect("hydrolysis web platform: failed to create the viewport probe")
-            .dyn_into::<HtmlElement>()
-            .expect("hydrolysis web platform: created node is not an HTML element");
-        probe
-            .set_attribute("aria-hidden", "true")
-            .expect("hydrolysis web platform: failed to hide the viewport probe");
+    fn new(document: &Document) -> Result<Self, BrowserWindowError> {
+        let probe: HtmlElement = element_as(
+            accepted(document.create_element("div"), "create the viewport probe")?,
+            "HTML element for the viewport probe",
+        )?;
+        accepted(
+            probe.set_attribute("aria-hidden", "true"),
+            "hide the viewport probe",
+        )?;
         let style = probe.style();
         for (property, value) in [
             ("position", "fixed"),
@@ -736,16 +788,13 @@ impl Viewport {
             ("min-height", "100lvh"),
             ("max-height", "100svh"),
         ] {
-            style
-                .set_property(property, value)
-                .expect("hydrolysis web platform: failed to style the viewport probe");
+            set_style(&style, property, value);
         }
-        document
-            .body()
-            .expect("hydrolysis web platform: document body unavailable")
-            .append_child(&probe)
-            .expect("hydrolysis web platform: failed to append the viewport probe");
-        Self { probe }
+        accepted(
+            present(document.body(), "document body")?.append_child(&probe),
+            "append the viewport probe",
+        )?;
+        Ok(Self { probe })
     }
 
     /// Sizes `root` for the viewport as it is now and returns the window's
@@ -763,105 +812,103 @@ impl Viewport {
     /// screen's bottom edge by the chrome above the page; that part is
     /// painted and never shown. A browser with fixed chrome — every desktop
     /// browser — reports equal viewports and gets no extension.
+    ///
+    /// `None` — logged — when the browser cannot resolve the probe's style
+    /// or reports a length that is not in pixels: the root keeps its size
+    /// and the safe area its insets.
     fn fit(
         &self,
         browser_window: &BrowserHostWindow,
         root: &HtmlElement,
-    ) -> waterui_layout::padding::EdgeInsets {
-        let style = browser_window
-            .get_computed_style(&self.probe)
-            .expect("hydrolysis web platform: failed to compute the viewport probe style")
-            .expect("hydrolysis web platform: the viewport probe has no computed style");
-        let length = |property: &str| -> f64 {
-            let value = style
-                .get_property_value(property)
-                .expect("hydrolysis web platform: failed to read a viewport probe length");
-            value
-                .strip_suffix("px")
-                .and_then(|pixels| pixels.parse::<f64>().ok())
-                .unwrap_or_else(|| {
-                    panic!("hydrolysis web platform: viewport probe {property} resolved to {value:?}, not a pixel length")
-                })
+    ) -> Option<waterui_layout::padding::EdgeInsets> {
+        let Some(style) = browser_call(
+            browser_window.get_computed_style(&self.probe),
+            "compute the viewport probe style",
+        )
+        .flatten() else {
+            tracing::error!("hydrolysis web platform: the viewport probe has no computed style");
+            return None;
         };
-        let extension = if length("min-height") > length("max-height") {
-            let dimension = |value: Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>,
-                             name: &str| {
-                value
-                    .unwrap_or_else(|_| panic!("hydrolysis web platform: failed to query {name}"))
-                    .as_f64()
-                    .unwrap_or_else(|| panic!("hydrolysis web platform: {name} is not numeric"))
-            };
-            (dimension(browser_window.outer_height(), "outerHeight")
-                - dimension(browser_window.inner_height(), "innerHeight"))
+        let length = |property: &str| -> Option<f64> {
+            let value = browser_call(
+                style.get_property_value(property),
+                "read a viewport probe length",
+            )?;
+            let pixels = value
+                .strip_suffix("px")
+                .and_then(|pixels| pixels.parse::<f64>().ok());
+            if pixels.is_none() {
+                tracing::error!(
+                    "hydrolysis web platform: viewport probe {property} resolved to {value:?}, not a pixel length"
+                );
+            }
+            pixels
+        };
+        let extension = if length("min-height")? > length("max-height")? {
+            (window_extent(browser_window.outer_height(), "outerHeight")?
+                - window_extent(browser_window.inner_height(), "innerHeight")?)
             .max(0.0)
         } else {
             0.0
         };
-        root.style()
-            .set_property("height", &format!("calc(100% + {extension}px)"))
-            .expect("hydrolysis web platform: failed to size the root element");
-        let inset = |property: &str| crate::num_cast::f64_as_f32(length(property));
-        waterui_layout::padding::EdgeInsets::new(
-            inset("padding-top"),
-            inset("padding-left"),
-            crate::num_cast::f64_as_f32(length("padding-bottom") + extension),
-            inset("padding-right"),
-        )
+        let (top, left, bottom, right) = (
+            length("padding-top")?,
+            length("padding-left")?,
+            length("padding-bottom")?,
+            length("padding-right")?,
+        );
+        set_style(
+            &root.style(),
+            "height",
+            &format!("calc(100% + {extension}px)"),
+        );
+        Some(waterui_layout::padding::EdgeInsets::new(
+            crate::num_cast::f64_as_f32(top),
+            crate::num_cast::f64_as_f32(left),
+            crate::num_cast::f64_as_f32(bottom + extension),
+            crate::num_cast::f64_as_f32(right),
+        ))
     }
 }
 
-fn find_or_create_ime_input(document: &Document) -> HtmlInputElement {
+fn find_or_create_ime_input(document: &Document) -> Result<HtmlInputElement, BrowserWindowError> {
     if let Some(element) = document.get_element_by_id("waterui-ime") {
-        return element
-            .dyn_into::<HtmlInputElement>()
-            .expect("hydrolysis web platform: #waterui-ime is not an <input>");
+        return element_as(element, "<input> as #waterui-ime");
     }
 
-    let input = document
-        .create_element("input")
-        .expect("hydrolysis web platform: failed to create IME input")
-        .dyn_into::<HtmlInputElement>()
-        .expect("hydrolysis web platform: created node is not an input");
+    let input: HtmlInputElement = element_as(
+        accepted(document.create_element("input"), "create the IME input")?,
+        "<input> for the IME input",
+    )?;
     input.set_id("waterui-ime");
     let style = input.style();
-    style
-        .set_property("position", "fixed")
-        .expect("hydrolysis web platform: failed to style IME input");
-    style
-        .set_property("opacity", "0")
-        .expect("hydrolysis web platform: failed to style IME input opacity");
-    style
-        .set_property("pointer-events", "none")
-        .expect("hydrolysis web platform: failed to style IME input pointer-events");
-    style
-        .set_property("z-index", "-1")
-        .expect("hydrolysis web platform: failed to style IME input z-index");
-    style
-        .set_property("left", "0px")
-        .expect("hydrolysis web platform: failed to style IME input left");
-    style
-        .set_property("top", "0px")
-        .expect("hydrolysis web platform: failed to style IME input top");
-    style
-        .set_property("width", "1px")
-        .expect("hydrolysis web platform: failed to style IME input width");
-    style
-        .set_property("height", "1px")
-        .expect("hydrolysis web platform: failed to style IME input height");
-    document
-        .body()
-        .expect("hydrolysis web platform: document body unavailable")
-        .append_child(&input)
-        .expect("hydrolysis web platform: failed to append IME input to body");
-    input
+    for (property, value) in [
+        ("position", "fixed"),
+        ("opacity", "0"),
+        ("pointer-events", "none"),
+        ("z-index", "-1"),
+        ("left", "0px"),
+        ("top", "0px"),
+        ("width", "1px"),
+        ("height", "1px"),
+    ] {
+        set_style(&style, property, value);
+    }
+    accepted(
+        present(document.body(), "document body")?.append_child(&input),
+        "append the IME input to the body",
+    )?;
+    Ok(input)
 }
 
 fn measure_root(browser_window: &BrowserHostWindow, root: &HtmlElement) -> PendingResize {
-    let scale_factor = browser_window.device_pixel_ratio();
-    assert!(
-        scale_factor.is_finite() && scale_factor > 0.0,
-        "hydrolysis web platform received invalid devicePixelRatio {scale_factor}"
-    );
+    let mut scale_factor = browser_window.device_pixel_ratio();
+    if !(scale_factor.is_finite() && scale_factor > 0.0) {
+        contract_violation!(
+            "hydrolysis web platform received invalid devicePixelRatio {scale_factor}; the page is measured at 1"
+        );
+        scale_factor = 1.0;
+    }
 
     let rect = root.get_bounding_client_rect();
     let mut logical_width = rect.width();
@@ -872,19 +919,13 @@ fn measure_root(browser_window: &BrowserHostWindow, root: &HtmlElement) -> Pendi
     if logical_height <= 0.0 {
         logical_height = f64::from(root.client_height());
     }
+    // A browser that cannot report the window's extent leaves it at zero,
+    // which measures as one pixel.
     if logical_width <= 0.0 {
-        logical_width = browser_window
-            .inner_width()
-            .expect("hydrolysis web platform: failed to query window width")
-            .as_f64()
-            .expect("hydrolysis web platform: window width is not numeric");
+        logical_width = window_extent(browser_window.inner_width(), "width").unwrap_or(0.0);
     }
     if logical_height <= 0.0 {
-        logical_height = browser_window
-            .inner_height()
-            .expect("hydrolysis web platform: failed to query window height")
-            .as_f64()
-            .expect("hydrolysis web platform: window height is not numeric");
+        logical_height = window_extent(browser_window.inner_height(), "height").unwrap_or(0.0);
     }
 
     PendingResize {
@@ -925,9 +966,9 @@ fn register_listeners(
             if !targets_root(&event, &root) {
                 return;
             }
-            let event = event
-                .dyn_into::<KeyboardEvent>()
-                .expect("hydrolysis web platform: keydown event had unexpected type");
+            let Some(event) = typed_event::<KeyboardEvent>(event, "keydown") else {
+                return;
+            };
             if matches!(event.key().as_str(), "Tab" | "Enter" | " ") {
                 event.prevent_default();
             }
@@ -953,9 +994,9 @@ fn register_listeners(
             if !targets_root(&event, &root) {
                 return;
             }
-            let event = event
-                .dyn_into::<KeyboardEvent>()
-                .expect("hydrolysis web platform: keyup event had unexpected type");
+            let Some(event) = typed_event::<KeyboardEvent>(event, "keyup") else {
+                return;
+            };
             if matches!(event.key().as_str(), "Tab" | "Enter" | " ") {
                 event.prevent_default();
             }
@@ -985,9 +1026,12 @@ fn register_listeners(
                 if !targets_root(&event, &root) {
                     return;
                 }
-                let event = event
-                    .dyn_into::<PointerEvent>()
-                    .expect("hydrolysis web platform: pointerdown event had unexpected type");
+                let Some(event) = typed_event::<PointerEvent>(event, "pointerdown") else {
+                    return;
+                };
+                let Some((id, kind)) = pointer_identity(&event) else {
+                    return;
+                };
                 event.prevent_default();
                 // Preventing the default also prevents the press from focusing
                 // the root, which receives the keys. Text editing owns the
@@ -1006,8 +1050,8 @@ fn register_listeners(
                     f64::from(event.client_y()),
                 );
                 pending_events.borrow_mut().push(InputEvent::PointerDown {
-                    id: pointer_id(&event),
-                    kind: pointer_kind(&event),
+                    id,
+                    kind,
                     x,
                     y,
                     button: map_pointer_button(event.button()),
@@ -1030,9 +1074,12 @@ fn register_listeners(
                 if !targets_root(&event, &root) {
                     return;
                 }
-                let event = event
-                    .dyn_into::<PointerEvent>()
-                    .expect("hydrolysis web platform: pointerup event had unexpected type");
+                let Some(event) = typed_event::<PointerEvent>(event, "pointerup") else {
+                    return;
+                };
+                let Some((id, kind)) = pointer_identity(&event) else {
+                    return;
+                };
                 event.prevent_default();
                 let (x, y) = event_position(
                     &root,
@@ -1040,8 +1087,8 @@ fn register_listeners(
                     f64::from(event.client_y()),
                 );
                 pending_events.borrow_mut().push(InputEvent::PointerUp {
-                    id: pointer_id(&event),
-                    kind: pointer_kind(&event),
+                    id,
+                    kind,
                     x,
                     y,
                     button: map_pointer_button(event.button()),
@@ -1064,20 +1111,20 @@ fn register_listeners(
                 if !targets_root(&event, &root) {
                     return;
                 }
-                let event = event
-                    .dyn_into::<PointerEvent>()
-                    .expect("hydrolysis web platform: pointermove event had unexpected type");
+                let Some(event) = typed_event::<PointerEvent>(event, "pointermove") else {
+                    return;
+                };
+                let Some((id, kind)) = pointer_identity(&event) else {
+                    return;
+                };
                 let (x, y) = event_position(
                     &root,
                     f64::from(event.client_x()),
                     f64::from(event.client_y()),
                 );
-                pending_events.borrow_mut().push(InputEvent::PointerMove {
-                    id: pointer_id(&event),
-                    kind: pointer_kind(&event),
-                    x,
-                    y,
-                });
+                pending_events
+                    .borrow_mut()
+                    .push(InputEvent::PointerMove { id, kind, x, y });
                 redraw_requested.set(true);
                 schedule_frame();
             },
@@ -1096,13 +1143,15 @@ fn register_listeners(
                 if !targets_root(&event, &root) {
                     return;
                 }
-                let event = event
-                    .dyn_into::<PointerEvent>()
-                    .expect("hydrolysis web platform: pointercancel event had unexpected type");
-                pending_events.borrow_mut().push(InputEvent::PointerCancel {
-                    id: pointer_id(&event),
-                    kind: pointer_kind(&event),
-                });
+                let Some(event) = typed_event::<PointerEvent>(event, "pointercancel") else {
+                    return;
+                };
+                let Some((id, kind)) = pointer_identity(&event) else {
+                    return;
+                };
+                pending_events
+                    .borrow_mut()
+                    .push(InputEvent::PointerCancel { id, kind });
                 redraw_requested.set(true);
                 schedule_frame();
             },
@@ -1118,9 +1167,9 @@ fn register_listeners(
             if !targets_root(&event, &root) {
                 return;
             }
-            let event = event
-                .dyn_into::<WheelEvent>()
-                .expect("hydrolysis web platform: wheel event had unexpected type");
+            let Some(event) = typed_event::<WheelEvent>(event, "wheel") else {
+                return;
+            };
             event.prevent_default();
             let (x, y) = event_position(
                 &root,
@@ -1149,9 +1198,9 @@ fn register_listeners(
             ime_input.as_ref(),
             "keydown",
             move |event| {
-                let event = event
-                    .dyn_into::<KeyboardEvent>()
-                    .expect("hydrolysis web platform: keydown event had unexpected type");
+                let Some(event) = typed_event::<KeyboardEvent>(event, "keydown") else {
+                    return;
+                };
                 let modifiers = map_modifiers_from_keyboard(&event);
                 match event.key().as_str() {
                     "Backspace" => {
@@ -1234,9 +1283,9 @@ fn register_listeners(
             &ime_input_target,
             "compositionstart",
             move |event| {
-                let event = event
-                    .dyn_into::<CompositionEvent>()
-                    .expect("hydrolysis web platform: compositionstart event had unexpected type");
+                let Some(event) = typed_event::<CompositionEvent>(event, "compositionstart") else {
+                    return;
+                };
                 composing.set(true);
                 pending_events.borrow_mut().push(InputEvent::ImePreedit {
                     text: composition_text(event),
@@ -1257,9 +1306,10 @@ fn register_listeners(
             &ime_input_target,
             "compositionupdate",
             move |event| {
-                let event = event
-                    .dyn_into::<CompositionEvent>()
-                    .expect("hydrolysis web platform: compositionupdate event had unexpected type");
+                let Some(event) = typed_event::<CompositionEvent>(event, "compositionupdate")
+                else {
+                    return;
+                };
                 pending_events.borrow_mut().push(InputEvent::ImePreedit {
                     text: composition_text(event),
                     // The DOM composition events report no caret offset.
@@ -1282,9 +1332,9 @@ fn register_listeners(
             &ime_input_target,
             "compositionend",
             move |event| {
-                let event = event
-                    .dyn_into::<CompositionEvent>()
-                    .expect("hydrolysis web platform: compositionend event had unexpected type");
+                let Some(event) = typed_event::<CompositionEvent>(event, "compositionend") else {
+                    return;
+                };
                 composing.set(false);
                 suppress_next_input.set(true);
                 ime_input.set_value("");
@@ -1330,11 +1380,10 @@ pub fn add_event_listener(
     handler: impl 'static + FnMut(Event),
 ) -> Closure<dyn FnMut(Event)> {
     let closure = Closure::wrap(Box::new(handler) as Box<dyn FnMut(Event)>);
-    target
-        .add_event_listener_with_callback(event_name, closure.as_ref().unchecked_ref())
-        .unwrap_or_else(|_| {
-            panic!("hydrolysis web platform: failed to register {event_name} listener")
-        });
+    browser_call(
+        target.add_event_listener_with_callback(event_name, closure.as_ref().unchecked_ref()),
+        &format!("register the {event_name} listener"),
+    );
     closure
 }
 
@@ -1364,25 +1413,44 @@ const REDIRECTED_INPUT: [&str; 8] = [
 /// held.
 pub fn yield_wheel(element: &HtmlElement) -> Closure<dyn FnMut(Event)> {
     let closure = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
-        let wheel = event
-            .dyn_ref::<WheelEvent>()
-            .expect("hydrolysis web platform: a wheel listener received another event");
+        let Some(wheel) = event.dyn_ref::<WheelEvent>() else {
+            contract_violation!(
+                "hydrolysis web platform: the wheel yield received a non-wheel event; the event is left to the element"
+            );
+            return;
+        };
         event.stop_immediate_propagation();
         event.prevent_default();
-        page_root()
-            .dispatch_event(&wheel_event_copy(wheel))
-            .expect("hydrolysis web platform: failed to yield a wheel event");
+        redirect_to_root(
+            wheel_event_copy(wheel).map(Into::into),
+            "yield a wheel event",
+        );
     });
-    element
-        .add_event_listener_with_callback_and_bool("wheel", closure.as_ref().unchecked_ref(), true)
-        .expect("hydrolysis web platform: failed to register the wheel yield");
+    browser_call(
+        element.add_event_listener_with_callback_and_bool(
+            "wheel",
+            closure.as_ref().unchecked_ref(),
+            true,
+        ),
+        "register the wheel yield",
+    );
     closure
 }
 
 #[cfg(any(feature = "video", feature = "webview-system"))]
+/// Dispatches `copy` to the page root; a missing copy, a missing root or a
+/// refused dispatch is logged and the input is dropped.
+fn redirect_to_root(copy: Option<Event>, what: &str) {
+    let (Some(copy), Some(root)) = (copy, page_root()) else {
+        return;
+    };
+    browser_call(root.dispatch_event(&copy), what);
+}
+
+#[cfg(any(feature = "video", feature = "webview-system"))]
 /// A dispatchable copy of `event`, carrying everything the root's pointer
-/// listeners read.
-fn pointer_event_copy(event: &PointerEvent) -> PointerEvent {
+/// listeners read; `None`, logged, when the browser refuses to build it.
+fn pointer_event_copy(event: &PointerEvent) -> Option<PointerEvent> {
     let init = web_sys::PointerEventInit::new();
     init.set_bubbles(true);
     init.set_cancelable(true);
@@ -1402,14 +1470,16 @@ fn pointer_event_copy(event: &PointerEvent) -> PointerEvent {
     init.set_pressure(event.pressure());
     init.set_width(event.width());
     init.set_height(event.height());
-    PointerEvent::new_with_event_init_dict(&event.type_(), &init)
-        .expect("hydrolysis web platform: failed to copy a pointer event")
+    browser_call(
+        PointerEvent::new_with_event_init_dict(&event.type_(), &init),
+        "copy a pointer event",
+    )
 }
 
 #[cfg(any(feature = "video", feature = "webview-system"))]
 /// A dispatchable copy of `event`, carrying everything the root's wheel
-/// listener reads.
-fn wheel_event_copy(event: &WheelEvent) -> WheelEvent {
+/// listener reads; `None`, logged, when the browser refuses to build it.
+fn wheel_event_copy(event: &WheelEvent) -> Option<WheelEvent> {
     let init = web_sys::WheelEventInit::new();
     init.set_bubbles(true);
     init.set_cancelable(true);
@@ -1423,8 +1493,10 @@ fn wheel_event_copy(event: &WheelEvent) -> WheelEvent {
     init.set_delta_y(event.delta_y());
     init.set_delta_z(event.delta_z());
     init.set_delta_mode(event.delta_mode());
-    WheelEvent::new_with_event_init_dict(&event.type_(), &init)
-        .expect("hydrolysis web platform: failed to copy a wheel event")
+    browser_call(
+        WheelEvent::new_with_event_init_dict(&event.type_(), &init),
+        "copy a wheel event",
+    )
 }
 
 /// Hit-taking surfaces over the rects where interactive Hydrolysis content
@@ -1463,15 +1535,12 @@ impl OcclusionShields {
                             || {
                                 event
                                     .dyn_ref::<WheelEvent>()
-                                    .map(|wheel| wheel_event_copy(wheel).into())
+                                    .and_then(wheel_event_copy)
+                                    .map(Into::into)
                             },
-                            |pointer| Some(pointer_event_copy(pointer).into()),
+                            |pointer| pointer_event_copy(pointer).map(Into::into),
                         );
-                        if let Some(copy) = copy {
-                            page_root().dispatch_event(&copy).expect(
-                                "hydrolysis web platform: failed to redirect shielded input",
-                            );
-                        }
+                        redirect_to_root(copy, "redirect shielded input");
                     });
                     (name, closure)
                 })
@@ -1511,37 +1580,17 @@ fn sync_shields(
 ) {
     let mut shields = shields.borrow_mut();
     while shields.len() > rects.len() {
-        shields.pop().expect("a surplus shield exists").remove();
+        shields
+            .pop()
+            .expect("the loop condition holds a surplus shield")
+            .remove();
     }
     while shields.len() < rects.len() {
-        let root = page_root();
-        let shield: HtmlElement = root
-            .owner_document()
-            .expect("hydrolysis web platform: the root element left its document")
-            .create_element("div")
-            .expect("hydrolysis web platform: failed to create an occlusion shield")
-            .unchecked_into();
-        // Above the engine's stacking root whatever the document order: a
-        // shield can be created before the first frame appends that root.
-        for (property, value) in [
-            ("position", "absolute"),
-            ("z-index", "1"),
-            ("pointer-events", "auto"),
-        ] {
-            shield
-                .style()
-                .set_property(property, value)
-                .expect("hydrolysis web platform: failed to style an occlusion shield");
-        }
-        for (name, closure) in listeners.iter() {
-            shield
-                .add_event_listener_with_callback(name, closure.as_ref().unchecked_ref())
-                .unwrap_or_else(|_| {
-                    panic!("hydrolysis web platform: failed to register the {name} shield")
-                });
-        }
-        root.append_child(&shield)
-            .expect("hydrolysis web platform: failed to add an occlusion shield");
+        let Some(shield) = create_shield(listeners) else {
+            // The page refused or has no root: the shields built so far stay
+            // and the remaining rects go unshielded until the next sync.
+            break;
+        };
         shields.push(shield);
     }
     for (shield, rect) in shields.iter().zip(rects) {
@@ -1552,21 +1601,54 @@ fn sync_shields(
             ("width", rect.width()),
             ("height", rect.height()),
         ] {
-            style
-                .set_property(property, &format!("{value}px"))
-                .expect("hydrolysis web platform: failed to place an occlusion shield");
+            set_style(&style, property, &format!("{value}px"));
         }
     }
 }
 
-/// The page's root element.
+/// A transparent `<div>` appended to the page root with every shield
+/// listener registered; `None`, logged, when the page has no root or refuses
+/// a step.
 #[cfg(any(feature = "video", feature = "webview-system"))]
-fn page_root() -> HtmlElement {
-    web_sys::window()
+fn create_shield(listeners: &ShieldListeners) -> Option<HtmlElement> {
+    let root = page_root()?;
+    let document = root.owner_document().or_else(|| {
+        tracing::error!("hydrolysis web platform: the root element left its document");
+        None
+    })?;
+    let shield: HtmlElement =
+        browser_call(document.create_element("div"), "create an occlusion shield")?
+            .unchecked_into();
+    // Above the engine's stacking root whatever the document order: a
+    // shield can be created before the first frame appends that root.
+    let style = shield.style();
+    for (property, value) in [
+        ("position", "absolute"),
+        ("z-index", "1"),
+        ("pointer-events", "auto"),
+    ] {
+        set_style(&style, property, value);
+    }
+    for (name, closure) in listeners.iter() {
+        browser_call(
+            shield.add_event_listener_with_callback(name, closure.as_ref().unchecked_ref()),
+            &format!("register the {name} shield"),
+        );
+    }
+    browser_call(root.append_child(&shield), "add an occlusion shield")?;
+    Some(shield)
+}
+
+/// The page's root element; `None`, logged, when the page has none.
+#[cfg(any(feature = "video", feature = "webview-system"))]
+fn page_root() -> Option<HtmlElement> {
+    let root = web_sys::window()
         .and_then(|window| window.document())
-        .and_then(|document| document.get_element_by_id(ROOT_ID))
-        .expect("hydrolysis web platform: the page has no #waterui-root")
-        .unchecked_into()
+        .and_then(|document| document.get_element_by_id(ROOT_ID));
+    if root.is_none() {
+        tracing::error!("hydrolysis web platform: the page has no #{ROOT_ID}");
+    }
+    root.map(JsCast::unchecked_into)
 }
 
 /// Whether `event` was dispatched to the root element itself. The engine's
@@ -1634,18 +1716,42 @@ const fn map_pointer_button(button: i16) -> PointerButton {
     }
 }
 
-fn pointer_id(event: &PointerEvent) -> u64 {
-    u64::try_from(event.pointer_id())
-        .expect("hydrolysis web platform: pointer id must be non-negative")
-}
-
-fn pointer_kind(event: &PointerEvent) -> PointerKind {
-    match event.pointer_type().as_str() {
+/// The pointer's id and kind. A negative id or a pointer type the platform
+/// has no kind for is the browser breaking the Pointer Events contract: it is
+/// reported and `None` drops the event.
+fn pointer_identity(event: &PointerEvent) -> Option<(u64, PointerKind)> {
+    let Ok(id) = u64::try_from(event.pointer_id()) else {
+        contract_violation!(
+            "hydrolysis web platform: pointer id {} is negative; the event is dropped",
+            event.pointer_id()
+        );
+        return None;
+    };
+    let kind = match event.pointer_type().as_str() {
         "mouse" => PointerKind::Mouse,
         "touch" => PointerKind::Touch,
         "pen" => PointerKind::Pen,
-        kind => panic!("hydrolysis web platform: unsupported pointer type {kind:?}"),
-    }
+        other => {
+            contract_violation!(
+                "hydrolysis web platform: unsupported pointer type {other:?}; the event is dropped"
+            );
+            return None;
+        }
+    };
+    Some((id, kind))
+}
+
+/// `event` as the `T` its listener was registered for. Any other type is the
+/// browser breaking the listener contract: it is reported and `None` drops the
+/// event.
+fn typed_event<T: JsCast>(event: Event, name: &str) -> Option<T> {
+    let actual = event.type_();
+    event.dyn_into::<T>().ok().or_else(|| {
+        contract_violation!(
+            "hydrolysis web platform: the {name} listener received a `{actual}` event of another type; the event is dropped"
+        );
+        None
+    })
 }
 
 fn map_cursor_style(style: CursorStyle) -> &'static str {
@@ -1666,7 +1772,12 @@ fn map_cursor_style(style: CursorStyle) -> &'static str {
         CursorStyle::Move => "move",
         CursorStyle::Wait => "wait",
         CursorStyle::Copy => "copy",
-        _ => panic!("unsupported CursorStyle variant in hydrolysis web backend"),
+        other => {
+            contract_violation!(
+                "CursorStyle {other:?} has no CSS cursor in the hydrolysis web backend; the default cursor shows"
+            );
+            "default"
+        }
     }
 }
 

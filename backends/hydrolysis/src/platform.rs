@@ -227,6 +227,27 @@ pub enum GpuUnavailable {
         #[source]
         source: OpenDeviceError,
     },
+    /// The Cherenkov engine could not be created on the adapter's device.
+    #[error("the Cherenkov engine could not be created on the GPU adapter '{adapter}'")]
+    Engine {
+        /// The adapter's name.
+        adapter: String,
+        /// Why the engine could not be created.
+        #[source]
+        source: cherenkov::EngineError,
+    },
+    /// The Cherenkov engine could not create a render surface.
+    #[error("the Cherenkov engine could not create a render surface")]
+    EngineSurface(#[source] cherenkov::SurfaceError),
+    /// The device cannot take the shaders the engine delivers on its backend.
+    #[error("the GPU device on the {backend:?} backend cannot take the engine's shaders")]
+    ShaderDelivery {
+        /// The backend the device runs on.
+        backend: wgpu::Backend,
+        /// Why the device cannot take them.
+        #[source]
+        source: cherenkov::EngineError,
+    },
     /// The window's presentation surface could not be created.
     #[cfg(hydrolysis_winit)]
     #[error("{context}: failed to create the window's GPU surface")]
@@ -3339,13 +3360,12 @@ impl OffscreenSceneSurface {
         /// the browser's GPU device.
         ///
         /// # Errors
-        /// [`GpuUnavailable`], as [`OffscreenGpuContext::new`].
-        ///
-        /// # Panics
-        /// Panics when the engine cannot be created on the device.
+        /// [`GpuUnavailable`], as [`OffscreenGpuContext::new`], and
+        /// [`Self::on_context`] when the engine cannot be created on the
+        /// device.
         pub fn new(width: u32, height: u32) -> Result<Self, GpuUnavailable> {
             let gpu = pollster::block_on(OffscreenGpuContext::new())?;
-            Ok(crate::engine::engine_await!(Self::on_context(gpu, width, height)))
+            crate::engine::engine_await!(Self::on_context(gpu, width, height))
         }
     }
 
@@ -3355,8 +3375,16 @@ impl OffscreenSceneSurface {
         ///
         /// Async on wasm32, where `shared_engine` and the texture surface
         /// await the browser's GPU device.
-        #[must_use]
-        pub fn on_context(gpu: OffscreenGpuContext, width: u32, height: u32) -> Self {
+        ///
+        /// # Errors
+        /// [`GpuUnavailable::Engine`] when the engine cannot be created on
+        /// the device, [`GpuUnavailable::EngineSurface`] or
+        /// [`GpuUnavailable::ShaderDelivery`] when its surface cannot.
+        pub fn on_context(
+            gpu: OffscreenGpuContext,
+            width: u32,
+            height: u32,
+        ) -> Result<Self, GpuUnavailable> {
             let target = OffscreenSurface::on_context(
                 gpu,
                 width,
@@ -3367,7 +3395,7 @@ impl OffscreenSceneSurface {
                 target.device_loss().gpu_context().context_id,
                 target.adapter(),
                 target.device_loss().gpu_context().shared_device.clone(),
-            ));
+            ))?;
             // The caller drives `engine.render` itself: no host loop exists
             // for the surface to wake.
             let cherenkov = crate::engine::engine_await!(crate::engine::TextureCherenkovSurface::new(
@@ -3376,12 +3404,12 @@ impl OffscreenSceneSurface {
                 target.adapter().get_info().backend,
                 (width.max(1), height.max(1)),
                 || {},
-            ));
-            Self {
+            ))?;
+            Ok(Self {
                 target,
                 cherenkov,
                 state,
-            }
+            })
         }
     }
 
@@ -3404,7 +3432,7 @@ impl OffscreenSceneSurface {
     /// row).
     ///
     /// Call after `engine.render(..)`; a call before the engine produces its
-    /// first texture panics through the surface's presentation contract.
+    /// first texture is a contract violation that presents nothing.
     ///
     /// # Errors
     /// [`ReadbackError`](crate::ReadbackError) when the readback fails, and
@@ -3844,9 +3872,10 @@ mod winit_impl {
             >,
         >,
         /// The screen-change observer that sets `display_moved`;
-        /// unregisters itself on drop.
+        /// unregisters itself on drop. `None` when the window offered
+        /// nothing to observe: its moves then go unannounced.
         #[cfg(target_os = "macos")]
-        _screen_observer: super::macos_display_moves::DisplayMoves,
+        _screen_observer: Option<super::macos_display_moves::DisplayMoves>,
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -7287,6 +7316,8 @@ mod winit_impl {
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub use web_impl::BrowserWindowError;
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use web_impl::ExportedBrowserSurface as BrowserSurface;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use web_impl::ExportedBrowserWindow as BrowserWindow;
@@ -7401,7 +7432,8 @@ mod recovery_tests {
     #[test]
     fn a_lost_scene_surface_reports_the_loss_from_its_readback() {
         let context = OffscreenGpuContext::for_tests();
-        let mut scene = super::OffscreenSceneSurface::on_context(context, 4, 4);
+        let mut scene = super::OffscreenSceneSurface::on_context(context, 4, 4)
+            .expect("a test host creates the engine on its device");
         scene
             .target
             .device_loss()

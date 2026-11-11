@@ -442,19 +442,23 @@ impl AndroidSurface {
         &mut self,
         display_scale: f64,
         base_color: cherenkov_record::WorkingColor,
-    ) -> (
-        crate::renderer::FrameRenderTarget<'_>,
-        crate::platform::EngineAndroidTarget<'_>,
-    ) {
+    ) -> Result<
+        (
+            crate::renderer::FrameRenderTarget<'_>,
+            crate::platform::EngineAndroidTarget<'_>,
+        ),
+        crate::platform::GpuUnavailable,
+    > {
         let context = self.handles.gpu_context();
-        let state = self.engine_state.get_or_insert_with(|| {
-            crate::engine::shared_engine_state(
+        let state = match &mut self.engine_state {
+            Some(state) => state,
+            empty => empty.insert(crate::engine::shared_engine_state(
                 context.context_id,
                 &context.shared_device.adapter,
                 context.shared_device.clone(),
-            )
-        });
-        (
+            )?),
+        };
+        Ok((
             crate::renderer::FrameRenderTarget {
                 adapter: &context.shared_device.adapter,
                 device: &context.shared_device.device,
@@ -477,7 +481,7 @@ impl AndroidSurface {
                 transparent: self.transparent,
                 band_commits: &self.band_commits.0,
             },
-        )
+        ))
     }
 
     /// Sets or clears the band presenting the content above the embedded
@@ -636,8 +640,18 @@ impl crate::runner::window::GpuSurfaceFrame for AndroidSurface {
         if self.handles.is_lost() || !self.is_attached() {
             return Err(SurfaceError::Lost);
         }
-        let (target, engine_target) =
-            self.render_targets(display_scale, crate::renderer::working_color(clear_color));
+        let (target, engine_target) = match self
+            .render_targets(display_scale, crate::renderer::working_color(clear_color))
+        {
+            Ok(targets) => targets,
+            Err(error) => {
+                tracing::error!(
+                    "hydrolysis android: {:#}; the frame is skipped and the surface reports lost",
+                    waterui_core::Error::from(error)
+                );
+                return Err(SurfaceError::Lost);
+            }
+        };
         renderer
             .render_android_frame(&target, engine_target)
             .unwrap_or_else(|error| panic!("hydrolysis android: engine render failed: {error:#}"));

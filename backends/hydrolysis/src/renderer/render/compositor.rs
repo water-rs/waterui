@@ -89,12 +89,12 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         ///
         /// # Errors
         ///
-        /// Returns the engine's [`cherenkov::RenderError`] when the frame
-        /// fails to render.
+        /// [`FrameError`] when the engine cannot be created on the device or
+        /// the frame fails to render.
         pub fn render_scene_to_texture(
             &mut self,
             target: HydrolysisRenderTarget<'_>,
-        ) -> Result<(), cherenkov::RenderError> {
+        ) -> Result<(), FrameError> {
             let (texture, format) = (target.texture, target.format);
             let (device, queue) = (target.device, target.queue);
             let frame = crate::engine::engine_await!(
@@ -154,14 +154,14 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         ///
         /// # Errors
         ///
-        /// Returns the engine's [`cherenkov::RenderError`] when the frame
-        /// fails to render.
+        /// [`FrameError`] when the engine cannot be created on the device or
+        /// the frame fails to render.
         pub(crate) fn render_texture_frame(
             &mut self,
             target: FrameRenderTarget<'_>,
             format: wgpu::TextureFormat,
             headroom: f32,
-        ) -> Result<EngineFrame, cherenkov::RenderError> {
+        ) -> Result<EngineFrame, FrameError> {
         let supported = matches!(
             format.remove_srgb_suffix(),
             wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
@@ -176,7 +176,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
                 ?format,
                 "hydrolysis renderer: unsupported surface format; the frame is not rendered"
             );
-            return Err(cherenkov::RenderError::Unsupported("surface format"));
+            return Err(cherenkov::RenderError::Unsupported("surface format").into());
         }
 
         let _render_span = tracing::debug_span!("hydrolysis_render_scene").entered();
@@ -184,7 +184,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             target.gpu_context_id,
             target.adapter,
             target.shared_device.clone(),
-        ));
+        ))?;
         if !self
             .cherenkov_window
             .as_ref()
@@ -200,7 +200,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
                 target.adapter.get_info().backend,
                 (target.width, target.height),
                 self.host_wake(),
-            ));
+            ))?;
             self.cherenkov_window = Some(CherenkovWindow::new(
                 surface,
                 &target,
@@ -235,14 +235,14 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
     ///
     /// # Errors
     ///
-    /// Returns the engine's [`cherenkov::RenderError`] when the frame fails
-    /// to render.
+    /// [`FrameError`] when the engine cannot be created on the device or the
+    /// frame fails to render.
     #[cfg(all(target_os = "macos", hydrolysis_winit))]
     pub(crate) fn render_window_frame(
         &mut self,
         target: &FrameRenderTarget<'_>,
         engine_target: crate::platform::EngineWindowTarget<'_>,
-    ) -> Result<(), cherenkov::RenderError> {
+    ) -> Result<(), FrameError> {
         let crate::platform::EngineWindowTarget {
             window: native_window,
             window_slot,
@@ -254,7 +254,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             target.gpu_context_id,
             target.adapter,
             target.shared_device.clone(),
-        );
+        )?;
         if !window_slot.as_ref().is_some_and(|window| {
             window.renders_on(target) && window.surface.transparent() == transparent
         }) {
@@ -268,7 +268,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
                 (target.width, target.height),
                 crate::platform::hydrolysis_output_request(transparent),
                 self.host_wake(),
-            );
+            )?;
             *window_slot = Some(CherenkovWindow::new(
                 surface,
                 target,
@@ -291,7 +291,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             surface.render(at, target.display_scale)
         });
         *window_slot = Some(window);
-        rendered
+        Ok(rendered?)
     }
 
     /// Commits directly into the Android compositor target, without a
@@ -379,8 +379,8 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
     ///
     /// # Errors
     ///
-    /// Returns the engine's [`cherenkov::RenderError`] when the frame fails
-    /// to render.
+    /// [`FrameError`] when the engine cannot be created on the device or the
+    /// frame fails to render.
     #[cfg(all(target_arch = "wasm32", feature = "web"))]
     #[allow(
         clippy::future_not_send,
@@ -393,14 +393,14 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         window_slot: &mut Option<
             CherenkovWindow<crate::engine::DomCherenkovSurface, crate::text::ParleyEngine>,
         >,
-    ) -> Result<(), cherenkov::RenderError> {
+    ) -> Result<(), FrameError> {
         let _render_span = tracing::debug_span!("hydrolysis_render_scene").entered();
         let state = crate::engine::shared_engine_state(
             target.gpu_context_id,
             target.adapter,
             target.shared_device.clone(),
         )
-        .await;
+        .await?;
         if !window_slot
             .as_ref()
             .is_some_and(|window| window.renders_on(target))
@@ -415,7 +415,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
                 (target.width, target.height),
                 self.host_wake(),
             )
-            .await;
+            .await?;
             *window_slot = Some(CherenkovWindow::new(
                 surface,
                 target,
@@ -511,6 +511,19 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             self.frame_applied_filter_effect,
         ) = self.applied_filter_metrics.snapshot();
     }
+}
+
+/// Why a frame could not be rendered.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum FrameError {
+    /// The engine or one of its surfaces could not be created on the
+    /// device: the host cannot render here.
+    #[error(transparent)]
+    Unavailable(#[from] crate::platform::GpuUnavailable),
+    /// The engine rejected or failed the frame.
+    #[error(transparent)]
+    Render(#[from] cherenkov::RenderError),
 }
 
 /// A rendered engine frame, waiting for its present.
