@@ -1801,12 +1801,31 @@ pub struct PictureInputs<'a> {
     pub composed: Vec<LocalKey>,
 }
 
+/// How long the coverage of a walk's GPU-routed paths is kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PathCoverage {
+    /// Ordinary draws replay it on later frames.
+    Retained,
+    /// A picture's local image needs it only while it rasterizes
+    /// ([`super::gpu_cov::GpuCoverage::finish_pictures`]).
+    PictureOnly,
+}
+
+impl PathCoverage {
+    const fn of(target: Target) -> Self {
+        if matches!(target, Target::Projected(key) if key.picture.is_some()) {
+            Self::PictureOnly
+        } else {
+            Self::Retained
+        }
+    }
+}
+
 /// The lowering walk state for one surface frame.
 pub struct Lowering<'a> {
     /// Present only when the surface's content holds a picture, so
-    /// picture-free walks carry no picture state; boxed so it adds one
-    /// pointer, not its fields, to every picture-free walk.
-    pub pictures: Option<Box<PictureInputs<'a>>>,
+    /// picture-free walks carry no picture state.
+    pub pictures: Option<PictureInputs<'a>>,
     #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
     pub(super) preparation: Option<&'a rayon::ThreadPool>,
     #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
@@ -1922,6 +1941,9 @@ pub struct Lowering<'a> {
     local: Option<(LayerId, Affine)>,
     /// The target the walk's root draws into.
     root_target: Target,
+    /// How long coverage the walk's GPU-routed paths generate is kept,
+    /// which follows `root_target`.
+    path_coverage: PathCoverage,
     /// Projective layers composed into this walk's raster, by layer.
     projected: FxHashMap<LayerId, Placement>,
     /// Projective composites emitted so far: speculative opacity
@@ -1994,6 +2016,7 @@ impl<'a> Lowering<'a> {
             capture_space: FxHashMap::default(),
             local: None,
             root_target: Target::Part(0),
+            path_coverage: PathCoverage::Retained,
             projected: FxHashMap::default(),
             projective_draws: 0,
             surface: size,
@@ -2490,6 +2513,7 @@ impl<'a> Lowering<'a> {
     ) -> Result<(), RenderError> {
         self.local = local;
         self.root_target = root_target;
+        self.path_coverage = PathCoverage::of(root_target);
         self.semantic_target = root_target;
         self.projected = projected;
         self.promoted = plan.planes.iter().map(|p| p.layer).collect();
@@ -6149,7 +6173,7 @@ impl<'a> Lowering<'a> {
         let pending = u32::try_from(self.pending.len()).expect("pending count fits u32");
         self.pending.push(PendingRaster::GpuPath {
             draw,
-            retain: !matches!(self.root_target, Target::Projected(key) if key.picture.is_some()),
+            retain: self.path_coverage == PathCoverage::Retained,
         });
         self.push_gpu_range(pending);
     }
