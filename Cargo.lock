@@ -12645,6 +12645,7 @@ dependencies = [
  "block2 0.6.2",
  "blocking",
  "cfg_aliases",
+ "cherenkov",
  "cherenkov-oracle",
  "cocoa-ui",
  "cookie",

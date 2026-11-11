@@ -210,6 +210,22 @@ impl<B: Backend> Engine<B> {
         }
     }
 
+    /// Shuts the render thread down and joins it. Test-only: dropping an
+    /// engine detaches the thread (#3753), so a surface only starts
+    /// answering [`SurfaceError::Lost`] some time after the drop; once this
+    /// returns the thread has ended, its channel receiver is gone, and
+    /// every surface of this engine reports `Lost` deterministically.
+    ///
+    /// # Panics
+    /// When the render thread panicked.
+    #[cfg(feature = "testing")]
+    pub fn shutdown_and_join_for_testing(mut self) {
+        let _ = self.tx.send(Message::Shutdown);
+        if let Some(thread) = self.thread.take() {
+            thread.join().expect("the render thread ends cleanly");
+        }
+    }
+
     /// The backend's provenance (`B::Info`).
     #[must_use]
     pub const fn info(&self) -> &B::Info {

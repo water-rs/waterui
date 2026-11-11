@@ -1350,19 +1350,22 @@ mod tests {
             Rc::get_mut(&mut part)
                 .expect("the fresh participant is exclusively owned")
                 .resources = SceneResources::new(Rc::new(NeverBackend));
+            let engine = Rc::clone(dead_generation.engine());
             drop(dead_generation);
-            // Dropping the engine never joins its render thread: the
-            // channel closes once the worker has run its ordered shutdown,
-            // so the trial waits — bounded — for that exit.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-            let lost = loop {
-                match part.surface.display(display) {
-                    Err(waterui_graphics::backend::cherenkov::SurfaceError::Lost) => break true,
-                    _ if std::time::Instant::now() >= deadline => break false,
-                    _ => std::thread::yield_now(),
-                }
-            };
-            assert!(lost, "the dropped engine's surface channel is closed");
+            // Dropping the engine detaches its render thread, so the
+            // channel closes only some time later; the test seam joins the
+            // thread, after which the surface deterministically answers
+            // the production `SurfaceError::Lost`.
+            Rc::into_inner(engine)
+                .expect("the engine has no owner left besides this trial")
+                .shutdown_and_join_for_testing();
+            assert!(
+                matches!(
+                    part.surface.display(display),
+                    Err(waterui_graphics::backend::cherenkov::SurfaceError::Lost)
+                ),
+                "the joined engine's surface channel is closed"
+            );
             part
         };
         let requester: Rc<dyn SceneParticipant> = dead_part.clone();
