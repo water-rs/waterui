@@ -12989,6 +12989,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-contract"
+version = "0.5.1"
+dependencies = [
+ "tracing",
+]
+
+[[package]]
 name = "waterui-controls"
 version = "0.5.1"
 dependencies = [
@@ -13020,6 +13027,7 @@ dependencies = [
  "suiteki",
  "thiserror 2.0.21",
  "tracing",
+ "waterui-contract",
  "waterui-macros",
 ]
 

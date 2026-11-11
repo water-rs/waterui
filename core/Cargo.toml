@@ -18,6 +18,7 @@ suiteki.workspace = true
 smallvec.workspace = true
 nami.workspace = true
 tracing.workspace = true
+waterui-contract.workspace = true
 waterui-macros.workspace = true
 
 [dependencies.anyhow]

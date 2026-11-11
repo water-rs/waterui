@@ -1,9 +1,14 @@
 //! Reporting of broken contracts: the panic-in-debug, log-in-release policy.
+//!
+//! Shared by the framework and the engines below it, so it depends only on
+//! `tracing` and builds on `no_std`.
+
+#![cfg_attr(not(test), no_std)]
 
 /// Reports a broken contract: a debug build panics with the message, a
 /// release build logs it through `tracing::error!` and the caller continues.
 ///
-/// Takes the arguments of [`format!`]. The build mode is that of the
+/// Takes the arguments of [`format_args!`]. The build mode is that of the
 /// *calling* crate (`cfg!(debug_assertions)` expands at the call site), and
 /// callers need no `tracing` dependency.
 ///
@@ -22,7 +27,7 @@
 /// # Example
 ///
 /// ```
-/// use waterui_core::contract_violation;
+/// use waterui_contract::contract_violation;
 ///
 /// /// Opacity is a fraction; an out-of-range value is a caller bug, and the
 /// /// defined outcome in a release build is the nearest valid fraction.
@@ -66,8 +71,8 @@ pub mod __private {
 #[cfg(test)]
 mod tests {
     #[test]
-    #[should_panic(expected = "contract broken: 7")]
-    fn contract_violation_panics_in_debug_build() {
+    #[cfg_attr(debug_assertions, should_panic(expected = "contract broken: 7"))]
+    fn contract_violation_panics_in_debug_build_and_logs_in_release_build() {
         contract_violation!("contract broken: {}", 7);
     }
 
