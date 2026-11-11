@@ -9,6 +9,8 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use waterui_contract::contract_violation;
+
 use crate::ImageLimits;
 use crate::ShaderId;
 use crate::error::ResourceError;
@@ -598,14 +600,19 @@ impl<B: crate::HostedLayers> Hosted<B> {
     /// layer moves it there. Its pixels are the host's, so the layer is
     /// never known to be opaque.
     ///
-    /// # Panics
-    /// When `size` is not finite or has a negative side.
+    /// # Contract
+    /// A `size` that is not finite or has a negative side is a contract
+    /// violation; the extent is then the empty size.
     #[must_use]
     pub fn at(&self, size: kurbo::Size) -> LayerContent<B> {
-        assert!(
-            size.is_finite() && size.width >= 0.0 && size.height >= 0.0,
-            "a hosted extent is a finite, non-negative size, not {size:?}"
-        );
+        let size = if size.is_finite() && size.width >= 0.0 && size.height >= 0.0 {
+            size
+        } else {
+            contract_violation!(
+                "a hosted extent is a finite, non-negative size, not {size:?}; the extent is empty"
+            );
+            kurbo::Size::ZERO
+        };
         let object = self.object.clone();
         let install: crate::message::InstallOp<B> = Box::new(move |r, surface, layer| {
             B::bind_hosted(r, surface, layer, object, size);

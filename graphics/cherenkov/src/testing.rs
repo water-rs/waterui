@@ -2316,9 +2316,58 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "a hosted extent is a finite, non-negative size")]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a hosted extent is a finite, non-negative size")
+    )]
     fn a_hosted_extent_must_be_finite() {
-        let _ = crate::Hosted::<Null>::new(()).at(kurbo::Size::new(f64::NAN, 1.0));
+        let (engine, rx) = engine();
+        let surface = engine
+            .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
+            .expect("surface");
+        let web = surface.layer();
+        let content = crate::Hosted::<Null>::new(()).at(kurbo::Size::new(f64::NAN, 1.0));
+        surface.update(|tx| {
+            tx[surface.root()].push(&web);
+            tx[&web].content(content);
+        });
+        engine.render(FrameTime::now()).expect("render");
+        let events: Vec<_> = rx.try_iter().collect();
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                Event::BindHosted(_, _, size) if *size == kurbo::Size::ZERO
+            )),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "refresh range must be positive and ordered")
+    )]
+    fn an_invalid_refresh_range_keeps_the_previous_one() {
+        let target = Offscreen::new((8, 8), OffscreenFormat::LinearF16);
+        let before = target.refresh.clone();
+        let target = target.rate(0..=30);
+        assert_eq!(target.refresh, before);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "this renderer cannot present host window 3's band")
+    )]
+    fn a_renderer_without_bands_drops_the_band() {
+        let (events, rx) = std::sync::mpsc::channel();
+        let mut renderer = NullRenderer::new(NullConfig {
+            events,
+            reject: HashSet::default(),
+            image_limits: crate::ImageLimits::UNLIMITED,
+        });
+        renderer.set_band(SurfaceId::new(1), 3, None);
+        assert!(rx.try_iter().next().is_none(), "no band event");
     }
 
     #[test]

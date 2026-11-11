@@ -1682,6 +1682,7 @@ dependencies = [
  "tracing",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
+ "waterui-contract",
  "web-time",
 ]
 
