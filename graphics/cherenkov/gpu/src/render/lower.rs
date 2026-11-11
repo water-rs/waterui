@@ -731,6 +731,8 @@ impl ContentData {
             + self.storage.stops.capacity() * size_of::<Stop>()
             + self.storage.refs.capacity() * size_of::<(u32, u64)>()
             + self.storage.gpu_paths.capacity() * std::mem::size_of::<(usize, PreparedGpu)>()
+            + self.storage.picture_domains.capacity()
+                * std::mem::size_of::<(usize, picture::PreparedDomain)>()
             + self
                 .storage
                 .gpu_paths
@@ -738,6 +740,12 @@ impl ContentData {
                 .map(|entry| entry.path.heap_bytes())
                 .sum::<usize>()) as u64
             + self.storage.geometry.heap_bytes()
+            + self
+                .storage
+                .picture_domains
+                .values()
+                .map(picture::PreparedDomain::source_bytes)
+                .sum::<u64>()
     }
 
     pub fn into_picture(self) -> cherenkov::Picture {
@@ -768,6 +776,18 @@ impl ContentData {
         self.storage = EmissionStorage::default();
     }
 
+    /// Rebuild emissions after picture admission changes their raster target.
+    /// Compiled operations and prepared geometry do not depend on that target.
+    pub fn discard_emissions(&mut self) {
+        self.retained.trim();
+        self.storage = EmissionStorage {
+            gpu_paths: std::mem::take(&mut self.storage.gpu_paths),
+            picture_domains: std::mem::take(&mut self.storage.picture_domains),
+            geometry: std::mem::take(&mut self.storage.geometry),
+            ..EmissionStorage::default()
+        };
+    }
+
     /// Whether the content samples `resource`.
     pub fn references(&self, resource: cherenkov::ResourceId) -> bool {
         self.retained.references(resource)
@@ -793,6 +813,7 @@ impl ContentData {
 #[derive(Default)]
 pub struct EmissionStorage {
     gpu_paths: FxHashMap<usize, PreparedGpu>,
+    picture_domains: FxHashMap<usize, picture::PreparedDomain>,
     /// CPU-route path geometry retained across content replacements by
     /// semantic key; bounded to the latest walk's marks.
     pub(crate) geometry: GeometryCache,
@@ -1089,6 +1110,9 @@ impl GeometryCache {
 
 impl EmissionStorage {
     fn retain_gpu_paths(&mut self, ops: &[Op]) {
+        self.picture_domains.retain(|index, entry| {
+            matches!(ops.get(*index), Some(Op::BeginPicture { picture, .. }) if entry.matches_source(picture))
+        });
         self.gpu_paths
             .retain(|index, _| matches!(ops.get(*index), Some(Op::Path { .. })));
     }
@@ -1120,6 +1144,7 @@ impl EmissionStorage {
         }
         let mut storage = Self {
             gpu_paths: std::mem::take(&mut self.gpu_paths),
+            picture_domains: std::mem::take(&mut self.picture_domains),
             geometry: std::mem::take(&mut self.geometry),
             templates: Vec::with_capacity(templates),
             covers: Vec::with_capacity(covers),
@@ -1760,8 +1785,27 @@ impl Isolation {
     }
 }
 
+mod picture;
+
+/// Retained local images available to nested picture composition.
+pub struct PictureInputs<'a> {
+    pub retained: &'a FxHashMap<LayerId, Vec<super::projective::Entry>>,
+    pub inputs: &'a super::projective::Inputs,
+    /// Asked what a picture image will commit before it is admitted.
+    device: &'a wgpu::Device,
+    pub available: u64,
+    selected: Option<FxHashSet<LocalKey>>,
+    /// Picture images this walk realizes, in realization order.
+    pub realize: Vec<super::projective::Realize>,
+    /// Picture images this walk composes.
+    pub composed: Vec<LocalKey>,
+}
+
 /// The lowering walk state for one surface frame.
 pub struct Lowering<'a> {
+    /// Present only when the surface's content holds a picture, so
+    /// picture-free walks carry no picture state.
+    pub pictures: Option<PictureInputs<'a>>,
     #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
     pub(super) preparation: Option<&'a rayon::ThreadPool>,
     #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
@@ -1905,6 +1949,7 @@ impl<'a> Lowering<'a> {
     ) -> Self {
         anchor_scratch.clear();
         Self {
+            pictures: None,
             frame,
             anchor_scratch,
             raster_scratch,
@@ -2315,16 +2360,18 @@ impl<'a> Lowering<'a> {
         &mut self,
         caches: &mut FxHashMap<LayerId, ContentData>,
         glyphs: &GlyphContext<'_>,
-    ) -> Result<(), RenderError> {
+    ) -> Result<bool, RenderError> {
+        let mut pictures = false;
         for content in caches.values_mut() {
-            let changed = content.retained.prepare(&mut super::prepared::Lowerer {
+            let prepared = content.retained.prepare(&mut super::prepared::Lowerer {
                 fonts: glyphs.fonts,
                 images: glyphs.images,
                 pending: &mut self.pending,
             })?;
-            self.commands_lowered += changed;
+            self.commands_lowered += prepared.commands;
+            pictures |= prepared.pictures;
         }
-        Ok(())
+        Ok(pictures)
     }
 
     /// Lowers a surface's sampled tree and its clear colour into the
@@ -3254,7 +3301,11 @@ impl<'a> Lowering<'a> {
         if let Some(open) = &mut self.frame.open {
             open.color_range = super::present::ColorRange::Standard;
         }
+        // A speculative pass may roll back its local render passes. Only
+        // the final surface walk may retain picture pixels.
+        let pictures = self.pictures.take();
         let result = body(self, glyphs);
+        self.pictures = pictures;
         // The speculated level is translucent, and eligibility keeps every
         // ancestor of a promoted layer opaque: its body never crosses a
         // part boundary.
@@ -4443,6 +4494,13 @@ impl<'a> Lowering<'a> {
         let (mut changed, mut i) = (false, range.start);
         while i < range.end {
             match &ops[i] {
+                Op::BeginPicture { .. } => {
+                    let (next, realized) =
+                        self.picture_ops(source, ops, emissions, storage, (layer, i), glyphs)?;
+                    changed |= realized;
+                    i = next;
+                    continue;
+                }
                 Op::BeginClip { local, shape, end } => {
                     let saved = self.transform;
                     self.transform = saved * *local;
@@ -4673,7 +4731,11 @@ impl<'a> Lowering<'a> {
             let cache = &mut emissions[i];
             if matches!(
                 op,
-                Op::BeginClip { .. } | Op::BeginIsolate { .. } | Op::BeginShadow { .. } | Op::End
+                Op::BeginPicture { .. }
+                    | Op::BeginClip { .. }
+                    | Op::BeginIsolate { .. }
+                    | Op::BeginShadow { .. }
+                    | Op::End
             ) {
                 break;
             }
@@ -5091,11 +5153,11 @@ impl<'a> Lowering<'a> {
         debug_assert!(
             !earlier
                 .iter()
-                .any(|pending| matches!(pending, PendingRaster::GpuPath(_))),
+                .any(|pending| matches!(pending, PendingRaster::GpuPath { .. })),
             "a leaf's GPU draw is the last pending raster it pushes"
         );
         match last {
-            PendingRaster::GpuPath(draw) => Some(draw),
+            PendingRaster::GpuPath { draw, .. } => Some(draw),
             _ => None,
         }
     }
@@ -6084,7 +6146,10 @@ impl<'a> Lowering<'a> {
             open.seg_start = index + 1;
         }
         let pending = u32::try_from(self.pending.len()).expect("pending count fits u32");
-        self.pending.push(PendingRaster::GpuPath(draw));
+        self.pending.push(PendingRaster::GpuPath {
+            draw,
+            retain: !matches!(self.root_target, Target::Projected(key) if key.picture.is_some()),
+        });
         self.push_gpu_range(pending);
     }
 
@@ -7403,7 +7468,7 @@ mod tests {
                 let tasks = lowering
                     .pending
                     .iter()
-                    .filter(|task| matches!(task, PendingRaster::GpuPath(_)))
+                    .filter(|task| matches!(task, PendingRaster::GpuPath { .. }))
                     .count();
                 assert_eq!(
                     tasks,

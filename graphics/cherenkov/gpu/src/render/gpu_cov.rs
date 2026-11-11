@@ -14,10 +14,11 @@
 //! indirect arguments from `draws`, whose count words arrive through
 //! 4-byte buffer copies.
 
-use cherenkov::RenderError;
+use cherenkov::{Instant, RenderError};
 use rustc_hash::FxHashMap;
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Duration;
 use wgpu::util::DeviceExt;
 
 use crate::render::bindings;
@@ -135,6 +136,8 @@ struct Entry {
     /// it into a submission die at the next `begin_frame`, so no frame
     /// can replay a block whose kernels never ran.
     generated: bool,
+    /// At least one ordinary draw needs this coverage beyond picture generation.
+    retained: bool,
     /// While a compaction's copies are unrecorded, the block base in
     /// `compaction`'s source buffer where this entry's valid content
     /// lives.
@@ -164,6 +167,8 @@ struct CoverageArena {
     words: u32,
     /// Bump frontier, always 8-word aligned.
     tail: u32,
+    /// Layout changed; allocate its final capacity at `ensure`.
+    pending: bool,
     /// Bumped on every buffer replacement; `bind0` is stale whenever it
     /// differs from the generation `bind0` was built against.
     generation: u64,
@@ -178,6 +183,7 @@ impl CoverageArena {
             buffer: None,
             words: 0,
             tail: 0,
+            pending: false,
             generation: 0,
             bounce: None,
         }
@@ -198,6 +204,7 @@ impl CoverageArena {
         self.bounce = None;
         self.words = 0;
         self.tail = 0;
+        self.pending = false;
         self.generation += 1;
     }
 }
@@ -325,6 +332,15 @@ pub struct GpuCoverage {
     args_layout: Option<wgpu::BindGroupLayout>,
     pipes: Option<Pipes>,
     buffers: Option<Buffers>,
+    /// The last generating frame's working set as a fresh allocation would
+    /// size it, reserved before optional picture admission while released
+    /// ([`Self::generation_reservation`]).
+    generation_bytes: u64,
+    /// The time of the commit in progress, [`GpuCoverage::begin_frame`]'s.
+    frame_time: Option<Instant>,
+    /// The time of the last commit that needed the generation scratch; the
+    /// idle interval is measured from it ([`GpuCoverage::idle_deadline`]).
+    scratch_used: Option<Instant>,
 }
 
 /// One generation record of a miss: the bound of the rows it generates,
@@ -502,6 +518,9 @@ impl GpuCoverage {
             args_layout: None,
             pipes: None,
             buffers: None,
+            generation_bytes: 0,
+            frame_time: None,
+            scratch_used: None,
         }
     }
 
@@ -512,7 +531,8 @@ impl GpuCoverage {
     /// failed or retried commit can never leave a block whose kernels
     /// did not run for a later frame to replay (water-rs/waterui#3081).
     /// The holes they leave are the compaction rule's input.
-    pub fn begin_frame(&mut self) {
+    pub fn begin_frame(&mut self, now: Instant) {
+        self.frame_time = Some(now);
         self.epoch += 1;
         self.paths.clear();
         self.batch = Batch::default();
@@ -555,16 +575,7 @@ impl GpuCoverage {
     /// the submit lands; an in-place one holds only the bounce buffer.
     pub fn bytes(&self) -> u64 {
         self.uploads.iter().map(wgpu::Buffer::size).sum::<u64>()
-            + self.buffers.as_ref().map_or(0, |b| {
-                b.params.size()
-                    + b.elements.size()
-                    + b.paths.size()
-                    + b.segments.size()
-                    + b.coverage.size()
-                    + b.strokes.size()
-                    + b.args.size()
-                    + b.work.size()
-            })
+            + self.generation_resident_bytes()
             + self.arena.buffer.as_ref().map_or(0, wgpu::Buffer::size)
             + self.arena.bounce.as_ref().map_or(0, wgpu::Buffer::size)
             + self
@@ -573,6 +584,86 @@ impl GpuCoverage {
                 .filter(|compaction| self.arena.buffer.as_ref() != Some(&compaction.source))
                 .map_or(0, |compaction| compaction.source.size())
             + self.draws_buffer.as_ref().map_or(0, wgpu::Buffer::size)
+    }
+
+    /// Resident storage plus the allocations the accepted frame will need.
+    /// Admission uses the same layout as ensure, before creating buffers.
+    pub fn planned_bytes(&self) -> u64 {
+        let mut bytes = self.bytes();
+        if !self.has_draws() {
+            return bytes;
+        }
+        if self.arena.pending {
+            bytes += u64::from(self.arena.words) * 4;
+        }
+        if let Some(copies) = self.in_place_copies() {
+            bytes += bounce_size(copies)
+                .saturating_sub(self.arena.bounce.as_ref().map_or(0, wgpu::Buffer::size));
+        }
+        let draws = (self.draws.len() as u64).max(1) * u64::from(ARGS_WORDS) * 4;
+        bytes += draws.saturating_sub(self.draws_buffer.as_ref().map_or(0, wgpu::Buffer::size));
+        if self.has_misses() {
+            // `size_buffers` replaces a retained buffer by the one
+            // `grown_size` names, so the frame adds the difference.
+            let resident = self.generation_resident_bytes();
+            bytes = bytes - resident + self.planned_generation_bytes();
+        }
+        bytes
+    }
+
+    /// The generation scratch `size_buffers` will hold for this frame's
+    /// misses: each retained buffer grown by [`grown_size`], the fixed
+    /// parameter and argument buffers at their sizes.
+    fn planned_generation_bytes(&self) -> u64 {
+        let resident = self.buffers.as_ref().map(|b| {
+            [
+                b.coverage.size(),
+                b.elements.size(),
+                b.strokes.size(),
+                b.paths.size(),
+                b.segments.size(),
+                b.args.size(),
+                b.work.size(),
+            ]
+        });
+        scratch_bytes(
+            allocation_sizes(self.generation_sizes()),
+            resident,
+            self.limit.bytes,
+        )
+    }
+
+    fn generation_sizes(&self) -> [u64; 7] {
+        let mut sizes = [0; 7];
+        for &batch in self.batches.iter().chain(std::iter::once(&self.batch)) {
+            for (peak, size) in sizes.iter_mut().zip(BatchPlan::new(batch).sizes) {
+                *peak = (*peak).max(size);
+            }
+        }
+        sizes
+    }
+
+    fn generation_resident_bytes(&self) -> u64 {
+        self.buffers.as_ref().map_or(0, |b| {
+            b.params.size()
+                + b.elements.size()
+                + b.paths.size()
+                + b.segments.size()
+                + b.coverage.size()
+                + b.strokes.size()
+                + b.args.size()
+                + b.work.size()
+        })
+    }
+
+    /// The last generating frame's working set not resident now. Retained
+    /// scratch is already in [`Self::bytes`], so this is zero until the idle
+    /// interval releases it ([`Self::release_idle`]); released scratch will be needed again
+    /// when picture misses rasterize, so optional image retention is not
+    /// offered its working set.
+    pub fn generation_reservation(&self) -> u64 {
+        self.generation_bytes
+            .saturating_sub(self.generation_resident_bytes())
     }
 
     /// Retained host input/draw-list allocation capacities.
@@ -645,11 +736,10 @@ impl GpuCoverage {
         // The generation scratch outlives the frame that sized it, so the
         // next generating frame reuses it instead of allocating its own
         // (water-rs/waterui#4174): a buffer of a size no frame outgrows is
-        // allocated once. A submitted frame that generated nothing means
-        // the engine has stopped generating coverage, and releases it.
-        if !self.has_misses() {
-            self.buffers = None;
-        }
+        // allocated once. A frame that generates nothing neither needs nor
+        // releases it: it is released once no frame has needed it for an
+        // idle interval ([`Self::release_idle`]), so an application that
+        // alternates replaying and generating keeps one set.
         if !self.encoded {
             return;
         }
@@ -666,8 +756,11 @@ impl GpuCoverage {
     /// allocates a block, evicts undrawn entries LRU-first over the
     /// budget, and pushes the generation records the kernels run on —
     /// one, or one per row slice when the whole path's scratch does not
-    /// fit a batch ([`GpuCoverage::slices`]).
-    pub fn draw(&mut self, device: &wgpu::Device, draw: &GpuDraw) -> Result<u32, RenderError> {
+    /// fit a batch ([`GpuCoverage::slices`]). `retain` marks coverage an
+    /// ordinary draw needs past picture generation
+    /// ([`GpuCoverage::finish_pictures`]). Nothing is allocated here:
+    /// `ensure` creates the planned arena once admission accepted it.
+    pub fn draw(&mut self, draw: &GpuDraw, retain: bool) -> Result<u32, RenderError> {
         let &GpuDraw {
             key,
             shift,
@@ -677,6 +770,7 @@ impl GpuCoverage {
             ..
         } = draw;
         if let Some(entry) = self.entries.get_mut(&key) {
+            entry.retained |= retain;
             if entry.last_used != self.epoch {
                 self.undrawn_bytes -= u64::from(entry.words) * 4;
                 entry.last_used = self.epoch;
@@ -685,16 +779,17 @@ impl GpuCoverage {
             return Ok(u32::try_from(self.draws.len() - 1).expect("draw count fits u32"));
         }
         let slices = self.slices(prepared, raster, clip)?;
-        self.generate(device, draw, &slices)
+        self.generate(draw, &slices, retain)
     }
 
-    /// Allocate `draw`'s entry and push the generation records of
-    /// `slices`, which cover its rows top to bottom, as its draw index.
+    /// Allocate `draw`'s entry, `retain`ed across settles when asked,
+    /// and push the generation records of `slices`, which cover its rows
+    /// top to bottom, as its draw index.
     fn generate(
         &mut self,
-        device: &wgpu::Device,
         draw: &GpuDraw,
         slices: &[Slice],
+        retain: bool,
     ) -> Result<u32, RenderError> {
         let &GpuDraw {
             key,
@@ -713,7 +808,7 @@ impl GpuCoverage {
             .sum();
         let geometry_slots = u32::try_from(geometry_slots).expect("instance cap fits u32");
         let texels = u32::try_from(texels).expect("texel words fit u32");
-        let (base, texel_base, block_words) = self.alloc_block(device, geometry_slots, texels)?;
+        let (base, texel_base, block_words) = self.alloc_block(geometry_slots, texels)?;
         let record = u32::try_from(self.paths.len()).expect("path count fits u32");
         for (index, slice) in slices.iter().enumerate() {
             self.push_slice(
@@ -734,6 +829,7 @@ impl GpuCoverage {
                 record,
                 slices: u32::try_from(slices.len()).expect("slice count fits u32"),
                 generated: false,
+                retained: retain,
                 src: None,
                 last_used: self.epoch,
             },
@@ -1042,10 +1138,10 @@ impl GpuCoverage {
     /// whether or not any draw misses. A frame without GPU
     /// draws records no encoder work to carry the copies, so its
     /// compaction waits for the next frame that has some.
-    pub fn settle(&mut self, device: &wgpu::Device, draws_coverage: bool) {
+    pub fn settle(&mut self, draws_coverage: bool) {
         self.evict_undrawn();
         if draws_coverage && u64::from(self.arena.tail) > 2 * self.live_words {
-            self.compact(device, 0)
+            self.compact(0)
                 .expect("the live blocks fit the arena they came from");
         }
     }
@@ -1076,7 +1172,6 @@ impl GpuCoverage {
     /// bump frontier cannot serve it.
     fn alloc_block(
         &mut self,
-        device: &wgpu::Device,
         geometry_slots: u32,
         texels: u32,
     ) -> Result<(u32, u32, u32), RenderError> {
@@ -1086,7 +1181,7 @@ impl GpuCoverage {
         // with room for it, growing the buffer only when they do not
         // fit it (§3.3).
         if self.arena.tail + block_words > self.arena.words {
-            self.compact(device, block_words)?;
+            self.compact(block_words)?;
         }
         let base = self.arena.tail;
         self.arena.tail += block_words;
@@ -1098,16 +1193,18 @@ impl GpuCoverage {
         ))
     }
 
-    /// Repack every live entry to the front of the arena, which must
-    /// then hold the live words plus this frame's immediate need with a
-    /// quarter of that as headroom (§3.3). The current buffer is reused
-    /// whenever it holds that much; only a working set that outgrows it
-    /// replaces it with one of exactly that size, so a scene whose live
-    /// set churns at a steady size repacks in place and allocates
-    /// nothing (water-rs/waterui#4108). Generated entries schedule one
-    /// copy each into the coverage prologue; ungenerated ones redirect
-    /// their dispatch record to the new block.
-    fn compact(&mut self, device: &wgpu::Device, extra: u32) -> Result<(), RenderError> {
+    /// Plan a repack of every live entry to the front of the arena,
+    /// which must then hold the live words plus this frame's immediate
+    /// need with a quarter of that as headroom (§3.3). The current
+    /// buffer is reused whenever it holds that much; only a working set
+    /// that outgrows it plans a replacement of exactly that size, so a
+    /// scene whose live set churns at a steady size repacks in place and
+    /// allocates nothing (water-rs/waterui#4108). A replacement is only
+    /// planned: `ensure` creates it once, after layout planning and
+    /// admission, however many repacks the commit ran. Generated entries
+    /// schedule one copy each into the coverage prologue; ungenerated
+    /// ones redirect their dispatch record to the new block.
+    fn compact(&mut self, extra: u32) -> Result<(), RenderError> {
         let mut order: Vec<CoverageKey> = self.entries.keys().copied().collect();
         order.sort_by_key(|key| self.entries[key].base);
         let mut tail = 0u32;
@@ -1140,21 +1237,18 @@ impl GpuCoverage {
             .as_ref()
             .map(|compaction| compaction.source.clone())
             .or_else(|| self.arena.buffer.clone());
-        if self.arena.buffer.is_none() || u64::from(self.arena.words) < words {
-            self.arena.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("coverage arena"),
-                size: words * 4,
-                usage: wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::COPY_SRC
-                    | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
+        // `words` is the capacity the arena will have at `ensure`: the
+        // resident buffer's, or an earlier repack's planned replacement,
+        // and zero with neither. A planned replacement too small for this
+        // repack is resized, never allocated twice.
+        if u64::from(self.arena.words) < words {
             self.arena.words = u32::try_from(words).expect("arena words fit u32");
-            self.arena.generation += 1;
+            self.arena.pending = true;
         }
         // Content repacked within the buffer it already lives in moves
-        // only where its block shifts.
-        let in_place = source.as_ref() == self.arena.buffer.as_ref();
+        // only where its block shifts; a planned replacement receives
+        // every generated block.
+        let in_place = !self.arena.pending && source.as_ref() == self.arena.buffer.as_ref();
         let mut copies = Vec::new();
         for (key, new_base) in moves {
             let entry = self.entries.get_mut(&key).expect("compaction entry");
@@ -1242,10 +1336,11 @@ impl GpuCoverage {
         Ok(())
     }
 
-    /// Size the draws buffer to the frame's draws. The arena itself is
-    /// already sized — commit-time allocations create or compact it —
-    /// and its generation tells the renderer whether `bind0` is stale.
-    pub fn ensure(&mut self, device: &wgpu::Device) {
+    /// Allocate the planned arena and size draw/compute buffers before optional
+    /// images are admitted. Multiple commit-time repacks allocate only once.
+    /// Its generation tells the renderer whether `bind0` is stale.
+    pub fn ensure(&mut self, device: &wgpu::Device) -> Result<(), RenderError> {
+        self.materialize_arena(device);
         self.draws_buffer = Some(sized_buffer(
             device,
             self.draws_buffer.as_ref(),
@@ -1259,14 +1354,104 @@ impl GpuCoverage {
                     wgpu::BufferUsages::empty()
                 },
         ));
+        if let Some(copies) = self.in_place_copies() {
+            let size = bounce_size(copies);
+            self.arena.bounce = Some(sized_buffer(
+                device,
+                self.arena.bounce.as_ref(),
+                "coverage bounce",
+                size,
+                wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            ));
+        }
+        if self.has_misses() {
+            self.size_buffers(device, self.generation_sizes())?;
+        }
+        Ok(())
+    }
+
+    /// The pending compaction's copies when it repacks the arena within
+    /// its resident buffer, which they reach through the bounce buffer.
+    fn in_place_copies(&self) -> Option<&[(u64, u64, u64)]> {
+        self.compaction
+            .as_ref()
+            .filter(|compaction| {
+                !self.arena.pending && self.arena.buffer.as_ref() == Some(&compaction.source)
+            })
+            .map(|compaction| compaction.copies.as_slice())
+    }
+
+    fn materialize_arena(&mut self, device: &wgpu::Device) {
+        if self.arena.pending {
+            self.arena.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("coverage arena"),
+                size: u64::from(self.arena.words) * 4,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.arena.pending = false;
+            self.arena.generation += 1;
+        }
+    }
+
+    /// All surfaces have encoded their draws. Picture-only coverage can leave
+    /// now: submitted commands own the old arena until its readers complete.
+    pub fn finish_pictures(&mut self) {
+        let before = self.entries.len();
+        self.entries.retain(|_, entry| entry.retained);
+        if self.entries.len() == before {
+            return;
+        }
+        self.live_words = self
+            .entries
+            .values()
+            .map(|entry| u64::from(entry.words))
+            .sum();
+        self.undrawn_bytes = self
+            .entries
+            .values()
+            .filter(|entry| entry.last_used < self.epoch)
+            .map(|entry| u64::from(entry.words) * 4)
+            .sum();
+        if self.entries.is_empty() {
+            self.compaction = None;
+            self.arena.trim();
+        }
+        // Mixed arenas reuse their existing storage. The next commit's
+        // ordinary 2x compaction rule reclaims these holes without allocating
+        // and copying a fresh arena after every picture generation frame.
+    }
+
+    /// When the generation scratch is due for release: the idle `interval`
+    /// after the last commit that needed it, `None` while none is held (or
+    /// when the interval never elapses).
+    pub fn idle_deadline(&self, interval: Duration) -> Option<Instant> {
+        self.buffers.as_ref()?;
+        self.scratch_used?.checked_add(interval)
+    }
+
+    /// Releases the generation scratch when no commit has needed it for
+    /// `interval` as of `now`, returning whether it did. The retained arena
+    /// is output, not scratch, and stays.
+    pub fn release_idle(&mut self, now: Instant, interval: Duration) -> bool {
+        let due = self.idle_deadline(interval).is_some_and(|due| now >= due);
+        if due {
+            self.buffers = None;
+            self.scratch_used = None;
+        }
+        due
     }
 
     pub fn trim(&mut self) {
+        self.generation_bytes = 0;
         self.entries.clear();
         self.compaction = None;
         self.live_words = 0;
         self.undrawn_bytes = 0;
         self.buffers = None;
+        self.scratch_used = None;
         self.uploads.clear();
         self.draws_buffer = None;
         self.arena.trim();
@@ -1284,21 +1469,16 @@ impl GpuCoverage {
         encoder: &mut wgpu::CommandEncoder,
         delivery: crate::render::shaders::ShaderDelivery,
         timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'_>>,
-    ) -> Result<(), RenderError> {
+    ) {
         if self.encoded || !self.has_draws() {
-            return Ok(());
+            return;
         }
         self.encoded = true;
         let arena = self.arena.buffer().expect("coverage arena sized").clone();
         if let Some(compaction) = &self.compaction {
             if compaction.source == arena {
-                record_in_place(
-                    device,
-                    encoder,
-                    &arena,
-                    &compaction.copies,
-                    &mut self.arena.bounce,
-                );
+                let bounce = self.arena.bounce.as_ref().expect("ensure sized the bounce");
+                record_in_place(encoder, &arena, &compaction.copies, bounce);
             } else {
                 for &(src, dst, len) in &compaction.copies {
                     encoder.copy_buffer_to_buffer(&compaction.source, src, &arena, dst, len);
@@ -1313,14 +1493,6 @@ impl GpuCoverage {
                     writes.end_of_pass_write_index,
                 )
             });
-            let mut sizes = [0; 7];
-            for &batch in self.batches.iter().chain(std::iter::once(&self.batch)) {
-                let plan = BatchPlan::new(batch);
-                for (peak, size) in sizes.iter_mut().zip(plan.sizes) {
-                    *peak = (*peak).max(size);
-                }
-            }
-            self.size_buffers(device, sizes)?;
             for index in 0..=self.batches.len() {
                 let batch = self.batches.get(index).copied().unwrap_or(self.batch);
                 // The first batch's pass opens the timing and the last one
@@ -1357,7 +1529,6 @@ impl GpuCoverage {
                 );
             }
         }
-        Ok(())
     }
 
     fn size_buffers(&mut self, device: &wgpu::Device, sizes: [u64; 7]) -> Result<(), RenderError> {
@@ -1370,6 +1541,8 @@ impl GpuCoverage {
                 "GPU coverage input exceeds device buffer limit",
             ));
         }
+        self.scratch_used = self.frame_time;
+        let sizes = allocation_sizes(sizes);
         let previous = self.buffers.as_ref();
         let limit = self.limit.bytes;
         // Tests read the buffers back; the runtime never does.
@@ -1392,7 +1565,7 @@ impl GpuCoverage {
                 device,
                 previous.map(|b| &b.elements),
                 "cov elements",
-                (sizes[1].max(48), limit),
+                (sizes[1], limit),
                 storage,
             ),
             paths: grown_buffer(
@@ -1406,7 +1579,7 @@ impl GpuCoverage {
                 device,
                 previous.map(|b| &b.segments),
                 "cov segments",
-                (sizes[4].max(16), limit),
+                (sizes[4], limit),
                 storage,
             ),
             coverage: grown_buffer(
@@ -1420,7 +1593,7 @@ impl GpuCoverage {
                 device,
                 previous.map(|b| &b.strokes),
                 "cov strokes",
-                (sizes[2].next_multiple_of(16).max(16), limit),
+                (sizes[2], limit),
                 storage,
             ),
             args: sized_buffer(
@@ -1438,6 +1611,9 @@ impl GpuCoverage {
                 storage,
             ),
         });
+        // What a fresh allocation of this working set takes once it is
+        // released, not the grown buffers' slack.
+        self.generation_bytes = scratch_bytes(sizes, None, limit);
 
         Ok(())
     }
@@ -2269,18 +2445,35 @@ const fn radix_passes(key_end: u32) -> u32 {
     key_end.bit_width().div_ceil(4)
 }
 
+fn allocation_sizes(mut sizes: [u64; 7]) -> [u64; 7] {
+    sizes[1] = sizes[1].max(48);
+    sizes[2] = sizes[2].next_multiple_of(16).max(16);
+    sizes[4] = sizes[4].max(16);
+    sizes
+}
+
+/// The bounce buffer size an in-place compaction moving `copies` needs:
+/// its moved bytes, at most one [`BOUNCE_BYTES`] phase.
+fn bounce_size(copies: &[(u64, u64, u64)]) -> u64 {
+    copies
+        .iter()
+        .map(|&(.., len)| len)
+        .sum::<u64>()
+        .min(BOUNCE_BYTES)
+}
+
 /// Record an in-place compaction's copies, `(src, dst, len)` byte
-/// ranges of `arena`, through the `bounce` staging buffer, since a copy
-/// cannot read and write one buffer. A repack keeps block order, so
-/// every destination lies at or below its source: moving the blocks in
-/// ascending order, one bounce-sized phase at a time, never overwrites
-/// content a later phase still reads (water-rs/waterui#4108).
+/// ranges of `arena`, through the `staging` bounce buffer `ensure`
+/// sized, since a copy cannot read and write one buffer. A repack keeps
+/// block order, so every destination lies at or below its source:
+/// moving the blocks in ascending order, one bounce-sized phase at a
+/// time, never overwrites content a later phase still reads
+/// (water-rs/waterui#4108).
 fn record_in_place(
-    device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
     arena: &wgpu::Buffer,
     copies: &[(u64, u64, u64)],
-    bounce: &mut Option<wgpu::Buffer>,
+    staging: &wgpu::Buffer,
 ) {
     let mut ascending = copies.to_vec();
     ascending.sort_unstable_by_key(|&(src, ..)| src);
@@ -2296,21 +2489,13 @@ fn record_in_place(
             _ => runs.push((src, dst, len)),
         }
     }
-    let moved: u64 = runs.iter().map(|run| run.2).sum();
-    let staging = sized_buffer(
-        device,
-        bounce.as_ref(),
-        "coverage bounce",
-        moved.min(BOUNCE_BYTES),
-        wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-    );
     let capacity = staging.size();
     // The current phase's `(dst, bounce offset, len)` write-backs, recorded
     // once every read of the phase is.
     let mut phase: Vec<(u64, u64, u64)> = Vec::new();
     let write_back = |encoder: &mut wgpu::CommandEncoder, phase: &mut Vec<(u64, u64, u64)>| {
         for &(dst, offset, len) in phase.iter() {
-            encoder.copy_buffer_to_buffer(&staging, offset, arena, dst, len);
+            encoder.copy_buffer_to_buffer(staging, offset, arena, dst, len);
         }
         phase.clear();
     };
@@ -2318,7 +2503,7 @@ fn record_in_place(
     for (mut src, mut dst, mut len) in runs {
         while len > 0 {
             let take = len.min(capacity - used);
-            encoder.copy_buffer_to_buffer(arena, src, &staging, used, take);
+            encoder.copy_buffer_to_buffer(arena, src, staging, used, take);
             phase.push((dst, used, take));
             used += take;
             src += take;
@@ -2331,7 +2516,6 @@ fn record_in_place(
         }
     }
     write_back(encoder, &mut phase);
-    *bounce = Some(staging);
 }
 
 /// A retained generation scratch buffer of at least `size` bytes: the
@@ -2346,11 +2530,39 @@ fn grown_buffer(
     (size, limit): (u64, u64),
     usage: wgpu::BufferUsages,
 ) -> wgpu::Buffer {
-    if let Some(buffer) = previous.filter(|buffer| buffer.size() >= size) {
-        return buffer.clone();
+    let grown = grown_size(previous.map(wgpu::Buffer::size), size, limit);
+    sized_buffer(
+        device,
+        previous.filter(|buffer| buffer.size() == grown),
+        label,
+        grown,
+        usage,
+    )
+}
+
+/// The size of the scratch buffer [`grown_buffer`] holds for `size` bytes
+/// over a `previous` buffer of that size: the previous one while it is
+/// large enough, otherwise twice it within `limit` and at least `size`.
+/// Admission ([`GpuCoverage::planned_bytes`]) plans with the same rule.
+fn grown_size(previous: Option<u64>, size: u64, limit: u64) -> u64 {
+    match previous {
+        Some(previous) if previous >= size => previous,
+        Some(previous) => (previous * 2).min(limit).max(size),
+        None => size,
     }
-    let grown = previous.map_or(size, |buffer| (buffer.size() * 2).min(limit).max(size));
-    sized_buffer(device, None, label, grown, usage)
+}
+
+/// The generation scratch bytes held for the per-buffer `sizes` (already
+/// through [`allocation_sizes`]) over the `resident` buffers' sizes, in
+/// the same order: each grown by [`grown_size`], plus the parameter
+/// blocks. `sizes[5]`, the dispatch arguments, is fixed, so it never grows.
+fn scratch_bytes(sizes: [u64; 7], resident: Option<[u64; 7]>, limit: u64) -> u64 {
+    sizes
+        .into_iter()
+        .enumerate()
+        .map(|(index, size)| grown_size(resident.map(|r| r[index]), size, limit))
+        .sum::<u64>()
+        + PARAMS_BLOCKS * u64::from(PARAMS_STRIDE)
 }
 
 fn sized_buffer(
@@ -2441,12 +2653,9 @@ mod tests {
         }
         let path = crate::render::path::prepare_gpu(&elements, Affine::IDENTITY, (64.0, 64.0));
         let mut frame = uncapped(&device);
-        frame.begin_frame();
+        frame.begin_frame(Instant::now());
         frame
-            .draw(
-                &device,
-                &GpuDraw::new(1, 0, Affine::IDENTITY, path, (64, 64)),
-            )
+            .draw(&GpuDraw::new(1, 0, Affine::IDENTITY, path, (64, 64)), true)
             .expect("dense path fits");
         let plan = BatchPlan::new(frame.batch);
         assert!(
@@ -2483,11 +2692,11 @@ mod tests {
             return;
         };
         let mut frame = uncapped(&device);
-        frame.begin_frame();
+        frame.begin_frame(Instant::now());
         frame
             .draw(
-                &device,
                 &GpuDraw::new(1, 0, Affine::IDENTITY, large_path, (4096, 4096)),
+                true,
             )
             .expect("sparse 4096-square capacity");
         assert!(frame.batch.bound.total() < GPU_COV_MAX_BYTES);
@@ -2496,8 +2705,8 @@ mod tests {
         assert!(
             frame
                 .draw(
-                    &device,
-                    &GpuDraw::new(2, 0, Affine::IDENTITY, huge_path, (1_000_000, 1_000_000)),
+                    &GpuDraw::new(2, 0, Affine::IDENTITY, huge_path, (1_000_000, 1_000_000),),
+                    true
                 )
                 .is_err()
         );
@@ -2524,11 +2733,11 @@ mod tests {
             return;
         };
         let mut probe = uncapped(&device);
-        probe.begin_frame();
+        probe.begin_frame(Instant::now());
         probe
             .draw(
-                &device,
                 &GpuDraw::new(1, 0, Affine::IDENTITY, rectangle(4096), (4096, 4096)),
+                true,
             )
             .expect("fits the device's own limits");
         // A device whose binding limit sits below the largest single
@@ -2538,12 +2747,12 @@ mod tests {
             ..wgpu::Limits::default()
         };
         let mut frame = GpuCoverage::with_limits(&small, None, u64::MAX);
-        frame.begin_frame();
+        frame.begin_frame(Instant::now());
         assert!(
             frame
                 .draw(
-                    &device,
-                    &GpuDraw::new(1, 0, Affine::IDENTITY, rectangle(4096), (4096, 4096)),
+                    &GpuDraw::new(1, 0, Affine::IDENTITY, rectangle(4096), (4096, 4096),),
+                    true
                 )
                 .is_err(),
             "draw must refuse what record_prologue would reject"
@@ -2557,11 +2766,11 @@ mod tests {
             ..wgpu::Limits::default()
         };
         let mut frame = GpuCoverage::with_limits(&between, None, u64::MAX);
-        frame.begin_frame();
+        frame.begin_frame(Instant::now());
         frame
             .draw(
-                &device,
                 &GpuDraw::new(1, 0, Affine::IDENTITY, rectangle(4096), (4096, 4096)),
+                true,
             )
             .expect("every buffer fits the binding limit");
     }
@@ -2569,7 +2778,7 @@ mod tests {
     #[test]
     #[expect(
         clippy::too_many_lines,
-        reason = "one scenario: both roads' frame, its batches and the replay read back"
+        reason = "one scenario: both roads' frame, its batches, the replay read back and the commit lifecycle"
     )]
     fn road_paths_share_bounded_scratch() {
         let Some((device, queue, delivery)) = delivery_device() else {
@@ -2605,25 +2814,33 @@ mod tests {
             output_bytes + 64 < frame.limit.bytes,
             "both retained outputs fit"
         );
-        frame.begin_frame();
-        frame.draw(&device, first).expect("first road fits");
+        frame.begin_frame(Instant::now());
+        frame.draw(first, false).expect("first road fits");
         frame
-            .draw(&device, second)
+            .draw(second, true)
             .expect("individually admitted roads share bounded scratch");
         assert_eq!(frame.batches.len(), 1, "two dispatch batches");
-        frame.begin_frame();
+        frame.begin_frame(Instant::now());
         frame
-            .draw(&device, first)
+            .draw(first, false)
             .expect("first road after abandoned commit");
         frame
-            .draw(&device, second)
+            .draw(second, true)
             .expect("second road after abandoned commit");
         assert_eq!(frame.generated(), 2, "unsubmitted results are regenerated");
-        frame.ensure(&device);
+        assert!(
+            frame.arena().is_none(),
+            "planning allocates no intermediate arenas"
+        );
+        let planned_bytes = frame.planned_bytes();
+        frame.ensure(&device).expect("coverage buffers fit");
+        assert_eq!(
+            frame.bytes(),
+            planned_bytes,
+            "admission budgets actual buffer allocations"
+        );
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        frame
-            .record_prologue(&device, &queue, &mut encoder, delivery, None)
-            .expect("batched prologue");
+        frame.record_prologue(&device, &queue, &mut encoder, delivery, None);
         let arena = frame.arena().expect("retained arena");
         let first_entry = &frame.entries[&first.key];
         let second_entry = &frame.entries[&second.key];
@@ -2647,21 +2864,37 @@ mod tests {
                 assert_eq!(words[2][index * ARGS_WORDS as usize + offset], count);
             }
         }
+        let generation_bytes = frame.generation_resident_bytes();
+        assert!(generation_bytes > 0);
+        assert_eq!(
+            frame.generation_reservation(),
+            0,
+            "resident scratch is already counted"
+        );
         frame.submitted();
         assert!(
             frame.buffers.is_some(),
             "a generating frame retains its scratch"
         );
+        assert_eq!(
+            frame.generation_reservation(),
+            0,
+            "retained scratch is not reserved twice"
+        );
         assert_eq!(frame.uploads.len(), 0);
-        frame.begin_frame();
-        frame.draw(&device, first).expect("first cache hit");
-        frame.draw(&device, second).expect("second cache hit");
+        frame.begin_frame(Instant::now());
+        frame.draw(first, false).expect("first cache hit");
+        frame.draw(second, true).expect("second cache hit");
         assert!(!frame.has_misses(), "both batches remain cached");
-        frame.ensure(&device);
+        let arena_generation = frame.arena_generation();
+        let resident = frame.bytes();
+        frame.compact(0).expect("first planned repack");
+        frame.compact(0).expect("second planned repack");
+        assert_eq!(frame.arena_generation(), arena_generation);
+        assert_eq!(frame.bytes(), resident, "copy source is counted once");
+        frame.ensure(&device).expect("coverage buffers fit");
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        frame
-            .record_prologue(&device, &queue, &mut encoder, delivery, None)
-            .expect("cached prologue");
+        frame.record_prologue(&device, &queue, &mut encoder, delivery, None);
         let replay = read_back(
             &device,
             &queue,
@@ -2671,9 +2904,51 @@ mod tests {
         assert_eq!(replay[0], words[2], "cached coverage preserves draw counts");
         frame.submitted();
         assert!(
-            frame.buffers.is_none(),
-            "a frame that generates nothing releases generation scratch"
+            frame.buffers.is_some(),
+            "a frame that generates nothing leaves release to the idle interval"
         );
+        let interval = Duration::from_secs(1);
+        frame.release_idle(Instant::now() + interval, interval);
+        assert!(frame.buffers.is_none(), "idle scratch is released");
+        assert_eq!(
+            frame.generation_reservation(),
+            generation_bytes,
+            "released scratch stays reserved for the next generation"
+        );
+        frame.finish_pictures();
+        assert!(!frame.entries.contains_key(&first.key));
+        frame.begin_frame(Instant::now());
+        frame
+            .draw(second, false)
+            .expect("ordinary entry shared with a picture");
+        assert!(!frame.has_misses());
+        frame.settle(true);
+        frame.ensure(&device).expect("ordinary coverage fits");
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        frame.record_prologue(&device, &queue, &mut encoder, delivery, None);
+        let survivor = &frame.entries[&second.key];
+        let surviving = read_back(
+            &device,
+            &queue,
+            &[(
+                frame.arena().expect("ordinary arena"),
+                u64::from(survivor.base) * 4,
+                4,
+            )],
+            encoder,
+        );
+        assert_eq!(
+            surviving[0], words[1],
+            "ordinary coverage survives retirement"
+        );
+        frame.submitted();
+        frame.finish_pictures();
+        assert!(
+            frame.entries.contains_key(&second.key),
+            "ordinary sharing remains retained"
+        );
+        frame.trim();
+        assert_eq!(frame.generation_reservation(), 0);
     }
 
     /// Uploads stage within the chunk bound — the allocator's
@@ -2758,11 +3033,9 @@ mod tests {
             "a road's scratch outgrows the limit"
         );
         frame.limit.bytes = block;
-        frame.begin_frame();
+        frame.begin_frame(Instant::now());
         for draw in &draws {
-            frame
-                .draw(&device, draw)
-                .expect("road slices fit the limit");
+            frame.draw(draw, true).expect("road slices fit the limit");
         }
         let slices: Vec<u32> = draws
             .iter()
@@ -2836,9 +3109,9 @@ mod tests {
              {per_batch} of per-batch data"
         );
         let mut whole = uncapped(&device);
-        whole.begin_frame();
+        whole.begin_frame(Instant::now());
         for draw in &draws {
-            whole.draw(&device, draw).expect("road fits uncapped");
+            whole.draw(draw, true).expect("road fits uncapped");
             assert_eq!(whole.entries[&draw.key].slices, 1, "uncapped is unsliced");
         }
         let (at_once, _) =
@@ -2859,12 +3132,26 @@ mod tests {
         };
         let mut frame = uncapped(&device);
         frame.limit.bytes = std::mem::size_of::<GpuStrokeRecord>() as u64;
-        frame.begin_frame();
+        frame.begin_frame(Instant::now());
         for (index, path) in road_paths().into_iter().enumerate() {
             let draw = GpuDraw::new(index as u64 + 1, 0, Affine::IDENTITY, path, (1024, 768));
-            assert!(frame.draw(&device, &draw).is_err(), "an unfittable road");
+            assert!(frame.draw(&draw, true).is_err(), "an unfittable road");
         }
         assert_eq!(frame.paths.len(), 0, "refused before appending a path");
+    }
+
+    /// Handles to the retained scratch buffers, compared by identity.
+    fn scratch(frame: &GpuCoverage) -> [wgpu::Buffer; 7] {
+        let buffers = frame.buffers.as_ref().expect("scratch retained");
+        [
+            buffers.elements.clone(),
+            buffers.paths.clone(),
+            buffers.segments.clone(),
+            buffers.coverage.clone(),
+            buffers.strokes.clone(),
+            buffers.args.clone(),
+            buffers.work.clone(),
+        ]
     }
 
     /// Admitted roads are never sliced: they run in the batches the
@@ -2872,10 +3159,10 @@ mod tests {
     /// allocator's block size once split them. The frame's scratch
     /// outlives its submit: a later generating frame
     /// of the same size reuses the very buffers, one that needs more
-    /// replaces them, and a submitted frame that generates nothing
-    /// releases them (water-rs/waterui#4174).
+    /// replaces them, and they are released once no frame has needed
+    /// them for the idle interval (water-rs/waterui#4174, #4193).
     #[test]
-    fn generation_scratch_is_retained_until_nothing_generates() {
+    fn generation_scratch_is_released_after_the_idle_interval() {
         let Some((device, queue, delivery)) = delivery_device() else {
             return;
         };
@@ -2889,18 +3176,6 @@ mod tests {
             .collect();
         let moved = |draw: &GpuDraw, content| {
             GpuDraw::new(content, 0, Affine::IDENTITY, draw.path.clone(), (1024, 768))
-        };
-        let scratch = |frame: &GpuCoverage| {
-            let buffers = frame.buffers.as_ref().expect("scratch retained");
-            [
-                buffers.elements.clone(),
-                buffers.paths.clone(),
-                buffers.segments.clone(),
-                buffers.coverage.clone(),
-                buffers.strokes.clone(),
-                buffers.args.clone(),
-                buffers.work.clone(),
-            ]
         };
         let mut frame = uncapped(&device);
         // The smaller road first, so the larger one outgrows its scratch.
@@ -2920,27 +3195,57 @@ mod tests {
         } else {
             (&draws[1], &draws[0])
         };
+        // The clock is injected: each frame starts a `step` after the last.
+        let interval = Duration::from_secs(1);
+        let step = Duration::from_millis(400);
+        let start = Instant::now();
         let first = [moved(small, 10)];
-        coverage_frame(&mut frame, gpu, &[&first[0]]);
+        coverage_frame(&mut frame, gpu, &[&first[0]], start);
         let retained = scratch(&frame);
         let bytes = frame.bytes();
+        assert_eq!(
+            frame.idle_deadline(interval),
+            Some(start + interval),
+            "the deadline is an idle interval after the generating frame"
+        );
         // The same work at new placements misses again: nothing allocates.
         let second = [moved(small, 11)];
-        coverage_frame(&mut frame, gpu, &[&second[0]]);
+        coverage_frame(&mut frame, gpu, &[&second[0]], start + step);
         assert_eq!(scratch(&frame), retained, "an equal frame reuses scratch");
         assert_eq!(frame.bytes(), bytes, "and holds no more");
+        assert_eq!(
+            frame.idle_deadline(interval),
+            Some(start + step + interval),
+            "a generating frame defers the deadline"
+        );
         // A frame needing more grows what it needs.
         let (a, b) = (moved(small, 12), moved(large, 13));
-        coverage_frame(&mut frame, gpu, &[&a, &b]);
+        coverage_frame(&mut frame, gpu, &[&a, &b], start + step * 2);
         assert!(frame.bytes() > bytes, "a larger frame grows scratch");
         let grown = scratch(&frame);
         assert_ne!(grown, retained, "a larger frame replaces what it outgrew");
         // A smaller frame afterwards keeps the larger buffers.
-        coverage_frame(&mut frame, gpu, &[&moved(small, 14)]);
+        coverage_frame(&mut frame, gpu, &[&moved(small, 14)], start + step * 3);
         assert_eq!(scratch(&frame), grown, "scratch never shrinks while used");
-        // Nothing generates: replaying a resident entry releases it all.
-        coverage_frame(&mut frame, gpu, &[&moved(small, 14)]);
-        assert!(frame.buffers.is_none(), "an idle frame releases scratch");
+        let last = start + step * 3;
+        // A frame that only replays neither releases nor defers.
+        coverage_frame(&mut frame, gpu, &[&moved(small, 14)], last + step);
+        assert_eq!(scratch(&frame), grown, "a replaying frame keeps scratch");
+        assert_eq!(frame.idle_deadline(interval), Some(last + interval));
+        // No frame follows: scratch survives until the interval elapses.
+        assert!(!frame.release_idle(last + Duration::from_millis(999), interval));
+        assert_eq!(
+            scratch(&frame),
+            grown,
+            "released only once the idle time is up"
+        );
+        assert!(frame.release_idle(last + interval, interval));
+        assert!(frame.buffers.is_none(), "an idle interval releases scratch");
+        assert_eq!(
+            frame.idle_deadline(interval),
+            None,
+            "nothing is left to release"
+        );
         assert_eq!(
             frame.bytes(),
             frame.arena().map_or(0, wgpu::Buffer::size)
@@ -2949,9 +3254,9 @@ mod tests {
             "only the arena and draw list remain"
         );
         let mut whole = uncapped(&device);
-        whole.begin_frame();
+        whole.begin_frame(Instant::now());
         for draw in &draws {
-            whole.draw(&device, draw).expect("road fits");
+            whole.draw(draw, true).expect("road fits");
             assert_eq!(whole.entries[&draw.key].slices, 1, "the road is whole");
         }
         assert!(
@@ -2972,15 +3277,13 @@ mod tests {
         ),
     ) {
         let mut probe = uncapped(device);
-        probe.begin_frame();
+        probe.begin_frame(Instant::now());
         probe
-            .generate(device, draw, std::slice::from_ref(slice))
+            .generate(draw, std::slice::from_ref(slice), true)
             .expect("a slice draws alone");
-        probe.ensure(device);
+        probe.ensure(device).expect("slice buffers fit");
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        probe
-            .record_prologue(device, queue, &mut encoder, delivery, None)
-            .expect("slice prologue");
+        probe.record_prologue(device, queue, &mut encoder, delivery, None);
         let work = probe.buffers.as_ref().expect("scratch sized").work.clone();
         let used = read_back(device, queue, &[(&work, 0, 8)], encoder);
         let (bins, fragments) = (used[0][0] as usize, used[0][1] as usize);
@@ -3009,7 +3312,7 @@ mod tests {
         draws: &[GpuDraw],
         limit: u64,
     ) -> (Vec<cherenkov_oracle::image::F32Image>, u64) {
-        frame.ensure(device);
+        frame.ensure(device).expect("coverage buffers fit");
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         let timing = device
             .features()
@@ -3021,21 +3324,19 @@ mod tests {
                     count: 2,
                 })
             });
-        frame
-            .record_prologue(
-                device,
-                queue,
-                &mut encoder,
-                delivery,
-                timing
-                    .as_ref()
-                    .map(|query_set| wgpu::ComputePassTimestampWrites {
-                        query_set,
-                        beginning_of_pass_write_index: Some(0),
-                        end_of_pass_write_index: Some(1),
-                    }),
-            )
-            .expect("coverage prologue");
+        frame.record_prologue(
+            device,
+            queue,
+            &mut encoder,
+            delivery,
+            timing
+                .as_ref()
+                .map(|query_set| wgpu::ComputePassTimestampWrites {
+                    query_set,
+                    beginning_of_pass_write_index: Some(0),
+                    end_of_pass_write_index: Some(1),
+                }),
+        );
         let buffers = frame.buffers.as_ref().expect("scratch sized");
         for buffer in [
             &buffers.params,
@@ -3184,20 +3485,25 @@ mod tests {
             crate::render::shaders::ShaderDelivery,
         ),
         draws: &[&GpuDraw],
+        at: Instant,
     ) -> Vec<u32> {
-        frame.begin_frame();
+        frame.begin_frame(at);
         for draw in draws {
             frame.touch(draw.key);
         }
-        frame.settle(device, true);
+        frame.settle(true);
         for draw in draws {
-            frame.draw(device, draw).expect("road draw fits");
+            frame.draw(draw, true).expect("road draw fits");
         }
-        frame.ensure(device);
+        let planned = frame.planned_bytes();
+        frame.ensure(device).expect("coverage buffers fit");
+        assert_eq!(
+            frame.bytes(),
+            planned,
+            "admission budgets the arena, bounce and scratch ensure holds"
+        );
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        frame
-            .record_prologue(device, queue, &mut encoder, delivery, None)
-            .expect("coverage prologue");
+        frame.record_prologue(device, queue, &mut encoder, delivery, None);
         let arena = frame.arena().expect("retained arena");
         let copies: Vec<_> = draws
             .iter()
@@ -3225,9 +3531,9 @@ mod tests {
         let paths = road_paths();
         let words = |path: &crate::render::path::GpuPath| {
             let mut probe = GpuCoverage::with_limits(&device.limits(), None, 0);
-            probe.begin_frame();
+            probe.begin_frame(Instant::now());
             let draw = GpuDraw::new(1, 0, Affine::IDENTITY, path.clone(), (1024, 768));
-            probe.draw(&device, &draw).expect("road draw fits");
+            probe.draw(&draw, true).expect("road draw fits");
             probe.entries[&draw.key].words
         };
         // The moving road is the larger, so evicting its last placement
@@ -3243,13 +3549,13 @@ mod tests {
             |content| GpuDraw::new(content, 0, Affine::IDENTITY, moving.clone(), (1024, 768));
         // A zero undrawn budget evicts each step's placement at the next.
         let mut frame = GpuCoverage::new(&device, None, 0, super::super::PipelineCache::default());
-        let first = coverage_frame(&mut frame, gpu, &[&step(100), &still]);
+        let first = coverage_frame(&mut frame, gpu, &[&step(100), &still], Instant::now());
         assert!(first.iter().all(|&count| count > 0), "both roads emit");
         let arena = frame.arena().expect("sized arena").clone();
         let generation = frame.arena_generation();
         let base = frame.entries[&still.key].base;
         for content in 101..105 {
-            let counts = coverage_frame(&mut frame, gpu, &[&step(content), &still]);
+            let counts = coverage_frame(&mut frame, gpu, &[&step(content), &still], Instant::now());
             assert_eq!(counts, first, "every step emits what the first did");
             assert_eq!(
                 frame.arena_generation(),
@@ -3619,7 +3925,7 @@ mod tests {
             .chain(miters.chunks(1))
         {
             let mut frame = uncapped(&device);
-            frame.begin_frame();
+            frame.begin_frame(Instant::now());
             let mut kept = Vec::new();
             for (path, stroke) in chunk {
                 let raster = Affine::translate((8.0, 8.0))
@@ -3645,11 +3951,10 @@ mod tests {
                 // the kernels' bbox lies in.
                 let draw = GpuDraw::new(content, 0, raster, gpu, (1024, 1024));
                 frame
-                    .draw(&device, &draw)
+                    .draw(&draw, true)
                     .unwrap_or_else(|error| panic!("case {index} draws: {error:?}"));
                 kept.push((index, draw.path));
             }
-            frame.ensure(&device);
             // A NaN tail past `seg_total` catches a chord written beyond
             // the last path's segments: `dispatch` reuses a large enough
             // buffer as is, so the tail sits inside the bound buffer.
@@ -3684,11 +3989,10 @@ mod tests {
                 args: stub("cov args"),
                 work: stub("cov work"),
             });
+            frame.ensure(&device).expect("coverage buffers fit");
             let mut encoder =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-            frame
-                .record_prologue(&device, &queue, &mut encoder, delivery, None)
-                .expect("the prologue records");
+            frame.record_prologue(&device, &queue, &mut encoder, delivery, None);
             let buffers = frame.buffers.as_ref().expect("buffers sized");
             // Every slot starts as NaN, so an unwritten chord cannot pass as
             // geometry.
