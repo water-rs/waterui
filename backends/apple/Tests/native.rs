@@ -10521,7 +10521,7 @@ mod list_ax {
     use objc2_foundation::{NSArray, NSIndexSet};
     use waterui::component::list::ListItem;
     use waterui::layout::scroll::ScrollController;
-    use waterui_apple::native_test_support::{row_item, row_list};
+    use waterui_apple::native_test_support::{row_item, row_list, sectioned_row_list};
 
     use super::{AttachedWindow, Retained, leaf, mtm, trial_each};
 
@@ -10657,9 +10657,42 @@ mod list_ax {
         );
     }
 
+    /// A sectioned list's accessibility rows are its section bands and
+    /// content rows: the spacer row that carries the list's top gap below
+    /// a leading header reserves space and is no element.
+    fn a_sectioned_list_exposes_no_spacer_row() {
+        let (leaf, surface) = sectioned_row_list();
+        let _window = leaf::attach(mtm(), leaf.view());
+        leaf.view().setNeedsLayout(true);
+        leaf.view().layoutSubtreeIfNeeded();
+        let table = surface.table_view();
+        // Header, spacer, two rows, header, one row.
+        assert_eq!(table.numberOfRows(), 6);
+        // A window that never draws does not tile its table, so the rows
+        // are realized explicitly: the accessibility answers expose only
+        // realized rows, and the spacer must be left out even once it is.
+        for row in 0..table.numberOfRows() {
+            let _ = table.rowViewAtRow_makeIfNecessary(row, true);
+        }
+        assert_eq!(realized_rows(&table), 6, "every row is realized");
+        assert_eq!(
+            ax_rows(&table).count(),
+            5,
+            "accessibilityRows must hold the two bands and three rows, not the spacer"
+        );
+        assert!(
+            ax_children(&table).count() <= 5 + NON_ROW_CHILDREN,
+            "accessibilityChildren must not gain the spacer row"
+        );
+    }
+
     /// The `list_ax::` trials.
     pub fn trials() -> Vec<libtest_mimic::Trial> {
         trial_each(vec![
+            (
+                "list_ax::a_sectioned_list_exposes_no_spacer_row".to_owned(),
+                Box::new(a_sectioned_list_exposes_no_spacer_row),
+            ),
             (
                 "list_ax::a_large_list_walk_materializes_no_rows".to_owned(),
                 Box::new(a_large_list_walk_materializes_no_rows),

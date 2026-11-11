@@ -10,7 +10,7 @@
 use waterui_text::{IntoText, Text};
 
 use super::ListSection;
-use super::content::{ListContent, ListScope, SectionScope, TaggedBy};
+use super::content::{ContentTags, ListContent, ListScope, SectionScope};
 use super::rows::ListItemSink;
 
 /// Groups a sub-tree of [`ListContent`] under an optional header and footer.
@@ -115,4 +115,6 @@ impl<C: ListContent<SectionScope>> ListContent<ListScope> for Section<C> {
     }
 }
 
-impl<T, C: TaggedBy<T>> TaggedBy<T> for Section<C> {}
+impl<T, C: ContentTags<T>> ContentTags<T> for Section<C> {
+    type Presence = C::Presence;
+}

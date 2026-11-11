@@ -46,6 +46,46 @@ pub const RATE_FAST: RefreshRange = 60..=120;
 /// at 60 Hz remain.
 pub const RATE_SLOW: RefreshRange = 30..=60;
 
+/// Which kinds of engine-run layer tracks a surface's tree still holds.
+///
+/// A track that settles on its own (a spring, a timed transition, a
+/// keyframe track with a finite repeat) is `finite`; a keyframe track that
+/// repeats until replaced is `perpetual`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RunningTracks {
+    /// A running track will settle on its own.
+    pub finite: bool,
+    /// A running track repeats until its layer or property is replaced.
+    pub perpetual: bool,
+}
+
+impl RunningTracks {
+    /// The tracks either side runs.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self {
+            finite: self.finite || other.finite,
+            perpetual: self.perpetual || other.perpetual,
+        }
+    }
+
+    /// Counts a running track, perpetual or not.
+    pub(crate) const fn note(&mut self, perpetual: bool) {
+        if perpetual {
+            self.perpetual = true;
+        } else {
+            self.finite = true;
+        }
+    }
+
+    /// Counts `track` when it is running.
+    const fn note_track<T: Animatable>(&mut self, track: Option<&Track<T>>) {
+        if let Some(track) = track {
+            self.note(track.repeats_forever());
+        }
+    }
+}
+
 /// Complete affine and opacity tracks available for compositor handoff.
 #[derive(Clone, Debug)]
 pub struct LayerAnimations {
@@ -404,6 +444,11 @@ impl<T: Animatable> std::fmt::Debug for Track<T> {
 }
 
 impl<T: Animatable> Track<T> {
+    /// Whether the track is a keyframe track that repeats until replaced.
+    const fn repeats_forever(&self) -> bool {
+        self.motion.repeats_forever()
+    }
+
     /// The track as a compositor can take it over; `None` for a keyframe
     /// track, which only the engine samples.
     fn description(&self) -> Option<AnimationTrack<T>> {
@@ -575,6 +620,34 @@ impl SurfaceTree {
             running |= node.animation_rate.is_some();
         }
         running.then_some(RATE_SLOW)
+    }
+
+    /// The tracks the engine itself is running on attached layers, the
+    /// scheduled work a host's settled query must see. Compositor-owned
+    /// layers (`owns`) are skipped like in [`Self::animation_rate`]: the
+    /// compositor runs them, the engine never samples them, so their tracks
+    /// stay in the tree until the handoff ends and would otherwise never
+    /// settle.
+    pub fn running_tracks(&self, owns: impl Fn(LayerId) -> bool) -> RunningTracks {
+        let mut running = RunningTracks::default();
+        for (&raw, node) in &self.nodes {
+            if !node.attached || owns(LayerId::new(raw)) {
+                continue;
+            }
+            running.note_track(node.transform_track.as_ref());
+            running.note_track(node.opacity_track.as_ref());
+            running.note_track(node.scroll_track.as_ref());
+            if let Some(components) = &node.components {
+                components.note_running(&mut running);
+            }
+        }
+        for (raw, state) in &self.projective {
+            let node = &self.nodes[raw];
+            if node.attached && !owns(LayerId::new(*raw)) {
+                state.note_running(&mut running);
+            }
+        }
+        running
     }
 
     /// An empty tree holding only its root layer (`LayerId(0)`).
@@ -1331,6 +1404,70 @@ mod hierarchy_tests {
             parent: tree.root(),
             child: id,
         });
+    }
+
+    #[test]
+    fn running_tracks_tell_finite_from_perpetual_and_skip_owned_layers() {
+        let mut tree = SurfaceTree::new();
+        let finite = LayerId::new(1);
+        let perpetual = LayerId::new(2);
+        for id in [finite, perpetual] {
+            tree.apply(LayerOp::Create(id));
+            tree.apply(LayerOp::Push {
+                parent: tree.root(),
+                child: id,
+            });
+        }
+        assert_eq!(tree.running_tracks(|_| false), RunningTracks::default());
+
+        let start = Instant::now();
+        tree.apply(LayerOp::Opacity(
+            finite,
+            Prop {
+                target: 1.0,
+                animation: Some(Curve::linear(Duration::from_secs(1)).into()),
+                start: None,
+            },
+        ));
+        assert_eq!(
+            tree.running_tracks(|_| false),
+            RunningTracks {
+                finite: true,
+                perpetual: false
+            }
+        );
+        assert_eq!(
+            tree.running_tracks(|layer| layer == finite),
+            RunningTracks::default()
+        );
+
+        let unit = Duration::from_secs(1);
+        tree.apply(LayerOp::Keyframes(
+            perpetual,
+            crate::LayerKeyframes::Rotation(crate::KeyframeProp {
+                target: 0.,
+                keyframes: crate::Keyframes::new(unit, 0.).then(1., Curve::linear(unit), 1.),
+                repeat: crate::Repeat::Forever,
+            }),
+        ));
+        assert_eq!(
+            tree.running_tracks(|_| false),
+            RunningTracks {
+                finite: true,
+                perpetual: true
+            }
+        );
+
+        tree.sample(start, 1.0);
+        tree.sample(start + Duration::from_secs(2), 1.0);
+        assert_eq!(
+            tree.running_tracks(|_| false),
+            RunningTracks {
+                finite: false,
+                perpetual: true
+            },
+            "the finite track settled; the repeating one never does"
+        );
     }
 
     #[test]

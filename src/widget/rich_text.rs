@@ -209,10 +209,12 @@ impl View for RichTextElement {
                 // is rendered from Markdown, so the snackbar coupling is here.
                 #[cfg(feature = "snackbar")]
                 let view = view.on_copied(|env| {
-                    let snackbar = env
-                        .extract::<SnackbarManager>()
-                        .expect("the window's environment carries its SnackbarManager");
-                    snackbar.show(Snackbar::new("Copied to clipboard"));
+                    match env.extract::<SnackbarManager>() {
+                        Ok(snackbar) => snackbar.show(Snackbar::new("Copied to clipboard")),
+                        Err(error) => crate::contract_violation!(
+                            "the window's environment carries no SnackbarManager, so the copy shows no feedback: {error}"
+                        ),
+                    }
                 });
                 AnyView::new(view)
             }
@@ -261,14 +263,23 @@ fn render_math(source: Str, block: bool) -> AnyView {
 fn render_image(src: &Str) -> AnyView {
     #[cfg(feature = "media")]
     {
-        let url = Url::parse(src)
-            .unwrap_or_else(|| panic!("RichText image source is not a valid URL: {src}"));
+        // The source is document content, not the app's own contract: an
+        // invalid URL is input to report, never a reason to panic.
+        let Some(url) = Url::parse(src) else {
+            tracing::warn!(
+                "RichText image source is not a valid URL, so the image renders nothing: {src}"
+            );
+            return AnyView::default();
+        };
         AnyView::new(media_photo(url))
     }
 
     #[cfg(not(feature = "media"))]
     {
-        panic!("RichText image rendering requires the `media` feature: {src}");
+        crate::contract_violation!(
+            "RichText image rendering requires the `media` feature, so the image renders nothing: {src}"
+        );
+        AnyView::default()
     }
 }
 
@@ -345,7 +356,7 @@ fn render_table(
         })
         .collect();
     let layout = MarkdownTableLayout::new(
-        NonZeroUsize::new(col_count).expect("Markdown table must have at least one column"),
+        NonZeroUsize::new(col_count).expect("a zero column count returned an empty view above"),
         resolved_alignments,
     );
     AnyView::new(FixedContainer::new(layout, cells))
@@ -421,11 +432,8 @@ impl MarkdownTableLayout {
         for cell_index in 0..cell_count {
             let dimensions =
                 children[self.child_index(cell_index)].measure(ProposalSize::UNSPECIFIED);
-            let width = dimensions.size.width;
-            assert!(
-                width.is_finite(),
-                "Markdown table cells must have finite intrinsic widths"
-            );
+            let width =
+                finite_or_zero(dimensions.size.width, "Markdown table cell intrinsic width");
             let column = cell_index % columns;
             column_widths[column] = column_widths[column].max(width.max(0.0));
         }
@@ -449,11 +457,13 @@ impl MarkdownTableLayout {
         let mut row_heights = vec![0.0_f32; row_count];
         for cell_index in 0..cell_count {
             let column = cell_index % columns;
-            let dimensions = children[self.child_index(cell_index)]
+            let mut dimensions = children[self.child_index(cell_index)]
                 .measure(ProposalSize::new(Some(column_widths[column]), None));
-            assert!(
-                dimensions.size.width.is_finite() && dimensions.size.height.is_finite(),
-                "Markdown table cells must have finite measured sizes"
+            dimensions.size.width =
+                finite_or_zero(dimensions.size.width, "Markdown table cell measured width");
+            dimensions.size.height = finite_or_zero(
+                dimensions.size.height,
+                "Markdown table cell measured height",
             );
             let row = cell_index / columns;
             row_heights[row] = row_heights[row].max(dimensions.size.height.max(0.0));
@@ -462,11 +472,11 @@ impl MarkdownTableLayout {
 
         let separator_dimensions =
             children[self.separator_index()].measure(ProposalSize::new(Some(width), None));
-        assert!(
-            separator_dimensions.size.height.is_finite(),
-            "Markdown table separator must have a finite height"
-        );
-        let separator_height = separator_dimensions.size.height.max(0.0);
+        let separator_height = finite_or_zero(
+            separator_dimensions.size.height,
+            "Markdown table separator height",
+        )
+        .max(0.0);
         let height = row_heights.iter().sum::<f32>()
             + separator_height
             + repeated_spacing(MARKDOWN_TABLE_ROW_SPACING, row_count);
@@ -557,6 +567,17 @@ impl Layout for MarkdownTableLayout {
     fn stretch_axis(&self, _children: &[StretchAxis]) -> StretchAxis {
         StretchAxis::Horizontal
     }
+}
+
+/// `value`, or 0 after a contract violation when a measured size is not
+/// finite: a debug build panics, and a release build logs the error and
+/// counts the size as zero.
+fn finite_or_zero(value: f32, what: &str) -> f32 {
+    if value.is_finite() {
+        return value;
+    }
+    crate::contract_violation!("{what} is {value}, which is not finite, so it counts as 0");
+    0.0
 }
 
 fn repeated_spacing(spacing: f32, count: usize) -> f32 {
@@ -1007,7 +1028,7 @@ const fn map_table_alignment(alignment: Alignment) -> MarkdownTableAlignment {
 fn collapse_inline(mut elements: Vec<RichTextElement>) -> RichTextElement {
     match elements.len() {
         0 => RichTextElement::Text(StyledStr::empty()),
-        1 => elements.pop().expect("elements should have one item"),
+        1 => elements.pop().expect("this arm matches a length of one"),
         _ => RichTextElement::Group {
             elements,
             inline: true,
@@ -1018,7 +1039,7 @@ fn collapse_inline(mut elements: Vec<RichTextElement>) -> RichTextElement {
 fn collapse_block(mut elements: Vec<RichTextElement>) -> RichTextElement {
     match elements.len() {
         0 => RichTextElement::Text(StyledStr::empty()),
-        1 => elements.pop().expect("elements should have one item"),
+        1 => elements.pop().expect("this arm matches a length of one"),
         _ => RichTextElement::Group {
             elements,
             inline: false,
@@ -1281,6 +1302,20 @@ impl Default for InlineGroup {
 mod tests {
     use super::*;
     use waterui_layout::ResolvedExtent;
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "which is not finite"))]
+    fn a_non_finite_measured_size_counts_as_zero() {
+        assert!((finite_or_zero(1.5, "size") - 1.5).abs() < f32::EPSILON);
+        assert!(finite_or_zero(f32::NAN, "size").abs() < f32::EPSILON);
+    }
+
+    #[test]
+    #[cfg(feature = "media")]
+    fn an_invalid_image_url_renders_nothing() {
+        let view = render_image(&Str::from("not a url"));
+        assert!(view.is::<()>());
+    }
 
     /// Collects a document's elements into a shape that is easy to assert on.
     fn plain_text_of(elements: &[RichTextElement]) -> String {

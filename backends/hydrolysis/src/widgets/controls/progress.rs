@@ -1,12 +1,16 @@
+use crate::renderer::live_progress::LiveProgressParts;
 use crate::renderer::{
     HydroNativeView, HydroState, RenderContext, RetainedSubview, WidgetRenderContext,
-    circle_arc_path, measure_progress_intrinsic,
+    measure_progress_intrinsic,
 };
-use crate::theme::ProgressIndicatorStyle;
+use crate::theme::{
+    IndicatorLook, LinearProgressLook, ProgressControl, ProgressSpec, SpecTint, WidgetTheme,
+};
 #[cfg(feature = "accessibility")]
 use accesskit::{Node as AccessibilityNode, Role as AccessibilityNodeRole};
-use core::f64::consts::{FRAC_PI_2, TAU};
-use nami::{Computed, Signal};
+use kurbo::{Rect, Size, Vec2};
+use nami::{Binding, Computed, Signal};
+use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::component::progress::{ProgressConfig, ProgressStyle};
@@ -15,30 +19,144 @@ use waterui_core::Native;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
 
-const LINEAR_DETERMINATE_ANIMATION_KEY: usize = 1;
-const CIRCULAR_DETERMINATE_ANIMATION_KEY: usize = 2;
+/// A progress indicator's look: the theme's linear bar, or the indicator it
+/// draws in a square.
+#[derive(Clone)]
+enum ProgressLook {
+    Linear(LinearProgressLook),
+    Indicator(IndicatorLook),
+}
+
+impl ProgressLook {
+    /// The look `theme` gives an indicator of `spec` in `env`.
+    fn resolve(theme: &Rc<dyn WidgetTheme>, spec: &ProgressSpec, env: &Environment) -> Self {
+        match spec.style() {
+            ProgressStyle::Linear => Self::Linear(theme.linear_progress(spec, env)),
+            ProgressStyle::Circular => Self::Indicator(theme.circular_progress(spec, env)),
+            ProgressStyle::Loading => Self::Indicator(theme.loading_indicator(spec, env)),
+            _ => panic!("hydrolysis ProgressStyle variant is not implemented"),
+        }
+    }
+
+    /// The heights of the label band and the value-label band an indicator
+    /// of `style` reserves, when it is `determinate` and its labels measure
+    /// `labels`: a label with no extent is no label, only a linear indicator
+    /// draws labels, and only a determinate one draws a value label.
+    /// Measurement and rendering both place the bands from this.
+    fn bands(
+        style: ProgressStyle,
+        determinate: bool,
+        labels: (LayoutSize, LayoutSize),
+    ) -> (Option<f64>, Option<f64>) {
+        if !matches!(style, ProgressStyle::Linear) {
+            return (None, None);
+        }
+        (extent(labels.0), extent(labels.1).filter(|_| determinate))
+    }
+
+    /// The bands `spec` reserves, from the heights of the labels it has.
+    fn spec_bands(
+        spec: &ProgressSpec,
+        labels: (LayoutSize, LayoutSize),
+    ) -> (Option<f64>, Option<f64>) {
+        (
+            spec.label().then(|| f64::from(labels.0.height)),
+            spec.value_label().then(|| f64::from(labels.1.height)),
+        )
+    }
+
+    /// The size an indicator of this look measures with the given bands.
+    fn size(&self, (label, value_label): (Option<f64>, Option<f64>)) -> LayoutSize {
+        let size = match self {
+            Self::Linear(look) => {
+                let width = look.minimum_width();
+                let layout = look.layout(width, label, value_label);
+                Size::new(width, layout.height)
+            }
+            Self::Indicator(look) => look.control().size(),
+        };
+        LayoutSize::new(
+            crate::num_cast::f64_as_f32(size.width),
+            crate::num_cast::f64_as_f32(size.height),
+        )
+    }
+}
+
+/// The height of a label of `size`, or `None` when it has no extent: the
+/// indicator has no such label.
+fn extent(size: LayoutSize) -> Option<f64> {
+    (size.width > 0.0 || size.height > 0.0).then_some(f64::from(size.height))
+}
+
+/// The spec of the indicator `style` is in `env`: `determinate` when its
+/// value is a number, with a label and a value label when they have an
+/// extent.
+fn progress_spec(
+    style: ProgressStyle,
+    four_color: bool,
+    determinate: bool,
+    labels: (LayoutSize, LayoutSize),
+    env: &Environment,
+) -> ProgressSpec {
+    // A loading indicator is indeterminate by construction.
+    let determinate = determinate && !matches!(style, ProgressStyle::Loading);
+    let (label, value_label) = ProgressLook::bands(style, determinate, labels);
+    ProgressSpec::new(
+        style,
+        determinate,
+        waterui_core::layout::layout_direction(env).snapshot(),
+        SpecTint::resolve(env),
+    )
+    .with_label(label.is_some())
+    .with_value_label(value_label.is_some())
+    .with_four_color(four_color)
+}
 
 /// The retained render state of a progress indicator. Its `label`/`value_label`
 /// are move-only `AnyView`s (they cannot be re-dispatched twice), so the
 /// persistent `Widget` node holds them as [`RetainedSubview`]s built once and
-/// re-flushed each frame; the `value` signal is read through `read_signal`.
+/// re-flushed each frame. The look the theme gave, and the parts recorded
+/// from it, are held across renders while the indicator's spec and frame stay
+/// the same; the `value` moves the parts' operands and re-renders nothing.
 pub struct ProgressRenderState<E: crate::text::TextEngine> {
     label: RetainedSubview<E>,
     value_label: RetainedSubview<E>,
     value: Computed<f64>,
     style: ProgressStyle,
     four_color: bool,
+    /// Whether the value is a number. It changes only when the value
+    /// turns indeterminate or back, so reading it re-renders the indicator
+    /// exactly then.
+    determinate: Binding<bool>,
+    /// Keeps `determinate` following `value`.
+    _determinacy: Box<dyn Any>,
+    look: Option<(ProgressSpec, ProgressLook)>,
+    parts: Option<LiveProgressParts>,
 }
 
 impl<E: crate::text::TextEngine> ProgressRenderState<E> {
     pub(crate) fn from_config(config: ProgressConfig) -> Self {
         let (label, value_label, value, style, four_color) = config.into_parts();
+        let determinate = Binding::container(value.snapshot().is_finite());
+        let determinacy = value.watch({
+            let determinate = determinate.clone();
+            move |context| {
+                let finite = context.value().is_finite();
+                if determinate.snapshot() != finite {
+                    determinate.set(finite);
+                }
+            }
+        });
         Self {
             label: RetainedSubview::new(label),
             value_label: RetainedSubview::new(value_label),
             value,
             style,
             four_color,
+            determinate,
+            _determinacy: Box::new(determinacy),
+            look: None,
+            parts: None,
         }
     }
 
@@ -58,6 +176,41 @@ impl<E: crate::text::TextEngine> ProgressRenderState<E> {
     pub(crate) fn take_layout_dirty(&mut self) -> bool {
         self.label.take_layout_dirty_if_built() | self.value_label.take_layout_dirty_if_built()
     }
+
+    /// The look for `spec` in `env`: the one already held when the spec is
+    /// unchanged, otherwise requested again.
+    fn look(
+        &mut self,
+        theme: &Rc<dyn WidgetTheme>,
+        spec: ProgressSpec,
+        env: &Environment,
+    ) -> &ProgressLook {
+        if self.held(&spec).is_none() {
+            let look = ProgressLook::resolve(theme, &spec, env);
+            self.look = Some((spec, look));
+        }
+        &self.look.as_ref().expect("the look was just ensured").1
+    }
+
+    fn held(&self, spec: &ProgressSpec) -> Option<&ProgressLook> {
+        self.look
+            .as_ref()
+            .filter(|(held, _)| held == spec)
+            .map(|(_, look)| look)
+    }
+
+    /// The look for `spec` in `env` without holding it: the held one, or a
+    /// fresh one for a measurement ahead of the render that holds it.
+    fn peek(
+        &self,
+        theme: &Rc<dyn WidgetTheme>,
+        spec: &ProgressSpec,
+        env: &Environment,
+    ) -> ProgressLook {
+        self.held(spec)
+            .cloned()
+            .unwrap_or_else(|| ProgressLook::resolve(theme, spec, env))
+    }
 }
 
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ProgressConfig> {
@@ -69,6 +222,20 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ProgressConfig> {
     ) -> LayoutSize {
         measure_progress_intrinsic(view.as_inner(), state, env, theme)
     }
+}
+
+/// The measured size of the indicator `config` describes, from its labels'
+/// measured sizes.
+pub fn progress_size(
+    theme: &Rc<dyn WidgetTheme>,
+    style: ProgressStyle,
+    four_color: bool,
+    determinate: bool,
+    labels: (LayoutSize, LayoutSize),
+    env: &Environment,
+) -> LayoutSize {
+    let spec = progress_spec(style, four_color, determinate, labels, env);
+    ProgressLook::resolve(theme, &spec, env).size(ProgressLook::spec_bands(&spec, labels))
 }
 
 /// Emits a progress indicator's accessibility node. Shared by the dispatch path
@@ -110,9 +277,9 @@ pub fn progress_accessibility<E: crate::text::TextEngine>(
     }
 }
 
-/// Measures a retained progress leaf from its [`ProgressRenderState`]. Mirrors
-/// [`measure_progress_intrinsic`] (which does not measure the label view — it uses
-/// the default font height — so the retained labels are not needed here).
+/// Measures a retained progress leaf from its [`ProgressRenderState`], reading
+/// the label sizes from its already-built [`RetainedSubview`]s so layout and
+/// render agree on which bands the indicator reserves.
 pub fn measure_progress_node<E: crate::text::TextEngine>(
     render_state: &ProgressRenderState<E>,
     _proposal: ProposalSize,
@@ -120,50 +287,29 @@ pub fn measure_progress_node<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
-    let size = match render_state.style {
-        ProgressStyle::Linear => {
-            let metrics = theme.progress_metrics(ProgressIndicatorStyle::Linear);
-            let label_height = f64::from(
-                waterui_text::font::Font::default()
-                    .resolve(env)
-                    .snapshot()
-                    .size(),
-            )
-            .max(metrics.label_height);
-            let value_label_height = if state.measure_signal(&render_state.value).is_finite() {
-                metrics.value_label_top_spacing + label_height
-            } else {
-                0.0
-            };
-            let width = metrics
-                .bar_horizontal_inset
-                .mul_add(2.0, metrics.min_track_width);
-            let height =
-                label_height + metrics.bar_top_offset + metrics.bar_height + value_label_height;
-            LayoutSize::new(
-                crate::num_cast::f64_as_f32(width),
-                crate::num_cast::f64_as_f32(height),
-            )
-        }
-        ProgressStyle::Circular | ProgressStyle::Loading => {
-            let style = if matches!(render_state.style, ProgressStyle::Loading) {
-                ProgressIndicatorStyle::Loading
-            } else {
-                ProgressIndicatorStyle::Circular
-            };
-            let metrics = theme.progress_metrics(style);
-            LayoutSize::new(
-                crate::num_cast::f64_as_f32(metrics.circular_diameter),
-                crate::num_cast::f64_as_f32(metrics.circular_diameter),
-            )
-        }
-        _ => panic!("hydrolysis ProgressStyle variant is not implemented"),
-    };
-    ViewDimensions::new(size)
+    let determinate = state.measure_signal(&render_state.determinate);
+    let labels = (
+        render_state.label.measure_built(state, env, theme),
+        render_state.value_label.measure_built(state, env, theme),
+    );
+    let spec = progress_spec(
+        render_state.style,
+        render_state.four_color,
+        determinate,
+        labels,
+        env,
+    );
+    ViewDimensions::new(
+        render_state
+            .peek(theme, &spec, env)
+            .size(ProgressLook::spec_bands(&spec, labels)),
+    )
 }
 
 /// Renders a retained progress leaf every flush: emits a11y (unless hidden) then
-/// the track/spinner + labels, reading the `value` signal each frame.
+/// the indicator + labels. The value moves the indicator's operands directly;
+/// the node renders again only for what the accessibility node and the
+/// look's spec read.
 pub fn render_progress_node<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<ProgressRenderState<E>>>,
@@ -189,10 +335,6 @@ pub fn render_progress_node<E: crate::text::TextEngine>(
     render_progress_parts(ctx, state, env);
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
-)]
 pub fn render_progress_parts<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<ProgressRenderState<E>>>,
@@ -200,185 +342,70 @@ pub fn render_progress_parts<E: crate::text::TextEngine>(
 ) {
     let theme = ctx.theme();
     let mut progress = state.borrow_mut();
-    let style = progress.style;
-    let four_color = progress.four_color;
-    let value_signal = progress.value.clone();
-    let value = ctx.renderer_mut().read_signal(&value_signal);
-    let finite = value.is_finite();
-    let clamped = crate::num_cast::f64_as_f32(value.clamp(0.0, 1.0));
-
-    match style {
-        ProgressStyle::Linear => {
-            let metrics = theme.progress_metrics(ProgressIndicatorStyle::Linear);
-            let motion = theme.progress_motion();
-            let label_size = progress.label.measure_intrinsic(ctx.renderer_mut(), env);
-            let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
-                f64::from(label_size.height).max(metrics.label_height)
-            } else {
-                0.0
-            };
-            if label_height > 0.0 {
-                let label_rect = kurbo::Rect::new(
-                    ctx.bounds.x0,
-                    ctx.bounds.y0,
-                    ctx.bounds.x1,
-                    (ctx.bounds.y0 + label_height).min(ctx.bounds.y1),
-                );
-                // The label's semantics are merged into the indicator's own node by
-                // `progress_accessibility`, so the sub-view flushes visual-only.
-                let render_ctx = ctx.render_context();
-                let label_area = ctx.safe_area_for(label_rect);
-                let label = &mut progress.label;
-                ctx.renderer_mut()
-                    .with_suppressed_accessibility(|renderer| {
-                        label.place(
-                            renderer,
-                            render_ctx,
-                            env,
-                            ProposalSize::UNSPECIFIED,
-                            label_rect,
-                            label_area,
-                        );
-                    });
+    let determinate = {
+        let signal = progress.determinate.clone();
+        ctx.renderer_mut().read_signal(&signal)
+    };
+    let labels = (
+        progress.label.measure_intrinsic(ctx.renderer_mut(), env),
+        progress
+            .value_label
+            .measure_intrinsic(ctx.renderer_mut(), env),
+    );
+    let spec = progress_spec(
+        progress.style,
+        progress.four_color,
+        determinate,
+        labels,
+        env,
+    );
+    let (label_height, value_label_height) = ProgressLook::spec_bands(&spec, labels);
+    let look = progress.look(&theme, spec, env).clone();
+    let origin = Vec2::new(ctx.bounds.x0, ctx.bounds.y0);
+    let (control, frame): (&ProgressControl, Rect) = match &look {
+        ProgressLook::Linear(linear) => {
+            let layout = linear.layout(ctx.bounds.width(), label_height, value_label_height);
+            // The labels' semantics are merged into the indicator's own
+            // node by `progress_accessibility`, so the sub-views flush
+            // visual-only.
+            if let Some(band) = layout.label {
+                place_label(ctx, &mut progress.label, band + origin, env);
             }
+            if let Some(band) = layout.value_label {
+                place_label(ctx, &mut progress.value_label, band + origin, env);
+            }
+            (linear.control(), layout.bar + origin)
+        }
+        ProgressLook::Indicator(indicator) => (indicator.control(), indicator.frame(ctx.bounds)),
+    };
+    // The parts read the value through its signal: a value change moves
+    // their operands and records nothing.
+    let value = progress.value.clone();
+    let parts = LiveProgressParts::ensure(&mut progress.parts, control, frame, &value).clone();
+    let render_ctx = ctx.render_context();
+    parts.push(ctx.renderer_mut(), render_ctx);
+}
 
-            let bar_y = ctx.bounds.y0 + label_height + metrics.bar_top_offset;
-            let bar_rect = kurbo::Rect::new(
-                ctx.bounds.x0 + metrics.bar_horizontal_inset,
-                bar_y,
-                ctx.bounds.x1 - metrics.bar_horizontal_inset,
-                bar_y + metrics.bar_height,
+/// Places a retained label sub-view in `band`, visual-only.
+fn place_label<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    label: &mut RetainedSubview<E>,
+    band: Rect,
+    env: &Environment,
+) {
+    let render_ctx = ctx.render_context();
+    let area = ctx.safe_area_for(band);
+    ctx.renderer_mut()
+        .with_suppressed_accessibility(|renderer| {
+            label.place(
+                renderer,
+                render_ctx,
+                env,
+                ProposalSize::UNSPECIFIED,
+                band,
+                area,
             );
-            // The track leaves a gap around the active indicator, so where the
-            // indicator ends has to be resolved before the track is drawn.
-            let fill_rect = finite.then(|| {
-                let animated = ctx.renderer_mut().sample_owned_scalar_target(
-                    state,
-                    LINEAR_DETERMINATE_ANIMATION_KEY,
-                    clamped,
-                    motion.linear_determinate.clone(),
-                );
-                kurbo::Rect::new(
-                    bar_rect.x0,
-                    bar_rect.y0,
-                    bar_rect
-                        .width()
-                        .mul_add(f64::from(animated.clamp(0.0, 1.0)), bar_rect.x0),
-                    bar_rect.y1,
-                )
-            });
-            {
-                ctx.draw_context(|draw| {
-                    theme.draw_progress_linear_track(
-                        &mut *draw,
-                        bar_rect,
-                        fill_rect.map(|rect| rect.x1),
-                    );
-                });
-            }
-            if let Some(fill_rect) = fill_rect {
-                ctx.draw_context(|draw| {
-                    theme.draw_progress_linear_fill(&mut *draw, fill_rect);
-                });
-            } else {
-                let elapsed = ctx
-                    .renderer_mut()
-                    .sample_repeating_motion(motion.linear_indeterminate_cycle, state);
-                ctx.draw_context(|draw| {
-                    theme.draw_progress_linear_indeterminate(
-                        &mut *draw, bar_rect, elapsed, four_color,
-                    );
-                });
-            }
-
-            if finite {
-                let value_label_rect = kurbo::Rect::new(
-                    ctx.bounds.x0,
-                    bar_rect.y1 + metrics.value_label_top_spacing,
-                    ctx.bounds.x1,
-                    ctx.bounds.y1,
-                );
-                if value_label_rect.height() > 0.0 {
-                    // The formatted value text duplicates the numeric value the
-                    // indicator's node already carries, so it flushes visual-only.
-                    let render_ctx = ctx.render_context();
-                    let value_label_area = ctx.safe_area_for(value_label_rect);
-                    let value_label = &mut progress.value_label;
-                    ctx.renderer_mut()
-                        .with_suppressed_accessibility(|renderer| {
-                            value_label.place(
-                                renderer,
-                                render_ctx,
-                                env,
-                                ProposalSize::UNSPECIFIED,
-                                value_label_rect,
-                                value_label_area,
-                            );
-                        });
-                }
-            }
-        }
-        ProgressStyle::Circular => {
-            let metrics = theme.progress_metrics(ProgressIndicatorStyle::Circular);
-            let center = kurbo::Point::new(
-                ctx.bounds.x0 + ctx.bounds.width() / 2.0,
-                ctx.bounds.y0 + ctx.bounds.height() / 2.0,
-            );
-            let stroke_width = metrics.circular_stroke_width;
-            let radius =
-                (ctx.bounds.width().min(ctx.bounds.height()) - stroke_width).max(0.0) / 2.0;
-            let motion = theme.progress_motion();
-            if finite {
-                let animated = ctx.renderer_mut().sample_owned_scalar_target(
-                    state,
-                    CIRCULAR_DETERMINATE_ANIMATION_KEY,
-                    clamped,
-                    motion.circular_determinate,
-                );
-                let arc = circle_arc_path(center, radius, -FRAC_PI_2, TAU * f64::from(animated));
-                ctx.draw_context(|draw| {
-                    theme.draw_progress_circular_track(
-                        &mut *draw,
-                        center,
-                        radius,
-                        stroke_width,
-                        Some(f64::from(animated)),
-                    );
-                    theme.draw_progress_circular_fill(&mut *draw, &arc, stroke_width);
-                });
-            } else {
-                let elapsed = ctx
-                    .renderer_mut()
-                    .sample_repeating_motion(motion.circular_indeterminate_cycle, state);
-                ctx.draw_context(|draw| {
-                    theme.draw_progress_circular_indeterminate(
-                        &mut *draw,
-                        center,
-                        radius,
-                        stroke_width,
-                        elapsed,
-                        four_color,
-                    );
-                });
-            }
-        }
-        ProgressStyle::Loading => {
-            // The loading indicator is indeterminate by construction: it has no
-            // track, so there is nothing for a value to fill. A value set on one
-            // still reaches assistive technology through the node above.
-            let motion = theme.progress_motion();
-            let bounds = ctx.bounds;
-            let elapsed = ctx
-                .renderer_mut()
-                .sample_repeating_motion(motion.loading_cycle, state);
-            ctx.draw_context(|draw| {
-                theme.draw_progress_loading(&mut *draw, bounds, elapsed, four_color);
-            });
-        }
-        _ => {
-            panic!("hydrolysis ProgressStyle variant is not implemented");
-        }
-    }
+        });
 }
 
 /// Emits a retained progress indicator's accessibility node for the semantic

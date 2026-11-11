@@ -10,6 +10,7 @@ use std::rc::{Rc, Weak};
 
 use nami::{Binding, Signal as _};
 use waterui_core::animation::Animation;
+use waterui_core::contract_violation;
 use waterui_core::layout::{Point, Size};
 use waterui_layout::scroll::{Axis, ScrollPosition};
 
@@ -613,15 +614,18 @@ impl ScrollHandle {
     /// generation still answers for the run it armed — a previous frame's
     /// handle must not report a live run as `Interrupted` — while a token
     /// beyond the claim counter, or one another scroll view issued, is a
-    /// programming error and panics.
+    /// programming error.
     ///
-    /// # Panics
+    /// # Contract
     ///
-    /// When `run` was issued by a different scroll view's handle, or names a
-    /// claim beyond the state's counter.
+    /// A `run` issued by a different scroll view's handle, or naming a claim
+    /// beyond the state's counter, breaks the contract: a debug build panics,
+    /// and a release build logs the error and reports `Interrupted`.
     #[must_use]
     pub fn scroll_run_outcome(&self, run: &ScrollRun) -> ScrollRunOutcome {
-        self.assert_same_state(&run.state, "scroll run");
+        if !self.is_same_state(&run.state, "scroll run") {
+            return ScrollRunOutcome::Interrupted;
+        }
         self.state.borrow().scroll_run_outcome(run)
     }
 
@@ -630,16 +634,18 @@ impl ScrollHandle {
     /// extents are measured, and the run keeps converging on the refined
     /// destination instead of re-arming. Refuses — returns `false` — when
     /// `run` is not the live run, so a requester cannot steer another owner's
-    /// animation on the same surface. A run minted by another scroll view
-    /// panics.
+    /// animation on the same surface.
     ///
-    /// # Panics
+    /// # Contract
     ///
-    /// When `run` was issued by a different scroll view's handle, or names a
-    /// claim beyond the state's counter.
+    /// A `run` issued by a different scroll view's handle, or naming a claim
+    /// beyond the state's counter, breaks the contract: a debug build panics,
+    /// and a release build logs the error and refuses.
     #[must_use]
     pub fn retarget_animated_scroll(&self, run: &ScrollRun, x: f64, y: f64) -> bool {
-        self.assert_same_state(&run.state, "scroll run");
+        if !self.is_same_state(&run.state, "scroll run") {
+            return false;
+        }
         self.state.borrow_mut().retarget_animated_scroll(run, x, y)
     }
 
@@ -668,12 +674,16 @@ impl ScrollHandle {
     /// measured mid-drag does not stop the drag, and the delta claims
     /// nothing again.
     ///
-    /// # Panics
+    /// # Contract
     ///
-    /// When `claim` was minted by a different scroll view's handle.
+    /// A `claim` minted by a different scroll view's handle breaks the
+    /// contract: a debug build panics, and a release build logs the error and
+    /// refuses.
     #[must_use]
     pub fn apply_gesture_delta(&self, claim: &GestureClaim, dx: f64, dy: f64) -> bool {
-        self.assert_same_state(&claim.state, "gesture claim");
+        if !self.is_same_state(&claim.state, "gesture claim") {
+            return false;
+        }
         let changed = {
             let mut state = self.state.borrow_mut();
             if state.offset_epoch != claim.offset_epoch {
@@ -692,12 +702,16 @@ impl ScrollHandle {
     /// the fling starts from the release offset, which already carries any
     /// shift applied during the drag.
     ///
-    /// # Panics
+    /// # Contract
     ///
-    /// When `claim` was minted by a different scroll view's handle.
+    /// A `claim` minted by a different scroll view's handle breaks the
+    /// contract: a debug build panics, and a release build logs the error and
+    /// refuses.
     #[must_use]
     pub fn begin_fling(&self, claim: &GestureClaim) -> bool {
-        self.assert_same_state(&claim.state, "gesture claim");
+        if !self.is_same_state(&claim.state, "gesture claim") {
+            return false;
+        }
         let mut state = self.state.borrow_mut();
         if state.offset_epoch != claim.offset_epoch {
             return false;
@@ -715,12 +729,16 @@ impl ScrollHandle {
     /// extents live at that frame. `None` names an axis the fling does not
     /// sample: that axis keeps its current offset untouched.
     ///
-    /// # Panics
+    /// # Contract
     ///
-    /// When `claim` was minted by a different scroll view's handle.
+    /// A `claim` minted by a different scroll view's handle breaks the
+    /// contract: a debug build panics, and a release build logs the error and
+    /// refuses.
     #[must_use]
     pub fn apply_fling_offset(&self, claim: &GestureClaim, x: Option<f64>, y: Option<f64>) -> bool {
-        self.assert_same_state(&claim.state, "gesture claim");
+        if !self.is_same_state(&claim.state, "gesture claim") {
+            return false;
+        }
         let changed = {
             let mut state = self.state.borrow_mut();
             if state.offset_epoch != claim.offset_epoch {
@@ -736,12 +754,16 @@ impl ScrollHandle {
     /// A fling asks before each tick: a write that changes nothing is not a
     /// lost claim.
     ///
-    /// # Panics
+    /// # Contract
     ///
-    /// When `claim` was minted by a different scroll view's handle.
+    /// A `claim` minted by a different scroll view's handle breaks the
+    /// contract: a debug build panics, and a release build logs the error and
+    /// reports that it does not hold the offset.
     #[must_use]
     pub fn holds(&self, claim: &GestureClaim) -> bool {
-        self.assert_same_state(&claim.state, "gesture claim");
+        if !self.is_same_state(&claim.state, "gesture claim") {
+            return false;
+        }
         self.state.borrow().offset_epoch == claim.offset_epoch
     }
 
@@ -754,9 +776,11 @@ impl ScrollHandle {
     /// nothing written, `false` returned — once a newer claim owns the
     /// offset.
     ///
-    /// # Panics
+    /// # Contract
     ///
-    /// When `claim` was minted by a different scroll view's handle.
+    /// A `claim` minted by a different scroll view's handle breaks the
+    /// contract: a debug build panics, and a release build logs the error and
+    /// refuses.
     #[must_use]
     pub fn apply_gesture_offset(
         &self,
@@ -764,7 +788,9 @@ impl ScrollHandle {
         x: Option<f64>,
         y: Option<f64>,
     ) -> bool {
-        self.assert_same_state(&claim.state, "gesture claim");
+        if !self.is_same_state(&claim.state, "gesture claim") {
+            return false;
+        }
         let changed = {
             let mut state = self.state.borrow_mut();
             if state.offset_epoch != claim.offset_epoch {
@@ -782,9 +808,11 @@ impl ScrollHandle {
     /// — and stay unclamped until [`Self::end_gesture`] or a newer claim
     /// clamps them.
     ///
-    /// # Panics
+    /// # Contract
     ///
-    /// When `claim` was minted by a different scroll view's handle.
+    /// A `claim` minted by a different scroll view's handle breaks the
+    /// contract: a debug build panics, and a release build logs the error and
+    /// refuses.
     #[must_use]
     pub fn apply_overscroll_fling_offset(
         &self,
@@ -792,7 +820,9 @@ impl ScrollHandle {
         x: Option<f64>,
         y: Option<f64>,
     ) -> bool {
-        self.assert_same_state(&claim.state, "gesture claim");
+        if !self.is_same_state(&claim.state, "gesture claim") {
+            return false;
+        }
         let changed = {
             let mut state = self.state.borrow_mut();
             if state.offset_epoch != claim.offset_epoch {
@@ -811,12 +841,16 @@ impl ScrollHandle {
     /// claim that never wrote unclamped, or one a newer claim already
     /// superseded, changes nothing.
     ///
-    /// # Panics
+    /// # Contract
     ///
-    /// When `claim` was minted by a different scroll view's handle.
+    /// A `claim` minted by a different scroll view's handle breaks the
+    /// contract: a debug build panics, and a release build logs the error and
+    /// refuses.
     #[must_use]
     pub fn end_gesture(&self, claim: &GestureClaim) -> bool {
-        self.assert_same_state(&claim.state, "gesture claim");
+        if !self.is_same_state(&claim.state, "gesture claim") {
+            return false;
+        }
         let changed = {
             let mut state = self.state.borrow_mut();
             if state.offset_epoch != claim.offset_epoch {
@@ -828,14 +862,18 @@ impl ScrollHandle {
         changed
     }
 
-    /// Asserts `issuer` names this handle's state. Runs and gesture claims
+    /// Whether `issuer` names this handle's state; a foreign one breaks the
+    /// contract and the caller refuses the call. Runs and gesture claims
     /// carry the issuing state's `Weak`, which pins its allocation, so an
     /// `Rc` address can never be recycled into a false match.
-    fn assert_same_state(&self, issuer: &Weak<RefCell<ScrollState>>, what: &str) {
-        assert!(
-            core::ptr::eq(issuer.as_ptr(), Rc::as_ptr(&self.state)),
-            "a {what} may only act on the handle that issued it"
-        );
+    fn is_same_state(&self, issuer: &Weak<RefCell<ScrollState>>, what: &str) -> bool {
+        let same = core::ptr::eq(issuer.as_ptr(), Rc::as_ptr(&self.state));
+        if !same {
+            contract_violation!(
+                "a {what} may only act on the handle that issued it; the call is refused"
+            );
+        }
+        same
     }
 }
 
@@ -910,7 +948,7 @@ impl ScrollState {
             self.generation = self
                 .generation
                 .checked_add(1)
-                .expect("scroll controller generation overflow");
+                .expect("a u64 generation advancing once per layout change does not overflow");
         }
         self.report_offset();
         self.generation
@@ -967,7 +1005,7 @@ impl ScrollState {
         self.offset_epoch = self
             .offset_epoch
             .checked_add(1)
-            .expect("scroll offset epoch overflow");
+            .expect("a u64 epoch advancing once per claim does not overflow");
         self.end_programmatic(ScrollRunOutcome::Interrupted);
         self.offset_epoch
     }
@@ -1077,7 +1115,9 @@ impl ScrollState {
             Axis::Horizontal => (true, false),
             Axis::Vertical => (false, true),
             Axis::All => (true, true),
-            _ => panic!("scroll axis variant is not supported by hydrolysis"),
+            _ => panic!(
+                "unreachable: every `Axis` variant `waterui-layout` defines is scrolled here; a new variant must add its arm"
+            ),
         }
     }
 
@@ -1101,14 +1141,18 @@ impl ScrollState {
         )
     }
 
-    /// Asserts `token` is within the claim counter: a value beyond it was
+    /// Whether `token` is within the claim counter: a value beyond it was
     /// never handed out by this scroll view, so naming one is a programming
-    /// error, not a dead run to report `Interrupted`.
-    fn assert_issued_token(&self, token: u64) {
-        assert!(
-            token > 0 && token <= self.offset_epoch,
-            "scroll run token {token} is beyond the claim counter — never issued by this scroll view"
-        );
+    /// error, not a dead run to report `Interrupted`. The caller refuses the
+    /// call.
+    fn is_issued_token(&self, token: u64) -> bool {
+        let issued = token > 0 && token <= self.offset_epoch;
+        if !issued {
+            contract_violation!(
+                "scroll run token {token} is beyond the claim counter — never issued by this scroll view; the call is refused"
+            );
+        }
+        issued
     }
 
     fn apply_scroll_delta(&mut self, dx: f64, dy: f64, is_line_delta: bool) -> bool {
@@ -1206,9 +1250,11 @@ impl ScrollState {
     /// How the run `run` identifies ended — or whether it still drives the
     /// offset. Only a single outcome slot is kept, so an earlier run reports
     /// `Interrupted` once a newer one has ended; a token beyond the claim
-    /// counter is a programming error and panics.
+    /// counter is a programming error and reports `Interrupted` too.
     fn scroll_run_outcome(&self, run: &ScrollRun) -> ScrollRunOutcome {
-        self.assert_issued_token(run.token);
+        if !self.is_issued_token(run.token) {
+            return ScrollRunOutcome::Interrupted;
+        }
         if self
             .programmatic
             .as_ref()
@@ -1252,7 +1298,9 @@ impl ScrollState {
     /// touching its clock; reports whether `run` names the live run — the
     /// only one a requester may steer.
     fn retarget_animated_scroll(&mut self, run: &ScrollRun, x: f64, y: f64) -> bool {
-        self.assert_issued_token(run.token);
+        if !self.is_issued_token(run.token) {
+            return false;
+        }
         let (target_x, target_y) = self.clamped(x, y);
         let Some(live) = &mut self.programmatic else {
             return false;
@@ -2211,8 +2259,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "beyond the claim counter")]
-    fn a_token_the_state_never_issued_panics_instead_of_reporting_interrupted() {
+    #[cfg_attr(debug_assertions, should_panic(expected = "beyond the claim counter"))]
+    fn a_token_the_state_never_issued_is_refused() {
         let handle = vertical_handle();
         // Token 1 may exist or not — either way the claim counter has not
         // reached 5, so this token is beyond the claim counter and the query
@@ -2221,18 +2269,37 @@ mod tests {
             state: Rc::downgrade(&handle.state),
             token: 5,
         };
-        let _ = handle.scroll_run_outcome(&forged);
+        assert_eq!(
+            handle.scroll_run_outcome(&forged),
+            ScrollRunOutcome::Interrupted
+        );
+        assert!(!handle.retarget_animated_scroll(&forged, 0.0, 10.0));
     }
 
     #[test]
-    #[should_panic(expected = "handle that issued it")]
-    fn a_run_from_another_scroll_view_panics_on_query() {
+    #[cfg_attr(debug_assertions, should_panic(expected = "handle that issued it"))]
+    fn a_run_from_another_scroll_view_is_refused() {
         let handle = vertical_handle();
         let other = vertical_handle();
         let foreign = other
             .scroll_to_animated(0.0, 50.0, Animation::default(), Instant::now())
             .expect("the run must arm");
-        let _ = handle.scroll_run_outcome(&foreign);
+        assert_eq!(
+            handle.scroll_run_outcome(&foreign),
+            ScrollRunOutcome::Interrupted
+        );
+        assert!(!handle.retarget_animated_scroll(&foreign, 0.0, 10.0));
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "handle that issued it"))]
+    fn a_gesture_claim_from_another_scroll_view_is_refused() {
+        let handle = vertical_handle();
+        let foreign = vertical_handle().begin_gesture();
+        assert!(!handle.holds(&foreign));
+        assert!(!handle.apply_gesture_delta(&foreign, 0.0, 10.0));
+        assert!(!handle.begin_fling(&foreign));
+        assert!(!handle.end_gesture(&foreign));
     }
 
     #[test]

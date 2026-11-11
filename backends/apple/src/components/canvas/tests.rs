@@ -1659,4 +1659,156 @@ mod render {
             "a filter group is a layer of its own beside the fill"
         );
     }
+
+    /// The `CanvasView` a canvas-composed view mounts as.
+    fn canvas_view(view: impl waterui_core::View) -> waterui_graphics::canvas::CanvasView {
+        use waterui_core::{AnyView, Environment, View as _};
+        let env = Environment::new();
+        let canvas = AnyView::new(view.body(&env))
+            .downcast::<waterui_graphics::canvas::Canvas>()
+            .unwrap_or_else(|_| panic!("the view composes to a canvas"));
+        AnyView::new(canvas.body(&env))
+            .downcast::<waterui_graphics::canvas::CanvasView>()
+            .map_or_else(|_| panic!("a canvas mounts as a canvas view"), |view| *view)
+    }
+
+    /// Four morphs at five progress steps in a square and a wide box, laid
+    /// out as the Hydrolysis gallery of the same name lays them out
+    /// (`testing/src/tests/shape_morph.rs`): both draw the path the shape
+    /// crate derives, so the sheets are expected to look the same.
+    #[test]
+    fn morph_sequences_render_in_square_and_wide_boxes() {
+        use waterui::shape::{
+            Capsule, Circle, Ellipse, MorphShape, Rectangle, RoundedRectangle, ShapeExt as _,
+        };
+        use waterui_graphics::color::Color;
+        use waterui_graphics::draw::LayoutSize;
+        use waterui_graphics::resources::SceneResources;
+
+        type Morph = fn(Color) -> MorphShape;
+        const GAP: f32 = 8.0;
+        const MARGIN: f32 = 16.0;
+        const WIDTH: usize = 608;
+        const HEIGHT: usize = 584;
+        let morphs: [Morph; 4] = [
+            |color| Rectangle.morph_to(Circle, color),
+            |color| Circle.morph_to(Ellipse, color),
+            |color| Capsule.morph_to(Ellipse, color),
+            |color| RoundedRectangle::new(0.2).morph_to(Capsule, color),
+        ];
+        let boxes = [(64.0_f32, 64.0_f32), (112.0, 64.0)];
+        let steps = [0.0_f32, 0.25, 0.5, 0.75, 1.0];
+        let sheet_width = f32::from(u16::try_from(WIDTH).expect("the sheet is narrow"));
+
+        let registry = Rc::new(Registry::default());
+        let resources = SceneResources::new(Rc::new(Backend::new(Rc::clone(&registry), u64::MAX)));
+        let fixture = Fixture::new(Rc::clone(&registry));
+        let ctx = fixture.at(px(SCALE));
+        let sheet = CALayer::new();
+        let mut trees = Vec::new();
+        let mut y = MARGIN;
+        for morph in morphs {
+            for (width, height) in boxes {
+                let row = 4.0f32.mul_add(GAP, 5.0 * width);
+                let mut x = MARGIN + (2.0f32.mul_add(-MARGIN, sheet_width) - row) / 2.0;
+                for step in steps {
+                    let mut scene = canvas_view(morph(Color::srgb_hex("#3B82F6")).progress(step));
+                    let mut names = resources.recording();
+                    let mut content = Content::record(&LayoutSize::new(), |recorder| {
+                        scene.build_scene(recorder, &mut names, width, height);
+                    });
+                    let _held = names.finish();
+                    let tree = Tree::new(&first_list(&mut content), ctx);
+                    tree.settle();
+                    tree.root().setAnchorPoint(CGPoint::ZERO);
+                    tree.root()
+                        .setPosition(CGPoint::new(f64::from(x), f64::from(y)));
+                    sheet.addSublayer(tree.root());
+                    trees.push(tree);
+                    x += width + GAP;
+                }
+                y += height + GAP;
+            }
+        }
+        // The trees own the layers' display lists, so they live until the
+        // sheet is rendered.
+        assert_eq!(
+            trees.len(),
+            morphs.len() * boxes.len() * steps.len(),
+            "every cell is on the sheet"
+        );
+        save(
+            "morph_sequences",
+            &pixels(&sheet, WIDTH, HEIGHT, SCALE),
+            WIDTH,
+            HEIGHT,
+            SCALE,
+        );
+    }
+
+    /// The animated mesh gradient, driven as a host drives it: recorded at
+    /// mount, then updated in place by frames presented ten seconds apart.
+    /// Both captures go through the layer tree and Core Animation's own
+    /// `renderInContext`.
+    #[test]
+    fn the_animated_mesh_gradient_flows_with_the_canvas_clock() {
+        use core::time::Duration;
+        use waterui_graphics::draw::{Instant, LayoutSize};
+        use waterui_graphics::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig};
+        use waterui_graphics::resources::SceneResources;
+        use waterui_graphics::{SceneFrame, SceneUpdate};
+
+        const WIDTH: usize = 360;
+        const HEIGHT: usize = 240;
+        const WIDTH_PT: f32 = 360.0;
+        const HEIGHT_PT: f32 = 240.0;
+        let mut scene = canvas_view(AnimatedMeshGradient::new(
+            AnimatedMeshGradientConfig::aqua_bloom().speed(1.0),
+        ));
+        let registry = Rc::new(Registry::default());
+        let resources = SceneResources::new(Rc::new(Backend::new(Rc::clone(&registry), u64::MAX)));
+        let mut names = resources.recording();
+        let mut content = Content::record(&LayoutSize::new(), |recorder| {
+            let again = scene.build_scene(recorder, &mut names, WIDTH_PT, HEIGHT_PT);
+            assert!(again, "a gradient bound to the clock asks for frames");
+        });
+        let _held = names.finish();
+        let fixture = Fixture::new(registry);
+        let ctx = fixture.at(1.0);
+        let mut tree = Tree::new(&first_list(&mut content), ctx);
+        tree.settle();
+        save(
+            "animated_mesh_t0",
+            &pixels(tree.root(), WIDTH, HEIGHT, 1),
+            WIDTH,
+            HEIGHT,
+            1,
+        );
+
+        let start = Instant::now();
+        for time in [start, start + Duration::from_secs(10)] {
+            let update = scene.update_scene(
+                &resources,
+                SceneFrame {
+                    width: WIDTH_PT,
+                    height: HEIGHT_PT,
+                    time,
+                },
+            );
+            assert!(matches!(update, SceneUpdate::Retained { again: true }));
+            let _ = content.sample(time);
+        }
+        let Some(ContentChange::Update(updates)) = content.take_change() else {
+            panic!("the clock updates the mesh operand in place");
+        };
+        tree.update(&updates, ctx);
+        tree.settle();
+        save(
+            "animated_mesh_t10",
+            &pixels(tree.root(), WIDTH, HEIGHT, 1),
+            WIDTH,
+            HEIGHT,
+            1,
+        );
+    }
 }

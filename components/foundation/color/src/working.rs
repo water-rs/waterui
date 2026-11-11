@@ -5,7 +5,7 @@
 //! spaces (`Srgb`, `P3`, `Oklch`) resolve into it, and the perceptual
 //! adjustments on `Color` go through Oklch and back.
 
-use crate::draw::{Color as SpaceColor, LinearSrgb, WorkingColor};
+use cherenkov_record::{Color as SpaceColor, LinearDisplayP3, LinearSrgb, WorkingColor};
 use color::{AlphaColor, Oklch as OklchSpace};
 
 use super::{Oklch, Srgb, linear_to_srgb};
@@ -20,7 +20,7 @@ pub fn from_linear_srgb([red, green, blue]: [f32; 3], alpha: f32) -> WorkingColo
 #[must_use]
 pub fn to_linear_srgb(color: WorkingColor) -> [f32; 3] {
     let [red, green, blue, _] = color.components;
-    let converted = AlphaColor::<crate::draw::LinearDisplayP3>::new([red, green, blue, 1.0])
+    let converted = AlphaColor::<LinearDisplayP3>::new([red, green, blue, 1.0])
         .convert::<LinearSrgb>()
         .components;
     [converted[0], converted[1], converted[2]]
@@ -41,10 +41,9 @@ pub fn to_srgb(color: WorkingColor) -> Srgb {
 #[must_use]
 pub fn to_oklch(color: WorkingColor) -> Oklch {
     let [red, green, blue, _] = color.components;
-    let [lightness, chroma, hue, _] =
-        AlphaColor::<crate::draw::LinearDisplayP3>::new([red, green, blue, 1.0])
-            .convert::<OklchSpace>()
-            .components;
+    let [lightness, chroma, hue, _] = AlphaColor::<LinearDisplayP3>::new([red, green, blue, 1.0])
+        .convert::<OklchSpace>()
+        .components;
     Oklch::new(lightness, chroma, if hue.is_finite() { hue } else { 0.0 })
 }
 
@@ -53,7 +52,7 @@ pub fn to_oklch(color: WorkingColor) -> Oklch {
 pub fn from_oklch(oklch: Oklch, alpha: f32) -> WorkingColor {
     let converted =
         AlphaColor::<OklchSpace>::new([oklch.lightness, oklch.chroma, oklch.hue, alpha])
-            .convert::<crate::draw::LinearDisplayP3>()
+            .convert::<LinearDisplayP3>()
             .components;
     WorkingColor::new(converted)
 }

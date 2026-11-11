@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+  --> tests/ui/list_selection/fail_other_tag.rs:14:16
+   |
+14 |     .selection(selection)
+   |      --------- ^^^^^^^^^ expected `&Binding<Option<&str>>`, found `&Binding<Option<usize>>`
+   |      |
+   |      arguments to this method are incorrect
+   |
+   = note: expected reference `&Binding<Option<&str>>`
+              found reference `&Binding<Option<usize>>`
+note: method defined here
+  --> $WORKSPACE/src/component/list/mod.rs
+   |
+   |     pub fn selection<T>(self, selection: &Binding<Option<T>>) -> ListBuilder<V>
+   |            ^^^^^^^^^

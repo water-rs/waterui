@@ -105,11 +105,12 @@ differs after comments, doc comments, lint attributes (`must_use`, `expect`,
 `allow`, `warn`, `deny`, `inline`, `doc`) and `#[cfg(test)]` items are removed;
 `.github/scripts/layout_gate.py` makes that comparison. Lint-only,
 documentation-only and test-only edits cannot change semantics, so they do
-not need the label. An agent asks the maintainer and applies the label once
-he approves that specific change; it never applies the label on its own
-judgement. The label records his decision that the change is either a
-conformance fix (the code now matches the document) or an approved amendment
-of the document.
+not need the label. A change to layout source that leaves layout semantics
+unchanged gets the label from the agent itself, without asking. Any other
+change gets it only once the maintainer approves that specific change. The
+label then records that the change keeps the semantics, is a conformance fix
+(the code now matches the document), or is an approved amendment of the
+document.
 
 A case the document does not decide is not a licence to pick a behaviour in code; every freeze break so far came from one, found by a dogfood app. Record it as an issue with the code's current behaviour, the reference framework's behaviour, and a recommended rule, and let the maintainer decide.
 
@@ -132,7 +133,7 @@ A case the document does not decide is not a licence to pick a behaviour in code
 - Diagnostics never use `println!` (Rust), `print()` (Swift) or `println()` (Kotlin): use `tracing::debug!()`, `Logger` with the `dev.waterui` subsystem, and `Log.d()`. Debug output appears only when the CLI runs with `--logs debug`.
 - Applications are created, built, previewed, run and deployed only through the `water` CLI (`water create`, `build`, `preview`, `run`, `package`), never by hand-scaffolding or direct native-tool invocation; `water create` or existing generated project files are the source of truth for project structure. If an application workflow needs `adb`, `xcodebuild` or another tool directly because `water` lacks the capability, propose adding it to the CLI. Standalone crate or backend-package verification uses the package's own toolchain: Cargo, SwiftPM, or Gradle.
 - Monorepo examples set `waterui_path = "../.."` in `Water.toml` so they use the local backends.
-- Fail fast: an unexpected case crashes early with a clear message. No stubs, fallbacks, simplifications or patches, and no legacy code kept as a fallback: a deprecated feature loses all of its code.
+- Fail fast: an unexpected case surfaces early with a clear message. The framework, its backends and components run inside a user's application and never panic casually: a contract violation panics in a debug build and is logged through `tracing` in a release build. The CLI, tests and build scripts crash on it. No stubs, fallbacks, simplifications or patches, and no legacy code kept as a fallback: a deprecated feature loses all of its code.
 - Enforce invariants in the type system rather than at runtime; prefer structs, traits, and generics over enums and type erasure where they express the model.
 - A public struct is either fixed-shape plain data, with every field public and no `#[non_exhaustive]`, or keeps its fields private behind `Type::new`, getters and, where mutation is part of its contract, `set_*` setters. `#[non_exhaustive]` on a struct with public fields is banned: it exposes the representation while still forcing a constructor, as std never does.
 - Public traits expose the friendliest signature even when not object-safe (`-> impl Future`/`-> impl View`, generic methods, RPITIT). Dynamic dispatch goes through a private object-safe shim trait (`XxxImpl`) with a blanket `impl<T: Xxx> XxxImpl for T`, stored as `Box<dyn XxxImpl>` behind a public wrapper (`AnyXxx` / `ViewRenderer`-style); type erasure never shapes the public API (`core/src/ui/view_renderer.rs` is the canonical example).

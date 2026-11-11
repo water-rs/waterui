@@ -271,7 +271,7 @@ pub fn styling_block_08() {
         MeshGradient::new(3, 3, colors.clone()).size(300.0, 200.0)
     };
     let _ = {
-        // animates in-shader on the engine clock
+        // flows with the canvas clock, on every backend
         AnimatedMeshGradient::new(AnimatedMeshGradientConfig::aqua_bloom())
     };
     let _ = {

@@ -9,10 +9,11 @@ use crate::{AnyView, Environment, View, layout::StretchAxis};
 /// `Native<T>` allows embedding platform-specific UI elements within the view hierarchy.
 /// The generic parameter `T` represents the platform-specific component type.
 ///
-/// # Panics
+/// # Contract
 ///
-/// Attempting to render a `Native<T>` view directly will panic. This type is intended
-/// to be handled by platform-specific rendering backends.
+/// Rendering a `Native<T>` view directly breaks the contract of this type, which
+/// platform-specific backends handle: a debug build panics, and a release build
+/// logs the error and renders the fallback, or nothing without one.
 #[derive(Debug)]
 pub struct Native<T: NativeView> {
     native: T,
@@ -62,8 +63,13 @@ impl<T: NativeView> Native<T> {
 
 impl<T: 'static + NativeView> View for Native<T> {
     fn body(self, _env: &Environment) -> impl View {
-        self.fallback
-            .unwrap_or_else(|| panic!("Native view ({})", type_name::<T>()))
+        self.fallback.unwrap_or_else(|| {
+            crate::contract_violation!(
+                "Native view ({}) reached `body` without a fallback: the backend does not realize it, so it renders nothing",
+                type_name::<T>()
+            );
+            AnyView::default()
+        })
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -82,5 +88,33 @@ pub trait NativeView {
     /// Which axis (or axes) this view stretches to fill available space.
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::metadata::{Metadata, MetadataKey};
+
+    struct Probe;
+    impl NativeView for Probe {}
+
+    struct Marker;
+    impl MetadataKey for Marker {}
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "without a fallback"))]
+    fn a_native_view_without_a_fallback_renders_nothing() {
+        let body = Native::new(Probe).body(&Environment::new());
+        assert!(AnyView::new(body).is::<()>());
+    }
+
+    #[test]
+    fn a_native_view_with_a_fallback_renders_it() {
+        let body = Native::new(Probe)
+            .with_fallback(Metadata::new((), Marker))
+            .body(&Environment::new());
+        assert!(AnyView::new(body).is::<Metadata<Marker>>());
     }
 }

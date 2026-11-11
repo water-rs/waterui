@@ -131,7 +131,6 @@ effects = ["waterui-graphics/effects"]
 gpu = [
     "effects",
     "waterui-graphics/gpu",
-    "waterui-shape/gpu",
     "dep:waterui-svg",
 ]
 # `asset!` expands image-kind assets into `waterui::media::Photo` (`ImageAsset`,

@@ -16,8 +16,8 @@
 //!
 //! Each part also keeps what its rows are selected by — a static row's
 //! `.tag(…)` value, a collection item's id — erased until a selection names
-//! the type; [`TaggedBy`] makes that type agree with the content at compile
-//! time.
+//! the type; [`ContentTags`] makes that type agree with the content, and
+//! requires a row selected by it, at compile time.
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
@@ -37,7 +37,7 @@ use waterui_core::id::{Id as RawId, Mapping};
 
 use crate::views::{AnyViewsSnapshot, SharedAnyViews, ViewSnapshot, Views};
 
-use super::content::TaggedBy;
+use super::content::{ContentTags, HoldsTag};
 use super::selection::SelectableRows;
 use super::{ListItem, ListSection};
 
@@ -70,42 +70,60 @@ impl fmt::Debug for ListSections {
 impl ListSections {
     /// The index of the section the row `id` belongs to.
     ///
-    /// # Panics
+    /// # Contract
     ///
-    /// Panics if `id` is not an id the list's contents reported.
+    /// An `id` the list's contents never reported breaks the contract: a debug
+    /// build panics, and a release build logs the error and answers section 0.
     #[must_use]
     pub fn section_of(&self, id: RawId) -> usize {
-        (self.section_of)(id)
-            .unwrap_or_else(|| panic!("list row id {id:?} was never reported by the list"))
+        (self.section_of)(id).unwrap_or_else(|| {
+            crate::contract_violation!(
+                "list row id {id:?} was never reported by the list, so it is placed in section 0"
+            );
+            0
+        })
     }
 
     /// The chrome of section `index`: `None` for rows outside any `Section`.
     ///
-    /// # Panics
+    /// # Contract
     ///
-    /// Panics if `index` is not a section index [`ListSections::section_of`]
-    /// returned.
+    /// An `index` that [`ListSections::section_of`] never returned breaks the
+    /// contract: a debug build panics, and a release build logs the error and
+    /// answers `None`.
     #[must_use]
     pub fn section(&self, index: usize) -> Option<&ListSection> {
-        self.sections[index].as_ref()
+        let Some(section) = self.sections.get(index) else {
+            crate::contract_violation!(
+                "list section {index} does not exist, so it has no chrome; the list has {} sections",
+                self.sections.len()
+            );
+            return None;
+        };
+        section.as_ref()
     }
 
     /// The sections that hold rows in `rows`, in order, with the rows each
     /// covers. The spans partition `rows.range()`; a section with no rows
     /// has no span, so it draws neither header nor footer.
     ///
-    /// # Panics
+    /// # Contract
     ///
-    /// Panics if `rows` is not a snapshot of the list these sections
-    /// describe: a row without an id, or with an id the list never reported.
+    /// A `rows` that is not a snapshot of the list these sections describe — a
+    /// row without an id, or with an id the list never reported — breaks the
+    /// contract: a debug build panics, and a release build logs the error and
+    /// places that row in section 0.
     #[must_use]
     pub fn spans(&self, rows: &impl ViewSnapshot<Id = RawId>) -> Vec<ListSectionSpan> {
         let range = rows.range();
         let section_at = |index: usize| {
-            self.section_of(
-                rows.get_id(index)
-                    .unwrap_or_else(|| panic!("list row {index} has no id in its snapshot")),
-            )
+            let Some(id) = rows.get_id(index) else {
+                crate::contract_violation!(
+                    "list row {index} has no id in its snapshot, so it is placed in section 0"
+                );
+                return 0;
+            };
+            self.section_of(id)
         };
         let mut spans = Vec::new();
         let mut start = range.start;
@@ -124,7 +142,7 @@ impl ListSections {
             }
             spans.push(ListSectionSpan {
                 rows: start..low,
-                section: self.sections[section].clone(),
+                section: self.section(section).cloned(),
             });
             start = low;
         }
@@ -241,7 +259,8 @@ pub struct ListRowId {
 ///
 /// `C` is the content the rows were collected from. It holds no data; it
 /// carries the content's type to [`ListBuilder::selection`](super::ListBuilder::selection),
-/// which accepts a selection type only when the content is [`TaggedBy`] it.
+/// which accepts a selection type only when the content is
+/// [`TaggedBy`](super::TaggedBy) it.
 pub struct ContentRows<C> {
     parts: Rc<[SharedAnyViews<ListItem>]>,
     tags: Rc<[PartTags]>,
@@ -271,67 +290,88 @@ enum TypedPartTags<T> {
     Items(Mapping<T>),
 }
 
-/// The panic for a part whose tags are not of the type its list is selected
-/// by — reachable only through a `TaggedBy` implementation that disagrees
-/// with the rows its content collects.
-fn mistagged<T>() -> ! {
-    panic!(
-        "a list selected by `{}` holds rows tagged by another type: a `TaggedBy` implementation does not match the rows its content collects",
+/// Reports a part whose tags are not of the type its list is selected by —
+/// reachable only through a `ContentTags` implementation that disagrees with
+/// the rows its content collects. A debug build panics, and a release build
+/// logs the error and the rows of that part carry no tag.
+fn report_mistagged<T>() {
+    crate::contract_violation!(
+        "a list selected by `{}` holds rows tagged by another type: a `ContentTags` implementation does not match the rows its content collects, so those rows carry no tag",
         type_name::<T>()
-    )
+    );
 }
 
 impl PartTags {
-    fn typed<T: 'static + Clone>(&self) -> TypedPartTags<T> {
+    fn typed<T: 'static + Ord + Clone>(&self) -> TypedPartTags<T> {
         match self {
             Self::Static { positions, tags } => TypedPartTags::Static {
                 positions: positions.clone(),
                 tags: tags
                     .iter()
                     .map(|tag| {
-                        tag.as_ref().map(|tag| {
-                            tag.downcast_ref::<T>()
-                                .cloned()
-                                .unwrap_or_else(|| mistagged::<T>())
-                        })
+                        let tag = tag.as_ref()?;
+                        let typed = tag.downcast_ref::<T>().cloned();
+                        if typed.is_none() {
+                            report_mistagged::<T>();
+                        }
+                        typed
                     })
                     .collect(),
             },
-            Self::Items(ids) => TypedPartTags::Items(
-                ids.downcast_ref::<Mapping<T>>()
-                    .cloned()
-                    .unwrap_or_else(|| mistagged::<T>()),
-            ),
+            Self::Items(ids) => {
+                TypedPartTags::Items(ids.downcast_ref::<Mapping<T>>().cloned().unwrap_or_else(
+                    || {
+                        report_mistagged::<T>();
+                        Mapping::new()
+                    },
+                ))
+            }
         }
     }
 }
 
 impl<T: Ord + Clone> TypedPartTags<T> {
-    /// The tag of the part's row `row`.
+    /// The tag of the part's row `row`; a row the part never reported carries
+    /// none, after a contract violation.
     fn tag(&self, row: RawId) -> Option<T> {
-        fn unreported(row: RawId) -> ! {
-            panic!("list row id {row:?} was never reported by its part")
-        }
-        match self {
-            Self::Static { positions, tags } => {
-                tags[positions.to_data(row).unwrap_or_else(|| unreported(row))].clone()
-            }
-            Self::Items(ids) => Some(ids.to_data(row).unwrap_or_else(|| unreported(row))),
-        }
+        let tag = match self {
+            Self::Static { positions, tags } => positions
+                .to_data(row)
+                .and_then(|position| tags.get(position).cloned()),
+            Self::Items(ids) => ids.to_data(row).map(Some),
+        };
+        tag.unwrap_or_else(|| {
+            crate::contract_violation!(
+                "list row id {row:?} was never reported by its part, so it carries no tag"
+            );
+            None
+        })
     }
 }
 
 /// The rows of `List::content` are selected by `T` when the content is
 /// tagged by `T`: a static row by its `.tag(…)` value, a `ForEach` row by
-/// its item's id, and an untagged static row not at all.
+/// its item's id, and an untagged static row not at all. Content with no row
+/// selected by `T` is not selectable by it.
 impl<C, T> SelectableRows<T> for ContentRows<C>
 where
-    C: TaggedBy<T>,
+    C: ContentTags<T>,
+    C::Presence: HoldsTag,
     T: 'static + Ord + Clone,
 {
     fn row_tags(&self) -> impl Fn(&ListRowId) -> Option<T> + 'static {
         let parts: Rc<[TypedPartTags<T>]> = self.tags.iter().map(PartTags::typed).collect();
-        move |id: &ListRowId| parts[id.part].tag(id.row)
+        move |id: &ListRowId| {
+            let Some(part) = parts.get(id.part) else {
+                crate::contract_violation!(
+                    "list row id names part {}, but the list has {} parts, so it carries no tag",
+                    id.part,
+                    parts.len()
+                );
+                return None;
+            };
+            part.tag(id.row)
+        }
     }
 }
 

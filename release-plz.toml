@@ -80,6 +80,11 @@ version_group = "waterui"
 git_tag_name = "text-v{{ version }}"
 
 [[package]]
+name = "waterui-color"
+version_group = "waterui"
+git_tag_name = "color-v{{ version }}"
+
+[[package]]
 name = "waterui-layout"
 version_group = "waterui"
 git_tag_name = "layout-v{{ version }}"

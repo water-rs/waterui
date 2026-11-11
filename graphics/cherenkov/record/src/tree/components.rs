@@ -141,6 +141,14 @@ macro_rules! property {
 }
 
 impl Components {
+    pub(super) const fn note_running(&self, running: &mut super::RunningTracks) {
+        running.note_track(self.translation_track.as_ref());
+        running.note_track(self.rotation_track.as_ref());
+        running.note_track(self.scale_track.as_ref());
+        running.note_track(self.skew_track.as_ref());
+        running.note_track(self.pivot_track.as_ref());
+    }
+
     /// Any component track still running.
     pub(super) const fn animating(&self) -> bool {
         self.translation_track.is_some()

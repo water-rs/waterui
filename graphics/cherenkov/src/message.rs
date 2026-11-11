@@ -16,7 +16,7 @@ pub type FrameReplySender<T> = Sender<T>;
 #[cfg(not(target_arch = "wasm32"))]
 pub type FrameReplySender<T> = SyncSender<T>;
 
-use cherenkov_record::{ChangeSet, LayerId, ResourceId, SurfaceId};
+use cherenkov_record::{ChangeSet, LayerId, ResourceId, RunningTracks, SurfaceId};
 
 use crate::backend::{Backend, Display, Renderer, SurfaceInfo};
 use crate::config::{MemoryUsage, Pressure};
@@ -109,12 +109,21 @@ impl std::fmt::Debug for FontData {
     }
 }
 
+/// What a rendered frame publishes for one surface.
+#[derive(Clone, Debug)]
+pub struct SurfaceNext {
+    /// The surface's own deadline.
+    pub next: Next,
+    /// The layer tracks the engine still runs on the surface.
+    pub tracks: RunningTracks,
+}
+
 /// What one rendered frame produces.
 pub struct RenderedFrame<B: Backend> {
     /// The aggregate [`Next`].
     pub next: Next,
-    /// Each rendered surface's own deadline.
-    pub surface_next: rustc_hash::FxHashMap<SurfaceId, Next>,
+    /// Each rendered surface's own deadline and running tracks.
+    pub surface_next: rustc_hash::FxHashMap<SurfaceId, SurfaceNext>,
     /// The frame's stats.
     pub stats: FrameStats,
     /// The work the awaiting caller applies on its own thread before

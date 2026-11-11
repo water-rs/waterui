@@ -65,9 +65,11 @@ impl AnyView {
             let any = &mut Some(view) as &mut dyn Any;
             return any
                 .downcast_mut::<Option<Self>>()
-                .expect("downcast to option should succeed")
+                .expect(
+                    "the TypeId check above proved V is AnyView, so the slot is an Option<AnyView>",
+                )
                 .take()
-                .expect("option should contain a value"); // TODO: use downcast_mut_unchecked when it's stable
+                .expect("the slot was just filled with Some(view)"); // TODO: use downcast_mut_unchecked when it's stable
         }
 
         Self(Box::new(view))

@@ -1,5 +1,6 @@
 mod canvas;
 mod harness;
+mod shape_morph;
 mod transitions;
 
 use super::*;
@@ -295,15 +296,15 @@ mod token_probe {
 
     use hydrolysis::theme::{
         BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, DividerMetrics, DragMapping,
-        FocusIndicator, HitRegion, InputFieldMetrics, InteractionMotion, Knob, Label, ListMetrics,
-        Motion, NavigationMetrics, NavigationMotion, PickerMetrics, PressFeedback,
-        ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
+        FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionMotion, Knob,
+        Label, LinearProgressLook, ListMetrics, Motion, NavigationMetrics, NavigationMotion,
+        PickerMetrics, PressFeedback, ProgressControl, ProgressSpec, RadioIndicatorState,
         RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook,
         StepperSpec, Surface, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics,
         TextCaretMotion, TextContextMenuMetrics, ToggleSpec, WidgetInteractionState, WidgetTheme,
     };
     use hydrolysis::theme::{CheckboxLook, SwitchDrag, SwitchLook};
-    use kurbo::{BezPath, Point, Rect};
+    use kurbo::{Point, Rect};
     use waterui::animation::Animation;
     use waterui::color::Srgb;
     use waterui::component::text;
@@ -369,28 +370,6 @@ mod token_probe {
                 press_shape: Animation::linear(Duration::from_millis(15)),
                 minimum_press_duration: Duration::from_millis(225),
                 touch_delay: Duration::from_millis(150),
-            }
-        }
-
-        fn progress_motion(&self) -> ProgressMotion {
-            ProgressMotion {
-                linear_determinate: Animation::bezier(
-                    Duration::from_millis(250),
-                    0.4,
-                    0.0,
-                    0.6,
-                    1.0,
-                ),
-                circular_determinate: Animation::bezier(
-                    Duration::from_millis(500),
-                    0.0,
-                    0.0,
-                    0.2,
-                    1.0,
-                ),
-                linear_indeterminate_cycle: Duration::from_secs(2),
-                loading_cycle: Duration::from_millis(4_666),
-                circular_indeterminate_cycle: Duration::from_millis(5_332),
             }
         }
 
@@ -557,84 +536,30 @@ mod token_probe {
             )
         }
 
-        fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics {
-            match style {
-                ProgressIndicatorStyle::Loading => ProgressMetrics::loading(48.0, 38.0),
-                ProgressIndicatorStyle::Linear => ProgressMetrics {
-                    label_height: 18.0,
-                    bar_top_offset: 10.0,
-                    bar_height: 8.0,
-                    bar_horizontal_inset: 8.0,
-                    value_label_top_spacing: 6.0,
-                    min_track_width: 72.0,
-                    circular_diameter: 0.0,
-                    circular_stroke_width: 0.0,
-                    loading_indicator_size: 0.0,
-                },
-                ProgressIndicatorStyle::Circular => ProgressMetrics {
-                    label_height: 0.0,
-                    bar_top_offset: 0.0,
-                    bar_height: 0.0,
-                    bar_horizontal_inset: 0.0,
-                    value_label_top_spacing: 0.0,
-                    min_track_width: 0.0,
-                    circular_diameter: 32.0,
-                    circular_stroke_width: 5.0,
-                    loading_indicator_size: 0.0,
-                },
-            }
+        fn linear_progress(&self, _spec: &ProgressSpec, _env: &Environment) -> LinearProgressLook {
+            LinearProgressLook::new(
+                ProgressControl::new(
+                    kurbo::Size::new(72.0, 8.0),
+                    Motion::uniform(Animation::linear(Duration::from_millis(15))),
+                ),
+                8.0,
+            )
+            .label_band(18.0, 10.0)
+            .value_label_band(6.0)
         }
 
-        fn draw_progress_linear_track(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _active_end: Option<f64>,
-        ) {
-        }
-        fn draw_progress_linear_fill(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_progress_linear_indeterminate(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _elapsed: Duration,
-            _four_color: bool,
-        ) {
-        }
-        fn draw_progress_circular_track(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _width: f64,
-            _active_turns: Option<f64>,
-        ) {
-        }
-        fn draw_progress_circular_fill(
-            &self,
-            _recorder: &mut Recorder,
-            _path: &BezPath,
-            _width: f64,
-        ) {
-        }
-        fn draw_progress_loading(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _elapsed: Duration,
-            _four_color: bool,
-        ) {
+        fn circular_progress(&self, _spec: &ProgressSpec, _env: &Environment) -> IndicatorLook {
+            IndicatorLook::new(ProgressControl::new(
+                kurbo::Size::new(32.0, 32.0),
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            ))
         }
 
-        fn draw_progress_circular_indeterminate(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _width: f64,
-            _elapsed: Duration,
-            _four_color: bool,
-        ) {
+        fn loading_indicator(&self, _spec: &ProgressSpec, _env: &Environment) -> IndicatorLook {
+            IndicatorLook::new(ProgressControl::new(
+                kurbo::Size::new(48.0, 48.0),
+                Motion::uniform(Animation::linear(Duration::from_millis(15))),
+            ))
         }
 
         fn navigation_metrics(&self) -> NavigationMetrics {

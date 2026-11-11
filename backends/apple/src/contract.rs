@@ -154,7 +154,7 @@ impl NativeLeaf {
     /// outer declaration wins, the inner one dropping unowned.
     pub fn set_transition(&mut self, claim: crate::transition::TransitionClaim) {
         if self.transition.is_some() {
-            crate::transition::transition_violation!(
+            waterui::contract_violation!(
                 "waterui-apple: a `.transition(...)` declaration beneath another `.transition(...)` \
                  is never owned — remove the inner declaration (docs/layout-spec.md §4.5)"
             );
@@ -268,7 +268,7 @@ impl NativeLeaf {
     #[must_use]
     pub fn mount(mut self, parent: &PlatformView) -> Mounted {
         if self.transition.take().is_some() {
-            crate::transition::transition_violation!(
+            waterui::contract_violation!(
                 "waterui-apple: `.transition(...)` reached a view with no structural transition \
                  owner. A transition declares how a view is inserted and removed, so it must be \
                  the outermost modifier of the content a structural site swaps — of a \

@@ -211,7 +211,13 @@ impl Dynamic {
                     initial
                 }
                 DynamicHandlerState::Connected { .. } => {
-                    unreachable!("Dynamic already connected")
+                    // A clone of a connected `Dynamic` was realized again.
+                    // The first receiver keeps the node; this realization
+                    // stays empty.
+                    crate::contract_violation!(
+                        "a Dynamic was connected twice: the second realization stays empty and the first keeps receiving updates"
+                    );
+                    return;
                 }
             }
         };
@@ -402,6 +408,28 @@ mod tests {
         handle.set(Metadata::new((), Probe(1)));
 
         assert_eq!(&*delivered.borrow(), &[1, 2]);
+    }
+
+    /// Realizing a clone of a connected `Dynamic` leaves the first receiver
+    /// in place and the second realization empty.
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "connected twice"))]
+    fn a_second_connection_keeps_the_first_receiver() {
+        let (handle, dynamic) = Dynamic::new();
+        let first = Rc::new(Cell::new(0));
+        let second = Rc::new(Cell::new(0));
+        dynamic.clone().connect({
+            let first = Rc::clone(&first);
+            move |_| first.set(first.get() + 1)
+        });
+        dynamic.connect({
+            let second = Rc::clone(&second);
+            move |_| second.set(second.get() + 1)
+        });
+
+        handle.set(Metadata::new((), Probe(1)));
+
+        assert_eq!((first.get(), second.get()), (1, 0));
     }
 
     /// A `Dynamic::watch` builder that writes the watched signal queues that

@@ -26,7 +26,7 @@ use crate::image::ImageUpload;
 use cherenkov_record::ResourceId;
 use cherenkov_record::{BackdropShaderId, ChangeSet, LayerId, SurfaceId, SurfaceTree};
 
-use crate::message::{Message, RenderOutcome, RenderedFrame, ResOp};
+use crate::message::{Message, RenderOutcome, RenderedFrame, ResOp, SurfaceNext};
 use crate::paint::ImageId;
 use crate::{BackdropEffect, WorkingColor};
 
@@ -927,7 +927,7 @@ fn finish_frame<B: Backend>(
     time: crate::Instant,
     redraw: &FrameRedraw,
     rejected: &[SurfaceRejection],
-) -> (Next, FxHashMap<SurfaceId, Next>) {
+) -> (Next, FxHashMap<SurfaceId, SurfaceNext>) {
     let mut rate = None;
     // Keyed by surface: one entry per drawn surface, so publication
     // stays linear in the surface count instead of rescanning a Vec.
@@ -954,7 +954,13 @@ fn finish_frame<B: Backend>(
                 Some(crate::backend::union_rate(running, request.clone()))
             }
         };
-        surface_next.insert(*id, mine.map_or(Next::Idle, |rate| next_at(time, rate)));
+        surface_next.insert(
+            *id,
+            SurfaceNext {
+                next: mine.map_or(Next::Idle, |rate| next_at(time, rate)),
+                tracks: state.tree.running_tracks(|layer| owned.contains(&layer)),
+            },
+        );
         match running {
             Some(r) if r == cherenkov_record::tree::RATE_FAST => {
                 rate = Some(cherenkov_record::tree::RATE_FAST);

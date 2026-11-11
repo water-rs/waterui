@@ -406,10 +406,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // only then decides: a scope with a running slot stays drawn; one
         // with nothing left animating is dropped and the content unmounts.
         self.record_presentation(entry, presentation, ctx, safe_area, false);
-        if self
-            .animation_controller
-            .scope_is_active(scope, self.frame_instant)
-        {
+        if self.animation_controller.scope_is_active(scope) {
             return Some(frame);
         }
         self.program().discard_last_scope();

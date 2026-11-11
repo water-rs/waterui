@@ -2159,7 +2159,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -4717,7 +4717,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#a46e53101b7c2e4bd96acf25d7c03ce885828aca"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#b3a2f4590c6df2459b3c0407c7acee3b689ea9a9"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -12977,6 +12977,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-color"
+version = "0.5.1"
+dependencies = [
+ "cherenkov-record",
+ "color",
+ "filtrate-core",
+ "nami",
+ "pastey 0.2.3",
+ "waterui-core",
+]
+
+[[package]]
 name = "waterui-controls"
 version = "0.5.1"
 dependencies = [
@@ -13007,6 +13019,7 @@ dependencies = [
  "smallvec",
  "suiteki",
  "thiserror 2.0.21",
+ "tracing",
  "waterui-macros",
 ]
 
@@ -13054,7 +13067,6 @@ dependencies = [
  "cherenkov-gpu",
  "cherenkov-oracle",
  "cherenkov-record",
- "color",
  "event-listener",
  "filtrate",
  "filtrate-core",
@@ -13068,7 +13080,6 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-video",
  "objc2-metal 0.3.2",
- "pastey 0.2.3",
  "pollster 1.0.1",
  "send_wrapper",
  "shaderloom",
@@ -13076,6 +13087,7 @@ dependencies = [
  "tracing",
  "ttf-parser",
  "waterui",
+ "waterui-color",
  "waterui-core",
  "waterui-testing",
  "wgpu",
@@ -13164,15 +13176,13 @@ dependencies = [
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?branch=dev#5fd33037f929f42f0d2913998c782fa4cbd258a0"
+source = "git+https://github.com/water-rs/image?branch=dev#6a725427a4151b33cc7c2a817bfb74312c2c58df"
 dependencies = [
- "executor-core",
  "half",
  "image",
  "mp4-atom",
  "num-traits",
  "thiserror 2.0.21",
- "tracing",
  "waterkit-codec",
  "waterui-core",
  "waterui-graphics",
@@ -13503,15 +13513,9 @@ dependencies = [
 name = "waterui-shape"
 version = "0.5.1"
 dependencies = [
- "async-channel",
- "executor-core",
- "futures-lite",
  "nami",
- "native-executor",
- "num-traits",
  "waterui-core",
  "waterui-graphics",
- "web-time",
 ]
 
 [[package]]
@@ -13567,8 +13571,8 @@ dependencies = [
  "two-face",
  "waterkit-clipboard",
  "waterui",
+ "waterui-color",
  "waterui-core",
- "waterui-graphics",
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",

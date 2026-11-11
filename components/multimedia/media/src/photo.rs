@@ -27,12 +27,13 @@ use std::path::Path;
 #[cfg(target_arch = "wasm32")]
 use waterkit_fs::WaterFs;
 use waterui_core::content_ledger::OwedContent;
+use waterui_core::contract_violation;
 use waterui_core::event::{LifeCycle, LifeCycleHook};
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::reactive::watcher::BoxWatcherGuard;
 use waterui_core::{AnyView, Computed, ContentLedger, Environment, Metadata, Retain, Signal, View};
 use waterui_image::{
-    ContentMode, Image, ReactiveImage, ReactiveImageHandle, RegistrationState, reactive_image,
+    ContentMode, Image, ImageStatus, ReactiveImage, ReactiveImageHandle, reactive_image,
 };
 #[cfg(feature = "remote")]
 use zenwave::{Client, Method};
@@ -83,9 +84,9 @@ pub enum Event {
     /// decoded — a frame the backend refuses reports [`Event::Error`]
     /// instead, never `Loaded`.
     Loaded,
-    /// The image failed to load: the source did not decode, or the scene
-    /// backend refused a frame's registration. The message is the decode
-    /// error or the refusal's [`Display`](core::fmt::Display).
+    /// The image failed to load: the source did not decode, or the render
+    /// target refused a frame's pixels. The message is the decode error or
+    /// the refusal's [`Display`](core::fmt::Display).
     Error(String),
 }
 
@@ -233,13 +234,12 @@ struct PhotoLoadState {
     latest_source: Option<Url>,
     last_started_source: Option<Url>,
     /// The first frame of `latest_source`, owed to a capture until its
-    /// registration settles. Replacing it releases the previous source's
-    /// entry.
+    /// status settles. Replacing it releases the previous source's entry.
     owed: Option<OwedContent>,
-    /// The watch turning the current source's registration state into its
-    /// owed capture and events. Owned here so a source change drops it: a
+    /// The watch turning the current source's image status into its owed
+    /// capture and events. Owned here so a source change drops it: a
     /// settlement for a replaced source never fires.
-    registration: Option<BoxWatcherGuard>,
+    status: Option<BoxWatcherGuard>,
 }
 
 impl PhotoLoadState {
@@ -250,7 +250,7 @@ impl PhotoLoadState {
     ) -> Option<Url> {
         if self.latest_source.as_ref() != Some(&source) {
             self.owed = owe(&source);
-            self.registration = None;
+            self.status = None;
         }
         self.latest_source = Some(source.clone());
         self.start_if_ready(source)
@@ -361,7 +361,7 @@ fn start_load_task(
                 tracing::error!("[Photo] Failed to load: {}", e);
                 if generation.get() == token {
                     // A source whose decode failed reports no later
-                    // registration event.
+                    // status event.
                     let mut settlement = settlement.borrow_mut();
                     let fresh = !matches!(settlement.phase, Phase::Reported);
                     settlement.phase = Phase::Reported;
@@ -380,15 +380,15 @@ fn start_load_task(
     .detach();
 }
 
-/// What the current source's registration settlements have come to, shared
-/// between the registration watch and the decode task that marks `finished`
+/// What the current source's status settlements have come to, shared
+/// between the status watch and the decode task that marks `finished`
 /// once the stream ends.
 #[derive(Debug)]
 struct Settlement {
-    /// The registration state last observed on the handle:
-    /// [`Pending`](RegistrationState::Pending) while the published frame's
-    /// recording pass has not settled it yet.
-    latest: RegistrationState,
+    /// The status last observed on the handle:
+    /// [`Pending`](ImageStatus::Pending) while no target has drawn the
+    /// published frame yet.
+    latest: ImageStatus,
     /// What the source's report still waits for.
     phase: Phase,
     /// The decode stream ended, making the last published frame the final
@@ -396,7 +396,7 @@ struct Settlement {
     finished: bool,
 }
 
-/// Which registration settlement a source's report still waits for.
+/// Which status settlement a source's report still waits for.
 #[derive(Debug)]
 enum Phase {
     /// No published frame has settled yet; the first to do so resolves the
@@ -412,7 +412,7 @@ enum Phase {
 impl Settlement {
     const fn new() -> Self {
         Self {
-            latest: RegistrationState::Pending,
+            latest: ImageStatus::Pending,
             phase: Phase::AwaitingFirst,
             finished: false,
         }
@@ -421,7 +421,7 @@ impl Settlement {
 
 /// Starts reporting for the source the load is about to fetch: bumps the
 /// load generation, clears the published frame, and installs the watch that
-/// turns the handle's registration state into the source's owed capture and
+/// turns the handle's image status into the source's owed capture and
 /// events. The watch's guard is owned by `load_state`, so a source change
 /// ends it. Returns the load's token and the settlement record the decode
 /// task marks finished on.
@@ -439,7 +439,7 @@ fn begin_source_load(
     generation.set(token);
     handler.clear();
     let settlement = Rc::new(RefCell::new(Settlement::new()));
-    let guard = handler.registration().watch({
+    let guard = handler.status().watch({
         let settlement = Rc::clone(&settlement);
         let load_state = Rc::clone(load_state);
         let on_event = Rc::clone(on_event);
@@ -454,7 +454,7 @@ fn begin_source_load(
             settle_registration(&mut settlement, &load_state, &on_event, &env);
         }
     });
-    load_state.borrow_mut().registration = Some(guard);
+    load_state.borrow_mut().status = Some(guard);
     (token, settlement)
 }
 
@@ -479,7 +479,7 @@ fn decode_finished(
 
 /// Applies the settlement the source stands at. The first published frame's
 /// outcome resolves the capture it owes; [`Event::Loaded`] fires on the
-/// final frame's registration, and [`Event::Error`] on a refusal of the
+/// final frame being ready, and [`Event::Error`] on a refusal of the
 /// first or the final frame. A refused progressive frame between them is
 /// superseded by the frame that replaces it, so it reports nothing. Each
 /// event fires once per source.
@@ -493,8 +493,8 @@ fn settle_registration(
         return;
     }
     match settlement.latest.clone() {
-        RegistrationState::Pending => {}
-        RegistrationState::Registered => {
+        ImageStatus::Pending => {}
+        ImageStatus::Ready => {
             if matches!(settlement.phase, Phase::AwaitingFirst) {
                 settlement.phase = Phase::WatchingFinal;
                 if let Some(owed) = load_state.borrow_mut().owed.take() {
@@ -508,7 +508,7 @@ fn settle_registration(
                 }
             }
         }
-        RegistrationState::Refused(error) => {
+        ImageStatus::Refused(error) => {
             let first = matches!(settlement.phase, Phase::AwaitingFirst);
             if !(first || settlement.finished) {
                 return;
@@ -520,6 +520,9 @@ fn settle_registration(
             if let Some(on_event) = on_event.borrow_mut().as_mut() {
                 on_event(Event::Error(error.to_string()), env);
             }
+        }
+        status => {
+            contract_violation!("Photo has no settlement for the image status {status:?}");
         }
     }
 }
@@ -620,10 +623,11 @@ mod tests {
     };
     use crate::Url;
     use image::ImageEncoder as _;
+    use waterui::graphics::canvas::{Canvas, CanvasView};
     use waterui::graphics::draw::{Content, FontId, ImageId, ImageLimits, LayoutSize};
     use waterui::graphics::{
         FontSource, Handle, ImageData, ResourceError, ResourceHandle, Rgba8, Rgba16F, SceneBackend,
-        SceneContent, SceneResources, SceneView,
+        SceneContent, SceneResources,
     };
     use waterui_core::handler::BoxedEventAction;
     use waterui_core::{
@@ -784,20 +788,25 @@ mod tests {
         }
     }
 
-    /// The scene content inside a `ReactiveImage`'s body — the view keeps it
-    /// behind a layout container, so a test pulls it out through the public
-    /// view API to drive `build_scene` itself.
+    /// The mounted canvas inside a `ReactiveImage`'s body — the view keeps
+    /// its canvas behind a layout container, so a test pulls it out through
+    /// the public view API and mounts it, as a backend does, to drive
+    /// `build_scene` itself.
     fn mounted_content(image: ReactiveImage) -> Box<dyn SceneContent> {
-        let body = AnyView::new(image.body(&Environment::new()));
+        let env = Environment::new();
+        let body = AnyView::new(image.body(&env));
         let container = body
             .downcast::<FixedContainer>()
             .unwrap_or_else(|_| panic!("a reactive image mounts inside a fixed container"));
         let (_, mut contents) = container.into_inner();
-        let scene = contents
+        let canvas = contents
             .pop()
-            .and_then(|view| view.downcast::<SceneView>().ok())
-            .expect("a reactive image's only content is a scene view");
-        scene.into_content()
+            .and_then(|view| view.downcast::<Canvas>().ok())
+            .expect("a reactive image's only content is a canvas");
+
+        (AnyView::new(canvas.body(&env))
+            .downcast::<CanvasView>()
+            .unwrap_or_else(|_| panic!("a canvas mounts as a canvas view"))) as _
     }
 
     /// Records one frame of `content` against `resources`, running the
@@ -888,21 +897,16 @@ mod tests {
         let (token, settlement) =
             begin_source_load(&handle, &on_event, &env, &generation, &load_state);
 
-        // Publish the first frame and settle its registration — refused.
+        // Publish the first frame and draw it — the target refuses it.
         handle.set(Image::new(vec![255; 4], 1, 1));
         settle_frame(&mut *content, &resources);
-        assert!(
-            events.borrow().is_empty(),
-            "the refusal reports from the executor, not inside the recording pass"
-        );
-        assert_eq!(waterui_testing::drain_parked_local_work(), 1);
 
         let fired = events.borrow();
         let [event] = fired.as_slice() else {
             panic!("a refused first frame reports one error: {fired:?}");
         };
         assert!(
-            event.starts_with("Error(the scene backend rejected the image"),
+            event.starts_with("Error(") && event.contains("refused by the test backend"),
             "{event}"
         );
         drop(fired);
@@ -912,7 +916,7 @@ mod tests {
             failure
                 .get_source()
                 .to_string()
-                .contains("the scene backend rejected the image"),
+                .contains("refused by the test backend"),
             "{failure}"
         );
 
@@ -950,11 +954,10 @@ mod tests {
         let (token, settlement) =
             begin_source_load(&handle, &on_event, &env, &generation, &load_state);
 
-        // The first published frame registers: the owed capture is
+        // The first published frame is drawn: the owed capture is
         // fulfilled, but nothing is reported while the stream runs.
         handle.set(Image::new(vec![255; 4], 1, 1));
         settle_frame(&mut *content, &resources);
-        assert_eq!(waterui_testing::drain_parked_local_work(), 1);
         assert_eq!(
             ledger.pending().snapshot(),
             0,
@@ -978,7 +981,6 @@ mod tests {
 
         // Re-recording the same frame reports nothing further.
         settle_frame(&mut *content, &resources);
-        assert_eq!(waterui_testing::drain_parked_local_work(), 0);
         assert_eq!(events.borrow().len(), 1);
     }
 
@@ -996,17 +998,16 @@ mod tests {
             on_event,
         } = load_test_setup(false);
 
-        // Source A publishes a frame whose registration settles refused; the
-        // settlement is queued for the executor but not delivered yet.
+        // Source A publishes a frame the target would refuse, but no
+        // recording pass has drawn it yet.
         load_state.borrow_mut().appeared = true;
         load_state.borrow_mut().owed = ContentLedger::owe::<Photo>(&env, "replaced.png".to_owned());
         let _ = begin_source_load(&handle, &on_event, &env, &generation, &load_state);
         handle.set(Image::new(vec![255; 4], 1, 1));
-        settle_frame(&mut *content, &resources);
 
-        // The source changes before the settlement lands: the watch is
-        // dropped with the old source's load state, and the new source owes
-        // its own capture.
+        // The source changes before that frame is drawn: the watch is
+        // dropped with the old source's load state, the published frame is
+        // cleared, and the new source owes its own capture.
         let next = Url::from_file_path_str("/photos/next.png");
         update_photo_source(
             &load_state,
@@ -1024,14 +1025,10 @@ mod tests {
             },
         );
 
-        assert_eq!(
-            waterui_testing::drain_parked_local_work(),
-            1,
-            "the replaced source's settlement was still delivered"
-        );
+        settle_frame(&mut *content, &resources);
         assert!(
             events.borrow().is_empty(),
-            "a settlement for a replaced source reports nothing"
+            "a frame of a replaced source reports nothing"
         );
         assert_eq!(
             ledger
@@ -1046,7 +1043,6 @@ mod tests {
         // And the current source's own settlement still reports.
         handle.set(Image::new(vec![255; 4], 1, 1));
         settle_frame(&mut *content, &resources);
-        assert_eq!(waterui_testing::drain_parked_local_work(), 1);
         assert_eq!(events.borrow().len(), 1);
     }
 
