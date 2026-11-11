@@ -111,7 +111,8 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
     type Group = Infallible;
     type Shader = Infallible;
 
-    const BACKDROP_SHADERS: bool = false;
+    const BACKDROP_SHADER_REFUSAL: Option<&'static str> =
+        Some("the HWUI render target has no backdrop shaders");
 
     fn resources(host: &Self::Host) -> &Rc<SceneResources> {
         &host.resources

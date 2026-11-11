@@ -86,7 +86,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
     type Host = CherenkovHost;
     type Group = cherenkov::BackdropGroup;
     type Shader = cherenkov::BackdropShader;
-    const BACKDROP_SHADERS: bool = true;
+    const BACKDROP_SHADER_REFUSAL: Option<&'static str> = None;
 
     #[cfg(hydrolysis_hosted)]
     fn mount_hosted(

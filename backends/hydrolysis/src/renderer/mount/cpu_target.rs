@@ -30,10 +30,17 @@ use crate::text::TextService;
 use super::engine_target::{install_engine_text, mount_material_group};
 use super::{FilterHandle, LayerTarget, MaterialTerms};
 
-/// Why a view that needs a GPU device cannot mount on this target.
+/// Why a view that needs a GPU device cannot mount on this target. A build
+/// without the `gpu` feature refuses those views before they reach a target
+/// (`refuse_gpu_device_view`), so here the build has both painters and
+/// adapter selection chose this one.
 #[cfg(hydrolysis_gpu)]
-const NO_GPU: &str = "needs a GPU device, but this runtime renders on the Cherenkov CPU backend \
-                      (the host has no usable GPU, or the build selected only the `cpu` feature)";
+const NO_GPU: &str = "this runtime renders on the Cherenkov CPU backend: the host has no usable \
+                      hardware GPU";
+
+/// Why a theme's backdrop shaders cannot attach to this target.
+const NO_BACKDROP_SHADERS: &str = "the Cherenkov CPU backend does not realize backdrop shaders \
+                                   yet (water-rs/waterui#4065)";
 
 /// The Cherenkov CPU target's host: one per window of an offscreen runtime
 /// that selected the CPU backend.
@@ -61,7 +68,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_cpu::Raster {
     /// No backdrop shader exists on this target, so no chrome member can be
     /// bound: the payload a chrome join would build is uninhabited.
     type Shader = Infallible;
-    const BACKDROP_SHADERS: bool = false;
+    const BACKDROP_SHADER_REFUSAL: Option<&'static str> = Some(NO_BACKDROP_SHADERS);
 
     fn resources(host: &RasterHost) -> &Rc<SceneResources> {
         &host.resources
@@ -80,10 +87,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_cpu::Raster {
         _pixels: (u32, u32),
         _wake: ProducerWake,
     ) {
-        panic!(
-            "hydrolysis: GpuView (GPU content, which the GPU video player and the vector map \
-             render through) {NO_GPU}"
-        );
+        crate::renderer::unsupported_gpu_device_view("GpuContentView", NO_GPU);
     }
 
     #[cfg(hydrolysis_gpu)]
@@ -95,7 +99,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_cpu::Raster {
         _presented: waterui_graphics::gpu::PresentedSize,
         _wake: ProducerWake,
     ) -> Option<(u32, u32)> {
-        panic!("hydrolysis: ExternalFrameView (external GPU frames) {NO_GPU}");
+        crate::renderer::unsupported_gpu_device_view("ExternalFrameView", NO_GPU);
     }
 
     fn filter(_host: &RasterHost, _runtime: &mut FilteredRuntime) -> FilterId {

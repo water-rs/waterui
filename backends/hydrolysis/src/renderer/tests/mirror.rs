@@ -130,7 +130,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
     type Group = BackdropId;
     /// The mirror's engine realizes real backdrop shaders.
     type Shader = cherenkov::BackdropShader;
-    const BACKDROP_SHADERS: bool = true;
+    const BACKDROP_SHADER_REFUSAL: Option<&'static str> = None;
 
     fn resources(host: &MirrorHost) -> &Rc<SceneResources> {
         &host.resources
@@ -539,7 +539,8 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for NoShaderTarget {
     type Host = NoShaderHost;
     type Group = ();
     type Shader = ();
-    const BACKDROP_SHADERS: bool = false;
+    const BACKDROP_SHADER_REFUSAL: Option<&'static str> =
+        Some("this engine has no backdrop shaders");
 
     fn resources(host: &NoShaderHost) -> &Rc<SceneResources> {
         &host.resources

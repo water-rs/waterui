@@ -87,6 +87,27 @@ pub fn unsupported_webview() -> ! {
     )
 }
 
+/// A leaf that needs a GPU device — `view`, as
+/// [`gpu_device_view`](waterui_graphics::backend::gpu_device_view) names it —
+/// reached a painter without one; `no_gpu` says why this runtime has none.
+#[cfg(any(not(hydrolysis_gpu), hydrolysis_cpu_painter))]
+pub fn unsupported_gpu_device_view(view: &str, no_gpu: &str) -> ! {
+    panic!("hydrolysis: {view} needs a GPU device, but {no_gpu}")
+}
+
+/// Refuses `view` when it needs a GPU device, in a build without the GPU
+/// painter: such a build compiles no realization for these leaves, so measure
+/// and node build stop at them here instead of expanding their `body`.
+#[cfg(not(hydrolysis_gpu))]
+pub fn refuse_gpu_device_view(view: &AnyView) {
+    if let Some(name) = waterui_graphics::backend::gpu_device_view(view) {
+        unsupported_gpu_device_view(
+            name,
+            "this Hydrolysis build has no GPU painter: it was built without the `gpu` feature",
+        )
+    }
+}
+
 /// Reaching a `PlatformView` leaf without a `PlatformViewSink` in the window
 /// environment means the runner cannot mount native children at all.
 pub fn unsupported_platform_view() -> ! {
@@ -163,6 +184,12 @@ pub fn is_hydro_native_view(view: &AnyView) -> bool {
         };
     }
     hydro_native_view_types!(check_native_view);
+    // A leaf that needs a GPU device is a leaf here too, so layout stops at
+    // it and measure and node build refuse it by name.
+    #[cfg(not(hydrolysis_gpu))]
+    if waterui_graphics::backend::gpu_device_view(view).is_some() {
+        return true;
+    }
     false
 }
 
@@ -183,5 +210,7 @@ pub fn dimensions_for_known_native_views<E: crate::text::TextEngine>(
         };
     }
     hydro_native_view_types!(try_native_dimensions);
+    #[cfg(not(hydrolysis_gpu))]
+    refuse_gpu_device_view(view);
     None
 }

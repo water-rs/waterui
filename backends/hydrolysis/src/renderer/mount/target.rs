@@ -36,11 +36,11 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
     /// GPU target.
     type Shader: Clone + 'static;
 
-    /// Whether the target's engine realizes backdrop shaders at all.
-    /// `false` — a CPU engine — makes a [`Mount`](super::Mount::new)
-    /// attach panic when the theme's material registry is not empty
+    /// Why the target's engine cannot realize backdrop shaders, or `None`
+    /// when it can. A refusal makes a [`Mount`](super::Mount::new) attach
+    /// panic with it when the theme's material registry is not empty
     /// (water-rs/waterui#1788).
-    const BACKDROP_SHADERS: bool;
+    const BACKDROP_SHADER_REFUSAL: Option<&'static str>;
 
     fn resources(host: &Self::Host) -> &Rc<SceneResources>;
 

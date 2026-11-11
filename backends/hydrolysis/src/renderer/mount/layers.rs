@@ -431,8 +431,9 @@ impl<E: crate::text::TextEngine> NodeLayers<E> {
     }
 
     /// The `ChromeMaterial` member layers the node mounted, across its
-    /// own, inner and scope lists — a test-facing answer.
-    #[cfg(test)]
+    /// own, inner and scope lists — a test-facing answer. Only the GPU
+    /// painter mounts chrome members until water-rs/waterui#4065.
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn chrome_members(&self) -> Vec<(u32, LayerId)> {
         self.members
             .iter()
@@ -619,24 +620,27 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> CommitCx<'_, '_, '_, T, E> {
 
 impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
     /// The mount binds to a target whose engine realizes materials.
-    /// `registry` is the theme's `MaterialRegistry`: a target with no
-    /// backdrop shaders — a CPU engine — panics on this attach when the
-    /// registry is not empty (water-rs/waterui#1788).
+    /// `registry` is the theme's `MaterialRegistry`: a target that refuses
+    /// backdrop shaders ([`LayerTarget::BACKDROP_SHADER_REFUSAL`]) panics on
+    /// this attach with its reason when the registry is not empty
+    /// (water-rs/waterui#1788).
     pub fn new(
         shared: Rc<RefCell<Shared<T>>>,
         registry: &cherenkov_record::MaterialRegistry,
     ) -> Self {
-        assert!(
-            T::BACKDROP_SHADERS || registry.is_empty(),
-            "hydrolysis materials: this layer target's engine has no backdrop shaders, \
-             but the theme registered {} — the material chrome would have nothing to draw \
-             with; attach the theme to a GPU engine or register no shaders",
-            registry
-                .shaders()
-                .map(|(key, _)| format!("{key:?}"))
-                .collect::<Vec<_>>()
-                .join(", "),
-        );
+        if let Some(refusal) = T::BACKDROP_SHADER_REFUSAL
+            && !registry.is_empty()
+        {
+            panic!(
+                "hydrolysis materials: the theme registered the backdrop shaders {}, but {refusal} \
+                 — the material chrome would have nothing to draw with",
+                registry
+                    .shaders()
+                    .map(|(key, _)| format!("{key:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
         let root = Shared::root(&shared);
         let window = Shared::layer(&shared);
         Self {
