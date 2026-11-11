@@ -36,30 +36,27 @@ use waterui::easing::{EasingCurve, Interpolatable};
 use waterui::Intensity;
 
 // `.filter(F)` requires `F: Filter + RenderTransfer` and `.effect(E)` requires
-// `E: Effect + RenderTransfer`; `filtrate` (the filters and effects) and the
-// render-transfer trait are re-exported at the graphics root so an app links
-// the same copies the engine runs.
+// `E: Effect + RenderTransfer`; the filter set, the `Filter` and `Effect`
+// traits with the types an effect is written in, and the render-transfer trait
+// answer at `graphics::filter_view` so an app links the same copies the
+// engine runs.
 #[cfg(feature = "gpu")]
-use waterui::graphics::{
-    RenderTransfer, SHADER_EFFECT_MAX_PARAMS, ShaderEffect, ShaderEffectError,
-    filtrate::{
-        Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
-        Filter,
-    },
+use waterui::graphics::RenderTransfer;
+#[cfg(feature = "gpu")]
+use waterui::graphics::filter_view::{
+    Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
+    Filter, RetainedMemory, SHADER_EFFECT_MAX_PARAMS, ShaderEffect, ShaderEffectError,
+    TextureViews, filters,
 };
 
-// Apps implementing `GpuContent`/`Effect` must be able to use the same `wgpu` this
-// build links, rather than hand-adding a version that may not match.
-#[cfg(feature = "gpu")]
-use waterui::graphics::wgpu;
-
 // A `GpuContent` author's whole vocabulary answers at `graphics::gpu`: the
-// device crates, the frame timing and readback types, the external-frame
-// interop and the engine backend `OffscreenRenderer` is generic over.
+// `wgpu` and `bytemuck` this build links rather than a hand-added version
+// that may not match, the frame timing and readback types, the
+// external-frame interop and the engine backend `OffscreenRenderer` is
+// generic over.
 #[cfg(feature = "gpu")]
 use waterui::graphics::gpu::{
-    Display, FrameTime, Gpu, Offscreen, OffscreenFormat, Readback, bytemuck, interop,
-    wgpu as gpu_wgpu,
+    Display, FrameTime, Gpu, Offscreen, OffscreenFormat, Readback, bytemuck, interop, wgpu,
 };
 
 #[test]

@@ -232,7 +232,7 @@ the prelude supplies `VertexOutput` (`position`, `uv`), `input_texture`/`input_s
 `effect_param(i)`:
 
 ```rust
-use waterui::graphics::ShaderEffect;
+use waterui::graphics::filter_view::ShaderEffect;
 
 let crt = ShaderEffect::new(include_str!("crt.wgsl"))?; // invalid WGSL is an Err, never a blank view
 terminal()

@@ -4,7 +4,7 @@
 //! platform image view. It needs no GPU device, which is the point — a static
 //! drawing must not cost a wgpu runtime.
 //!
-//! [`Picture`]: crate::picture::Picture
+//! [`Picture`]: crate::backend::Picture
 
 use alloc::rc::Rc;
 use alloc::vec::Vec;
@@ -107,7 +107,7 @@ impl From<RenderError> for RasterizeError {
 /// The engine behind a `Rasterizer` is real, so pictures that name engine
 /// resources — fonts, images, shader paints — must have recorded those
 /// resources against this one: record them with
-/// [`Picture::record_with`](crate::picture::Picture::record_with) over
+/// [`Picture::record_with`](crate::backend::Picture::record_with) over
 /// [`Rasterizer::resources`], not another engine.
 ///
 /// Every drawing it takes carries the registrations it names — a
@@ -446,7 +446,7 @@ mod tests {
     use crate::draw::kurbo::{Rect, Shape};
     use crate::draw::{Color, Draw, Srgb, StaticRecorder, WorkingColor};
 
-    use crate::picture::Picture;
+    use crate::backend::Picture;
 
     /// Linear-working red is Display P3's red, which sRGB cannot hold: the
     /// expectations below come from naming an sRGB colour instead of a

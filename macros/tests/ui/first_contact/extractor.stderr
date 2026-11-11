@@ -23,7 +23,7 @@ help: the trait `Extractor` is not implemented for `ApiClient`
 note: required by a bound in `use_env`
   --> $WORKSPACE/core/src/foundation/env.rs
    |
-   | pub fn use_env<E, V, F>(f: F) -> UseEnv<impl FnOnce(&Environment) -> V>
+   | pub fn use_env<E, V, F>(f: F) -> UseEnv<impl FnOnce(&Environment) -> Option<V>>
    |        ------- required by a bound in this function
    | where
    |     E: Extractor,
@@ -54,7 +54,7 @@ help: the trait `Extractor` is not implemented for `ApiClient`
 note: required by a bound in `use_env`
  --> $WORKSPACE/core/src/foundation/env.rs
   |
-  | pub fn use_env<E, V, F>(f: F) -> UseEnv<impl FnOnce(&Environment) -> V>
+  | pub fn use_env<E, V, F>(f: F) -> UseEnv<impl FnOnce(&Environment) -> Option<V>>
   |        ------- required by a bound in this function
   | where
   |     E: Extractor,

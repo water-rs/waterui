@@ -614,7 +614,7 @@ lto = "thin"
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
 shaderloom = { git = "https://github.com/water-rs/shaderloom", branch = "dev" }
-# Extracted crates on crates.io (waterui-canvas #185, waterui-chart #188, …) depend on the
+# Extracted crates on crates.io (waterui-chart #188, …) depend on the
 # registry `waterui-core` and `waterui-graphics`; the workspace must resolve
 # those to its own copies or the graph carries two of each and every `View`
 # is a different type on either side. Publishing ignores this table, so the
@@ -729,13 +729,12 @@ wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame",
 # Split component repositories, the waterkit family and suiteki follow their
 # `dev` branch; `Cargo.lock` records the exact commit.
 waterui-barcode = { git = "https://github.com/water-rs/barcode", branch = "dev" }
-waterui-canvas = { git = "https://github.com/water-rs/canvas", branch = "dev" }
 waterui-chart = { git = "https://github.com/water-rs/chart", branch = "dev" }
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "dev" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "dev" }
 waterui-particle = { git = "https://github.com/water-rs/particle", branch = "dev" }
 waterui-image = { git = "https://github.com/water-rs/image", branch = "dev" }
-waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16f99e021f735d0b1b31c95552b074e953d56418" }
+waterui-svg = { git = "https://github.com/water-rs/svg", branch = "dev" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
 waterkit-camera = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
 waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", branch = "dev" }

@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
+use crate::draw::{Draw, Paint, WorkingColor};
 use cherenkov_record::ShapeData;
 use kurbo::{Rect, RoundedRect};
 use nami::{Binding, Signal as _};
@@ -17,7 +18,6 @@ use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::LayoutDirection;
-use waterui_graphics::draw::{Draw, Paint, WorkingColor};
 
 use super::chrome_primitives::Frames;
 use super::{MinimalTestTheme, pumped_test_environment, test_environment};

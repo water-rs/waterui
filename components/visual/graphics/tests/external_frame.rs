@@ -26,11 +26,10 @@ use objc2_core_video::{
 use objc2_metal::{
     MTLDevice, MTLPixelFormat, MTLStorageMode, MTLTexture, MTLTextureDescriptor, MTLTextureUsage,
 };
-use waterui_graphics::cherenkov::{Display, FrameTime, Readback};
-use waterui_graphics::cherenkov_gpu::interop::{ExternalFrame, FrameColor, metal};
+use waterui_graphics::gpu::interop::{ExternalFrame, FrameColor, metal};
 use waterui_graphics::gpu::{
-    ExternalFrameRenderer, ExternalFrameSource, ExternalFrameView, FrameOutput, GpuRuntime,
-    PresentedSize, RedrawHandle, RetiredOutput,
+    Display, ExternalFrameRenderer, ExternalFrameSource, ExternalFrameView, FrameOutput, FrameTime,
+    GpuRuntime, PresentedSize, Readback, RedrawHandle, RetiredOutput,
 };
 use waterui_graphics::offscreen::{OffscreenImage, OffscreenSize};
 

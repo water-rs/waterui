@@ -22,7 +22,7 @@ use waterui::shape::RoundedRectangle;
 use waterui::{FilterViewExt, ViewExt};
 use waterui_core::AnyView;
 use waterui_graphics::backend::{FilteredView, SceneViewMergeToParent};
-use waterui_graphics::filtrate::{
+use waterui_graphics::filter_view::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
     RetainedMemory,
 };
