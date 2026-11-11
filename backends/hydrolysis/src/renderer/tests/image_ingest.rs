@@ -4,8 +4,8 @@
 //! `Queue::write_texture` untouched and panic there with a message naming
 //! neither the image nor the view; the unwind then panicked again in the
 //! swapchain destructor and aborted the process. Validation now happens at
-//! the first owned point on each ingest path: `assert_well_formed_image`
-//! guards the peniko payloads `Recording::image` lowers, and
+//! the first owned point on each ingest path: `check_well_formed_image`
+//! refuses the peniko payloads `Recording::image` lowers, and
 //! `cherenkov::ImageData::new` — whose `Err` names the expected and actual
 //! byte counts and the format — guards the `SceneResources::image`
 //! registration a `SceneContent::build_scene` drives.
@@ -24,7 +24,7 @@ use waterui_graphics::{RecordingResources, SceneContent, SceneInvalidator, Scene
 
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
-use crate::renderer::assert_well_formed_image;
+use crate::renderer::check_well_formed_image;
 
 const WINDOW: u32 = 160;
 
@@ -48,16 +48,20 @@ fn well_formed_image() -> ImageData {
 }
 
 #[test]
-#[should_panic(
-    expected = "Rgba8 at 10x10 needs width*height*bytes_per_pixel = 400 bytes, but the blob holds 100 bytes"
-)]
-fn malformed_image_data_is_named_at_ingest() {
-    assert_well_formed_image(&malformed_image());
+fn malformed_image_data_is_refused_at_ingest() {
+    let error = check_well_formed_image(&malformed_image())
+        .expect_err("a malformed blob is refused, never uploaded");
+    assert!(
+        error.to_string().contains(
+            "Rgba8 at 10x10 needs width*height*bytes_per_pixel = 400 bytes, but the blob holds 100 bytes"
+        ),
+        "{error}"
+    );
 }
 
 #[test]
 fn well_formed_image_data_passes_ingest() {
-    assert_well_formed_image(&well_formed_image());
+    check_well_formed_image(&well_formed_image()).expect("a well-formed image passes");
 }
 
 fn runtime_with(view: impl View) -> HeadlessRuntime {

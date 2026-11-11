@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use cherenkov_record::{FilterId, Layer, MaterialRegistry, ResourceError, Transaction};
 use rustc_hash::FxHashMap;
+use waterui_core::contract_violation;
 use waterui_graphics::filtrate::filters::OverscrollStretch;
 use waterui_graphics::gpu::PresentedSize;
 use waterui_graphics::{Handle, Reactive, TextBackend, TextRegistration, TextRequest};
@@ -38,25 +39,26 @@ impl MaterialTerms<cherenkov::BackdropShader> {
 
 /// Attaches `registry` to `engine`: each shader source registers with the
 /// engine and its handle joins the per-engine table a chrome member's
-/// group binds. A source the engine rejects panics at attach, naming the
-/// key — the registry is the theme's own contract, so a rejection is a
-/// programmer error.
+/// group binds. A source the engine rejects is reported at attach, naming
+/// the key, and stays out of the table: the chrome that names it is not
+/// drawn.
 pub fn attach_material_shaders(
     engine: &crate::engine::GpuEngine,
     registry: &MaterialRegistry,
 ) -> FxHashMap<cherenkov_record::MaterialShader, cherenkov::BackdropShader> {
     registry
         .shaders()
-        .map(|(key, source)| {
+        .filter_map(|(key, source)| {
             let shader = engine
                 .backdrop_shader(source.clone())
-                .unwrap_or_else(|error| {
-                    panic!(
+                .inspect_err(|error| {
+                    contract_violation!(
                         "hydrolysis materials: backdrop shader {key:?} failed to register on the \
-                         attached engine: {error}"
-                    )
-                });
-            (key, shader)
+                         attached engine: {error}; the chrome that names it is not drawn"
+                    );
+                })
+                .ok()?;
+            Some((key, shader))
         })
         .collect()
 }

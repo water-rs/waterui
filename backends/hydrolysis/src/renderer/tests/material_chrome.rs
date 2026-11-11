@@ -1173,24 +1173,32 @@ fn engine_attach_registers_each_shader() {
     );
 }
 
-/// A source the engine rejects panics at attach, naming the key.
+/// A source the engine rejects is reported at attach, naming the key, and
+/// stays out of the attached table.
 #[test]
-#[should_panic(expected = "backdrop shader MaterialShader(9) failed to register")]
-fn a_rejected_source_panics_at_attach_naming_the_key() {
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "backdrop shader MaterialShader(9) failed to register")
+)]
+fn a_rejected_source_is_reported_at_attach_naming_the_key() {
     let mut registry = MaterialRegistry::new();
     registry.register_shader(
         MaterialShader::new(9),
         BackdropShaderSource::wgsl("fn backdrop_effect( { this is not wgsl"),
     );
-    mirror_engine(|engine| attach_material_shaders(engine, &registry));
+    let attached = mirror_engine(|engine| attach_material_shaders(engine, &registry));
+    assert!(!attached.contains_key(&MaterialShader::new(9)));
 }
 
-/// A material naming a capture class the registry lacks panics at install,
-/// naming the key.
+/// A material naming a capture class the registry lacks is reported at
+/// install, naming the key, and draws no chrome.
 #[test]
-#[should_panic(expected = "capture class CaptureClass(7) is not registered")]
-fn an_unregistered_class_panics_at_install() {
-    let _runtime = rendered(
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "capture class CaptureClass(7) is not registered")
+)]
+fn an_unregistered_class_is_reported_at_install() {
+    let runtime = rendered(
         tap_view,
         MinimalTestTheme {
             chrome: ChromePlan {
@@ -1201,18 +1209,21 @@ fn an_unregistered_class_panics_at_install() {
         },
         DISPLAY_SCALE,
     );
+    assert_eq!(chrome_mount(&runtime).chrome_group_count(), 0);
 }
 
-/// A CPU engine — a layer target with no backdrop shaders — panics on
-/// attach when the theme's registry is not empty.
+/// A CPU engine — a layer target with no backdrop shaders — reports on
+/// attach when the theme's registry is not empty, and the mount holds no
+/// chrome.
 #[test]
-#[should_panic(expected = "no backdrop shaders")]
-fn a_cpu_engine_panics_on_attach_with_a_nonempty_registry() {
+#[cfg_attr(debug_assertions, should_panic(expected = "no backdrop shaders"))]
+fn a_cpu_engine_reports_on_attach_with_a_nonempty_registry() {
     let mut registry = MaterialRegistry::new();
     for (key, source) in glass_plan(vec![]).shaders {
         registry.register_shader(key, source);
     }
-    let _mount = no_shader_mount(&registry);
+    let mount = no_shader_mount(&registry);
+    assert_eq!(mount.chrome_groups().backdrop_group_count(), 0);
 }
 
 /// …but an empty registry mounts on it fine — a theme with no materials
@@ -1222,11 +1233,15 @@ fn a_cpu_engine_accepts_an_empty_registry() {
     let _mount = no_shader_mount(&MaterialRegistry::new());
 }
 
-/// A material naming a shader the registry lacks panics at install.
+/// A material naming a shader the registry lacks is reported at install and
+/// draws no chrome.
 #[test]
-#[should_panic(expected = "backdrop shader MaterialShader(7) is not registered")]
-fn an_unregistered_shader_panics_at_install() {
-    let _runtime = rendered(
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "backdrop shader MaterialShader(7) is not registered")
+)]
+fn an_unregistered_shader_is_reported_at_install() {
+    let runtime = rendered(
         tap_view,
         MinimalTestTheme {
             chrome: ChromePlan {
@@ -1237,6 +1252,7 @@ fn an_unregistered_shader_panics_at_install() {
         },
         DISPLAY_SCALE,
     );
+    assert_eq!(chrome_mount(&runtime).chrome_group_count(), 0);
 }
 
 /// A `Union` class's members share one group under one scope — like

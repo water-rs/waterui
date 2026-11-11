@@ -4,6 +4,7 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use waterui_core::contract_violation;
 
 impl_widget_behavior!(
     crate::widgets::layout::list::ListRenderState<E>,
@@ -287,20 +288,19 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             use crate::widgets::platform::webview::AndroidSystemWebViewHandle;
 
             let handle = webview.handle();
-            let instance = handle
+            let Some(instance) = handle
                 .downcast_ref::<AndroidSystemWebViewHandle>()
-                .map_or_else(
-                    || {
-                        panic!(
-                            "hydrolysis android: a WebView handle that is not \
-                             AndroidSystemWebViewHandle reached the backend; the \
-                             Android system bridge only draws views `WebView::open` \
-                             made through its controller — another engine must \
-                             install its `Hook<WebView>` realization"
-                        )
-                    },
-                    AndroidSystemWebViewHandle::instance,
+                .map(AndroidSystemWebViewHandle::instance)
+            else {
+                contract_violation!(
+                    "hydrolysis android: a WebView handle that is not \
+                     AndroidSystemWebViewHandle reached the backend; the \
+                     Android system bridge only draws views `WebView::open` \
+                     made through its controller — another engine must \
+                     install its `Hook<WebView>` realization; the web view is not drawn"
                 );
+                return Self::build_empty(renderer, env);
+            };
             let stretch = waterui_core::NativeView::stretch_axis(webview);
             let owner: Rc<dyn core::any::Any> = Rc::new(handle.clone());
             let state = Rc::new(RefCell::new(PlatformViewRenderState::from_instance(
@@ -310,8 +310,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         }
         #[cfg(not(any(hydrolysis_system_webview, hydrolysis_android_system_webview)))]
         {
-            let _ = (webview, env, renderer);
-            unsupported_webview()
+            let _ = webview;
+            contract_violation!("{UNSUPPORTED_WEBVIEW}; the web view is not drawn");
+            Self::build_empty(renderer, env)
         }
     }
 

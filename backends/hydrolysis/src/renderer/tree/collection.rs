@@ -11,6 +11,7 @@ use crate::theme::WidgetTheme;
 use std::rc::Rc;
 
 use nami::collection::CollectionChange;
+use waterui_core::contract_violation;
 use waterui_core::layout::{LayoutError, PlacementInput, ResolvedExtent, resolve_layout_extent};
 use waterui_core::transition::{Ghost, GhostSlot, TransitionSpec};
 use waterui_core::views::ViewSnapshot;
@@ -37,6 +38,38 @@ pub fn collect_replaced_ids<S>(
     for range in change.updates() {
         out.extend(range.filter_map(|index| snapshot.get_id(index)));
     }
+}
+
+/// The id of item `index`, which `snapshot` must report for every index in its
+/// range. `None` after a contract violation when it does not: the caller skips
+/// the item.
+pub(super) fn item_id<S: ViewSnapshot>(snapshot: &S, index: usize) -> Option<S::Id> {
+    let id = snapshot.get_id(index);
+    if id.is_none() {
+        contract_violation!(
+            "hydrolysis collection: item {index} has no id although it is in the snapshot's range; the item is skipped"
+        );
+    }
+    id
+}
+
+/// The view of item `index`, which `snapshot` must materialize for every index
+/// in its range. `None` after a contract violation when it does not: the
+/// caller skips the item, or draws [`item_view_or_empty`]'s empty view.
+fn item_view<S: ViewSnapshot>(snapshot: &S, index: usize) -> Option<S::View> {
+    let view = snapshot.get_view(index);
+    if view.is_none() {
+        contract_violation!(
+            "hydrolysis collection: item {index} failed to materialize although it is in the snapshot's range; the item draws nothing"
+        );
+    }
+    view
+}
+
+/// [`item_view`], with an empty view standing in for the item that failed to
+/// materialize, for callers that must place a view at `index`.
+pub(super) fn item_view_or_empty(snapshot: &AnyViewsSnapshot<AnyView>, index: usize) -> AnyView {
+    item_view(snapshot, index).unwrap_or_else(|| AnyView::new(()))
 }
 
 /// The dimensions a live entry freezes at for its removal ghost: measured at
@@ -558,16 +591,12 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
         let snapshot = self.snapshot.borrow().clone();
         let len = snapshot.len();
 
-        let indices: Vec<usize> = snapshot.range().collect();
-        let ids: Vec<CollectionItemId> = indices
-            .iter()
-            .map(|&index| {
-                snapshot
-                    .get_id(index)
-                    .unwrap_or_else(|| panic!("hydrolysis collection: item {index} has no id"))
-            })
+        let items: Vec<(usize, CollectionItemId)> = snapshot
+            .range()
+            .filter_map(|index| Some((index, item_id(&snapshot, index)?)))
             .collect();
-        let live: std::collections::HashSet<CollectionItemId> = ids.iter().copied().collect();
+        let live: std::collections::HashSet<CollectionItemId> =
+            items.iter().map(|&(_, id)| id).collect();
 
         // Partition the previous display order into entries still live
         // (reusable, keyed by id) and departed ones, which become ghosts when
@@ -600,26 +629,21 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
 
         let mut next = Vec::with_capacity(len);
         let replaced = core::mem::take(&mut *self.replaced_ids.borrow_mut());
-        for (index, id) in indices.into_iter().zip(ids) {
+        for (index, id) in items {
             let entry = if let Some(mut previous) = reuse_by_id.remove(&id) {
                 if replaced.contains(&id) {
                     // Same id, changed content: re-materialize this row's
                     // node and spec from the current item. The entry keeps
                     // its identity; an in-flight insertion clock keeps running.
-                    let view = snapshot
-                        .get_view(index)
-                        .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
                     previous.replace_node(RenderNode::build(
-                        normalize_layout_view(view, &env),
+                        normalize_layout_view(item_view_or_empty(&snapshot, index), &env),
                         &env,
                         renderer,
                     ));
                 }
                 previous
             } else {
-                let view = snapshot
-                    .get_view(index)
-                    .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
+                let view = item_view_or_empty(&snapshot, index);
                 let core = renderer.new_core();
                 core.cell.set_parent(&self.core.cell);
                 let node = RenderNode::build(normalize_layout_view(view, &env), &env, renderer);
@@ -959,9 +983,7 @@ impl<T: View, E: crate::text::TextEngine> LazyTransitions<E, T> {
         let anchor_before = |index: Option<usize>| -> Option<CollectionItemId> {
             let mut index = index?;
             loop {
-                let id = previous
-                    .get_id(index)
-                    .expect("hydrolysis LazyStack: a previous row has an id");
+                let id = item_id(&previous, index)?;
                 if live.contains_key(&id) {
                     return Some(id);
                 }
@@ -1133,13 +1155,11 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
                 if index >= count {
                     break;
                 }
-                let id = views
-                    .get_id(index)
-                    .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
+                let Some(id) = item_id(views, index) else {
+                    continue;
+                };
                 if cache.get(&id).is_none() {
-                    let view = views.get_view(index).unwrap_or_else(|| {
-                        panic!("hydrolysis LazyStack failed to materialize item {index}")
-                    });
+                    let view = item_view_or_empty(views, index);
                     // Build now, not at flush: a cached-but-unbuilt entry
                     // measures as zero and is skipped by `patch_for_parent`,
                     // so the row would place at a collapsed rect this frame.
@@ -1167,7 +1187,15 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         match &self.axis {
             LazyStackAxisConfig::Vertical { spacing, .. }
             | LazyStackAxisConfig::Horizontal { spacing, .. } => {
-                f64::from(state.measure_signal(spacing))
+                let spacing = f64::from(state.measure_signal(spacing));
+                if spacing.is_finite() && spacing >= 0.0 {
+                    spacing
+                } else {
+                    contract_violation!(
+                        "virtualized item spacing {spacing} must be finite and non-negative; the items are laid out without spacing"
+                    );
+                    0.0
+                }
             }
         }
     }
@@ -1199,9 +1227,9 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         index: usize,
         proposal: ProposalSize,
     ) -> (Size, StretchAxis) {
-        let id = snapshot
-            .get_id(index)
-            .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
+        let Some(id) = item_id(snapshot, index) else {
+            return (Size::new(0.0, 0.0), StretchAxis::None);
+        };
         if let Some(item) = self.item_cache.borrow().get(&id)
             && item.is_built()
         {
@@ -1211,10 +1239,7 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
             );
         }
 
-        let view = snapshot
-            .get_view(index)
-            .unwrap_or_else(|| panic!("hydrolysis LazyStack failed to materialize item {index}"));
-        let view = normalize_layout_view(view, &self.env);
+        let view = normalize_layout_view(item_view_or_empty(snapshot, index), &self.env);
         state.measurement.begin_transient_measurement();
         let result = {
             let bound = RefCell::new(&mut *state);
@@ -1325,10 +1350,7 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
             let LazySlot::Row(index) = self.transitions.slot_at(position) else {
                 continue;
             };
-            let id = snapshot
-                .get_id(index)
-                .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
-            let Some(item) = cache.get(&id) else {
+            let Some(item) = item_id(snapshot, index).and_then(|id| cache.get(&id)) else {
                 continue;
             };
             let proposal = self.item_proposal(cross);
@@ -1551,17 +1573,12 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         cursor: f64,
         stack_area: Option<&safe_area::SafeAreaLayout>,
     ) -> f64 {
-        let id = snapshot
-            .get_id(index)
-            .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
+        let Some(id) = item_id(snapshot, index) else {
+            return 0.0;
+        };
         let proposal = self.item_proposal(cross);
         let env = &self.env;
-        let materialize = || {
-            let view = snapshot.get_view(index).unwrap_or_else(|| {
-                panic!("hydrolysis LazyStack failed to materialize item {index}")
-            });
-            normalize_layout_view(view, env)
-        };
+        let materialize = || normalize_layout_view(item_view_or_empty(snapshot, index), env);
         let (size, stretch) = {
             let mut cache = self.item_cache.borrow_mut();
             let subview = cache.entry(id, materialize);
@@ -1691,17 +1708,14 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         });
         self.item_cache.borrow_mut().begin_frame();
         for index in snapshot.range() {
-            let id = snapshot
-                .get_id(index)
-                .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
+            let Some(id) = item_id(&snapshot, index) else {
+                continue;
+            };
             let env = &self.env;
             let views = &snapshot;
             let mut cache = self.item_cache.borrow_mut();
             let subview = cache.entry(id, || {
-                let view = views.get_view(index).unwrap_or_else(|| {
-                    panic!("hydrolysis LazyStack failed to materialize item {index}")
-                });
-                normalize_layout_view(view, env)
+                normalize_layout_view(item_view_or_empty(views, index), env)
             });
             // The row's declaration is claimed before its first walk.
             subview.ensure_built(renderer, env);

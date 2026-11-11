@@ -9,8 +9,10 @@ use super::ContainerNode;
 use super::*;
 use crate::text::TextEngine;
 use crate::theme::WidgetTheme;
+use waterui_core::contract_violation;
 use waterui_core::layout::{
-    Layout, LayoutError, LayoutPlacement, ResolvedExtent, place_layout, resolve_layout_extent,
+    Layout, LayoutError, LayoutPlacement, ResolvedExtent, SubviewPlacement, place_layout,
+    resolve_layout_extent,
 };
 use waterui_graphics::scene_stretch_axis;
 use waterui_layout::scroll::scroll_stretch_axis;
@@ -365,7 +367,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             },
                         )
                     }
-                    _ => panic!("hydrolysis render tree: unsupported scroll axis"),
+                    other => {
+                        contract_violation!(
+                            "hydrolysis render tree: unsupported scroll axis {other:?}; the scroll view measures as zero"
+                        );
+                        Size::zero()
+                    }
                 };
                 ViewDimensions::new(size)
             }
@@ -720,7 +727,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     ScrollAxis::Horizontal => ProposalSize::new(None, Some(size.height)),
                     ScrollAxis::Vertical => ProposalSize::new(Some(size.width), None),
                     ScrollAxis::All => ProposalSize::UNSPECIFIED,
-                    _ => panic!("hydrolysis render tree: unsupported scroll axis"),
+                    other => {
+                        contract_violation!(
+                            "hydrolysis render tree: unsupported scroll axis {other:?}; the scroll view is not laid out"
+                        );
+                        return;
+                    }
                 };
                 let intrinsic = node
                     .child
@@ -737,7 +749,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         intrinsic.width.max(size.width),
                         intrinsic.height.max(size.height),
                     ),
-                    _ => panic!("hydrolysis render tree: unsupported scroll axis"),
+                    _ => unreachable!("an unsupported scroll axis returned above"),
                 };
                 // §7.1's scroll surface: the extension is computed once
                 // here — the edges whose laid-out frame touches the
@@ -871,9 +883,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::LazyStack(node) => {
                 #[cfg(feature = "accessibility")]
                 {
-                    let resolved = node
-                        .resolve_extent(&mut renderer.state, &theme, bounds, proposal)
-                        .unwrap_or_else(|error| panic!("hydrolysis layout: {error}"));
+                    let resolved = resolved_or_collapsed(
+                        node.resolve_extent(&mut renderer.state, &theme, bounds, proposal),
+                        bounds,
+                    );
                     node.geometry = Some(PlacedGeometry {
                         proposal,
                         answer: resolved.answer,
@@ -888,8 +901,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             // reports in that response rectangle.
             Self::Text(node) => {
                 let answer = text_dimensions(node, &mut renderer.state, env, proposal).size;
-                let resolved = ResolvedExtent::centred(bounds, answer)
-                    .unwrap_or_else(|error| panic!("hydrolysis layout: {error}"));
+                let resolved =
+                    resolved_or_collapsed(ResolvedExtent::centred(bounds, answer), bounds);
                 node.geometry = Some(PlacedGeometry {
                     proposal,
                     answer,
@@ -916,8 +929,37 @@ pub(super) fn placed_layout(
     proposal: ProposalSize,
     children: &[&dyn SubView],
 ) -> LayoutPlacement {
-    place_layout(layout, bounds, proposal, children)
-        .unwrap_or_else(|error| panic!("hydrolysis layout: {error}"))
+    place_layout(layout, bounds, proposal, children).unwrap_or_else(|error| {
+        contract_violation!(
+            "hydrolysis layout: {error}; the container and its children collapse to zero size at the container's origin"
+        );
+        let collapsed = Rect::new(bounds.origin(), Size::zero());
+        LayoutPlacement {
+            answer: Size::zero(),
+            response_rect: collapsed,
+            children: children
+                .iter()
+                .map(|_| SubviewPlacement::new(collapsed, ProposalSize::new(Some(0.0), Some(0.0))))
+                .collect(),
+        }
+    })
+}
+
+/// `result`, or after a contract violation a zero-size response at `bounds`'
+/// origin when the layout driver rejected the answer or the bounds.
+pub(super) fn resolved_or_collapsed(
+    result: Result<ResolvedExtent, LayoutError>,
+    bounds: Rect,
+) -> ResolvedExtent {
+    result.unwrap_or_else(|error| {
+        contract_violation!(
+            "hydrolysis layout: {error}; the view collapses to zero size at its origin"
+        );
+        ResolvedExtent {
+            answer: Size::zero(),
+            rect: Rect::new(bounds.origin(), Size::zero()),
+        }
+    })
 }
 
 /// A text leaf's answer to `proposal`, shaped under `env`.

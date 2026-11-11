@@ -3,6 +3,7 @@
 use super::*;
 use crate::text::{TextLayout as _, TextPosition, TextSelection};
 use unicode_segmentation::UnicodeSegmentation;
+use waterui_core::contract_violation;
 use waterui_graphics::draw::Draw as _;
 
 /// What became of a key press once the framework finished with it.
@@ -1171,10 +1172,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let started = self.text_editing.text_caret_fade_started_at.unwrap_or(now);
         let elapsed = now.saturating_duration_since(started);
         let cycle_secs = motion.fade_cycle_duration.as_secs_f32();
-        assert!(
-            cycle_secs > 0.0,
-            "hydrolysis text caret fade cycle duration must be > 0"
-        );
+        if cycle_secs <= 0.0 {
+            contract_violation!(
+                "hydrolysis text caret fade cycle duration must be > 0; the caret does not blink"
+            );
+            return 1.0;
+        }
         let phase = (elapsed.as_secs_f32() / cycle_secs).fract();
         let wave = f32::midpoint((core::f32::consts::TAU * phase).cos(), 1.0);
         (1.0 - motion.min_opacity).mul_add(wave, motion.min_opacity)
@@ -1254,10 +1257,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 }
             }
         }
-        assert!(
-            count == 1,
-            "hydrolysis .focused() requires exactly one TextField or SecureField or input surface in the wrapped subtree, found {count}"
-        );
+        if count != 1 {
+            contract_violation!(
+                "hydrolysis .focused() requires exactly one TextField or SecureField or input surface in the wrapped subtree, found {count}; the binding is not wired"
+            );
+            return;
+        }
         if let Some((cell, index)) = embedded_hit {
             // The bucket borrow ends before the focus setters run: they
             // materialize the registries, which borrow the same `RefCell`.
@@ -1268,10 +1273,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     .expect("hydrolysis focused metadata missing embedded input bucket")
                     .embedded_input_targets[index]
                     .payload;
-                assert!(
-                    target.focus_binding.is_none(),
-                    "hydrolysis does not allow multiple .focused() modifiers to target the same control"
-                );
+                if target.focus_binding.is_some() {
+                    contract_violation!(
+                        "hydrolysis does not allow multiple .focused() modifiers to target the same control; the later binding is not wired"
+                    );
+                    return;
+                }
                 target.focus_binding = Some(value.0.clone());
                 target.interaction_key.clone()
             };
@@ -1292,10 +1299,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 .expect("hydrolysis focused metadata missing text input bucket")
                 .text_input_targets[index]
                 .payload;
-            assert!(
-                target.focus_binding.is_none(),
-                "hydrolysis does not allow multiple .focused() modifiers to target the same control"
-            );
+            if target.focus_binding.is_some() {
+                contract_violation!(
+                    "hydrolysis does not allow multiple .focused() modifiers to target the same control; the later binding is not wired"
+                );
+                return;
+            }
             target.focus_binding = Some(value.0.clone());
             target.interaction_key.clone()
         };
@@ -1600,21 +1609,24 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let theme = Rc::clone(&overlay.theme);
         let metrics = theme.text_context_menu_metrics();
         let text = self.popup_menu_text_metrics(&items, metrics, env, &theme);
-        let origin = popup_window_origin(
+        let Some(origin) = popup_window_origin(
             LayoutPoint::new(
                 crate::num_cast::f64_as_f32(row_bounds.x1),
                 crate::num_cast::f64_as_f32(row_bounds.y0),
             ),
             env,
-        );
+        ) else {
+            return;
+        };
+        let Some(manager) = popup_window_manager(env, "text selection menus") else {
+            return;
+        };
         let group = overlay.menu_group.clone();
         group.truncate(1);
         let (window, state) =
             popup_menu_window(items, origin, group.clone(), 1, metrics, text, &theme);
         group.push(state);
-        env.get::<PopupWindowManager>()
-            .expect("hydrolysis text selection menus require PopupWindowManager in environment")
-            .show(window, env);
+        manager.show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
         self.context_mark_layout();
     }

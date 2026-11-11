@@ -775,11 +775,18 @@ fn layout_normalization_does_not_charge_metadata_depth_to_component_recursion() 
 }
 
 #[test]
-#[should_panic(expected = "hydrolysis layout normalization exceeded recursion budget")]
-fn layout_normalization_still_rejects_recursive_component_bodies() {
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "hydrolysis layout normalization exceeded recursion budget")
+)]
+fn layout_normalization_reports_recursive_component_bodies_and_draws_nothing() {
     let env = test_environment();
 
-    let _ = normalize_layout_view(AnyView::new(RecursivelyErasedView), &env);
+    let view = normalize_layout_view(AnyView::new(RecursivelyErasedView), &env);
+    assert!(
+        view.is::<()>(),
+        "the recursive body is replaced by an empty view"
+    );
 }
 
 #[test]
@@ -1743,8 +1750,8 @@ fn a_label_survives_the_environment_snapshot_a_view_hook_takes() {
 /// with no page behind it.
 #[cfg(not(hydrolysis_system_webview))]
 #[test]
-#[should_panic(expected = "no web engine is bridged")]
-fn a_webview_with_no_engine_to_draw_it_panics() {
+#[cfg_attr(debug_assertions, should_panic(expected = "no web engine is bridged"))]
+fn a_webview_with_no_engine_to_draw_it_is_reported_and_not_drawn() {
     use std::future::{Future, ready};
 
     use waterui_core::{Signal, Str};

@@ -162,18 +162,22 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             format: wgpu::TextureFormat,
             headroom: f32,
         ) -> Result<EngineFrame, cherenkov::RenderError> {
-        assert!(
-            matches!(
-                format.remove_srgb_suffix(),
-                wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
-            ) || matches!(
-                format,
-                wgpu::TextureFormat::Rgba16Float
-                    | wgpu::TextureFormat::Rgba32Float
-                    | wgpu::TextureFormat::Rgb10a2Unorm
-            ),
-            "hydrolysis renderer: unsupported surface format {format:?}"
+        let supported = matches!(
+            format.remove_srgb_suffix(),
+            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
+        ) || matches!(
+            format,
+            wgpu::TextureFormat::Rgba16Float
+                | wgpu::TextureFormat::Rgba32Float
+                | wgpu::TextureFormat::Rgb10a2Unorm
         );
+        if !supported {
+            tracing::error!(
+                ?format,
+                "hydrolysis renderer: unsupported surface format; the frame is not rendered"
+            );
+            return Err(cherenkov::RenderError::Unsupported("surface format"));
+        }
 
         let _render_span = tracing::debug_span!("hydrolysis_render_scene").entered();
         let state = crate::engine::engine_await!(crate::engine::shared_engine_state(
