@@ -308,7 +308,7 @@ fn note(
 pub struct Resources<'a> {
     pub device: &'a wgpu::Device,
     pub layout: &'a wgpu::PipelineLayout,
-    pub layout1: &'a wgpu::BindGroupLayout,
+    pub group1: &'a crate::render::Group1,
     pub dummy: &'a wgpu::TextureView,
     pub bind0: &'a wgpu::BindGroup,
     pub images: &'a FxHashMap<u64, crate::render::GpuImage>,
@@ -380,7 +380,7 @@ pub fn encode(
                 stats.bind_groups_created += 1;
                 make_bind1(
                     resources.device,
-                    resources.layout1,
+                    resources.group1,
                     resources.dummy,
                     None,
                     None,
@@ -586,7 +586,7 @@ pub fn encode(
                     stats.bind_groups_created += 1;
                     make_bind1(
                         resources.device,
-                        resources.layout1,
+                        resources.group1,
                         resources.dummy,
                         None,
                         None,
