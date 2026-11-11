@@ -120,6 +120,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use cherenkov_shader::naga;
 use filtrate_core::{FilterParam, WatchGuard};
+use waterui_contract::contract_violation;
 
 use crate::effect::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRedrawCallback, EffectRenderError,
@@ -339,14 +340,13 @@ impl ShaderEffect {
     /// Adds a constant parameter, readable in the shader as `effect_param(n)`
     /// where `n` counts the parameters added before it.
     ///
-    /// # Panics
-    ///
-    /// Panics when the effect already carries [`SHADER_EFFECT_MAX_PARAMS`]
-    /// parameters.
+    /// An effect that already carries [`SHADER_EFFECT_MAX_PARAMS`] parameters
+    /// breaks the contract: the extra parameter is dropped.
     #[must_use]
     pub fn param(mut self, value: f32) -> Self {
-        self.push_param(value);
-        self.const_params.push(value);
+        if self.push_param(value).is_some() {
+            self.const_params.push(value);
+        }
         self
     }
 
@@ -368,14 +368,15 @@ impl ShaderEffect {
     /// reports is discarded: there is nothing left to render it, and the
     /// host is not woken.
     ///
-    /// # Panics
-    ///
-    /// Panics when the effect already carries [`SHADER_EFFECT_MAX_PARAMS`]
-    /// parameters.
+    /// An effect that already carries [`SHADER_EFFECT_MAX_PARAMS`] parameters
+    /// breaks the contract: the extra parameter is dropped and the returned
+    /// guard subscribes nothing.
     #[must_use]
     pub fn watch_param<P: FilterParam + ?Sized>(mut self, param: &P) -> (Self, WatchGuard) {
-        let index = self.push_param(param.snapshot());
-        let guard = self.animator.sender().watch(index, param);
+        let guard = match self.push_param(param.snapshot()) {
+            Some(index) => self.animator.sender().watch(index, param),
+            None => WatchGuard::new(()),
+        };
         (self, guard)
     }
 
@@ -434,12 +435,17 @@ impl ShaderEffect {
         }
     }
 
-    fn push_param(&mut self, initial: f32) -> usize {
-        assert!(
-            self.animator.param_count() < SHADER_EFFECT_MAX_PARAMS,
-            "a ShaderEffect carries at most {SHADER_EFFECT_MAX_PARAMS} parameters"
-        );
-        self.animator.push_param(initial)
+    /// Appends a parameter and returns its index, or `None` — after
+    /// reporting the broken contract — when the block is full.
+    fn push_param(&mut self, initial: f32) -> Option<usize> {
+        if self.animator.param_count() >= SHADER_EFFECT_MAX_PARAMS {
+            contract_violation!(
+                "a ShaderEffect carries at most {SHADER_EFFECT_MAX_PARAMS} parameters; \
+                 the extra parameter is dropped"
+            );
+            return None;
+        }
+        Some(self.animator.push_param(initial))
     }
 }
 
@@ -894,7 +900,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "at most 16 parameters")]
+    #[cfg_attr(debug_assertions, should_panic(expected = "at most 16 parameters"))]
     fn parameters_are_bounded_by_the_uniform_block() {
         let mut effect = ShaderEffect::new(PASS_THROUGH).expect("valid");
         for value in 0..=SHADER_EFFECT_MAX_PARAMS {
@@ -902,6 +908,19 @@ mod tests {
             let value = value as f32;
             effect = effect.param(value);
         }
+        // Release builds drop the extra parameter and carry on.
+        assert_eq!(effect.param_count(), SHADER_EFFECT_MAX_PARAMS);
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "at most 16 parameters"))]
+    fn a_watched_parameter_beyond_the_block_subscribes_nothing() {
+        let mut effect = ShaderEffect::new(PASS_THROUGH).expect("valid");
+        for _ in 0..SHADER_EFFECT_MAX_PARAMS {
+            effect = effect.param(0.0);
+        }
+        let (effect, _guard) = effect.watch_param(&1.0_f32);
+        assert_eq!(effect.param_count(), SHADER_EFFECT_MAX_PARAMS);
     }
 
     /// A `FilterParam` whose watcher callback the test fires by hand.
@@ -1008,6 +1027,32 @@ mod tests {
         assert!(effect.redraw_hint(), "the change wants a frame");
         effect.animator.update(Duration::ZERO);
         assert_eq!(effect.animator.current_values(), &[0.75]);
+    }
+
+    /// A second host callback breaks the contract and is ignored: the first
+    /// one keeps being woken.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "installed exactly once before setup")
+    )]
+    fn a_second_redraw_callback_is_ignored() {
+        let param = ScriptedParam::constant(0.25);
+        let (mut effect, _subscription) = ShaderEffect::new(PASS_THROUGH)
+            .expect("valid")
+            .watch_param(&param);
+        let redraws = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&redraws);
+        effect.set_redraw_callback(Arc::new(move || {
+            count.fetch_add(1, Ordering::Relaxed);
+        }));
+        effect.set_redraw_callback(Arc::new(|| {}));
+
+        param.fire(AnimatedTarget {
+            value: 0.75,
+            interpolator: None,
+        });
+        assert_eq!(redraws.load(Ordering::Relaxed), 1);
     }
 
     /// Toggling a watched animation flag reaches the render side: the flag

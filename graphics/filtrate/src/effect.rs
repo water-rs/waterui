@@ -53,6 +53,11 @@ pub enum EffectSetupError {
         /// What disagrees.
         reason: String,
     },
+    /// The filter's auxiliary images disagree with its declaration: an image
+    /// is visited out of range or twice, never visited, or has neither CPU
+    /// texels nor a texture.
+    #[error("auxiliary images: {0}")]
+    AuxImages(String),
     /// A stage's snippet breaks the composer's snippet contract.
     #[error("{0}")]
     Snippet(String),

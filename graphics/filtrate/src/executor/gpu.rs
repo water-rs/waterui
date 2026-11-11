@@ -277,21 +277,25 @@ impl Gpu {
         let mut uploader = Uploader {
             ctx,
             images: (0..F::IMAGES).map(|_| None).collect(),
+            error: None,
         };
         filter.visit_images(&mut uploader);
-        let images: Vec<Image> = uploader
+        if let Some(error) = uploader.error {
+            return Err(error);
+        }
+        let images = uploader
             .images
             .into_iter()
             .enumerate()
             .map(|(index, image)| {
-                image.unwrap_or_else(|| {
-                    panic!(
+                image.ok_or_else(|| {
+                    EffectSetupError::AuxImages(format!(
                         "the filter declares {} images but never visited image {index}",
                         F::IMAGES
-                    )
+                    ))
                 })
             })
-            .collect();
+            .collect::<Result<Vec<Image>, _>>()?;
 
         check_bound_textures(&passes, &images, ctx.device)?;
 
@@ -964,19 +968,35 @@ pub fn sampler(device: &wgpu::Device, filter: wgpu::FilterMode) -> wgpu::Sampler
 struct Uploader<'a, 'c> {
     ctx: &'a EffectContext<'c>,
     images: Vec<Option<Image>>,
+    /// The first way the filter's visits disagree with its declaration;
+    /// setup fails with it once the visit is over.
+    error: Option<EffectSetupError>,
+}
+
+impl Uploader<'_, '_> {
+    /// Records the first disagreement; later visits are ignored.
+    fn fail(&mut self, reason: String) {
+        self.error
+            .get_or_insert(EffectSetupError::AuxImages(reason));
+    }
 }
 
 impl ImageVisitor for Uploader<'_, '_> {
     fn visit<I: AuxImage + ?Sized>(&mut self, index: usize, image: &I) {
-        assert!(
-            index < self.images.len(),
-            "the filter visited image {index} but declares {} images",
-            self.images.len()
-        );
-        assert!(
-            self.images[index].is_none(),
-            "the filter visited image {index} twice"
-        );
+        if self.error.is_some() {
+            return;
+        }
+        if index >= self.images.len() {
+            self.fail(format!(
+                "the filter visited image {index} but declares {} images",
+                self.images.len()
+            ));
+            return;
+        }
+        if self.images[index].is_some() {
+            self.fail(format!("the filter visited image {index} twice"));
+            return;
+        }
         // A caller-provided texture binds in place — no upload.
         if let Some(image) = image
             .as_any()
@@ -990,9 +1010,12 @@ impl ImageVisitor for Uploader<'_, '_> {
             return;
         }
 
-        let data = image
-            .data()
-            .unwrap_or_else(|| panic!("aux image {index} is neither CPU data nor a GPU texture"));
+        let Some(data) = image.data() else {
+            self.fail(format!(
+                "aux image {index} is neither CPU data nor a GPU texture"
+            ));
+            return;
+        };
         let format = match data.format {
             AuxFormat::Rgba8 => wgpu::TextureFormat::Rgba8Unorm,
             AuxFormat::Rgba16Float => wgpu::TextureFormat::Rgba16Float,

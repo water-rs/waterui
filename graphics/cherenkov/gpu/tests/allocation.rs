@@ -555,3 +555,95 @@ fn isolation_storage_follows_content_changes_and_releases_old_bindings() -> Resu
     Ok(())
 }
 }
+
+/// Live bytes of the `label` resources the events created, grew and retired.
+fn live_bytes(events: &[AllocEvent], label: &'static str) -> i128 {
+    events
+        .iter()
+        .map(|event| match event.kind {
+            EventKind::Create {
+                label: l, bytes, ..
+            } if l == label => i128::from(bytes),
+            EventKind::Grow {
+                label: l, old, new, ..
+            } if l == label => i128::from(new) - i128::from(old),
+            EventKind::Retire {
+                label: l, bytes, ..
+            } if l == label => -i128::from(bytes),
+            _ => 0,
+        })
+        .sum()
+}
+
+split_test! {
+/// The picture share bounds the picture images every surface keeps, not
+/// each surface's own: three surfaces whose pictures each fit the share but
+/// not together never hold more than it, whether they are lowered together
+/// or one surface is lowered while the others keep composing theirs.
+fn picture_images_share_one_engine_wide_budget() -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::Picture;
+    use cherenkov::kurbo::Affine;
+    const SIDE: u32 = 1024;
+    const RED: WorkingColor = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
+    let sink = Sink::new();
+    let gpu = Bytes::mib(96);
+    let share = i128::from(gpu.0 / 8);
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig {
+        alloc_diag: Some(sink.clone()),
+        budget: cherenkov::Budget {
+            gpu,
+            ..cherenkov::Budget::default()
+        },
+        ..Default::default()
+    }))?;
+    let mut surfaces = Vec::new();
+    for _ in 0..3 {
+        let surface = wait!(engine.surface(Offscreen::new((SIDE, SIDE), OffscreenFormat::LinearF16), || {}))?;
+        surface.clear_color(WorkingColor::new([0.0, 0.0, 0.0, 1.0]));
+        surfaces.push(surface);
+    }
+    let side = f64::from(SIDE);
+    let record = |inset: f64| {
+        Picture::record(|c| {
+            c.fill(
+                polygon(&[(inset, 1.0), (side - 1.0, inset), (side - inset, side - 1.0), (1.0, side - inset)]),
+                RED,
+            );
+        })
+    };
+    let mut live = 0;
+    let mut pictures = 0;
+    for (step, inset) in [2.0, 3.0, 4.0].into_iter().enumerate() {
+        // The first frame lowers every surface in one batch; later frames
+        // replace one surface's picture while the others keep theirs.
+        let changed: &[usize] = if step == 0 { &[0, 1, 2] } else { &[step] };
+        for (&index, offset) in changed.iter().zip([0.0, 1.0, 2.0]) {
+            let surface = &surfaces[index];
+            let picture = record(inset + offset);
+            surface.update(|tx| {
+                tx[surface.root()].content(surface.record(|c| c.picture(&picture, Affine::IDENTITY)));
+            });
+        }
+        wait!(engine.render(FrameTime::now()))?;
+        let events = sink.take();
+        live += live_bytes(&events, "projective image");
+        pictures = pictures.max(
+            events
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::Create { label: "projective image", .. }))
+                .count(),
+        );
+        assert!(
+            live <= share,
+            "frame {step}: picture images hold {live} bytes, more than the {share}-byte picture share"
+        );
+        for surface in &surfaces {
+            let pixels = wait!(surface.readback())?;
+            let centre = pixels.pixels[(SIDE / 2 * pixels.width + SIDE / 2) as usize];
+            assert!(centre[0] > 0.99 && centre[1] < 0.01, "frame {step}: every picture draws, retained or not");
+        }
+    }
+    assert!(pictures > 0, "the share retains pictures");
+    Ok(())
+}
+}
