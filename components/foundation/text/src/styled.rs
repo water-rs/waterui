@@ -85,10 +85,11 @@ impl Style {
         Self::default()
     }
 
-    /// Sets the font.
+    /// Applies a font over this style's font, keeping what the new font does
+    /// not set; see [`Font::inherit`].
     #[must_use]
     pub fn font(mut self, font: impl Into<Font>) -> Self {
-        self.font = font.into();
+        self.font = font.into().inherit(&self.font);
         self
     }
 
@@ -500,11 +501,25 @@ impl StyledStr {
         self.apply_style(|s| *s = take(s).size(size))
     }
 
-    /// Sets the font for all chunks.
+    /// Applies a font over every chunk's font.
+    ///
+    /// A chunk keeps what the font does not set: a slot replaces the chunk's
+    /// slot while the chunk's bold, size and weight stay; see
+    /// [`Font::inherit`].
     #[must_use]
     pub fn font(self, font: impl Into<Font>) -> Self {
         let font = font.into();
-        self.apply_style(|s| s.font = font.clone())
+        self.apply_style(|s| s.font = font.clone().inherit(&s.font))
+    }
+
+    /// Sets every chunk in `base`, the font of the text the string is part
+    /// of: each chunk's font inherits what it does not set from `base`.
+    #[must_use]
+    pub fn inherit_font(self, base: &Font) -> Self {
+        if base.is_inherited() {
+            return self;
+        }
+        self.apply_style(|s| s.font = take(&mut s.font).inherit(base))
     }
 
     /// Sets the foreground color for all chunks.

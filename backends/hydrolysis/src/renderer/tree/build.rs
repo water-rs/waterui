@@ -68,17 +68,16 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         };
         let view = match view.downcast::<Native<TextConfig>>() {
             Ok(text) => {
-                let config = (*text).into_inner();
+                let (content, alignment, line_limit) = (*text).into_inner().into_parts();
                 let core = renderer.new_core();
                 let (layout_dirty, invalidate) = layout_invalidation(&core.cell);
                 let guards = [
-                    config.content().watch({
+                    content.watch({
                         let invalidate = Rc::clone(&invalidate);
                         move |_| invalidate()
                     }),
-                    config.paragraph_alignment().watch(move |_| invalidate()),
+                    alignment.watch(move |_| invalidate()),
                 ];
-                let (content, alignment, line_limit) = config.into_parts();
                 return Self::Text(Box::new(TextNode {
                     memo_gate: Cell::default(),
                     memo_slots: RefCell::default(),
