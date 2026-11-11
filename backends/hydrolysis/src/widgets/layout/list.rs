@@ -3063,7 +3063,7 @@ fn draw_section_label<E: crate::text::TextEngine>(
     }
     let styled = ctx
         .renderer_mut()
-        .read_signal(section_chrome_text(label, is_header).resolve(env).content());
+        .read_signal(&section_chrome_text(label, is_header).resolve(env).content());
     ctx.render_styled_text(
         styled,
         waterui_layout::stack::HorizontalAlignment::Leading,

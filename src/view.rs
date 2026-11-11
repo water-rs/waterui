@@ -10,14 +10,14 @@
 //! These extensions help create a fluent API for constructing user interfaces.
 
 use executor_core::spawn_local;
-use nami::{Binding, Signal, SignalExt as _, signal::IntoComputed};
+use nami::{Binding, Computed, Signal, SignalExt as _, signal::IntoComputed};
 use waterui_core::IntoSignalF32;
 #[cfg(feature = "std")]
 use waterui_core::handler::ReportExtraction;
 pub use waterui_core::view::*;
 use waterui_core::{
     AnyView, Environment, IgnorableMetadata, Retain,
-    env::{UseEnv, With},
+    env::{Installed, With},
     extract::State,
     handler::{EventHandler, Handler, HandlerOnce},
     layout::{HorizontalAlignment, VerticalAlignment, ViewDimensions},
@@ -70,7 +70,7 @@ use waterkit_haptic::{Haptic, Intensity};
 use waterui_core::Metadata;
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent};
 use waterui_core::id::TaggedView;
-use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
+use waterui_core::interaction::{Disabled, InteractionReport, InteractionState, Selected};
 use waterui_core::key::{KeyHandling, OnKeyPress};
 
 /// Plays an impact haptic. `Haptic::impact` is async; the event that
@@ -168,7 +168,16 @@ pub trait ViewExt: View + Sized {
     /// * `visible` - A reactive boolean indicating whether the view should be visible
     fn visible(self, visible: impl IntoComputed<bool>) -> impl View {
         let visible = visible.into_computed();
-        let accessibility_state = visible.map(|visible| AccessibilityState::new().hidden(!visible));
+        // A visible scope says nothing about hiding: like the opacity it
+        // multiplies, `.visible(true)` never reveals what an enclosing
+        // `.visible(false)` hid, so it leaves the flag to the enclosing scope.
+        let accessibility_state = visible.map(|visible| {
+            if visible {
+                AccessibilityState::new()
+            } else {
+                AccessibilityState::new().hidden(true)
+            }
+        });
         let opacity_value = visible.map(|visible| if visible { 1.0 } else { 0.0 });
         let hittable_value = visible;
 
@@ -1320,11 +1329,7 @@ pub trait ViewExt: View + Sized {
 
     /// Installs a plugin into the environment.
     fn install(self, plugin: impl Plugin) -> impl View {
-        UseEnv::new(move |env: &Environment| {
-            let mut env = env.clone();
-            plugin.install(&mut env);
-            Metadata::new(self, env)
-        })
+        Installed::new(self, plugin)
     }
 
     /// Retains a value for the lifetime of this view.
@@ -1483,20 +1488,20 @@ pub trait ViewExt: View + Sized {
     fn disabled(self, is_disabled: impl IntoComputed<bool>) -> impl View {
         let is_disabled = is_disabled.into_computed();
 
-        let accessibility_state =
-            is_disabled.map(|disabled| AccessibilityState::new().disabled(disabled));
+        // Disabled scopes OR-combine (`Disabled::install`), so an enabled
+        // scope leaves the flag to the enclosing scope rather than claim it.
+        let accessibility_state = is_disabled.map(|disabled| {
+            if disabled {
+                AccessibilityState::new().disabled(true)
+            } else {
+                AccessibilityState::new()
+            }
+        });
         let hittable_value = is_disabled.map(|d| !d);
-        let scope = is_disabled;
 
-        UseEnv::new(move |env: &Environment| {
-            let mut env = env.clone();
-            waterui_core::interaction::Disabled::install(&mut env, scope);
-            Metadata::new(
-                self.a11y_state_signal(accessibility_state)
-                    .hittable(hittable_value),
-                env,
-            )
-        })
+        self.a11y_state_signal(accessibility_state)
+            .hittable(hittable_value)
+            .install(DisabledScope(is_disabled))
     }
 
     /// Reports the state of the interactive control this modifies — or the
@@ -1577,6 +1582,16 @@ pub trait ViewExt: View + Sized {
 }
 
 impl<V: View + Sized> ViewExt for V {}
+
+/// The scope [`ViewExt::disabled`] installs: OR-combined with any disabled
+/// scope inherited from an enclosing `.disabled(...)`.
+struct DisabledScope(Computed<bool>);
+
+impl Plugin for DisabledScope {
+    fn install(self, env: &mut Environment) {
+        Disabled::install(env, self.0);
+    }
+}
 
 #[cfg(test)]
 mod tests {

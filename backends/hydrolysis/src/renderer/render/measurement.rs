@@ -287,7 +287,7 @@ fn measure_view_dimensions_with_proposal_with_budget<E: crate::text::TextEngine>
     }
     if let Some(text) = view.downcast_ref::<Text>() {
         let resolved = text.resolve(&scoped_env);
-        let content = state.measure_signal(resolved.content());
+        let content = state.measure_signal(&resolved.content());
         let alignment = state.measure_signal(resolved.paragraph_alignment());
         return HydrolysisRenderer::measure_text_dimensions(
             state,
@@ -1313,7 +1313,7 @@ pub fn measure_text_field_size_with_label_size<E: crate::text::TextEngine>(
 ) -> LayoutSize {
     let metrics = theme.input_field_metrics();
     let line_limit = text_field.line_limit().map(NonZeroUsize::get);
-    let prompt = state.measure_signal(text_field.prompt().content());
+    let prompt = state.measure_signal(&text_field.prompt().content());
     let value = state.measure_signal(text_field.value());
     let prompt_size = HydrolysisRenderer::measure_text_intrinsic_size_with_line_limit(
         state, prompt, env, line_limit,
@@ -1529,7 +1529,7 @@ fn resolved_text_styled<E: crate::text::TextEngine>(
     state: &mut HydroState<E>,
 ) -> StyledStr {
     let resolved = text.resolve(env);
-    state.measure_signal(resolved.content())
+    state.measure_signal(&resolved.content())
 }
 
 pub fn measure_date_picker_intrinsic<E: crate::text::TextEngine>(

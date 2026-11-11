@@ -672,7 +672,7 @@ pub fn diff(prev: Option<&Properties>, next: &Properties, ops: &mut Vec<Op>) {
 mod tests {
     use cherenkov::kurbo::{RoundedRect, Vec2};
     use cherenkov::testing::LayerOp;
-    use cherenkov::{LayerId, Prop, SurfaceTree};
+    use cherenkov::{Animatable, LayerId, Prop, SurfaceTree};
 
     use super::*;
     use crate::interop::{ChromaSiting, ContentLight, MasteringDisplay};
@@ -982,7 +982,7 @@ mod tests {
     const VIDEO: LayerId = LayerId::new(2);
     const CONTROLS: LayerId = LayerId::new(3);
 
-    const fn prop<T>(target: T) -> Prop<T> {
+    const fn prop<T: Animatable>(target: T) -> Prop<T> {
         Prop {
             target,
             animation: None,

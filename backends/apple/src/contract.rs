@@ -115,6 +115,12 @@ pub struct NativeLeaf {
     /// handler in the same chain reaches it (water-rs/waterui#1292). `None`
     /// for every other leaf: the chain ends there.
     handler_env: Option<Environment>,
+    /// Whether an accessibility-state scope already applied its state to
+    /// this leaf's view. The innermost scope applies the state merged over
+    /// every enclosing scope (`AccessibilityStateSignal::install`), so an
+    /// enclosing scope rendered around the same leaf must not apply its own,
+    /// less specific state over it.
+    accessibility_state_applied: bool,
     /// The view controllers [`mount`] adopted from this leaf's subtree —
     /// `UIKit` only forwards appearance and layout callbacks down a real
     /// containment chain.
@@ -149,6 +155,7 @@ impl NativeLeaf {
             geometry,
             transition: None,
             handler_env: None,
+            accessibility_state_applied: false,
             #[cfg(target_os = "ios")]
             attached_controllers: Vec::new(),
         }
@@ -194,6 +201,14 @@ impl NativeLeaf {
     #[must_use]
     pub const fn take_transition(&mut self) -> Option<crate::transition::TransitionClaim> {
         self.transition.take()
+    }
+
+    /// Claims this leaf's view for an accessibility-state scope, answering
+    /// whether the claim is new. `false` means a nested scope already
+    /// applied the state merged over this one, and this scope applies
+    /// nothing.
+    pub(crate) const fn claim_accessibility_state(&mut self) -> bool {
+        !core::mem::replace(&mut self.accessibility_state_applied, true)
     }
 
     /// The platform view. Borrowed: the leaf owns it.
