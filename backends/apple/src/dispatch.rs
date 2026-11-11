@@ -176,12 +176,8 @@ pub(crate) fn is_native_boundary(view: &AnyView) -> bool {
 
 /// Renders native content using the owning environment's dispatcher.
 ///
-/// # Panics
-/// Panics off the main thread: platform views exist only there, so no
-/// leaf can answer the call.
+/// `mtm` proves the call is on the main thread, where platform views exist.
 #[must_use]
-pub fn render(view: AnyView, env: &Environment) -> NativeLeaf {
-    let mtm = cocoa_ui::MainThreadMarker::new()
-        .expect("platform views are built on the main thread; the caller's contract");
+pub fn render(view: AnyView, env: &Environment, mtm: cocoa_ui::MainThreadMarker) -> NativeLeaf {
     dispatcher(env).render(view, env, mtm)
 }

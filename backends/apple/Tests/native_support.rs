@@ -269,7 +269,7 @@ pub fn mount_uikit_window(
     let mut keepalive = crate::contract::KeepAlive::default();
     let mut env = env.clone();
     crate::theme::install_controller(&mut env, &controller, &mut keepalive);
-    let content = crate::embedding::mount_content(&host, view, &env, &mut keepalive);
+    let content = crate::embedding::mount_content(&host, view, &env, &mut keepalive, mtm);
     window.makeKeyAndVisible();
     window.layoutIfNeeded();
     // A scene window opens an appearance transition only the run loop
@@ -475,6 +475,7 @@ pub fn mount_uikit_embedded(
             view.take().expect("the view mounts once"),
             env,
             keepalive,
+            mtm,
         )
     };
     let content = content_first.then(|| mount(&host, env, &mut keepalive));
@@ -2043,6 +2044,7 @@ pub fn render(view: impl waterui_backend_core::View) -> crate::contract::NativeL
     crate::dispatch::render(
         waterui_backend_core::AnyView::new(view),
         &render_environment(),
+        MainThreadMarker::new().expect("rendering runs on the main thread"),
     )
 }
 

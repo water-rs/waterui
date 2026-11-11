@@ -188,7 +188,7 @@ pub fn render_adopting(
 
 /// `updateChild`: render `view`, retire the previous child, mount the
 /// new leaf into the host, then re-forward the negotiated proposal and
-/// invalidate up the hierarchy. A render miss keeps the previous child.
+/// invalidate up the hierarchy.
 ///
 /// The borrow is released before `layout_if_needed`: that call runs the
 /// host's layout handler synchronously, and the handler borrows the same
@@ -197,9 +197,7 @@ fn update_child(state: &Rc<RefCell<DynamicState>>, view: AnyView) {
     let host = {
         let state_rc = Rc::clone(state);
         let mut state = state.borrow_mut();
-        let Some(leaf) = state.renderer.try_render(view) else {
-            return;
-        };
+        let leaf = state.renderer.render(view);
         // The outgoing child leaves the semantic tree now: a claimed
         // instance retires into a ghost painted beneath the incoming
         // child — a conditional holds no slot (§4.5) — and an unclaimed

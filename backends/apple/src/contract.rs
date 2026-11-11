@@ -129,7 +129,7 @@ impl NativeLeaf {
     /// A view whose class carries response geometry commits it under the
     /// leaf's rule at the start of every layout pass and reports the
     /// committed response as its accessibility frame; a container driver
-    /// takes the commit over through [`drive_geometry`](Self::drive_geometry).
+    /// takes the commit over through `drive_geometry`.
     pub fn new<V: AsRef<PlatformView> + ?Sized>(view: &V, layout: impl SubView + 'static) -> Self {
         let layout: Rc<dyn SubView> = Rc::new(MemoizingSubView::new(Box::new(layout)));
         let view = retain_base(view);
@@ -577,13 +577,6 @@ impl<'a> RenderContext<'a> {
         self.dispatcher.render(view.into(), self.env, self.mtm)
     }
 
-    /// Renders `view`. Always `Some`: a view no handler claims expands
-    /// through `body()` until one does.
-    #[must_use]
-    pub fn try_render(&self, view: impl Into<AnyView>) -> Option<NativeLeaf> {
-        Some(self.render(view))
-    }
-
     /// The same context under another environment — for metadata handlers
     /// that overlay the environment for their subtree:
     /// `let env = ctx.env().clone(); env.insert(..); ctx.with_env(&env).render(content)`
@@ -623,12 +616,6 @@ impl Renderer {
     #[must_use]
     pub fn render(&self, view: impl Into<AnyView>) -> NativeLeaf {
         self.dispatcher.render(view.into(), &self.env, self.mtm)
-    }
-
-    /// Renders `view`. Always `Some`, as [`RenderContext::try_render`].
-    #[must_use]
-    pub fn try_render(&self, view: impl Into<AnyView>) -> Option<NativeLeaf> {
-        Some(self.render(view))
     }
 
     /// Renders `view` and answers the environment its leaf resolved

@@ -52,13 +52,14 @@ impl FrozenFrameSlot {
     /// A private-storage copy target for `size`/`format` under
     /// `context` — a matching spare, or a fresh texture pair. The Metal
     /// texture is what a [`cocoa_ui::capture::FrozenSurface`] hands to a
-    /// later capture; the wgpu import is this copy's destination.
+    /// later capture; the wgpu import is this copy's destination. `None`
+    /// when Metal refuses the texture.
     fn target(
         &self,
         context: &Arc<SharedGpuContext>,
         source: &wgpu::Texture,
         size: (u32, u32),
-    ) -> FrozenFrame {
+    ) -> Option<FrozenFrame> {
         let pixel_format = cocoa_ui::metal::wgpu_to_metal_format(source.format());
         {
             let mut spares = self.spare.borrow_mut();
@@ -67,7 +68,7 @@ impl FrozenFrameSlot {
                     && frame.pixel_format == pixel_format
                     && Arc::ptr_eq(&frame.context, context)
             }) {
-                return spares.swap_remove(index);
+                return Some(spares.swap_remove(index));
             }
         }
         // SAFETY: creates a valid descriptor; Metal validates the arguments.
@@ -81,9 +82,17 @@ impl FrozenFrameSlot {
         };
         descriptor.setUsage(MTLTextureUsage::ShaderRead | MTLTextureUsage::RenderTarget);
         descriptor.setStorageMode(MTLStorageMode::Private);
-        let texture = crate::gpu_runtime::raw_metal_device(context)
-            .newTextureWithDescriptor(&descriptor)
-            .expect("failed to create the frozen frame copy texture");
+        let Some(texture) =
+            crate::gpu_runtime::raw_metal_device(context).newTextureWithDescriptor(&descriptor)
+        else {
+            tracing::error!(
+                width = size.0,
+                height = size.1,
+                ?pixel_format,
+                "Metal refused the frozen frame copy texture; the frame is not frozen"
+            );
+            return None;
+        };
         // SAFETY: `texture` is a fresh private texture on this context's
         // device, so `UNINITIALIZED` is its true handoff state; the copy
         // below is its first access.
@@ -99,27 +108,29 @@ impl FrozenFrameSlot {
                 "Frozen Frame Copy",
             )
         };
-        FrozenFrame {
+        Some(FrozenFrame {
             texture,
             wgpu: wgpu_texture,
             context: context.clone(),
             pixel_format,
             size,
-        }
+        })
     }
 
     /// Appends `copy_texture_to_texture(source -> copy)` to `encoder`,
     /// the frame's own submission on the same wgpu queue, so ordering
     /// is implicit. Returns the copy for the work item to carry into
-    /// [`promote`](Self::promote) or [`recycle`](Self::recycle).
+    /// [`promote`](Self::promote) or [`recycle`](Self::recycle). `None` when
+    /// Metal refuses the copy texture; nothing is encoded and the frame is
+    /// not frozen.
     pub fn encode_copy(
         &self,
         context: &Arc<SharedGpuContext>,
         source: &wgpu::Texture,
         size: (u32, u32),
         encoder: &mut wgpu::CommandEncoder,
-    ) -> FrozenFrame {
-        let frame = self.target(context, source, size);
+    ) -> Option<FrozenFrame> {
+        let frame = self.target(context, source, size)?;
         encoder.copy_texture_to_texture(
             source.as_image_copy(),
             frame.wgpu.as_image_copy(),
@@ -129,7 +140,7 @@ impl FrozenFrameSlot {
                 depth_or_array_layers: 1,
             },
         );
-        frame
+        Some(frame)
     }
 
     /// A successful frame: the copy becomes `last`; the previous `last`

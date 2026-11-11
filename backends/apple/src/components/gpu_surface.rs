@@ -1742,7 +1742,7 @@ fn submit_drawable_frame(
     // slot inside this same submission — GPU→GPU, ordered after the
     // render on the shared queue. The copy rides the work item and the
     // settle promotes it only on a real `PresentedFrame` receipt.
-    let frozen = state.armed.as_ref().map(|armed| {
+    let frozen = state.armed.as_ref().and_then(|armed| {
         armed.encode_copy(
             context,
             imported.expect("an armed surface imports its target"),
@@ -2473,7 +2473,7 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
         // An armed surface copies the external target it just wrote —
         // an externally rendered surface's screen pixels are what its
         // capture composed — inside this same submission.
-        let frozen = self.state.armed.as_ref().map(|armed| {
+        let frozen = self.state.armed.as_ref().and_then(|armed| {
             armed.encode_copy(
                 &context,
                 imported

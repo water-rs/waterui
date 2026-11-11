@@ -32,19 +32,19 @@ private func mountCreate(
   _ _: UnsafePointer<CChar>, _ _: UnsafePointer<CChar>,
   _ _: Bool, _ _: Bool, _ _: UnsafePointer<CChar>?,
   _ _: UnsafePointer<Double>?
-) -> UnsafeMutableRawPointer
+) -> UnsafeMutableRawPointer?
 @_extern(c, "waterui_apple_mount_drop")
-private func mountDrop(_ _: UnsafeMutableRawPointer)
+private func mountDrop(_ _: UnsafeMutableRawPointer?)
 @_extern(c, "waterui_apple_update_visibility")
-private func updateVisibilityNative(_ _: UnsafeRawPointer)
+private func updateVisibilityNative(_ _: UnsafeRawPointer?)
 @_extern(c, "waterui_apple_update_environment")
 private func updateEnvironmentNative(
-  _ _: UnsafeRawPointer, _ _: Bool, _ _: Bool,
+  _ _: UnsafeRawPointer?, _ _: Bool, _ _: Bool,
   _ _: UnsafePointer<CChar>, _ _: UnsafePointer<Double>
 )
 @_extern(c, "waterui_apple_measure")
 private func measureNative(
-  _ _: UnsafeRawPointer, _ _: Double, _ _: Double,
+  _ _: UnsafeRawPointer?, _ _: Double, _ _: Double,
   _ _: Bool, _ _: Bool, _ _: UnsafeMutablePointer<Double>
 )
 
@@ -159,7 +159,9 @@ private struct HostEnvironment: Equatable {
 @MainActor
 private final class WaterUIMount {
   private let runtime: WaterUIRuntime
-  let pointer: UnsafeMutableRawPointer
+  /// The backend's mount handle; nil when the app declares no root window,
+  /// a mount that shows no content and answers every call neutrally.
+  let pointer: UnsafeMutableRawPointer?
 
   init(runtime: WaterUIRuntime, host: AnyObject, resources: WaterUIResourceContext,
        environment: HostEnvironment?) {
@@ -184,7 +186,7 @@ private final class WaterUIMount {
   func updateEnvironment(_ environment: HostEnvironment) {
     environment.withFontsPointer { hostFonts in
       environment.locale.withCString { locale in
-        updateEnvironmentNative(UnsafeRawPointer(pointer),
+        updateEnvironmentNative(pointer.map { UnsafeRawPointer($0) },
                                 environment.dark, environment.rtl, locale, hostFonts)
       }
     }
@@ -195,7 +197,7 @@ private final class WaterUIMount {
   func measure(_ proposal: ProposedViewSize) -> CGSize {
     var result = [Double](repeating: 0, count: 2)
     result.withUnsafeMutableBufferPointer { buffer in
-      measureNative(UnsafeRawPointer(pointer),
+      measureNative(pointer.map { UnsafeRawPointer($0) },
                     proposal.width ?? 0, proposal.height ?? 0,
                     proposal.width != nil, proposal.height != nil, buffer.baseAddress!)
     }
@@ -206,7 +208,9 @@ private final class WaterUIMount {
 
   #if canImport(UIKit)
   var sceneOwner: WaterUISceneOwner {
-    WaterUISceneOwner(runtime: runtime, id: mountSceneID(UnsafeRawPointer(pointer)))
+    // Scene ids start at 1, so 0 routes to no mount: `connect` answers nil.
+    WaterUISceneOwner(
+      runtime: runtime, id: pointer.map { mountSceneID(UnsafeRawPointer($0)) } ?? 0)
   }
   #endif
 }
@@ -309,8 +313,8 @@ public final class WaterUIHostController: UIViewController {
   /// nothing a mounted surface can observe; call this so surfaces parked
   /// for visibility re-check and resume.
   public func updateVisibility() {
-    guard let mount else { return }
-    updateVisibilityNative(UnsafeRawPointer(mount.pointer))
+    guard let pointer = mount?.pointer else { return }
+    updateVisibilityNative(UnsafeRawPointer(pointer))
   }
 
   public var sceneOwner: WaterUISceneOwner {
@@ -411,8 +415,8 @@ public final class WaterUIHostController: NSViewController {
   /// whenever the host mutates one of them and surfaces parked for
   /// visibility re-check and resume.
   public func updateVisibility() {
-    guard let mount else { return }
-    updateVisibilityNative(UnsafeRawPointer(mount.pointer))
+    guard let pointer = mount?.pointer else { return }
+    updateVisibilityNative(UnsafeRawPointer(pointer))
   }
 }
 

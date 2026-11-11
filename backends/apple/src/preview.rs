@@ -463,7 +463,7 @@ impl Stage {
         let root = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, size.width, size.height));
         window.setContentView(Some(&*root));
         let mut keepalive = crate::contract::KeepAlive::default();
-        let content = crate::embedding::mount_content(&root, view(), env, &mut keepalive);
+        let content = crate::embedding::mount_content(&root, view(), env, &mut keepalive, mtm);
         crate::first_paint::mark(&root, env);
         // The window never orders in, so the surfaces inside cannot
         // present: the drive keeps their frames — and the content their
@@ -516,7 +516,7 @@ impl Stage {
             move |scheme| crate::theme::refresh(&theme, scheme)
         });
         let mut keepalive = crate::contract::KeepAlive::default();
-        let content = crate::embedding::mount_content(&root, view(), env, &mut keepalive);
+        let content = crate::embedding::mount_content(&root, view(), env, &mut keepalive, mtm);
         crate::first_paint::mark(&root, env);
         window.layoutIfNeeded();
         // The scene-less window never reaches a presentable scene, so the

@@ -1362,7 +1362,7 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, work: PresentWork) {
     // slot inside this same submission — GPU→GPU, ordered after the
     // effects on the shared queue; the settle promotes it only on a
     // real `PresentedFrame` receipt.
-    let frozen = state.armed.as_ref().map(|armed| {
+    let frozen = state.armed.as_ref().and_then(|armed| {
         armed.encode_copy(
             &context,
             &output_wgpu_texture,
@@ -2131,9 +2131,9 @@ impl CapturableSurface for FilteredCapturable {
             };
             let (needs_redraw, mut encoder) =
                 encode_effects(&state, &context, &input, &output, timing);
-            let frozen = armed
-                .as_ref()
-                .map(|armed| armed.encode_copy(&context, &output, (width, height), &mut encoder));
+            let frozen = armed.as_ref().and_then(|armed| {
+                armed.encode_copy(&context, &output, (width, height), &mut encoder)
+            });
             drop(input);
             drop(output);
             if needs_redraw {
@@ -2235,7 +2235,7 @@ impl CapturableSurface for FilteredCapturable {
             };
             let (needs_redraw, mut encoder) =
                 encode_effects(&state, &context, &input, &output, timing);
-            let frozen = armed_for_copy.as_ref().map(|Sendable(armed)| {
+            let frozen = armed_for_copy.as_ref().and_then(|Sendable(armed)| {
                 armed.encode_copy(&context, &output, (width, height), &mut encoder)
             });
             drop(input);
