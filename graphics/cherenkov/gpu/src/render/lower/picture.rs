@@ -3,7 +3,7 @@ use super::{
     Affine, Emission, EmissionStorage, GlyphContext, LayerId, LocalKey, Lowering, Op, Placement,
     Range, Realization, Rect, RenderError, Target,
 };
-use crate::render::projective::{Key, LocalFormat, PictureId, PictureImage, Realize};
+use crate::render::projective::{Key, PictureId, PictureImage, Realize};
 use cherenkov::lowering::projective::{Homography, LocalImage, mip_levels};
 
 /// Picture bounds survive texture eviction and admission retries. Keeping the
@@ -11,14 +11,12 @@ use cherenkov::lowering::projective::{Homography, LocalImage, mip_levels};
 pub(super) struct PreparedDomain {
     source: cherenkov::Picture,
     bucket: i32,
-    format: LocalFormat,
-    replacements: u64,
     source_bytes: u64,
     visible: bool,
     domain: Option<crate::render::planes::static_layer::Domain>,
     /// What the driver commits for the domain's image with its mip chain,
-    /// by the `(format, base size)` it was asked for.
-    committed: Option<(LocalFormat, (u32, u32), u64)>,
+    /// by the base size it was asked for.
+    committed: Option<((u32, u32), u64)>,
 }
 
 impl PreparedDomain {
@@ -30,24 +28,19 @@ impl PreparedDomain {
         self.source_bytes
     }
 
-    /// The bytes the driver commits for this domain's image in `format`
-    /// with every mip level, asked once per format and size.
-    fn committed(
-        &mut self,
-        device: &wgpu::Device,
-        format: LocalFormat,
-        size: (u32, u32),
-    ) -> Result<u64, RenderError> {
-        if let Some((f, s, bytes)) = self.committed
-            && (f, s) == (format, size)
+    /// The bytes the driver commits for this domain's image with every mip
+    /// level, asked once per size.
+    fn committed(&mut self, device: &wgpu::Device, size: (u32, u32)) -> Result<u64, RenderError> {
+        if let Some((s, bytes)) = self.committed
+            && s == size
         {
             return Ok(bytes);
         }
         let bytes = crate::render::resident::texture_bytes(
             device,
-            &crate::render::projective::descriptor(&mip_levels(size), format),
+            &crate::render::projective::descriptor(&mip_levels(size)),
         )?;
-        self.committed = Some((format, size, bytes));
+        self.committed = Some((size, bytes));
         Ok(bytes)
     }
 }
@@ -79,18 +72,17 @@ impl<'a> super::PictureInputs<'a> {
                     continue;
                 };
                 // A visible domain was sized when it was planned; one whose
-                // format or size moved since is planned again before it ranks.
-                let Some((format, size, bytes)) = prepared.committed else {
+                // size moved since is planned again before it ranks.
+                let Some((size, bytes)) = prepared.committed else {
                     continue;
                 };
-                if (format, size) != (prepared.format, domain.size) {
+                if size != domain.size {
                     continue;
                 }
                 let key = LocalKey {
                     layer,
                     picture: Some(PictureId::of(&prepared.source)),
                     bucket: prepared.bucket,
-                    format,
                 };
                 candidates.push((key, prepared.source_bytes(), bytes));
             }
@@ -186,29 +178,10 @@ impl Lowering<'_> {
         // pixels across small scale changes. Whole octaves can charge 4x.
         let density = (f64::from(scale as f32).log2() * 2.0).ceil();
         let density = (density * 0.5).exp2();
-        let replacements = context.inputs.replacements;
-        let format = domains
-            .get(&index)
-            .filter(|prepared| {
-                prepared.matches_source(picture) && prepared.replacements == replacements
-            })
-            .map_or_else(
-                || {
-                    if crate::render::content_range::of_ops(ops, glyphs.images)
-                        == crate::render::present::ColorRange::HighDynamicRange
-                    {
-                        LocalFormat::Working
-                    } else {
-                        LocalFormat::Srgb8
-                    }
-                },
-                |prepared| prepared.format,
-            );
         let key = LocalKey {
             layer,
             picture: Some(PictureId::of(picture)),
             bucket: crate::render::projective::bucket(density),
-            format,
         };
         let entry = context
             .retained
@@ -251,8 +224,6 @@ impl Lowering<'_> {
                     PreparedDomain {
                         source: picture.clone(),
                         bucket: key.bucket,
-                        format,
-                        replacements,
                         source_bytes: picture
                             .display_list()
                             .heap_bytes(cherenkov::lowering::memory::command_bytes),
@@ -287,8 +258,6 @@ impl Lowering<'_> {
         let prepared = domains.entry(index).or_insert_with(|| PreparedDomain {
             source: picture.clone(),
             bucket: key.bucket,
-            format,
-            replacements,
             source_bytes: picture
                 .display_list()
                 .heap_bytes(cherenkov::lowering::memory::command_bytes),
@@ -297,15 +266,13 @@ impl Lowering<'_> {
             committed: None,
         });
         prepared.bucket = key.bucket;
-        prepared.format = format;
-        prepared.replacements = replacements;
         prepared.domain = Some(domain);
         prepared.visible = !bounds.is_zero_area();
         if !prepared.visible {
             return Ok(None);
         }
         // Sized before selection, so a picture ranks once it is planned.
-        let committed = prepared.committed(context.device, format, domain.size)?;
+        let committed = prepared.committed(context.device, domain.size)?;
         let mut image = LocalImage {
             density,
             local_to_texel: raster.inverse(),
