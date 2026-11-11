@@ -107,7 +107,9 @@ To read the active scheme, `waterui::theme::current_color_scheme(&env)` returns 
 debug, logs and yields light in release); `installed_color_scheme(&env)` returns
 `Option<Computed<ColorScheme>>` for code that must tolerate its absence.
 `env.install(theme)` on the app environment applies globally; `.install(theme)` on a view
-scopes it to that subtree.
+scopes it to that subtree. A `.color_scheme(..)` installed on a subtree re-derives the theme
+tokens that subtree resolves; a colour set through `ColorSettings` stays the same in every
+scheme.
 
 ## Concrete colors
 
