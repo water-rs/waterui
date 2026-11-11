@@ -11,6 +11,8 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+#[cfg(feature = "accessibility")]
+use waterui_core::contract_violation;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
@@ -813,25 +815,25 @@ impl HeadlessRuntime {
     /// row's selection) live there. Returns whether the action changed state,
     /// in which case the next pump re-emits.
     ///
-    /// # Panics
-    /// Panics when the request targets the node of a popup window that is
-    /// already closed.
+    /// A request that targets the node of a popup window that is already
+    /// closed is a contract violation by the caller: the action is declined.
     #[cfg(feature = "accessibility")]
     pub fn perform_accessibility_action(&mut self, request: AccessibilityActionRequest) -> bool {
         // Popup ranges are the shared `WINDOW_ID_STRIDE` the merge assigns.
         let target = request.target_node.0;
         let (window, request) = if target >= WINDOW_ID_STRIDE {
             let index = target / WINDOW_ID_STRIDE - 1;
-            let popup = self
+            let Some(popup) = self
                 .popup_windows
                 .get_mut(crate::num_cast::u64_as_usize(index))
-                .unwrap_or_else(|| {
-                    panic!(
-                        "hydrolysis headless runtime: accessibility action {:?} targets closed popup \
-                         node {target}",
-                        request.action
-                    )
-                });
+            else {
+                contract_violation!(
+                    "hydrolysis headless runtime: accessibility action {:?} targets closed popup \
+                     node {target}; the action is declined",
+                    request.action
+                );
+                return false;
+            };
             let mut request = request;
             request.target_node = accesskit::NodeId(target % WINDOW_ID_STRIDE);
             (popup, request)

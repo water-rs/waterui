@@ -185,6 +185,13 @@ pub use window::HeadlessSnapshot;
 pub use window::window_requires_transparency;
 pub use window::{FrameCounters, FramePhases, FrameProfile};
 
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(hydrolysis_winit),
+    not(target_os = "android")
+))]
+use waterui_core::contract_violation;
+
 use crate::env::{parse_bool_env, parse_optional_positive_u64_env, parse_positive_u64_env};
 use crate::platform::{InputEvent, KeyState, PlatformWindow};
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
@@ -299,16 +306,25 @@ fn offscreen_scale_factor() -> f64 {
     let Some(raw) = std::env::var_os(VARIABLE) else {
         return DEFAULT;
     };
-    let raw = raw
-        .to_str()
-        .unwrap_or_else(|| panic!("{VARIABLE} must be valid UTF-8"));
-    let parsed: f64 = raw
-        .parse()
-        .unwrap_or_else(|error| panic!("{VARIABLE} must be a number, got {raw:?}: {error}"));
-    assert!(
-        parsed.is_finite() && parsed > 0.0,
-        "{VARIABLE} must be finite and positive, got {parsed}"
-    );
+    let Some(raw) = raw.to_str() else {
+        contract_violation!("{VARIABLE} must be valid UTF-8; the scale stays {DEFAULT}");
+        return DEFAULT;
+    };
+    let parsed = match raw.parse::<f64>() {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            contract_violation!(
+                "{VARIABLE} must be a number, got {raw:?}: {error}; the scale stays {DEFAULT}"
+            );
+            return DEFAULT;
+        }
+    };
+    if !(parsed.is_finite() && parsed > 0.0) {
+        contract_violation!(
+            "{VARIABLE} must be finite and positive, got {parsed}; the scale stays {DEFAULT}"
+        );
+        return DEFAULT;
+    }
     parsed
 }
 

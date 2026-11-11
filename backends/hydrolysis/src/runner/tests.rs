@@ -544,25 +544,37 @@ fn an_infinite_max_size_component_leaves_that_axis_unbounded() {
 }
 
 /// A NaN in the app's `frame` binding is a programming error: the runner
-/// panics at the read, naming the field and the value, rather than quietly
-/// repairing it deeper in the geometry path.
+/// reports it at the read, naming the field and the value, and reads the
+/// component as zero rather than quietly repairing it deeper in the geometry
+/// path.
 #[test]
-#[should_panic(expected = "Window::frame.width must be finite, got NaN")]
-fn a_nan_frame_panics_naming_the_field_and_value() {
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "Window::frame.width must be finite, got NaN")
+)]
+fn a_nan_frame_reports_the_field_and_value() {
     use waterui_core::layout::{Point, Rect, Size};
 
     let window = Window::new("", binding(WindowState::Normal), || ().size(100.0, 50.0));
     window
         .frame
         .set(Rect::new(Point::new(0.0, 0.0), Size::new(f32::NAN, 300.0)));
-    let _ = runtime_window_for(window, &test_environment());
+    let mut runtime = runtime_window_for(window, &test_environment());
+    let _ = pump_window_semantics(&mut runtime, &test_environment());
+    let read = crate::platform::validated_window_frame(runtime.window.frame.snapshot());
+    assert!(read.width().abs() < f32::EPSILON);
+    assert!((read.height() - 300.0).abs() < f32::EPSILON);
 }
 
 /// The same trust boundary applies to the explicit size limits: a NaN
-/// `min_size` panics at the read naming the field.
+/// `min_size` is reported at the read naming the field, and the axis has no
+/// minimum.
 #[test]
-#[should_panic(expected = "Window::min_size.width must be finite, got NaN")]
-fn a_nan_min_size_panics_naming_the_field_and_value() {
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "Window::min_size.width must be finite, got NaN")
+)]
+fn a_nan_min_size_reports_the_field_and_value() {
     use waterui_core::layout::Size;
 
     let window = Window::new("", binding(WindowState::Normal), || ().size(100.0, 50.0))
@@ -571,18 +583,36 @@ fn a_nan_min_size_panics_naming_the_field_and_value() {
     let _ = pump_window_semantics(&mut runtime, &test_environment());
 }
 
-/// `max_size` accepts `+∞` per axis but nothing else non-finite.
+/// `max_size` accepts `+∞` per axis but nothing else non-finite: the axis is
+/// reported and unbounded.
 #[test]
-#[should_panic(
-    expected = "Window::max_size.height must be finite or +inf for an unbounded axis, got NaN"
+#[cfg_attr(
+    debug_assertions,
+    should_panic(
+        expected = "Window::max_size.height must be finite or +inf for an unbounded axis, got NaN"
+    )
 )]
-fn a_nan_max_size_panics_naming_the_field_and_value() {
+fn a_nan_max_size_reports_the_field_and_value() {
     use waterui_core::layout::Size;
 
     let window = Window::new("", binding(WindowState::Normal), || ().size(100.0, 50.0))
         .max_size(Size::new(640.0, f32::NAN));
     let mut runtime = runtime_window_for(window, &test_environment());
     let _ = pump_window_semantics(&mut runtime, &test_environment());
+}
+
+/// A platform that reports a scale factor that is not finite and positive is
+/// reported, and the surface is taken at scale 1.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "hydrolysis runner: invalid scale factor 0")
+)]
+fn an_invalid_platform_scale_factor_reports_and_reads_as_one() {
+    assert_eq!(
+        super::window::create_bounds(200, 100, 0.0),
+        kurbo::Rect::new(0.0, 0.0, 200.0, 100.0)
+    );
 }
 
 /// A re-measure on a screen change updates the limits only: a user-set size

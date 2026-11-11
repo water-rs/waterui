@@ -25,6 +25,7 @@ use std::sync::{
 };
 use waterui::theme::color::Background;
 use waterui::window::ResolvedWindowBackground;
+use waterui_core::contract_violation;
 use waterui_graphics::{Color, color::WorkingColor};
 
 /// The work scheduled for the next pump of a window.
@@ -466,29 +467,39 @@ pub(super) fn axes_whose_limits_changed(
     )
 }
 
-/// Asserts an app-pinned `Window::min_size` is finite on both axes — a NaN
-/// or infinite minimum is a programming error, not a bound to repair.
+/// Checks an app-pinned `Window::min_size` is finite on both axes — a NaN
+/// or infinite minimum is a contract violation by the app, not a bound to
+/// repair: the axis then has no minimum (`0`).
 fn validated_min_size(size: waterui_core::layout::Size) -> waterui_core::layout::Size {
-    for (axis, value) in [("width", size.width), ("height", size.height)] {
-        assert!(
-            value.is_finite(),
-            "hydrolysis runner: Window::min_size.{axis} must be finite, got {value}"
-        );
-    }
-    size
+    let finite = |axis: &str, value: f32| {
+        if value.is_finite() {
+            value
+        } else {
+            contract_violation!(
+                "hydrolysis runner: Window::min_size.{axis} must be finite, got {value}; the axis has no minimum"
+            );
+            0.0
+        }
+    };
+    waterui_core::layout::Size::new(finite("width", size.width), finite("height", size.height))
 }
 
-/// Asserts an app-pinned `Window::max_size` component is finite or `+∞` —
+/// Checks an app-pinned `Window::max_size` component is finite or `+∞` —
 /// the explicit per-axis "unbounded" an app writes to leave one side open.
-/// Any other non-finite value is a programming error.
+/// Any other non-finite value is a contract violation by the app: the axis
+/// is then unbounded.
 fn validated_max_size(size: waterui_core::layout::Size) -> waterui_core::layout::Size {
-    for (axis, value) in [("width", size.width), ("height", size.height)] {
-        assert!(
-            value.is_finite() || value == f32::INFINITY,
-            "hydrolysis runner: Window::max_size.{axis} must be finite or +inf for an unbounded axis, got {value}"
-        );
-    }
-    size
+    let bounded = |axis: &str, value: f32| {
+        if value.is_finite() || value == f32::INFINITY {
+            value
+        } else {
+            contract_violation!(
+                "hydrolysis runner: Window::max_size.{axis} must be finite or +inf for an unbounded axis, got {value}; the axis is unbounded"
+            );
+            f32::INFINITY
+        }
+    };
+    waterui_core::layout::Size::new(bounded("width", size.width), bounded("height", size.height))
 }
 
 /// Clamps a window size into the new limits, axis by axis — but only on
@@ -953,11 +964,18 @@ pub(super) fn schedule_redraw_or_refresh<P: PlatformWindow, E: crate::text::Text
     runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
 }
 
+/// The logical bounds of a `width` x `height` pixel surface. A platform that
+/// reports a scale factor that is not finite and positive violates the host
+/// contract: the report is logged and the surface is taken at scale `1`.
 pub(super) fn create_bounds(width: u32, height: u32, scale_factor: f64) -> kurbo::Rect {
-    assert!(
-        scale_factor.is_finite() && scale_factor > 0.0,
-        "hydrolysis runner: invalid scale factor {scale_factor}"
-    );
+    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        contract_violation!(
+            "hydrolysis runner: invalid scale factor {scale_factor}; the surface is taken at scale 1"
+        );
+        1.0
+    };
     kurbo::Rect::new(
         0.0,
         0.0,
@@ -1354,10 +1372,13 @@ pub(super) fn pump_window_semantics<P: PlatformWindow, E: crate::text::TextEngin
             runtime
                 .renderer
                 .flush_window_tree(env, bounds, transform, kurbo::Affine::IDENTITY);
-        assert!(
-            flushed,
-            "hydrolysis runner: retained render tree vanished during semantics pump"
-        );
+        if !flushed {
+            contract_violation!(
+                "hydrolysis runner: retained render tree vanished during semantics pump; the pump publishes nothing"
+            );
+            runtime.clear_frame_mode();
+            return false;
+        }
         apply_window_size_limits(runtime, env);
         runtime.clear_frame_mode();
         return true;
@@ -1479,7 +1500,7 @@ crate::engine::cfg_async_fn! {
     // Restore a lost device generation before any handle is read: the
     // recovered device, its fresh context id and the reconfigured
     // swapchain are what the frame below renders on. An unrecoverable
-    // device panics inside, naming the recorded losses.
+    // device logs an error inside, naming the recorded losses.
     surface.ensure_live();
     let (width, height) = surface.size();
     let format = surface.format();
@@ -1491,7 +1512,7 @@ crate::engine::cfg_async_fn! {
     // so the image must be acquired, filled and presented without an await
     // in between.
     let render_started_at = Instant::now();
-    let engine_frame = crate::engine::engine_await!(renderer.render_texture_frame(
+    let engine_frame = match crate::engine::engine_await!(renderer.render_texture_frame(
         crate::renderer::FrameRenderTarget {
             adapter: surface.adapter(),
             device: surface.device(),
@@ -1505,10 +1526,15 @@ crate::engine::cfg_async_fn! {
         },
         format,
         surface.display_headroom(),
-    ))
-    .unwrap_or_else(|error| {
-        panic!("hydrolysis renderer: engine render failed: {error:#}")
-    });
+    )) {
+        Ok(engine_frame) => engine_frame,
+        Err(error) => {
+            tracing::error!(
+                "hydrolysis renderer: engine render failed: {error:#}; the frame is skipped and the surface reports lost"
+            );
+            return Err(crate::platform::SurfaceError::Lost);
+        }
+    };
     surface.set_content_range(engine_frame.content_range);
     let output_alpha = surface.output_alpha();
     let engine_render = render_started_at.elapsed();
@@ -1536,21 +1562,26 @@ crate::engine::cfg_async_fn! {
     let snapshot = {
         #[cfg(feature = "frame-profile")]
         let readback_started_at = Instant::now();
-        let snapshot = capture_snapshot.then(|| {
-            renderer.frame_work_counters_mut().gpu_submissions += 1;
-            HeadlessSnapshot {
-                width,
-                height,
-                rgba8: readback_surface_texture_rgba8(&*surface, frame.texture(), width, height)
-                    .unwrap_or_else(|error| {
-                        panic!(
-                            "hydrolysis headless snapshot readback failed: {:#}",
-                            waterui_core::Error::from(error)
-                        )
+        let snapshot = capture_snapshot
+            .then(|| {
+                renderer.frame_work_counters_mut().gpu_submissions += 1;
+                match readback_surface_texture_rgba8(&*surface, frame.texture(), width, height) {
+                    Ok(rgba8) => Some(HeadlessSnapshot {
+                        width,
+                        height,
+                        rgba8,
+                        output_alpha,
                     }),
-                output_alpha,
-            }
-        });
+                    Err(error) => {
+                        tracing::error!(
+                            "hydrolysis headless snapshot readback failed: {:#}; the frame carries no snapshot",
+                            waterui_core::Error::from(error)
+                        );
+                        None
+                    }
+                }
+            })
+            .flatten();
         #[cfg(feature = "frame-profile")]
         {
             renderer.frame_stage_times.set_readback(renderer.frame_stage_times.readback() + readback_started_at.elapsed());
@@ -1559,10 +1590,11 @@ crate::engine::cfg_async_fn! {
     };
     #[cfg(target_arch = "wasm32")]
     let snapshot = {
-        assert!(
-            !capture_snapshot,
-            "browser surfaces cannot be synchronously read back for a headless snapshot"
-        );
+        if capture_snapshot {
+            contract_violation!(
+                "browser surfaces cannot be synchronously read back for a headless snapshot; the frame carries no snapshot"
+            );
+        }
         None
     };
     let present_started_at = Instant::now();
@@ -1604,9 +1636,12 @@ impl GpuSurfaceFrame for crate::platform::WinitSurface {
         self.ensure_live();
         let (target, engine_target) =
             self.render_targets(display_scale, crate::renderer::working_color(clear_color));
-        renderer
-            .render_window_frame(&target, engine_target)
-            .unwrap_or_else(|error| panic!("hydrolysis renderer: engine render failed: {error:#}"));
+        if let Err(error) = renderer.render_window_frame(&target, engine_target) {
+            tracing::error!(
+                "hydrolysis renderer: engine render failed: {error:#}; the frame is skipped and the surface reports lost"
+            );
+            return Err(crate::platform::SurfaceError::Lost);
+        }
         self.device_loss().note_frame_presented();
         Ok(SurfaceRenderResult {
             acquire: Duration::ZERO,
@@ -1643,10 +1678,12 @@ impl GpuSurfaceFrame for crate::platform::BrowserSurface {
         }
         let (target, root, window_slot) =
             self.render_targets(display_scale, crate::renderer::working_color(clear_color));
-        renderer
-            .render_dom_frame(&target, root, window_slot)
-            .await
-            .unwrap_or_else(|error| panic!("hydrolysis renderer: engine render failed: {error:#}"));
+        if let Err(error) = renderer.render_dom_frame(&target, root, window_slot).await {
+            tracing::error!(
+                "hydrolysis renderer: engine render failed: {error:#}; the frame is skipped and the surface reports lost"
+            );
+            return Err(crate::platform::SurfaceError::Lost);
+        }
         self.device_loss().note_frame_presented();
         Ok(SurfaceRenderResult {
             acquire: Duration::ZERO,
@@ -1806,12 +1843,12 @@ crate::engine::cfg_async_fn! {
 
         let rendered = match render_result {
             Ok(rendered) => rendered,
-            Err(
-                crate::platform::SurfaceError::Lost
-                | crate::platform::SurfaceError::Outdated
-                | crate::platform::SurfaceError::Timeout
-                | crate::platform::SurfaceError::Occluded,
-            ) => {
+            Err(error) => {
+                if error == crate::platform::SurfaceError::Validation {
+                    tracing::error!(
+                        "hydrolysis surface acquisition failed validation; the frame is skipped"
+                    );
+                }
                 runtime.request_refresh();
                 runtime.request_redraw();
                 runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
@@ -1853,9 +1890,6 @@ crate::engine::cfg_async_fn! {
                         ..FrameProfile::default()
                     },
                 };
-            }
-            Err(crate::platform::SurfaceError::Validation) => {
-                panic!("hydrolysis surface acquisition failed validation")
             }
         };
         if P::SAMPLES_TOP_EDGE {
@@ -1974,11 +2008,18 @@ crate::engine::cfg_async_fn! {
     }
 }
 
+/// `value` physical pixels in logical points. A platform that reports a scale
+/// factor that is not finite and positive violates the host contract: the
+/// report is logged and the dimension is taken at scale `1`.
 pub(super) fn physical_to_logical_dimension(value: u32, scale_factor: f64) -> f32 {
-    assert!(
-        scale_factor.is_finite() && scale_factor > 0.0,
-        "hydrolysis runner: invalid scale factor {scale_factor}"
-    );
+    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        contract_violation!(
+            "hydrolysis runner: invalid scale factor {scale_factor}; the dimension is taken at scale 1"
+        );
+        1.0
+    };
     crate::num_cast::f64_as_f32(f64::from(value) / scale_factor)
 }
 
@@ -2033,12 +2074,15 @@ fn refresh_pending_input_geometry<P: PlatformWindow, E: crate::text::TextEngine>
     let (width, height) = runtime.platform.content_size();
     let bounds = create_bounds(width, height, scale_factor);
     let transform = kurbo::Affine::scale(scale_factor);
-    assert!(
-        runtime
-            .renderer
-            .flush_window_tree(env, bounds, transform, kurbo::Affine::IDENTITY,),
-        "hydrolysis input geometry refresh lost the retained window tree"
-    );
+    if !runtime
+        .renderer
+        .flush_window_tree(env, bounds, transform, kurbo::Affine::IDENTITY)
+    {
+        contract_violation!(
+            "hydrolysis input geometry refresh lost the retained window tree; the geometry stays as the last frame left it"
+        );
+        return;
+    }
     apply_window_size_limits(runtime, env);
 }
 

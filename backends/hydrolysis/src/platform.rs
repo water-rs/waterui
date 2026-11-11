@@ -7,6 +7,7 @@ use waterui::cursor::CursorStyle;
 use waterui::window::Window as WuiWindow;
 #[cfg(hydrolysis_gpu_painter)]
 use waterui::window::WindowState;
+use waterui_core::contract_violation;
 #[cfg(hydrolysis_gpu_painter)]
 use waterui_graphics::gpu::RedrawHandle;
 
@@ -315,18 +316,21 @@ impl DeviceLoss {
 #[cfg(hydrolysis_gpu_painter)]
 pub const MAX_UNPRODUCTIVE_LOSSES: usize = 3;
 
-/// Ends a recovery streak: panics naming every recorded loss once the
-/// consecutive-unproductive budget ran out. `losses` counts generations
-/// that died before ever presenting and rebuild attempts that failed.
+/// Whether a recovery streak ran out of budget: `losses` counts generations
+/// that died before ever presenting and rebuild attempts that failed. Logs
+/// an error naming every recorded loss when it did.
 #[cfg(hydrolysis_gpu_painter)]
-pub fn assert_within_recovery_budget(losses: &[String]) {
-    assert!(
-        losses.len() <= MAX_UNPRODUCTIVE_LOSSES,
-        "hydrolysis: GPU device is unrecoverable — {} consecutive generations \
-         died before presenting a frame: {}",
-        losses.len(),
-        losses.join("; ")
-    );
+fn recovery_budget_exhausted(losses: &[String]) -> bool {
+    let exhausted = losses.len() > MAX_UNPRODUCTIVE_LOSSES;
+    if exhausted {
+        tracing::error!(
+            "hydrolysis: GPU device is unrecoverable — {} consecutive generations \
+             died before presenting a frame: {}; the context stays lost and is not rebuilt again",
+            losses.len(),
+            losses.join("; ")
+        );
+    }
+    exhausted
 }
 
 /// The swappable core of a recoverable GPU context: the live device
@@ -351,7 +355,7 @@ struct RecoverableGpuInner {
     /// wholesale when the driver reported its device lost.
     generation: DeviceLoss,
     /// Losses and failed rebuilds since the last generation that
-    /// presented — the record the exhaustion panic reports.
+    /// presented — the record the exhaustion error reports.
     unproductive_losses: Vec<String>,
 }
 
@@ -387,7 +391,8 @@ impl RecoverableGpu {
     /// rebuild joins the budget and leaves the dead generation in place,
     /// so the frame still reports the surface lost and the next one
     /// retries; once [`MAX_UNPRODUCTIVE_LOSSES`] consecutive losses run
-    /// out, this panics naming every recorded loss.
+    /// out, an error naming every recorded loss is logged and the dead
+    /// generation stays live, never rebuilt again.
     ///
     /// Returns the context's live generation; the caller adopts it when
     /// its context id differs from the one it holds — another surface on
@@ -408,9 +413,22 @@ impl RecoverableGpu {
     /// half of a recovery whose rebuild must `await` (WebGPU's device
     /// request cannot block). [`Self::finish_recovery`] completes it; the
     /// lock is never held across the rebuild.
+    ///
+    /// `None` once the recovery budget ran out: the dead generation stays
+    /// live and is not rebuilt again.
     pub(crate) fn take_lost(&self) -> Option<DeviceLoss> {
         let generation = self.generation();
-        generation.is_lost().then_some(generation)
+        (generation.is_lost() && !self.budget_exhausted()).then_some(generation)
+    }
+
+    /// Whether the consecutive-unproductive loss budget ran out.
+    fn budget_exhausted(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unproductive_losses
+            .len()
+            > MAX_UNPRODUCTIVE_LOSSES
     }
 
     /// Completes the recovery `take_lost` started: records `dead` against
@@ -419,7 +437,8 @@ impl RecoverableGpu {
     /// live (another surface may already have rebuilt past `dead`). A
     /// failed rebuild joins the budget and leaves the dead generation in
     /// place; once [`MAX_UNPRODUCTIVE_LOSSES`] consecutive losses run out,
-    /// this panics naming every recorded loss.
+    /// an error naming every recorded loss is logged and the dead generation
+    /// stays live, never rebuilt again.
     pub(crate) fn finish_recovery(
         &self,
         dead: &DeviceLoss,
@@ -442,14 +461,16 @@ impl RecoverableGpu {
         } else {
             inner.unproductive_losses.push(dead.describe_loss());
         }
-        assert_within_recovery_budget(&inner.unproductive_losses);
+        if recovery_budget_exhausted(&inner.unproductive_losses) {
+            return inner.generation.clone();
+        }
         match rebuilt {
             Ok(generation) => inner.generation = generation,
             Err(error) => {
                 inner
                     .unproductive_losses
                     .push(format!("device recreation failed: {error}"));
-                assert_within_recovery_budget(&inner.unproductive_losses);
+                recovery_budget_exhausted(&inner.unproductive_losses);
             }
         }
         inner.generation.clone()
@@ -1742,11 +1763,10 @@ pub trait PresentationSurface {
     /// whose recreation cannot run synchronously — the browser surface
     /// recovers inside its async render path instead.
     ///
-    /// # Panics
-    /// Implementations panic naming every recorded loss once
-    /// [`MAX_UNPRODUCTIVE_LOSSES`] consecutive generations die before
-    /// presenting: a permanently failing device is an explicit error,
-    /// never an infinite retry.
+    /// Once [`MAX_UNPRODUCTIVE_LOSSES`] consecutive generations die before
+    /// presenting, implementations log an error naming every recorded loss
+    /// and keep the dead generation: a permanently failing device is an
+    /// explicit error, never an infinite retry.
     fn ensure_live(&mut self) {}
 }
 
@@ -1864,23 +1884,29 @@ pub struct WindowSafeArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>
 #[derive(Debug, Clone)]
 pub struct WindowKeyboardArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>);
 
-/// Asserts the app's `Window::frame` binding carries finite components on
+/// Checks the app's `Window::frame` binding carries finite components on
 /// all four fields. The binding is a trust boundary — a NaN or infinite
-/// frame is a programming error, not something the runner silently repairs
-/// deeper in the geometry path.
+/// frame is a contract violation by the app, reported at the read rather than
+/// quietly repaired deeper in the geometry path; each non-finite component
+/// then reads as `0.0`.
 pub fn validated_window_frame(frame: waterui_core::layout::Rect) -> waterui_core::layout::Rect {
-    for (field, value) in [
-        ("x", frame.x()),
-        ("y", frame.y()),
-        ("width", frame.width()),
-        ("height", frame.height()),
-    ] {
-        assert!(
-            value.is_finite(),
-            "hydrolysis runner: Window::frame.{field} must be finite, got {value}"
-        );
-    }
-    frame
+    let finite = |field: &str, value: f32| {
+        if value.is_finite() {
+            value
+        } else {
+            contract_violation!(
+                "hydrolysis runner: Window::frame.{field} must be finite, got {value}; it reads as 0"
+            );
+            0.0
+        }
+    };
+    waterui_core::layout::Rect::new(
+        waterui_core::layout::Point::new(finite("x", frame.x()), finite("y", frame.y())),
+        waterui_core::layout::Size::new(
+            finite("width", frame.width()),
+            finite("height", frame.height()),
+        ),
+    )
 }
 
 /// Resolves the title-bar buttons `Window::closable` leaves enabled.
@@ -2870,7 +2896,9 @@ impl OffscreenSurface {
             }
             #[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
             SurfaceFrame::Window { .. } => {
-                panic!("hydrolysis offscreen surface received a window frame");
+                contract_violation!(
+                    "hydrolysis offscreen surface received a window frame; the frame is dropped"
+                );
             }
         }
     }
@@ -3279,13 +3307,16 @@ impl OffscreenWindow {
     /// Sets the physical-pixels-per-logical-pixel ratio, reallocating the
     /// surface to match. See [`Self::with_scale_factor`].
     ///
-    /// # Panics
-    /// Panics when `scale_factor` is not finite and positive.
+    /// A `scale_factor` that is not finite and positive is a contract
+    /// violation by the caller: it is reported and the window keeps its
+    /// previous scale factor.
     pub fn set_scale_factor(&mut self, scale_factor: f64) {
-        assert!(
-            scale_factor.is_finite() && scale_factor > 0.0,
-            "offscreen scale factor must be finite and positive, got {scale_factor}"
-        );
+        if !(scale_factor.is_finite() && scale_factor > 0.0) {
+            contract_violation!(
+                "offscreen scale factor must be finite and positive, got {scale_factor}; the window keeps its scale factor"
+            );
+            return;
+        }
         let logical_width = f64::from(self.surface.size().0) / self.scale_factor;
         let logical_height = f64::from(self.surface.size().1) / self.scale_factor;
         self.scale_factor = scale_factor;
@@ -3295,14 +3326,10 @@ impl OffscreenWindow {
     /// Sets the scale factor, consuming and returning the window. See
     /// [`Self::set_scale_factor`].
     ///
-    /// # Panics
-    /// Panics when `scale_factor` is not finite and positive.
+    /// A `scale_factor` that is not finite and positive is reported and
+    /// ignored, as in [`Self::set_scale_factor`].
     #[must_use]
     pub fn with_scale_factor(mut self, scale_factor: f64) -> Self {
-        assert!(
-            scale_factor.is_finite() && scale_factor > 0.0,
-            "offscreen scale factor must be finite and positive, got {scale_factor}"
-        );
         self.set_scale_factor(scale_factor);
         self
     }
@@ -3456,6 +3483,7 @@ mod winit_impl {
 
     use nami::Signal;
     use waterui::window::{UserAttention, WindowLevel, WindowState};
+    use waterui_core::contract_violation;
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use winit::{
         dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize},
@@ -4106,7 +4134,9 @@ mod winit_impl {
                     reclaim_device(&shared.device);
                 }
                 SurfaceFrame::Offscreen { .. } => {
-                    panic!("hydrolysis winit surface received an offscreen frame")
+                    contract_violation!(
+                        "hydrolysis winit surface received an offscreen frame; the frame is dropped"
+                    );
                 }
             }
         }
@@ -4184,10 +4214,14 @@ mod winit_impl {
                 return ops;
             };
             ops.push(TextInputSyncOp::Purpose(state.purpose));
-            assert!(
-                scale_factor.is_finite() && scale_factor > 0.0,
-                "hydrolysis winit backend received invalid scale factor {scale_factor}"
-            );
+            let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+                scale_factor
+            } else {
+                contract_violation!(
+                    "hydrolysis winit backend received invalid scale factor {scale_factor}; the cursor area is taken at scale 1"
+                );
+                1.0
+            };
             ops.push(TextInputSyncOp::CursorArea {
                 x: crate::num_cast::f64_as_i32((state.x * scale_factor).round()),
                 y: crate::num_cast::f64_as_i32((state.y * scale_factor).round()),
@@ -4627,20 +4661,32 @@ mod winit_impl {
             if self.blur_effect_view.is_some() {
                 return;
             }
-            let handle = self
-                .window
-                .window_handle()
-                .expect("Hydrolysis macOS window must expose an AppKit handle");
+            let handle = match self.window.window_handle() {
+                Ok(handle) => handle,
+                Err(error) => {
+                    tracing::error!(
+                        "Hydrolysis macOS window must expose an AppKit handle: {error}; blur-behind is not applied"
+                    );
+                    return;
+                }
+            };
             let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-                panic!("Hydrolysis macOS window returned a non-AppKit handle");
+                contract_violation!(
+                    "Hydrolysis macOS window returned a non-AppKit handle; blur-behind is not applied"
+                );
+                return;
             };
             // SAFETY: winit hands out the window's live `NSView` pointer —
             // the content view — and the borrow does not outlive the window
             // handle it came from. AppKit calls run on the main thread, as
             // every window method on this host does.
             let content_view = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
-            let mtm = MainThreadMarker::new()
-                .expect("Hydrolysis macOS blur-behind must run on the AppKit main thread");
+            let Some(mtm) = MainThreadMarker::new() else {
+                contract_violation!(
+                    "Hydrolysis macOS blur-behind must run on the AppKit main thread; blur-behind is not applied"
+                );
+                return;
+            };
             self.blur_effect_view = Some(super::macos_blur_behind::install(content_view, mtm));
         }
 
@@ -4941,71 +4987,104 @@ mod winit_impl {
         /// A window manager that does not read the atom leaves the
         /// translucent window unblurred.
         ///
-        /// # Panics
-        /// Panics when the connection lookup, the `intern_atom` round, the
-        /// property request or the flush fails: the dispatch already matched
-        /// an X11 raw window handle, so each is a bug, not an unsupported
-        /// case.
+        /// The dispatch already matched an X11 raw window handle, so a failing
+        /// connection lookup, `intern_atom` round, property request or flush
+        /// is logged as an error and leaves the window's blur unchanged.
         #[cfg(hydrolysis_wayland_platform)]
         fn x11_set_blur_behind(&self, blur: bool) {
             use x11rb::connection::Connection as _;
             use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, PropMode};
             use x11rb::wrapper::ConnectionExt as _;
-            let (connection, window_xid) = self.x11_connection_and_window().expect(
-                "the dispatch matched an X11 raw window handle but its connection lookup failed",
-            );
-            let atom = connection
-                .intern_atom(false, b"_KDE_NET_WM_BLUR_BEHIND_REGION")
-                .expect("intern_atom(_KDE_NET_WM_BLUR_BEHIND_REGION) failed")
-                .reply()
-                .expect("intern_atom(_KDE_NET_WM_BLUR_BEHIND_REGION) returned no reply")
-                .atom;
-            if blur {
-                connection
-                    .change_property32(PropMode::REPLACE, window_xid, atom, AtomEnum::CARDINAL, &[])
-                    .expect("change_property32(_KDE_NET_WM_BLUR_BEHIND_REGION) failed");
-            } else {
-                connection
-                    .delete_property(window_xid, atom)
-                    .expect("delete_property(_KDE_NET_WM_BLUR_BEHIND_REGION) failed");
+            fn step<T, E: std::fmt::Display>(step: &str, result: Result<T, E>) -> Option<T> {
+                result
+                    .inspect_err(|error| {
+                        tracing::error!(
+                            "hydrolysis X11 blur-behind: {step} failed: {error}; the blur is unchanged"
+                        );
+                    })
+                    .ok()
             }
-            connection
-                .flush()
-                .expect("flushing the borrowed XCB connection failed");
+            let Some((connection, window_xid)) = self.x11_connection_and_window() else {
+                tracing::error!(
+                    "the dispatch matched an X11 raw window handle but its connection lookup failed; the blur is unchanged"
+                );
+                return;
+            };
+            let Some(cookie) = step(
+                "intern_atom(_KDE_NET_WM_BLUR_BEHIND_REGION)",
+                connection.intern_atom(false, b"_KDE_NET_WM_BLUR_BEHIND_REGION"),
+            ) else {
+                return;
+            };
+            let Some(atom) = step(
+                "intern_atom(_KDE_NET_WM_BLUR_BEHIND_REGION) reply",
+                cookie.reply(),
+            )
+            .map(|reply| reply.atom) else {
+                return;
+            };
+            if blur {
+                step(
+                    "change_property32(_KDE_NET_WM_BLUR_BEHIND_REGION)",
+                    connection.change_property32(
+                        PropMode::REPLACE,
+                        window_xid,
+                        atom,
+                        AtomEnum::CARDINAL,
+                        &[],
+                    ),
+                );
+            } else {
+                step(
+                    "delete_property(_KDE_NET_WM_BLUR_BEHIND_REGION)",
+                    connection.delete_property(window_xid, atom),
+                );
+            }
+            step("flushing the borrowed XCB connection", connection.flush());
         }
 
         /// Dispatches the blur-behind ask to the windowing system the window
         /// lives on: the KDE blur-behind property on X11,
         /// `ext-background-effect-v1` on Wayland.
         ///
-        /// # Panics
-        /// Panics when the window carries neither an X11 nor a Wayland raw
-        /// handle — no other backend exists on this target — or when a
-        /// Wayland window's display handle is missing or is not Wayland.
+        /// A window that carries neither an X11 nor a Wayland raw handle — no
+        /// other backend exists on this target — or a Wayland window whose
+        /// display handle is not Wayland violates winit's contract: the
+        /// violation is reported and the blur is not applied. A missing
+        /// window or display handle is logged the same way.
         #[cfg(hydrolysis_wayland_platform)]
         fn linux_apply_blur_behind(&mut self, blur: bool) {
             use super::wayland_blur::{WaylandBlur, WaylandBlurSupport};
             use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
-            match self
-                .window
-                .window_handle()
-                .expect("a winit window always has a window handle")
-                .as_raw()
-            {
+            let raw_handle = match self.window.window_handle() {
+                Ok(handle) => handle.as_raw(),
+                Err(error) => {
+                    tracing::error!(
+                        "a winit window always has a window handle: {error}; the blur is not applied"
+                    );
+                    return;
+                }
+            };
+            match raw_handle {
                 RawWindowHandle::Xcb(_) | RawWindowHandle::Xlib(_) => {
                     self.x11_set_blur_behind(blur);
                 }
                 RawWindowHandle::Wayland(handle) => {
                     let surface = handle.surface.as_ptr();
-                    let RawDisplayHandle::Wayland(display) = self
-                        .window
-                        .display_handle()
-                        .expect("a winit window on Wayland always has a display handle")
-                        .as_raw()
-                    else {
-                        panic!(
-                            "a winit window with a Wayland window handle carries a non-Wayland display handle"
+                    let raw_display = match self.window.display_handle() {
+                        Ok(handle) => handle.as_raw(),
+                        Err(error) => {
+                            tracing::error!(
+                                "a winit window on Wayland always has a display handle: {error}; the blur is not applied"
+                            );
+                            return;
+                        }
+                    };
+                    let RawDisplayHandle::Wayland(display) = raw_display else {
+                        contract_violation!(
+                            "a winit window with a Wayland window handle carries a non-Wayland display handle; the blur is not applied"
                         );
+                        return;
                     };
                     if blur && matches!(self.wayland_blur, WaylandBlurSupport::NotAsked) {
                         self.wayland_blur = WaylandBlur::new(display.display.as_ptr())
@@ -5017,9 +5096,11 @@ mod winit_impl {
                         wayland_blur.set_blur(blur, surface);
                     }
                 }
-                other => panic!(
-                    "a winit window on a free-unix target carries an unexpected raw window handle: {other:?}"
-                ),
+                other => {
+                    contract_violation!(
+                        "a winit window on a free-unix target carries an unexpected raw window handle: {other:?}; the blur is not applied"
+                    );
+                }
             }
         }
 
@@ -5027,11 +5108,9 @@ mod winit_impl {
         /// to, refreshes the visibility signals, and re-applies deferred
         /// geometry once the window maps.
         ///
-        /// # Panics
-        ///
-        /// Panics when winit reports a non-finite or non-positive scale
-        /// factor — a broken platform contract the backend cannot recover
-        /// from.
+        /// A non-finite or non-positive scale factor from winit is a broken
+        /// platform contract: it is reported and the event still resizes the
+        /// surface to the window's current inner size.
         #[expect(
             clippy::too_many_lines,
             reason = "the dispatch walks every winit event kind in one ordered sequence; splitting it would obscure the event ordering"
@@ -5082,10 +5161,11 @@ mod winit_impl {
                         .push(InputEvent::Maximized(self.window.is_maximized()));
                 }
                 WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                    assert!(
-                        scale_factor.is_finite() && *scale_factor > 0.0,
-                        "hydrolysis winit backend received invalid scale factor {scale_factor}"
-                    );
+                    if !(scale_factor.is_finite() && *scale_factor > 0.0) {
+                        contract_violation!(
+                            "hydrolysis winit backend received invalid scale factor {scale_factor}; the surface resizes to the window's inner size"
+                        );
+                    }
                     let size = self.window.inner_size();
                     self.pending_surface_size = Some(size);
                     self.pending_events.push(InputEvent::Resize {
@@ -5374,13 +5454,9 @@ mod winit_impl {
     /// and later, decided from the OS build number rather than by probing
     /// the call: on an older build the window stays translucent and
     /// unblurred, the decided unsupported case. On a build that has the
-    /// attribute a failed call is unexpected, so the failure panics with the
-    /// HRESULT and the attribute rather than degrading silently.
-    ///
-    /// # Panics
-    /// Panics when a `DwmSetWindowAttribute` or `DwmExtendFrameIntoClientArea`
-    /// call fails on a build that has the attribute, when the window has no
-    /// handle, or when `RtlGetVersion` fails.
+    /// attribute a failed call is unexpected, so the failure is logged as an
+    /// error with the HRESULT and the attribute, as is a window without a
+    /// handle, and the blur stays as it was.
     #[cfg(target_os = "windows")]
     fn windows_apply_blur_behind(native_window: &NativeWindow, blur: bool) {
         use windows_sys::Win32::Foundation::HWND;
@@ -5393,12 +5469,20 @@ mod winit_impl {
         if os_build() < SYSTEM_BACKDROP_BUILD {
             return;
         }
-        let RawWindowHandle::Win32(win32) = native_window
-            .window_handle()
-            .expect("a winit window on Windows always has a window handle")
-            .as_raw()
-        else {
-            panic!("a winit window on Windows carries a Win32 raw window handle");
+        let raw_handle = match native_window.window_handle() {
+            Ok(handle) => handle.as_raw(),
+            Err(error) => {
+                tracing::error!(
+                    "a winit window on Windows always has a window handle: {error}; the blur is unchanged"
+                );
+                return;
+            }
+        };
+        let RawWindowHandle::Win32(win32) = raw_handle else {
+            contract_violation!(
+                "a winit window on Windows carries a Win32 raw window handle; the blur is unchanged"
+            );
+            return;
         };
         let hwnd = win32.hwnd.get() as HWND;
 
@@ -5419,10 +5503,12 @@ mod winit_impl {
                     .expect("a backdrop's size fits u32"),
             )
         };
-        assert_eq!(
-            hr, 0,
-            "DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE) failed: HRESULT {hr:#010x}"
-        );
+        if hr != 0 {
+            tracing::error!(
+                "DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE) failed: HRESULT {hr:#010x}; the blur is unchanged"
+            );
+            return;
+        }
 
         // A margin of -1 extends the frame into the whole client area, so the
         // backdrop shows through the transparent surface; 0 restores the
@@ -5437,18 +5523,18 @@ mod winit_impl {
         // SAFETY: `hwnd` is live as above, and `pmarInset` points at a
         // readable `MARGINS`, as the API requires.
         let hr = unsafe { DwmExtendFrameIntoClientArea(hwnd, &raw const margins) };
-        assert_eq!(
-            hr, 0,
-            "DwmExtendFrameIntoClientArea failed: HRESULT {hr:#010x}"
-        );
+        if hr != 0 {
+            tracing::error!(
+                "DwmExtendFrameIntoClientArea failed: HRESULT {hr:#010x}; the frame keeps its margins"
+            );
+        }
     }
 
     /// The running OS's build number, from `RtlGetVersion` — the version
     /// source the loader's compatibility lie cannot reach, unlike
     /// `GetVersionEx`, which reports what the manifest claims.
     ///
-    /// # Panics
-    /// Panics when `RtlGetVersion` returns a failing `NTSTATUS`.
+    /// A failing `NTSTATUS` is logged as an error and reads as build `0`.
     #[cfg(target_os = "windows")]
     fn os_build() -> u32 {
         use windows_sys::Wdk::System::SystemServices::RtlGetVersion;
@@ -5462,15 +5548,24 @@ mod winit_impl {
         // SAFETY: `info` is a live `OSVERSIONINFOW` of the declared size, as
         // the API requires.
         let status = unsafe { RtlGetVersion(&raw mut info) };
-        assert_eq!(status, 0, "RtlGetVersion failed: NTSTATUS {status:#010x}");
+        if status != 0 {
+            tracing::error!(
+                "RtlGetVersion failed: NTSTATUS {status:#010x}; the OS build reads as 0, below every backdrop build"
+            );
+            return 0;
+        }
         info.dwBuildNumber
     }
 
     fn map_cursor_position(position: &PhysicalPosition<f64>, scale_factor: f64) -> (f32, f32) {
-        assert!(
-            scale_factor.is_finite() && scale_factor > 0.0,
-            "hydrolysis winit backend received invalid scale factor {scale_factor}"
-        );
+        let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+            scale_factor
+        } else {
+            contract_violation!(
+                "hydrolysis winit backend received invalid scale factor {scale_factor}; the position is taken at scale 1"
+            );
+            1.0
+        };
         let logical = position.to_logical::<f64>(scale_factor);
         (
             crate::num_cast::f64_as_f32(logical.x),
@@ -6041,7 +6136,12 @@ mod winit_impl {
             CursorStyle::Move => CursorIcon::Move,
             CursorStyle::Wait => CursorIcon::Wait,
             CursorStyle::Copy => CursorIcon::Copy,
-            _ => panic!("unsupported CursorStyle variant in hydrolysis winit backend"),
+            _ => {
+                contract_violation!(
+                    "unsupported CursorStyle variant in hydrolysis winit backend; the default cursor shows"
+                );
+                CursorIcon::Default
+            }
         }
     }
 
@@ -6434,11 +6534,15 @@ mod winit_impl {
         }
 
         #[test]
-        fn cursor_position_panics_with_invalid_scale_factor() {
-            let result = std::panic::catch_unwind(|| {
-                let _ = map_cursor_position(&PhysicalPosition::new(120.0, 80.0), 0.0);
-            });
-            assert!(result.is_err());
+        #[cfg_attr(
+            debug_assertions,
+            should_panic(expected = "received invalid scale factor 0")
+        )]
+        fn an_invalid_scale_factor_maps_the_cursor_at_scale_one() {
+            assert_eq!(
+                map_cursor_position(&PhysicalPosition::new(120.0, 80.0), 0.0),
+                (120.0, 80.0)
+            );
         }
 
         fn caps_with_alpha_modes(
@@ -7048,17 +7152,22 @@ mod recovery_tests {
     }
 
     #[test]
-    #[should_panic(expected = "GPU device is unrecoverable")]
     fn unproductive_losses_end_in_the_unrecoverable_error() {
         let (_context, mut surface) = test_surface();
         // Every generation dies before presenting a frame; the budget is
-        // consecutive, so one loss past MAX_UNPRODUCTIVE_LOSSES panics.
+        // consecutive, so one loss past MAX_UNPRODUCTIVE_LOSSES exhausts it.
         for _ in 0..=MAX_UNPRODUCTIVE_LOSSES {
             surface
                 .device_loss()
                 .simulate_loss("gone before presenting");
             PresentationSurface::ensure_live(&mut surface);
         }
+        // The dead generation stays live, and later frames do not rebuild it.
+        let dead = surface.device_loss().gpu_context().context_id;
+        assert!(surface.device_loss().is_lost());
+        PresentationSurface::ensure_live(&mut surface);
+        assert_eq!(surface.device_loss().gpu_context().context_id, dead);
+        assert!(surface.device_loss().is_lost());
     }
 
     #[test]

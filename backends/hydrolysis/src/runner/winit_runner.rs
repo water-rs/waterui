@@ -27,6 +27,8 @@ use waterui::window::{Monitor, MonitorSelector, Window, WindowState};
 use waterui_core::Environment;
 #[cfg(hydrolysis_wayland_platform)]
 use waterui_core::Str;
+#[cfg(target_os = "windows")]
+use waterui_core::contract_violation;
 use waterui_graphics::gpu::RedrawHandle;
 use waterui_text::FontCollection;
 
@@ -138,17 +140,25 @@ const FORCED_TERMINATION_EXIT_CODE: i32 = 130;
 /// [`TerminationSignals`] owns the contract: the first delivery of a watched
 /// signal is this send — the graceful request the event loop serves — and a
 /// repeated signal ends the process by the signal's own default action. The
-/// returned guard keeps the watcher alive for the duration of the run.
+/// returned guard keeps the watcher alive for the duration of the run. When
+/// the OS refuses the watcher, an error is logged and there is no guard: the
+/// signals keep their default action.
 #[cfg(unix)]
 fn install_termination_handler(
     event_proxy: &winit::event_loop::EventLoopProxy<RunnerEvent>,
-) -> super::termination::TerminationSignals {
+) -> Option<super::termination::TerminationSignals> {
     let signal_proxy = event_proxy.clone();
     super::termination::TerminationSignals::install(move |_signal| {
         // The watcher reads deliveries on its own thread rather than inside a
         // signal handler, so waking the loop from here is an ordinary send.
         let _ = signal_proxy.send_event(RunnerEvent::Terminate);
     })
+    .inspect_err(|error| {
+        tracing::error!(
+            "hydrolysis runner: failed to watch the termination signals: {error}; they keep their default action"
+        );
+    })
+    .ok()
 }
 
 /// Turns the console control events into [`RunnerEvent::Terminate`].
@@ -163,7 +173,7 @@ fn install_termination_handler(
 fn install_termination_handler(event_proxy: &winit::event_loop::EventLoopProxy<RunnerEvent>) {
     let requests = TerminationRequests::default();
     let signal_proxy = event_proxy.clone();
-    ctrlc::set_handler(move || match requests.record() {
+    let installed = ctrlc::set_handler(move || match requests.record() {
         TerminationAction::RequestExit => {
             // `ctrlc` runs this on a thread of its own rather than inside a
             // signal handler, so waking the loop from here is an ordinary send.
@@ -175,8 +185,12 @@ fn install_termination_handler(event_proxy: &winit::event_loop::EventLoopProxy<R
             );
             std::process::exit(FORCED_TERMINATION_EXIT_CODE);
         }
-    })
-    .expect("hydrolysis runner: failed to install the termination handler");
+    });
+    if let Err(error) = installed {
+        tracing::error!(
+            "hydrolysis runner: failed to install the termination handler: {error}; Ctrl+C keeps its default action"
+        );
+    }
     install_console_close_handler(event_proxy);
 }
 
@@ -337,9 +351,9 @@ impl TerminationSubclass {
     /// message, so the wait ends for executor work as well as for the
     /// window and loop messages an `on_terminate` future may be awaiting.
     ///
-    /// # Panics
-    ///
-    /// When `MsgWaitForMultipleObjectsEx` fails, with `GetLastError`.
+    /// When `MsgWaitForMultipleObjectsEx` fails, the failure is logged with
+    /// `GetLastError` and the wait ends: the session end proceeds without
+    /// waiting for `on_terminate`.
     fn run_until_terminated(&self) {
         use windows_sys::Win32::Foundation::WAIT_FAILED;
         use windows_sys::Win32::System::Threading::INFINITE;
@@ -365,11 +379,13 @@ impl TerminationSubclass {
                     MWMO_INPUTAVAILABLE,
                 )
             };
-            assert!(
-                woke != WAIT_FAILED,
-                "hydrolysis runner: waiting for on_terminate at session end failed: {}",
-                std::io::Error::last_os_error()
-            );
+            if woke == WAIT_FAILED {
+                tracing::error!(
+                    "hydrolysis runner: waiting for on_terminate at session end failed: {}; the session end proceeds without it",
+                    std::io::Error::last_os_error()
+                );
+                return;
+            }
             // SAFETY: `MSG` is plain data, and the all-zero value is valid.
             let mut msg: MSG = unsafe { std::mem::zeroed() };
             // SAFETY: `msg` is a writable `MSG`; a null HWND takes every
@@ -475,9 +491,9 @@ fn install_termination_subclass(
         // SAFETY: the subclass was not installed, so nothing else holds the
         // allocation `Box::into_raw` produced above.
         drop(unsafe { Box::from_raw(subclass) });
-        panic!(
+        tracing::error!(
             "hydrolysis runner: SetWindowSubclass failed on an application window, so its \
-             session end would skip on_terminate: {error}"
+             session end skips on_terminate: {error}"
         );
     }
 }
@@ -538,9 +554,9 @@ unsafe extern "system" fn console_close_handler(ctrl_type: u32) -> windows_sys::
     if ctrl_type != CTRL_CLOSE_EVENT {
         return 0;
     }
-    let event_proxy = CONSOLE_CLOSE
-        .get()
-        .expect("the console handler is registered after its event loop is recorded");
+    let event_proxy = CONSOLE_CLOSE.get().expect(
+        "the console handler is registered only after its event loop is recorded in CONSOLE_CLOSE",
+    );
     let (released, release) = mpsc::channel();
     // A loop that already exited drops the event and its sender, which ends
     // the wait at once.
@@ -551,25 +567,27 @@ unsafe extern "system" fn console_close_handler(ctrl_type: u32) -> windows_sys::
 
 /// Registers [`console_close_handler`] ahead of `ctrlc`'s handler.
 ///
-/// # Panics
-///
-/// When it is called a second time in the process, or when
-/// `SetConsoleCtrlHandler` fails.
+/// A second call in the process is a contract violation and installs nothing;
+/// a failing `SetConsoleCtrlHandler` is logged and closing the console takes
+/// its default action.
 #[cfg(target_os = "windows")]
 fn install_console_close_handler(event_proxy: &winit::event_loop::EventLoopProxy<RunnerEvent>) {
     use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
-    assert!(
-        CONSOLE_CLOSE.set(event_proxy.clone()).is_ok(),
-        "hydrolysis runner: the console close handler is installed once per process"
-    );
+    if CONSOLE_CLOSE.set(event_proxy.clone()).is_err() {
+        contract_violation!(
+            "hydrolysis runner: the console close handler is installed once per process; the second install is ignored"
+        );
+        return;
+    }
     // SAFETY: `console_close_handler` matches `PHANDLER_ROUTINE` and lives
     // for the whole process.
     let installed = unsafe { SetConsoleCtrlHandler(Some(console_close_handler), 1) };
-    assert!(
-        installed != 0,
-        "hydrolysis runner: failed to install the console close handler: {}",
-        std::io::Error::last_os_error()
-    );
+    if installed == 0 {
+        tracing::error!(
+            "hydrolysis runner: failed to install the console close handler: {}; closing the console takes its default action",
+            std::io::Error::last_os_error()
+        );
+    }
 }
 
 struct PendingWindow {
@@ -686,9 +704,15 @@ pub fn run(
             .with_default_menu(false)
             .with_activate_ignoring_other_apps(activate_at_launch);
     }
-    let event_loop = event_loop_builder
-        .build()
-        .expect("hydrolysis runner: failed to create event loop");
+    let event_loop = match event_loop_builder.build() {
+        Ok(event_loop) => event_loop,
+        Err(error) => {
+            tracing::error!(
+                "hydrolysis runner: failed to create the event loop: {error}; the app does not start"
+            );
+            return;
+        }
+    };
     let event_proxy = event_loop.create_proxy();
     let (local_runnable_tx, local_runnable_rx) = mpsc::channel::<Runnable>();
     let local_runnable_rx = Rc::new(local_runnable_rx);
@@ -801,9 +825,8 @@ pub fn run(
     env.insert(crate::renderer::WindowCloser::new({
         let event_proxy = event_proxy.clone();
         move |window| {
-            event_proxy
-                .send_event(RunnerEvent::CloseWindow(window))
-                .expect("the runner's event loop outlives the WindowCloser it installs");
+            // A loop that already exited has no window left to close.
+            let _ = event_proxy.send_event(RunnerEvent::CloseWindow(window));
         }
     }));
     // The app's menu bar resolves after the machine installed `Quit` and
@@ -881,7 +904,9 @@ pub fn run(
     let run_result = event_loop.run_app(&mut runner);
     waterui_locale::shutdown_current_thread_runtime_locale_state();
     let _ = runner.drain_local_executor_queue();
-    run_result.expect("hydrolysis runner: event loop failed");
+    if let Err(error) = run_result {
+        tracing::error!("hydrolysis runner: event loop failed: {error}; the app exits");
+    }
 }
 
 struct WinitRunner {
@@ -1250,46 +1275,55 @@ impl WinitRunner {
         &mut self,
         event_loop: &ActiveEventLoop,
         pending: PendingWindow,
-    ) -> (
+    ) -> Option<(
         RuntimeWindow<WinitWindow, crate::text::ParleyEngine>,
         AccessKitAdapter,
-    ) {
+    )> {
         let PendingWindow { window, activates } = pending;
         let activation = window.activation;
         // `Window::placement` resolves each time the window is shown — and a
         // winit window is shown exactly once, at mount (a `Closed` window is
         // destroyed, never re-shown) — so the resolved rect is written into
         // `frame` here, before the attributes carry it into the map request.
-        if let Some(placement) = window.placement.as_ref() {
-            let monitor = self.resolve_placement_monitor(event_loop, placement.monitor());
+        if let Some(placement) = window.placement.as_ref()
+            && let Some(monitor) = self.resolve_placement_monitor(event_loop, placement.monitor())
+        {
             window.frame.set((placement.place())(&monitor));
         }
         let attributes =
             native_window_attributes(&window, &self.env, activates, self.window_icon.clone());
 
-        let native_window = Arc::new(
-            event_loop
-                .create_window(attributes)
-                .expect("hydrolysis runner: failed to create winit window"),
-        );
+        let native_window = match event_loop.create_window(attributes) {
+            Ok(native_window) => Arc::new(native_window),
+            Err(error) => {
+                tracing::error!(
+                    "hydrolysis runner: failed to create the winit window: {error}; the window is not mounted"
+                );
+                return None;
+            }
+        };
         arm_window_focus_requests(&window, &native_window);
         #[cfg(hydrolysis_wayland_platform)]
         if let Some(xid) = x11_state_watch::x11_window_id(&native_window) {
             // The window is on X11, so the app's own server connection is
             // already up — every watch step is expected to succeed, and a
-            // failure means minimize would go undetected. The window's
-            // creation fails rather than silently covering the gap.
+            // failure means minimize goes undetected: it is logged and the
+            // window runs without the watch.
             if self.x11_state_watch.is_none() {
-                self.x11_state_watch = Some(
-                    X11StateWatch::connect(self.event_proxy.clone())
-                        .expect("hydrolysis runner: failed to start the X11 state watch"),
+                match X11StateWatch::connect(self.event_proxy.clone()) {
+                    Ok(watch) => self.x11_state_watch = Some(watch),
+                    Err(error) => tracing::error!(
+                        "hydrolysis runner: failed to start the X11 state watch: {error}; minimize goes undetected"
+                    ),
+                }
+            }
+            if let Some(watch) = self.x11_state_watch.as_ref()
+                && let Err(error) = watch.select(xid)
+            {
+                tracing::error!(
+                    "hydrolysis runner: failed to subscribe to X11 window state events: {error}; minimize goes undetected for this window"
                 );
             }
-            self.x11_state_watch
-                .as_ref()
-                .expect("hydrolysis runner: X11 state watch missing after connect")
-                .select(xid)
-                .expect("hydrolysis runner: failed to subscribe to X11 window state events");
         }
         #[cfg(target_os = "windows")]
         if activates {
@@ -1362,7 +1396,7 @@ impl WinitRunner {
                 runtime.platform.native_window().focus_window();
             }
         }
-        (runtime, adapter)
+        Some((runtime, adapter))
     }
 
     /// Installs the monitored main-thread executor on the first active event
@@ -1409,12 +1443,13 @@ impl WinitRunner {
         // every window creation — means no window's first frame ever
         // resolves the placeholder the binding was created with.
         #[cfg(target_os = "windows")]
-        sync_system_color_scheme(
-            &self.system_color_scheme,
-            event_loop
-                .system_theme()
-                .expect("winit reports the system theme on Windows"),
-        );
+        if let Some(theme) = event_loop.system_theme() {
+            sync_system_color_scheme(&self.system_color_scheme, theme);
+        } else {
+            contract_violation!(
+                "winit reports the system theme on Windows, but reported none; the color scheme keeps its placeholder"
+            );
+        }
         // Linux: hold every mount until the portal's initial `ReadOne`
         // resolved — the first window's first frame must already draw in
         // the real scheme, never a Light placeholder corrected a frame
@@ -1428,7 +1463,9 @@ impl WinitRunner {
         let mut pending = mem::take(&mut self.pending_windows);
         pending.extend(self.pending_window_queue.borrow_mut().drain(..));
         for pending in pending {
-            let (runtime, adapter) = self.create_runtime_window(event_loop, pending);
+            let Some((runtime, adapter)) = self.create_runtime_window(event_loop, pending) else {
+                continue;
+            };
             let id = runtime.platform.id();
             self.windows.insert(id, runtime);
             self.accesskit_adapters.insert(id, adapter);
@@ -1442,7 +1479,7 @@ impl WinitRunner {
         &self,
         event_loop: &ActiveEventLoop,
         selector: MonitorSelector,
-    ) -> Monitor {
+    ) -> Option<Monitor> {
         crate::runner::placement::resolve_placement_monitor(
             &crate::runner::placement::PlacementContext {
                 event_loop,
