@@ -53,12 +53,12 @@ mod tests {
         let mut second = first.clone();
         second.insert(ResourceContext::new("/second/assets", "/second/fonts"));
         assert_eq!(
-            ResourceContext::from_environment(&first).assets(),
-            std::path::Path::new("/first/assets")
+            ResourceContext::from_environment(&first).map(ResourceContext::assets),
+            Some(std::path::Path::new("/first/assets"))
         );
         assert_eq!(
-            ResourceContext::from_environment(&second).fonts(),
-            std::path::Path::new("/second/fonts")
+            ResourceContext::from_environment(&second).map(ResourceContext::fonts),
+            Some(std::path::Path::new("/second/fonts"))
         );
     }
 }

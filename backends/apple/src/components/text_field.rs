@@ -660,9 +660,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
         if let Some(on_submit) = on_submit {
             let env = ctx.env().clone();
             #[cfg(target_os = "ios")]
-            leaf.keep(field.install_submit_handler(move |_| on_submit.call(&env)));
+            leaf.keep(field.install_submit_handler(move |_| on_submit.run(&env)));
             #[cfg(target_os = "macos")]
-            field.on_submit(move |_| on_submit.call(&env));
+            field.on_submit(move |_| on_submit.run(&env));
         }
 
         // The prompt renders into the placeholder under the placeholder

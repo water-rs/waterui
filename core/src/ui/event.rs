@@ -6,7 +6,8 @@
 
 use crate::{
     handler::{
-        BoxedAction, BoxedActionOnce, Handler, HandlerOnce, boxed_action, boxed_action_once,
+        BoxedAction, BoxedActionOnce, Handler, HandlerOnce, ReportExtraction, boxed_action,
+        boxed_action_once,
     },
     layout::Point,
     metadata::MetadataKey,
@@ -64,7 +65,7 @@ impl LifeCycleHook {
     /// Handles the lifecycle event by invoking the stored handler.
     /// This consumes the hook since the handler is one-time.
     pub fn handle(self, env: &crate::Environment) {
-        (self.handler)(env);
+        (self.handler)(env).report_extraction();
     }
 }
 
@@ -145,7 +146,7 @@ impl OnEvent {
 
     /// Handles the event by invoking the stored handler.
     pub fn handle(&mut self, env: &crate::Environment) {
-        (self.handler)(env);
+        (self.handler)(env).report_extraction();
     }
 }
 

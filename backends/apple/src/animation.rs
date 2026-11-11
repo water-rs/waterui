@@ -28,7 +28,7 @@ use waterui::reactive::watcher::Metadata;
 /// macOS).
 #[cfg(platform_timing)]
 pub fn timing(animation: &Animation) -> Timing {
-    match *animation {
+    match animation.clone().validated() {
         Animation::Default => Timing::Bezier {
             duration: 0.25,
             control_points: [0.42, 0.0, 0.58, 1.0],
@@ -69,7 +69,7 @@ pub fn with_platform_animation(metadata: &Metadata, body: impl FnOnce() + 'stati
 /// animator.
 #[cfg(frame_progress)]
 pub fn progress(animation: &Animation) -> Rc<dyn Fn(f64) -> f64> {
-    let animation = animation.clone();
+    let animation = animation.clone().validated();
     Rc::new(move |elapsed| {
         f64::from(animation.progress(core::time::Duration::from_secs_f64(elapsed)))
     })

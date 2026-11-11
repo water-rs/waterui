@@ -1091,9 +1091,11 @@ impl WebViewOpen {
     /// [`WebView::proxy_scope`], which attaches the proxy without placing
     /// anything.
     ///
-    /// # Panics
+    /// # Missing controller
     ///
-    /// Panics when rendered without a [`WebViewController`] in the environment.
+    /// Rendered without a [`WebViewController`] in the environment, a debug
+    /// build panics, a release build logs the contract violation, and the
+    /// view renders nothing.
     pub fn with_proxy<V, F>(self, content: F) -> impl View
     where
         V: View,
@@ -1101,13 +1103,10 @@ impl WebViewOpen {
     {
         use waterui_core::env::with;
         waterui_core::env::UseEnv::new(move |env: &Environment| {
-            let controller = env
-                .get::<WebViewController>()
-                .cloned()
-                .expect("a WebView needs a WebViewController in its environment");
+            let controller = web_view_controller(env)?;
             let webview = self.create(&controller, env);
             let scoped = with(content(), WebViewProxy::new(webview.handle().clone()));
-            vstack((scoped, webview))
+            Some(vstack((scoped, webview)))
         })
     }
 
@@ -1235,14 +1234,20 @@ impl WebViewOpen {
     }
 }
 
+/// The host's [`WebViewController`], or `None` after reporting that the
+/// environment carries none — a web view cannot render without one.
+fn web_view_controller(env: &Environment) -> Option<WebViewController> {
+    let controller = env.get::<WebViewController>().cloned();
+    if controller.is_none() {
+        waterui_core::contract_violation!("a WebView needs a WebViewController in its environment");
+    }
+    controller
+}
+
 impl View for WebViewOpen {
     fn body(self, _env: &Environment) -> impl View {
         waterui_core::env::UseEnv::new(move |env: &Environment| {
-            let controller = env
-                .get::<WebViewController>()
-                .cloned()
-                .expect("a WebView needs a WebViewController in its environment");
-            self.create(&controller, env)
+            web_view_controller(env).map(|controller| self.create(&controller, env))
         })
     }
 

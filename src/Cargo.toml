@@ -38,6 +38,7 @@ waterui-meta = { workspace = true, optional = true }
 executor-core.workspace = true
 futures.workspace = true
 tracing.workspace = true
+thiserror = { version = "2.0.21", default-features = false }
 # `Link` opens its URL in the system handler.
 waterkit-deeplink.workspace = true
 # Grapheme clusters for the avatar monogram: a name's first "letter" is a

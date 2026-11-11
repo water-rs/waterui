@@ -290,7 +290,7 @@ impl<T: Animatable> AnimationTrack<T> {
         match animation {
             Some(animation) if !animation.duration().is_zero() => {
                 self.active = Some(ActiveTrack {
-                    animation,
+                    animation: animation.validated(),
                     elapsed: Duration::ZERO,
                     from,
                     to: target,
@@ -336,6 +336,23 @@ impl<T: Animatable> AnimationTrack<T> {
 const DEFAULT_TIMED_DURATION: Duration = Duration::from_millis(250);
 /// Default spring animation duration (used for timing calculations).
 const DEFAULT_SPRING_DURATION: Duration = Duration::from_millis(600);
+
+/// Whether spring parameters describe a physical spring.
+pub(super) const fn spring_is_valid(stiffness: f32, damping: f32) -> bool {
+    stiffness.is_finite() && stiffness > 0.0 && damping.is_finite() && damping >= 0.0
+}
+
+/// Whether bezier control points are finite with `x1` and `x2` in `[0, 1]`.
+pub(super) const fn bezier_is_valid(x1: f32, y1: f32, x2: f32, y2: f32) -> bool {
+    x1.is_finite()
+        && y1.is_finite()
+        && x2.is_finite()
+        && y2.is_finite()
+        && x1 >= 0.0
+        && x1 <= 1.0
+        && x2 >= 0.0
+        && x2 <= 1.0
+}
 
 /// An enumeration representing different types of animations
 ///
@@ -477,19 +494,15 @@ impl Animation {
     /// let animation = Animation::spring(100.0, 10.0);
     /// ```
     ///
-    /// # Panics
-    ///
-    /// Panics if `stiffness` is not finite or is less than or equal to zero,
-    /// or if `damping` is not finite or is negative.
+    /// Stiffness must be finite and greater than zero and damping finite and
+    /// not negative. A debug build asserts this; the constructor stays plain
+    /// data, and a consumer calls [`validated`](Self::validated) to turn an
+    /// invalid animation into the default one.
     #[must_use]
     pub const fn spring(stiffness: f32, damping: f32) -> Self {
-        assert!(
-            stiffness.is_finite() && stiffness > 0.0,
-            "Animation::spring requires finite stiffness > 0"
-        );
-        assert!(
-            damping.is_finite() && damping >= 0.0,
-            "Animation::spring requires finite damping >= 0"
+        debug_assert!(
+            spring_is_valid(stiffness, damping),
+            "Animation::spring requires finite stiffness > 0 and finite damping >= 0"
         );
         Self::Spring { stiffness, damping }
     }
@@ -513,19 +526,15 @@ impl Animation {
     /// let animation = Animation::bezier(Duration::from_millis(400), 0.25, 0.1, 0.25, 1.0);
     /// ```
     ///
-    /// # Panics
-    ///
-    /// Panics if any control point is non-finite or if `x1` or `x2` falls
-    /// outside the normalized `[0, 1]` range.
+    /// Every control point must be finite and `x1` and `x2` must lie in the
+    /// normalized `[0, 1]` range. A debug build asserts this; the constructor
+    /// stays plain data, and a consumer calls [`validated`](Self::validated)
+    /// to turn an invalid animation into the default one.
     #[must_use]
     pub const fn bezier(duration: Duration, x1: f32, y1: f32, x2: f32, y2: f32) -> Self {
-        assert!(
-            !(!x1.is_finite() || !y1.is_finite() || !x2.is_finite() || !y2.is_finite()),
-            "Animation::bezier requires finite control points"
-        );
-        assert!(
-            !(x1 < 0.0 || x1 > 1.0 || x2 < 0.0 || x2 > 1.0),
-            "Animation::bezier requires x1/x2 in [0, 1]"
+        debug_assert!(
+            bezier_is_valid(x1, y1, x2, y2),
+            "Animation::bezier requires finite control points with x1/x2 in [0, 1]"
         );
         Self::Bezier {
             duration,
@@ -533,6 +542,27 @@ impl Animation {
             y1,
             x2,
             y2,
+        }
+    }
+
+    /// This animation when its parameters are valid, otherwise the default
+    /// animation.
+    ///
+    /// A consumer calls it where it takes an `Animation` from app code. An
+    /// invalid spring or bezier is a contract violation: a debug build panics
+    /// and a release build logs it and uses [`Animation::Default`].
+    #[must_use]
+    pub fn validated(self) -> Self {
+        let valid = match &self {
+            Self::Default => true,
+            Self::Bezier { x1, y1, x2, y2, .. } => bezier_is_valid(*x1, *y1, *x2, *y2),
+            Self::Spring { stiffness, damping } => spring_is_valid(*stiffness, *damping),
+        };
+        if valid {
+            self
+        } else {
+            crate::contract_violation!("invalid animation parameters: {self:?}");
+            Self::Default
         }
     }
 
@@ -779,21 +809,55 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "stiffness > 0")]
-    fn spring_rejects_non_positive_stiffness() {
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "finite stiffness > 0")]
+    fn spring_constructor_asserts_non_positive_stiffness_in_debug() {
         let _ = Animation::spring(0.0, 10.0);
     }
 
     #[test]
-    #[should_panic(expected = "damping >= 0")]
-    fn spring_rejects_negative_damping() {
-        let _ = Animation::spring(100.0, -1.0);
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "x1/x2 in [0, 1]")]
+    fn bezier_constructor_asserts_invalid_x_range_in_debug() {
+        let _ = Animation::bezier(Duration::from_millis(100), -0.1, 0.0, 0.5, 1.0);
     }
 
     #[test]
-    #[should_panic(expected = "x1/x2 in [0, 1]")]
-    fn bezier_rejects_invalid_x_range() {
-        let _ = Animation::bezier(Duration::from_millis(100), -0.1, 0.0, 0.5, 1.0);
+    fn validated_keeps_valid_animations() {
+        let spring = Animation::spring(100.0, 10.0);
+        assert_eq!(spring.clone().validated(), spring);
+        let bezier = Animation::ease_in_out(Duration::from_millis(100));
+        assert_eq!(bezier.clone().validated(), bezier);
+        assert_eq!(Animation::Default.validated(), Animation::Default);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "invalid animation parameters")]
+    fn validated_reports_an_invalid_spring_in_debug() {
+        let _ = Animation::Spring {
+            stiffness: 100.0,
+            damping: -1.0,
+        }
+        .validated();
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn validated_replaces_invalid_animations_with_the_default_in_release() {
+        let spring = Animation::Spring {
+            stiffness: 0.0,
+            damping: 10.0,
+        };
+        assert_eq!(spring.validated(), Animation::Default);
+        let bezier = Animation::Bezier {
+            duration: Duration::from_millis(100),
+            x1: -0.1,
+            y1: 0.0,
+            x2: 0.5,
+            y2: 1.0,
+        };
+        assert_eq!(bezier.validated(), Animation::Default);
     }
 
     #[test]

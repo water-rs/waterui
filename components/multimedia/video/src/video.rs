@@ -23,6 +23,7 @@ use core::fmt;
 use nami::{Signal as _, SignalExt as _};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::time::Duration;
+use waterui_core::handler::ReportExtraction as _;
 use waterui_core::{
     Binding, Computed, Environment, NativeView, SerialDispatch, binding, configurable,
     layout::StretchAxis,
@@ -1320,7 +1321,9 @@ impl QueuedVideoEvents {
 
     fn emit(&self, event: Event) {
         self.events.deliver(event, |event| {
-            (self.handler.borrow_mut())(event, &self.env);
+            // An event handler whose extractors fail does not run; the event
+            // is dropped and the failure reported.
+            (self.handler.borrow_mut())(event, &self.env).report_extraction();
         });
     }
 }
@@ -1882,6 +1885,7 @@ mod tests {
                     callback_slot.borrow().as_ref().expect("callback installed")(Event::Ended);
                 }
                 inside.set(false);
+                Ok(())
             }
         });
         let callback = VideoEventHandler::new(handler).bind_callback(Environment::new());
@@ -1920,6 +1924,7 @@ mod tests {
                         .call(Event::Ended);
                 }
                 inside.set(false);
+                Ok(())
             }
         });
         let bound = VideoEventHandler::new(handler).bind(&Environment::new());

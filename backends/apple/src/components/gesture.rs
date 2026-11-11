@@ -42,6 +42,7 @@ use waterui::gesture::{
     MagnificationEvent, PointerButton, RotationEvent, TapEvent,
 };
 use waterui_core::Metadata;
+use waterui_core::handler::ReportExtraction as _;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
@@ -660,7 +661,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 GesturePayload::Magnification(event) => action_env.insert(event),
                 GesturePayload::Rotation(event) => action_env.insert(event),
             }
-            (action.borrow_mut())(&action_env);
+            (action.borrow_mut())(&action_env).report_extraction();
         });
 
         // An assistive client's activation — `AXPress` on `AppKit`,

@@ -58,7 +58,10 @@ use nami::Signal;
 use suiteki::Str;
 use waterui_core::{
     Environment,
-    handler::{BoxedAction, BoxedEventAction, EventHandler, boxed_action, boxed_event_handler},
+    handler::{
+        BoxedAction, BoxedEventAction, EventHandler, ReportExtraction, boxed_action,
+        boxed_event_handler,
+    },
     metadata::{Metadata, MetadataKey},
 };
 use waterui_url::Url;
@@ -319,7 +322,7 @@ impl DropDestination {
             accepted_kind: TransferKind::of::<T>(),
             on_drop: Box::new(move |payload: DragPayload, env: &Environment| {
                 let value = payload.expect_value::<T>().clone();
-                on_drop(value, env);
+                on_drop(value, env)
             }),
             on_enter: None,
             on_exit: None,
@@ -354,20 +357,20 @@ impl DropDestination {
             );
             return;
         }
-        (self.on_drop)(payload, env);
+        (self.on_drop)(payload, env).report_extraction();
     }
 
     /// Reports that an accepted drag entered the destination's bounds.
     pub fn enter(&mut self, env: &Environment) {
         if let Some(on_enter) = &mut self.on_enter {
-            on_enter(env);
+            on_enter(env).report_extraction();
         }
     }
 
     /// Reports that an accepted drag left the destination's bounds without dropping.
     pub fn exit(&mut self, env: &Environment) {
         if let Some(on_exit) = &mut self.on_exit {
-            on_exit(env);
+            on_exit(env).report_extraction();
         }
     }
 
@@ -395,9 +398,9 @@ fn chain(previous: Option<BoxedAction<()>>, handler: impl FnMut() + 'static) -> 
     let mut handler = boxed_action(handler);
     Box::new(move |env| {
         if let Some(previous) = &mut previous {
-            previous(env);
+            previous(env)?;
         }
-        handler(env);
+        handler(env)
     })
 }
 

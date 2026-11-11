@@ -2,7 +2,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use waterui_core::gesture::{GestureObserver, LongPressGesture};
-use waterui_core::handler::{BoxedEventAction, EventHandler, boxed_event_handler};
+use waterui_core::handler::{
+    BoxedEventAction, EventHandler, ReportExtraction, boxed_event_handler,
+};
 use waterui_core::{
     AnyView, Binding, Computed, Dynamic, Environment, Metadata, SerialDispatch, Signal, SignalExt,
     View, layout::StretchAxis, reactive::signal::IntoComputed,
@@ -192,7 +194,7 @@ impl LivePhotoReporter {
     fn emit(&self, event: Event) {
         self.inner.events.deliver(event, |event| {
             if let Some(handler) = self.inner.handler.borrow_mut().as_mut() {
-                handler(event, &self.inner.env);
+                handler(event, &self.inner.env).report_extraction();
             }
         });
     }
@@ -249,6 +251,7 @@ mod tests {
                     reporter.emit(Event::MotionEnded);
                 }
                 inside.set(false);
+                Ok(())
             }
         }));
 
