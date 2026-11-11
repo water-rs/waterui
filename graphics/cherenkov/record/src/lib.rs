@@ -52,6 +52,7 @@ pub mod target;
 pub mod text;
 pub mod tree;
 mod union_cap;
+pub mod wgsl;
 
 pub use kurbo;
 /// Monotonic presentation clock: std on native, browser performance clock on wasm.

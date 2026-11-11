@@ -18,9 +18,6 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::image::CpuImage;
 
-/// The backdrop prelude, after filtrate-core's working-space fragment.
-const BACKDROP_PRELUDE: &str = include_str!("backdrop.wgsl");
-
 /// `backdrop_sample(q)`'s index in [`BACKDROP`]'s host functions.
 pub const SAMPLE: usize = 0;
 /// `backdrop_sample_level(q, level)`'s index.
@@ -72,12 +69,8 @@ impl BackdropProgram {
         // The GPU backend appends the user source to its module text the
         // same way (`backdrop_effect_text`): the source names the prelude's
         // types and functions, so it cannot be parsed apart from it.
-        let text = format!(
-            "{}\n{BACKDROP_PRELUDE}\n{}",
-            filtrate_core::space::WGSL,
-            source.source
-        );
-        let program = Program::wgsl(&text, "backdrop_effect", &BACKDROP)
+        let text = cherenkov::wgsl::backdrop_module(&source.source);
+        let program = Program::wgsl(&text, cherenkov::wgsl::BACKDROP_ENTRY, &BACKDROP)
             .map_err(|error| ResourceError::Shader(error.to_string()))?;
         let signature = || {
             ResourceError::Shader(
@@ -174,7 +167,7 @@ impl PaintProgram {
     /// paint's vertex stage does not supply, does not return a `vec4<f32>`,
     /// or uses a construct the lane executor does not model.
     pub fn compile(source: &ShaderSource) -> Result<Self, ResourceError> {
-        let text = cherenkov::wgsl::paint_module(source);
+        let text = cherenkov::wgsl::paint_module(&source.source);
         let invalid = |error: &dyn std::fmt::Display| ResourceError::Shader(error.to_string());
         let module = naga::front::wgsl::parse_str(&text)
             .map_err(|error| ResourceError::Shader(error.emit_to_string(&text)))?;

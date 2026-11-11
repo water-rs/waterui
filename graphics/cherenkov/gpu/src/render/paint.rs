@@ -76,7 +76,7 @@ const FRAGMENT_ENTRY: &str = cherenkov::wgsl::PAINT_ENTRY;
 
 /// The module a user shader paint compiles to.
 fn module_text(source: &ShaderSource) -> String {
-    cherenkov::wgsl::paint_module(source)
+    cherenkov::wgsl::paint_module(&source.source)
 }
 
 /// Validates a user shader paint on the caller thread: the composed module

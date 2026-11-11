@@ -1,8 +1,10 @@
-// The CPU backend's backdrop effect prelude: what the backdrop shader
+// The backdrop effect contract as declarations: what the backdrop shader
 // contract (`cherenkov::BackdropShaderSource`) and the GPU module give a
-// registered `backdrop_effect`. filtrate-core's working-space fragment
-// (`space_to_srgb`, `space_from_srgb`, the `SPACE_*` constants) precedes
-// it and the user source follows.
+// registered `backdrop_effect`, for an evaluator that binds the capture
+// reads itself — the CPU backend's lane executor and the reference oracle.
+// filtrate-core's working-space fragment (`space_to_srgb`,
+// `space_from_srgb`, the `SPACE_*` constants) precedes it and the user
+// source follows.
 
 const SPACE_LINEAR: u32 = 0u;
 const SPACE_SRGB: u32 = 1u;

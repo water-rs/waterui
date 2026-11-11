@@ -24,7 +24,7 @@ pub enum Paint {
     Mesh(MeshGradient),
     /// An image pattern.
     Image(ImagePattern),
-    /// A user shader paint. It needs the GPU backend.
+    /// A user shader paint. A backend without shader paints refuses it.
     Shader(ShaderPaint),
     /// A paint whose coordinates are mapped into shape space independently
     /// of the shape's geometry. See [`TransformedPaint`].
