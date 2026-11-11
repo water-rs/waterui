@@ -65,7 +65,16 @@ name = "waterui-meta"
 version_group = "waterui"
 
 [[package]]
+name = "waterui-git-head"
+version_group = "waterui"
+git_tag_name = "git-head/v{{ version }}"
+
+[[package]]
 name = "waterui-contract"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-easing"
 version_group = "waterui"
 
 [[package]]

@@ -28,6 +28,7 @@ use waterui::navigation::{
 use waterui::theme::color::{Background, Surface};
 use waterui_controls::label::LabelDisplayMode;
 use waterui_controls::text_field::TextField;
+use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Metadata, Native};
@@ -1969,12 +1970,15 @@ fn moving_page_transition<E: crate::text::TextEngine>(
         });
     entry.content.ensure_built(renderer, &env);
     let declared = entry.content.transition().cloned();
-    assert!(
-        declared.is_none() || entry.transition.is_none(),
-        "Hydrolysis: a navigation destination declares both a navigation transition \
-         (`NavigationView::transition`) and a `.transition(...)` on its page root; a \
-         destination declares how it arrives and leaves once"
-    );
+    if declared.is_some() && entry.transition.is_some() {
+        contract_violation!(
+            "Hydrolysis: a navigation destination declares both a navigation transition \
+             (`NavigationView::transition`) and a `.transition(...)` on its page root; a \
+             destination declares how it arrives and leaves once; the page root's \
+             declaration is ignored"
+        );
+        return None;
+    }
     declared
 }
 
@@ -2228,19 +2232,28 @@ fn present_matched_transition<E: crate::text::TextEngine>(
         page_area,
         fade(incoming, to_identity, to_source),
     );
-    let from_element = from_page.element(from_source, id).unwrap_or_else(|| {
-        panic!("navigation zoom source {id:?} is not present in the outgoing page")
-    });
-    let to_element = to_page.element(to_source, id).unwrap_or_else(|| {
-        panic!("navigation zoom destination {id:?} is not present in the incoming page")
-    });
-    assert!(
-        from_element.bounds.width() > 0.0
-            && from_element.bounds.height() > 0.0
-            && to_element.bounds.width() > 0.0
-            && to_element.bounds.height() > 0.0,
-        "navigation zoom geometry must have a positive size"
-    );
+    let Some(from_element) = from_page.element(from_source, id) else {
+        contract_violation!(
+            "navigation zoom source {id:?} is not present in the outgoing page; the pages cross-fade without the zoom"
+        );
+        return;
+    };
+    let Some(to_element) = to_page.element(to_source, id) else {
+        contract_violation!(
+            "navigation zoom destination {id:?} is not present in the incoming page; the pages cross-fade without the zoom"
+        );
+        return;
+    };
+    if !(from_element.bounds.width() > 0.0
+        && from_element.bounds.height() > 0.0
+        && to_element.bounds.width() > 0.0
+        && to_element.bounds.height() > 0.0)
+    {
+        contract_violation!(
+            "navigation zoom geometry must have a positive size; the pages cross-fade without the zoom"
+        );
+        return;
+    }
     let target = interpolate_rect(from_element.bounds, to_element.bounds, progress);
     let item = matched_scope_item(id);
     present_matched_element(
@@ -2565,9 +2578,13 @@ pub fn navigation_stack_accessibility<E: crate::text::TextEngine>(
             });
         match ctx {
             Some(ctx) => {
-                let metrics = theme
-                    .expect("rendered navigation stack accessibility passes the theme")
-                    .navigation_metrics();
+                let Some(theme) = theme else {
+                    contract_violation!(
+                        "rendered navigation stack accessibility passes the theme; the back button exposes no accessibility node"
+                    );
+                    return;
+                };
+                let metrics = theme.navigation_metrics();
                 let back_bounds = navigation_back_button_rect(ctx.bounds(), metrics);
                 let _ = renderer.register_accessibility_node(
                     back_node,
@@ -2975,22 +2992,27 @@ pub fn render_navigation_stack_parts<E: crate::text::TextEngine>(
     ctx.renderer_mut()
         .register_pointer_drag_target(edge_rect, move |renderer, point, pop_env| {
             let point = placement.resolved_transform(true).inverse() * point;
-            let starting = renderer
+            let Some(starting) = renderer
                 .navigation
                 .slots
                 .get(&drag_slot_key)
-                .expect("Hydrolysis navigation slot missing")
-                .interactive_pop
-                .is_none();
+                .map(|slot| slot.interactive_pop.is_none())
+            else {
+                contract_violation!(
+                    "Hydrolysis navigation slot missing during an edge drag; the drag is ignored"
+                );
+                return false;
+            };
             if starting {
                 if !renderer.attempt_navigation_pop(&drag_slot_key, pop_env) {
                     return false;
                 }
-                let slot = renderer
-                    .navigation
-                    .slots
-                    .get_mut(&drag_slot_key)
-                    .expect("Hydrolysis navigation slot missing");
+                let Some(slot) = renderer.navigation.slots.get_mut(&drag_slot_key) else {
+                    contract_violation!(
+                        "Hydrolysis navigation slot missing during an edge drag; the drag is ignored"
+                    );
+                    return false;
+                };
                 slot.transition = None;
                 slot.interactive_pop = Some(
                     crate::renderer::navigation_state::NavigationInteractivePop::new(
@@ -3002,15 +3024,18 @@ pub fn render_navigation_stack_parts<E: crate::text::TextEngine>(
                 );
                 return true;
             }
-            renderer
+            let Some(interactive) = renderer
                 .navigation
                 .slots
                 .get_mut(&drag_slot_key)
-                .expect("Hydrolysis navigation slot missing")
-                .interactive_pop
-                .as_mut()
-                .expect("Hydrolysis interactive pop must exist while dragging")
-                .update(point.x)
+                .and_then(|slot| slot.interactive_pop.as_mut())
+            else {
+                contract_violation!(
+                    "Hydrolysis interactive pop must exist while dragging; the drag is ignored"
+                );
+                return false;
+            };
+            interactive.update(point.x)
         });
     ctx.renderer_mut().register_back_target(
         crate::renderer::navigation_state::NavigationBackTarget {

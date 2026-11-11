@@ -105,14 +105,9 @@ where
     V: Validatable<Value: Clone>,
 {
     fn body(mut self, _env: &waterui_core::Environment) -> impl View {
-        let value = {
-            let value = self.view.validable();
-            let validator = self.validator.clone();
-            let new_binding = value.filter(move |v| validator.validate(v.clone()).is_ok());
-
-            *value = new_binding;
-            value.clone()
-        };
+        // The label observes the field's own binding, so a rejected entry is
+        // visible to the validator and its error is shown beside the field.
+        let value = self.view.validable().clone();
         vstack((
             self.view,
             Text::computed(value.map(move |v| {

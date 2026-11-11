@@ -6,7 +6,7 @@ use waterui_core::{AnyView, ContentLedger, Environment};
 use waterui_graphics::backend::SceneViewMergeToParent;
 use waterui_text::FontCollection;
 
-use crate::platform::{DeviceLoss, OffscreenSurface, PresentationSurface as _, SurfaceFrame};
+use crate::platform::{GpuGeneration, OffscreenSurface, PresentationSurface as _, SurfaceFrame};
 use crate::readback::readback_texture_rgba8;
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer};
 
@@ -62,26 +62,19 @@ impl HydrolysisViewRenderer {
     /// Ensures the offscreen surface exists at `width`×`height`, acquires
     /// its next frame and returns the GPU handles the capture renders
     /// through.
+    ///
+    /// A host without a usable GPU or a device lost beyond recovery fails
+    /// the capture with [`RenderError::Gpu`].
     #[expect(
         clippy::future_not_send,
         reason = "view rendering runs on the main thread; the future borrows non-Send GPU state"
     )]
-    async fn acquire_frame(
-        &self,
-        width: u32,
-        height: u32,
-    ) -> (
-        SurfaceFrame,
-        wgpu::Adapter,
-        wgpu::Device,
-        wgpu::Queue,
-        DeviceLoss,
-        wgpu::TextureFormat,
-    ) {
+    async fn acquire_frame(&self, width: u32, height: u32) -> Result<AcquiredFrame, RenderError> {
         let cell = &self.surface;
         if cell.borrow().is_none() {
-            let offscreen =
-                OffscreenSurface::new(width, height, wgpu::TextureFormat::Rgba8Unorm).await;
+            let offscreen = OffscreenSurface::new(width, height, wgpu::TextureFormat::Rgba8Unorm)
+                .await
+                .map_err(gpu_failure)?;
             *cell.borrow_mut() = Some(offscreen);
         }
 
@@ -93,17 +86,14 @@ impl HydrolysisViewRenderer {
             .as_mut()
             .expect("hydrolysis view renderer surface must initialize before rendering");
         surface.resize(width, height);
-        let frame = surface.acquire();
-        (
-            frame,
-            surface.adapter().clone(),
-            surface.device().clone(),
-            surface.queue().clone(),
-            surface.device_loss().clone(),
-            surface.format(),
-        )
+        let frame = surface.acquire().map_err(gpu_failure)?;
+        Ok((frame, surface.generation().clone(), surface.format()))
     }
 }
+
+/// An acquired capture frame, the device generation it renders through and
+/// the frame's format.
+type AcquiredFrame = (SurfaceFrame, GpuGeneration, wgpu::TextureFormat);
 
 impl CustomViewRenderer for HydrolysisViewRenderer {
     #[expect(
@@ -129,8 +119,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
         )]
         let height = request.size().height.max(1.0).round() as u32;
 
-        let (frame, adapter, device, queue, device_loss, format) =
-            self.acquire_frame(width, height).await;
+        let (frame, generation, format) = self.acquire_frame(width, height).await?;
 
         // The capture's text engine shapes against the collection the runner
         // installed — `FontCollection::from_env` names the host's obligation
@@ -178,18 +167,12 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                 },
             )
             .await?;
-        crate::engine::engine_await!(renderer.render_scene_to_texture(
-            crate::renderer::HydrolysisRenderTarget {
-                adapter: &adapter,
-                device: &device,
-                queue: &queue,
-                device_loss,
-                texture: frame.texture(),
-                format,
-                width,
-                height,
-                base_color: cherenkov_record::WorkingColor::TRANSPARENT,
-            }
+        crate::engine::engine_await!(renderer.render_generation_to_texture(
+            &generation,
+            frame.texture(),
+            format,
+            (width, height),
+            cherenkov_record::WorkingColor::TRANSPARENT,
         ))
         .map_err(gpu_failure)?;
         renderer.frame_work_counters_mut().gpu_submissions += 1;

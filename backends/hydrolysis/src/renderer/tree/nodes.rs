@@ -1,11 +1,13 @@
 //! The retained node structs a [`RenderNode`] variant carries, with their
 //! small inherent impls (runtime setup, per-frame effect application).
 
+use super::layout::resolved_or_collapsed;
 #[cfg(feature = "frame-profile")]
 use super::layout::{SignatureHasher, hash_size};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::renderer::mount::motion::{LayerMotion, Motion};
 use crate::text::{TextEngine, TextLayout as _};
 use waterui::gesture::TapGesture;
 use waterui_core::transition::TransitionSpec;
@@ -105,10 +107,11 @@ fn anchored_bounds<E: TextEngine>(
     let theme = renderer.theme();
     let cell = RefCell::new(&mut renderer.state);
     let allocation = Rect::from_size(size);
-    let response = NodeSubView::new(root, &cell, env, &theme)
-        .resolve_extent(allocation, proposal)
-        .unwrap_or_else(|error| panic!("hydrolysis layout: {error}"))
-        .rect;
+    let response = resolved_or_collapsed(
+        NodeSubView::new(root, &cell, env, &theme).resolve_extent(allocation, proposal),
+        allocation,
+    )
+    .rect;
     let target = allocation.align(*response.size(), anchor);
     allocation.translated(target.x() - response.x(), target.y() - response.y())
 }
@@ -1272,31 +1275,156 @@ pub struct ContainerNode<E: crate::text::TextEngine> {
     pub(crate) _guards: Vec<BoxWatcherGuard>,
 }
 
-/// An animated-opacity wrapper: re-samples its alpha each flush and pushes a
-/// layer around the child. Layout-transparent (the child measures/places as if
-/// the wrapper were absent), matching the SwiftUI/WaterUI transform model.
+/// An opacity wrapper: its layer's opacity follows the value on the
+/// engine's clock — each change hands the layer the change's animation —
+/// so a fade never re-records (water-rs/waterui#2203). Layout-transparent
+/// (the child measures/places as if the wrapper were absent), matching the
+/// SwiftUI/WaterUI transform model.
 pub struct OpacityNode<E: crate::text::TextEngine> {
     pub(crate) core: NodeCore<E>,
-    pub(crate) value: Opacity,
+    pub(crate) motion: Motion<f32>,
     pub(crate) child: RenderNode<E>,
 }
 
+/// A scale wrapper: its layer scales about the anchor on the engine's
+/// clock, a track per axis (water-rs/waterui#2203).
 pub struct ScaleNode<E: crate::text::TextEngine> {
     pub(crate) core: NodeCore<E>,
-    pub(crate) value: Scale,
+    pub(crate) anchor: waterui::style::Anchor,
+    pub(crate) motion: Rc<LayerMotion>,
     pub(crate) child: RenderNode<E>,
 }
 
+/// A rotation wrapper: its layer turns about the anchor on the engine's
+/// clock (water-rs/waterui#2203).
 pub struct RotationNode<E: crate::text::TextEngine> {
     pub(crate) core: NodeCore<E>,
-    pub(crate) value: Rotation,
+    pub(crate) anchor: waterui::style::Anchor,
+    pub(crate) motion: Rc<LayerMotion>,
     pub(crate) child: RenderNode<E>,
 }
 
+/// An offset wrapper: its layer translates on the engine's clock, a track
+/// per axis (water-rs/waterui#2203).
 pub struct OffsetNode<E: crate::text::TextEngine> {
     pub(crate) core: NodeCore<E>,
-    pub(crate) value: Offset,
+    pub(crate) motion: Rc<LayerMotion>,
     pub(crate) child: RenderNode<E>,
+}
+
+/// A wrapper property's value as its engine layer property reads it.
+fn unit(value: f32) -> f64 {
+    f64::from(value)
+}
+
+/// A rotation's degrees as the engine's radians.
+fn radians(degrees: f32) -> f64 {
+    f64::from(degrees).to_radians()
+}
+
+/// A transform wrapper's motion axis following `signal` into the layer's
+/// `f64` lanes through `map`.
+fn transform_axis<E: crate::text::TextEngine>(
+    renderer: &SemanticCore<E>,
+    core: &NodeCore<E>,
+    signal: &Computed<f32>,
+    map: fn(f32) -> f64,
+) -> Motion<f64> {
+    renderer.wrapper_motion(signal, map, &core.cell, false)
+}
+
+/// A transform wrapper's core, its placement moved by `motion`.
+fn moved_core<E: crate::text::TextEngine>(
+    renderer: &SemanticCore<E>,
+    motion: impl FnOnce(&NodeCore<E>) -> LayerMotion,
+) -> (NodeCore<E>, Rc<LayerMotion>) {
+    let core = renderer.new_core();
+    let motion = Rc::new(motion(&core));
+    core.cell.placement().set_motion(Rc::clone(&motion));
+    (core, motion)
+}
+
+impl<E: crate::text::TextEngine> OpacityNode<E> {
+    pub(crate) fn new(
+        value: &Opacity,
+        renderer: &mut SemanticCore<E>,
+        child: impl FnOnce(&mut SemanticCore<E>) -> RenderNode<E>,
+    ) -> Self {
+        let core = renderer.new_core();
+        let motion = renderer.wrapper_motion(value.value(), |alpha| alpha, &core.cell, true);
+        Self {
+            core,
+            motion,
+            child: child(renderer),
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> ScaleNode<E> {
+    pub(crate) fn new(
+        value: &Scale,
+        renderer: &mut SemanticCore<E>,
+        child: impl FnOnce(&mut SemanticCore<E>) -> RenderNode<E>,
+    ) -> Self {
+        let clock = Rc::clone(renderer.placement_clock());
+        let (core, motion) = moved_core(renderer, |core| {
+            LayerMotion::scale(
+                transform_axis(renderer, core, value.x(), unit),
+                transform_axis(renderer, core, value.y(), unit),
+                clock,
+            )
+        });
+        Self {
+            core,
+            anchor: value.anchor(),
+            motion,
+            child: child(renderer),
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> RotationNode<E> {
+    pub(crate) fn new(
+        value: &Rotation,
+        renderer: &mut SemanticCore<E>,
+        child: impl FnOnce(&mut SemanticCore<E>) -> RenderNode<E>,
+    ) -> Self {
+        let clock = Rc::clone(renderer.placement_clock());
+        let (core, motion) = moved_core(renderer, |core| {
+            LayerMotion::rotation(
+                transform_axis(renderer, core, value.angle(), radians),
+                clock,
+            )
+        });
+        Self {
+            core,
+            anchor: value.anchor(),
+            motion,
+            child: child(renderer),
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> OffsetNode<E> {
+    pub(crate) fn new(
+        value: &Offset,
+        renderer: &mut SemanticCore<E>,
+        child: impl FnOnce(&mut SemanticCore<E>) -> RenderNode<E>,
+    ) -> Self {
+        let clock = Rc::clone(renderer.placement_clock());
+        let (core, motion) = moved_core(renderer, |core| {
+            LayerMotion::offset(
+                transform_axis(renderer, core, &value.x, unit),
+                transform_axis(renderer, core, &value.y, unit),
+                clock,
+            )
+        });
+        Self {
+            core,
+            motion,
+            child: child(renderer),
+        }
+    }
 }
 
 pub struct ScrollNode<E: crate::text::TextEngine> {

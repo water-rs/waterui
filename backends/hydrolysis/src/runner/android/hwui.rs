@@ -126,11 +126,14 @@ impl HwuiWindow {
     ) -> Result<bool, JniError> {
         runtime.platform.apply_properties(&runtime.window);
         let background = SurfaceBackground::of(&runtime.window, env);
-        assert!(
-            background.behind_level().is_none(),
-            "hydrolysis HWUI: behind-window material is unsupported \
-             (water-rs/waterui#1899)"
-        );
+        if background.behind_level().is_some() {
+            // The frame renders without the blur: the window keeps its
+            // backdrop and clear colour.
+            waterui_core::contract_violation!(
+                "hydrolysis HWUI: behind-window material is unsupported \
+                 (water-rs/waterui#1899); the window renders without it"
+            );
+        }
         runtime.platform.set_transparent(background.transparent());
         runtime.renderer.set_window_backdrop(background.backdrop());
         pump_window_scene(runtime, env, drain);

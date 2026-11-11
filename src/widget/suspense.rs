@@ -33,13 +33,12 @@
 
 use core::future::Future;
 
-use executor_core::spawn_local;
 use waterui_core::{
     AnyView, ContentLedger, Environment, View,
     handler::{AnyViewBuilder, ViewBuilder},
 };
 
-use crate::component::Dynamic;
+use crate::{ViewExt, component::Dynamic};
 
 /// A component that manages asynchronous content loading with loading states.
 ///
@@ -269,16 +268,15 @@ where
         // is already recorded when this entry resolves.
         let owed = ContentLedger::owe::<Self>(env, core::any::type_name::<V>());
         let new_env = env.clone();
-        spawn_local(async move {
+        // The view retains the loading task, so unmounting it cancels the
+        // future instead of leaving it polled until it completes.
+        view.task(async move {
             let content = SuspendedView::body(self.content, new_env).await;
             handler.set(content);
             if let Some(owed) = owed {
                 owed.fulfil();
             }
         })
-        .detach();
-
-        view
     }
 }
 

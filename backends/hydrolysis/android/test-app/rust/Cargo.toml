@@ -27,6 +27,7 @@ hwui = ["hydrolysis/hwui"]
 # A probe scene replaces the host scene. Each probe feature implies `probe`.
 probe = []
 filter-probe = ["probe"]
+stretch-probe = ["probe"]
 # GPU content under the HWUI painter (`--features hwui,gpu-video-probe`):
 # the GPU video player and the GPU vector map, each its own scene
 # (water-rs/waterui#1812).

@@ -16,6 +16,7 @@ use std::cell::RefCell;
 use std::ops::RangeInclusive;
 use std::rc::Rc;
 use waterui_controls::stepper::StepperConfig;
+use waterui_core::contract_violation;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{LayoutDirection, ProposalSize, ViewDimensions};
@@ -51,6 +52,30 @@ impl EndParts {
             report: nami::Binding::container(InteractionState::empty()),
         }
     }
+}
+
+/// `range` when it is ordered. An unordered range is a contract violation by
+/// the app, reported, and the stepper holds its value at `range`'s start.
+fn ordered_range(range: &RangeInclusive<i32>) -> RangeInclusive<i32> {
+    if range.start() <= range.end() {
+        return range.clone();
+    }
+    contract_violation!(
+        "hydrolysis stepper requires an ordered range, got {range:?}; the stepper holds its value at the range's start"
+    );
+    *range.start()..=*range.start()
+}
+
+/// Whether `step` is positive. A step that is not is a contract violation by
+/// the app, reported; the stepper then ignores it.
+fn positive_step(step: i32) -> bool {
+    let positive = step > 0;
+    if !positive {
+        contract_violation!(
+            "hydrolysis stepper requires positive step, got {step}; the step is ignored"
+        );
+    }
+    positive
 }
 
 impl<E: crate::text::TextEngine> StepperRenderState<E> {
@@ -160,12 +185,9 @@ pub fn stepper_accessibility<E: crate::text::TextEngine>(
         if let Some(value) = renderer.resolve_accessibility_value(env, None) {
             node.set_value(value);
         }
-        let start = *stepper.range().start();
-        let end = *stepper.range().end();
-        assert!(
-            (start <= end),
-            "hydrolysis stepper requires an ordered range"
-        );
+        let range = ordered_range(stepper.range());
+        let start = *range.start();
+        let end = *range.end();
         // Read value/step through `read_signal` so a change schedules a frame and
         // this persistent node re-renders (and re-publishes the a11y value).
         let current = renderer.read_signal(stepper.value()).clamp(start, end);
@@ -173,8 +195,9 @@ pub fn stepper_accessibility<E: crate::text::TextEngine>(
         node.set_min_numeric_value(f64::from(start));
         node.set_max_numeric_value(f64::from(end));
         let step = renderer.read_signal(stepper.step());
-        assert!((step > 0), "hydrolysis stepper requires positive step");
-        node.set_numeric_value_step(f64::from(step));
+        if positive_step(step) {
+            node.set_numeric_value_step(f64::from(step));
+        }
         node.add_action(AccessibilityAction::Focus);
         // A disabled stepper stays in the tree (focusable, announced as
         // disabled) but exposes no value actions and no action target.
@@ -189,7 +212,7 @@ pub fn stepper_accessibility<E: crate::text::TextEngine>(
             Some(AccessibilityActionTarget::Stepper {
                 value: stepper.value().clone(),
                 step: stepper.step().clone(),
-                range: stepper.range().clone(),
+                range,
             })
         };
         if let Some(node_id) = renderer.register_accessibility_leaf(ctx, node, env, action_target) {
@@ -288,7 +311,9 @@ fn stepping_action<E: crate::text::TextEngine>(
 ) -> impl FnMut(&mut SemanticCore<E>, Point, &Environment) -> bool {
     move |_renderer, _point, _env| {
         let step = stepping.step.snapshot();
-        assert!((step > 0), "hydrolysis stepper requires positive step");
+        if !positive_step(step) {
+            return false;
+        }
         let next = end.stepped(stepping.value.snapshot(), step, &stepping.range);
         stepping.value.set(next);
         true
@@ -326,7 +351,7 @@ pub fn render_stepper_parts<E: crate::text::TextEngine>(
     let (range, value, step) = {
         let stepper = &state.config;
         (
-            stepper.range().clone(),
+            ordered_range(stepper.range()),
             stepper.value().clone(),
             stepper.step().clone(),
         )
@@ -342,10 +367,6 @@ pub fn render_stepper_parts<E: crate::text::TextEngine>(
         let signal = widget_disabled(env);
         ctx.renderer_mut().read_signal(&signal)
     };
-    assert!(
-        (range.start() <= range.end()),
-        "hydrolysis stepper requires an ordered range"
-    );
     let look = state.look(&theme, env).clone();
     let direction = waterui_core::layout::layout_direction(env).snapshot();
     let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
@@ -565,9 +586,10 @@ fn stepper_rects(
 
 #[cfg(test)]
 mod tests {
-    use super::{stepper_rects, stepper_size};
+    use super::{ordered_range, positive_step, stepper_rects, stepper_size};
     use crate::testing::plain_stepper_look;
     use kurbo::Rect;
+    use std::ops::RangeInclusive;
     use waterui_core::layout::{LayoutDirection, Size as LayoutSize};
 
     /// The plain look's ends are 14 by 14, 4 apart, 8 from the label.
@@ -641,5 +663,33 @@ mod tests {
         assert!(rtl.increment.x1 < rtl.decrement.x0 && rtl.decrement.x1 < rtl.label.x0);
         assert!((rtl.decrement.x0 - (bounds.x1 - ltr.decrement.x1)).abs() < 1e-9);
         assert!((rtl.label.x1 - (bounds.x1 - ltr.label.x0)).abs() < 1e-9);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "stepper requires an ordered range")
+    )]
+    fn an_unordered_range_is_reported_and_holds_the_value_at_its_start() {
+        assert_eq!(ordered_range(&RangeInclusive::new(5, 1)), 5..=5);
+    }
+
+    #[test]
+    fn an_ordered_range_is_kept() {
+        assert_eq!(ordered_range(&(1..=5)), 1..=5);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "stepper requires positive step")
+    )]
+    fn a_non_positive_step_is_reported_and_ignored() {
+        assert!(!positive_step(0));
+    }
+
+    #[test]
+    fn a_positive_step_is_accepted() {
+        assert!(positive_step(2));
     }
 }

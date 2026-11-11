@@ -225,7 +225,7 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
         (
             text_field.label().clone(),
             text_field.value().clone(),
-            text_field.prompt().content().clone(),
+            text_field.prompt().content(),
             text_field.selection_menu().clone(),
             text_field.line_limit(),
             text_field.on_submit().cloned(),
@@ -1150,7 +1150,7 @@ pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
         (
             text_field.label().clone(),
             text_field.value().clone(),
-            text_field.prompt().content().clone(),
+            text_field.prompt().content(),
             text_field.selection_menu().clone(),
             text_field.line_limit(),
             text_field.on_submit().cloned(),

@@ -234,6 +234,7 @@ zenwave = { version = "0.7.1", default-features = false, features = ["hyper-back
 
 [build-dependencies]
 toml = "1.1.8"
+waterui-git-head.workspace = true
 
 [lints]
 workspace = true
@@ -241,5 +242,6 @@ workspace = true
 [dev-dependencies]
 syn = { version = "3.0.9", default-features = false, features = ["parsing", "full"] }
 
+# `waterui-git-head` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
 [package.metadata.cargo-machete]
-ignored = ["roxmltree"]
+ignored = ["roxmltree", "waterui-git-head"]

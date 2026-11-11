@@ -275,7 +275,9 @@ waterui-icons-native = { version = "0.5.1", path = "components/icon/native" }
 waterui-locale = { version = "0.5.1", path = "utils/locale" }
 waterui-map = { version = "0.5.1", path = "components/data/map" }
 waterui-meta = { version = "0.5.1", path = "utils/meta" }
+waterui-git-head = { version = "0.5.1", path = "utils/git-head" }
 waterui-contract = { version = "0.5.1", path = "utils/contract" }
+waterui-easing = { version = "0.5.1", path = "utils/easing" }
 waterui-apple-os = { version = "0.5.1", path = "utils/apple-os" }
 waterkit-location = "0.2"
 waterkit-screen = "0.2"

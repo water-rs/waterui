@@ -8,6 +8,7 @@
 //! - `Environment`: A store for typed values that can be passed between views
 //! - `UseEnv`: A view that allows consuming environment values
 //! - `With`: A view that extends the environment with additional values
+//! - `Installed`: A view that installs a plugin into its content's environment
 //!
 //! # Example
 //!
@@ -496,6 +497,37 @@ pub const fn with<V: View, T: 'static>(view: V, value: T) -> With<V, T> {
 impl<V: View, T: 'static> View for With<V, T> {
     fn body(self, env: &Environment) -> impl View {
         let env = env.extending(self.value);
+        Metadata::new(self.content, env)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.content.stretch_axis()
+    }
+}
+
+/// A view that installs a [`Plugin`] into the environment of its content.
+///
+/// The plugin is installed into a copy of the parent environment when the view
+/// renders, so it applies to the content's subtree only. Like [`With`],
+/// `Installed` is transparent for layout and reports its content's stretch
+/// axis.
+#[derive(Debug, Clone)]
+pub struct Installed<V, P> {
+    content: V,
+    plugin: P,
+}
+
+impl<V: View, P: Plugin> Installed<V, P> {
+    /// Creates a view that installs `plugin` into the environment of `content`.
+    pub const fn new(content: V, plugin: P) -> Self {
+        Self { content, plugin }
+    }
+}
+
+impl<V: View, P: Plugin> View for Installed<V, P> {
+    fn body(self, env: &Environment) -> impl View {
+        let mut env = env.clone();
+        self.plugin.install(&mut env);
         Metadata::new(self.content, env)
     }
 

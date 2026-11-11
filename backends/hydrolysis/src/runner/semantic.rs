@@ -22,6 +22,7 @@ use crate::renderer::{MenuShortcutRegistry, SemanticCore, WindowId};
 use std::rc::Rc;
 #[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
+use waterui_core::contract_violation;
 
 /// What one semantic pump produced.
 ///
@@ -354,26 +355,25 @@ impl SemanticRuntime {
     /// row's selection) live there. Returns whether the action changed state,
     /// in which case the next pump re-emits.
     ///
-    /// # Panics
-    /// Panics when the request targets the node of a popup window that is
-    /// already closed.
-    /// in which case the next pump re-emits.
+    /// A request that targets the node of a popup window that is already
+    /// closed is a contract violation by the caller: the action is declined.
     #[cfg(feature = "accessibility")]
     pub fn perform_accessibility_action(&mut self, request: AccessibilityActionRequest) -> bool {
         // Popup ranges are the shared `WINDOW_ID_STRIDE` the merge assigns.
         let target = request.target_node.0;
         let (window, request) = if target >= WINDOW_ID_STRIDE {
             let index = target / WINDOW_ID_STRIDE - 1;
-            let popup = self
+            let Some(popup) = self
                 .popup_windows
                 .get_mut(crate::num_cast::u64_as_usize(index))
-                .unwrap_or_else(|| {
-                    panic!(
-                        "hydrolysis semantic runtime: accessibility action {:?} targets closed popup \
-                         node {target}",
-                        request.action
-                    )
-                });
+            else {
+                contract_violation!(
+                    "hydrolysis semantic runtime: accessibility action {:?} targets closed popup \
+                     node {target}; the action is declined",
+                    request.action
+                );
+                return false;
+            };
             let mut request = request;
             request.target_node = accesskit::NodeId(target % WINDOW_ID_STRIDE);
             (popup, request)
@@ -814,10 +814,13 @@ fn pump_semantic_window(window: &mut SemanticWindow, env: &Environment) -> bool 
         return false;
     }
     if window.core.has_render_tree() {
-        assert!(
-            window.core.flush_window_semantics(env),
-            "hydrolysis semantic runtime: retained window tree vanished during pump"
-        );
+        if !window.core.flush_window_semantics(env) {
+            contract_violation!(
+                "hydrolysis semantic runtime: retained window tree vanished during pump; the pump publishes nothing"
+            );
+            window.refresh_requested = false;
+            return false;
+        }
         window.refresh_requested = false;
         return true;
     }

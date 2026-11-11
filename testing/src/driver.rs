@@ -135,6 +135,14 @@ impl RuntimeDriver for HeadlessRuntime {
 
     fn pump_at(&mut self, at: Instant, capture_snapshot: bool) -> DriverPumpResult {
         let mut result = Self::pump_at(self, capture_snapshot, at);
+        // A window whose surface failed for good never renders again: the
+        // test host cannot go on, and the failure names why.
+        if let Some(error) = result.take_failure() {
+            panic!(
+                "waterui-testing: the window's surface failed for good: {:#}",
+                waterui_core::Error::from(error)
+            );
+        }
         DriverPumpResult {
             rebuilt: result.rebuilt(),
             profile: result.profile(),

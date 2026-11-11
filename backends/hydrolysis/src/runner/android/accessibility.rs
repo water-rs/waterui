@@ -338,7 +338,13 @@ fn text_input_action(
             }
             editing.set_selection(editor_id, arg1, arg2)
         }
-        _ => unreachable!("filtered above"),
+        _ => {
+            waterui_core::contract_violation!(
+                "hydrolysis android: text_input_action reached with {action:?}, which the \
+                 editing-action filter above excludes; the generic dispatch takes it"
+            );
+            return Ok(None);
+        }
     };
     if handled {
         session.editing_flush_and_sync();

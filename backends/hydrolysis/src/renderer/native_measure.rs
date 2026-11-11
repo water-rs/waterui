@@ -8,6 +8,7 @@ use super::*;
 use crate::platform_view::PlatformView;
 use crate::theme::WidgetTheme;
 use std::rc::Rc;
+use waterui_core::contract_violation;
 
 /// The measure half of a native leaf view. Rendering is owned by the retained
 /// [`RenderNode`](crate::renderer::tree::RenderNode) tree; this trait only sizes a
@@ -30,12 +31,14 @@ pub trait HydroNativeView<E: crate::text::TextEngine>: View + Sized + 'static {
     }
 }
 
-pub fn unsupported_system_icon(icon: &SystemIcon) -> ! {
-    panic!(
+/// Reports a `SystemIcon` the backend cannot draw; the icon is not drawn and
+/// measures as zero.
+pub fn unsupported_system_icon(icon: &SystemIcon) {
+    contract_violation!(
         "SystemIcon `{}` is unsupported on Hydrolysis because self-drawn backends have no \
-         OS-supplied icon catalog; use a packaged WaterUI icon crate",
+         OS-supplied icon catalog; use a packaged WaterUI icon crate; the icon is not drawn",
         icon.name().as_str()
-    )
+    );
 }
 
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SystemIcon> {
@@ -45,18 +48,20 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SystemIcon> {
         _env: &Environment,
         _theme: &Rc<dyn WidgetTheme>,
     ) -> LayoutSize {
-        unsupported_system_icon(view.as_inner())
+        unsupported_system_icon(view.as_inner());
+        LayoutSize::zero()
     }
 }
 
 /// Reaching `Native<MapConfig>` means `Map::body` found no `Hook<MapConfig>` —
 /// no map realization was installed — and this backend ships no map engine of
-/// its own.
-pub fn unsupported_map() -> ! {
-    panic!(
+/// its own. The map is not drawn and measures as zero.
+pub fn unsupported_map() {
+    contract_violation!(
         "Map is unsupported on Hydrolysis because the backend has no map engine; install a \
-         map realization such as `waterui_map_gpu::install` before rendering a `Map`"
-    )
+         map realization such as `waterui_map_gpu::install` before rendering a `Map`; the map \
+         is not drawn"
+    );
 }
 
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<MapConfig> {
@@ -66,36 +71,20 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<MapConfig> {
         _env: &Environment,
         _theme: &Rc<dyn WidgetTheme>,
     ) -> LayoutSize {
-        unsupported_map()
+        unsupported_map();
+        LayoutSize::zero()
     }
 }
 
-/// Reaching `WebView` without a `Hook<WebView>` engine realization means
-/// the backend has nothing to draw a page with: a build without a system
-/// bridge — `hydrolysis_system_webview` or
-/// `hydrolysis_android_system_webview` — bridges no engine. On Android the
-/// `webview-system` feature mounts the platform `WebView` as a
-/// platform-view instance, so reaching this is a non-system engine's
-/// handle slipping past the leaf's downcast.
+/// Why a `WebView` cannot be drawn on a build without a bridged web engine:
+/// reaching `WebView` without a `Hook<WebView>` engine realization leaves the
+/// backend nothing to draw a page with. Reported as a contract violation by
+/// the tree builder and the leaf's measure.
 #[cfg(not(any(hydrolysis_system_webview, hydrolysis_android_system_webview)))]
-pub fn unsupported_webview() -> ! {
-    panic!(
-        "WebView is unsupported on this Hydrolysis build because no web engine is bridged; \
-         link a browser engine crate (`waterui-browser-cef`, `waterui-browser-wpe`), enable \
-         the `webview-system` and `winit` features on macOS, the `webview-system` and \
-         `web` features on the web, or the `webview-system` feature on Android"
-    )
-}
-
-/// Reaching a `PlatformView` leaf without a `PlatformViewSink` in the window
-/// environment means the runner cannot mount native children at all.
-pub fn unsupported_platform_view() -> ! {
-    panic!(
-        "PlatformView is unsupported on this runner because no PlatformViewSink is installed; \
-         a host that embeds native views (the Android runner) inserts one into the window \
-         environment at session create"
-    )
-}
+pub const UNSUPPORTED_WEBVIEW: &str = "WebView is unsupported on this Hydrolysis build because no web engine is bridged; \
+     link a browser engine crate (`waterui-browser-cef`, `waterui-browser-wpe`), enable \
+     the `webview-system` and `winit` features on macOS, the `webview-system` and \
+     `web` features on the web, or the `webview-system` feature on Android";
 
 pub fn dimensions_for_native<V: HydroNativeView<E>, E: crate::text::TextEngine>(
     view: &AnyView,

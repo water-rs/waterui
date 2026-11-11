@@ -40,7 +40,6 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 
 use crate::animation::engine_animation;
-use crate::draw::{curve_value, settled, spring_step};
 
 /// Values crossing the render-thread boundary, mirroring the engine's
 /// `RenderTransfer` marker so `effects` builds without it.
@@ -322,68 +321,130 @@ impl ParamGuards {
     }
 }
 
-/// A Cherenkov animation driving a scalar filter parameter.
+/// A Cherenkov animation driving a scalar filter parameter from rest,
+/// evaluated through the shared evaluator exactly as core and the engine
+/// evaluate it.
 struct AnimationInterpolator(crate::draw::Animation);
 
-const SPRING_STEP: f64 = 1.0 / 240.0;
-const SPRING_STEP_NANOS: u128 = 1_000_000_000 / 240;
-const SPRING_LIMIT: Duration = Duration::from_secs(10);
-
-#[allow(clippy::cast_possible_truncation)]
 impl AnimationInterpolator {
-    fn spring_at(
-        spring: &crate::draw::Spring,
-        from: f32,
-        to: f32,
-        elapsed: Duration,
-    ) -> (f64, bool) {
-        let (mut pos, mut velocity) = ([f64::from(from)], [0.0]);
-        let target = [f64::from(to)];
-        let steps = (elapsed.min(SPRING_LIMIT).as_nanos() / SPRING_STEP_NANOS) + 1;
-        for _ in 0..steps {
-            (pos, velocity) = spring_step(pos, velocity, target, spring, SPRING_STEP);
-            if settled(pos, velocity, target) {
-                return (target[0], true);
-            }
-        }
-        (pos[0], false)
+    /// The parameter `elapsed` after it left `from` at rest for `to`, and
+    /// whether the animation is done there; a decay lands at once.
+    fn sample(&self, from: f32, to: f32, elapsed: Duration) -> (f64, bool) {
+        let Some(timing) = self.0.timing() else {
+            return (f64::from(to), true);
+        };
+        let (mut position, mut rate) = ([0.0], [0.0]);
+        let done = timing.sample_lanes(
+            &[f64::from(from)],
+            &[0.0],
+            &[f64::from(to)],
+            elapsed.as_secs_f64(),
+            &mut position,
+            &mut rate,
+        );
+        (position[0], done)
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
 impl Interpolator for AnimationInterpolator {
+    /// A curve's duration; for a spring, the time a unit step from rest
+    /// takes to settle for good, as `Animation::duration` reports it.
     fn duration(&self) -> Duration {
         match &self.0 {
             crate::draw::Animation::Curve(curve) => curve.duration,
-            crate::draw::Animation::Spring(_) => SPRING_LIMIT,
+            crate::draw::Animation::Spring(spring) => spring
+                .unit_settling_duration()
+                .expect("`engine_animation` validates its spring, which settles in finite time"),
             crate::draw::Animation::Decay(_) => Duration::ZERO,
         }
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a filter parameter is an f32; the evaluator works in f64"
+    )]
     fn interpolate(&self, from: f32, to: f32, elapsed: Duration) -> f32 {
-        match &self.0 {
-            crate::draw::Animation::Curve(curve) => {
-                let t = if curve.duration.is_zero() {
-                    1.0
-                } else {
-                    (elapsed.as_secs_f64() / curve.duration.as_secs_f64()).min(1.0)
-                };
-                let k = curve_value(curve, t);
-                (f64::from(to) - f64::from(from)).mul_add(k, f64::from(from)) as f32
-            }
-            crate::draw::Animation::Spring(spring) => {
-                Self::spring_at(spring, from, to, elapsed).0 as f32
-            }
-            crate::draw::Animation::Decay(_) => to,
-        }
+        self.sample(from, to, elapsed).0 as f32
     }
 
     fn is_complete(&self, elapsed: Duration) -> bool {
+        self.sample(0.0, 1.0, elapsed).1
+    }
+
+    /// The span of every value `interpolate` returns: the endpoints, widened
+    /// by the animation's overshoot.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a filter parameter is an f32; the bounds are computed in f64"
+    )]
+    fn bounds(&self, from: f32, to: f32) -> (f32, f32) {
+        let (from, to) = (f64::from(from), f64::from(to));
+        let (lo, hi) = self.unit_range();
+        let (a, b) = (
+            f64::mul_add(to - from, lo, from),
+            f64::mul_add(to - from, hi, from),
+        );
+        // Rounding to f32 is monotonic, so covering the f64 samples covers
+        // their f32 casts.
+        (a.min(b) as f32, a.max(b) as f32)
+    }
+}
+
+/// Relative widening of an analytically computed extremum, so rounding in
+/// the evaluator's own arithmetic cannot put a sample outside the bound.
+const EXTREMUM_MARGIN: f64 = 1e-9;
+
+impl AnimationInterpolator {
+    /// The range `[lo, hi]` of the animation's unit progress from rest, as
+    /// the samples of a unit step from 0 to 1 span it.
+    fn unit_range(&self) -> (f64, f64) {
         match &self.0 {
-            crate::draw::Animation::Spring(spring) => {
-                elapsed >= SPRING_LIMIT || Self::spring_at(spring, 0.0, 1.0, elapsed).1
+            crate::draw::Animation::Spring(spring) if spring.damping < 1.0 => {
+                // An underdamped step response peaks first at
+                // `1 + e^(-πζ/√(1-ζ²))`, which bounds every later sample,
+                // and never drops below its start.
+                let zeta = spring.damping;
+                let peak =
+                    (-core::f64::consts::PI * zeta / f64::mul_add(zeta, -zeta, 1.0).sqrt()).exp();
+                (0.0, peak.mul_add(1.0 + EXTREMUM_MARGIN, 1.0))
             }
-            _ => elapsed >= self.duration(),
+            crate::draw::Animation::Spring(_) => (0.0, 1.0),
+            crate::draw::Animation::Curve(curve) => {
+                // y(s) = a·s³ + b·s² + c·s over s in [0, 1], with y(0) = 0
+                // and y(1) = 1; its extrema are the endpoints and the real
+                // roots of y'(s) = 3a·s² + 2b·s + c inside (0, 1).
+                let (y1, y2) = (curve.p1.y, curve.p2.y);
+                let (a, b, c) = (
+                    3.0f64.mul_add(y1, 3.0f64.mul_add(-y2, 1.0)),
+                    3.0 * 2.0f64.mul_add(-y1, y2),
+                    3.0 * y1,
+                );
+                let y = |s: f64| f64::mul_add(f64::mul_add(a, s, b), s, c) * s;
+                let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+                let mut visit = |s: f64| {
+                    if s > 0.0 && s < 1.0 {
+                        let value = y(s);
+                        lo = lo.min(f64::mul_add(value.abs(), -EXTREMUM_MARGIN, value));
+                        hi = hi.max(f64::mul_add(value.abs(), EXTREMUM_MARGIN, value));
+                    }
+                };
+                let (qa, qb) = (3.0 * a, 2.0 * b);
+                if qa.abs() < f64::EPSILON {
+                    if qb.abs() >= f64::EPSILON {
+                        visit(-c / qb);
+                    }
+                } else {
+                    let discriminant = f64::mul_add(4.0 * qa, -c, qb * qb);
+                    if discriminant >= 0.0 {
+                        let root = discriminant.sqrt();
+                        visit((-qb + root) / (2.0 * qa));
+                        visit((-qb - root) / (2.0 * qa));
+                    }
+                }
+                (lo, hi)
+            }
+            // A decay lands at once, at `to`.
+            crate::draw::Animation::Decay(_) => (1.0, 1.0),
         }
     }
 }
@@ -2035,7 +2096,7 @@ mod tests {
     use super::{
         AnimationInterpolator, Brightness, ColorStage, FilterLink, FilterParam as _, FilterSignal,
         FilterViewExt as _, FilteredView, GaussianBlur, OutputSize, ParamGuards, Placed,
-        SPRING_LIMIT, SpatialStage, StageCollector,
+        SpatialStage, StageCollector,
     };
     use crate::animation::engine_animation;
     use core::time::Duration;
@@ -2485,13 +2546,107 @@ mod tests {
 
     #[test]
     fn animation_spring_uses_engine_physics() {
-        let interpolator = AnimationInterpolator(engine_animation(&Animation::spring(200.0, 15.0)));
-        assert_eq!(interpolator.duration(), SPRING_LIMIT);
+        let animation = Animation::spring(200.0, 15.0);
+        let interpolator = AnimationInterpolator(engine_animation(&animation));
+        // The filter runs the spring core defines, for as long as core does.
+        assert_eq!(interpolator.duration(), animation.duration());
         let early = interpolator.interpolate(0.0, 1.0, Duration::from_millis(30));
         assert!(
             early > 0.0 && early < 1.0,
             "spring progresses without snapping, got {early}"
         );
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the interpolator answers in f32"
+        )]
+        let core = animation.progress(Duration::from_millis(30)) as f32;
+        assert_eq!(early.to_bits(), core.to_bits());
         assert!(!interpolator.is_complete(Duration::from_millis(30)));
+        assert!(interpolator.is_complete(animation.duration()));
+    }
+
+    /// Every sample over a dense grid to the settling duration lies inside
+    /// the reported bounds; returns the sampled extremes.
+    fn assert_samples_within_bounds(
+        interpolator: &AnimationInterpolator,
+        from: f32,
+        to: f32,
+    ) -> (f32, f32, (f32, f32)) {
+        let bounds = interpolator.bounds(from, to);
+        let end = u64::try_from(interpolator.duration().as_micros()).unwrap() + 100_000;
+        let (mut low, mut high) = (f32::MAX, f32::MIN);
+        for micros in (0..=end).step_by(250) {
+            let value = interpolator.interpolate(from, to, Duration::from_micros(micros));
+            assert!(
+                bounds.0 <= value && value <= bounds.1,
+                "{value} at {micros}us is outside {bounds:?}"
+            );
+            low = low.min(value);
+            high = high.max(value);
+        }
+        (low, high, bounds)
+    }
+
+    #[test]
+    fn an_underdamped_spring_bounds_its_overshoot() {
+        let interpolator = AnimationInterpolator(engine_animation(&Animation::spring(100.0, 10.0)));
+        let (_, high) = interpolator.bounds(0.0, 10.0);
+        let peak = (0..=2000)
+            .map(|ms| interpolator.interpolate(0.0, 10.0, Duration::from_millis(ms)))
+            .fold(f32::MIN, f32::max);
+        assert!(
+            peak <= high,
+            "blur radius peaks at {peak}, bounds report {high}"
+        );
+        let (low, sampled_high, bounds) = assert_samples_within_bounds(&interpolator, 0.0, 10.0);
+        assert!(
+            (bounds.1 - sampled_high).abs() < 1e-3,
+            "{bounds:?} vs {sampled_high}"
+        );
+        assert!((bounds.0 - low).abs() < 1e-3, "{bounds:?} vs {low}");
+    }
+
+    #[test]
+    fn damped_springs_stay_within_endpoints() {
+        for damping in [60.0, 20.0] {
+            let interpolator =
+                AnimationInterpolator(engine_animation(&Animation::spring(100.0, damping)));
+            let (_, _, bounds) = assert_samples_within_bounds(&interpolator, 0.0, 10.0);
+            assert_eq!(bounds, (0.0, 10.0));
+        }
+    }
+
+    #[test]
+    fn overshooting_bezier_bounds_are_tight() {
+        let animation = Animation::bezier(Duration::from_millis(350), 0.68, -0.6, 0.32, 1.6);
+        let interpolator = AnimationInterpolator(engine_animation(&animation));
+        let (low, high, bounds) = assert_samples_within_bounds(&interpolator, 0.0, 10.0);
+        assert!(bounds.0 < 0.0 && bounds.1 > 10.0, "{bounds:?}");
+        assert!((bounds.0 - low).abs() < 1e-3, "{bounds:?} vs {low}");
+        assert!((bounds.1 - high).abs() < 1e-3, "{bounds:?} vs {high}");
+    }
+
+    #[test]
+    fn plain_ease_bounds_are_the_endpoints() {
+        let interpolator = AnimationInterpolator(engine_animation(&Animation::Default));
+        let (_, _, bounds) = assert_samples_within_bounds(&interpolator, 0.0, 10.0);
+        assert_eq!(bounds, (0.0, 10.0));
+    }
+
+    #[test]
+    fn reversed_direction_bounds_cover_the_overshoot() {
+        let spring = AnimationInterpolator(engine_animation(&Animation::spring(100.0, 10.0)));
+        let (low, _, bounds) = assert_samples_within_bounds(&spring, 10.0, 0.0);
+        assert!(
+            bounds.0 < 0.0 && (bounds.1 - 10.0).abs() < 1e-6,
+            "{bounds:?}"
+        );
+        assert!((bounds.0 - low).abs() < 1e-3, "{bounds:?} vs {low}");
+
+        let animation = Animation::bezier(Duration::from_millis(350), 0.68, -0.6, 0.32, 1.6);
+        let bezier = AnimationInterpolator(engine_animation(&animation));
+        let (low, high, bounds) = assert_samples_within_bounds(&bezier, 10.0, 0.0);
+        assert!(bounds.0 < 0.0 && bounds.1 > 10.0, "{bounds:?}");
+        assert!((bounds.0 - low).abs() < 1e-3 && (bounds.1 - high).abs() < 1e-3);
     }
 }

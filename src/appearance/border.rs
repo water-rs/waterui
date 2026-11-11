@@ -28,6 +28,10 @@ use waterui_layout::EdgeSet;
 /// A border is defined by its color, width, corner radius, and which edges
 /// to draw the border on.
 ///
+/// A border only strokes: it never clips the view it wraps, whatever the
+/// corner radius. To cut content to a rounded shape, apply `.clip(shape)`
+/// to the view before the border.
+///
 /// # Examples
 ///
 /// ```rust

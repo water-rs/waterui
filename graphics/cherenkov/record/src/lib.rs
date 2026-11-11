@@ -58,8 +58,8 @@ pub use kurbo;
 pub use web_time::Instant;
 
 pub use crate::animation::{
-    Animatable, Animation, AnimationTrack, Curve, Decay, Easing, KeyframeAnimation, Keyframes,
-    Lanes, Repeat, Spring, curve_value, decay_step, settled, spring_step,
+    Animatable, Animation, AnimationTrack, CubicBezier, Curve, Decay, Easing, KeyframeAnimation,
+    Keyframes, Lanes, Repeat, Spring, Timing, curve_value, decay_step, spring_step,
 };
 pub use crate::backdrop::{
     BackdropEffect, BackdropOuter, BackdropOuterError, BackdropSample, BackdropShaderEffect,
@@ -88,8 +88,8 @@ pub use crate::material::{
     OuterExtentError, UnionSmoothing, UnionSmoothingError,
 };
 pub use crate::ops::{
-    AnimationStart, BackdropId, ChangeSet, ContentOp, Install, KeyframeProp, LayerId,
-    LayerKeyframes, LayerOp, Op, Prop, SurfaceId,
+    AnimationOrigin, AnimationStart, Axis, BackdropId, ChangeSet, ContentOp, Install, KeyframeProp,
+    LayerId, LayerKeyframes, LayerOp, Op, Prop, SurfaceId, TrackOrigin, TrackStart,
 };
 pub use crate::paint::{
     ColorStop, Extend, ImageId, ImagePattern, Interpolation, LinearGradient,
@@ -112,6 +112,7 @@ pub use crate::surface::{Layer, LayerContent, LayerEdit, LayerOwner, Shared, Tra
 pub use crate::target::{BackdropSampling, GpuInstalls, ProjectiveLayers, Queue, Target};
 pub use crate::text::TextLayoutId;
 pub use crate::tree::{
-    LayerAnimations, LayerNode, Realize, RunningTracks, SurfaceTree, snap_animating,
+    LayerAnimations, LayerNode, Realize, RunningTracks, SurfaceTree, TransformComponents,
+    snap_animating,
 };
 pub use kurbo::Stroke;

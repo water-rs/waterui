@@ -29,6 +29,8 @@ use waterui_core::Native;
 mod filter_probe;
 #[cfg(any(feature = "gpu-video-probe", feature = "gpu-map-probe"))]
 mod gpu_probe;
+#[cfg(feature = "stretch-probe")]
+mod stretch_probe;
 
 /// The bindings arrive owned so the returned view holds no borrow of the
 /// window closure's locals; each is only borrowed in the body, which the
@@ -102,6 +104,10 @@ fn build_app() -> App {
                 #[cfg(feature = "filter-probe")]
                 {
                     filter_probe::view()
+                }
+                #[cfg(feature = "stretch-probe")]
+                {
+                    stretch_probe::view()
                 }
                 #[cfg(feature = "gpu-video-probe")]
                 {

@@ -28,6 +28,7 @@ use waterui_controls::menu::{
 };
 use waterui_core::Environment;
 use waterui_core::Str;
+use waterui_core::contract_violation;
 use waterui_core::handler::SharedAction;
 use waterui_core::impl_extractor;
 
@@ -112,12 +113,26 @@ impl MenuShortcut {
     }
 }
 
-/// The panic text for a renderer resolving menu chords in an environment no
-/// runner prepared: registering and dispatching both name it, so the missing
-/// seed names the runner that skipped it.
+/// The contract-violation text for a renderer resolving menu chords in an
+/// environment no runner prepared: registering and dispatching both name it,
+/// so the missing seed names the runner that skipped it.
 pub const MISSING_MENU_SHORTCUT_REGISTRY: &str = "menu shortcuts require the runner to seed a MenuShortcutRegistry into the window's \
      environment — the winit runner, headless run and HeadlessRuntime, SemanticRuntime and \
      the web runner all install one; a renderer built outside a runner seeds its own";
+
+/// The [`MenuShortcutRegistry`] the runner seeded into `env`, or `None` after
+/// a contract violation when it seeded none; `outcome` states what the caller
+/// does without it.
+pub fn menu_shortcut_registry<'env, E: crate::text::TextEngine>(
+    env: &'env Environment,
+    outcome: &str,
+) -> Option<&'env MenuShortcutRegistry<E>> {
+    let registry = env.get::<MenuShortcutRegistry<E>>();
+    if registry.is_none() {
+        contract_violation!("{MISSING_MENU_SHORTCUT_REGISTRY}; {outcome}");
+    }
+    registry
+}
 
 /// The window-close primitive a declared `MenuItem::CloseWindow` stands
 /// for: handed a [`WindowId`], it asks that window to close through the
@@ -230,10 +245,12 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         items: Computed<Vec<ResolvedMenuItem>>,
         env: Environment,
     ) {
-        env.get::<MenuShortcutRegistry<E>>()
-            .cloned()
-            .expect(MISSING_MENU_SHORTCUT_REGISTRY)
-            .register_mounted(self.window_id, menu_state, items, env);
+        let Some(registry) =
+            menu_shortcut_registry::<E>(&env, "the menu's shortcuts are not registered").cloned()
+        else {
+            return;
+        };
+        registry.register_mounted(self.window_id, menu_state, items, env);
     }
 }
 

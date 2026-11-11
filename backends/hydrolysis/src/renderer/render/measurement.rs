@@ -9,6 +9,7 @@ use crate::widgets::layout::container::resolve_lazy_container_extent;
 use crate::widgets::nav::tabs::{tabs_decide_layout, tabs_item_natural_width};
 use std::rc::Rc;
 use waterui::navigation::tab::TabIcon;
+use waterui_core::contract_violation;
 use waterui_core::handler::BoxedAction;
 use waterui_core::layout::{LayoutError, ResolvedExtent, layout_direction, resolve_layout_extent};
 use waterui_core::views::ViewSnapshot;
@@ -217,11 +218,13 @@ fn measure_view_dimensions_with_proposal_with_budget<E: crate::text::TextEngine>
     theme: &Rc<dyn WidgetTheme>,
     remaining: usize,
 ) -> ViewDimensions {
-    assert!(
-        (remaining != 0),
-        "hydrolysis view measurement exceeded recursion budget for {}",
-        view.name()
-    );
+    if remaining == 0 {
+        contract_violation!(
+            "hydrolysis view measurement exceeded recursion budget for {}; the view measures as zero",
+            view.name()
+        );
+        return ViewDimensions::new(LayoutSize::zero());
+    }
     let (view, scoped_env) = flatten_environment_metadata_ref(view, env);
 
     if let Some(content) = passthrough_content(view) {
@@ -284,7 +287,7 @@ fn measure_view_dimensions_with_proposal_with_budget<E: crate::text::TextEngine>
     }
     if let Some(text) = view.downcast_ref::<Text>() {
         let resolved = text.resolve(&scoped_env);
-        let content = state.measure_signal(resolved.content());
+        let content = state.measure_signal(&resolved.content());
         let alignment = state.measure_signal(resolved.paragraph_alignment());
         return HydrolysisRenderer::measure_text_dimensions(
             state,
@@ -344,10 +347,11 @@ fn measure_view_dimensions_with_proposal_with_budget<E: crate::text::TextEngine>
         return ViewDimensions::new(LayoutSize::new(1.0, 1.0));
     }
 
-    panic!(
-        "hydrolysis dimensions estimation encountered unsupported view type {}",
+    contract_violation!(
+        "hydrolysis dimensions estimation encountered unsupported view type {}; the view measures as zero",
         view.name()
     );
+    ViewDimensions::new(LayoutSize::zero())
 }
 
 /// The response geometry (water-rs/waterui#1323) of a view the estimator
@@ -945,18 +949,24 @@ pub fn measure_tabs_layout<E: crate::text::TextEngine>(
 ) -> LayoutSize {
     // An empty set mounts: nothing answers but the bar's own metrics.
     let snapshot = tabs.tabs().snapshot();
-    let tab_at = |index: usize| {
-        snapshot
-            .get_view(index)
-            .expect("a collection snapshot reports a view for every index")
-    };
+    let tab_views: Vec<_> = (0..snapshot.len())
+        .filter_map(|index| {
+            let tab = snapshot.get_view(index);
+            if tab.is_none() {
+                contract_violation!(
+                    "hydrolysis tabs: tab {index} failed to materialize although it is in the snapshot's range; the tab is skipped"
+                );
+            }
+            tab
+        })
+        .collect();
 
     // Labels measure title-only: the bar places the icon itself, so the label
     // must not count it a second time.
     let label_env = env.extending(waterui_controls::label::LabelDisplayMode::TitleOnly);
-    let item_sizes: Vec<(LayoutSize, Option<LayoutSize>)> = (0..snapshot.len())
-        .map(|index| {
-            let tab = tab_at(index);
+    let item_sizes: Vec<(LayoutSize, Option<LayoutSize>)> = tab_views
+        .iter()
+        .map(|tab| {
             let label_size = measure_view_intrinsic(&tab.label().build(), state, &label_env, theme);
             let icon_size = tab.icon().as_ref().map(|icon| {
                 let icon_view = match icon {
@@ -986,8 +996,7 @@ pub fn measure_tabs_layout<E: crate::text::TextEngine>(
     let mut max_content_width: f64 = 0.0;
     let mut max_content_height: f64 = 0.0;
     let mut bar_width = 0.0;
-    for (index, (label_size, icon_size)) in item_sizes.iter().enumerate() {
-        let tab = tab_at(index);
+    for (tab, (label_size, icon_size)) in tab_views.iter().zip(&item_sizes) {
         bar_width += tabs_item_natural_width(*label_size, *icon_size, &metrics, layout);
 
         let content = normalize_layout_view(AnyView::new(tab.content().build()), env);
@@ -1005,7 +1014,7 @@ pub fn measure_tabs_layout<E: crate::text::TextEngine>(
         NativeTabStyle::Sidebar => (
             max_content_width + metrics.bar_height,
             max_content_height
-                .max(metrics.button_min_width * crate::num_cast::usize_as_f64(snapshot.len())),
+                .max(metrics.button_min_width * crate::num_cast::usize_as_f64(tab_views.len())),
         ),
     };
     LayoutSize::new(
@@ -1142,11 +1151,7 @@ pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
         return LayoutSize::zero();
     }
     let editing = state.measure_signal(list.editing());
-    let mut first_item = contents
-        .get_view(0)
-        .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index 0"));
-    let first_content = normalize_layout_view(first_item.take_content(), env);
-    first_item.set_content(first_content);
+    let first_item = materialize_list_item(&contents, 0, env);
     let metrics = theme.list_metrics();
     let content_size = match width {
         Some(width) => measure_list_row_content(
@@ -1208,9 +1213,12 @@ pub fn materialize_list_item(
     index: usize,
     env: &Environment,
 ) -> ListItem {
-    let mut item = contents
-        .get_view(index)
-        .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index {index}"));
+    let mut item = contents.get_view(index).unwrap_or_else(|| {
+        contract_violation!(
+            "ListConfig failed to materialize item at index {index}; the row is empty"
+        );
+        ListItem::new(())
+    });
     let content = normalize_layout_view(item.take_content(), env);
     item.set_content(content);
     item
@@ -1305,7 +1313,7 @@ pub fn measure_text_field_size_with_label_size<E: crate::text::TextEngine>(
 ) -> LayoutSize {
     let metrics = theme.input_field_metrics();
     let line_limit = text_field.line_limit().map(NonZeroUsize::get);
-    let prompt = state.measure_signal(text_field.prompt().content());
+    let prompt = state.measure_signal(&text_field.prompt().content());
     let value = state.measure_signal(text_field.value());
     let prompt_size = HydrolysisRenderer::measure_text_intrinsic_size_with_line_limit(
         state, prompt, env, line_limit,
@@ -1521,7 +1529,7 @@ fn resolved_text_styled<E: crate::text::TextEngine>(
     state: &mut HydroState<E>,
 ) -> StyledStr {
     let resolved = text.resolve(env);
-    state.measure_signal(resolved.content())
+    state.measure_signal(&resolved.content())
 }
 
 pub fn measure_date_picker_intrinsic<E: crate::text::TextEngine>(
@@ -1626,10 +1634,12 @@ pub fn measure_picker_intrinsic_with_label_size<E: crate::text::TextEngine>(
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
     let items = state.measure_signal(picker.items());
-    assert!(
-        !(items.is_empty()),
-        "hydrolysis picker requires at least one item"
-    );
+    if items.is_empty() {
+        contract_violation!(
+            "hydrolysis picker requires at least one item; the picker measures as zero"
+        );
+        return LayoutSize::zero();
+    }
     let item_count = items.len();
 
     match picker.style() {
@@ -1751,7 +1761,12 @@ pub fn measure_picker_intrinsic_with_label_size<E: crate::text::TextEngine>(
                 crate::num_cast::f64_as_f32(height),
             )
         }
-        _ => panic!("hydrolysis PickerStyle variant is not implemented"),
+        other => {
+            contract_violation!(
+                "hydrolysis PickerStyle variant {other:?} is not implemented; the picker measures as zero"
+            );
+            LayoutSize::zero()
+        }
     }
 }
 

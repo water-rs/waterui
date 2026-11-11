@@ -7,6 +7,8 @@
 mod components;
 mod projective;
 
+pub use components::TransformComponents;
+
 use crate::Instant;
 use rustc_hash::FxHashMap;
 use waterui_contract::contract_violation;
@@ -29,7 +31,7 @@ use crate::target::Target;
 /// `prop` for a property other than `scroll_offset`, which takes no
 /// `Decay`: one that carries it lands without animation, after a contract
 /// violation.
-fn without_decay<T>(mut prop: Prop<T>) -> Prop<T> {
+fn without_decay<T: Animatable>(mut prop: Prop<T>) -> Prop<T> {
     prop.animation = prop.animation.and_then(Animation::except_decay);
     prop
 }
@@ -388,6 +390,10 @@ impl LayerNode {
         self.outer_stamp
     }
 
+    /// The refresh class the layer's running tracks need: fast while
+    /// anything moves geometry, slow for a decay past its fast phase and for
+    /// an opacity curve or spring, which moves no geometry — a fade reads
+    /// smooth at 30–60 Hz. A keyframed opacity keeps the fast class.
     fn classify_rate(&self, scale: f64, components_running: bool) -> Option<RefreshRange> {
         if components_running {
             return Some(RATE_FAST);
@@ -395,7 +401,9 @@ impl LayerNode {
         let mut rate = None;
         for fast in [
             self.transform_track.as_ref().map(|t| t.is_fast(scale)),
-            self.opacity_track.as_ref().map(|t| t.is_fast(scale)),
+            self.opacity_track
+                .as_ref()
+                .map(|t| matches!(t.motion, Motion::Keyframes(_))),
             self.scroll_track.as_ref().map(|t| t.is_fast(scale)),
         ]
         .into_iter()
@@ -941,8 +949,10 @@ impl SurfaceTree {
             LayerOp::Create(_) | LayerOp::Remove(_) => None,
             LayerOp::Transform(id, _)
             | LayerOp::Translation(id, _)
+            | LayerOp::TranslationAxis(id, ..)
             | LayerOp::Rotation(id, _)
             | LayerOp::Scale(id, _)
+            | LayerOp::ScaleAxis(id, ..)
             | LayerOp::Skew(id, _)
             | LayerOp::Pivot(id, _)
             | LayerOp::Projection(id, _)
@@ -1020,9 +1030,13 @@ impl SurfaceTree {
                     set_prop(&mut node.transform_track, &mut node.transform, &prop);
                 }
             }
-            LayerOp::Translation(id, prop) => self.node_mut(id).set_translation(prop),
+            LayerOp::Translation(id, prop) => self.node_mut(id).set_translation(&prop),
+            LayerOp::TranslationAxis(id, axis, prop) => {
+                self.node_mut(id).set_translation_axis(axis, prop);
+            }
             LayerOp::Rotation(id, prop) => self.node_mut(id).set_rotation(prop),
-            LayerOp::Scale(id, prop) => self.node_mut(id).set_scale(prop),
+            LayerOp::Scale(id, prop) => self.node_mut(id).set_scale(&prop),
+            LayerOp::ScaleAxis(id, axis, prop) => self.node_mut(id).set_scale_axis(axis, prop),
             LayerOp::Skew(id, prop) => self.node_mut(id).set_skew(prop),
             LayerOp::Pivot(id, prop) => self.node_mut(id).set_pivot(prop),
             op @ (LayerOp::Projection(..)
@@ -1280,8 +1294,10 @@ impl SurfaceTree {
 /// the old track's last sampled position and velocity (its start state when
 /// never sampled), so a spring retargeted mid-flight is continuous in
 /// position and velocity and a curve restarts from its current value. A
-/// change without an animation snaps and drops the track.
+/// start that names its origin starts the track from exactly that state.
+/// A change without an animation snaps and drops the track.
 fn set_prop<T: Animatable>(track: &mut Option<Track<T>>, value: &mut T, prop: &Prop<T>) {
+    let start = prop.start.as_ref().map(|start| start.at);
     match prop.animation {
         None => {
             *value = prop.target;
@@ -1303,14 +1319,28 @@ fn set_prop<T: Animatable>(track: &mut Option<Track<T>>, value: &mut T, prop: &P
                 velocity,
                 prop.target,
                 animation,
-                prop.start,
+                start,
             ));
         }
         Some(animation) => {
+            if let Some(origin) = prop
+                .start
+                .as_ref()
+                .and_then(|start| start.origin.as_deref())
+            {
+                *track = Some(Track::new(
+                    origin.from,
+                    origin.velocity,
+                    prop.target,
+                    animation,
+                    start,
+                ));
+                return;
+            }
             let (from, velocity, last) = track.as_ref().map_or_else(
                 || ((*value).into_lanes(), T::Lanes::zero(), None),
                 |old| {
-                    prop.start.map_or_else(
+                    start.map_or_else(
                         || {
                             (
                                 old.last.map_or(old.from, |(_, pos, _)| pos),
@@ -1330,7 +1360,7 @@ fn set_prop<T: Animatable>(track: &mut Option<Track<T>>, value: &mut T, prop: &P
                     )
                 },
             );
-            let mut next = Track::new(from, velocity, prop.target, animation, prop.start);
+            let mut next = Track::new(from, velocity, prop.target, animation, start);
             next.last = last;
             *track = Some(next);
         }
@@ -1366,6 +1396,7 @@ pub const fn snap_animating(t: Affine) -> Affine {
 mod hierarchy_tests {
     use super::*;
     use crate::display_list::{Operand, Picture, SlotUpdate};
+    use crate::ops::TrackStart;
     use crate::style::Group;
     use crate::{Curve, Decay, Spring};
     use crate::{Draw, WorkingColor};
@@ -1647,7 +1678,7 @@ mod hierarchy_tests {
             Prop {
                 target: Affine::translate((100., 20.)),
                 animation: Some(Curve::linear(Duration::from_millis(500)).into()),
-                start: Some(start),
+                start: Some(TrackStart::at(start)),
             },
         ));
         // The description is complete before the first sample: the track's
@@ -1680,7 +1711,7 @@ mod hierarchy_tests {
             Prop {
                 target: Affine::translate((100., 0.)),
                 animation: Some(Curve::linear(Duration::from_secs(1)).into()),
-                start: Some(start),
+                start: Some(TrackStart::at(start)),
             },
         ));
         let first = tree
@@ -1698,7 +1729,7 @@ mod hierarchy_tests {
             Prop {
                 target: Affine::translate((50., 0.)),
                 animation: Some(Curve::linear(Duration::from_millis(500)).into()),
-                start: Some(retarget_at),
+                start: Some(TrackStart::at(retarget_at)),
             },
         ));
         let track = tree
@@ -1739,7 +1770,7 @@ mod hierarchy_tests {
             Prop {
                 target: Affine::translate((50., 0.)),
                 animation: Some(Spring::smooth().into()),
-                start: Some(retarget_at),
+                start: Some(TrackStart::at(retarget_at)),
             },
         ));
         let track = tree
@@ -1771,7 +1802,7 @@ mod hierarchy_tests {
                 child,
             });
         }
-        // Decay is the only slow class, and it is legal only on scroll offset.
+        // A slow decay is legal only on scroll offset.
         tree.apply(LayerOp::ScrollOffset(
             slow,
             Prop {
@@ -2011,7 +2042,8 @@ mod hierarchy_tests {
         ));
         tree.sample(start, 1.0);
         assert_eq!(tree.animation_rate(|_| true), None);
-        assert_eq!(tree.animation_rate(|_| false), Some(RATE_FAST));
+        // An opacity curve moves no geometry: it runs in the slow class.
+        assert_eq!(tree.animation_rate(|_| false), Some(RATE_SLOW));
         tree.sample_owned(start + Duration::from_secs(1), |_| true);
         tree.apply(LayerOp::Opacity(
             layer,
@@ -2031,6 +2063,101 @@ mod hierarchy_tests {
         assert!((track.from - 0.5).abs() < 1e-6);
         assert!((track.velocity[0] + 0.5).abs() < 1e-6);
         assert_eq!(track.start, start + Duration::from_secs(1));
+    }
+
+    /// An opacity curve or spring moves no geometry and runs in the slow
+    /// class; a layer that also moves geometry runs fast.
+    #[test]
+    fn an_opacity_fade_runs_slow_and_a_moving_layer_fast() {
+        let start = Instant::now();
+        for animation in [
+            Animation::from(Curve::linear(Duration::from_secs(1))),
+            Animation::from(Spring::smooth()),
+        ] {
+            let mut tree = SurfaceTree::new();
+            let layer = tree.root();
+            tree.apply(LayerOp::Opacity(
+                layer,
+                Prop {
+                    target: 0.0,
+                    animation: Some(animation),
+                    start: Some(TrackStart::at(start)),
+                },
+            ));
+            let fading = tree.sample(start + Duration::from_millis(100), 1.0);
+            assert_eq!(fading.rate, Some(RATE_SLOW), "{animation:?}");
+            tree.apply(LayerOp::Transform(
+                layer,
+                Prop {
+                    target: Affine::translate((40., 0.)),
+                    animation: Some(animation),
+                    start: Some(TrackStart::at(start)),
+                },
+            ));
+            let moving = tree.sample(start + Duration::from_millis(150), 1.0);
+            assert_eq!(moving.rate, Some(RATE_FAST), "{animation:?}");
+        }
+    }
+
+    /// A start that names its origin starts the track from exactly that
+    /// state, whatever ran on the property before: the host's track, its
+    /// velocity included, reaches a layer bound mid-flight whole.
+    #[test]
+    fn a_start_with_an_origin_runs_exactly_that_track() {
+        let start = Instant::now();
+        let spring = Animation::from(Spring::smooth());
+        let origin = crate::ops::TrackOrigin::<f32> {
+            from: [0.2],
+            velocity: [3.0],
+        };
+        let mut tree = SurfaceTree::new();
+        let layer = tree.root();
+        // A track already runs on the property; the origin replaces it.
+        tree.apply(LayerOp::Opacity(
+            layer,
+            Prop {
+                target: 0.6,
+                animation: Some(Curve::linear(Duration::from_secs(1)).into()),
+                start: Some(TrackStart::at(start)),
+            },
+        ));
+        tree.apply(LayerOp::Opacity(
+            layer,
+            Prop {
+                target: 1.0,
+                animation: Some(spring),
+                start: Some(TrackStart {
+                    at: start,
+                    origin: Some(Box::new(origin)),
+                }),
+            },
+        ));
+        let track = tree
+            .layer(layer)
+            .animations()
+            .expect("describable tracks")
+            .opacity
+            .expect("the running spring");
+        assert_eq!(track.velocity, [3.0]);
+        assert_eq!(track.start, start);
+        let at = start + Duration::from_millis(120);
+        tree.sample(at, 1.0);
+        let timing = spring.timing().expect("a spring has a timing");
+        let (mut position, mut velocity) = ([0.0], [0.0]);
+        timing.sample_lanes(
+            &origin.from,
+            &origin.velocity,
+            &[1.0],
+            Duration::from_millis(120).as_secs_f64(),
+            &mut position,
+            &mut velocity,
+        );
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the opacity lane is an f32 widened; the layer stores it narrowed"
+        )]
+        let expected = position[0] as f32;
+        assert_eq!(tree.layer(layer).opacity.to_bits(), expected.to_bits());
     }
 
     #[test]

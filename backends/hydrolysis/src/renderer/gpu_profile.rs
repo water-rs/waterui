@@ -241,8 +241,14 @@ impl GpuFrameProfiler {
     }
 
     /// Submits the resolve and waits for it — the frame's GPU drain. Returns
-    /// the resolved nanosecond timestamps in slot order.
-    fn resolve(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> [u64; QUERY_SLOTS as usize] {
+    /// the resolved nanosecond timestamps in slot order, or `None` when the
+    /// device fails to hand the staging buffer back (the failure is logged and
+    /// the frame reports no GPU spans).
+    fn resolve(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Option<[u64; QUERY_SLOTS as usize]> {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("hydrolysis_frame_profile_resolve_encoder"),
         });
@@ -262,21 +268,42 @@ impl GpuFrameProfiler {
             let _ = sender.send(result);
         });
         let _ = device.poll(wgpu::PollType::wait_indefinitely());
-        receiver
-            .recv()
-            .expect("hydrolysis frame profile map callback dropped")
-            .expect("hydrolysis failed to map frame profile buffer");
+        match receiver.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::error!(
+                    %error,
+                    "hydrolysis failed to map the frame profile buffer; the frame reports no GPU spans"
+                );
+                return None;
+            }
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    "hydrolysis frame profile map callback was dropped; the frame reports no GPU spans"
+                );
+                return None;
+            }
+        }
 
-        let mapped = slice
-            .get_mapped_range()
-            .expect("hydrolysis failed to read frame profile buffer");
+        let mapped = match slice.get_mapped_range() {
+            Ok(mapped) => mapped,
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    "hydrolysis failed to read the frame profile buffer; the frame reports no GPU spans"
+                );
+                self.staging_buffer.unmap();
+                return None;
+            }
+        };
         let mut timestamps = [0u64; QUERY_SLOTS as usize];
         for (slot, bytes) in mapped.as_chunks::<8>().0.iter().enumerate() {
             timestamps[slot] = u64::from_le_bytes(*bytes);
         }
         drop(mapped);
         self.staging_buffer.unmap();
-        timestamps
+        Some(timestamps)
     }
 }
 
@@ -331,8 +358,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         };
         let wait_started_at = Instant::now();
         self.core.state_mut().counters.gpu_submissions += 1;
-        let [before_content, before_composite, end] = profiler.resolve(device, queue);
+        let resolved = profiler.resolve(device, queue);
         self.frame_stage_times.gpu_wait += wait_started_at.elapsed();
+        let Some([before_content, before_composite, end]) = resolved else {
+            return;
+        };
         // Query results are device-clock ticks; the period turns them into ns
         // (1.0 on most adapters, but not guaranteed).
         let period = f64::from(queue.get_timestamp_period());

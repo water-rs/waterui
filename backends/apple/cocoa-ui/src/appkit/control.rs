@@ -3,7 +3,7 @@
 //! # Safety
 //!
 //! `activate` calls `performClick:`, which `AppKit` binds unsafe because the
-//! call site is expected on the main thread — [`MainThreadMarker`]-gated
+//! call site is expected on the main thread — [`MainThreadMarker`](objc2::MainThreadMarker)-gated
 //! callers uphold that.
 
 use objc2::rc::Retained;
@@ -25,7 +25,7 @@ pub fn first_control(view: &NSView) -> Option<Retained<NSControl>> {
     None
 }
 
-/// The first [`Button`] in `view`'s subtree, depth-first.
+/// The first [`Button`](crate::appkit::Button) in `view`'s subtree, depth-first.
 #[must_use]
 pub fn first_button(view: &NSView) -> Option<Retained<crate::appkit::Button>> {
     if let Some(button) = view.downcast_ref::<crate::appkit::Button>() {

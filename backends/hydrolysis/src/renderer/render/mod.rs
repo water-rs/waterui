@@ -16,7 +16,7 @@ mod subview;
 mod view_helpers;
 
 #[cfg(hydrolysis_gpu_painter)]
-pub use compositor::HydrolysisRenderTarget;
+pub use compositor::FrameError;
 #[cfg(hydrolysis_gpu_painter)]
 pub use compositor::{CherenkovWindow, FrameRenderTarget};
 pub use measurement::*;

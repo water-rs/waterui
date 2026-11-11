@@ -24,6 +24,9 @@ rustc-hash = "2"
 serde = { version = "1", features = ["derive", "rc"], optional = true }
 thiserror = "2"
 waterui-contract.workspace = true
+# The curve and spring evaluator WaterUI's core shares, so both sides sample
+# an animation identically.
+waterui-easing.workspace = true
 web-time = "1"
 
 [dev-dependencies]

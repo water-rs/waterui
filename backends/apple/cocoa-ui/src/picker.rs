@@ -3,7 +3,7 @@
 //! The style decides which concrete control the picker wraps; the platforms
 //! choose their closest primitive for it.
 
-/// The presentation a [`Picker`] renders.
+/// The presentation a `Picker` renders.
 ///
 /// The mapping to platform controls is asymmetric on purpose: `UIKit` has
 /// no radio-group primitive, so [`PickerStyle::Radio`] drives a

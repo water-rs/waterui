@@ -15,8 +15,9 @@ use std::num::NonZeroU64;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cherenkov_record::{FilterId, Fixed, Layer, LayerId, ShapeData, Shared, Transaction};
+use cherenkov_record::{Axis, FilterId, Fixed, Layer, LayerId, ShapeData, Shared, Transaction};
 
+use waterui_core::contract_violation;
 use waterui_graphics::backend::HeldResources;
 
 use super::backdrop::{
@@ -24,6 +25,7 @@ use super::backdrop::{
     MaterialMembership, MemberBind, ScopeAnchors, scope_id,
 };
 use super::cell::NodeCell;
+use super::motion::{LayerMotion, Motion};
 use super::placement::Placement;
 use super::program::{
     ChromeMaterial, InnerProgram, Item, LiveItem, LiveOpacity, MaterialRequest, ProducerContent,
@@ -77,6 +79,62 @@ struct LayerProps {
     scroll: kurbo::Vec2,
     /// Live properties, written over `transform` and in place of `opacity`.
     live: ScopeLive,
+    /// Engine-run motion, written over `transform` and in place of
+    /// `opacity` (water-rs/waterui#2203).
+    motion: FrameMotion,
+}
+
+/// The engine-run motion a node's frame layer follows. Two are the same
+/// when they bind the same motions about the same pivot, whatever value
+/// the motions hold.
+#[derive(Clone)]
+struct FrameMotion {
+    opacity: Option<Motion<f32>>,
+    transform: Option<Rc<LayerMotion>>,
+    /// The pivot `transform` turns about, as last written.
+    pivot: kurbo::Vec2,
+}
+
+impl FrameMotion {
+    const NONE: Self = Self {
+        opacity: None,
+        transform: None,
+        pivot: kurbo::Vec2::ZERO,
+    };
+
+    /// The motion `program` hands its frame layer.
+    fn of<E: crate::text::TextEngine>(program: &Program<E>) -> Self {
+        Self {
+            opacity: program.opacity_motion.clone(),
+            transform: program.motion.clone(),
+            pivot: program
+                .motion
+                .as_ref()
+                .map_or(kurbo::Vec2::ZERO, |motion| motion.pivot()),
+        }
+    }
+
+    fn same_transform(&self, other: &Self) -> bool {
+        match (&self.transform, &other.transform) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+
+    fn same_opacity(&self, other: &Self) -> bool {
+        match (&self.opacity, &other.opacity) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.same(b),
+            _ => false,
+        }
+    }
+}
+
+impl PartialEq for FrameMotion {
+    fn eq(&self, other: &Self) -> bool {
+        self.same_opacity(other) && self.same_transform(other) && self.pivot == other.pivot
+    }
 }
 
 impl LayerProps {
@@ -87,23 +145,65 @@ impl LayerProps {
         filter: None,
         scroll: kurbo::Vec2::ZERO,
         live: ScopeLive::NONE,
+        motion: FrameMotion::NONE,
     };
 
-    /// The layer's opacity now: its live operand's value, or its fixed one.
+    /// The layer's opacity now: its motion's or live operand's value at
+    /// rest, or its fixed one.
     fn opacity_now(&self) -> f32 {
+        if let Some(motion) = &self.motion.opacity {
+            return motion.target();
+        }
         self.live
             .opacity
             .as_ref()
             .map_or(self.opacity, LiveOpacity::now)
     }
 
-    /// The layer's transform now: its live operand's value over its at-rest
-    /// transform, or the at-rest one.
+    /// The layer's transform now: its motion at rest and its live operand's
+    /// value over its at-rest transform, or the at-rest one.
     fn transform_now(&self) -> kurbo::Affine {
+        let rest = self
+            .motion
+            .transform
+            .as_ref()
+            .map_or(self.transform, |motion| motion.matrix(self.transform, None));
         self.live
             .transform
             .as_ref()
-            .map_or(self.transform, |live| self.transform * live.now())
+            .map_or(rest, |live| rest * live.now())
+    }
+}
+
+/// Binds `motion`'s transform components on `layer`: the pivot whenever it
+/// moved, and every axis's motion when `rebind`.
+fn write_motion<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    tx: &mut Transaction<'_, T>,
+    layer: &Layer,
+    motion: &LayerMotion,
+    pivot: kurbo::Vec2,
+    rebind: bool,
+) {
+    let edit = &mut tx[layer];
+    edit.pivot(Fixed(pivot));
+    if !rebind {
+        return;
+    }
+    for (axis, translation) in Axis::BOTH.into_iter().zip(motion.translation_axes()) {
+        if let Some(translation) = translation {
+            edit.translation_axis(axis, translation.live());
+        }
+    }
+    if let Some(rotation) = motion.rotation_angle() {
+        edit.rotation(rotation.live());
+    }
+    for (axis, scale) in Axis::BOTH.into_iter().zip(motion.scale_axes()) {
+        if let Some(scale) = scale {
+            edit.scale_axis(axis, scale.live());
+        }
+    }
+    for bound in motion.motions() {
+        bound.rebind();
     }
 }
 
@@ -128,20 +228,35 @@ fn write_props<T: LayerTarget<E>, E: crate::text::TextEngine>(
             }
         }
     }
-    let opacity_changed = match (&written.live.opacity, &props.live.opacity) {
-        (None, None) => written.opacity.to_bits() != props.opacity.to_bits(),
-        (written, props) => written != props,
+    let opacity_changed = if written.motion.opacity.is_some() || props.motion.opacity.is_some() {
+        !written.motion.same_opacity(&props.motion)
+    } else {
+        match (&written.live.opacity, &props.live.opacity) {
+            (None, None) => written.opacity.to_bits() != props.opacity.to_bits(),
+            (written, props) => written != props,
+        }
     };
     if opacity_changed {
-        match &props.live.opacity {
-            Some(live) => {
+        match (&props.motion.opacity, &props.live.opacity) {
+            (Some(motion), _) => {
+                edit.opacity(motion.live());
+                motion.rebind();
+            }
+            (None, Some(live)) => {
                 edit.opacity(live.live());
             }
-            None => {
+            (None, None) => {
                 edit.opacity(props.opacity);
             }
         }
     }
+    if let Some(motion) = &props.motion.transform {
+        let rebind = !written.motion.same_transform(&props.motion);
+        if rebind || written.motion.pivot != props.motion.pivot {
+            write_motion(tx, layer, motion, props.motion.pivot, rebind);
+        }
+    }
+    let edit = &mut tx[layer];
     if written.clip != props.clip {
         match &props.clip {
             Some(clip) => edit.clip(clip.clone()),
@@ -613,23 +728,25 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> CommitCx<'_, '_, '_, T, E> {
 impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
     /// The mount binds to a target whose engine realizes materials.
     /// `registry` is the theme's `MaterialRegistry`: a target with no
-    /// backdrop shaders — a CPU engine — panics on this attach when the
-    /// registry is not empty (water-rs/waterui#1788).
+    /// backdrop shaders — a CPU engine — reports on this attach when the
+    /// registry is not empty, and its material chrome is not drawn
+    /// (water-rs/waterui#1788).
     pub fn new(
         shared: Rc<RefCell<Shared<T>>>,
         registry: &cherenkov_record::MaterialRegistry,
     ) -> Self {
-        assert!(
-            T::BACKDROP_SHADERS || registry.is_empty(),
-            "hydrolysis materials: this layer target's engine has no backdrop shaders, \
-             but the theme registered {} — the material chrome would have nothing to draw \
-             with; attach the theme to a GPU engine or register no shaders",
-            registry
-                .shaders()
-                .map(|(key, _)| format!("{key:?}"))
-                .collect::<Vec<_>>()
-                .join(", "),
-        );
+        if !(T::BACKDROP_SHADERS || registry.is_empty()) {
+            contract_violation!(
+                "hydrolysis materials: this layer target's engine has no backdrop shaders, \
+                 but the theme registered {}; the material chrome is not drawn; \
+                 attach the theme to a GPU engine or register no shaders",
+                registry
+                    .shaders()
+                    .map(|(key, _)| format!("{key:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
         let root = Shared::root(&shared);
         let window = Shared::layer(&shared);
         Self {
@@ -1076,8 +1193,11 @@ fn lower_program<T: LayerTarget<E>, E: crate::text::TextEngine>(
     program: &Program<E>,
     canvas: Option<LayerId>,
 ) {
+    let motion = FrameMotion::of(program);
     let Program {
         opacity,
+        opacity_motion: _,
+        motion: _,
         clip,
         filter,
         material,
@@ -1087,7 +1207,7 @@ fn lower_program<T: LayerTarget<E>, E: crate::text::TextEngine>(
     } = program;
     let filter = filter
         .as_ref()
-        .map(|runtime| T::filter(cx.host, &mut runtime.borrow_mut()));
+        .and_then(|runtime| T::filter(cx.host, &mut runtime.borrow_mut()));
     let clip = material.as_ref().map_or_else(
         || clip.clone(),
         |request| Some(ShapeData::of(&request.bounds)),
@@ -1103,6 +1223,7 @@ fn lower_program<T: LayerTarget<E>, E: crate::text::TextEngine>(
             filter,
             scroll: kurbo::Vec2::ZERO,
             live: ScopeLive::NONE,
+            motion,
         },
     );
     // A platform-view leaf's frame marks where its external host window
@@ -1245,7 +1366,7 @@ fn lower_inner<T: LayerTarget<E>, E: crate::text::TextEngine>(
             match &mut layers.inner_stretch {
                 Some(stretch) => stretch.show(shown, world),
                 None => {
-                    layers.inner_stretch = Some(StretchFilter::new::<T, E>(cx.host, shown, world));
+                    layers.inner_stretch = StretchFilter::new::<T, E>(cx.host, shown, world);
                 }
             }
             layers.inner_stretch.as_ref().map(StretchFilter::id)
@@ -2300,8 +2421,8 @@ fn visit_list<E: crate::text::TextEngine>(
 /// is fully transparent holds no membership: the group belongs to its
 /// visible members.
 ///
-/// An unregistered shader or capture class panics here — at install —
-/// naming the key.
+/// An unregistered shader or capture class is reported here — at install —
+/// naming the key, and the member draws no chrome.
 fn lower_chrome<T: LayerTarget<E>, E: crate::text::TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
     chrome: &ChromeMaterial,
@@ -2333,21 +2454,12 @@ fn lower_chrome<T: LayerTarget<E>, E: crate::text::TextEngine>(
     // recording stored.
     cx.tx[&member.layer].clip(chrome.material.shape().rebound());
     member.chrome = Some(chrome.clone());
-    if chrome.visible {
-        let registry = &T::material_terms(cx.host).registry;
-        let class = chrome.material.capture();
-        let params = *registry.capture_class(class).unwrap_or_else(|| {
-            panic!(
-                "hydrolysis materials: capture class {class:?} is not registered; the theme \
-                 declares its classes through `WidgetTheme::register_backdrop_shaders`"
-            )
-        });
-        let shader = chrome.material.shader();
-        assert!(
-            registry.shader(shader).is_some(),
-            "hydrolysis materials: backdrop shader {shader:?} is not registered; the theme \
-             declares its shaders through `WidgetTheme::register_backdrop_shaders`"
-        );
+    let registered = if chrome.visible {
+        chrome_terms::<T, E>(cx.host, chrome)
+    } else {
+        None
+    };
+    if let Some((class, params)) = registered {
         let key = ChromeGroupKey::new(
             member.layer.id(),
             chrome.material.scope(),
@@ -2383,6 +2495,43 @@ fn lower_chrome<T: LayerTarget<E>, E: crate::text::TextEngine>(
     members.len() - 1
 }
 
+/// The capture class and its terms `chrome` draws with, or `None` after a
+/// reported violation when the theme's registry lacks the class or shader
+/// the material names, or the engine holds no handle for the shader.
+fn chrome_terms<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    host: &T::Host,
+    chrome: &ChromeMaterial,
+) -> Option<(
+    cherenkov_record::CaptureClass,
+    cherenkov_record::MaterialCapture,
+)> {
+    let terms = T::material_terms(host);
+    let class = chrome.material.capture();
+    let Some(params) = terms.registry.capture_class(class).copied() else {
+        contract_violation!(
+            "hydrolysis materials: capture class {class:?} is not registered; the theme \
+             declares its classes through `WidgetTheme::register_backdrop_shaders`; the member draws no chrome"
+        );
+        return None;
+    };
+    let shader = chrome.material.shader();
+    if terms.registry.shader(shader).is_none() {
+        contract_violation!(
+            "hydrolysis materials: backdrop shader {shader:?} is not registered; the theme \
+             declares its shaders through `WidgetTheme::register_backdrop_shaders`; the member draws no chrome"
+        );
+        return None;
+    }
+    if !terms.shaders.contains_key(&shader) {
+        contract_violation!(
+            "hydrolysis materials: backdrop shader {shader:?} is registered but has no handle \
+             on this engine; the member draws no chrome"
+        );
+        return None;
+    }
+    Some((class, params))
+}
+
 /// The member's own binding payload (water-rs/waterui#1788): the
 /// shader's engine handle and its live effect — the terms the group table
 /// stores on the member's entry so a group rebuild rebinds each member's
@@ -2394,13 +2543,7 @@ fn chrome_member_payload<T: LayerTarget<E>, E: crate::text::TextEngine>(
     let shader = T::material_terms(host)
         .shaders
         .get(&chrome.material.shader())
-        .unwrap_or_else(|| {
-            panic!(
-                "hydrolysis materials: backdrop shader {:?} is registered but has no handle \
-                 on this engine — a theme's registry is registered at engine attach",
-                chrome.material.shader(),
-            )
-        })
+        .expect("`chrome_terms` checked that the engine holds a handle for the shader")
         .clone();
     super::backdrop::ChromeMemberPayload {
         shader,

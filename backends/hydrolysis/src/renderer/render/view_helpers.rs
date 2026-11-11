@@ -2,6 +2,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use waterui_core::Computed;
+use waterui_core::contract_violation;
 use waterui_core::interaction::Selected;
 use waterui_core::layout::LayoutPriority;
 use waterui_core::metadata::MetadataKey;
@@ -151,15 +152,26 @@ pub const fn restore_a11y_naming_scope<E: crate::text::TextEngine>(
 /// The `Env` scoping for a static [`AccessibilityState`]: a hidden state
 /// suppresses the whole subtree's emission (a constant can never un-hide), and
 /// the state is stored as a constant [`AccessibilityStateSignal`] so emission
-/// resolves one code path for static and reactive state alike.
+/// resolves one code path for static and reactive state alike. Like the
+/// reactive scope, it merges over the state an enclosing scope installed.
 pub fn a11y_scoped_env_for_state(env: &Environment, value: &AccessibilityState) -> Environment {
     let mut scoped = env.clone();
     if value.is_hidden() {
         scoped.insert(AccessibilityHidden::new(true));
     }
-    scoped.insert(AccessibilityStateSignal::new(Computed::constant(
-        value.clone(),
-    )));
+    AccessibilityStateSignal::install(&mut scoped, Computed::constant(value.clone()));
+    scoped
+}
+
+/// The `Env` scoping for a reactive [`AccessibilityStateSignal`]: the scope
+/// merges field by field over the state an enclosing scope installed, so a
+/// `.disabled(..)` inside a `.visible(..)` keeps both flags.
+pub fn a11y_scoped_env_for_state_signal(
+    env: &Environment,
+    value: &AccessibilityStateSignal,
+) -> Environment {
+    let mut scoped = env.clone();
+    AccessibilityStateSignal::install(&mut scoped, value.state().clone());
     scoped
 }
 
@@ -219,7 +231,7 @@ pub fn a11y_scoped_env_for_view<E: crate::text::TextEngine>(
         // node that represents the wrapped view reads it from the scope.
         AccessibilityGeometry => a11y_scoped_env::<AccessibilityGeometry>,
         AccessibilityState => a11y_scoped_env_for_state,
-        AccessibilityStateSignal => a11y_scoped_env::<AccessibilityStateSignal>,
+        AccessibilityStateSignal => a11y_scoped_env_for_state_signal,
     )
 }
 
@@ -285,11 +297,13 @@ fn hoist_accessibility_metadata_inner<E: crate::text::TextEngine>(
 }
 
 fn gesture_group_identity_with_budget(view: &AnyView, remaining: usize) -> usize {
-    assert!(
-        (remaining != 0),
-        "hydrolysis gesture group identity extraction exceeded recursion budget for {}",
-        view.name()
-    );
+    if remaining == 0 {
+        contract_violation!(
+            "hydrolysis gesture group identity extraction exceeded recursion budget for {}; the group is identified by this view",
+            view.name()
+        );
+        return view.stable_ptr() as usize;
+    }
     if let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
         return gesture_group_identity_with_budget(&metadata.content, remaining - 1);
     }
@@ -445,11 +459,13 @@ fn normalize_layout_view_with_budget(
     env: &Environment,
     remaining: usize,
 ) -> AnyView {
-    assert!(
-        (remaining != 0),
-        "hydrolysis layout normalization exceeded recursion budget for {}",
-        view.name()
-    );
+    if remaining == 0 {
+        contract_violation!(
+            "hydrolysis layout normalization exceeded recursion budget for {}; the view is replaced by an empty view",
+            view.name()
+        );
+        return AnyView::new(());
+    }
     let next_remaining = remaining - 1;
     let mut view = view;
 
@@ -601,7 +617,7 @@ fn normalize_layout_view_with_budget(
     }
     normalize_env_scoping_ignorable_metadata!(
         AccessibilityHidden, a11y_scoped_env;
-        AccessibilityStateSignal, a11y_scoped_env;
+        AccessibilityStateSignal, a11y_scoped_env_for_state_signal;
         AccessibilityState, a11y_scoped_env_for_state
     );
 
@@ -782,7 +798,9 @@ fn shape_kind_radii(kind: ShapeKind, min_side: f32) -> [f32; 4] {
             fixed(bottom_right),
             fixed(bottom_left),
         ],
-        ShapeKind::CustomPath => panic!("a custom path has no corner radii"),
+        ShapeKind::CustomPath => {
+            unreachable!("`shape_kind_path` resolves radii only for structured kinds")
+        }
     }
 }
 
@@ -879,20 +897,24 @@ pub fn path_commands_to_path(commands: &[PathCommand], bounds: kurbo::Rect) -> k
                 has_current = true;
             }
             PathCommand::LineTo { x, y } => {
-                assert!(
-                    has_current,
-                    "PathCommand::LineTo requires an active current point"
-                );
+                if !has_current {
+                    contract_violation!(
+                        "PathCommand::LineTo requires an active current point; the command is ignored"
+                    );
+                    continue;
+                }
                 path.line_to(kurbo::Point::new(
                     f64::from(*x) * width,
                     f64::from(*y) * height,
                 ));
             }
             PathCommand::QuadTo { cx, cy, x, y } => {
-                assert!(
-                    has_current,
-                    "PathCommand::QuadTo requires an active current point"
-                );
+                if !has_current {
+                    contract_violation!(
+                        "PathCommand::QuadTo requires an active current point; the command is ignored"
+                    );
+                    continue;
+                }
                 path.quad_to(
                     kurbo::Point::new(f64::from(*cx) * width, f64::from(*cy) * height),
                     kurbo::Point::new(f64::from(*x) * width, f64::from(*y) * height),
@@ -906,10 +928,12 @@ pub fn path_commands_to_path(commands: &[PathCommand], bounds: kurbo::Rect) -> k
                 x,
                 y,
             } => {
-                assert!(
-                    has_current,
-                    "PathCommand::CubicTo requires an active current point"
-                );
+                if !has_current {
+                    contract_violation!(
+                        "PathCommand::CubicTo requires an active current point; the command is ignored"
+                    );
+                    continue;
+                }
                 path.curve_to(
                     kurbo::Point::new(f64::from(*c1x) * width, f64::from(*c1y) * height),
                     kurbo::Point::new(f64::from(*c2x) * width, f64::from(*c2y) * height),

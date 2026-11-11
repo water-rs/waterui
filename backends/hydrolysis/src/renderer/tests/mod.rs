@@ -6,7 +6,7 @@ use crate::text::{Affinity, TextEngine as _, TextLayout as _, TextPosition};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::future::Future;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::mpsc;
 
 use executor_core::LocalExecutor;
@@ -27,6 +27,7 @@ mod drag_drop;
 mod dynamic_remeasure;
 #[cfg(not(target_arch = "wasm32"))]
 mod emoji_atlas;
+mod engine_motion;
 mod gesture_buttons;
 mod gesture_capture;
 mod gesture_env;
@@ -399,6 +400,26 @@ pub fn window_mount(
         .mount
 }
 
+/// Swaps the window host's engine-surface link for `surface` and returns
+/// the link it held: swapping in `Weak::new()` stands in for a surface
+/// dropped during the window's commit, swapping the returned link back
+/// restores it.
+pub fn swap_host_surface(
+    runtime: &mut crate::HeadlessRuntime,
+    surface: Weak<cherenkov::Surface<cherenkov_gpu::Gpu>>,
+) -> Weak<cherenkov::Surface<cherenkov_gpu::Gpu>> {
+    std::mem::replace(
+        &mut runtime
+            .renderer_mut()
+            .cherenkov_window
+            .as_mut()
+            .expect("the frame installed into a window")
+            .host
+            .surface,
+        surface,
+    )
+}
+
 /// The window's backdrop-group table — the test renders one window.
 pub fn mounts(
     runtime: &crate::HeadlessRuntime,
@@ -508,19 +529,20 @@ fn subscribed_snapshot_preserves_registration_animation_metadata() {
     clippy::float_cmp,
     reason = "the snapshot is the signal's stored literal read back untouched; any drift means the read went through arithmetic it must not"
 )]
-fn animated_scalar_subscribes_before_reading_its_snapshot() {
+fn wrapper_motion_subscribes_before_reading_its_snapshot() {
     let signal = registration_signal(0.25, nami::watcher::Context::from(0.25));
-    let mut renderer = test_renderer();
-    let owner = Rc::new(());
+    let renderer = test_renderer();
 
-    let resolved = renderer.resolve_owned_scalar(
+    let motion = super::mount::motion::Motion::new(
         &signal,
-        &owner,
-        usize::MAX,
-        cherenkov_record::tree::RATE_FAST,
+        f64::from,
+        renderer.frame_signals(),
+        Rc::clone(renderer.placement_clock()),
+        Box::new(|| {}),
+        false,
     );
 
-    assert_eq!(resolved, 0.25);
+    assert_eq!(motion.target(), 0.25);
     assert!(signal.subscribed.get());
 }
 
@@ -775,11 +797,18 @@ fn layout_normalization_does_not_charge_metadata_depth_to_component_recursion() 
 }
 
 #[test]
-#[should_panic(expected = "hydrolysis layout normalization exceeded recursion budget")]
-fn layout_normalization_still_rejects_recursive_component_bodies() {
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "hydrolysis layout normalization exceeded recursion budget")
+)]
+fn layout_normalization_reports_recursive_component_bodies_and_draws_nothing() {
     let env = test_environment();
 
-    let _ = normalize_layout_view(AnyView::new(RecursivelyErasedView), &env);
+    let view = normalize_layout_view(AnyView::new(RecursivelyErasedView), &env);
+    assert!(
+        view.is::<()>(),
+        "the recursive body is replaced by an empty view"
+    );
 }
 
 #[test]
@@ -1743,8 +1772,8 @@ fn a_label_survives_the_environment_snapshot_a_view_hook_takes() {
 /// with no page behind it.
 #[cfg(not(hydrolysis_system_webview))]
 #[test]
-#[should_panic(expected = "no web engine is bridged")]
-fn a_webview_with_no_engine_to_draw_it_panics() {
+#[cfg_attr(debug_assertions, should_panic(expected = "no web engine is bridged"))]
+fn a_webview_with_no_engine_to_draw_it_is_reported_and_not_drawn() {
     use std::future::{Future, ready};
 
     use waterui_core::{Signal, Str};
@@ -4289,26 +4318,18 @@ fn a_labelled_container_that_stands_reports_its_response_rectangle() {
     );
 }
 
+/// A GPU context whose generations' engines report their composition
+/// decisions into the returned sink.
 fn diagnostic_gpu() -> (
     crate::platform::OffscreenGpuContext,
     cherenkov_gpu::composition::Sink,
-    Rc<crate::engine::SharedEngineState>,
 ) {
-    let gpu = crate::platform::OffscreenGpuContext::new_blocking();
-    let probe = crate::platform::OffscreenSurface::on_context(
-        gpu.clone(),
-        1,
-        1,
-        wgpu::TextureFormat::Rgba8UnormSrgb,
-    );
-    let context = probe.device_loss().gpu_context();
     let diagnostics = cherenkov_gpu::composition::Sink::new();
-    let engine = crate::engine::GpuEngine::new(cherenkov_gpu::GpuConfig {
-        device: Some(context.shared_device.clone()),
-        composition_diag: Some(diagnostics.clone()),
-        ..cherenkov_gpu::GpuConfig::default()
-    })
-    .expect("diagnostic engine");
-    let state = crate::engine::SharedEngineState::register(context.context_id, Rc::new(engine));
-    (gpu, diagnostics, state)
+    let gpu = crate::platform::OffscreenGpuContext::for_tests_with_engine_config(
+        cherenkov_gpu::GpuConfig {
+            composition_diag: Some(diagnostics.clone()),
+            ..cherenkov_gpu::GpuConfig::default()
+        },
+    );
+    (gpu, diagnostics)
 }

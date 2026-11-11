@@ -16,11 +16,13 @@
 //! `a11y_geometry` names the allocation or an explicit region of that
 //! committed geometry instead.
 //!
-//! `AccessibilityState` and `AccessibilityStateSignal` share one applier:
-//! on `UIKit`, `checked` writes a spoken value the first time it arrives
-//! and restores the original value only after it was ever written —
-//! `wroteCheckedValue`; `busy` swaps the hint for "Busy" and restores the
-//! original otherwise; `hidden` restores `accessibilityElementsHidden`.
+//! `AccessibilityState` and `AccessibilityStateSignal` share one applier.
+//! Nested state scopes merge field by field through the environment, and
+//! only the innermost scope on a leaf applies the merged state. On `UIKit`,
+//! `checked` writes a spoken value the first time it arrives and restores
+//! the original value only after it was ever written — `wroteCheckedValue`;
+//! `busy` swaps the hint for "Busy" and restores the original otherwise;
+//! `hidden` restores `accessibilityElementsHidden`.
 //! On `AppKit`, `expanded` is applied only when present and `hidden`
 //! restores `isAccessibilityElement`.
 
@@ -33,9 +35,10 @@ use waterui::accessibility::{
     AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
     AccessibilityValue,
 };
-use waterui_core::IgnorableMetadata;
+use waterui::reactive::Computed;
+use waterui_core::{AnyView, IgnorableMetadata};
 
-use crate::contract::NativeLeaf;
+use crate::contract::{NativeLeaf, RenderContext};
 use crate::dispatch::Dispatcher;
 use crate::proposal::in_view;
 
@@ -173,117 +176,72 @@ fn apply_hidden(target: &PlatformView, hidden: bool, original: bool) {
 }
 
 /// Shared bind for `AccessibilityState` (constant) and
-/// `AccessibilityStateSignal` (reactive): each delivery applies the whole
-/// state plus the `hidden` channel's restore semantics.
-fn install_state(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<IgnorableMetadata<AccessibilityState>>(|metadata, ctx| {
-        let mut leaf = ctx.render(metadata.content);
-        let target = view::retain_base(leaf.view());
-        leaf.keep(target.clone());
-        #[cfg(target_os = "ios")]
-        {
-            use alloc::rc::Rc;
-            use core::cell::{Cell, RefCell};
-            let state = Rc::new(RefCell::new(metadata.value));
-            let wrote_checked = Cell::new(false);
-            let original_value = a11y::value(&target);
-            let original_hint = a11y::hint(&target);
-            let original_hidden = a11y::hidden(&target);
-            let apply = {
-                let state = Rc::clone(&state);
-                let target = target.clone();
-                move || {
-                    let state = state.borrow();
-                    apply_state(
-                        &target,
-                        &state,
-                        wrote_checked.get(),
-                        original_value.as_deref(),
-                        original_hint.as_deref(),
-                    );
-                    if state.checked_state().is_some() {
-                        wrote_checked.set(true);
-                    }
-                }
-            };
-            apply();
-            apply_hidden(&target, state.borrow().is_hidden(), original_hidden);
-            leaf.keep(state);
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let original_element = a11y::is_element(target::of(&target));
-            apply_state(&target, &metadata.value);
-            apply_hidden(&target, metadata.value.is_hidden(), original_element);
-        }
-        leaf
-    });
-
-    install_state_signal(dispatcher);
-}
-
-/// `AccessibilityStateSignal`: the reactive channel of the state pair.
-fn install_state_signal(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<IgnorableMetadata<AccessibilityStateSignal>>(|metadata, ctx| {
-        let mut leaf = ctx.render(metadata.content);
-        let target = view::retain_base(leaf.view());
-        leaf.keep(target.clone());
-        #[cfg(target_os = "ios")]
-        {
-            use alloc::rc::Rc;
-            use core::cell::{Cell, RefCell};
-            use waterui::reactive::Signal;
-            let state = Rc::new(RefCell::new(metadata.value.state().snapshot()));
-            let wrote_checked = Rc::new(Cell::new(false));
-            let original_value = a11y::value(&target);
-            let original_hint = a11y::hint(&target);
-            let original_hidden = a11y::hidden(&target);
-            leaf.watch(metadata.value.state(), {
-                let state = Rc::clone(&state);
-                let target = target.clone();
-                let wrote_checked = Rc::clone(&wrote_checked);
-                let original_value = original_value.clone();
-                let original_hint = original_hint.clone();
-                move |wctx| {
-                    let next = wctx.value().clone();
-                    *state.borrow_mut() = next.clone();
-                    apply_state(
-                        &target,
-                        &next,
-                        wrote_checked.get(),
-                        original_value.as_deref(),
-                        original_hint.as_deref(),
-                    );
-                    if next.checked_state().is_some() {
-                        wrote_checked.set(true);
-                    }
-                    apply_hidden(&target, next.is_hidden(), original_hidden);
-                }
-            });
-            // Initial application, same as a watcher's first delivery.
-            let initial = state.borrow().clone();
+/// `AccessibilityStateSignal` (reactive).
+///
+/// The scope merges `local` over the state an enclosing scope installed and
+/// renders its content under the merged scope, so the innermost scope on a
+/// leaf holds every enclosing scope's fields and is the one that applies:
+/// an enclosing scope around the same leaf applies nothing over it
+/// ([`NativeLeaf::claim_accessibility_state`]). Each delivery applies the
+/// whole merged state plus the `hidden` channel's restore semantics.
+fn render_state(
+    content: AnyView,
+    local: Computed<AccessibilityState>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mut env = ctx.env().clone();
+    AccessibilityStateSignal::install(&mut env, local);
+    let merged = env
+        .get::<AccessibilityStateSignal>()
+        .expect("install inserts the merged state scope")
+        .state()
+        .clone();
+    let mut leaf = ctx.with_env(&env).render(content);
+    leaf.keep(env);
+    if !leaf.claim_accessibility_state() {
+        return leaf;
+    }
+    let target = view::retain_base(leaf.view());
+    leaf.keep(target.clone());
+    #[cfg(target_os = "ios")]
+    {
+        use core::cell::Cell;
+        let wrote_checked = Cell::new(false);
+        let original_value = a11y::value(&target);
+        let original_hint = a11y::hint(&target);
+        let original_hidden = a11y::hidden(&target);
+        leaf.bind(&merged, move |state| {
             apply_state(
                 &target,
-                &initial,
+                &state,
                 wrote_checked.get(),
                 original_value.as_deref(),
                 original_hint.as_deref(),
             );
-            if initial.checked_state().is_some() {
+            if state.checked_state().is_some() {
                 wrote_checked.set(true);
             }
-            apply_hidden(&target, initial.is_hidden(), original_hidden);
-            leaf.keep(state);
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let original_element = a11y::is_element(target::of(&target));
-            leaf.bind(metadata.value.state(), move |state| {
-                apply_state(&target, &state);
-                apply_hidden(&target, state.is_hidden(), original_element);
-            });
-        }
-        leaf
+            apply_hidden(&target, state.is_hidden(), original_hidden);
+        });
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let original_element = a11y::is_element(target::of(&target));
+        leaf.bind(&merged, move |state| {
+            apply_state(&target, &state);
+            apply_hidden(&target, state.is_hidden(), original_element);
+        });
+    }
+    leaf
+}
+
+/// Registers the constant and reactive state handlers on the shared bind.
+fn install_state(dispatcher: &mut Dispatcher) {
+    dispatcher.register_view::<IgnorableMetadata<AccessibilityState>>(|metadata, ctx| {
+        render_state(metadata.content, Computed::constant(metadata.value), ctx)
+    });
+    dispatcher.register_view::<IgnorableMetadata<AccessibilityStateSignal>>(|metadata, ctx| {
+        render_state(metadata.content, metadata.value.state().clone(), ctx)
     });
 }
 

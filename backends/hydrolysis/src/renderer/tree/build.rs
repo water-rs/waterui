@@ -3,12 +3,14 @@
 //! env scope, collection, lazy stack, scene/GPU/effect, `Dynamic` host).
 
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+use super::collection::{item_id, item_view_or_empty};
 #[allow(clippy::wildcard_imports)]
 use super::*;
 #[cfg(hydrolysis_gpu)]
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::platform_view::PlatformView;
 use core::any::Any;
+use waterui_core::contract_violation;
 use waterui_core::views::ViewSnapshot;
 use waterui_layout::BackgroundLayout;
 
@@ -66,17 +68,16 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         };
         let view = match view.downcast::<Native<TextConfig>>() {
             Ok(text) => {
-                let config = (*text).into_inner();
+                let (content, alignment, line_limit) = (*text).into_inner().into_parts();
                 let core = renderer.new_core();
                 let (layout_dirty, invalidate) = layout_invalidation(&core.cell);
                 let guards = [
-                    config.content().watch({
+                    content.watch({
                         let invalidate = Rc::clone(&invalidate);
                         move |_| invalidate()
                     }),
-                    config.paragraph_alignment().watch(move |_| invalidate()),
+                    alignment.watch(move |_| invalidate()),
                 ];
-                let (content, alignment, line_limit) = config.into_parts();
                 return Self::Text(Box::new(TextNode {
                     memo_gate: Cell::default(),
                     memo_slots: RefCell::default(),
@@ -166,44 +167,36 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let view = match view.downcast::<Metadata<Opacity>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
-                return Self::Opacity(Box::new(OpacityNode {
-                    core: renderer.new_core(),
-                    value,
-                    child: Self::build_view(content, env, renderer),
-                }));
+                return Self::Opacity(Box::new(OpacityNode::new(&value, renderer, |renderer| {
+                    Self::build_view(content, env, renderer)
+                })));
             }
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<Scale>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
-                return Self::Scale(Box::new(ScaleNode {
-                    core: renderer.new_core(),
-                    value,
-                    child: Self::build_view(content, env, renderer),
-                }));
+                return Self::Scale(Box::new(ScaleNode::new(&value, renderer, |renderer| {
+                    Self::build_view(content, env, renderer)
+                })));
             }
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<Rotation>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
-                return Self::Rotation(Box::new(RotationNode {
-                    core: renderer.new_core(),
-                    value,
-                    child: Self::build_view(content, env, renderer),
-                }));
+                return Self::Rotation(Box::new(RotationNode::new(&value, renderer, |renderer| {
+                    Self::build_view(content, env, renderer)
+                })));
             }
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<Offset>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
-                return Self::Offset(Box::new(OffsetNode {
-                    core: renderer.new_core(),
-                    value,
-                    child: Self::build_view(content, env, renderer),
-                }));
+                return Self::Offset(Box::new(OffsetNode::new(&value, renderer, |renderer| {
+                    Self::build_view(content, env, renderer)
+                })));
             }
             Err(view) => view,
         };
@@ -379,14 +372,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     content,
                     value: MaterialBackground(material),
                 } = *meta;
-                return Self::build_wrapper(
-                    WrapperEffect::Material(crate::renderer::material::WithinWindowLevel::of(
-                        material,
-                    )),
-                    content,
-                    env,
-                    renderer,
-                );
+                let Some(level) = crate::renderer::material::WithinWindowLevel::of(material) else {
+                    return Self::build_view(content, env, renderer);
+                };
+                return Self::build_wrapper(WrapperEffect::Material(level), content, env, renderer);
             }
             Err(view) => view,
         };
@@ -820,7 +809,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Err(view) => view,
         };
         let view = match view.downcast::<Native<SystemIcon>>() {
-            Ok(icon) => unsupported_system_icon(icon.as_inner()),
+            Ok(icon) => {
+                unsupported_system_icon(icon.as_inner());
+                return Self::build_empty(renderer, env);
+            }
             Err(view) => view,
         };
         let view = match view.downcast::<Native<waterui_graphics::Gradient>>() {
@@ -832,7 +824,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Err(view) => view,
         };
         let Err(view) = view.downcast::<Native<MapConfig>>() else {
-            unsupported_map()
+            unsupported_map();
+            return Self::build_empty(renderer, env);
         };
         // This backend bridges the platform's own web engine, and it only wins
         // by default: an application that linked a browser engine of its own
@@ -996,7 +989,15 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 appear: Cell::new(None),
                 disappear: Some(DeferredLifeCycleHook::new(hook, env.clone())),
             },
-            _ => panic!("hydrolysis lifecycle variant is not supported"),
+            other => {
+                contract_violation!(
+                    "hydrolysis lifecycle variant {other:?} is not supported; its hook never fires"
+                );
+                LifeCycleEffect {
+                    appear: Cell::new(None),
+                    disappear: None,
+                }
+            }
         };
         Self::Wrapper(Box::new(WrapperNode {
             accessibility_identity: Rc::new(()),
@@ -1070,18 +1071,14 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let snapshot = applied.borrow().clone();
         let entries = snapshot
             .range()
-            .map(|index| {
-                let id = snapshot
-                    .get_id(index)
-                    .unwrap_or_else(|| panic!("hydrolysis collection: item {index} has no id"));
-                let view = snapshot
-                    .get_view(index)
-                    .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
+            .filter_map(|index| {
+                let id = item_id(&snapshot, index)?;
+                let view = item_view_or_empty(&snapshot, index);
                 let entry_core = renderer.new_core();
                 entry_core.cell.set_parent(&core.cell);
                 let node = Self::build_view(normalize_layout_view(view, env), env, renderer);
                 node.core().cell.set_parent(&entry_core.cell);
-                CollectionEntry::new(id, node, entry_core)
+                Some(CollectionEntry::new(id, node, entry_core))
             })
             .collect();
         Self::Collection(Box::new(CollectionNode {

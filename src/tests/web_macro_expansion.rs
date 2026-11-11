@@ -6,7 +6,11 @@
 //! expansion breaks only downstream users. The produced value is never
 //! evaluated — `DirectoryServer::new` resolves the staged bundle root, which a
 //! test process does not have — so the function is only type-checked.
-#![cfg(all(feature = "webview", feature = "assets"))]
+//!
+//! On Apple the expansion's `stay_on_origin` policy needs a deployment target
+//! of OS 27, above the workspace floor, so there it is by design an error and
+//! the test compiles only on the other targets.
+#![cfg(all(feature = "webview", feature = "assets", not(target_vendor = "apple")))]
 
 /// `CARGO_MANIFEST_DIR` is the `waterui` package root (`src/`), so the fixture
 /// web project is addressed as `tests/fixtures/web_project`.

@@ -205,17 +205,18 @@ impl ToggleControl {
     /// Records `backdrop` above the parts already added: the parts added
     /// before it record below the material, those added after it above.
     ///
-    /// # Panics
-    ///
-    /// Panics when the control already has a backdrop: it has one stage.
+    /// A control has one backdrop stage: adding a second is the theme's
+    /// contract violation, reported while the first backdrop stays.
     #[must_use]
     pub fn backdrop(mut self, backdrop: ToggleBackdrop) -> Self {
         let parts = self.parts_mut();
-        assert!(
-            parts.backdrop.is_none(),
-            "a toggle control has one backdrop stage"
-        );
-        parts.backdrop = Some(backdrop);
+        if parts.backdrop.is_some() {
+            waterui_core::contract_violation!(
+                "a toggle control has one backdrop stage; the first backdrop stays and the second is ignored"
+            );
+        } else {
+            parts.backdrop = Some(backdrop);
+        }
         self
     }
 
