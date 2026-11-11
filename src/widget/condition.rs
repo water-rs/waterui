@@ -434,7 +434,7 @@ where
         let chain = Rc::new(chain);
         let otherwise = Rc::new(otherwise);
 
-        Dynamic::watch(chain.make_combined(), move |index| {
+        Dynamic::watch(chain.make_combined().distinct(), move |index| {
             index.map_or_else(|| otherwise.build().anyview(), |i| chain.build_branch(i))
         })
         .anyview()
