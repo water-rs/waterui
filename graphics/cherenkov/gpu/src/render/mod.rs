@@ -3257,7 +3257,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         Some(&device),
     )?;
     let pipeline_layout = create_pipeline_layout(&device, &layout0, &group1.layout);
-    let pipeline_cache =open_pipeline_cache(&device, &config);
+    let pipeline_cache = open_pipeline_cache(&device, &config);
     let mut pipelines = std::array::from_fn(|_| {
         std::array::from_fn(|_| std::array::from_fn(|_| None::<wgpu::RenderPipeline>))
     });
