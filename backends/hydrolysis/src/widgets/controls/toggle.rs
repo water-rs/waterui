@@ -18,6 +18,7 @@ use nami::Signal as _;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
+use waterui_core::contract_violation;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{LayoutDirection, Size as LayoutSize};
 use waterui_core::layout::{ProposalSize, StretchAxis, ViewDimensions};
@@ -36,11 +37,9 @@ enum ToggleLook {
 impl ToggleLook {
     /// The look `theme` gives a toggle of `spec` in `env`.
     fn resolve(theme: &Rc<dyn WidgetTheme>, spec: &ToggleSpec, env: &Environment) -> Self {
-        match spec.style() {
-            ToggleStyle::Switch => Self::Switch(theme.switch(spec, env)),
+        match drawn_style(spec.style()) {
             ToggleStyle::Checkbox => Self::Checkbox(theme.checkbox(spec, env)),
-            ToggleStyle::Automatic => panic!("{UNRESOLVED_STYLE}"),
-            _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
+            _ => Self::Switch(theme.switch(spec, env)),
         }
     }
 
@@ -165,11 +164,9 @@ pub fn toggle_accessibility<E: crate::text::TextEngine>(
         let mut node = AccessibilityNode::new(
             crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                 env,
-                match toggle.style() {
-                    ToggleStyle::Switch => AccessibilityNodeRole::Switch,
+                match drawn_style(toggle.style()) {
                     ToggleStyle::Checkbox => AccessibilityNodeRole::CheckBox,
-                    ToggleStyle::Automatic => panic!("{UNRESOLVED_STYLE}"),
-                    _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
+                    _ => AccessibilityNodeRole::Switch,
                 },
             ),
         );
@@ -214,6 +211,25 @@ pub fn toggle_accessibility<E: crate::text::TextEngine>(
 /// reaching a match here is a broken contract, not a style to draw.
 const UNRESOLVED_STYLE: &str =
     "the toggle payload reached hydrolysis with an unresolved Automatic style";
+
+/// The style a toggle of `style` is drawn in. `Automatic` (unresolved) or a
+/// variant this backend does not implement is a contract violation by the
+/// producer of the payload, reported; the toggle is then drawn as a switch.
+fn drawn_style(style: ToggleStyle) -> ToggleStyle {
+    match style {
+        ToggleStyle::Switch | ToggleStyle::Checkbox => style,
+        ToggleStyle::Automatic => {
+            contract_violation!("{UNRESOLVED_STYLE}; the toggle is drawn as a switch");
+            ToggleStyle::Switch
+        }
+        other => {
+            contract_violation!(
+                "hydrolysis ToggleStyle variant {other:?} is not implemented; the toggle is drawn as a switch"
+            );
+            ToggleStyle::Switch
+        }
+    }
+}
 
 /// The size a toggle of `control` takes beside a label of `label_size`.
 fn toggle_size(control: &ToggleControl, label_size: LayoutSize) -> (f64, f64) {
@@ -548,51 +564,46 @@ fn left_to_right_bounds(
     let control_y0 = bounds.y0 + ((bounds.height() - size.height) / 2.0).max(0.0);
     let control_y1 = control_y0 + size.height;
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
-    match style {
-        ToggleStyle::Checkbox => {
-            let control_x0 = bounds.x0;
-            let control_x1 = control_x0 + size.width;
-            let control = kurbo::Rect::new(control_x0, control_y0, control_x1, control_y1);
-            let label_x0 = if has_label {
-                (control_x1 + spacing).min(bounds.x1)
-            } else {
-                control_x1
-            };
-            let max_label_width = (bounds.x1 - label_x0).max(0.0);
-            let label_width = f64::from(label_size.width).min(max_label_width);
-            (
+    // `drawn_style` only answers `Checkbox` or `Switch`.
+    if matches!(drawn_style(style), ToggleStyle::Checkbox) {
+        let control_x0 = bounds.x0;
+        let control_x1 = control_x0 + size.width;
+        let control = kurbo::Rect::new(control_x0, control_y0, control_x1, control_y1);
+        let label_x0 = if has_label {
+            (control_x1 + spacing).min(bounds.x1)
+        } else {
+            control_x1
+        };
+        let max_label_width = (bounds.x1 - label_x0).max(0.0);
+        let label_width = f64::from(label_size.width).min(max_label_width);
+        (
+            control,
+            label_beside_control_bounds(
+                label_x0,
+                label_x0 + label_width,
+                bounds,
                 control,
-                label_beside_control_bounds(
-                    label_x0,
-                    label_x0 + label_width,
-                    bounds,
-                    control,
-                    f64::from(label_size.height),
-                ),
-            )
-        }
-        ToggleStyle::Switch => {
-            let control_x0 = (bounds.x1 - size.width).max(bounds.x0);
-            let control =
-                kurbo::Rect::new(control_x0, control_y0, control_x0 + size.width, control_y1);
-            let label_x1 = if has_label {
-                (control_x0 - spacing).max(bounds.x0)
-            } else {
-                bounds.x0
-            };
-            (
+                f64::from(label_size.height),
+            ),
+        )
+    } else {
+        let control_x0 = (bounds.x1 - size.width).max(bounds.x0);
+        let control = kurbo::Rect::new(control_x0, control_y0, control_x0 + size.width, control_y1);
+        let label_x1 = if has_label {
+            (control_x0 - spacing).max(bounds.x0)
+        } else {
+            bounds.x0
+        };
+        (
+            control,
+            label_beside_control_bounds(
+                bounds.x0,
+                label_x1,
+                bounds,
                 control,
-                label_beside_control_bounds(
-                    bounds.x0,
-                    label_x1,
-                    bounds,
-                    control,
-                    f64::from(label_size.height),
-                ),
-            )
-        }
-        ToggleStyle::Automatic => panic!("{UNRESOLVED_STYLE}"),
-        _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
+                f64::from(label_size.height),
+            ),
+        )
     }
 }
 
@@ -616,7 +627,7 @@ pub fn emit_toggle_accessibility<E: crate::text::TextEngine>(
 
 #[cfg(test)]
 mod tests {
-    use super::toggle_control_and_label_bounds;
+    use super::{drawn_style, toggle_control_and_label_bounds};
     use crate::theme::{Motion, ToggleControl};
     use kurbo::Rect;
     use std::time::Duration;
@@ -708,5 +719,29 @@ mod tests {
                 control.center().y,
             );
         }
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "unresolved Automatic style")
+    )]
+    fn an_unresolved_automatic_style_is_reported_and_drawn_as_a_switch() {
+        assert!(matches!(
+            drawn_style(ToggleStyle::Automatic),
+            ToggleStyle::Switch
+        ));
+    }
+
+    #[test]
+    fn a_resolved_style_is_drawn_as_it_is() {
+        assert!(matches!(
+            drawn_style(ToggleStyle::Checkbox),
+            ToggleStyle::Checkbox
+        ));
+        assert!(matches!(
+            drawn_style(ToggleStyle::Switch),
+            ToggleStyle::Switch
+        ));
     }
 }

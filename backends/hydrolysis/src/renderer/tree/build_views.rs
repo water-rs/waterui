@@ -4,6 +4,8 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+// Only the Android bridge and a build with no bridged engine report a WebView.
+#[cfg(any(hydrolysis_android_system_webview, not(hydrolysis_system_webview)))]
 use waterui_core::contract_violation;
 
 impl_widget_behavior!(
@@ -303,9 +305,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             };
             let stretch = waterui_core::NativeView::stretch_axis(webview);
             let owner: Rc<dyn core::any::Any> = Rc::new(handle.clone());
-            let state = Rc::new(RefCell::new(PlatformViewRenderState::from_instance(
-                instance, owner, env,
-            )));
+            let Some(state) = PlatformViewRenderState::from_instance(instance, owner, env) else {
+                return Self::build_empty(renderer, env);
+            };
+            let state = Rc::new(RefCell::new(state));
             Self::build_widget(renderer, state, stretch, env)
         }
         #[cfg(not(any(hydrolysis_system_webview, hydrolysis_android_system_webview)))]

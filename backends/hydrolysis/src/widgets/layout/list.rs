@@ -27,6 +27,7 @@ use waterui::component::list::{
 use waterui::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
 use waterui_backend_core::scroll::{ScrollPositionReport, animated_row_scroll_approach};
 use waterui_core::animation::Animation;
+use waterui_core::contract_violation;
 use waterui_core::handler::{BoxedAction, boxed_action};
 use waterui_core::id::Id as RawId;
 use waterui_core::interaction::Selected;
@@ -221,15 +222,16 @@ impl ListRowSelection {
     /// between the anchor and this row without moving the anchor; the range
     /// selects only the rows in it that carry a tag.
     ///
-    /// # Panics
-    ///
-    /// Panics if the row carries no tag: callers offer selection input only
-    /// on rows [`ListRowSelection::selects`].
+    /// Callers offer selection input only on rows
+    /// [`ListRowSelection::selects`]; input reaching a row that carries no tag
+    /// is a contract violation, reported, and writes nothing.
     pub(crate) fn write(&self, index: usize, id: ListItemId, modifiers: Modifiers) {
-        let tag = self
-            .tags
-            .tag(id)
-            .expect("selection input reached a list row that carries no tag");
+        let Some(tag) = self.tags.tag(id) else {
+            contract_violation!(
+                "selection input reached a list row that carries no tag; the selection is unchanged"
+            );
+            return;
+        };
         match &self.selection {
             ListSelection::None => {}
             ListSelection::Single(selection) => {
@@ -961,11 +963,13 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
             self.viewport_anchor.set(None);
             return;
         }
-        let id = self
-            .rows_snapshot
-            .borrow()
-            .get_id(index)
-            .unwrap_or_else(|| panic!("hydrolysis List item {index} has no stable id"));
+        let Some(id) = self.rows_snapshot.borrow().get_id(index) else {
+            contract_violation!(
+                "hydrolysis List item {index} has no stable id although it is in the snapshot's range; the viewport anchor is cleared"
+            );
+            self.viewport_anchor.set(None);
+            return;
+        };
         let row_start = self
             .extent_index
             .borrow()
@@ -1317,11 +1321,7 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                 let cached_extent = state.extent_index.borrow().measured(position);
                 if let Some(extent) = cached_extent {
                     extent
-                } else {
-                    let theme =
-                        theme.expect("hydrolysis rendered list measurement requires a theme");
-                    let list_metrics = list_metrics
-                        .expect("hydrolysis rendered list measurement requires list metrics");
+                } else if let (Some(theme), Some(list_metrics)) = (theme, list_metrics) {
                     let content_size = measure_list_row_content(
                         item.content(),
                         viewport.width(),
@@ -1341,6 +1341,11 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                         .borrow_mut()
                         .set_measured(position, extent);
                     extent
+                } else {
+                    contract_violation!(
+                        "hydrolysis rendered list measurement requires a theme and list metrics; the row slot measures as zero height"
+                    );
+                    0.0
                 }
             } else {
                 0.0
@@ -1363,9 +1368,12 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                 slot_rect.x1,
                 slot_rect.y1 - footer_height,
             );
-            let row_id = rows_snapshot
-                .get_id(index)
-                .unwrap_or_else(|| panic!("hydrolysis list row {index} has no stable identity"));
+            let Some(row_id) = rows_snapshot.get_id(index) else {
+                contract_violation!(
+                    "hydrolysis list row {index} has no stable identity although it is in the snapshot's range; the row exposes no accessibility node"
+                );
+                continue;
+            };
             let key_base = row_a11y_key_base(row_id);
             if let Some(header) = chrome.header.clone() {
                 let header_rect = kurbo::Rect::new(
@@ -1711,15 +1719,21 @@ fn register_edit_control_node<E: crate::text::TextEngine>(
     node.add_action(AccessibilityAction::Click);
     let target = Some(AccessibilityActionTarget::Activate { action });
     match ctx {
-        Some(_ctx) => renderer.register_accessibility_child_node_with_key(
-            semantic_key,
-            node,
-            bounds.expect(
-                "hydrolysis list edit-control node: the rendered walk always has list metrics",
-            ),
-            env,
-            target,
-        ),
+        Some(_ctx) => {
+            let Some(bounds) = bounds else {
+                contract_violation!(
+                    "hydrolysis list edit-control node: the rendered walk always has list metrics; the control exposes no accessibility node"
+                );
+                return None;
+            };
+            renderer.register_accessibility_child_node_with_key(
+                semantic_key,
+                node,
+                bounds,
+                env,
+                target,
+            )
+        }
         None => renderer.register_accessibility_child_node_with_key_semantic(
             semantic_key,
             node,
@@ -1977,10 +1991,14 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
             let mut row_env = env.clone();
             row_env.insert(waterui_controls::button::ButtonStyle::Plain);
             row_env.insert(crate::widgets::controls::button::ListRowChrome);
+            let Some(row_id) = contents.get_id(index) else {
+                contract_violation!(
+                    "hydrolysis List item {index} has no stable id although it is in the snapshot's range; the row is not drawn"
+                );
+                position += 1;
+                continue;
+            };
             let item = materialize_list_item(&contents, index, &row_env);
-            let row_id = contents
-                .get_id(index)
-                .unwrap_or_else(|| panic!("hydrolysis List item {index} has no stable id"));
             let chrome = state.borrow().section_chrome(index);
             // A row's extent covers the section chrome it owns, so scroll offsets,
             // hit testing, and the visible window all account for it.
@@ -2838,7 +2856,9 @@ fn register_row_swipe_gesture<E: crate::text::TextEngine>(
         RowGestureSlot::Swipe,
         || {
             let action: BoxedAction<()> = boxed_action(move |env: Environment| {
-                let event = drag_event(&env);
+                let Some(event) = drag_event(&env) else {
+                    return;
+                };
                 let offset = f64::from(event.translation().x);
                 let row = binding.get();
                 let list = owner.borrow();
@@ -2906,7 +2926,9 @@ fn register_row_reorder_gesture<E: crate::text::TextEngine>(
         RowGestureSlot::Reorder,
         || {
             let action: BoxedAction<()> = boxed_action(move |env: Environment| {
-                let event = drag_event(&env);
+                let Some(event) = drag_event(&env) else {
+                    return;
+                };
                 let dy = f64::from(event.translation().y);
                 let row = binding.get();
                 // How many whole slots the pointer has travelled. Rows are
@@ -2978,10 +3000,17 @@ fn reorder_destination(index: usize, step: f64, total_rows: usize) -> usize {
 
 /// Reads the drag payload the gesture engine layered into the action's
 /// environment.
-fn drag_event(env: &Environment) -> DragEvent {
-    env.get::<DragEvent>()
-        .expect("hydrolysis list drag action is missing its DragEvent")
-        .clone()
+///
+/// An action without its [`DragEvent`] is a contract violation by the gesture
+/// engine, reported; the action is then ignored (`None`).
+fn drag_event(env: &Environment) -> Option<DragEvent> {
+    let event = env.get::<DragEvent>().cloned();
+    if event.is_none() {
+        contract_violation!(
+            "hydrolysis list drag action is missing its DragEvent; the drag is ignored"
+        );
+    }
+    event
 }
 
 /// Which of a row's two retained recognizers is being addressed.

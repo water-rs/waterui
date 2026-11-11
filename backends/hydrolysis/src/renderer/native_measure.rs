@@ -76,41 +76,15 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<MapConfig> {
     }
 }
 
-/// Why a `WebView` cannot be drawn on a build without a bridged web engine.
+/// Why a `WebView` cannot be drawn on a build without a bridged web engine:
+/// reaching `WebView` without a `Hook<WebView>` engine realization leaves the
+/// backend nothing to draw a page with. Reported as a contract violation by
+/// the tree builder and the leaf's measure.
 #[cfg(not(any(hydrolysis_system_webview, hydrolysis_android_system_webview)))]
 pub const UNSUPPORTED_WEBVIEW: &str = "WebView is unsupported on this Hydrolysis build because no web engine is bridged; \
      link a browser engine crate (`waterui-browser-cef`, `waterui-browser-wpe`), enable \
      the `webview-system` and `winit` features on macOS, the `webview-system` and \
      `web` features on the web, or the `webview-system` feature on Android";
-
-/// Reaching `WebView` without a `Hook<WebView>` engine realization means
-/// the backend has nothing to draw a page with: a build without a system
-/// bridge — `hydrolysis_system_webview` or
-/// `hydrolysis_android_system_webview` — bridges no engine. On Android the
-/// `webview-system` feature mounts the platform `WebView` as a
-/// platform-view instance, so reaching this is a non-system engine's
-/// handle slipping past the leaf's downcast.
-///
-/// Its remaining caller is the leaf's `intrinsic` under `widgets/`, which
-/// the widgets pass converts; the tree builder reports
-/// [`UNSUPPORTED_WEBVIEW`] as a contract violation instead.
-#[cfg(not(any(hydrolysis_system_webview, hydrolysis_android_system_webview)))]
-pub fn unsupported_webview() -> ! {
-    panic!("{UNSUPPORTED_WEBVIEW}")
-}
-
-/// Reaching a `PlatformView` leaf without a `PlatformViewSink` in the window
-/// environment means the runner cannot mount native children at all.
-///
-/// Its only caller is the leaf's state constructor under `widgets/`, whose
-/// outcome needs that state's shape changed; the widgets pass converts it.
-pub fn unsupported_platform_view() -> ! {
-    panic!(
-        "PlatformView is unsupported on this runner because no PlatformViewSink is installed; \
-         a host that embeds native views (the Android runner) inserts one into the window \
-         environment at session create"
-    )
-}
 
 pub fn dimensions_for_native<V: HydroNativeView<E>, E: crate::text::TextEngine>(
     view: &AnyView,
