@@ -7,15 +7,21 @@
 
 use std::convert::Infallible;
 use std::rc::Rc;
+use std::sync::Arc;
 
-use cherenkov_record::{FilterId, Layer, MaterialRegistry, Transaction};
-use waterui_graphics::Reactive;
+use cherenkov_record::{
+    FilterId, Layer, MaterialRegistry, ResourceError, TextLayoutId, Transaction,
+};
 use waterui_graphics::filter_view::AnyEffect;
 use waterui_graphics::filtrate::filters::OverscrollStretch;
+use waterui_graphics::{
+    Handle, Reactive, ResourceHandle, TextBackend, TextRegistration, TextRequest,
+};
 
 #[cfg(hydrolysis_gpu)]
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::hwui::HwuiTarget;
+use crate::hwui::text::TextLayoutResource;
 #[cfg(hydrolysis_gpu)]
 use crate::renderer::ProducerWake;
 use crate::renderer::effects::FilteredRuntime;
@@ -25,6 +31,8 @@ use crate::renderer::mount::backdrop::{
 };
 use crate::renderer::mount::target::{FilterHandle, LayerTarget, MaterialTerms};
 use crate::renderer::recording::SceneResources;
+use crate::text::TextService;
+use crate::text::{CanvasLayout, shape_canvas_text};
 
 /// The HWUI target's host: the session's shared resource tables and the
 /// theme's material registry. No engine handles — `Shader` is `Infallible`.
@@ -67,6 +75,38 @@ impl HwuiHost {
     }
 }
 
+/// Canvas text on the HWUI target: laid out by the platform's text stack
+/// and drawn from the platform layout, which the registration leases.
+struct HwuiText<E: crate::text::TextEngine> {
+    service: Arc<TextService<E>>,
+}
+
+/// A platform text layout's lease, as the registration holds it.
+struct PlatformLayout(Arc<TextLayoutResource>);
+
+impl ResourceHandle for PlatformLayout {
+    type Id = TextLayoutId;
+
+    fn id(&self) -> TextLayoutId {
+        self.0.id()
+    }
+}
+
+impl<E: crate::text::TextEngine> TextBackend for HwuiText<E> {
+    fn register_text(
+        &self,
+        request: TextRequest,
+    ) -> Result<Option<TextRegistration>, ResourceError> {
+        let Some(CanvasLayout { layout, size }) = shape_canvas_text(&self.service, &request) else {
+            return Ok(None);
+        };
+        Ok(self
+            .service
+            .platform_text(&layout)
+            .map(|lease| TextRegistration::new(Handle::new(PlatformLayout(lease)), size)))
+    }
+}
+
 impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
     type Host = HwuiHost;
     type Group = Infallible;
@@ -76,6 +116,14 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
 
     fn resources(host: &Self::Host) -> &Rc<SceneResources> {
         &host.resources
+    }
+
+    fn install_text(host: &Self::Host, text: &Arc<TextService<E>>) {
+        host.resources.install_text(text, || {
+            Rc::new(HwuiText {
+                service: Arc::clone(text),
+            })
+        });
     }
 
     #[cfg(hydrolysis_gpu)]

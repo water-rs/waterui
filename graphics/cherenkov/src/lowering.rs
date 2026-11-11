@@ -8,7 +8,9 @@ use std::ops::Range;
 use kurbo::Affine;
 use smallvec::SmallVec;
 
-use crate::{BlendMode, Command, Dirty, DisplayList, FillRule, Group, RenderError, ShapeData};
+use crate::{
+    BlendMode, Command, Dirty, DisplayList, FillRule, Group, RenderError, ShapeData, TextLayouts,
+};
 
 mod disjoint;
 pub mod memory;
@@ -157,13 +159,14 @@ impl<T: Operation> Lowered<T> {
     pub fn full<C: Compiler<Op = T>>(
         list: &DisplayList,
         compiler: &mut C,
+        text: &TextLayouts,
     ) -> Result<Self, C::Error> {
         let mut lowered = Self {
             ops: Vec::with_capacity(list.len()),
             spans: Vec::with_capacity(list.len()),
             pictures: false,
         };
-        lowered.refill(list, compiler)?;
+        lowered.refill(list, compiler, text)?;
         Ok(lowered)
     }
 
@@ -171,11 +174,12 @@ impl<T: Operation> Lowered<T> {
         &mut self,
         list: &DisplayList,
         compiler: &mut C,
+        text: &TextLayouts,
     ) -> Result<(), C::Error> {
         self.ops.clear();
         self.spans.clear();
         self.pictures = walk(
-            list,
+            Source { list, text },
             0..list.len(),
             Affine::IDENTITY,
             compiler,
@@ -200,6 +204,7 @@ impl<T: Operation> Lowered<T> {
         list: &DisplayList,
         dirty: &Dirty,
         compiler: &mut C,
+        text: &TextLayouts,
     ) -> Result<Option<Vec<Range<usize>>>, C::Error> {
         let mut patches = Vec::new();
         for range in dirty.ranges() {
@@ -207,7 +212,7 @@ impl<T: Operation> Lowered<T> {
             let mut ops = Vec::new();
             let mut spans = Vec::with_capacity(range.len());
             walk(
-                list,
+                Source { list, text },
                 range.clone(),
                 self.spans[range.start].ambient,
                 compiler,
@@ -228,7 +233,7 @@ impl<T: Operation> Lowered<T> {
                     .zip(&ops)
                     .any(|(a, b)| !a.same_structure(b))
             {
-                *self = Self::full(list, compiler)?;
+                *self = Self::full(list, compiler, text)?;
                 return Ok(None);
             }
             let offset = u32::try_from(lo).expect("op index fits u32");
@@ -274,9 +279,20 @@ pub fn append<C: Compiler>(
     compiler: &mut C,
     ops: &mut Vec<C::Op>,
 ) -> Result<(), C::Error> {
+    append_with(list, ambient, compiler, &TextLayouts::default(), ops)
+}
+
+/// [`append`] for content that may draw registered text layouts.
+fn append_with<C: Compiler>(
+    list: &DisplayList,
+    ambient: Affine,
+    compiler: &mut C,
+    text: &TextLayouts,
+    ops: &mut Vec<C::Op>,
+) -> Result<(), C::Error> {
     let mut spans = Vec::with_capacity(list.len());
     walk(
-        list,
+        Source { list, text },
         0..list.len(),
         ambient,
         compiler,
@@ -287,9 +303,17 @@ pub fn append<C: Compiler>(
     Ok(())
 }
 
-/// Lowers `range` of `list`, returning whether it opened a picture scope.
+/// A display list and the text layouts its `Command::Text`s may name.
+#[derive(Clone, Copy)]
+struct Source<'a> {
+    list: &'a DisplayList,
+    text: &'a TextLayouts,
+}
+
+/// Lowers `range` of `source`'s list, returning whether it opened a picture
+/// scope.
 fn walk<C: Compiler>(
-    list: &DisplayList,
+    source: Source<'_>,
     range: Range<usize>,
     ambient: Affine,
     compiler: &mut C,
@@ -297,6 +321,7 @@ fn walk<C: Compiler>(
     spans: &mut Vec<Span>,
     root: bool,
 ) -> Result<bool, C::Error> {
+    let Source { list, text } = source;
     let mut pictures = false;
     let mut i = range.start;
     while i < range.end {
@@ -324,7 +349,7 @@ fn walk<C: Compiler>(
                 let emitted = opener.is_some();
                 pictures |= emitted;
                 ops.extend(opener);
-                append(picture.display_list(), inner, compiler, ops)?;
+                append_with(picture.display_list(), inner, compiler, text, ops)?;
                 if emitted {
                     let close = u32::try_from(ops.len()).expect("op index fits u32");
                     *ops[start as usize]
@@ -334,10 +359,21 @@ fn walk<C: Compiler>(
                 }
                 None
             }
-            Command::Text { layout, .. } => panic!(
-                "text layout {} reached Cherenkov, which draws text as glyph runs and registers no text layouts: the recorder is bound to another target's text engine",
-                layout.raw()
-            ),
+            Command::Text {
+                layout,
+                transform,
+                paint,
+            } => {
+                let expansion = text.expand(*layout, paint.as_ref());
+                append_with(
+                    expansion.display_list(),
+                    ambient * *transform,
+                    compiler,
+                    text,
+                    ops,
+                )?;
+                None
+            }
             Command::End => unreachable!("validated scopes consume their end"),
             command => {
                 compiler.draw_at(command, ambient, ops, root.then_some(i))?;
@@ -351,7 +387,7 @@ fn walk<C: Compiler>(
                 ops: start..u32::try_from(ops.len()).expect("op index fits u32"),
                 ambient,
             });
-            pictures |= walk(list, i + 1..end, inner, compiler, ops, spans, root)?;
+            pictures |= walk(source, i + 1..end, inner, compiler, ops, spans, root)?;
             let close = u32::try_from(ops.len()).expect("op index fits u32");
             if emitted {
                 *ops[start as usize]
@@ -472,8 +508,8 @@ impl<O: Operation, E> Content<O, E> {
     /// Whether the current source commands, slot updates applied and nested
     /// pictures included, sample `resource`.
     #[must_use]
-    pub fn references(&self, resource: crate::ResourceId) -> bool {
-        self.list.display_list().references(resource)
+    pub fn references(&self, resource: crate::ResourceId, text: &TextLayouts) -> bool {
+        text.samples(self.list.display_list(), resource)
     }
 
     /// Current prepared operations and the source they index. Dirty or
@@ -498,7 +534,11 @@ impl<O: Operation, E> Content<O, E> {
     /// Returns whether anything was discarded.
     pub fn invalidate_image(&mut self, id: crate::ImageId) -> bool {
         let stale = self.lowered.is_some()
-            && (!self.dirty.is_empty() || self.references(crate::ResourceId::Image(id)));
+            && (!self.dirty.is_empty()
+                || self
+                    .list
+                    .display_list()
+                    .references(crate::ResourceId::Image(id)));
         if stale {
             self.invalidate();
         }
@@ -542,13 +582,17 @@ impl<O: Operation, E> Content<O, E> {
     ///
     /// # Panics
     /// When the command count exceeds u32.
-    pub fn prepare<C: Compiler<Op = O>>(&mut self, compiler: &mut C) -> Result<Prepared, C::Error> {
+    pub fn prepare<C: Compiler<Op = O>>(
+        &mut self,
+        compiler: &mut C,
+        text: &TextLayouts,
+    ) -> Result<Prepared, C::Error> {
         let count;
         let pictures;
         if self.rebuild
             && let Some(lowered) = &mut self.lowered
         {
-            lowered.refill(self.list.display_list(), compiler)?;
+            lowered.refill(self.list.display_list(), compiler, text)?;
             self.emissions
                 .resize_with(lowered.ops.len(), Realization::default);
             self.dirty = Dirty::default();
@@ -566,7 +610,9 @@ impl<O: Operation, E> Content<O, E> {
                     pictures: lowered.pictures,
                 });
             }
-            if let Some(patches) = lowered.patch(self.list.display_list(), &self.dirty, compiler)? {
+            if let Some(patches) =
+                lowered.patch(self.list.display_list(), &self.dirty, compiler, text)?
+            {
                 for range in patches {
                     for emission in &mut self.emissions[range] {
                         emission.valid = false;
@@ -582,7 +628,7 @@ impl<O: Operation, E> Content<O, E> {
             }
             pictures = lowered.pictures;
         } else {
-            let lowered = Lowered::full(self.list.display_list(), compiler)?;
+            let lowered = Lowered::full(self.list.display_list(), compiler, text)?;
             self.emissions
                 .resize_with(lowered.ops.len(), Realization::default);
             pictures = lowered.pictures;
@@ -2853,8 +2899,11 @@ mod tests {
 
 #[cfg(test)]
 mod content_tests {
-    use super::{Content, Operation};
-    use crate::Draw;
+    use kurbo::{Affine, Rect};
+
+    use super::{Command, Compiler, Content, Operation, TextLayouts, append, append_with};
+    use crate::shape::ShapeData;
+    use crate::{Draw, Group};
 
     struct TestOp;
 
@@ -2866,6 +2915,106 @@ mod content_tests {
         fn same_structure(&self, _other: &Self) -> bool {
             true
         }
+    }
+
+    /// A compiler that keeps each drawn command's fill rectangle and the
+    /// ambient transform it was drawn under.
+    struct Collect;
+
+    impl Compiler for Collect {
+        type Op = (Affine, Rect);
+        type Error = ();
+
+        fn draw(
+            &mut self,
+            command: &Command,
+            ambient: Affine,
+            ops: &mut Vec<Self::Op>,
+        ) -> Result<(), ()> {
+            let Command::Fill {
+                shape: ShapeData::Rect(rect),
+                ..
+            } = command
+            else {
+                panic!("unexpected command {command:?}")
+            };
+            ops.push((ambient, *rect));
+            Ok(())
+        }
+
+        fn clip(&mut self, _: &ShapeData, _: Affine) -> Result<Self::Op, ()> {
+            unreachable!("no clips")
+        }
+
+        fn group(&mut self, _: &Group, _: bool) -> Result<Option<Self::Op>, ()> {
+            unreachable!("no groups")
+        }
+
+        fn end(&mut self) -> Self::Op {
+            unreachable!("no scopes")
+        }
+    }
+
+    impl Operation for (Affine, Rect) {
+        fn end_mut(&mut self) -> Option<&mut u32> {
+            None
+        }
+
+        fn same_structure(&self, _: &Self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn a_text_command_lowers_as_its_expansion_under_its_transform() {
+        use crate::text::{TextCommand, TextLayoutData};
+        use crate::{Draw as _, Fixed, TextLayoutId, WorkingColor};
+
+        let id = TextLayoutId::new(5);
+        let rect = Rect::new(1., 2., 3., 4.);
+        let mut layouts = TextLayouts::default();
+        layouts.add(
+            id,
+            TextLayoutData::new(
+                vec![TextCommand::Fill(rect, WorkingColor::WHITE.into())],
+                None,
+                &[],
+            ),
+        );
+        let list = crate::Picture::record(|c| {
+            c.transform(Fixed(Affine::translate((10., 20.))), |c| {
+                c.text(id, Fixed(Affine::scale(2.)));
+            });
+        });
+        let mut ops = Vec::new();
+        append_with(
+            list.display_list(),
+            Affine::IDENTITY,
+            &mut Collect,
+            &layouts,
+            &mut ops,
+        )
+        .expect("lowers");
+        assert_eq!(
+            ops,
+            [(Affine::translate((10., 20.)) * Affine::scale(2.), rect)]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "not registered")]
+    fn a_text_command_naming_an_unregistered_layout_panics() {
+        use crate::{Draw as _, Fixed, TextLayoutId};
+
+        let list = crate::Picture::record(|c| {
+            c.text(TextLayoutId::new(8), Fixed(Affine::IDENTITY));
+        });
+        let _ = append(
+            list.display_list(),
+            Affine::IDENTITY,
+            &mut Collect,
+            &mut Vec::new(),
+        );
     }
 
     #[test]

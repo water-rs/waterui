@@ -15,6 +15,7 @@ mod layers;
 mod plan;
 mod replay;
 mod resources;
+mod text;
 mod tree;
 
 use waterui_graphics::canvas::CanvasView;

@@ -170,8 +170,14 @@ fn item_extent(commands: &[Command], index: usize, registry: &Registry) -> Optio
             Composite::Hidden => None,
             Composite::Normal | Composite::Filter(_) | Composite::Backdrop => inside(*end),
         },
-        Command::Text { .. } => {
-            panic!("a canvas records no text layout until semantic text exists (#4053)")
+        Command::Text {
+            layout,
+            transform,
+            paint,
+        } => {
+            let text = registry.text(*layout, paint.as_ref());
+            let inner = text.display_list().commands();
+            extent(inner, 0..inner.len(), registry).map(|r| transform.transform_rect_bbox(r))
         }
         Command::End => unreachable!("an item is never a scope's End"),
     }
@@ -255,8 +261,17 @@ fn draw_item(target: Target<'_>, commands: &[Command], index: usize) {
             CGContext::end_transparency_layer(context);
             CGContext::restore_g_state(context);
         }
-        Command::Text { .. } => {
-            panic!("a canvas records no text layout until semantic text exists (#4053)")
+        Command::Text {
+            layout,
+            transform,
+            paint,
+        } => {
+            let text = target.registry.text(*layout, paint.as_ref());
+            let inner = text.display_list().commands();
+            CGContext::save_g_state(context);
+            CGContext::concat_ctm(context, cg::transform(*transform));
+            draw(target, inner, 0..inner.len());
+            CGContext::restore_g_state(context);
         }
         Command::End => unreachable!("an item is never a scope's End"),
     }

@@ -1216,8 +1216,10 @@ mod front {
         },
         /// A text layer's source — a `draw_text` draw of the parley layout.
         Text {
-            /// The layout, its fonts registered.
-            layout: cherenkov::TextLayout,
+            /// The layout, its fonts registered. Boxed so the layout's
+            /// fields never decide how `Op`'s discriminant is encoded: the
+            /// record loops decode it once per op on every scene.
+            layout: Box<cherenkov::TextLayout>,
             /// Where the layout's top-left corner lands.
             origin: kurbo::Point,
         },
@@ -1535,10 +1537,10 @@ mod front {
                     ))
                 })
         };
-        let layout = cherenkov::TextLayout::new(layout, fonts_of)
+        let layout = cherenkov::TextLayout::new(&layout, cherenkov::Paint::clone, fonts_of)
             .map_err(|e| BenchError::Engine(format!("{}: text layout: {e}", front.engine)))?;
         Ok(Op::Text {
-            layout,
+            layout: Box::new(layout),
             origin: source.origin,
         })
     }

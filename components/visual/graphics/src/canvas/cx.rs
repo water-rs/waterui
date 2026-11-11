@@ -15,6 +15,7 @@ use nami::watcher::{BoxWatcherGuard, Context};
 use nami::{Computed, Signal, SignalExt as _};
 use waterui_core::Environment;
 use waterui_core::layout::{Affine2, Rect, Size};
+use waterui_text::styled::StyledStr;
 
 use crate::canvas::cell::SignalCell;
 use crate::canvas::drawing::Drawing;
@@ -22,6 +23,7 @@ use crate::canvas::geometry::Shape;
 use crate::canvas::operand::Operand;
 use crate::canvas::paint::{IntoPaint, Layer, Paint, Sampling, Shadow, StrokeStyle};
 use crate::canvas::resource::{GlyphRun, ImageSource};
+use crate::canvas::text::TextPlacement;
 use crate::color::{Color, WorkingColor};
 use crate::draw::{Recorder, Region, ShapeData};
 use crate::scene_view::SceneInvalidator;
@@ -191,6 +193,10 @@ pub enum Node {
     Glyphs {
         run: Computed<GlyphRun>,
         paint: Computed<Paint>,
+    },
+    Text {
+        text: Computed<StyledStr>,
+        placement: Computed<TextPlacement>,
     },
     Draw {
         drawing: Drawing,
@@ -417,6 +423,33 @@ impl Cx {
             paint: self.paint(paint),
         };
         self.isolate(node);
+    }
+
+    /// Draws styled `text` anchored by `placement`.
+    ///
+    /// The target lays the text out with its own text stack, so it matches
+    /// every other `Text` on the screen, and resolves its colours, locale
+    /// and fonts in the canvas's environment. The canvas never measures: the
+    /// [`placement`](TextPlacement) names the anchor, the alignment of the
+    /// lines and the edge of the box the anchor sits at, and the width
+    /// lines break at. Text whose box layout must know stays a `Text` view
+    /// over the canvas.
+    ///
+    /// A signal of text lays it out again and swaps the layout, and so does
+    /// a signal of placements whose alignment or width changed; one whose
+    /// origin alone changed moves the laid-out text, animated when the
+    /// change carries an animation.
+    pub fn text(
+        &mut self,
+        text: impl Into<Operand<StyledStr>>,
+        placement: impl Into<Operand<TextPlacement>>,
+    ) {
+        // Its own part: a new text is a new layout, which records this one
+        // command again.
+        self.isolate(Node::Text {
+            text: text.into().into_computed(),
+            placement: placement.into().into_computed(),
+        });
     }
 
     /// Draws `drawing` under `transform`.

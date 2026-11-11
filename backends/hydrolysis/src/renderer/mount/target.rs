@@ -2,6 +2,7 @@
 //! a node's layers need from the engine beyond recorded content.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use cherenkov_record::{FilterId, Layer, MaterialRegistry, Transaction};
 use rustc_hash::FxHashMap;
@@ -18,6 +19,7 @@ use crate::renderer::mount::backdrop::{
     MaterialBackdropGroups, MaterialMembership, MemberBind,
 };
 use crate::renderer::recording::SceneResources;
+use crate::text::TextService;
 
 /// A layer target: recorded runs land through `Transaction`, and the
 /// producer, filter and backdrop installs through the target's host.
@@ -41,6 +43,15 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
     const BACKDROP_SHADERS: bool;
 
     fn resources(host: &Self::Host) -> &Rc<SceneResources>;
+
+    /// Installs, on the host's shared resources, the registry that lays out
+    /// the text a canvas names through `text`, the session's text service.
+    /// A commit calls it ahead of every mount, so it installs once per
+    /// service. A target that does not draw canvas text leaves the default
+    /// no-op: a canvas that names text then reports the refusal.
+    fn install_text(host: &Self::Host, text: &Arc<TextService<E>>) {
+        let _ = (host, text);
+    }
 
     /// Binds hosted content at `size` on `layer`; returns whether this call
     /// (re)bound it. Only a target with system-compositor planes hosts
@@ -219,4 +230,4 @@ mod gpu;
 #[cfg(hydrolysis_gpu_painter)]
 pub use gpu::CherenkovHost;
 #[cfg(all(test, hydrolysis_gpu_painter))]
-pub use gpu::{attach_material_shaders, chrome_sample, chrome_spec};
+pub use gpu::{attach_material_shaders, chrome_sample, chrome_spec, install_gpu_text};

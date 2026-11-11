@@ -518,6 +518,156 @@ fn size_follows_the_box() {
     assert_eq!(seen.get(), Size::new(100.0, 50.0));
 }
 
+mod text {
+    use alloc::rc::Rc;
+    use core::cell::{Cell, RefCell};
+
+    use nami::binding;
+    use waterui_core::layout::{HorizontalAlignment, Point, Size};
+    use waterui_text::styled::StyledStr;
+
+    use super::{Canvas, ContentChange, Operand, counting_invalidator, mount};
+    use crate::canvas::TextPlacement;
+    use crate::draw::{Content, LayoutSize, ResourceError, TextLayoutId};
+    use crate::resources::{Handle, ResourceHandle, TextBackend, TextRegistration, TextRequest};
+    use crate::scene::resources::tests::null_resources;
+    use crate::scene_view::{SceneContent as _, SceneFrame, SceneUpdate};
+
+    /// A registration naming a layout the test made up.
+    struct Layout(TextLayoutId);
+
+    impl ResourceHandle for Layout {
+        type Id = TextLayoutId;
+
+        fn id(&self) -> TextLayoutId {
+            self.0
+        }
+    }
+
+    /// A text registry that lays every text out as a 40 by 10 box and
+    /// remembers what it was asked.
+    #[derive(Default)]
+    struct Fake {
+        asked: RefCell<Vec<(HorizontalAlignment, Option<f32>, String)>>,
+        next: Cell<u64>,
+    }
+
+    impl TextBackend for Fake {
+        fn register_text(
+            &self,
+            request: TextRequest,
+        ) -> Result<Option<TextRegistration>, ResourceError> {
+            let text = request.text().to_plain().to_string();
+            let placement = request.placement();
+            self.asked
+                .borrow_mut()
+                .push((placement.alignment(), placement.get_width(), text));
+            self.next.set(self.next.get() + 1);
+            Ok(Some(TextRegistration::new(
+                Handle::new(Layout(TextLayoutId::new(self.next.get()))),
+                Size::new(40.0, 10.0),
+            )))
+        }
+    }
+
+    fn text(string: &str) -> StyledStr {
+        StyledStr::plain(String::from(string))
+    }
+
+    #[test]
+    fn a_moved_origin_moves_the_laid_out_text_without_laying_it_out_again() {
+        let placement =
+            binding(TextPlacement::at(Point::new(50.0, 5.0)).aligned(HorizontalAlignment::Center));
+        let mut scene = mount(Canvas::new({
+            let placement = placement.clone();
+            move |cx| cx.text(text("hello"), placement)
+        }));
+        let invalidations = counting_invalidator(&mut scene);
+        let (resources, _events) = null_resources();
+        let fake = Rc::new(Fake::default());
+        resources.set_text(Rc::clone(&fake));
+        let mut names = resources.recording();
+        let mut content = Content::record(&LayoutSize::new(), |recorder| {
+            scene.build_scene(recorder, &mut names, 100.0, 50.0);
+        });
+        let held = names.finish();
+        let _ = content.take_change();
+
+        placement
+            .set(TextPlacement::at(Point::new(70.0, 8.0)).aligned(HorizontalAlignment::Center));
+        let Some(ContentChange::Update(updates)) = content.take_change() else {
+            panic!("a moved origin updates the transform in place");
+        };
+        let Operand::Transform(moved) = updates[0].value else {
+            panic!("the text's transform");
+        };
+        // Centre-aligned: the 40 point box's centre sits on the origin.
+        assert_eq!((moved.translation().x, moved.translation().y), (50.0, 8.0));
+        assert_eq!(fake.asked.borrow().len(), 1, "one layout, never redone");
+        assert_eq!(invalidations.get(), 0);
+        drop(held);
+    }
+
+    #[test]
+    fn a_new_width_or_text_lays_the_text_out_again() {
+        let words = binding(text("one"));
+        let placement = binding(TextPlacement::at(Point::new(0.0, 0.0)));
+        let mut scene = mount(Canvas::new({
+            let (words, placement) = (words.clone(), placement.clone());
+            move |cx| cx.text(words, placement)
+        }));
+        let invalidations = counting_invalidator(&mut scene);
+        let (resources, _events) = null_resources();
+        let fake = Rc::new(Fake::default());
+        resources.set_text(Rc::clone(&fake));
+        let mut names = resources.recording();
+        let _content = Content::record(&LayoutSize::new(), |recorder| {
+            scene.build_scene(recorder, &mut names, 100.0, 50.0);
+        });
+        let _held = names.finish();
+        let frame = || SceneFrame {
+            width: 100.0,
+            height: 50.0,
+            time: crate::draw::Instant::now(),
+        };
+        // The first frame mounts the canvas's clock; the recording stays.
+        let _ = scene.update_scene(&resources, frame());
+
+        placement.set(TextPlacement::at(Point::new(0.0, 0.0)).width(24.0));
+        assert_eq!(invalidations.get(), 1, "a new width asks for a pass");
+        assert_eq!(
+            scene.update_scene(&resources, frame()),
+            SceneUpdate::Retained { again: false }
+        );
+        words.set(text("two"));
+        assert_eq!(invalidations.get(), 2, "a new text asks for a pass");
+        let _ = scene.update_scene(&resources, frame());
+
+        let asked = fake.asked.borrow();
+        let seen: Vec<_> = asked
+            .iter()
+            .map(|(_, width, text)| (*width, text.as_str()))
+            .collect();
+        assert_eq!(
+            seen,
+            [(None, "one"), (Some(24.0), "one"), (Some(24.0), "two")]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "canvas text was refused")]
+    fn a_target_without_a_text_stack_refuses_canvas_text() {
+        let mut scene = mount(Canvas::new(|cx| {
+            cx.text(text("hello"), TextPlacement::at(Point::new(0.0, 0.0)));
+        }));
+        let (resources, _events) = null_resources();
+        let mut names = resources.recording();
+        let _ = Content::record(&LayoutSize::new(), |recorder| {
+            scene.build_scene(recorder, &mut names, 100.0, 50.0);
+        });
+    }
+}
+
 #[test]
 fn canvas_size_before_mounting_reports_the_built_size() {
     let size = CanvasSize::new();

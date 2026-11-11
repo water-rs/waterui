@@ -3948,7 +3948,9 @@ mod tests {
             &mut raster_scratch,
             Some(crate::render::gpu_cov::CoverageLimit::new(&device.limits())),
         );
-        lowering.prepare(&mut caches, &glyphs).expect("prepared");
+        lowering
+            .prepare(&mut caches, &glyphs, &cherenkov::TextLayouts::default())
+            .expect("prepared");
         let plan = crate::render::planes::Plan {
             planes: Vec::new(),
             rejected: Vec::new(),
