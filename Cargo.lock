@@ -2165,7 +2165,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -4724,7 +4724,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#fe30ff333f0e3f2f5befcf41356c8c526c36330f"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#c44a702c9a9ee8a9e4e5b1878c3d16e39accff9e"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -12766,11 +12766,10 @@ dependencies = [
 [[package]]
 name = "waterui-barcode"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/barcode?branch=dev#6a33701aedc1ca3533dc6bd7c4594a5ed1823f2a"
+source = "git+https://github.com/water-rs/barcode?branch=dev#cd32426e732eb4d7075e0006fa4b49ac30928e24"
 dependencies = [
  "barcoders",
  "fast_qr",
- "kurbo",
  "nami",
  "thiserror 2.0.21",
  "waterui-core",
@@ -12780,7 +12779,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-cef"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=dev#b8f4a596a954f19c387bbec5f2795ee21a14a9d8"
+source = "git+https://github.com/water-rs/browsers?branch=dev#0e7ae6aeaa0d4c9caa5e79109952d79ef1b88624"
 dependencies = [
  "async-channel",
  "base64 0.23.1",
@@ -12820,7 +12819,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-wpe"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=dev#b8f4a596a954f19c387bbec5f2795ee21a14a9d8"
+source = "git+https://github.com/water-rs/browsers?branch=dev#0e7ae6aeaa0d4c9caa5e79109952d79ef1b88624"
 dependencies = [
  "cookie",
  "executor-core",
@@ -12846,28 +12845,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "waterui-canvas"
-version = "0.2.0"
-source = "git+https://github.com/water-rs/canvas?branch=dev#60b0ac8165a13351b7abe888d7aa7aef35f993c4"
-dependencies = [
- "image",
- "kurbo",
- "nami",
- "parley 0.11.1",
- "tracing",
- "waterui-core",
- "waterui-graphics",
-]
-
-[[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?branch=dev#c4c0dcb5bfc6ec97257b93bab6e0f8776dc9f951"
+source = "git+https://github.com/water-rs/chart?branch=dev#313e0ad99e1c1fd99f19a7f97f56ed97072cafe5"
 dependencies = [
  "bytemuck",
  "nami",
  "num-traits",
- "waterui-canvas",
  "waterui-core",
  "waterui-graphics",
  "waterui-layout",
@@ -13200,7 +13184,7 @@ dependencies = [
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?branch=dev#6a725427a4151b33cc7c2a817bfb74312c2c58df"
+source = "git+https://github.com/water-rs/image?branch=dev#338c20da3ce03d20186e947de41e1443d33d7673"
 dependencies = [
  "half",
  "image",
@@ -13373,9 +13357,12 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?branch=dev#34d4f6606a7dd143083e87a397df6d3584750a21"
+source = "git+https://github.com/water-rs/map-gpu?branch=dev#4a3f25f3955530f87086200d46ed3ba9d713daf3"
 dependencies = [
+ "arc-swap",
  "blocking",
+ "cherenkov",
+ "cherenkov-gpu",
  "executor-core",
  "futures",
  "futures-lite",
@@ -13408,7 +13395,7 @@ dependencies = [
 [[package]]
 name = "waterui-math"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/math?branch=dev#ec88928076fa1e1e4da9613e6224dc0a921a3ca9"
+source = "git+https://github.com/water-rs/math?branch=dev#4f4e006ebd8015a721cc7579b768e87e3b581a23"
 dependencies = [
  "kurbo",
  "mathcat",
@@ -13511,7 +13498,7 @@ dependencies = [
 [[package]]
 name = "waterui-particle"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/particle?branch=dev#1aa8a4d33121810613ac3c66e2304ed15c315b46"
+source = "git+https://github.com/water-rs/particle?branch=dev#804d940be1d050c10923a83daa94977e82a65408"
 dependencies = [
  "bytemuck",
  "encase",
@@ -13545,7 +13532,7 @@ dependencies = [
 [[package]]
 name = "waterui-svg"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/svg?rev=16f99e021f735d0b1b31c95552b074e953d56418#16f99e021f735d0b1b31c95552b074e953d56418"
+source = "git+https://github.com/water-rs/svg?branch=dev#427884dcfe913ad20438bcf941c71934cc89eea4"
 dependencies = [
  "suiteki",
  "tracing",
@@ -13710,7 +13697,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=dev#e78cd6eb90ea2a5f175f22e498e00a5985063828"
+source = "git+https://github.com/water-rs/video-gpu?branch=dev#32a950955e29e70aba57348ab531fa21f6408b29"
 dependencies = [
  "async-channel",
  "executor-core",

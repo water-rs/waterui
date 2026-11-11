@@ -527,9 +527,9 @@ mod text {
     use waterui_text::styled::StyledStr;
 
     use super::{Canvas, ContentChange, Operand, counting_invalidator, mount};
+    use crate::backend::{Handle, ResourceHandle, TextBackend, TextRegistration, TextRequest};
     use crate::canvas::TextPlacement;
     use crate::draw::{Content, LayoutSize, ResourceError, TextLayoutId};
-    use crate::resources::{Handle, ResourceHandle, TextBackend, TextRegistration, TextRequest};
     use crate::scene::resources::tests::null_resources;
     use crate::scene_view::{SceneContent as _, SceneFrame, SceneUpdate};
 

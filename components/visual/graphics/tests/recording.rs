@@ -1,8 +1,8 @@
 //! The recording boundary's contract: constant and signal operands, engine
 //! resource handles, and what a rasterizer draws for each.
 //!
-//! These tests draw into `waterui_graphics::draw::Recorder`, mount the result on a real
-//! `cherenkov_cpu` engine through [`waterui_graphics::raster::Rasterizer`]
+//! These tests draw into `waterui_graphics::backend::draw::Recorder`, mount the result on a real
+//! `cherenkov_cpu` engine through [`waterui_graphics::backend::raster::Rasterizer`]
 //! and read pixels back, because the signature is only half the contract —
 //! the other half is that what was recorded is what the engine draws.
 #![cfg(feature = "cpu")]
@@ -12,23 +12,22 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use nami::{Binding, SignalExt};
-use waterui_graphics::draw::kurbo::{Affine, Rect, Shape};
-use waterui_graphics::draw::{
-    Content, ContentChange, Draw, Glyph, GlyphRun, GlyphStyle, ImageId, LayoutSize, Recorder,
-    Sampling, StaticRecorder, WorkingColor,
+use waterui_graphics::backend::draw::kurbo::{Affine, Rect, Shape};
+use waterui_graphics::backend::draw::{
+    Color, Content, ContentChange, Draw, Glyph, GlyphRun, GlyphStyle, ImageId, LayoutSize,
+    Recorder, Sampling, Srgb, StaticRecorder, Stroke, WorkingColor,
 };
-use waterui_graphics::raster::{Rasterizer, RgbaBitmap};
-use waterui_graphics::{FontSource, ImageColorSpace, ImageData, Rgba8};
-use waterui_graphics::{
-    Picture, PictureSource, RecordingResources, Registered, SceneContent, SceneView,
+use waterui_graphics::backend::raster::{Rasterizer, RgbaBitmap};
+use waterui_graphics::backend::{
+    FontSource, ImageColorSpace, ImageData, Picture, PictureSource, RecordingResources, Registered,
+    Rgba8, SceneContent, SceneInvalidator, SceneView, invalidate_on_change,
 };
 
 /// sRGB red as the engine's working colour — `WorkingColor::new` names
 /// Display P3 components directly, which sRGB cannot hold, so pixel
 /// expectations come from converting a named sRGB colour.
 fn srgb(red: f32, green: f32, blue: f32) -> WorkingColor {
-    waterui_graphics::draw::Color::<waterui_graphics::draw::Srgb>::new([red, green, blue, 1.0])
-        .into()
+    Color::<Srgb>::new([red, green, blue, 1.0]).into()
 }
 
 fn filled_square(recorder: &mut Recorder, color: WorkingColor) {
@@ -51,7 +50,7 @@ fn a_fill_is_one_command_in_the_recorded_content() {
         filled_square(recorder, srgb(1.0, 0.0, 0.0));
         recorder.stroke(
             Rect::new(0.0, 0.0, 4.0, 4.0).to_path(0.05),
-            waterui_graphics::draw::Stroke::new(1.0),
+            Stroke::new(1.0),
             srgb(0.0, 0.0, 1.0),
         );
     });
@@ -359,10 +358,10 @@ fn a_signal_operand_updates_the_content_without_recording_again() {
 fn an_invalidator_fires_when_a_bound_signal_changes() {
     let flag = Rc::new(Cell::new(false));
     let asked = Rc::clone(&flag);
-    let invalidator: waterui_graphics::SceneInvalidator = Rc::new(move || asked.set(true));
+    let invalidator: SceneInvalidator = Rc::new(move || asked.set(true));
 
     let color = Binding::container(srgb(1.0, 0.0, 0.0));
-    let _guard = waterui_graphics::invalidate_on_change(&invalidator, &color.computed());
+    let _guard = invalidate_on_change(&invalidator, &color.computed());
     color.set(srgb(0.0, 0.0, 1.0));
     assert!(
         flag.get(),
