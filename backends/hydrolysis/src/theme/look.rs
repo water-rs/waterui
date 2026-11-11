@@ -450,15 +450,15 @@ impl<T: 'static, V: 'static> Driven<T, V> {
     /// same motion.
     #[cfg(hydrolysis_runtime)]
     ///
-    /// # Panics
-    ///
-    /// Panics on a [repeating](Self::repeating) value: its track holds
-    /// values of the source type.
+    /// A [repeating](Self::repeating) value's track holds values of the
+    /// source type, so mapping one is the theme's contract violation: it is
+    /// reported and the mapped value runs without the track.
     pub(crate) fn map<U: 'static>(&self, f: impl Fn(T) -> U + 'static) -> Driven<U, V> {
-        assert!(
-            self.repeating.is_none(),
-            "a repeating value cannot be mapped: its keyframes hold the source type"
-        );
+        if self.repeating.is_some() {
+            waterui_core::contract_violation!(
+                "a repeating value cannot be mapped: its keyframes hold the source type; the mapped value runs without the repeating track"
+            );
+        }
         let target = Rc::clone(&self.target);
         Driven {
             target: Rc::new(move |inputs| f(target(inputs))),

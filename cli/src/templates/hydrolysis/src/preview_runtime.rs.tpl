@@ -87,6 +87,10 @@ fn new_runtime(width: f32, height: f32, ledger: &ContentLedger) -> HeadlessRunti
         // resolves the way it does under `water run`.
         FontFamilyResolution::Lenient,
     )
+    .unwrap_or_else(|error| match std::error::Error::source(&error) {
+        Some(source) => panic!("hydrolysis preview: {error}: {source}"),
+        None => panic!("hydrolysis preview: {error}"),
+    })
     .with_scale_factor(PREVIEW_SCALE_FACTOR)
 }
 

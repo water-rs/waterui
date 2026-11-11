@@ -116,7 +116,7 @@ fn secondary_click(x: f32, y: f32) -> [InputEvent; 2] {
 }
 
 fn runtime_with(view: impl View) -> HeadlessRuntime {
-    runtime_with_on(view, crate::platform::OffscreenGpuContext::new_blocking())
+    runtime_with_on(view, crate::platform::OffscreenGpuContext::for_tests())
 }
 
 fn runtime_with_on(view: impl View, gpu: crate::platform::OffscreenGpuContext) -> HeadlessRuntime {
@@ -740,7 +740,7 @@ fn live_colour_updates_without_layout_or_recording() {
 fn short_text_signal_repaints_only_its_changed_region() {
     let value = Binding::container(10u32);
     let label = value.clone();
-    let (gpu, diagnostics, _state) = super::diagnostic_gpu();
+    let (gpu, diagnostics) = super::diagnostic_gpu();
     let mut runtime = runtime_with_on(
         vstack((
             text("Unchanged heading"),

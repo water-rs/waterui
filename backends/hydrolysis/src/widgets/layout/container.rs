@@ -9,6 +9,7 @@ use nami::Signal;
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::views::Views;
+use waterui_core::contract_violation;
 use waterui_core::layout::{
     LayoutError, PlacementInput, ProposalSize, Rect as LayoutRect, ResolvedExtent,
     Size as LayoutSize, SubView,
@@ -25,12 +26,35 @@ fn materialize_all(snapshot: &AnyViewsSnapshot<AnyView>, env: &Environment) -> V
     // source mid-pass cannot shift the membership the remaining indices read.
     let mut views = Vec::with_capacity(snapshot.len());
     for index in snapshot.range() {
-        let view = snapshot.get_view(index).unwrap_or_else(|| {
-            panic!("LazyContainer failed to materialize child at index {index}")
-        });
+        let Some(view) = snapshot.get_view(index) else {
+            contract_violation!(
+                "LazyContainer failed to materialize child at index {index} although it is in the snapshot's range; the child is skipped"
+            );
+            continue;
+        };
         views.push(normalize_layout_view(view, env));
     }
     views
+}
+
+/// The size of the lazy collection's first item under `proposal`: the sample
+/// a virtualized stack sizes itself from. A first item the snapshot fails to
+/// materialize is a contract violation and samples as zero.
+fn first_item_size<E: crate::text::TextEngine>(
+    children: &AnyViewsSnapshot<AnyView>,
+    proposal: ProposalSize,
+    state: &mut HydroState<E>,
+    env: &Environment,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
+) -> LayoutSize {
+    let Some(view) = children.get_view(0) else {
+        contract_violation!(
+            "LazyContainer failed to materialize child at index 0 although the collection is not empty; the sample measures as zero"
+        );
+        return LayoutSize::zero();
+    };
+    let view = normalize_layout_view(view, env);
+    measure_transient_view_with_proposal(&view, proposal, state, env, theme)
 }
 
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<FixedContainer> {
@@ -93,13 +117,7 @@ fn lazy_stack_sample_size<E: crate::text::TextEngine>(
         LazyStackAxisConfig::Vertical { .. } => ProposalSize::new(cross, None),
         LazyStackAxisConfig::Horizontal { .. } => ProposalSize::new(None, cross),
     };
-    let sample = children
-        .get_view(0)
-        .map(|view| normalize_layout_view(view, env))
-        .map_or_else(
-            || panic!("LazyContainer failed to materialize child at index 0"),
-            |view| measure_transient_view_with_proposal(&view, item_proposal, state, env, theme),
-        );
+    let sample = first_item_size(&children, item_proposal, state, env, theme);
     let count = crate::num_cast::usize_as_f64(child_count);
     // The sampled extent is the membership's intrinsic ideal; a finite
     // main-axis offer caps it (the stack virtualizes onto the offered
@@ -112,13 +130,7 @@ fn lazy_stack_sample_size<E: crate::text::TextEngine>(
             LazyStackAxisConfig::Vertical { .. } => ProposalSize::new(cross, Some(0.0)),
             LazyStackAxisConfig::Horizontal { .. } => ProposalSize::new(Some(0.0), cross),
         };
-        children
-            .get_view(0)
-            .map(|view| normalize_layout_view(view, env))
-            .map_or_else(
-                || panic!("LazyContainer failed to materialize child at index 0"),
-                |view| measure_transient_view_with_proposal(&view, min_proposal, state, env, theme),
-            )
+        first_item_size(&children, min_proposal, state, env, theme)
     });
     let cap = |extent: f64, floor: f64| match finite_main {
         Some(offer) => extent.min(f64::from(offer)).max(floor),

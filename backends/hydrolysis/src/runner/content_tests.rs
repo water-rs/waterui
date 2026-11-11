@@ -247,7 +247,12 @@ fn a_capture_resolves_a_family_the_installed_collection_carries() {
 /// as the capture's was before water-rs/waterui#1963, resolves the family
 /// and renders instead.
 #[test]
-#[should_panic(expected = "is neither installed on this host nor provided by a declared font file")]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(
+        expected = "is neither installed on this host nor provided by a declared font file"
+    )
+)]
 fn a_capture_shapes_only_against_the_installed_collection() {
     use waterui::prelude::text;
     use waterui_text::font::Font;
@@ -264,13 +269,17 @@ fn a_capture_shapes_only_against_the_installed_collection() {
         .to_owned();
 
     let view = text("probe").font(Font::default().family(host_family));
-    let _ = Capture::start_in(
+    // A debug build panics on the uninstalled family. A release build reports
+    // it and the shape falls through to the next family, so the capture
+    // still renders.
+    Capture::start_in(
         AnyView::new(view),
         Duration::from_secs(30),
         env,
         FontFamilyResolution::Strict,
     )
-    .finish();
+    .finish()
+    .expect("a release build shapes the uninstalled family through the next family");
 }
 
 #[test]

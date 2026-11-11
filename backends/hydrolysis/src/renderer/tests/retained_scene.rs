@@ -160,7 +160,7 @@ fn run_scenario(
         let value = value.clone();
         AnyViewBuilder::<AnyView>::new(move || make_view(&value))
     };
-    let (gpu, diagnostics, _state) = super::diagnostic_gpu();
+    let (gpu, diagnostics) = super::diagnostic_gpu();
     let mut runtime = HeadlessRuntime::new_for_tests_on_context(
         gpu,
         pumped_test_environment(),
@@ -1427,10 +1427,14 @@ fn pixel_at(snapshot: &crate::runner::HeadlessSnapshot, x: usize, y: usize) -> [
 }
 
 /// A `.transition(...)` no structural site swaps — here the window root —
-/// fails fast instead of drawing through: it has no clock to run on.
+/// is reported: it has no clock to run on, so the content is drawn without
+/// the transition.
 #[test]
-#[should_panic(expected = "structural transition owner")]
-fn transition_outside_a_structural_site_panics() {
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "structural transition owner")
+)]
+fn transition_outside_a_structural_site_is_reported_and_drawn_without_it() {
     let builder = AnyViewBuilder::<AnyView>::new(|| {
         AnyView::new(
             ().size(80.0, 40.0)
@@ -1458,12 +1462,12 @@ impl waterui_core::transition::Transition for CaptureOnlyTransition {
     }
 }
 
-/// The removal event on a capture-requiring spec panics where the ghost
-/// starts — the capture overlay is water-rs/waterui#1388, never a silent
-/// fallback.
+/// The removal event on a capture-requiring spec is reported where the
+/// ghost starts — the capture overlay is water-rs/waterui#1388 — and the
+/// removal runs without it.
 #[test]
-#[should_panic(expected = "pixel-capture transitions")]
-fn pixel_transition_on_a_collection_item_panics() {
+#[cfg_attr(debug_assertions, should_panic(expected = "pixel-capture transitions"))]
+fn pixel_transition_on_a_collection_item_is_reported_and_runs_without_the_overlay() {
     let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
     let builder = {
         let list = list.clone();

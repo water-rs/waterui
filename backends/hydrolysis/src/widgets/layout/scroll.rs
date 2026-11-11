@@ -9,6 +9,8 @@ use accesskit::{
 use std::rc::Rc;
 use waterui_core::Environment;
 use waterui_core::Native;
+#[cfg(feature = "accessibility")]
+use waterui_core::contract_violation;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize};
 use waterui_layout::scroll::{Axis as ScrollAxis, ScrollView};
 
@@ -94,7 +96,9 @@ pub fn register_scroll_accessibility_node<E: crate::text::TextEngine>(
             node.add_action(AccessibilityAction::ScrollUp);
             node.add_action(AccessibilityAction::ScrollDown);
         }
-        _ => panic!("scroll axis variant is not supported by hydrolysis"),
+        axis => contract_violation!(
+            "scroll axis variant {axis:?} is not supported by hydrolysis; the node exposes no scroll actions"
+        ),
     }
     match bounds {
         Some(bounds) => renderer.register_accessibility_node(

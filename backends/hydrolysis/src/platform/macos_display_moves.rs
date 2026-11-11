@@ -19,6 +19,7 @@ use objc2::runtime::{AnyObject, NSObjectProtocol};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, sel};
 use objc2_app_kit::NSWindowDidChangeScreenNotification;
 use objc2_foundation::{NSNotification, NSNotificationCenter, NSObject};
+use waterui_core::contract_violation;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window as NativeWindow;
 
@@ -83,21 +84,37 @@ impl core::fmt::Debug for DisplayMoves {
 impl DisplayMoves {
     /// Attaches an observer to the window's
     /// `NSWindowDidChangeScreenNotification`.
-    pub(super) fn attach(window: Arc<NativeWindow>, flag: DisplayMoveFlag) -> Self {
-        let mtm = MainThreadMarker::new()
-            .expect("hydrolysis display observer must be attached on the main thread");
-        let handle = window
-            .window_handle()
-            .expect("hydrolysis display observer requires a live window handle");
+    ///
+    /// `None` when the window exposes no `NSWindow` to observe: the failure
+    /// is reported and the window announces no display moves.
+    pub(super) fn attach(window: Arc<NativeWindow>, flag: DisplayMoveFlag) -> Option<Self> {
+        let mtm = MainThreadMarker::new().expect(
+            "the winit event loop exists only on the main thread, and windows are created inside it",
+        );
+        let handle = match window.window_handle() {
+            Ok(handle) => handle,
+            Err(error) => {
+                tracing::error!(
+                    "hydrolysis display observer found no window handle: {error}; display moves are not announced"
+                );
+                return None;
+            }
+        };
         let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-            panic!("hydrolysis display observer expected an AppKit raw window handle");
+            contract_violation!(
+                "hydrolysis display observer expected an AppKit raw window handle; display moves are not announced"
+            );
+            return None;
         };
         // SAFETY: winit hands out the window's live `NSView` pointer, and
         // the borrow does not outlive the window handle it came from.
         let view = unsafe { appkit.ns_view.cast::<objc2_app_kit::NSView>().as_ref() };
-        let ns_window = view
-            .window()
-            .expect("hydrolysis display observer requires the AppKit view's NSWindow");
+        let Some(ns_window) = view.window() else {
+            contract_violation!(
+                "hydrolysis display observer expected the AppKit view to have an NSWindow; display moves are not announced"
+            );
+            return None;
+        };
         let observer = DisplayMoveObserver::new(mtm, flag, window);
         let observer_object: &AnyObject = &observer;
         let window_object: &AnyObject = &ns_window;
@@ -114,7 +131,7 @@ impl DisplayMoves {
                 Some(window_object),
             );
         }
-        Self { observer }
+        Some(Self { observer })
     }
 }
 

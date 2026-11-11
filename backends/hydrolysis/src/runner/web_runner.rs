@@ -24,7 +24,7 @@ use wasm_bindgen::{JsCast, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
 use waterui::app::{App, AppParts};
 use waterui::window::{Window, WindowState};
-use waterui_core::Environment;
+use waterui_core::{Environment, contract_violation};
 use web_sys::Response;
 
 use crate::text::fonts::WebFonts;
@@ -35,7 +35,8 @@ use crate::renderer::{
 };
 use crate::runner::web_accessibility::WebAccessibilityBridge;
 use crate::runner::{
-    RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events, render_window,
+    RenderDiagnosticsConfig, RuntimeWindow, WindowFrame, advance_runtime, handle_input_events,
+    render_window,
 };
 use crate::text::ParleyEngine;
 use crate::time::Instant;
@@ -64,48 +65,49 @@ impl WebFontManifestEntry {
     clippy::future_not_send,
     reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
 )]
-async fn fetch_response(path: &str) -> Response {
-    let window = web_sys::window().expect("hydrolysis web font loader requires browser window");
+async fn fetch_response(path: &str) -> Result<Response, String> {
+    let window = web_sys::window()
+        .ok_or_else(|| "hydrolysis web font loader requires a browser window".to_owned())?;
     let response = JsFuture::from(window.fetch_with_str(path))
         .await
-        .unwrap_or_else(|error| panic!("hydrolysis web font fetch failed for `{path}`: {error:?}"));
+        .map_err(|error| format!("hydrolysis web font fetch failed for `{path}`: {error:?}"))?;
     let response: Response = response
         .dyn_into()
-        .unwrap_or_else(|_| panic!("hydrolysis web font fetch returned non-Response for `{path}`"));
-    assert!(
-        response.ok(),
-        "hydrolysis web font fetch failed for `{path}` with HTTP status {}",
-        response.status()
-    );
-    response
+        .map_err(|_| format!("hydrolysis web font fetch returned non-Response for `{path}`"))?;
+    if !response.ok() {
+        return Err(format!(
+            "hydrolysis web font fetch failed for `{path}` with HTTP status {}",
+            response.status()
+        ));
+    }
+    Ok(response)
 }
 
 #[expect(
     clippy::future_not_send,
     reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
 )]
-async fn fetch_bytes(path: &str) -> Vec<u8> {
-    let response = fetch_response(path).await;
-    let array_buffer = JsFuture::from(response.array_buffer().unwrap_or_else(|error| {
-        panic!("hydrolysis web font response array_buffer failed for `{path}`: {error:?}")
-    }))
-    .await
-    .unwrap_or_else(|error| {
-        panic!("hydrolysis web font array_buffer await failed for `{path}`: {error:?}")
-    });
+async fn fetch_bytes(path: &str) -> Result<Vec<u8>, String> {
+    let response = fetch_response(path).await?;
+    let buffer = response.array_buffer().map_err(|error| {
+        format!("hydrolysis web font response array_buffer failed for `{path}`: {error:?}")
+    })?;
+    let array_buffer = JsFuture::from(buffer).await.map_err(|error| {
+        format!("hydrolysis web font array_buffer await failed for `{path}`: {error:?}")
+    })?;
     let bytes = Uint8Array::new(&array_buffer);
     let mut data = vec![0_u8; bytes.length() as usize];
     bytes.copy_to(&mut data);
-    data
+    Ok(data)
 }
 
 #[expect(
     clippy::future_not_send,
     reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
 )]
-async fn fetch_text(path: &str) -> String {
-    String::from_utf8(fetch_bytes(path).await).unwrap_or_else(|error| {
-        panic!("hydrolysis web font manifest `{path}` is not valid UTF-8: {error}")
+async fn fetch_text(path: &str) -> Result<String, String> {
+    String::from_utf8(fetch_bytes(path).await?).map_err(|error| {
+        format!("hydrolysis web font manifest `{path}` is not valid UTF-8: {error}")
     })
 }
 
@@ -122,11 +124,16 @@ async fn fetch_text(path: &str) -> String {
     clippy::future_not_send,
     reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
 )]
-async fn load_web_fonts() -> (WebFonts, Vec<WebFontManifestEntry>) {
-    let manifest_text = fetch_text(WEB_FONT_MANIFEST_PATH).await;
-    let manifest: WebFontManifest = serde_json::from_str(&manifest_text).unwrap_or_else(|error| {
-        panic!("hydrolysis web font manifest parse failed for `{WEB_FONT_MANIFEST_PATH}`: {error}")
-    });
+///
+/// # Errors
+///
+/// What went wrong when the manifest or a first-frame face cannot be
+/// fetched or parsed.
+async fn load_web_fonts() -> Result<(WebFonts, Vec<WebFontManifestEntry>), String> {
+    let manifest_text = fetch_text(WEB_FONT_MANIFEST_PATH).await?;
+    let manifest: WebFontManifest = serde_json::from_str(&manifest_text).map_err(|error| {
+        format!("hydrolysis web font manifest parse failed for `{WEB_FONT_MANIFEST_PATH}`: {error}")
+    })?;
     let languages = waterui_locale::regional::current_settings()
         .preferred_languages()
         .to_vec();
@@ -145,7 +152,9 @@ async fn load_web_fonts() -> (WebFonts, Vec<WebFontManifestEntry>) {
             .iter()
             .map(|font| async move { fetch_bytes(&font.path()).await }),
     )
-    .await;
+    .await
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()?;
 
     let fonts = WebFonts::new(
         &manifest.default_family,
@@ -154,7 +163,7 @@ async fn load_web_fonts() -> (WebFonts, Vec<WebFontManifestEntry>) {
             .zip(font_files)
             .map(|(font, font_data)| (font.name.as_str(), font_data)),
     );
-    (fonts, deferred)
+    Ok((fonts, deferred))
 }
 
 /// Fetches the faces the first frame did not wait for, all at once, and
@@ -171,7 +180,13 @@ fn load_deferred_web_fonts(
         let arrived = Rc::clone(arrived);
         let wake = Rc::clone(wake);
         wasm_bindgen_futures::spawn_local(async move {
-            let font_data = fetch_bytes(&font.path()).await;
+            let font_data = match fetch_bytes(&font.path()).await {
+                Ok(font_data) => font_data,
+                Err(error) => {
+                    tracing::error!("{error}; the face `{}` is not registered", font.name);
+                    return;
+                }
+            };
             fonts.borrow_mut().register(&font.name, font_data);
             arrived.set(true);
             wake();
@@ -212,10 +227,15 @@ struct BrowserRunner {
     runtime: RuntimeWindow<BrowserWindow, crate::text::ParleyEngine>,
     runnable_queue: Rc<RefCell<VecDeque<Runnable>>>,
     accessibility_actions: Rc<RefCell<VecDeque<AccessibilityActionRequest>>>,
-    accessibility_bridge: WebAccessibilityBridge,
+    /// `None` when the browser refused the mirror's root; the page then has
+    /// no accessibility mirror.
+    accessibility_bridge: Option<WebAccessibilityBridge>,
     /// Whether the page has been told its first frame is up, which ends the
     /// launch screen the page shows until then.
     first_frame_announced: bool,
+    /// Set once the page's surface failed for good and the page reported
+    /// it: the pump runs no further frame, whatever wakes it.
+    stopped: bool,
     /// The page's fonts; the faces the first frame did not wait for register
     /// into it as they arrive.
     fonts: Rc<RefCell<WebFonts>>,
@@ -266,6 +286,9 @@ impl BrowserRunner {
         reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
     )]
     async fn frame(&mut self) -> bool {
+        if self.stopped {
+            return false;
+        }
         let _ = self.drain_local_executor_queue();
         if self.fonts_arrived.take() {
             self.runtime.renderer.fonts_changed();
@@ -299,11 +322,20 @@ impl BrowserRunner {
         if !self.runtime.is_hidden()
             && (self.runtime.mode.is_pending() || self.runtime.renderer.take_redraw_request())
         {
-            let presented = render_window(&mut self.runtime, &self.env, &mut || {
+            let frame = render_window(&mut self.runtime, &self.env, &mut || {
                 Self::drain_runnable_queue(&self.runnable_queue)
             })
             .await;
-            if presented && !self.first_frame_announced {
+            if let WindowFrame::Failed(error) = frame {
+                // The page's surface cannot render again: the page shows
+                // why in place of the app, and the pump stops.
+                let error = waterui_core::Error::from(error);
+                tracing::error!("hydrolysis web runner: {error:#}; the app stops rendering");
+                crate::platform::report_fatal_error(&format!("{error:#}"));
+                self.stopped = true;
+                return false;
+            }
+            if frame.presented() && !self.first_frame_announced {
                 self.first_frame_announced = true;
                 self.runtime.platform.announce_first_frame();
                 load_deferred_web_fonts(
@@ -314,8 +346,10 @@ impl BrowserRunner {
                 );
             }
         }
-        if let Some(update) = self.runtime.renderer.take_accessibility_tree_update() {
-            self.accessibility_bridge.update(update);
+        if let Some(update) = self.runtime.renderer.take_accessibility_tree_update()
+            && let Some(bridge) = self.accessibility_bridge.as_mut()
+        {
+            bridge.update(update);
         }
         true
     }
@@ -355,15 +389,29 @@ impl BrowserRunnerHandle {
             return;
         }
 
-        let browser_window = web_sys::window()
-            .expect("hydrolysis web runner: browser window unavailable for animation frame");
+        let Some(browser_window) = web_sys::window() else {
+            tracing::error!(
+                "hydrolysis web runner: browser window unavailable for animation frame; no frame is scheduled"
+            );
+            self.raf_pending.set(false);
+            return;
+        };
         let callback = self.raf_callback.borrow();
-        let callback = callback
-            .as_ref()
-            .expect("hydrolysis web runner: animation frame callback not initialized");
-        browser_window
-            .request_animation_frame(callback.as_ref().unchecked_ref())
-            .expect("hydrolysis web runner: failed to schedule animation frame");
+        let Some(callback) = callback.as_ref() else {
+            contract_violation!(
+                "hydrolysis web runner: animation frame callback not initialized; no frame is scheduled"
+            );
+            self.raf_pending.set(false);
+            return;
+        };
+        if let Err(error) =
+            browser_window.request_animation_frame(callback.as_ref().unchecked_ref())
+        {
+            tracing::error!(
+                "hydrolysis web runner: failed to schedule animation frame: {error:?}; no frame is scheduled"
+            );
+            self.raf_pending.set(false);
+        }
     }
 
     // The runner borrow spans the engine's await by design: `frame_in_flight`
@@ -455,10 +503,13 @@ pub fn run(app: App, style: impl crate::Style) {
         } = app.into_parts();
         let window_count = windows.len();
         let Ok([window]) = <[Window; 1]>::try_from(windows) else {
-            panic!(
+            let message = format!(
                 "hydrolysis web runner requires exactly one window, got {window_count}: a browser \
                  page is the application's only window and has no windowless state"
             );
+            contract_violation!("{message}; the page shows the error and the app does not start");
+            crate::platform::report_fatal_error(&message);
+            return;
         };
 
         let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
@@ -486,13 +537,23 @@ pub fn run(app: App, style: impl crate::Style) {
         // seeded from the collection, and a self-drawn component that typesets
         // text itself reads it out of the environment instead of building a
         // collection of its own.
-        let (platform, (fonts, deferred_fonts)) = futures::join!(
+        let (platform, fonts) = futures::join!(
             BrowserWindow::new(
                 Rc::clone(&browser_schedule),
                 Rc::clone(&browser_occlusion_wake),
             ),
             load_web_fonts()
         );
+        // The same ending as a browser without WebGPU: the page shows why in
+        // place of the app.
+        let (fonts, deferred_fonts) = match fonts {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                tracing::error!("{error}; the app does not start");
+                crate::platform::report_fatal_error(&error);
+                return;
+            }
+        };
         // A browser without WebGPU cannot host the window. The page shows why
         // in place of the app, and the runner ends here rather than panicking:
         // a panic traps the wasm instance inside the executor's poll, which
@@ -502,7 +563,7 @@ pub fn run(app: App, style: impl crate::Style) {
             Err(error) => {
                 tracing::error!(
                     cause = %std::error::Error::source(&error)
-                        .expect("every BrowserGpuUnavailable carries the browser's error"),
+                        .map_or_else(String::new, ToString::to_string),
                     "hydrolysis web runner: {error}"
                 );
                 crate::platform::report_fatal_error(&error.to_string());
@@ -549,6 +610,7 @@ pub fn run(app: App, style: impl crate::Style) {
             accessibility_actions,
             accessibility_bridge,
             first_frame_announced: false,
+            stopped: false,
             fonts: Rc::new(RefCell::new(fonts)),
             deferred_fonts,
             fonts_arrived: Rc::new(Cell::new(false)),

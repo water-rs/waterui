@@ -3,11 +3,13 @@
 //! supported, and `FilteredView` and the overscroll stretch lower to native
 //! `RenderEffect` chains; GPU-content and material capabilities are named
 //! refusals at install, matching `Encoder::refuse`'s policy — the issues
-//! that carry each capability are named in the panic.
+//! that carry each capability are named in the contract violation.
 
 use std::convert::Infallible;
 use std::rc::Rc;
 use std::sync::Arc;
+
+use waterui_core::contract_violation;
 
 use cherenkov_record::{
     FilterId, Layer, MaterialRegistry, ResourceError, TextLayoutId, Transaction,
@@ -134,9 +136,9 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
         _pixels: (u32, u32),
         _wake: ProducerWake,
     ) {
-        panic!(
+        contract_violation!(
             "hydrolysis HWUI: GpuContentView requires the hosted GPU-content realization \
-             (water-rs/waterui#1812)"
+             (water-rs/waterui#1812); the content is not drawn"
         );
     }
 
@@ -149,28 +151,48 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
         _presented: waterui_graphics::gpu::PresentedSize,
         _wake: ProducerWake,
     ) -> Option<(u32, u32)> {
-        panic!(
+        contract_violation!(
             "hydrolysis HWUI: ExternalFrameView requires the hosted GPU-content realization \
-             (water-rs/waterui#1812)"
+             (water-rs/waterui#1812); no frame is bound"
         );
+        None
     }
 
-    fn filter(host: &Self::Host, runtime: &mut FilteredRuntime) -> FilterId {
+    fn filter(host: &Self::Host, runtime: &mut FilteredRuntime) -> Option<FilterId> {
         runtime.filter(|source| {
-            FilterHandle::new(
-                host.backend
-                    .register_filter(source, host.effect_wake.clone())
-                    .unwrap_or_else(|error| panic!("{error}")),
-            )
+            match host
+                .backend
+                .register_filter(source, host.effect_wake.clone())
+            {
+                Ok(registration) => Some(FilterHandle::new(registration)),
+                Err(error) => {
+                    contract_violation!(
+                        "hydrolysis HWUI: the filter cannot be registered ({error}); \
+                         the layer draws without it"
+                    );
+                    None
+                }
+            }
         })
     }
 
-    fn stretch_filter(host: &Self::Host, filter: OverscrollStretch<Reactive>) -> FilterHandle {
-        FilterHandle::new(
-            host.backend
-                .register_filter(AnyEffect::filter(filter), host.effect_wake.clone())
-                .unwrap_or_else(|error| panic!("{error}")),
-        )
+    fn stretch_filter(
+        host: &Self::Host,
+        filter: OverscrollStretch<Reactive>,
+    ) -> Option<FilterHandle> {
+        match host
+            .backend
+            .register_filter(AnyEffect::filter(filter), host.effect_wake.clone())
+        {
+            Ok(registration) => Some(FilterHandle::new(registration)),
+            Err(error) => {
+                contract_violation!(
+                    "hydrolysis HWUI: the overscroll stretch filter cannot be registered \
+                     ({error}); the layer draws without it"
+                );
+                None
+            }
+        }
     }
 
     fn mount_material(
@@ -183,8 +205,9 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
         _membership: &MaterialMembership<E>,
         _bind: MemberBind,
     ) {
-        panic!(
-            "hydrolysis HWUI: Material requires the HWUI backdrop realization (water-rs/waterui#1899)"
+        contract_violation!(
+            "hydrolysis HWUI: Material requires the HWUI backdrop realization \
+             (water-rs/waterui#1899); the layer joins no backdrop group"
         );
     }
 
@@ -204,8 +227,9 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
         _payload: impl FnOnce() -> ChromeMemberPayload<Self::Shader>,
         _bind: MemberBind,
     ) {
-        panic!(
-            "hydrolysis HWUI: material chrome requires HWUI backdrop shaders (water-rs/waterui#1899)"
+        contract_violation!(
+            "hydrolysis HWUI: material chrome requires HWUI backdrop shaders \
+             (water-rs/waterui#1899); the layer joins no chrome group"
         );
     }
 }

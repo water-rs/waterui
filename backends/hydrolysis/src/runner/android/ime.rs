@@ -105,7 +105,11 @@ struct EditingStateJson {
     has_submit: bool,
 }
 
-pub fn editing_state_json(state: &EditingState) -> String {
+/// The editing state as the JSON the connection's `Editable` mirror reads.
+///
+/// # Errors
+/// [`serde_json::Error`] when the state does not serialize.
+pub fn editing_state_json(state: &EditingState) -> Result<String, serde_json::Error> {
     serde_json::to_string(&EditingStateJson {
         editor_id: state.editor_id,
         focused: state.focused,
@@ -119,7 +123,6 @@ pub fn editing_state_json(state: &EditingState) -> String {
         single_line: state.single_line,
         has_submit: state.has_submit,
     })
-    .expect("editing state serialization cannot fail")
 }
 
 /// `CursorAnchorInfo` as JSON: rectangles in logical units (`[l, t, r, b]`),
@@ -137,7 +140,9 @@ struct AnchorInfoJson {
     char_bounds: Vec<[f64; 5]>,
 }
 
-fn anchor_json(info: &AnchorInfo) -> String {
+/// # Errors
+/// [`serde_json::Error`] when the info does not serialize.
+fn anchor_json(info: &AnchorInfo) -> Result<String, serde_json::Error> {
     const fn rect(r: kurbo::Rect) -> [f64; 4] {
         [r.x0, r.y0, r.x1, r.y1]
     }
@@ -158,7 +163,6 @@ fn anchor_json(info: &AnchorInfo) -> String {
             })
             .collect(),
     })
-    .expect("anchor info serialization cannot fail")
 }
 
 impl AndroidSession {
@@ -271,8 +275,14 @@ impl AndroidSession {
         let snapshot = self.runtime.renderer.focused_editor_snapshot();
         self.ime.session.sync_from_renderer(snapshot.as_ref());
         if self.ime.session.is_dirty() {
-            let json = editing_state_json(&self.ime.session.state());
-            self.runtime.platform.bridge.editing_state_changed(&json);
+            match editing_state_json(&self.ime.session.state()) {
+                Ok(json) => self.runtime.platform.bridge.editing_state_changed(&json),
+                Err(error) => tracing::error!(
+                    target: "waterui::hydrolysis::android",
+                    %error,
+                    "editing state serialization failed; the connection keeps its previous state"
+                ),
+            }
             self.ime.session.clear_dirty();
         }
         let Some(snap) = snapshot else { return };
@@ -282,10 +292,14 @@ impl AndroidSession {
         if self.ime.last_anchor.as_ref() == Some(&info) {
             return;
         }
-        self.runtime
-            .platform
-            .bridge
-            .cursor_anchor_changed(&anchor_json(&info));
+        match anchor_json(&info) {
+            Ok(json) => self.runtime.platform.bridge.cursor_anchor_changed(&json),
+            Err(error) => tracing::error!(
+                target: "waterui::hydrolysis::android",
+                %error,
+                "cursor anchor serialization failed; the connection keeps its previous anchor"
+            ),
+        }
         self.ime.last_anchor = Some(info);
     }
 }

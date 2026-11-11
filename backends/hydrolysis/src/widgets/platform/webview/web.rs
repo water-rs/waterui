@@ -83,10 +83,9 @@ impl WebIframeHandle {
             .create_element("iframe")
             .expect("hydrolysis web view: failed to create an <iframe> element")
             .unchecked_into();
-        iframe
-            .style()
-            .set_property("border", "none")
-            .expect("hydrolysis web view: failed to style the <iframe>");
+        if let Err(error) = iframe.style().set_property("border", "none") {
+            tracing::error!(?error, "hydrolysis web view: styling the <iframe> failed");
+        }
         let handle = Self {
             inner: Rc::new(Inner {
                 iframe,
@@ -120,10 +119,17 @@ impl WebIframeHandle {
                     handler(&inner);
                 }
             });
-            self.inner
+            if let Err(error) = self
+                .inner
                 .iframe
                 .add_event_listener_with_callback(name, closure.as_ref().unchecked_ref())
-                .unwrap_or_else(|_| panic!("hydrolysis web view: failed to listen for {name}"));
+            {
+                tracing::error!(
+                    ?error,
+                    "hydrolysis web view: listening for {name} failed; the event is not reported"
+                );
+                continue;
+            }
             listeners.push(closure);
         }
     }

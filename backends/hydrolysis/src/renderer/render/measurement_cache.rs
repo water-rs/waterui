@@ -24,6 +24,7 @@
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
+use waterui_core::contract_violation;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
 
 use crate::renderer::tree::RenderNode;
@@ -366,19 +367,29 @@ impl<E: crate::text::TextEngine> MeasurementCaches<E> {
         self.dynamic_nodes.get(&identity).and_then(Weak::upgrade)
     }
 
-    /// Marks a `Dynamic` node as being measured, crashing on re-entrant
-    /// measurement of the same node (which would recurse forever).
-    pub(crate) fn begin_dynamic_measurement(&mut self, identity: usize, proposal: ProposalSize) {
+    /// Marks a `Dynamic` node as being measured. Re-entrant measurement of the
+    /// same node (which would recurse forever) is a contract violation: it is
+    /// reported, nothing is marked, and `false` is returned so the caller
+    /// measures the node as zero without a matching
+    /// [`Self::finish_dynamic_measurement`].
+    #[must_use = "a `false` return means the measurement must not run or be finished"]
+    pub(crate) fn begin_dynamic_measurement(
+        &mut self,
+        identity: usize,
+        proposal: ProposalSize,
+    ) -> bool {
         if let Some((_, active_proposal)) = self
             .dynamic_measurement_stack
             .iter()
             .find(|(active_identity, _)| *active_identity == identity)
         {
-            panic!(
-                "hydrolysis re-entered Dynamic measurement for node {identity} with proposal {proposal:?} while already measuring {active_proposal:?}"
+            contract_violation!(
+                "hydrolysis re-entered Dynamic measurement for node {identity} with proposal {proposal:?} while already measuring {active_proposal:?}; the node measures as zero"
             );
+            return false;
         }
         self.dynamic_measurement_stack.push((identity, proposal));
+        true
     }
 
     pub(crate) fn finish_dynamic_measurement(&mut self, identity: usize, phase: &str) {
@@ -656,18 +667,23 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "re-entered Dynamic measurement")]
-    fn reentrant_dynamic_measurement_crashes() {
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "re-entered Dynamic measurement")
+    )]
+    fn reentrant_dynamic_measurement_is_reported_and_declined() {
         let mut caches = MeasurementCaches::<crate::text::ParleyEngine>::default();
-        caches.begin_dynamic_measurement(1, ProposalSize::UNSPECIFIED);
-        caches.begin_dynamic_measurement(1, ProposalSize::new(Some(1.0), None));
+        assert!(caches.begin_dynamic_measurement(1, ProposalSize::UNSPECIFIED));
+        assert!(!caches.begin_dynamic_measurement(1, ProposalSize::new(Some(1.0), None)));
+        // The declined entry marked nothing: one finish balances the stack.
+        caches.finish_dynamic_measurement(1, "outer");
     }
 
     #[test]
     fn nested_distinct_dynamic_measurements_balance() {
         let mut caches = MeasurementCaches::<crate::text::ParleyEngine>::default();
-        caches.begin_dynamic_measurement(1, ProposalSize::UNSPECIFIED);
-        caches.begin_dynamic_measurement(2, ProposalSize::UNSPECIFIED);
+        assert!(caches.begin_dynamic_measurement(1, ProposalSize::UNSPECIFIED));
+        assert!(caches.begin_dynamic_measurement(2, ProposalSize::UNSPECIFIED));
         caches.finish_dynamic_measurement(2, "inner");
         caches.finish_dynamic_measurement(1, "outer");
     }

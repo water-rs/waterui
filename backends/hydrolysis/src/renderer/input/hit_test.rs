@@ -12,6 +12,7 @@ use waterui::Url;
 use waterui::drag_drop::{DragPayload, Files};
 use waterui::gesture::PointerButton as WuiPointerButton;
 use waterui_backend_core::gesture::{GesturePlacement, LONG_PRESS_SLOP};
+use waterui_core::contract_violation;
 use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_graphics::input::{Code, GesturePhase, ScrollPhase, ScrollUnit};
 use waterui_layout::scroll::Axis as ScrollAxis;
@@ -340,8 +341,8 @@ pub enum KeyboardActivation {
     Semantic,
 }
 
-/// The panic a touch press raises when the platform window reported no
-/// [`crate::platform::TouchScrollConfig`].
+/// The contract violation a touch press reports when the platform window
+/// reported no [`crate::platform::TouchScrollConfig`].
 const NO_TOUCH_SCROLL_CONFIG: &str =
     "hydrolysis: a touch press arrived but the platform window reported no touch_scroll_config";
 
@@ -1205,20 +1206,23 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// painted above the view covers the point. The same rule hosted planes
     /// publish ([`HitTestState::interactive_regions_above`]).
     ///
-    /// # Panics
-    ///
-    /// When this frame placed no platform view `view`: the caller names a
-    /// view the same frame's placements bound.
+    /// When this frame placed no platform view `view` — the caller must name
+    /// a view the same frame's placements bound — the call is a contract
+    /// violation and reports the point as not occluded, so the platform view
+    /// takes the hit.
     #[cfg(any(test, hydrolysis_hwui, hydrolysis_gpu_painter))]
     #[cfg_attr(all(not(target_os = "android"), not(test)), expect(dead_code))]
     pub(crate) fn platform_view_occluded(&self, view: u64, point: kurbo::Point) -> bool {
-        let placed = self
+        let Some(placed) = self
             .materialized_platform_views
             .iter()
             .find(|placed| placed.placement.id() == view)
-            .unwrap_or_else(|| {
-                panic!("hydrolysis: platform view {view} is not placed in the current frame")
-            });
+        else {
+            contract_violation!(
+                "hydrolysis: platform view {view} is not placed in the current frame; the point is not occluded"
+            );
+            return false;
+        };
         self.hit_test
             .interactive_regions_above(
                 placed.placement.order() as usize,
@@ -3492,12 +3496,14 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // types J, while J with nothing editable focused fires its chord —
         // the space bar included — and a bare `Delete` chord does not
         // steal the field's own delete either (water-rs/waterui#2118).
-        let registry = env
-            .get::<MenuShortcutRegistry<E>>()
-            .expect(MISSING_MENU_SHORTCUT_REGISTRY);
+        let registry =
+            menu_shortcut_registry::<E>(env, "menu chords are not dispatched for this key");
         let typing = !(modifiers.control || modifiers.alt || modifiers.super_key)
             && self.text_editing.has_focus();
-        if !typing && registry.dispatch(self.window_id, logical_key, modifiers, env) {
+        if !typing
+            && let Some(registry) = registry
+            && registry.dispatch(self.window_id, logical_key, modifiers, env)
+        {
             return true;
         }
         if matches!(key, KeyCode::Named(value) if value == "Escape")
@@ -4114,21 +4120,31 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.scroll_with_phase(x, y, dx, dy, false, phase)
     }
 
+    /// The platform window's touch-scroll parameters, or `None` after a
+    /// contract violation when it reported none: touch scrolling is then
+    /// off for the touch at hand.
+    fn touch_scroll_config(&self) -> Option<crate::platform::TouchScrollConfig> {
+        let config = self.hit_test.touch_scroll_config;
+        if config.is_none() {
+            contract_violation!("{NO_TOUCH_SCROLL_CONFIG}; the touch does not scroll");
+        }
+        config
+    }
+
     /// Arms the touch-scroll claim for a `PointerKind::Touch` sequence: the
     /// motion of every scroll view under the touch stops where it is —
     /// every other scroll view's keeps running — and the new press watches
     /// for a slop crossing while its press still lands on the content
     /// under it.
     ///
-    /// # Panics
-    /// Panics when the platform window reported no `touch_scroll_config`:
-    /// delivering touch input without the gesture's parameters is a host
-    /// bug, not a scroll-disabled platform.
+    /// When the platform window reported no `touch_scroll_config` the touch
+    /// is a contract violation — delivering touch input without the
+    /// gesture's parameters is a host bug, not a scroll-disabled platform —
+    /// and it arms no scroll: the press lands as a plain press.
     fn arm_touch_scroll(&mut self, point: kurbo::Point, button: PointerButton, at: Instant) {
-        assert!(
-            self.hit_test.touch_scroll_config.is_some(),
-            "{NO_TOUCH_SCROLL_CONFIG}"
-        );
+        if self.touch_scroll_config().is_none() {
+            return;
+        }
         // The touch stops the motions of the scroll views it lands in where
         // they are — their stretches held too, as each `ScrollView` under
         // an `ACTION_DOWN` aborts its scroller and holds its edges; the
@@ -4164,10 +4180,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// otherwise its gesture ends where it stopped. Returns whether that
     /// needs a frame.
     fn let_go_caught_motions(&mut self, caught: Vec<ScrollMotion>, at: Instant) -> bool {
-        let config = self
-            .hit_test
-            .touch_scroll_config
-            .expect(NO_TOUCH_SCROLL_CONFIG);
+        let Some(config) = self.touch_scroll_config() else {
+            return false;
+        };
         caught.into_iter().fold(false, |needs_frame, motion| {
             let key = motion.handle().cache_key();
             let release = motion.let_go(&config, at);
@@ -4228,10 +4243,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         finger_velocity: kurbo::Vec2,
         at: Instant,
     ) -> bool {
-        let config = self
-            .hit_test
-            .touch_scroll_config
-            .expect(NO_TOUCH_SCROLL_CONFIG);
+        let Some(config) = self.touch_scroll_config() else {
+            return false;
+        };
         let key = drag.handle.cache_key();
         let release = ScrollMotion::release(
             &drag.handle,
@@ -4284,10 +4298,10 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 // A `Pending` gesture exists only where the press armed it
                 // — with a config present — so a missing one here is the
                 // host retracting its parameters mid-sequence.
-                let config = self
-                    .hit_test
-                    .touch_scroll_config
-                    .expect(NO_TOUCH_SCROLL_CONFIG);
+                let Some(config) = self.touch_scroll_config() else {
+                    self.hit_test.touch_scroll = TouchScrollGesture::Pending(pending);
+                    return false;
+                };
                 let slop = f64::from(config.touch_slop());
                 if dominant.abs() <= slop {
                     self.hit_test.touch_scroll = TouchScrollGesture::Pending(pending);
@@ -4413,7 +4427,12 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         able(displacement_y, metrics.offset_y, metrics.max_y)
                     }
                     (ScrollAxis::Horizontal, false) | (ScrollAxis::Vertical, true) => false,
-                    _ => panic!("scroll axis variant is not supported by hydrolysis"),
+                    (other, _) => {
+                        contract_violation!(
+                            "scroll axis variant {other:?} is not supported by hydrolysis; the scroll view does not claim the touch"
+                        );
+                        false
+                    }
                 };
                 claims.then(|| (target.handle.clone(), target.owner.clone()))
             })

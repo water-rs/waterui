@@ -18,6 +18,7 @@
 
 use waterui::window::{Activation, Monitor, MonitorSelector};
 use waterui_core::Str;
+use waterui_core::contract_violation;
 use waterui_core::layout::{Point, Rect, Size};
 use winit::event_loop::ActiveEventLoop;
 use winit::monitor::MonitorHandle;
@@ -66,11 +67,14 @@ fn resolve_selector(
         Some(index) => index,
         // Wayland reports no primary monitor at all; index 0 stands in.
         None if wayland => 0,
-        None => panic!(
-            "hydrolysis runner: {selector:?} cannot resolve — primary_monitor() \
-             reported none while {} monitors exist",
-            frames.len()
-        ),
+        None => {
+            contract_violation!(
+                "hydrolysis runner: {selector:?} cannot resolve — primary_monitor() \
+                 reported none while {} monitors exist; the first monitor stands in",
+                frames.len()
+            );
+            0
+        }
     };
     Some(match selector {
         MonitorSelector::Primary => primary,
@@ -89,10 +93,13 @@ fn resolve_selector(
                 );
                 0
             }
-            None => panic!(
-                "hydrolysis runner: {selector:?} got no pointer position from a platform \
-                 that answers the query"
-            ),
+            None => {
+                contract_violation!(
+                    "hydrolysis runner: {selector:?} got no pointer position from a platform \
+                     that answers the query; the primary monitor stands in"
+                );
+                primary
+            }
         },
     })
 }
@@ -132,7 +139,7 @@ fn nearest_frame(frames: &[FrameSpec], point: (f64, f64)) -> usize {
             frame_distance_sq(**a, point).total_cmp(&frame_distance_sq(**b, point))
         })
         .map(|(index, _)| index)
-        .expect("nearest_frame: frames is non-empty (the caller checked)")
+        .expect("nearest_frame: frames is non-empty (resolve_selector returns before calling it on none)")
 }
 
 /// A monitor as winit reports it, plus whether the platform calls it the
@@ -204,13 +211,12 @@ pub struct PlacementContext<'a> {
 /// Resolves `selector` against the monitors the platform reports right now,
 /// with `ActiveEventLoop` in hand, and assembles the public [`Monitor`].
 ///
-/// Panics when the platform reports zero monitors: a window being shown has
-/// nowhere to go, and skipping placement silently would map it wherever the
-/// compositor feels like — that is a bug, so it fails loudly.
+/// A platform that reports zero monitors is a contract violation by the host:
+/// `None` comes back and the window is not placed.
 pub fn resolve_placement_monitor(
     context: &PlacementContext<'_>,
     selector: MonitorSelector,
-) -> Monitor {
+) -> Option<Monitor> {
     let specs = enumerate_monitors(context.event_loop);
     let primary = specs.iter().position(|spec| spec.is_primary);
     let focused = context
@@ -235,13 +241,14 @@ pub fn resolve_placement_monitor(
         })
         .collect();
     let wayland = event_loop_is_wayland(context.event_loop);
-    let index = resolve_selector(selector, &frames, primary, pointer, focused, wayland)
-        .unwrap_or_else(|| {
-            panic!(
-                "hydrolysis runner: Window::placement asked for {selector:?} but the platform reports zero monitors"
-            )
-        });
-    assemble_monitor(context.event_loop, &specs[index])
+    let Some(index) = resolve_selector(selector, &frames, primary, pointer, focused, wayland)
+    else {
+        contract_violation!(
+            "hydrolysis runner: Window::placement asked for {selector:?} but the platform reports zero monitors; the window is not placed"
+        );
+        return None;
+    };
+    Some(assemble_monitor(context.event_loop, &specs[index]))
 }
 
 /// Whether the event loop's display connection is Wayland — the only
@@ -376,39 +383,54 @@ struct X11Display {
     root: x11rb::protocol::xproto::Window,
 }
 
+/// The `result` of an X11 plumbing step, or `None` after logging that `step`
+/// failed: placing a window on a broken connection skips the X11 query.
+#[cfg(hydrolysis_wayland_platform)]
+fn x11_step<T, E: std::fmt::Display>(step: &str, result: Result<T, E>) -> Option<T> {
+    result
+        .inspect_err(|error| {
+            tracing::error!("hydrolysis runner: X11 {step} failed: {error}; the query is skipped");
+        })
+        .ok()
+}
+
 /// Winit's own X11 connection and the root window of the display's default
-/// screen. `None` only on a non-X11 connection (Wayland): a display handle
-/// error or any null/failed piece of the X11 plumbing panics, since placing
-/// a window on a broken connection is a bug, not a skipped placement.
+/// screen. `None` on a non-X11 connection (Wayland), and — after logging —
+/// when any piece of the X11 plumbing is null or fails: placing a window on a
+/// broken connection skips the X11 query.
 #[cfg(hydrolysis_wayland_platform)]
 fn x11_display(event_loop: &ActiveEventLoop) -> Option<X11Display> {
     use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
     use x11rb::connection::Connection;
     use x11rb::xcb_ffi::XCBConnection;
-    let raw = event_loop
-        .display_handle()
-        .expect("hydrolysis runner: winit display_handle() failed")
-        .as_raw();
+    let raw = x11_step("display_handle()", event_loop.display_handle())?.as_raw();
     match raw {
         RawDisplayHandle::Xcb(handle) => {
-            let ptr = handle
-                .connection
-                .expect(
-                    "hydrolysis runner: winit's XcbDisplayHandle carries a null xcb_connection_t",
-                )
-                .as_ptr();
+            let Some(ptr) = handle.connection else {
+                tracing::error!(
+                    "hydrolysis runner: winit's XcbDisplayHandle carries a null xcb_connection_t; the X11 query is skipped"
+                );
+                return None;
+            };
+            let ptr = ptr.as_ptr();
             // `should_drop = false`: the connection is winit's; wrapping is a
             // borrow, dropping the wrapper must not disconnect it.
             // SAFETY: `ptr` is the live XCB connection winit owns; `false`
             // keeps ownership with winit, so the wrapper only borrows it.
-            let connection = unsafe { XCBConnection::from_raw_xcb_connection(ptr, false) }
-                .expect("hydrolysis runner: xcb_ffi failed to wrap winit's X11 connection");
-            let root = connection
+            let connection = x11_step("wrapping winit's connection", unsafe {
+                XCBConnection::from_raw_xcb_connection(ptr, false)
+            })?;
+            let Some(root) = connection
                 .setup()
                 .roots
                 .get(crate::num_cast::i32_as_usize(handle.screen))
                 .map(|screen| screen.root)
-                .expect("hydrolysis runner: X11 connection has no root for the screen winit named");
+            else {
+                tracing::error!(
+                    "hydrolysis runner: X11 connection has no root for the screen winit named; the X11 query is skipped"
+                );
+                return None;
+            };
             Some(X11Display {
                 _xlib_xcb: None,
                 connection,
@@ -416,32 +438,44 @@ fn x11_display(event_loop: &ActiveEventLoop) -> Option<X11Display> {
             })
         }
         RawDisplayHandle::Xlib(handle) => {
-            let display = handle
-                .display
-                .expect("hydrolysis runner: winit's XlibDisplayHandle carries a null Display*")
-                .as_ptr()
-                .cast::<x11_dl::xlib::Display>();
-            let xlib_xcb = x11_dl::xlib_xcb::Xlib_xcb::open()
-                .expect("hydrolysis runner: Xlib_xcb::open failed — libX11-xcb is missing");
+            let Some(display) = handle.display else {
+                tracing::error!(
+                    "hydrolysis runner: winit's XlibDisplayHandle carries a null Display*; the X11 query is skipped"
+                );
+                return None;
+            };
+            let display = display.as_ptr().cast::<x11_dl::xlib::Display>();
+            let xlib_xcb = x11_step(
+                "Xlib_xcb::open (libX11-xcb is missing)",
+                x11_dl::xlib_xcb::Xlib_xcb::open(),
+            )?;
             // SAFETY: `display` is winit's live Xlib Display*, and
             // XGetXCBConnection on it yields the connection X11 already
             // opened for this process.
             let ptr = unsafe { (xlib_xcb.XGetXCBConnection)(display) }.cast::<std::ffi::c_void>();
-            assert!(
-                !ptr.is_null(),
-                "hydrolysis runner: XGetXCBConnection returned null for winit's Display"
-            );
+            if ptr.is_null() {
+                tracing::error!(
+                    "hydrolysis runner: XGetXCBConnection returned null for winit's Display; the X11 query is skipped"
+                );
+                return None;
+            }
             // SAFETY: `ptr` is the live XCB connection behind winit's Xlib
             // display; `false` keeps ownership with X11, so the wrapper only
             // borrows it.
-            let connection = unsafe { XCBConnection::from_raw_xcb_connection(ptr.cast(), false) }
-                .expect("hydrolysis runner: xcb_ffi failed to wrap the Xlib XCB connection");
-            let root = connection
+            let connection = x11_step("wrapping the Xlib XCB connection", unsafe {
+                XCBConnection::from_raw_xcb_connection(ptr.cast(), false)
+            })?;
+            let Some(root) = connection
                 .setup()
                 .roots
                 .get(crate::num_cast::i32_as_usize(handle.screen))
                 .map(|screen| screen.root)
-                .expect("hydrolysis runner: X11 connection has no root for the screen winit named");
+            else {
+                tracing::error!(
+                    "hydrolysis runner: X11 connection has no root for the screen winit named; the X11 query is skipped"
+                );
+                return None;
+            };
             Some(X11Display {
                 _xlib_xcb: Some(xlib_xcb),
                 connection,
@@ -453,19 +487,18 @@ fn x11_display(event_loop: &ActiveEventLoop) -> Option<X11Display> {
 }
 
 /// The X11 pointer position in physical pixels: `XQueryPointer`'s
-/// root-window coordinates are physical by definition. `None` only on a
-/// non-X11 display; a failed request or reply on a live X11 connection
-/// panics — a window being placed cannot lose its pointer silently.
+/// root-window coordinates are physical by definition. `None` on a non-X11
+/// display, and — after logging — when a request or reply on the X11
+/// connection fails.
 #[cfg(hydrolysis_wayland_platform)]
 fn x11_pointer_position(event_loop: &ActiveEventLoop) -> Option<(f64, f64)> {
     use x11rb::protocol::xproto::ConnectionExt;
     let display = x11_display(event_loop)?;
-    let reply = display
-        .connection
-        .query_pointer(display.root)
-        .expect("hydrolysis runner: X11 QueryPointer request failed")
-        .reply()
-        .expect("hydrolysis runner: X11 QueryPointer reply failed");
+    let cookie = x11_step(
+        "QueryPointer request",
+        display.connection.query_pointer(display.root),
+    )?;
+    let reply = x11_step("QueryPointer reply", cookie.reply())?;
     Some((f64::from(reply.root_x), f64::from(reply.root_y)))
 }
 
@@ -473,44 +506,56 @@ fn x11_pointer_position(event_loop: &ActiveEventLoop) -> Option<(f64, f64)> {
 /// physical pixels, intersected with the monitor's physical frame, converted
 /// to logical points. `None` only for legitimate absence — a non-X11
 /// connection, or a WM that publishes no `_NET_CURRENT_DESKTOP`/
-/// `_NET_WORKAREA` (empty property value). Every request/reply failure on
-/// the X11 connection panics.
+/// `_NET_WORKAREA` (empty property value). A failed request or reply on the
+/// X11 connection logs and yields `None` too.
 #[cfg(hydrolysis_wayland_platform)]
 fn x11_visible_frame(event_loop: &ActiveEventLoop, spec: &MonitorSpec) -> Option<FrameSpec> {
     use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
     let display = x11_display(event_loop)?;
     let conn = &display.connection;
-    let workarea = conn
-        .intern_atom(false, b"_NET_WORKAREA")
-        .expect("hydrolysis runner: X11 InternAtom(_NET_WORKAREA) request failed")
-        .reply()
-        .expect("hydrolysis runner: X11 InternAtom(_NET_WORKAREA) reply failed")
-        .atom;
-    let current_desktop = conn
-        .intern_atom(false, b"_NET_CURRENT_DESKTOP")
-        .expect("hydrolysis runner: X11 InternAtom(_NET_CURRENT_DESKTOP) request failed")
-        .reply()
-        .expect("hydrolysis runner: X11 InternAtom(_NET_CURRENT_DESKTOP) reply failed")
-        .atom;
-    let desktop = conn
-        .get_property(
-            false,
-            display.root,
-            current_desktop,
-            AtomEnum::CARDINAL,
-            0,
-            1,
-        )
-        .expect("hydrolysis runner: X11 GetProperty(_NET_CURRENT_DESKTOP) request failed")
-        .reply()
-        .expect("hydrolysis runner: X11 GetProperty(_NET_CURRENT_DESKTOP) reply failed");
+    let workarea = x11_step(
+        "InternAtom(_NET_WORKAREA) reply",
+        x11_step(
+            "InternAtom(_NET_WORKAREA) request",
+            conn.intern_atom(false, b"_NET_WORKAREA"),
+        )?
+        .reply(),
+    )?
+    .atom;
+    let current_desktop = x11_step(
+        "InternAtom(_NET_CURRENT_DESKTOP) reply",
+        x11_step(
+            "InternAtom(_NET_CURRENT_DESKTOP) request",
+            conn.intern_atom(false, b"_NET_CURRENT_DESKTOP"),
+        )?
+        .reply(),
+    )?
+    .atom;
+    let desktop = x11_step(
+        "GetProperty(_NET_CURRENT_DESKTOP) reply",
+        x11_step(
+            "GetProperty(_NET_CURRENT_DESKTOP) request",
+            conn.get_property(
+                false,
+                display.root,
+                current_desktop,
+                AtomEnum::CARDINAL,
+                0,
+                1,
+            ),
+        )?
+        .reply(),
+    )?;
     // A WM that publishes no `_NET_CURRENT_DESKTOP` has no work areas.
     let index = u32::from_le_bytes(*desktop.value.first_chunk::<4>()?) as usize;
-    let reply = conn
-        .get_property(false, display.root, workarea, AtomEnum::CARDINAL, 0, 1024)
-        .expect("hydrolysis runner: X11 GetProperty(_NET_WORKAREA) request failed")
-        .reply()
-        .expect("hydrolysis runner: X11 GetProperty(_NET_WORKAREA) reply failed");
+    let reply = x11_step(
+        "GetProperty(_NET_WORKAREA) reply",
+        x11_step(
+            "GetProperty(_NET_WORKAREA) request",
+            conn.get_property(false, display.root, workarea, AtomEnum::CARDINAL, 0, 1024),
+        )?
+        .reply(),
+    )?;
     // `_NET_WORKAREA` is a flat CARD32 list, four entries per desktop.
     let base = index * 4;
     let (cards, _) = reply.value.as_chunks::<4>();
@@ -561,9 +606,12 @@ fn primary_screen_height() -> Option<f64> {
     use objc2::MainThreadMarker;
     use objc2::rc::autoreleasepool;
     use objc2_app_kit::NSScreen;
-    let mtm = MainThreadMarker::new().expect(
-        "hydrolysis runner: placement resolved off the main thread (MainThreadMarker unavailable)",
-    );
+    let Some(mtm) = MainThreadMarker::new() else {
+        contract_violation!(
+            "hydrolysis runner: placement resolved off the main thread (MainThreadMarker unavailable); the pointer position is unknown"
+        );
+        return None;
+    };
     autoreleasepool(|_| {
         let screens = NSScreen::screens(mtm);
         screens
@@ -581,9 +629,12 @@ fn macos_visible_frame(spec: &MonitorSpec) -> Option<FrameSpec> {
     use objc2::rc::autoreleasepool;
     use objc2_app_kit::NSScreen;
     use winit::platform::macos::MonitorHandleExtMacOS;
-    let mtm = MainThreadMarker::new().expect(
-        "hydrolysis runner: placement resolved off the main thread (MainThreadMarker unavailable)",
-    );
+    let Some(mtm) = MainThreadMarker::new() else {
+        contract_violation!(
+            "hydrolysis runner: placement resolved off the main thread (MainThreadMarker unavailable); the visible frame equals the frame"
+        );
+        return None;
+    };
     autoreleasepool(|_| {
         let id = spec.handle.native_id();
         let screens = NSScreen::screens(mtm);
@@ -802,12 +853,11 @@ pub fn apply_activation(
 /// window already carries. Called between `create_window` and
 /// `set_visible(true)`, so the property is in place before the map request.
 ///
-/// Returns only on a Wayland connection, where there is no `WM_HINTS` to
-/// write (the documented Wayland limitation). On an X11 window every
-/// failure — the handle lookup, the hints read, the hints write — panics:
-/// `Activation::Never` that silently doesn't happen is worse than a crash,
-/// and `unwrap_or_default` on a failed read would clobber the window's
-/// other hints.
+/// Returns without writing on a Wayland connection, where there is no
+/// `WM_HINTS` to write (the documented Wayland limitation). On an X11 window
+/// a failed handle lookup, hints read or hints write logs an error and the
+/// window keeps its hints: a failed read never defaults, which would clobber
+/// the window's other hints.
 #[cfg(hydrolysis_wayland_platform)]
 fn apply_x11_input_hint(event_loop: &ActiveEventLoop, native_window: &NativeWindow) {
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -815,27 +865,39 @@ fn apply_x11_input_hint(event_loop: &ActiveEventLoop, native_window: &NativeWind
     let Some(display) = x11_display(event_loop) else {
         return;
     };
-    let handle = native_window
-        .window_handle()
-        .expect("hydrolysis runner: winit window_handle() failed while writing WM_HINTS");
+    let Some(handle) = x11_step(
+        "window_handle() while writing WM_HINTS",
+        native_window.window_handle(),
+    ) else {
+        return;
+    };
     let window = match handle.as_raw() {
         RawWindowHandle::Xcb(xcb) => xcb.window.get(),
         RawWindowHandle::Xlib(xlib) => crate::num_cast::u64_as_u32(xlib.window),
-        other => panic!(
-            "hydrolysis runner: Activation::Never on X11 got a non-X11 window handle {other:?}"
-        ),
+        other => {
+            contract_violation!(
+                "hydrolysis runner: Activation::Never on X11 got a non-X11 window handle {other:?}; the window keeps its hints"
+            );
+            return;
+        }
     };
-    // `Ok(None)` means the window carries no WM_HINTS yet — the only case
-    // where defaults are seeded.
-    let mut hints = WmHints::get(&display.connection, window)
-        .expect("hydrolysis runner: X11 GetProperty(WM_HINTS) request failed")
-        .reply()
-        .expect("hydrolysis runner: X11 GetProperty(WM_HINTS) reply failed")
-        .unwrap_or_default();
+    let Some(cookie) = x11_step(
+        "GetProperty(WM_HINTS) request",
+        WmHints::get(&display.connection, window),
+    ) else {
+        return;
+    };
+    let Some(current) = x11_step("GetProperty(WM_HINTS) reply", cookie.reply()) else {
+        return;
+    };
+    // `None` means the window carries no WM_HINTS yet — the only case where
+    // defaults are seeded.
+    let mut hints = current.unwrap_or_default();
     hints.input = Some(false);
-    hints
-        .set(&display.connection, window)
-        .expect("hydrolysis runner: failed to write WM_HINTS input=false");
+    x11_step(
+        "writing WM_HINTS input=false",
+        hints.set(&display.connection, window),
+    );
 }
 
 /// macOS `OnClick`/`Never`: `NSWindowStyleMaskNonactivatingPanel` on the
@@ -875,7 +937,8 @@ fn apply_windows_noactivate(native_window: &NativeWindow, never: bool) {
         return;
     };
     let hwnd = win32.hwnd.get() as windows_sys::Win32::Foundation::HWND;
-    let flag = isize::try_from(WS_EX_NOACTIVATE).expect("WS_EX_NOACTIVATE's bit fits isize");
+    let flag = isize::try_from(WS_EX_NOACTIVATE)
+        .expect("WS_EX_NOACTIVATE is a 32-bit style constant, so it fits isize");
     // SAFETY: `hwnd` is the window's live Win32 handle for as long as the
     // `NativeWindow` lives; the calls only read and rewrite its
     // extended-style word.
@@ -921,10 +984,16 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "primary_monitor() reported none")]
-    fn primary_missing_off_wayland_panics() {
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "primary_monitor() reported none")
+    )]
+    fn primary_missing_off_wayland_resolves_first() {
         let frames = [LEFT, RIGHT];
-        let _ = resolve_selector(MonitorSelector::Primary, &frames, None, None, None, false);
+        assert_eq!(
+            resolve_selector(MonitorSelector::Primary, &frames, None, None, None, false),
+            Some(0)
+        );
     }
 
     #[test]
@@ -1008,16 +1077,19 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "got no pointer position")]
-    fn pointer_missing_off_wayland_panics() {
+    #[cfg_attr(debug_assertions, should_panic(expected = "got no pointer position"))]
+    fn pointer_missing_off_wayland_resolves_primary() {
         let frames = [LEFT, RIGHT];
-        let _ = resolve_selector(
-            MonitorSelector::Pointer,
-            &frames,
-            Some(0),
-            None,
-            None,
-            false,
+        assert_eq!(
+            resolve_selector(
+                MonitorSelector::Pointer,
+                &frames,
+                Some(1),
+                None,
+                None,
+                false,
+            ),
+            Some(1)
         );
     }
 

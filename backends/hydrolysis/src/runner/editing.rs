@@ -37,6 +37,7 @@ use std::ops::Range;
 use crate::platform::KeyCode;
 use crate::renderer::{FocusedEditorSnapshot, InteractionKey, SemanticCore, TextContextMenuAction};
 use crate::text::{TextLayout as _, TextPosition};
+use waterui_core::contract_violation;
 
 /// Decodes the W3C `KeyboardEvent.key` value the Kotlin host's `w3cKey`
 /// reports for a `sendKeyEvent` key: the W3C logical key, and the legacy
@@ -47,15 +48,18 @@ use crate::text::{TextLayout as _, TextPosition};
 /// chord still matches on the logical key — while a dead key reports as
 /// `"Dead"`, not as its spacing accent.
 ///
-/// # Panics
-///
-/// On a string that is no W3C key value: the host promises one.
+/// A string that is no W3C key value is a contract violation by the host,
+/// which promises one: the key then reports as unidentified.
 pub fn hardware_key(key: &str) -> (KeyCode, keyboard_types::Key) {
-    let logical_key: keyboard_types::Key = key.parse().unwrap_or_else(|_| {
-        panic!(
-            "the Android host reported the key `{key}`, which is not a W3C KeyboardEvent.key value"
-        )
-    });
+    let Ok(logical_key) = key.parse::<keyboard_types::Key>() else {
+        contract_violation!(
+            "the Android host reported the key `{key}`, which is not a W3C KeyboardEvent.key value; the key reports as unidentified"
+        );
+        return (
+            KeyCode::Unidentified,
+            keyboard_types::Key::Named(keyboard_types::NamedKey::Unidentified),
+        );
+    };
     let code = match &logical_key {
         keyboard_types::Key::Character(character) => KeyCode::Character(character.clone()),
         keyboard_types::Key::Named(named) => KeyCode::Named(named.to_string()),
@@ -735,8 +739,7 @@ impl EditingSession {
             || self.cursor_update_filter & CURSOR_UPDATE_FILTER_EDITOR_BOUNDS != 0;
         let want_text = self.cursor_update_filter == 0
             || self.cursor_update_filter & CURSOR_UPDATE_FILTER_EDITING_TEXT != 0;
-        let composing_text = (want_text && self.composing.is_some()).then(|| {
-            let comp = self.composing.as_ref().unwrap_or_else(|| unreachable!());
+        let composing_text = self.composing.as_ref().filter(|_| want_text).map(|comp| {
             self.text[utf16_to_byte(&self.text, comp.start)..utf16_to_byte(&self.text, comp.end)]
                 .to_string()
         });
@@ -1408,8 +1411,17 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "not a W3C KeyboardEvent.key value")]
-    fn a_hardware_key_outside_the_w3c_vocabulary_panics() {
-        let _ = super::hardware_key("\n");
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "not a W3C KeyboardEvent.key value")
+    )]
+    fn a_hardware_key_outside_the_w3c_vocabulary_reports_unidentified() {
+        assert_eq!(
+            super::hardware_key("\n"),
+            (
+                crate::platform::KeyCode::Unidentified,
+                keyboard_types::Key::Named(keyboard_types::NamedKey::Unidentified)
+            )
+        );
     }
 }

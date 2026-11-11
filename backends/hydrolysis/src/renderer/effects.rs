@@ -106,22 +106,18 @@ impl FilteredRuntime {
     /// The filter handle this mount installs on its wrapper layer.
     ///
     /// Registers the effect on first call and returns its id — the runtime
-    /// retains the registration until the mount drops it.
+    /// retains the registration until the mount drops it. `None` when the
+    /// registration was rejected; the source is consumed by that attempt,
+    /// so later calls stay `None` without retrying.
     pub(crate) fn filter(
         &mut self,
-        register: impl FnOnce(AnyEffect) -> FilterHandle,
-    ) -> cherenkov_record::FilterId {
+        register: impl FnOnce(AnyEffect) -> Option<FilterHandle>,
+    ) -> Option<cherenkov_record::FilterId> {
         if self.filter.is_none() {
-            let source = self
-                .source
-                .take()
-                .expect("hydrolysis filtered mount without an effect source");
-            self.filter = Some(register(source));
+            let source = self.source.take()?;
+            self.filter = register(source);
         }
-        self.filter
-            .as_ref()
-            .expect("hydrolysis filtered mount lost its filter handle")
-            .id()
+        self.filter.as_ref().map(FilterHandle::id)
     }
 }
 

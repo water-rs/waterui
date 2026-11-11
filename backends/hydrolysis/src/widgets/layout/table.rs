@@ -22,6 +22,8 @@ use accesskit::{
 };
 use nami::Signal;
 use waterui::component::table::{TableColumn, TableConfig};
+#[cfg(feature = "accessibility")]
+use waterui_core::contract_violation;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::views::{ViewSnapshot, Views};
 use waterui_core::{AnyView, Environment, Native};
@@ -260,9 +262,12 @@ pub fn table_accessibility<E: crate::text::TextEngine>(
                 }
             }
         };
-        if let Some(layout_metrics) = layout_metrics {
-            let _ = layout_metrics;
-            let theme = theme.expect("hydrolysis rendered table accessibility requires a theme");
+        if layout_metrics.is_some() && theme.is_none() {
+            contract_violation!(
+                "hydrolysis rendered table accessibility requires a theme; the visible cell widths are not refreshed"
+            );
+        }
+        if let Some((_, theme)) = layout_metrics.zip(theme) {
             {
                 let state_ref = state.borrow();
                 let mut slot = state_ref.slot.borrow_mut();
