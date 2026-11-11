@@ -328,8 +328,6 @@ mod uikit_surface {
     };
     use waterui_backend_core::AnyView;
 
-    use crate::mtm;
-
     use crate::{PlatformView, Retained, mtm};
     use std::cell::Cell;
     use std::rc::Rc;
