@@ -351,8 +351,12 @@ pub struct CaptureItem {
     /// texel `i` covers the device interval `[i/s, (i+1)/s)`.
     pub scale: cherenkov::CaptureScale,
     /// The pyramid's level count: levels `1..n` reduce the filtered
-    /// level 0 by exact 2×2 boxes.
+    /// level 0 by `pyramid`'s kernel.
     pub levels: u32,
+    /// The kernel a level reduces its parent with: exact 2×2 boxes, or
+    /// the `[1, 5, 10, 10, 5, 1] / 32` binomial kernel centred on the same
+    /// boxes.
+    pub pyramid: cherenkov::CapturePyramid,
     /// The capture rect in capture texels (`union ⊕ apron` on the grid,
     /// clamped to the grid's extent).
     pub region: IRect,
@@ -665,10 +669,17 @@ impl BackdropPlan {
             // rows span `[i·B, (i + 2)·B)`. With `i ≥ p / B − 1.5` and
             // `i + 2 ≤ p / B + 1.5`, that is within `1.5·B` capture rows
             // of `p` on either side: the block plus the half-block the
-            // taps sit further out.
+            // taps sit further out. A Gaussian pyramid's level-`k` texel
+            // also reads two more level-`k − 1` texels on each side of its
+            // box, so folding the kept rows down to level 0 adds
+            // `2·Σ 2^(k−1) = 2·(B − 1)` rows.
             let extra = if levels > 1 {
                 let block = 1usize << (levels - 1);
-                block + block.div_ceil(2)
+                let widening = match self.spec.capture_pyramid() {
+                    cherenkov::CapturePyramid::Box => 0,
+                    cherenkov::CapturePyramid::Gaussian => 2 * (block - 1),
+                };
+                block + block.div_ceil(2) + widening
             } else {
                 0
             };
@@ -2318,6 +2329,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 group: gid,
                 scale: spec.scale(),
                 levels: spec.levels().get(),
+                pyramid: spec.capture_pyramid(),
                 region,
                 union: IRect {
                     x0: 0,
