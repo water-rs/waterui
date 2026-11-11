@@ -294,15 +294,6 @@ pub struct OutsideWatch {
     pub last_seen: u64,
 }
 
-/// Slot-owner attribution for the animation controller: the cell a slot's
-/// tick marks and the [`Dirty`] it raises.
-pub struct AnimationOwner<E: crate::text::TextEngine> {
-    /// The cell marked while the slot is active.
-    pub(crate) cell: Weak<NodeCell<E>>,
-    /// The dirty bit the slot raises.
-    pub(crate) dirty: Dirty,
-}
-
 /// A wake a host hands the renderer once so producers can request the next
 /// frame. `Arc<dyn Fn>` on purpose: the channel is painter-neutral — the
 /// HWUI host's `content_redraw_handle` and a GPU surface's `RedrawHandle`
@@ -590,10 +581,6 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// The node currently recording or measuring, and the phase — signal
     /// reads inside attribute their watcher guards (and marks) to it.
     reader: Option<Reader<E>>,
-    /// Slot-owner attribution for the animation controller: a bound key
-    /// maps to the cell that re-records when the slot advances, plus the
-    /// [`Dirty`] it raises.
-    animation_owners: rustc_hash::FxHashMap<AnimationKey, AnimationOwner<E>>,
     /// Identity-keyed subscriptions for reads no node owns (window-signal
     /// polls and driver reads outside a record or layout): one guard per
     /// signal identity, marking the root cell, kept only while the flush
@@ -917,7 +904,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             root,
             placement_clock,
             reader: None,
-            animation_owners: rustc_hash::FxHashMap::default(),
             outside_watches: rustc_hash::FxHashMap::default(),
             outside_watch_generation: 1,
             outside_frame_retains: Vec::new(),
@@ -976,6 +962,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let core = NodeCore::new(self.signals.clone(), Placement::new(&self.placement_clock));
         self.cells.borrow_mut().push(Rc::downgrade(&core.cell));
         core
+    }
+
+    /// The window's placement clock: the epoch placement resolutions cache
+    /// against and the instant engine-run motion evaluates at.
+    pub(crate) const fn placement_clock(&self) -> &Rc<PlacementClock> {
+        &self.placement_clock
     }
 
     /// Whether a structural rebuild is capturing right now — the gate a
@@ -1562,11 +1554,24 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.current_placement().resolved_transform(true)
     }
 
-    /// The flat-list view of the retained registries, rebuilt when a
-    /// registry write or a placement write made it stale.
+    /// The flat-list view of the retained registries as an event at the
+    /// frame clock's instant sees them: placement evaluates every
+    /// engine-run wrapper motion at that instant (water-rs/waterui#2203),
+    /// and the lists rebuild when a track was in flight since they last
+    /// resolved, or a registry or placement write made them stale.
     pub(crate) fn registries(&mut self) -> &HitTestState<E> {
+        self.placement_clock.advance(self.frame_instant);
         self.materialize_registries();
         &self.hit_test
+    }
+
+    /// The flat lists at a frame's end: rebuilt when a registry or
+    /// placement write made them stale, or once when a wrapper motion's
+    /// track ended — never because a track moved, so a frame never samples
+    /// the motions the engine runs (water-rs/waterui#2203).
+    pub(crate) fn frame_registries(&mut self) {
+        self.placement_clock.settle(self.frame_instant);
+        self.materialize_registries();
     }
 
     /// The focused text-input target's identity and window-space frame
@@ -1854,24 +1859,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
     }
 
-    /// Attributes the animation slot `key` to `cell` with `dirty`, so its
-    /// ticks mark the owning node. A rebind under the same key replaces the
-    /// entry — one owner per slot.
-    pub(crate) fn bind_animation_owner(
-        &mut self,
-        key: AnimationKey,
-        cell: &Rc<NodeCell<E>>,
-        dirty: Dirty,
-    ) {
-        self.animation_owners.insert(
-            key,
-            AnimationOwner {
-                cell: Rc::downgrade(cell),
-                dirty,
-            },
-        );
-    }
-
     /// The modifier snapshot the window last reported — pointer targets read
     /// it at commit time because pointer events carry no modifier state of
     /// their own (toggle and Shift range selection).
@@ -1945,6 +1932,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// [`SemanticCore::registries`].
     pub(crate) fn registries(&mut self) -> &HitTestState<E> {
         self.core.registries()
+    }
+
+    /// The frame-end materialization — see [`SemanticCore::frame_registries`].
+    pub(crate) fn frame_registries(&mut self) {
+        self.core.frame_registries();
     }
 
     /// [`SemanticCore::record_platform_views`].
@@ -2109,12 +2101,3 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 pub use render::HydroState;
 pub use render::RenderContext;
 pub use render::{HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};
-
-impl<E: crate::text::TextEngine> Clone for AnimationOwner<E> {
-    fn clone(&self) -> Self {
-        Self {
-            cell: self.cell.clone(),
-            dirty: self.dirty,
-        }
-    }
-}

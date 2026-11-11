@@ -7,6 +7,8 @@
 mod components;
 mod projective;
 
+pub use components::TransformComponents;
+
 use crate::Instant;
 use rustc_hash::FxHashMap;
 use waterui_contract::contract_violation;
@@ -941,8 +943,10 @@ impl SurfaceTree {
             LayerOp::Create(_) | LayerOp::Remove(_) => None,
             LayerOp::Transform(id, _)
             | LayerOp::Translation(id, _)
+            | LayerOp::TranslationAxis(id, ..)
             | LayerOp::Rotation(id, _)
             | LayerOp::Scale(id, _)
+            | LayerOp::ScaleAxis(id, ..)
             | LayerOp::Skew(id, _)
             | LayerOp::Pivot(id, _)
             | LayerOp::Projection(id, _)
@@ -1020,9 +1024,13 @@ impl SurfaceTree {
                     set_prop(&mut node.transform_track, &mut node.transform, &prop);
                 }
             }
-            LayerOp::Translation(id, prop) => self.node_mut(id).set_translation(prop),
+            LayerOp::Translation(id, prop) => self.node_mut(id).set_translation(&prop),
+            LayerOp::TranslationAxis(id, axis, prop) => {
+                self.node_mut(id).set_translation_axis(axis, prop);
+            }
             LayerOp::Rotation(id, prop) => self.node_mut(id).set_rotation(prop),
-            LayerOp::Scale(id, prop) => self.node_mut(id).set_scale(prop),
+            LayerOp::Scale(id, prop) => self.node_mut(id).set_scale(&prop),
+            LayerOp::ScaleAxis(id, axis, prop) => self.node_mut(id).set_scale_axis(axis, prop),
             LayerOp::Skew(id, prop) => self.node_mut(id).set_skew(prop),
             LayerOp::Pivot(id, prop) => self.node_mut(id).set_pivot(prop),
             op @ (LayerOp::Projection(..)

@@ -15,7 +15,7 @@ use std::num::NonZeroU64;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cherenkov_record::{FilterId, Fixed, Layer, LayerId, ShapeData, Shared, Transaction};
+use cherenkov_record::{Axis, FilterId, Fixed, Layer, LayerId, ShapeData, Shared, Transaction};
 
 use waterui_graphics::backend::HeldResources;
 
@@ -24,6 +24,7 @@ use super::backdrop::{
     MaterialMembership, MemberBind, ScopeAnchors, scope_id,
 };
 use super::cell::NodeCell;
+use super::motion::{LayerMotion, Motion};
 use super::placement::Placement;
 use super::program::{
     ChromeMaterial, InnerProgram, Item, LiveItem, LiveOpacity, MaterialRequest, ProducerContent,
@@ -77,6 +78,62 @@ struct LayerProps {
     scroll: kurbo::Vec2,
     /// Live properties, written over `transform` and in place of `opacity`.
     live: ScopeLive,
+    /// Engine-run motion, written over `transform` and in place of
+    /// `opacity` (water-rs/waterui#2203).
+    motion: FrameMotion,
+}
+
+/// The engine-run motion a node's frame layer follows. Two are the same
+/// when they bind the same motions about the same pivot, whatever value
+/// the motions hold.
+#[derive(Clone)]
+struct FrameMotion {
+    opacity: Option<Motion<f32>>,
+    transform: Option<Rc<LayerMotion>>,
+    /// The pivot `transform` turns about, as last written.
+    pivot: kurbo::Vec2,
+}
+
+impl FrameMotion {
+    const NONE: Self = Self {
+        opacity: None,
+        transform: None,
+        pivot: kurbo::Vec2::ZERO,
+    };
+
+    /// The motion `program` hands its frame layer.
+    fn of<E: crate::text::TextEngine>(program: &Program<E>) -> Self {
+        Self {
+            opacity: program.opacity_motion.clone(),
+            transform: program.motion.clone(),
+            pivot: program
+                .motion
+                .as_ref()
+                .map_or(kurbo::Vec2::ZERO, |motion| motion.pivot()),
+        }
+    }
+
+    fn same_transform(&self, other: &Self) -> bool {
+        match (&self.transform, &other.transform) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+
+    fn same_opacity(&self, other: &Self) -> bool {
+        match (&self.opacity, &other.opacity) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.same(b),
+            _ => false,
+        }
+    }
+}
+
+impl PartialEq for FrameMotion {
+    fn eq(&self, other: &Self) -> bool {
+        self.same_opacity(other) && self.same_transform(other) && self.pivot == other.pivot
+    }
 }
 
 impl LayerProps {
@@ -87,23 +144,65 @@ impl LayerProps {
         filter: None,
         scroll: kurbo::Vec2::ZERO,
         live: ScopeLive::NONE,
+        motion: FrameMotion::NONE,
     };
 
-    /// The layer's opacity now: its live operand's value, or its fixed one.
+    /// The layer's opacity now: its motion's or live operand's value at
+    /// rest, or its fixed one.
     fn opacity_now(&self) -> f32 {
+        if let Some(motion) = &self.motion.opacity {
+            return motion.target();
+        }
         self.live
             .opacity
             .as_ref()
             .map_or(self.opacity, LiveOpacity::now)
     }
 
-    /// The layer's transform now: its live operand's value over its at-rest
-    /// transform, or the at-rest one.
+    /// The layer's transform now: its motion at rest and its live operand's
+    /// value over its at-rest transform, or the at-rest one.
     fn transform_now(&self) -> kurbo::Affine {
+        let rest = self
+            .motion
+            .transform
+            .as_ref()
+            .map_or(self.transform, |motion| motion.matrix(self.transform, None));
         self.live
             .transform
             .as_ref()
-            .map_or(self.transform, |live| self.transform * live.now())
+            .map_or(rest, |live| rest * live.now())
+    }
+}
+
+/// Binds `motion`'s transform components on `layer`: the pivot whenever it
+/// moved, and every axis's motion when `rebind`.
+fn write_motion<T: LayerTarget<E>, E: crate::text::TextEngine>(
+    tx: &mut Transaction<'_, T>,
+    layer: &Layer,
+    motion: &LayerMotion,
+    pivot: kurbo::Vec2,
+    rebind: bool,
+) {
+    let edit = &mut tx[layer];
+    edit.pivot(Fixed(pivot));
+    if !rebind {
+        return;
+    }
+    for (axis, translation) in Axis::BOTH.into_iter().zip(motion.translation_axes()) {
+        if let Some(translation) = translation {
+            edit.translation_axis(axis, translation.live());
+        }
+    }
+    if let Some(rotation) = motion.rotation_angle() {
+        edit.rotation(rotation.live());
+    }
+    for (axis, scale) in Axis::BOTH.into_iter().zip(motion.scale_axes()) {
+        if let Some(scale) = scale {
+            edit.scale_axis(axis, scale.live());
+        }
+    }
+    for bound in motion.motions() {
+        bound.rebind();
     }
 }
 
@@ -128,20 +227,35 @@ fn write_props<T: LayerTarget<E>, E: crate::text::TextEngine>(
             }
         }
     }
-    let opacity_changed = match (&written.live.opacity, &props.live.opacity) {
-        (None, None) => written.opacity.to_bits() != props.opacity.to_bits(),
-        (written, props) => written != props,
+    let opacity_changed = if written.motion.opacity.is_some() || props.motion.opacity.is_some() {
+        !written.motion.same_opacity(&props.motion)
+    } else {
+        match (&written.live.opacity, &props.live.opacity) {
+            (None, None) => written.opacity.to_bits() != props.opacity.to_bits(),
+            (written, props) => written != props,
+        }
     };
     if opacity_changed {
-        match &props.live.opacity {
-            Some(live) => {
+        match (&props.motion.opacity, &props.live.opacity) {
+            (Some(motion), _) => {
+                edit.opacity(motion.live());
+                motion.rebind();
+            }
+            (None, Some(live)) => {
                 edit.opacity(live.live());
             }
-            None => {
+            (None, None) => {
                 edit.opacity(props.opacity);
             }
         }
     }
+    if let Some(motion) = &props.motion.transform {
+        let rebind = !written.motion.same_transform(&props.motion);
+        if rebind || written.motion.pivot != props.motion.pivot {
+            write_motion(tx, layer, motion, props.motion.pivot, rebind);
+        }
+    }
+    let edit = &mut tx[layer];
     if written.clip != props.clip {
         match &props.clip {
             Some(clip) => edit.clip(clip.clone()),
@@ -1076,8 +1190,11 @@ fn lower_program<T: LayerTarget<E>, E: crate::text::TextEngine>(
     program: &Program<E>,
     canvas: Option<LayerId>,
 ) {
+    let motion = FrameMotion::of(program);
     let Program {
         opacity,
+        opacity_motion: _,
+        motion: _,
         clip,
         filter,
         material,
@@ -1103,6 +1220,7 @@ fn lower_program<T: LayerTarget<E>, E: crate::text::TextEngine>(
             filter,
             scroll: kurbo::Vec2::ZERO,
             live: ScopeLive::NONE,
+            motion,
         },
     );
     // A platform-view leaf's frame marks where its external host window

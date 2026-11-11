@@ -10,25 +10,45 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use super::motion::LayerMotion;
 use super::stretch::ShownStretch;
+use crate::time::Instant;
 
-/// The per-window epoch that placement resolutions cache against.
+/// The per-window epoch that placement resolutions cache against, and the
+/// instant they evaluate engine-run motion at.
 ///
 /// Every [`Placement`] setter bumps it, so any placement change invalidates
 /// every cached resolution in the window at once — cheaper than tracking
 /// per-chain dependencies.
-pub struct PlacementClock(Cell<u64>);
+///
+/// A wrapper's transform motion (water-rs/waterui#2203) moves its layer on
+/// the engine's clock with no placement write, so placement evaluates it at
+/// the clock's instant: the last event's ([`Self::advance`]). Moving the
+/// instant bumps the epoch only while a track is in flight, and a frame
+/// re-evaluates once a track ends ([`Self::settle`]) — never every frame.
+pub struct PlacementClock {
+    epoch: Cell<u64>,
+    /// The instant motion evaluates at; `None` before the first event,
+    /// which evaluates every motion at rest.
+    instant: Cell<Option<Instant>>,
+    /// When each track started since the last evaluation is done.
+    settles: RefCell<Vec<Instant>>,
+}
 
 impl PlacementClock {
     /// A clock at epoch zero.
     pub fn new() -> Rc<Self> {
-        Rc::new(Self(Cell::new(0)))
+        Rc::new(Self {
+            epoch: Cell::new(0),
+            instant: Cell::new(None),
+            settles: RefCell::new(Vec::new()),
+        })
     }
 
     /// Advances the epoch; every setter calls it.
     pub fn bump(&self) {
-        self.0.set(
-            self.0
+        self.epoch.set(
+            self.epoch
                 .get()
                 .checked_add(1)
                 .expect("hydrolysis placement clock overflow"),
@@ -37,7 +57,49 @@ impl PlacementClock {
 
     /// The current epoch.
     pub const fn epoch(&self) -> u64 {
-        self.0.get()
+        self.epoch.get()
+    }
+
+    /// The instant placement evaluates motion at.
+    pub const fn instant(&self) -> Option<Instant> {
+        self.instant.get()
+    }
+
+    /// A motion changed: it moved, and — with `until` — a track runs until
+    /// that instant.
+    pub fn note_motion(&self, until: Option<Instant>) {
+        if let Some(until) = until {
+            self.settles.borrow_mut().push(until);
+        }
+        self.bump();
+    }
+
+    /// Evaluates motion at `now` from here on: an event at `now` asks where
+    /// things are. Bumps the epoch when a track was in flight at the
+    /// instant placement last evaluated at, since it has moved since.
+    pub fn advance(&self, now: Instant) {
+        let previous = self.instant.replace(Some(now));
+        if previous == Some(now) {
+            return;
+        }
+        let mut settles = self.settles.borrow_mut();
+        let moved = settles
+            .iter()
+            .any(|until| previous.is_none_or(|previous| *until > previous));
+        settles.retain(|until| *until > now);
+        drop(settles);
+        if moved {
+            self.bump();
+        }
+    }
+
+    /// A frame at `now`: re-evaluates at `now` only when a track that was
+    /// in flight at the last evaluation is done by then, so the rest
+    /// placement every track ends at is resolved once.
+    pub fn settle(&self, now: Instant) {
+        if self.settles.borrow().iter().any(|until| *until <= now) {
+            self.advance(now);
+        }
     }
 }
 
@@ -168,6 +230,9 @@ pub struct Placement {
     paint_parent: RefCell<Option<Rc<Self>>>,
     /// The node's transform in its parent's space.
     transform: Cell<kurbo::Affine>,
+    /// The engine-run transform motion over `transform` — a wrapper's
+    /// offset, rotation or scale — evaluated at the clock's instant.
+    motion: RefCell<Option<Rc<LayerMotion>>>,
     /// Content offset applied inside the node's own frame (scroll).
     content_offset: Cell<kurbo::Vec2>,
     /// A clip bounding box in the node's own space.
@@ -225,6 +290,7 @@ impl Placement {
             parent: RefCell::new(None),
             paint_parent: RefCell::new(None),
             transform: Cell::new(kurbo::Affine::IDENTITY),
+            motion: RefCell::new(None),
             content_offset: Cell::new(kurbo::Vec2::ZERO),
             clip: Cell::new(None),
             alpha: Cell::new(1.0),
@@ -318,6 +384,22 @@ impl Placement {
         self.clock.bump();
     }
 
+    /// Moves the node's frame by `motion` over its transform: the wrapper
+    /// that owns the placement animates its layer on the engine's clock.
+    pub fn set_motion(&self, motion: Rc<LayerMotion>) {
+        *self.motion.borrow_mut() = Some(motion);
+        self.clock.bump();
+    }
+
+    /// The node's transform into its parent's space with its motion at the
+    /// clock's instant — the layer's transform as the engine draws it then.
+    fn local_transform(&self) -> kurbo::Affine {
+        let transform = self.transform.get();
+        self.motion.borrow().as_ref().map_or(transform, |motion| {
+            motion.matrix(transform, self.clock.instant())
+        })
+    }
+
     /// Sets the clip bounding box in the node's own space.
     pub fn set_content_offset(&self, offset: kurbo::Vec2) {
         self.content_offset.set(offset);
@@ -345,6 +427,15 @@ impl Placement {
         while let Some(placement) = parent {
             if Rc::ptr_eq(&placement, anchor) {
                 return transform;
+            }
+            // A placement with motion is a layer node's frame: the frames
+            // under it anchor on it, so no paint delta crosses it — the
+            // engine moves its layer, never a descendant's transform.
+            if placement.motion.borrow().is_some() {
+                waterui_core::contract_violation!(
+                    "hydrolysis placement: a paint delta crosses an engine-animated frame; \
+                     the layer is placed at the frame's rest transform"
+                );
             }
             transform = placement.transform.get()
                 * kurbo::Affine::translate(placement.content_offset.get())
@@ -419,7 +510,7 @@ impl Placement {
             .map(Rc::as_ref)
             .chain(std::iter::once(self))
         {
-            transform *= placement.transform.get();
+            transform *= placement.local_transform();
             if let Some(shown) = placement.stretch.get() {
                 stretches.push(ResolvedStretch {
                     params: shown.params(transform),
@@ -484,7 +575,7 @@ impl Placement {
             .chain(std::iter::once(self))
         {
             removes = removes.union(placement.removes.get());
-            transform *= placement.transform.get();
+            transform *= placement.local_transform();
             alpha *= placement.alpha.get();
             if let Some(rect) = placement.clip.get() {
                 // The clip lives in the placement's own frame, outside its

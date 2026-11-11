@@ -27,6 +27,7 @@ mod drag_drop;
 mod dynamic_remeasure;
 #[cfg(not(target_arch = "wasm32"))]
 mod emoji_atlas;
+mod engine_motion;
 mod gesture_buttons;
 mod gesture_capture;
 mod gesture_env;
@@ -508,19 +509,20 @@ fn subscribed_snapshot_preserves_registration_animation_metadata() {
     clippy::float_cmp,
     reason = "the snapshot is the signal's stored literal read back untouched; any drift means the read went through arithmetic it must not"
 )]
-fn animated_scalar_subscribes_before_reading_its_snapshot() {
+fn wrapper_motion_subscribes_before_reading_its_snapshot() {
     let signal = registration_signal(0.25, nami::watcher::Context::from(0.25));
-    let mut renderer = test_renderer();
-    let owner = Rc::new(());
+    let renderer = test_renderer();
 
-    let resolved = renderer.resolve_owned_scalar(
+    let motion = super::mount::motion::Motion::new(
         &signal,
-        &owner,
-        usize::MAX,
-        cherenkov_record::tree::RATE_FAST,
+        f64::from,
+        renderer.frame_signals(),
+        Rc::clone(renderer.placement_clock()),
+        Box::new(|| {}),
+        false,
     );
 
-    assert_eq!(resolved, 0.25);
+    assert_eq!(motion.target(), 0.25);
     assert!(signal.subscribed.get());
 }
 

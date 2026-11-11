@@ -113,14 +113,14 @@ pub use cherenkov_record::Region;
 // The moved layer-tree types: re-exported at the root exactly like the
 // rest of `cherenkov-record`.
 pub use cherenkov_record::{
-    AnimationStart, BackdropEffect, BackdropId, BackdropOuter, BackdropOuterError, BackdropSample,
-    BackdropSampling, BackdropShaderEffect, BackdropShaderId, BackdropShaderSource, BackdropSpec,
-    BackdropUnion, BackdropUnionError, CaptureLevels, CaptureLevelsError, CaptureScale,
-    CaptureScaleError, ColorMatrix, ContentOp, GpuInstalls, ImageLimits, ImageStorage, Install,
-    KeyframeProp, Layer, LayerAnimations, LayerContent, LayerEdit, LayerId, LayerKeyframes,
-    LayerNode, LayerOwner, LevelRamp, LevelRampError, Projective, ProjectiveError,
+    AnimationStart, Axis, BackdropEffect, BackdropId, BackdropOuter, BackdropOuterError,
+    BackdropSample, BackdropSampling, BackdropShaderEffect, BackdropShaderId, BackdropShaderSource,
+    BackdropSpec, BackdropUnion, BackdropUnionError, CaptureLevels, CaptureLevelsError,
+    CaptureScale, CaptureScaleError, ColorMatrix, ContentOp, GpuInstalls, ImageLimits,
+    ImageStorage, Install, KeyframeProp, Layer, LayerAnimations, LayerContent, LayerEdit, LayerId,
+    LayerKeyframes, LayerNode, LayerOwner, LevelRamp, LevelRampError, Projective, ProjectiveError,
     ProjectiveLayers, Prop, Queue, Realize, RecordingScale, RecordingScaleError, Refraction,
     RefreshRange, ResourceId, Rim, Shared, SurfaceId, SurfaceTree, Target, TextLayoutId,
-    Transaction, snap_animating,
+    Transaction, TransformComponents, snap_animating,
 };
 pub use kurbo::Stroke;

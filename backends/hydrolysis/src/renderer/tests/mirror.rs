@@ -349,6 +349,17 @@ impl MirrorWindow {
         }
     }
 
+    /// Samples the mirrored tree's running tracks for a frame presented at
+    /// `at`, as the engine does before it draws one.
+    pub fn sample(&self, at: crate::time::Instant) -> cherenkov_record::tree::Sampling {
+        self.mirrored.borrow_mut().tree.sample(at, 1.0)
+    }
+
+    /// The mirrored layer `id`'s node.
+    pub fn layer(&self, id: LayerId) -> Ref<'_, LayerNode> {
+        Ref::map(self.mirrored.borrow(), |mirrored| mirrored.tree.layer(id))
+    }
+
     /// The layer path from the window layer down to `id`, inclusive.
     fn path(&self, id: LayerId) -> Vec<LayerId> {
         fn find(tree: &SurfaceTree, at: LayerId, id: LayerId, path: &mut Vec<LayerId>) -> bool {

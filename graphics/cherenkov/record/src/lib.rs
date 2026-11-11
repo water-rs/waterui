@@ -88,7 +88,7 @@ pub use crate::material::{
     OuterExtentError, UnionSmoothing, UnionSmoothingError,
 };
 pub use crate::ops::{
-    AnimationStart, BackdropId, ChangeSet, ContentOp, Install, KeyframeProp, LayerId,
+    AnimationStart, Axis, BackdropId, ChangeSet, ContentOp, Install, KeyframeProp, LayerId,
     LayerKeyframes, LayerOp, Op, Prop, SurfaceId,
 };
 pub use crate::paint::{
@@ -112,6 +112,7 @@ pub use crate::surface::{Layer, LayerContent, LayerEdit, LayerOwner, Shared, Tra
 pub use crate::target::{BackdropSampling, GpuInstalls, ProjectiveLayers, Queue, Target};
 pub use crate::text::TextLayoutId;
 pub use crate::tree::{
-    LayerAnimations, LayerNode, Realize, RunningTracks, SurfaceTree, snap_animating,
+    LayerAnimations, LayerNode, Realize, RunningTracks, SurfaceTree, TransformComponents,
+    snap_animating,
 };
 pub use kurbo::Stroke;

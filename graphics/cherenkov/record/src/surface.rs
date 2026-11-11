@@ -24,7 +24,7 @@ use waterui_contract::contract_violation;
 use crate::Instant;
 use crate::animation::{Animation, KeyframeAnimation};
 use crate::ops::{
-    AnimationStart, BackdropId, ChangeSet, ContentOp, Install, KeyframeProp, LayerId,
+    AnimationStart, Axis, BackdropId, ChangeSet, ContentOp, Install, KeyframeProp, LayerId,
     LayerKeyframes, LayerOp, Op, Prop, SurfaceId,
 };
 use crate::projective::Projective;
@@ -58,8 +58,12 @@ macro_rules! prop_kinds {
 prop_kinds![
     Transform,
     Translation,
+    TranslationX,
+    TranslationY,
     Rotation,
     Scale,
+    ScaleX,
+    ScaleY,
     Skew,
     Pivot,
     Projection,
@@ -85,7 +89,7 @@ impl PropKind {
 }
 
 /// A set of [`PropKind`]s, one bit per kind.
-type KindSet = u16;
+type KindSet = u32;
 
 /// A surface's kept property subscriptions, indexed by layer.
 ///
@@ -1522,8 +1526,13 @@ impl<T: Target> LayerEdit<T> {
     /// Sets the translation in local coordinates.
     /// Component properties compose after [`Self::transform`]. Each keeps
     /// its own live subscription and animation track; changing it never
-    /// re-records content.
+    /// re-records content. Each axis runs a track of its own, so a later
+    /// [`Self::translation_axis`] retargets one axis and leaves the other
+    /// running; binding the joint value drops both axes' bindings.
     pub fn translation(&mut self, value: impl Into<Live<Vec2>>) -> &mut Self {
+        for kind in [PropKind::TranslationX, PropKind::TranslationY] {
+            Shared::unbind(&self.shared, self.layer, kind);
+        }
         let target = Shared::bind_keyframed(
             &self.shared,
             self.layer,
@@ -1587,11 +1596,56 @@ impl<T: Target> LayerEdit<T> {
         self
     }
 
+    /// Sets one axis of the translation, with a live subscription and
+    /// animation track of its own: x and y can follow different signals
+    /// under different animations. Binding an axis drops the joint
+    /// [`Self::translation`] binding; the other axis keeps its value and
+    /// its track.
+    pub fn translation_axis(&mut self, axis: Axis, value: impl Into<Live<f64>>) -> &mut Self {
+        let kind = match axis {
+            Axis::X => PropKind::TranslationX,
+            Axis::Y => PropKind::TranslationY,
+        };
+        Shared::unbind(&self.shared, self.layer, PropKind::Translation);
+        let target = Shared::bind(
+            &self.shared,
+            self.layer,
+            kind,
+            value.into(),
+            move |layer, target, animation, start| {
+                LayerOp::TranslationAxis(
+                    layer,
+                    axis,
+                    Prop {
+                        target,
+                        animation,
+                        start,
+                    },
+                )
+            },
+        );
+        self.queue(Op::Layer(LayerOp::TranslationAxis(
+            self.layer,
+            axis,
+            Prop {
+                target,
+                animation: self.default_animation,
+                start: self.default_start,
+            },
+        )));
+        self
+    }
+
     /// Sets the x/y scale factors; initially (1, 1).
     /// Component properties compose after [`Self::transform`]. Each keeps
     /// its own live subscription and animation track; changing it never
-    /// re-records content.
+    /// re-records content. Each axis runs a track of its own, so a later
+    /// [`Self::scale_axis`] retargets one axis and leaves the other
+    /// running; binding the joint value drops both axes' bindings.
     pub fn scale(&mut self, value: impl Into<Live<Vec2>>) -> &mut Self {
+        for kind in [PropKind::ScaleX, PropKind::ScaleY] {
+            Shared::unbind(&self.shared, self.layer, kind);
+        }
         let target = Shared::bind_keyframed(
             &self.shared,
             self.layer,
@@ -1611,6 +1665,46 @@ impl<T: Target> LayerEdit<T> {
         );
         self.queue(Op::Layer(LayerOp::Scale(
             self.layer,
+            Prop {
+                target,
+                animation: self.default_animation,
+                start: self.default_start,
+            },
+        )));
+        self
+    }
+
+    /// Sets one axis's scale factor, with a live subscription and
+    /// animation track of its own: x and y can follow different signals
+    /// under different animations. Binding an axis drops the joint
+    /// [`Self::scale`] binding; the other axis keeps its value and its
+    /// track.
+    pub fn scale_axis(&mut self, axis: Axis, value: impl Into<Live<f64>>) -> &mut Self {
+        let kind = match axis {
+            Axis::X => PropKind::ScaleX,
+            Axis::Y => PropKind::ScaleY,
+        };
+        Shared::unbind(&self.shared, self.layer, PropKind::Scale);
+        let target = Shared::bind(
+            &self.shared,
+            self.layer,
+            kind,
+            value.into(),
+            move |layer, target, animation, start| {
+                LayerOp::ScaleAxis(
+                    layer,
+                    axis,
+                    Prop {
+                        target,
+                        animation,
+                        start,
+                    },
+                )
+            },
+        );
+        self.queue(Op::Layer(LayerOp::ScaleAxis(
+            self.layer,
+            axis,
             Prop {
                 target,
                 animation: self.default_animation,

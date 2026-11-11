@@ -1291,7 +1291,7 @@ pub(super) fn pump_window_scene<P: PlatformWindow, E: crate::text::TextEngine>(
     // per encoded frame, and a frame whose `current` is empty reads as
     // "no views". The record is idempotent, so the build and refresh arms
     // running their own frame-end step cost nothing here.
-    runtime.renderer.registries();
+    runtime.renderer.frame_registries();
     runtime.renderer.record_platform_views();
     if runtime.renderer.has_structure_marks() {
         // A structural mark raised mid-flush — an effect needs another frame.
@@ -1816,7 +1816,7 @@ crate::engine::cfg_async_fn! {
                 runtime.request_redraw();
                 runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
                 let (measurement_cache_hits, measurement_cache_misses) =
-                    runtime.renderer.measurement_cache_stats();
+                    runtime.renderer.take_measurement_cache_stats();
                 let mount_stats = runtime.renderer.mount_stats();
                 let (applied_filter_count, applied_filter_capture_us, applied_filter_effect_us) =
                     runtime.renderer.applied_filter_stats();
@@ -1875,7 +1875,7 @@ crate::engine::cfg_async_fn! {
             stages = runtime.renderer.take_frame_stage_times();
         }
         let (measurement_cache_hits, measurement_cache_misses) =
-            runtime.renderer.measurement_cache_stats();
+            runtime.renderer.take_measurement_cache_stats();
         let mount_stats = runtime.renderer.mount_stats();
         let (applied_filter_count, applied_filter_capture_us, applied_filter_effect_us) =
             runtime.renderer.applied_filter_stats();

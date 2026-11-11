@@ -87,6 +87,39 @@ pub struct Prop<T> {
     pub start: Option<Instant>,
 }
 
+/// One axis of a two-axis layer property — translation or scale — which
+/// animates per axis, so x and y can run different animations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Axis {
+    /// The horizontal axis.
+    X,
+    /// The vertical axis.
+    Y,
+}
+
+impl Axis {
+    /// Both axes, x first: the order a [`Vec2`]'s lanes take.
+    pub const BOTH: [Self; 2] = [Self::X, Self::Y];
+
+    /// The axis's component of `value`.
+    #[must_use]
+    pub const fn of(self, value: Vec2) -> f64 {
+        match self {
+            Self::X => value.x,
+            Self::Y => value.y,
+        }
+    }
+
+    /// `value` with this axis's component replaced by `component`.
+    #[must_use]
+    pub const fn with(self, value: Vec2, component: f64) -> Vec2 {
+        match self {
+            Self::X => Vec2::new(component, value.y),
+            Self::Y => Vec2::new(value.x, component),
+        }
+    }
+}
+
 /// A property's keyframe track: the value the property holds once a finite
 /// repeat ends, and the track it runs until then.
 #[derive(Clone, Debug)]
@@ -155,8 +188,14 @@ pub enum LayerOp {
     Translation(LayerId, Prop<Vec2>),
     /// Sets the unwrapped rotation angle in radians; initially zero.
     Rotation(LayerId, Prop<f64>),
+    /// Sets one axis of the translation with a track of its own: the other
+    /// axis keeps whatever it runs. `Translation` sets both axes at once.
+    TranslationAxis(LayerId, Axis, Prop<f64>),
     /// Sets the x/y scale factors; initially (1, 1).
     Scale(LayerId, Prop<Vec2>),
+    /// Sets one axis's scale factor with a track of its own: the other
+    /// axis keeps whatever it runs. `Scale` sets both axes at once.
+    ScaleAxis(LayerId, Axis, Prop<f64>),
     /// Sets x/y skew angles in radians; initially zero.
     Skew(LayerId, Prop<Vec2>),
     /// Sets the local pivot for rotation, skew and scale; initially zero.
@@ -227,8 +266,10 @@ impl LayerOp {
             | Self::Remove(id)
             | Self::Transform(id, _)
             | Self::Translation(id, _)
+            | Self::TranslationAxis(id, ..)
             | Self::Rotation(id, _)
             | Self::Scale(id, _)
+            | Self::ScaleAxis(id, ..)
             | Self::Skew(id, _)
             | Self::Pivot(id, _)
             | Self::Projection(id, _)
@@ -264,7 +305,9 @@ impl LayerOp {
         match self {
             Self::Transform(_, prop) => Some(&mut prop.animation),
             Self::Translation(_, prop) => Some(&mut prop.animation),
-            Self::Rotation(_, prop) => Some(&mut prop.animation),
+            Self::Rotation(_, prop)
+            | Self::TranslationAxis(_, _, prop)
+            | Self::ScaleAxis(_, _, prop) => Some(&mut prop.animation),
             Self::Scale(_, prop) => Some(&mut prop.animation),
             Self::Skew(_, prop) => Some(&mut prop.animation),
             Self::Pivot(_, prop) => Some(&mut prop.animation),
