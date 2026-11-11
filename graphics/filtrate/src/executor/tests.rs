@@ -13,6 +13,7 @@ use image::RgbaImage;
 
 use super::{Executor, entry};
 use crate::plan::{PassAux, Plan, PlanError};
+use crate::test_filters::{Masked, SdfReadout, assert_field_close, disc_coverage, disc_distance};
 use crate::{
     AnimatedCallback, AnimatedTarget, AuxSource, ColorFilter, ColorStage, CpuFilter, CpuImage,
     CpuKernel, Effect, EffectContext, EffectFrameTiming, EffectInput, EffectOutput,
@@ -28,68 +29,6 @@ use filtrate_core::space::{
 // ============================================================================
 // Test filters for the declarations no built-in uses yet
 // ============================================================================
-
-/// Writes the shape's signed distance field to red.
-struct SdfReadout;
-
-impl Filter for SdfReadout {
-    type Kind = kind::Spatial;
-    type Params = [f32; 0];
-
-    fn params(&self) -> [f32; 0] {
-        []
-    }
-
-    fn collect_stages<C: StageCollector>(&self, collector: &mut C) {
-        const STAGE: SpatialStage = SpatialStage {
-            name: "sdf_readout",
-            source: include_str!("test_snippets/sdf_readout.wgsl"),
-            source_f16: None,
-            params: &[],
-            space: OperatingSpace::Working,
-            shape: Some(ShapeInput::Sdf),
-            aux: &[],
-        };
-        collector.spatial(Placed::new(&STAGE));
-    }
-}
-
-impl SpatialFilter for SdfReadout {
-    fn footprint_of(_params: &[f32; 0]) -> Footprint {
-        Footprint::ZERO
-    }
-}
-
-/// Scales the input by the shape's mask.
-struct Masked;
-
-impl Filter for Masked {
-    type Kind = kind::Spatial;
-    type Params = [f32; 0];
-
-    fn params(&self) -> [f32; 0] {
-        []
-    }
-
-    fn collect_stages<C: StageCollector>(&self, collector: &mut C) {
-        const STAGE: SpatialStage = SpatialStage {
-            name: "masked",
-            source: include_str!("test_snippets/masked.wgsl"),
-            source_f16: None,
-            params: &[],
-            space: OperatingSpace::Working,
-            shape: Some(ShapeInput::Mask),
-            aux: &[],
-        };
-        collector.spatial(Placed::new(&STAGE));
-    }
-}
-
-impl SpatialFilter for Masked {
-    fn footprint_of(_params: &[f32; 0]) -> Footprint {
-        Footprint::ZERO
-    }
-}
 
 /// Declares a shape input its snippet does not take.
 struct UndeclaredShape;
@@ -1519,58 +1458,17 @@ fn shape_sdf(gpu: &TestGpu, size: (u32, u32), coverage: &[f32]) -> Vec<f32> {
         .collect()
 }
 
-/// Asserts `field` is within `tolerance` pixels of `expected` at every
-/// pixel centre.
-fn assert_field_close(
-    size: (u32, u32),
-    field: &[f32],
-    tolerance: f32,
-    expected: impl Fn(f32, f32) -> f32,
-) {
-    for y in 0..size.1 {
-        for x in 0..size.0 {
-            let got = field[usize::try_from(y * size.0 + x).expect("fits usize")];
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "test coordinates are small integers"
-            )]
-            let want = expected(x as f32 + 0.5, y as f32 + 0.5);
-            assert!(
-                (got - want).abs() <= tolerance,
-                "pixel ({x}, {y}): distance {got}, expected {want}"
-            );
-        }
-    }
-}
-
 #[test]
 #[expect(
     clippy::cast_precision_loss,
     reason = "test coordinates are small integers"
 )]
 fn gpu_shape_sdf_is_the_distance_to_the_half_coverage_contour() {
-    // An anti-aliased disc, its coverage supersampled 8 × 8 per pixel.
-    const SAMPLES: u32 = 8;
     let gpu = create_test_device();
     let size = (48, 40);
 
-    let (center, radius) = ([20.0f32, 22.0], 13.5f32);
-    let disc: Vec<f32> = (0..size.1)
-        .flat_map(|y| (0..size.0).map(move |x| (x, y)))
-        .map(|(x, y)| {
-            let inside = (0..SAMPLES * SAMPLES)
-                .filter(|sample| {
-                    let px = x as f32 + ((sample % SAMPLES) as f32 + 0.5) / SAMPLES as f32;
-                    let py = y as f32 + ((sample / SAMPLES) as f32 + 0.5) / SAMPLES as f32;
-                    (px - center[0]).hypot(py - center[1]) < radius
-                })
-                .count();
-            inside as f32 / (SAMPLES * SAMPLES) as f32
-        })
-        .collect();
-    assert_field_close(size, &shape_sdf(&gpu, size, &disc), 0.25, |x, y| {
-        (x - center[0]).hypot(y - center[1]) - radius
-    });
+    let disc = disc_coverage(size);
+    assert_field_close(size, &shape_sdf(&gpu, size, &disc), 0.25, disc_distance);
 
     // Opaque content ends at the input's edges. A corner pixel's
     // neighbourhood is also that of a 45° edge through both crossings, so

@@ -11,10 +11,12 @@
 //! footprint away from a window edge inside the image match a full-image
 //! application.
 //!
-//! A pass's input, its shape mask and the chain's auxiliary images are the
-//! textures its segment binds. A spatial pass runs 2×2 quads, so
-//! derivatives see the differences a GPU takes; lanes past the window edge
-//! run as helpers and are not stored.
+//! A pass's input, its shape and the chain's auxiliary images are the
+//! textures its segment binds. The shape is the chain input's coverage, or
+//! its signed distance field, built over the window on the GPU executor's
+//! jump-flooding schedule ([`crate::shape_field`]). A spatial pass runs 2×2
+//! quads, so derivatives see the differences a GPU takes; lanes past the
+//! window edge run as helpers and are not stored.
 
 extern crate alloc;
 
@@ -34,6 +36,7 @@ use cherenkov_shader::{
 use filtrate_core::{AuxImage, CpuImage, Filter, ImageVisitor, ShapeInput, WorkingSpace};
 
 use crate::plan::{PassAux, PassPlan, Plan};
+use crate::shape_field;
 
 /// Image handles a pass binds: its input, the chain input as its shape,
 /// then auxiliary image `n` at `AUX + n`.
@@ -105,6 +108,8 @@ struct Pass {
     space: Option<[Reg; 3]>,
     /// The handle each texture and sampler argument register holds.
     bindings: Vec<(Reg, u32)>,
+    /// Which representation of the chain input's shape the pass reads.
+    shape: Option<ShapeInput>,
     /// What auxiliary image `n` binds.
     aux: Vec<PassAux>,
 }
@@ -128,8 +133,10 @@ pub struct LaneProgram {
     images: Vec<Option<Texels>>,
     /// Which passes' inputs a later pass reads.
     kept: Vec<bool>,
-    /// Whether a pass reads the chain input as its shape.
-    shape: bool,
+    /// Whether a pass reads the chain input's coverage as its shape.
+    mask: bool,
+    /// Whether a pass reads the chain input's signed distance field.
+    sdf: bool,
 }
 
 impl LaneProgram {
@@ -138,11 +145,9 @@ impl LaneProgram {
     ///
     /// # Errors
     /// [`LaneFilterError::Plan`] when the stages do not plan,
-    /// [`LaneFilterError::Unsupported`] for a pass the lane executor cannot
-    /// run — a stage reading its shape's signed distance field, or a
-    /// construct the executor does not model — and
-    /// [`LaneFilterError::GpuImage`] for an auxiliary image without CPU
-    /// texels.
+    /// [`LaneFilterError::Unsupported`] for a pass using a construct the
+    /// executor does not model, and [`LaneFilterError::GpuImage`] for an
+    /// auxiliary image without CPU texels.
     pub fn new<F: Filter>(filter: &F) -> Result<Self, LaneFilterError> {
         let plan = Plan::new(filter, true, true, false, cherenkov_shader::Precision::F32)
             .map_err(|error| LaneFilterError::Plan(error.to_string()))?;
@@ -158,18 +163,11 @@ impl LaneProgram {
         }
         let mut images: Vec<Option<Texels>> = (0..F::IMAGES).map(|_| None).collect();
         let mut kept = alloc::vec![false; plan.passes.len()];
-        let mut shape = false;
+        let (mut mask, mut sdf) = (false, false);
         let mut passes = Vec::with_capacity(plan.passes.len());
         for pass in &plan.passes {
-            if pass.shape == Some(ShapeInput::Sdf) {
-                return Err(LaneFilterError::Unsupported {
-                    stage: pass.name,
-                    reason: "it reads its shape's signed distance field, which the CPU executor \
-                             does not build"
-                        .to_string(),
-                });
-            }
-            shape |= pass.shape.is_some();
+            mask |= pass.shape == Some(ShapeInput::Mask);
+            sdf |= pass.shape == Some(ShapeInput::Sdf);
             for aux in &pass.aux {
                 match *aux {
                     PassAux::Image(index) => {
@@ -189,7 +187,8 @@ impl LaneProgram {
             passes,
             images,
             kept,
-            shape,
+            mask,
+            sdf,
         })
     }
 
@@ -215,7 +214,10 @@ impl LaneProgram {
             return;
         }
         let top = image.top;
-        let chain_input = self.shape.then(|| image.pixels.to_vec());
+        let chain_input = self.mask.then(|| image.pixels.to_vec());
+        let field = self
+            .sdf
+            .then(|| shape_field::signed_distance(image.pixels, width, top, height));
         let mut inputs: Vec<Option<Vec<[f32; 4]>>> = (0..self.passes.len()).map(|_| None).collect();
         let size = [width as f32, height as f32];
         let window = Window {
@@ -251,9 +253,14 @@ impl LaneProgram {
                     ),
                 })
                 .collect();
+            let shape = match pass.shape {
+                None => None,
+                Some(ShapeInput::Mask) => chain_input.as_deref(),
+                Some(ShapeInput::Sdf) => field.as_deref(),
+            };
             let mut host = Images {
                 input: input.as_deref().map(|pixels| window.view(pixels)),
-                shape: chain_input.as_deref().map(|pixels| window.view(pixels)),
+                shape: shape.map(|pixels| window.view(pixels)),
                 aux: &aux,
             };
             if pass.spatial() {
@@ -551,6 +558,7 @@ fn compile(
         uniforms: Vec::new(),
         space: None,
         bindings: Vec::new(),
+        shape: plan.shape,
         aux: plan.aux.clone(),
     };
     for (index, arg) in plan.segment.args().iter().enumerate() {
@@ -628,6 +636,9 @@ mod tests {
         BlendMode, BlendWithImage, Bloom, Blur, Brightness, ColorMatrix, Convolution3x3,
         GaussianBlur, Grayscale, HueRotation, LumaCurve, Median3x3, OverscrollStretch, Saturation,
     };
+    use crate::test_filters::{
+        Masked, SdfReadout, assert_field_close, disc_coverage, disc_distance,
+    };
     use crate::{FilterImage, OperatingSpace};
 
     /// A 37 × 23 image: odd in both directions, so runs end in partial
@@ -651,22 +662,35 @@ mod tests {
         values
     }
 
-    /// `filter` through its lane program on rows `top..bottom` of `pixels`.
+    /// `filter` through its lane program on rows `top..bottom` of the
+    /// [`SIZE`] image `pixels`.
     fn lanes<F: Filter>(
         filter: &F,
         pixels: &[[f32; 4]],
         top: usize,
         bottom: usize,
     ) -> Vec<[f32; 4]> {
+        lanes_sized(filter, pixels, SIZE, top, bottom)
+    }
+
+    /// `filter` through its lane program on rows `top..bottom` of the
+    /// `size` image `pixels`.
+    fn lanes_sized<F: Filter>(
+        filter: &F,
+        pixels: &[[f32; 4]],
+        size: (usize, usize),
+        top: usize,
+        bottom: usize,
+    ) -> Vec<[f32; 4]> {
         let program = LaneProgram::new(filter).expect("the filter runs on the lane executor");
-        let mut window = pixels[top * SIZE.0..bottom * SIZE.0].to_vec();
+        let mut window = pixels[top * size.0..bottom * size.0].to_vec();
         program.apply(
             &flat(filter),
             &WorkingSpace::LINEAR_DISPLAY_P3,
             &mut CpuImage {
                 pixels: &mut window,
                 top,
-                size: SIZE,
+                size,
             },
         );
         window
@@ -846,6 +870,107 @@ mod tests {
         )]
         let apron = reach.resolve((37.0, 23.0)).ceil() as usize;
         assert_window_matches_full(&bloom, apron);
+    }
+
+    /// The size the shape field tests run at, the GPU executor's.
+    const FIELD_SIZE: (u32, u32) = (48, 40);
+
+    /// [`SdfReadout`] on rows `top..bottom` of premultiplied white at
+    /// `coverage`: the field the stage read.
+    fn shape_sdf(coverage: &[f32], top: usize, bottom: usize) -> Vec<f32> {
+        let texels: Vec<[f32; 4]> = coverage.iter().map(|&alpha| [alpha; 4]).collect();
+        let size = (FIELD_SIZE.0 as usize, FIELD_SIZE.1 as usize);
+        lanes_sized(&SdfReadout, &texels, size, top, bottom)
+            .into_iter()
+            .map(|texel| texel[0])
+            .collect()
+    }
+
+    /// The field the GPU executor's test holds its passes to, at the same
+    /// tolerance.
+    #[test]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "test coordinates are small integers"
+    )]
+    fn a_shape_field_is_the_distance_to_the_half_coverage_contour() {
+        let size = FIELD_SIZE;
+        let rows = size.1 as usize;
+        let disc = disc_coverage(size);
+        assert_field_close(size, &shape_sdf(&disc, 0, rows), 0.25, disc_distance);
+
+        // Opaque content ends at the image's edges.
+        let (width, height) = (size.0 as f32, size.1 as f32);
+        let opaque = vec![1.0; (size.0 * size.1) as usize];
+        assert_field_close(size, &shape_sdf(&opaque, 0, rows), 0.25, |x, y| {
+            -x.min(width - x).min(y).min(height - y)
+        });
+
+        // Nothing covered is farther than any distance the GPU's field
+        // holds, the largest finite f16.
+        let empty = vec![0.0; (size.0 * size.1) as usize];
+        assert!(
+            shape_sdf(&empty, 0, rows)
+                .iter()
+                .all(|&distance| distance == 65504.0),
+            "an empty shape is at the field's largest distance everywhere"
+        );
+    }
+
+    /// A band of the disc whose edges cross its interior: a window edge
+    /// inside the image adds no contour, so rows an apron away from it hold
+    /// the disc's distance, to the field's accuracy, wherever it is within
+    /// the apron, and no nearer one elsewhere.
+    #[test]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "test coordinates are small integers"
+    )]
+    fn a_band_sees_the_contour_within_its_apron() {
+        const APRON: usize = 6;
+        const TOLERANCE: f32 = 0.25;
+        let reach = APRON as f32;
+        let size = FIELD_SIZE;
+        let width = size.0 as usize;
+        let (top, bottom) = (12, 30);
+        let band = shape_sdf(&disc_coverage(size), top, bottom);
+        let mut within = 0;
+        for y in top + APRON..bottom - APRON {
+            for x in 0..width {
+                let expected = disc_distance(x as f32 + 0.5, y as f32 + 0.5);
+                let got = band[(y - top) * width + x];
+                assert_eq!(got < 0.0, expected < 0.0, "pixel ({x}, {y}): the sign");
+                if expected.abs() <= reach {
+                    assert!(
+                        (got - expected).abs() <= TOLERANCE,
+                        "pixel ({x}, {y}): distance {got}, expected {expected}"
+                    );
+                    within += 1;
+                } else {
+                    assert!(
+                        got.abs() >= reach - TOLERANCE,
+                        "pixel ({x}, {y}): distance {got} is within the apron, expected {expected}"
+                    );
+                }
+            }
+        }
+        assert!(within > 0, "the band holds pixels near the contour");
+    }
+
+    /// A stage reading the mask and one reading the field, chained: both
+    /// read the chain input's shape, not the previous stage's output.
+    #[test]
+    fn chained_stages_read_the_chain_inputs_shape() {
+        let size = FIELD_SIZE;
+        let rows = size.1 as usize;
+        let disc = disc_coverage(size);
+        let texels: Vec<[f32; 4]> = disc.iter().map(|&alpha| [alpha; 4]).collect();
+        let sized = (size.0 as usize, rows);
+        let chained: Vec<f32> = lanes_sized(&Masked.then(SdfReadout), &texels, sized, 0, rows)
+            .into_iter()
+            .map(|texel| texel[0])
+            .collect();
+        metrics::assert_close(&chained, &shape_sdf(&disc, 0, rows));
     }
 
     #[test]
