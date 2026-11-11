@@ -10,7 +10,9 @@
 //! [`layers`](self::layers) — the retained layer set and the one
 //! [`Mount`] a window commits through; [`target`](self::target) — the
 //! target seam; [`registry`](self::registry) — the retained registries;
-//! `animated` — animated-scalar and morph-progress sampling; `stretch` —
+//! `animated` — the per-view animation slot lifecycle and the wrapper
+//! motions it binds; [`motion`](self::motion) — the engine-run wrapper
+//! tracks placement evaluates at event time; `stretch` —
 //! the overscroll stretch filter a scroll node's inner layer draws with.
 
 mod animated;
@@ -19,6 +21,7 @@ pub mod cell;
 #[cfg(any(test, hydrolysis_hwui))]
 pub mod hwui;
 pub mod layers;
+pub mod motion;
 pub mod placement;
 pub mod program;
 pub mod registry;

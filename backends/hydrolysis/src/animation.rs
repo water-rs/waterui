@@ -6,19 +6,22 @@
 //! mixed with a per-instance discriminator). Slots are
 //! rebound on every structural rebuild and survive across frames so
 //! in-flight animations keep their progress; unbound slots are dropped when
-//! the rebuild finishes. The controller covers two slot kinds: animated
+//! the rebuild finishes. The controller samples two slot kinds: animated
 //! scalars driven by `AnimationTrack<f32>` and the radio-indicator selection
-//! choreography (inner dot scale/opacity plus outer ring color).
+//! choreography (inner dot scale/opacity plus outer ring color). A third
+//! kind, a wrapper's engine-run motion (water-rs/waterui#2203), is bound and
+//! scoped like the others but never sampled: the engine samples it, and the
+//! controller only compares the frame clock with the instant its track ends.
 
-use cherenkov_record::RefreshRange;
-use cherenkov_record::tree::RATE_FAST;
+#[cfg(any(test, all(target_os = "android", hydrolysis_gpu_painter)))]
+use cherenkov_record::{RefreshRange, tree::RATE_FAST};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use crate::renderer::mount::motion::MotionStatus;
 use crate::theme::{RadioIndicatorState, RadioSelectionMotion};
-use nami::watcher::Context;
-use waterui_core::animation::{Animation, AnimationTrack, ChangeAnimation};
+use waterui_core::animation::{Animation, AnimationTrack};
 use waterui_core::contract_violation;
 
 use crate::time::Instant;
@@ -44,8 +47,11 @@ const fn mix_identity(identity: usize, discriminator: usize) -> u64 {
 pub struct AnimationController {
     slots: BTreeMap<AnimationKey, AnimatedScalarSlot>,
     radio_indicator_slots: BTreeMap<AnimationKey, AnimatedRadioIndicatorSlot>,
+    /// Engine-run motions, by the scalar key of the wrapper slot they fill.
+    motions: BTreeMap<AnimationKey, Rc<MotionStatus>>,
     active_slots: BTreeSet<AnimationKey>,
     active_radio_indicator_slots: BTreeSet<AnimationKey>,
+    active_motions: BTreeSet<AnimationKey>,
     /// Scopes pushed by the backend while a subtree binds its slots — the
     /// anchored overlay's exit waits on the slots its content owns.
     scope_stack: Vec<u64>,
@@ -99,7 +105,6 @@ struct AnimatedScalarState {
     track: AnimationTrack<f32>,
     active_target: Option<f32>,
     last_tick: Instant,
-    refresh: RefreshRange,
 }
 
 #[derive(Debug)]
@@ -171,6 +176,7 @@ impl AnimationController {
     pub fn begin_rebuild_frame(&mut self) {
         self.active_slots.clear();
         self.active_radio_indicator_slots.clear();
+        self.active_motions.clear();
     }
 
     /// Finishes a structural rebuild by dropping every slot that was not
@@ -189,52 +195,48 @@ impl AnimationController {
         self.slots.retain(|key, _| self.active_slots.contains(key));
         self.radio_indicator_slots
             .retain(|key, _| self.active_radio_indicator_slots.contains(key));
+        self.motions
+            .retain(|key, _| self.active_motions.contains(key));
     }
 
-    /// Binds the scalar slot for `key` during dispatch, reconciling it with
-    /// the value observed from the view tree, and returns a fresh handle.
-    ///
-    /// If the observed value disagrees with the slot (and with any in-flight
-    /// target), the track snaps to it without animating — the watcher that
-    /// owns the handle is responsible for animated transitions. Each bind
-    /// advances the slot generation, so handles from earlier frames become
-    /// inert.
+    /// Binds the engine-run motion filling `key` during dispatch: until
+    /// the rebuild that no longer binds it, settle queries and `key`'s
+    /// animation scopes see its track.
     ///
     /// A `key` that is not a scalar-scope key is a contract violation by the
-    /// caller: it is reported and binds the slot all the same, since slots are
-    /// keyed by the whole key.
-    pub fn bind_scalar(
-        &mut self,
-        key: AnimationKey,
-        observed_value: f32,
-        now: Instant,
-        refresh: RefreshRange,
-    ) -> AnimatedScalarHandle {
+    /// caller: it is reported and binds the motion all the same, since
+    /// motions are keyed by the whole key.
+    pub fn bind_motion(&mut self, key: AnimationKey, status: Rc<MotionStatus>) {
         if key.scope != AnimationKeyScope::RendererLocalScalar {
             contract_violation!(
-                "animation scalar key used with mismatched scope; the slot is bound anyway"
+                "animation motion key used with mismatched scope; the motion is bound anyway"
             );
         }
-        self.active_slots.insert(key);
+        self.active_motions.insert(key);
         self.note_key(key);
-        let slot = self.slots.entry(key).or_insert_with(|| AnimatedScalarSlot {
-            state: Rc::new(RefCell::new(AnimatedScalarState::new(observed_value, now))),
-        });
+        self.motions.insert(key, status);
+    }
 
-        let state = Rc::clone(&slot.state);
-        let generation = {
-            let mut slot = state.borrow_mut();
-            slot.refresh = refresh;
-            slot.prepare_generation(observed_value)
-        };
-        AnimatedScalarHandle { state, generation }
+    /// Whether an engine-run motion's track still runs at `now`.
+    #[must_use]
+    pub fn motions_active(&self, now: Instant) -> bool {
+        self.motions.values().any(|status| status.is_running(now))
+    }
+
+    /// Fires the settle re-record of every motion whose track ended by
+    /// `now`; `true` when one fired. A comparison with each track's end,
+    /// never an evaluation of the track.
+    pub fn settle_motions(&self, now: Instant) -> bool {
+        self.motions
+            .values()
+            .fold(false, |fired, status| status.settle(now) | fired)
     }
 
     /// Binds the scalar slot for `key` and animates it toward `target` with
     /// `animation`, returning a fresh handle.
     ///
-    /// Unlike [`bind_scalar`](Self::bind_scalar), the target itself is the
-    /// per-frame input: re-binding with the same target does not restart the
+    /// The target itself is the per-frame input: re-binding with the same
+    /// target does not restart the
     /// in-flight animation, while a new target starts one from the current
     /// sampled value (no snapping). A slot created on first bind starts at
     /// `target` directly.
@@ -336,37 +338,14 @@ impl AnimationController {
     }
 
     /// The range needed by currently running content, independent of how
-    /// often the host happens to sample it.
+    /// often the host happens to sample it: widget scalars and the radio
+    /// choreography move content at the fast rate. Engine-run motions are
+    /// not counted here; the engine reports the rate of every track it
+    /// samples.
     #[cfg(any(test, all(target_os = "android", hydrolysis_gpu_painter)))]
     #[must_use]
     pub fn refresh_range(&self) -> Option<RefreshRange> {
-        if self
-            .radio_indicator_slots
-            .values()
-            .any(|slot| slot.state.borrow().is_active())
-        {
-            return Some(RATE_FAST);
-        }
-        self.slots
-            .values()
-            .filter_map(|slot| {
-                let state = slot.state.borrow();
-                state.is_active().then(|| state.refresh.clone())
-            })
-            .reduce(|left, right| {
-                (*left.start()).max(*right.start())..=(*left.end()).max(*right.end())
-            })
-    }
-
-    /// Returns the keys of all scalar slots whose animation is still in
-    /// flight, letting the renderer patch exactly the nodes that depend on
-    /// them.
-    #[must_use]
-    pub fn active_scalar_keys(&self) -> BTreeSet<AnimationKey> {
-        self.slots
-            .iter()
-            .filter_map(|(key, slot)| slot.state.borrow().is_active().then_some(*key))
-            .collect()
+        self.has_active().then_some(RATE_FAST)
     }
 
     /// Marks the start of a subtree whose animation slots belong to `scope`
@@ -398,11 +377,24 @@ impl AnimationController {
 
     /// Whether any slot attributed to `scope` is still animating at `now`.
     #[must_use]
-    pub fn scope_is_active(&self, scope: u64) -> bool {
+    pub fn scope_is_active(&self, scope: u64, now: Instant) -> bool {
         let Some(keys) = self.scoped_keys.get(&scope) else {
             return false;
         };
-        keys.iter().any(|key| self.key_is_active(*key))
+        keys.iter().any(|key| self.key_is_active(*key, now))
+    }
+
+    /// Re-records the owner of every motion attributed to `scope` that runs
+    /// at `now` once its track is done: the record that found `scope`
+    /// active decides again when its motions end, though nothing samples
+    /// them in between.
+    pub fn arm_scope_settle(&self, scope: u64, now: Instant) {
+        let Some(keys) = self.scoped_keys.get(&scope) else {
+            return;
+        };
+        for status in keys.iter().filter_map(|key| self.motions.get(key)) {
+            status.arm_settle(now);
+        }
     }
 
     /// Drops `scope`'s attributions; call when the owning subtree is gone so
@@ -411,13 +403,18 @@ impl AnimationController {
         self.scoped_keys.remove(&scope);
     }
 
-    /// Whether `key`'s slot is still animating, across every scope.
-    fn key_is_active(&self, key: AnimationKey) -> bool {
+    /// Whether `key`'s slot is still animating at `now`, across every scope.
+    fn key_is_active(&self, key: AnimationKey, now: Instant) -> bool {
         match key.scope {
-            AnimationKeyScope::RendererLocalScalar => self
-                .slots
-                .get(&key)
-                .is_some_and(|slot| slot.state.borrow().is_active()),
+            AnimationKeyScope::RendererLocalScalar => {
+                self.slots
+                    .get(&key)
+                    .is_some_and(|slot| slot.state.borrow().is_active())
+                    || self
+                        .motions
+                        .get(&key)
+                        .is_some_and(|status| status.is_running(now))
+            }
             AnimationKeyScope::RadioIndicator => self
                 .radio_indicator_slots
                 .get(&key)
@@ -434,14 +431,6 @@ impl AnimatedScalarHandle {
         let mut state = self.state.borrow_mut();
         state.advance(now);
         state.current()
-    }
-
-    /// Applies a signal watcher update: the new value becomes the target and
-    /// the `Animation` the update names (if any) drives the transition. An
-    /// update that names none or disables animation snaps.
-    pub fn apply_update_from_context(&self, update: Context<f32>, now: Instant) {
-        let animation = ChangeAnimation::of(update.metadata()).animation();
-        self.apply_target(update.into_value(), animation, now);
     }
 
     /// Steers the slot toward `target`, animating with `animation` or
@@ -467,17 +456,7 @@ impl AnimatedScalarState {
             track: AnimationTrack::new(initial),
             active_target: None,
             last_tick: now,
-            refresh: RATE_FAST,
         }
-    }
-
-    fn prepare_generation(&mut self, observed_value: f32) -> u64 {
-        self.generation = self
-            .generation
-            .checked_add(1)
-            .expect("animation controller generation overflow");
-        self.reconcile_observed(observed_value);
-        self.generation
     }
 
     const fn prepare_target_generation(&mut self) -> u64 {
@@ -486,20 +465,6 @@ impl AnimatedScalarState {
             .checked_add(1)
             .expect("animation controller generation overflow");
         self.generation
-    }
-
-    fn reconcile_observed(&mut self, observed_value: f32) {
-        if let Some(target) = self.active_target {
-            if !approx_eq(target, observed_value) {
-                self.track.set_target(observed_value, None);
-                self.active_target = None;
-            }
-            return;
-        }
-
-        if !approx_eq(self.current(), observed_value) {
-            self.track.set_target(observed_value, None);
-        }
     }
 
     fn apply_target(&mut self, target: f32, animation: Option<Animation>, now: Instant) {
@@ -612,7 +577,7 @@ const fn approx_eq(a: f32, b: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use cherenkov_record::tree::{RATE_FAST, RATE_SLOW};
+    use cherenkov_record::tree::RATE_FAST;
     use core::time::Duration;
     use std::time::Instant;
 
@@ -632,18 +597,6 @@ mod tests {
     #[test]
     #[cfg_attr(
         debug_assertions,
-        should_panic(expected = "animation scalar key used with mismatched scope")
-    )]
-    fn a_scalar_bind_with_a_radio_key_is_reported_and_still_binds() {
-        let mut controller = AnimationController::default();
-        let start = Instant::now();
-        let handle = controller.bind_scalar(radio_key(1), 0.5, start, RATE_FAST);
-        assert_eq!(handle.sample(start), 0.5);
-    }
-
-    #[test]
-    #[cfg_attr(
-        debug_assertions,
         should_panic(expected = "end_animation_scope without a matching begin")
     )]
     fn ending_an_unopened_scope_is_reported_and_pops_nothing() {
@@ -654,59 +607,31 @@ mod tests {
     }
 
     #[test]
-    fn mixed_animation_demand_returns_to_normal_after_motion_finishes() {
+    fn scalar_demand_is_fast_until_the_track_settles() {
         let mut controller = AnimationController::default();
         let start = Instant::now();
-        let fade = controller.bind_scalar(scalar_key(1), 0.0, start, RATE_SLOW);
-        let motion = controller.bind_scalar(scalar_key(2), 0.0, start, RATE_FAST);
-        fade.apply_target(1.0, Some(Animation::linear(Duration::from_secs(1))), start);
-        assert_eq!(controller.refresh_range(), Some(RATE_SLOW));
-        motion.apply_target(
-            1.0,
-            Some(Animation::linear(Duration::from_millis(100))),
-            start,
-        );
-        assert_eq!(controller.refresh_range(), Some(RATE_FAST));
-        controller.tick(start + Duration::from_millis(200));
-        assert_eq!(controller.refresh_range(), Some(RATE_SLOW));
-        controller.tick(start + Duration::from_secs(2));
+        let animation = Animation::linear(Duration::from_millis(100));
+        let handle = controller.bind_scalar_target(scalar_key(1), 0.0, animation.clone(), start);
         assert_eq!(controller.refresh_range(), None);
-        assert_eq!(fade.sample(start + Duration::from_secs(2)), 1.0);
-    }
-
-    #[test]
-    fn scalar_animation_advances_and_stops() {
-        let mut controller = AnimationController::default();
-        let start = Instant::now();
-        controller.begin_rebuild_frame();
-        let handle = controller.bind_scalar(scalar_key(1), 0.0, start, RATE_FAST);
-        controller.finish_rebuild_frame_with_inactive_slot_retention(false);
-
-        handle.apply_target(
-            1.0,
-            Some(Animation::ease_in_out(Duration::from_millis(120))),
-            start,
-        );
-
-        let mid_value = handle.sample(start + Duration::from_millis(60));
-        assert!(mid_value > 0.0 && mid_value < 1.0);
-        assert!(controller.tick(start + Duration::from_millis(60)));
-
-        let final_value = handle.sample(start + Duration::from_millis(200));
-        assert!((final_value - 1.0).abs() < 0.0001);
-        assert!(!controller.tick(start + Duration::from_millis(200)));
+        handle.apply_target(1.0, Some(animation), start);
+        assert_eq!(controller.refresh_range(), Some(RATE_FAST));
+        let settled = start + Duration::from_millis(200);
+        controller.tick(settled);
+        assert_eq!(controller.refresh_range(), None);
+        assert_eq!(handle.sample(settled), 1.0);
     }
 
     #[test]
     fn stale_generation_update_is_ignored() {
         let mut controller = AnimationController::default();
         let start = Instant::now();
+        let animation = Animation::linear(Duration::from_millis(100));
         controller.begin_rebuild_frame();
-        let stale = controller.bind_scalar(scalar_key(1), 0.0, start, RATE_FAST);
+        let stale = controller.bind_scalar_target(scalar_key(1), 0.0, animation.clone(), start);
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         controller.begin_rebuild_frame();
-        let current = controller.bind_scalar(scalar_key(1), 0.0, start, RATE_FAST);
+        let current = controller.bind_scalar_target(scalar_key(1), 0.0, animation, start);
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         stale.apply_target(1.0, None, start);
@@ -785,15 +710,15 @@ mod tests {
         let animation = Animation::ease_in_out(Duration::from_millis(120));
 
         controller.begin_rebuild_frame();
-        let handle = controller.bind_scalar(scalar_key(1), 0.0, start, RATE_FAST);
+        let handle = controller.bind_scalar_target(scalar_key(1), 0.0, animation.clone(), start);
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
-        handle.apply_target(1.0, Some(animation), start);
+        handle.apply_target(1.0, Some(animation.clone()), start);
 
         controller.begin_rebuild_frame();
         controller.finish_rebuild_frame_with_inactive_slot_retention(true);
 
         controller.begin_rebuild_frame();
-        let rebound = controller.bind_scalar(scalar_key(1), 1.0, start, RATE_FAST);
+        let rebound = controller.bind_scalar_target(scalar_key(1), 1.0, animation, start);
         controller.finish_rebuild_frame_with_inactive_slot_retention(false);
 
         let mid = rebound.sample(start + Duration::from_millis(60));

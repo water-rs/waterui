@@ -168,44 +168,36 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let view = match view.downcast::<Metadata<Opacity>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
-                return Self::Opacity(Box::new(OpacityNode {
-                    core: renderer.new_core(),
-                    value,
-                    child: Self::build_view(content, env, renderer),
-                }));
+                return Self::Opacity(Box::new(OpacityNode::new(&value, renderer, |renderer| {
+                    Self::build_view(content, env, renderer)
+                })));
             }
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<Scale>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
-                return Self::Scale(Box::new(ScaleNode {
-                    core: renderer.new_core(),
-                    value,
-                    child: Self::build_view(content, env, renderer),
-                }));
+                return Self::Scale(Box::new(ScaleNode::new(&value, renderer, |renderer| {
+                    Self::build_view(content, env, renderer)
+                })));
             }
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<Rotation>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
-                return Self::Rotation(Box::new(RotationNode {
-                    core: renderer.new_core(),
-                    value,
-                    child: Self::build_view(content, env, renderer),
-                }));
+                return Self::Rotation(Box::new(RotationNode::new(&value, renderer, |renderer| {
+                    Self::build_view(content, env, renderer)
+                })));
             }
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<Offset>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
-                return Self::Offset(Box::new(OffsetNode {
-                    core: renderer.new_core(),
-                    value,
-                    child: Self::build_view(content, env, renderer),
-                }));
+                return Self::Offset(Box::new(OffsetNode::new(&value, renderer, |renderer| {
+                    Self::build_view(content, env, renderer)
+                })));
             }
             Err(view) => view,
         };

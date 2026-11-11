@@ -49,7 +49,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         &mut self,
         node_id: AccessibilityNodeId,
     ) -> bool {
-        self.materialize_registries();
+        self.registries();
         let Some(focused) = self
             .text_editing
             .text_input_targets

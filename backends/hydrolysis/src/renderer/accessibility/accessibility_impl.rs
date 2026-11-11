@@ -2711,7 +2711,7 @@ fn accessibility_role_to_accesskit_role(role: AccessibilityRole) -> Accessibilit
         AccessibilityRole::Link => AccessibilityNodeRole::Link,
         AccessibilityRole::Image => AccessibilityNodeRole::Image,
         AccessibilityRole::Text => AccessibilityNodeRole::Label,
-        AccessibilityRole::Header => AccessibilityNodeRole::Header,
+        AccessibilityRole::Header => AccessibilityNodeRole::Heading,
         AccessibilityRole::Footer => AccessibilityNodeRole::Footer,
         AccessibilityRole::Navigation => AccessibilityNodeRole::Navigation,
         AccessibilityRole::Main => AccessibilityNodeRole::Main,

@@ -402,7 +402,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// re-entrancy (water-rs/waterui#1213) to `#[waterui::test]`.
     #[cfg(hydrolysis_cherenkov)]
     fn finish_semantic_emit_frame(&mut self, tree: &RenderNode<E>, structural_change: bool) {
-        self.registries();
+        self.frame_registries();
         self.hit_test
             .finish_rebuild_frame(&self.text_editing.text_input_targets);
         self.navigation.finish_rebuild_frame();
@@ -520,7 +520,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     ) {
         let host = self.core.presentation_hosts.text_overlay.clone();
         self.record_host(&host, |renderer| {
-            renderer.registries();
+            renderer.frame_registries();
             renderer.render_active_text_context_menu_overlay(env, transform);
             renderer.prepare_transient_text_input_overlay(env, transform);
         });
@@ -787,7 +787,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             self.frame_stage_times
                 .set_encode(self.frame_stage_times.encode() + encode_started_at.elapsed());
         }
-        self.core.registries();
+        self.core.frame_registries();
         // The materialized platform-view placements write into their tables
         // once, here at frame end — never mid-materialization.
         self.core.record_platform_views();

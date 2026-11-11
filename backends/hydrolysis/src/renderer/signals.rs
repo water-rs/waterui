@@ -302,17 +302,6 @@ impl<T: 'static, G> SubscribedSnapshot<T, G> {
 }
 
 impl<E: crate::text::TextEngine> SemanticCore<E> {
-    /// Pushes a watcher guard onto the store the current phase reads into:
-    /// the reading node's `subscriptions` while it records, its
-    /// `layout_subscriptions` while it measures/lays out, or the renderer's
-    /// outside-read store when no node is reading.
-    pub(crate) fn push_guard(&mut self, guard: Retain) {
-        match &self.reader {
-            Some(reader) => reader.store.borrow_mut().push(guard),
-            None => self.outside_frame_retains.push(guard),
-        }
-    }
-
     /// The frame triggers, for a watcher that outlives the read and only
     /// needs to wake the pump without re-encoding the tree.
     pub(crate) fn frame_signals(&self) -> FrameSignals {
@@ -512,22 +501,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.frame_instant
     }
 
-    /// Registers `key`'s animation slot against the node now reading and
-    /// returns that node's `Weak` for the watcher's own marks. With no node
-    /// reading, the root cell stands in as the owner.
-    pub(crate) fn mark_owner_for_animation(
-        &mut self,
-        key: AnimationKey,
-        dirty: Dirty,
-    ) -> Weak<NodeCell<E>> {
-        let cell = match &self.reader {
-            Some(reader) => Rc::clone(&reader.cell),
-            None => Rc::clone(&self.root),
-        };
-        self.bind_animation_owner(key, &cell, dirty);
-        Rc::downgrade(&cell)
-    }
-
     /// The renderer-local scalar key for slot `slot` of the view retained as
     /// `owner`.
     ///
@@ -609,24 +582,11 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
     pub fn advance_animations(&mut self) -> bool {
         let now = self.frame_instant;
+        // A wrapper motion whose track ended re-records its owner once, at
+        // rest; the engine sampled every step before it.
+        self.animation_controller.settle_motions(now);
         let pending_releases = self.flush_interaction_releases(now);
         let ticked = self.animation_controller.tick(now);
-        if ticked {
-            // Mark every live owner — a slot finishing this tick still gets
-            // its last sample marked — then keep only the entries whose
-            // slot is still animating, so an idle animation stops marking.
-            let active = self.animation_controller.active_scalar_keys();
-            self.animation_owners.retain(|key, owner| {
-                let Some(cell) = owner.cell.upgrade() else {
-                    return false;
-                };
-                // The tick's own scheduling is the `Animate` arm — marking
-                // through `mark()` would read the animation's continuation
-                // as an unapplied change every frame.
-                cell.mark_quiet(owner.dirty);
-                active.contains(key)
-            });
-        }
         ticked || pending_releases || self.navigation_animating(now)
     }
 
@@ -651,5 +611,14 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.animation_controller.has_active()
             || self.has_pending_interaction_releases(now)
             || self.navigation_animating(now)
+    }
+
+    /// Whether a wrapper's engine-run motion still runs at the frame clock.
+    ///
+    /// The engine samples these and asks for their frames itself, so they
+    /// never schedule a host animation frame — they are work for the settle
+    /// queries only, known from each track's end without evaluating it.
+    pub(crate) fn motions_active(&self) -> bool {
+        self.animation_controller.motions_active(self.frame_instant)
     }
 }
