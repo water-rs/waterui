@@ -483,8 +483,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                         });
                     }
-                    WrapperEffect::LayoutPriority(_) => {
-                        // Layout-only: nothing to apply while drawing.
+                    WrapperEffect::LayoutPriority(_) | WrapperEffect::OnChange { .. } => {
+                        // Layout-only or a held subscription: nothing to
+                        // apply while drawing.
                         node.child
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                     }

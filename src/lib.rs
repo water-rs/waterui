@@ -250,7 +250,6 @@ pub use waterui_core::transition::{
 #[doc(inline)]
 pub use waterkit_haptic::Intensity;
 
-pub(crate) mod view_ext;
 pub use nami as reactive;
 pub use nami::SignalExt;
 #[doc(inline)]

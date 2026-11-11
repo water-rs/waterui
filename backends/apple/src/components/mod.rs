@@ -107,6 +107,8 @@ pub mod native_filter;
 pub mod navigation;
 #[cfg(feature = "offset")]
 pub mod offset;
+#[cfg(feature = "on_change")]
+pub mod on_change;
 #[cfg(feature = "on_event")]
 pub mod on_event;
 #[cfg(feature = "on_key_press")]

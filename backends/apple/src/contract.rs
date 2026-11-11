@@ -107,6 +107,14 @@ pub struct NativeLeaf {
     /// but only a leaf a site holds directly can be claimed — the
     /// outermost-modifier rule docs/layout-spec.md §4.5 states.
     transition: Option<crate::transition::TransitionClaim>,
+    /// The environment this leaf's modifier chain resolves in, recorded by
+    /// the environment-only and handler wrappers that pass it through: a
+    /// `with_env` leaf records its scope, a handler wrapper the environment
+    /// its own handler resolved in. A handler wrapped around this leaf
+    /// resolves in it, so a `.state(..)` install on either side of the
+    /// handler in the same chain reaches it (water-rs/waterui#1292). `None`
+    /// for every other leaf: the chain ends there.
+    handler_env: Option<Environment>,
     /// The view controllers [`mount`] adopted from this leaf's subtree —
     /// `UIKit` only forwards appearance and layout callbacks down a real
     /// containment chain.
@@ -140,9 +148,26 @@ impl NativeLeaf {
             view,
             geometry,
             transition: None,
+            handler_env: None,
             #[cfg(target_os = "ios")]
             attached_controllers: Vec::new(),
         }
+    }
+
+    /// The environment a handler wrapped around this leaf resolves in:
+    /// the environment this leaf's modifier chain resolved in, or `env` —
+    /// the environment the wrapper renders under — when the chain ends at
+    /// this leaf.
+    #[must_use]
+    pub fn handler_env(&self, env: &Environment) -> Environment {
+        self.handler_env.as_ref().unwrap_or(env).clone()
+    }
+
+    /// Records the environment this leaf's modifier chain resolves in —
+    /// called by an environment-only or handler wrapper, so a handler
+    /// wrapped around it resolves through the same chain.
+    pub fn set_handler_env(&mut self, env: Environment) {
+        self.handler_env = Some(env);
     }
 
     /// Stores the leaf's `.transition(...)` declaration — the
