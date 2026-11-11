@@ -14,8 +14,9 @@ categories.workspace = true
 [dependencies]
 hydrolysis = { workspace = true, features = ["accessibility", "testing"] }
 waterui-core.workspace = true
-waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
-wgpu.workspace = true
+waterui = { workspace = true, features = ["assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
+# `TestHost`'s offscreen texture format; the `gpu` feature.
+wgpu = { workspace = true, optional = true }
 kurbo.workspace = true
 accesskit = "0.25"
 pollster.workspace = true
@@ -31,6 +32,13 @@ cargo_metadata.workspace = true
 waterui-assets-planner = { workspace = true, features = ["font-declarations"] }
 
 [features]
+default = ["gpu"]
+# Hydrolysis's GPU painter, and `TestHost`, which renders through it.
+gpu = ["hydrolysis/gpu", "waterui/gpu", "dep:wgpu"]
+# Hydrolysis's CPU painter. With `gpu` as well, an offscreen runtime renders
+# on the GPU when the host has a usable hardware adapter and on the CPU
+# otherwise.
+cpu = ["hydrolysis/cpu", "waterui/cpu"]
 # TypeScript views in a test: `ui()` installs the runtime loaded from the
 # bundle `WATERUI_TS_BUNDLE` names — set by `water test` — into the test
 # environment, so a view that reaches a `tsx!` mount renders. A test that

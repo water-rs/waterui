@@ -159,14 +159,27 @@ impl ChromeGroupKey {
     }
 
     /// The members' capture class.
-    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    #[cfg_attr(
+        not(hydrolysis_gpu_painter),
+        allow(
+            dead_code,
+            reason = "read by the GPU target's backdrop-shader chrome; no other target registers backdrop shaders (water-rs/waterui#4065)"
+        )
+    )]
     pub(crate) const fn class(&self) -> CaptureClass {
         self.class
     }
 
     /// The layer the group's capture anchors at — `None` under the
     /// first-member rule.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
+    #[cfg_attr(
+        not(hydrolysis_gpu_painter),
+        allow(
+            dead_code,
+            reason = "read by the GPU target's backdrop-shader chrome; no other target registers backdrop shaders (water-rs/waterui#4065)"
+        )
+    )]
     pub(crate) const fn anchor(&self) -> Option<LayerId> {
         self.anchor
     }
@@ -381,14 +394,14 @@ impl<E: crate::text::TextEngine> ScopeAnchors<E> {
 
     /// How many `(scope, canvas)` anchor registrations stand — a
     /// test-facing answer; it must equal the live anchor items' count.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn registration_count(&self) -> usize {
         self.anchors.len()
     }
 
     /// The live `(scope, canvas) → layer` registrations — a
     /// test-facing answer.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn registrations(&self) -> Vec<(NonZeroU64, Option<LayerId>, LayerId)> {
         self.anchors
             .iter()
@@ -399,14 +412,13 @@ impl<E: crate::text::TextEngine> ScopeAnchors<E> {
 
 /// The spec a group object was created with — the GPU target's
 /// [`cherenkov::BackdropGroup`] carries it. A test-facing read.
-#[cfg(test)]
+#[cfg(all(test, hydrolysis_gpu_painter))]
 pub trait SpecCarrier {
     /// The spec the group was created with.
     fn spec(&self) -> cherenkov_record::BackdropSpec;
 }
 
-#[cfg(test)]
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(all(test, hydrolysis_gpu_painter))]
 impl SpecCarrier for cherenkov::BackdropGroup {
     fn spec(&self) -> cherenkov_record::BackdropSpec {
         self.spec()
@@ -460,11 +472,23 @@ pub type MaterialBackdropGroups<G, E> = BackdropGroups<BackdropGroupKey, Materia
 #[derive(Debug)]
 pub struct ChromeMemberPayload<S> {
     /// The shader's engine handle, resolved at attach.
-    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    #[cfg_attr(
+        not(hydrolysis_gpu_painter),
+        allow(
+            dead_code,
+            reason = "read by the GPU target's backdrop-shader chrome; no other target registers backdrop shaders (water-rs/waterui#4065)"
+        )
+    )]
     pub shader: S,
     /// The member's live effect: the sample's uniforms re-read as it
     /// changes.
-    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    #[cfg_attr(
+        not(hydrolysis_gpu_painter),
+        allow(
+            dead_code,
+            reason = "read by the GPU target's backdrop-shader chrome; no other target registers backdrop shaders (water-rs/waterui#4065)"
+        )
+    )]
     pub effect: SharedLive<MaterialEffect>,
 }
 
@@ -712,7 +736,7 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M, E: crate::text::TextEngine>
 
     /// The display scale `member`'s backdrop group was built for, `None`
     /// while the member holds no membership.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn backdrop_display_scale(&self, member: LayerId) -> Option<f64> {
         let key = self.members.get(&member)?.key;
         self.groups
@@ -723,7 +747,7 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M, E: crate::text::TextEngine>
     /// The anchor layer written into `member`'s group's spec — `None`
     /// for a solo group, while the member holds no membership, or while
     /// its group has no object. A test-facing answer.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn backdrop_anchor(&self, member: LayerId) -> Option<LayerId>
     where
         G: SpecCarrier,
@@ -734,14 +758,14 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M, E: crate::text::TextEngine>
 
     /// How many live backdrop groups the table holds — a test-facing
     /// answer.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn backdrop_group_count(&self) -> usize {
         self.groups.len()
     }
 
     /// Every member layer and the display scale its group was built for —
     /// the mirror's `backdrops()` answer.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn member_scales(&self) -> Vec<(LayerId, f64)> {
         self.members
             .iter()
@@ -754,7 +778,7 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M, E: crate::text::TextEngine>
     }
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 impl<E: crate::text::TextEngine>
     BackdropGroups<BackdropGroupKey, MaterialRuntime, cherenkov::BackdropGroup, (), E>
 {
@@ -762,7 +786,7 @@ impl<E: crate::text::TextEngine>
     /// member holds no membership or its group has no object
     /// ([`Unbound`]). Two members answering the same id
     /// share one capture. A test-facing answer.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn backdrop_group_id(
         &self,
         member: LayerId,
@@ -773,7 +797,7 @@ impl<E: crate::text::TextEngine>
 }
 
 /// Chrome-group test accessors over the members the key maps.
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 impl<G, E: crate::text::TextEngine>
     BackdropGroups<
         ChromeGroupKey,
@@ -785,14 +809,14 @@ impl<G, E: crate::text::TextEngine>
 {
     /// The scope `member`'s chrome group is keyed by — `None` while the
     /// member holds no membership.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn chrome_scope(&self, member: LayerId) -> Option<BackdropScope> {
         self.members.get(&member).map(|entry| entry.key.scope)
     }
 
     /// The display scale `member`'s chrome group was built for — `None`
     /// while the member holds no membership.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn chrome_display_scale(&self, member: LayerId) -> Option<f64> {
         let key = self.members.get(&member)?.key;
         self.groups
@@ -801,7 +825,7 @@ impl<G, E: crate::text::TextEngine>
     }
 
     /// How many live chrome groups the table holds.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn chrome_group_count(&self) -> usize {
         self.groups.len()
     }
@@ -809,7 +833,7 @@ impl<G, E: crate::text::TextEngine>
     /// The group object `member` samples, for identity checks — `None`
     /// while the member holds no membership or its group has no object
     /// ([`Unbound`]).
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn chrome_group(&self, member: LayerId) -> Option<&G> {
         let key = self.members.get(&member)?.key;
         self.groups.get(&key)?.group.as_ref()
@@ -819,14 +843,14 @@ impl<G, E: crate::text::TextEngine>
 impl<G, E: crate::text::TextEngine> BackdropGroups<BackdropGroupKey, MaterialRuntime, G, (), E> {
     /// The scope `member`'s backdrop group is keyed by — `None` while the
     /// member holds no membership. A test-facing answer.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn backdrop_scope(&self, member: LayerId) -> Option<BackdropScope> {
         self.members.get(&member).map(|entry| entry.key.scope)
     }
 
     /// The colour scheme `member`'s backdrop group is keyed by — `None`
     /// while the member holds no membership. A test-facing answer.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn backdrop_scheme(&self, member: LayerId) -> Option<waterui::theme::ColorScheme> {
         self.members.get(&member).map(|entry| entry.key.scheme)
     }
@@ -836,7 +860,7 @@ impl<G, E: crate::text::TextEngine> BackdropGroups<BackdropGroupKey, MaterialRun
     /// group's own runtime: the key's level and colour scheme resolved
     /// once, so two groups under different schemes run different tones. A
     /// test-facing answer.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn backdrop_tone(&self, member: LayerId) -> Option<[f32; 7]> {
         let key = self.members.get(&member)?.key;
         self.groups
@@ -847,7 +871,7 @@ impl<G, E: crate::text::TextEngine> BackdropGroups<BackdropGroupKey, MaterialRun
     /// The chain `member`'s backdrop group runs, rebuilt from the runtime
     /// the group holds at the group's own display scale — `None` while
     /// the member holds no membership. A test-facing answer.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn backdrop_chain(
         &self,
         member: LayerId,

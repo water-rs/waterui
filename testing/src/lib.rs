@@ -150,7 +150,9 @@ pub use perf::{PerfApp, PerfConfig, PerfMeasurement, PerfReport, PerfRun, PerfSt
 pub use query::Query;
 pub use selector::{ElementAnchor, ElementRef, ElementSet, Selector};
 pub use semantics::{CheckedState, NodeBounds, NodeId, NodeSnapshot, Role, TreeSnapshot};
-pub use snapshot::{Snapshot, TestHost};
+pub use snapshot::Snapshot;
+#[cfg(feature = "gpu")]
+pub use snapshot::TestHost;
 pub use wait::{Expectation, WaitOptions, WaitResult};
 /// The content-type vocabulary [`NodeSnapshot::content_type`],
 /// [`Selector::content_type`] and [`Query::content_type`] speak.

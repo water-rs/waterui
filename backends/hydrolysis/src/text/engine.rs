@@ -19,7 +19,7 @@ use nami::Computed;
 use crate::renderer::{FrameWorkCounters, Recording};
 
 use super::input::ResolvedTextLayoutInput;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub use super::types::{Affinity, CARET_WIDTH};
 pub use super::types::{LineMetrics, TextPosition, TextSelection};
 
@@ -105,11 +105,11 @@ pub trait TextEngine: Send + Sync + 'static {
     ///
     /// The error `font` returns.
     ///
-    /// An engine that does not lay text out for the Cherenkov GPU target is
-    /// used on it against its contract: that is reported and the text
+    /// An engine that does not lay text out for the Cherenkov targets is
+    /// used on them against its contract: that is reported and the text
     /// registers as [`cherenkov::ResourceError::Unsupported`], so the canvas
     /// draws without it.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     fn cherenkov_text(
         &self,
         layout: &Self::Layout,
@@ -119,10 +119,10 @@ pub trait TextEngine: Send + Sync + 'static {
     ) -> Result<cherenkov::TextLayout, cherenkov::ResourceError> {
         let _ = (layout, font);
         waterui_core::contract_violation!(
-            "this text engine does not lay text out for the Cherenkov GPU target; the text is not registered"
+            "this text engine does not lay text out for the Cherenkov targets; the text is not registered"
         );
         Err(cherenkov::ResourceError::Unsupported(
-            "text layout on the Cherenkov GPU target",
+            "text layout on the Cherenkov targets",
         ))
     }
 

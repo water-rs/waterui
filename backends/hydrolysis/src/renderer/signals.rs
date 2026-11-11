@@ -488,7 +488,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// every animation Hydrolysis samples reads, so an operand animated
     /// inside the engine advances with the presented frames rather than
     /// with the wall clock.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) const fn frame_time(&self) -> cherenkov::FrameTime {
         #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
         if let Some(target) = self.presentation_target {

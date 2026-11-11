@@ -681,6 +681,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
+        #[cfg(not(hydrolysis_gpu))]
+        if refuse_gpu_device_view(&view) {
+            return Self::build_empty(renderer, env);
+        }
         // A platform-view embedding leaf: it records its frame onto the host's
         // `PlatformViewSink` each flush; mounting the real native child is the
         // host's work. No sink means this runner cannot embed — the leaf

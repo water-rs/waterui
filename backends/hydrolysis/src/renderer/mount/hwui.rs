@@ -113,7 +113,8 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
     type Group = Infallible;
     type Shader = Infallible;
 
-    const BACKDROP_SHADERS: bool = false;
+    const BACKDROP_SHADER_REFUSAL: Option<&'static str> =
+        Some("the HWUI render target has no backdrop shaders");
 
     fn resources(host: &Self::Host) -> &Rc<SceneResources> {
         &host.resources
@@ -239,7 +240,7 @@ use crate::renderer::HydrolysisRenderer;
 use crate::renderer::mount::Mount;
 
 #[cfg_attr(
-    hydrolysis_gpu_painter,
+    hydrolysis_cherenkov,
     expect(
         dead_code,
         reason = "the Android HWUI runner is the only caller; test builds keep the methods alongside the mount's contract surface"

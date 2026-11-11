@@ -86,6 +86,34 @@ pub const UNSUPPORTED_WEBVIEW: &str = "WebView is unsupported on this Hydrolysis
      the `webview-system` and `winit` features on macOS, the `webview-system` and \
      `web` features on the web, or the `webview-system` feature on Android";
 
+/// Reports a leaf that needs a GPU device — `view`, as
+/// [`gpu_device_view`](waterui_graphics::backend::gpu_device_view) names it —
+/// reaching a painter without one; `no_gpu` says why this runtime has none.
+/// The view is not drawn and measures as zero.
+#[cfg(any(not(hydrolysis_gpu), hydrolysis_cpu_painter))]
+pub fn unsupported_gpu_device_view(view: &str, no_gpu: &str) {
+    contract_violation!(
+        "hydrolysis: {view} needs a GPU device, but {no_gpu}; the view is not drawn"
+    );
+}
+
+/// Refuses `view` when it needs a GPU device, in a build without the GPU
+/// painter: such a build compiles no realization for these leaves, so measure
+/// and node build stop at them here instead of expanding their `body`.
+/// Returns whether `view` was refused; the caller then measures it as zero
+/// and builds it as an empty node.
+#[cfg(not(hydrolysis_gpu))]
+pub fn refuse_gpu_device_view(view: &AnyView) -> bool {
+    let Some(name) = waterui_graphics::backend::gpu_device_view(view) else {
+        return false;
+    };
+    unsupported_gpu_device_view(
+        name,
+        "this Hydrolysis build has no GPU painter: it was built without the `gpu` feature",
+    );
+    true
+}
+
 pub fn dimensions_for_native<V: HydroNativeView<E>, E: crate::text::TextEngine>(
     view: &AnyView,
     proposal: ProposalSize,
@@ -152,6 +180,12 @@ pub fn is_hydro_native_view(view: &AnyView) -> bool {
         };
     }
     hydro_native_view_types!(check_native_view);
+    // A leaf that needs a GPU device is a leaf here too, so layout stops at
+    // it and measure and node build refuse it by name.
+    #[cfg(not(hydrolysis_gpu))]
+    if waterui_graphics::backend::gpu_device_view(view).is_some() {
+        return true;
+    }
     false
 }
 
@@ -172,5 +206,9 @@ pub fn dimensions_for_known_native_views<E: crate::text::TextEngine>(
         };
     }
     hydro_native_view_types!(try_native_dimensions);
+    #[cfg(not(hydrolysis_gpu))]
+    if refuse_gpu_device_view(view) {
+        return Some(ViewDimensions::new(LayoutSize::zero()));
+    }
     None
 }

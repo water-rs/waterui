@@ -23,6 +23,55 @@ pub struct Backends {
     apple: Option<AppleBackend>,
 }
 
+/// The Cherenkov render backends a desktop or offscreen Hydrolysis build
+/// compiles — `[hydrolysis] render` in `Water.toml`, each value a set of
+/// `hydrolysis` features.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum HydrolysisRender {
+    /// The GPU backend alone: a host without a usable GPU backend fails at
+    /// startup with an unsupported-device error.
+    Gpu,
+    /// The CPU backend alone, with no `wgpu` in the build. Presenting it to
+    /// a desktop window is water-rs/waterui#4064; until then only offscreen
+    /// rendering builds with it.
+    Cpu,
+    /// Both: rendering is on the GPU when the host has a usable hardware
+    /// adapter and on the CPU otherwise.
+    Both,
+}
+
+impl HydrolysisRender {
+    /// The `hydrolysis` features (and the launcher features forwarding to
+    /// them) this selection enables.
+    #[must_use]
+    pub const fn features(self) -> &'static [&'static str] {
+        match self {
+            Self::Gpu => &["gpu"],
+            Self::Cpu => &["cpu"],
+            Self::Both => &["gpu", "cpu"],
+        }
+    }
+
+    /// The selection a project that chose none builds with: both backends
+    /// for offscreen rendering and for Linux and Windows, where a host may
+    /// have no usable GPU; the GPU backend for Apple targets, which always
+    /// have one.
+    #[must_use]
+    pub const fn default_for(platform: crate::platform::TargetPlatform, offscreen: bool) -> Self {
+        if offscreen {
+            return Self::Both;
+        }
+        match platform {
+            crate::platform::TargetPlatform::Linux | crate::platform::TargetPlatform::Windows => {
+                Self::Both
+            }
+            _ => Self::Gpu,
+        }
+    }
+}
+
 /// The `[hydrolysis]` table: selections the project author declares for
 /// the Hydrolysis backend.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -31,14 +80,27 @@ pub struct HydrolysisConfig {
     /// host. Absent means the GPU painter; an explicit painter the pinned
     /// host cannot serve is an error at scaffold time, never a substitute.
     painter: Option<crate::hydrolysis::android::HydrolysisAndroidPainter>,
+    /// The Cherenkov render backends a desktop or offscreen (`water
+    /// preview`) build compiles. Absent means the target's default
+    /// ([`HydrolysisRender::default_for`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    render: Option<HydrolysisRender>,
 }
 impl HydrolysisConfig {
     /// A `HydrolysisConfig` carrying each of its fields.
     #[must_use]
     pub const fn new(
         painter: Option<crate::hydrolysis::android::HydrolysisAndroidPainter>,
+        render: Option<HydrolysisRender>,
     ) -> Self {
-        Self { painter }
+        Self { painter, render }
+    }
+
+    /// The Cherenkov render backends a desktop or offscreen build compiles,
+    /// when the project chose them.
+    #[must_use]
+    pub const fn render(&self) -> Option<HydrolysisRender> {
+        self.render
     }
 
     /// The Android painter the generated app mounts on the shared Hydrolysis

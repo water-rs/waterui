@@ -1,14 +1,18 @@
 use super::headless::HeadlessPlatformWindow;
 use super::{
-    FrameMode, FrameReader, RenderDiagnosticsConfig, RuntimeWindow, WindowFrame,
-    acquire_surface_frame, advance_runtime, axes_whose_limits_changed, clamp_window_size,
-    handle_input_events, pump_window_semantics, render_window, render_window_with_capture,
-    reports_ui_idle, schedule_animation_update, schedule_redraw_or_refresh,
-    surface_error_requires_reconfigure,
+    FrameMode, FrameReader, RenderDiagnosticsConfig, RuntimeWindow, advance_runtime,
+    axes_whose_limits_changed, clamp_window_size, handle_input_events, pump_window_semantics,
+    render_window, render_window_with_capture, reports_ui_idle, schedule_animation_update,
+    schedule_redraw_or_refresh,
 };
+#[cfg(hydrolysis_gpu_painter)]
+use super::{WindowFrame, acquire_surface_frame, surface_error_requires_reconfigure};
 use crate::platform::{
-    GpuSurfaceWindow as _, InputEvent, OffscreenGpuContext, OffscreenSurface, PlatformWindow as _,
-    SurfaceError, SurfaceFrame, SurfaceProvider,
+    InputEvent, OffscreenPainter, OffscreenTarget as _, PaintedWindow as _, PlatformWindow as _,
+};
+#[cfg(hydrolysis_gpu_painter)]
+use crate::platform::{
+    OffscreenGpuContext, OffscreenSurface, SurfaceError, SurfaceFrame, SurfaceProvider,
 };
 use crate::renderer::tests::{MinimalTestTheme, test_environment};
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, InteractionKey};
@@ -95,6 +99,7 @@ fn animation_ticks_schedule_full_frames() {
     );
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 #[test]
 fn only_invalid_swap_chains_require_surface_reconfiguration() {
     assert!(surface_error_requires_reconfigure(SurfaceError::Lost));
@@ -103,6 +108,7 @@ fn only_invalid_swap_chains_require_surface_reconfiguration() {
     assert!(!surface_error_requires_reconfigure(SurfaceError::Occluded));
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 #[test]
 fn invalid_swap_chain_is_reconfigured_and_retried_in_the_same_frame() {
     let mut surface = RecoveringSurface::new(SurfaceError::Outdated);
@@ -228,11 +234,11 @@ fn hidden_window_parks_the_pump_and_restores_exactly_one_frame() {
 /// pump asks for no further frame, instead of spinning on redraws that would
 /// fail the same way forever.
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn a_terminal_frame_failure_requests_no_further_frame() {
     let env = test_environment();
     let gpu = OffscreenGpuContext::for_tests();
-    let platform =
-        HeadlessPlatformWindow::on_context(gpu.clone(), 16, 16, wgpu::TextureFormat::Rgba8Unorm);
+    let platform = HeadlessPlatformWindow::on_painter(&OffscreenPainter::Gpu(gpu.clone()), 16, 16);
     let mut runtime = runtime_window_with_platform(
         Window::new("", binding(WindowState::Normal), || ()),
         platform,
@@ -248,6 +254,7 @@ fn a_terminal_frame_failure_requests_no_further_frame() {
     runtime
         .platform
         .surface()
+        .gpu()
         .device_loss()
         .simulate_loss("gone for good");
     let unrecoverable = (0..=crate::platform::MAX_UNPRODUCTIVE_LOSSES)
@@ -1157,12 +1164,8 @@ fn runtime_window_sized(
     height: u32,
     env: &Environment,
 ) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
-    let platform = HeadlessPlatformWindow::on_context(
-        OffscreenGpuContext::for_tests(),
-        width,
-        height,
-        wgpu::TextureFormat::Rgba8Unorm,
-    );
+    let platform =
+        HeadlessPlatformWindow::on_painter(&OffscreenPainter::for_tests(), width, height);
     runtime_window_with_platform(window, platform, env)
 }
 
@@ -1176,7 +1179,7 @@ fn runtime_window_with_platform(
         Rc::new(MinimalTestTheme::default()),
         ParleyEngine::system(FontFamilyResolution::Strict),
     );
-    RuntimeWindow::new_gpu(
+    RuntimeWindow::new_painted(
         window,
         platform,
         renderer,
@@ -1191,7 +1194,7 @@ fn runtime_window_with_platform(
 
 /// The host-side construction, input pump and scene pump need only
 /// `PlatformWindow`: these helpers are deliberately generic over it, so an
-/// accidental `GpuSurfaceWindow` bound fails this test's compilation.
+/// accidental `PaintedWindow` bound fails this test's compilation.
 #[test]
 fn host_window_pipeline_requires_no_gpu_surface_trait() {
     fn construct<P: crate::platform::PlatformWindow, E: crate::text::TextEngine>(
@@ -1226,12 +1229,7 @@ fn host_window_pipeline_requires_no_gpu_surface_trait() {
         );
     }
 
-    let platform = HeadlessPlatformWindow::on_context(
-        OffscreenGpuContext::for_tests(),
-        320,
-        200,
-        wgpu::TextureFormat::Rgba8Unorm,
-    );
+    let platform = HeadlessPlatformWindow::on_painter(&OffscreenPainter::for_tests(), 320, 200);
     let env = test_environment();
     let mut runtime = construct(
         Window::new(
@@ -1431,18 +1429,14 @@ fn sized_test_runtime_window(
     env: &Environment,
 ) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
     let window = Window::new("", binding(WindowState::Normal), || ());
-    let mut platform = HeadlessPlatformWindow::on_context(
-        OffscreenGpuContext::for_tests(),
-        width,
-        height,
-        wgpu::TextureFormat::Rgba8Unorm,
-    );
+    let mut platform =
+        HeadlessPlatformWindow::on_painter(&OffscreenPainter::for_tests(), width, height);
     platform.apply_properties(&window);
     let renderer = HydrolysisRenderer::with_engine(
         Rc::new(MinimalTestTheme::default()),
         ParleyEngine::system(FontFamilyResolution::Strict),
     );
-    RuntimeWindow::new_gpu(
+    RuntimeWindow::new_painted(
         window,
         platform,
         renderer,
@@ -1455,6 +1449,7 @@ fn sized_test_runtime_window(
     )
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 struct RecoveringSurface {
     inner: OffscreenSurface,
     first_error: Option<SurfaceError>,
@@ -1462,6 +1457,7 @@ struct RecoveringSurface {
     resize_count: usize,
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl RecoveringSurface {
     fn new(first_error: SurfaceError) -> Self {
         Self {
@@ -1478,6 +1474,7 @@ impl RecoveringSurface {
     }
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl crate::platform::PresentationSurface for RecoveringSurface {
     fn device(&self) -> &wgpu::Device {
         self.inner.device()
@@ -1497,10 +1494,11 @@ impl crate::platform::PresentationSurface for RecoveringSurface {
 
     fn resize(&mut self, width: u32, height: u32) {
         self.resize_count += 1;
-        self.inner.resize(width, height);
+        crate::platform::PresentationSurface::resize(&mut self.inner, width, height);
     }
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl SurfaceProvider for RecoveringSurface {
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
         self.acquire_count += 1;
@@ -1632,12 +1630,7 @@ fn frame_transaction_gates_wakes_and_renders_the_restore_frame() {
     use super::window::{FrameDemand, FrameTransaction};
 
     let transaction = Rc::new(FrameTransaction::default());
-    let mut platform = HeadlessPlatformWindow::on_context(
-        OffscreenGpuContext::for_tests(),
-        16,
-        16,
-        wgpu::TextureFormat::Rgba8Unorm,
-    );
+    let mut platform = HeadlessPlatformWindow::on_painter(&OffscreenPainter::for_tests(), 16, 16);
     platform.frame_transaction = Some(Rc::clone(&transaction));
     let env = test_environment();
     let mut runtime = runtime_window_with_platform(

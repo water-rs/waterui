@@ -33,7 +33,7 @@ use waterui_core::Environment;
 use waterui_core::contract_violation;
 use waterui_graphics::backend::filtrate::Chain;
 use waterui_graphics::backend::filtrate::filters::{GaussianBlur, LumaCurve};
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use waterui_graphics::backend::filtrate::{FilterExt as _, OperatingSpace};
 
 /// The fraction of device resolution a material's backdrop is captured at.
@@ -343,7 +343,7 @@ impl MaterialRuntime {
     }
 
     /// The colour stage's resolved parameters — a test-facing answer.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn tone_params(&self) -> [f32; 7] {
         use waterui_graphics::backend::filtrate::Filter as _;
         self.tone.params()
@@ -352,7 +352,7 @@ impl MaterialRuntime {
     /// The backdrop chain for a surface at `display_scale` device pixels per
     /// point: the colour stage, then the blur in encoded sRGB with σ
     /// converted from points to capture texels.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn chain(&self, display_scale: f64) -> MaterialChain {
         #[expect(
             clippy::cast_possible_truncation,

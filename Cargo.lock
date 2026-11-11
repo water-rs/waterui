@@ -4628,6 +4628,7 @@ dependencies = [
  "block2 0.6.2",
  "cfg_aliases",
  "cherenkov",
+ "cherenkov-cpu",
  "cherenkov-gpu",
  "cherenkov-record",
  "console_error_panic_hook",
@@ -13752,7 +13753,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=dev#32a950955e29e70aba57348ab531fa21f6408b29"
+source = "git+https://github.com/water-rs/video-gpu?branch=dev#5a9a47c9df0c6c19e27dfc35c6d930b894668bc5"
 dependencies = [
  "async-channel",
  "executor-core",
