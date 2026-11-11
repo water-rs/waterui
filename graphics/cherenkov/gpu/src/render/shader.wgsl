@@ -30,6 +30,9 @@ const VARIANT_COMPOSITE: u32 = 8u;
 // The blend backdrop: a copy of the target's region, sampled like `source`.
 @group(1) @binding(1) var backdrop: texture_2d<f32>;
 @group(1) @binding(2) var image_tex: texture_2d<f32>;
+// Linear mag/min, nearest mipmap, clamp-to-edge: the hardware bilinear
+// fetches of `backdrop_sample_blur` read `source` through it.
+@group(1) @binding(4) var backdrop_sampler: sampler;
 
 // image-source
 // The sRGB transfer decode of each 8-bit code (`image_storage::transfer_table`).
@@ -39,12 +42,17 @@ struct ImageDecode {
 @group(0) @binding(5) var<storage, read> image_decode: ImageDecode;
 // image-source
 
-// Abramowitz & Stegun 7.1.26, |error| < 1.5e-7.
+// Abramowitz & Stegun 7.1.26: `erf(x) ≈ 1 − erf_tail(t)·exp(−x²)` for
+// `x ≥ 0` with `t = 1 / (1 + 0.3275911·x)`, `|error| < 1.5e-7`.
+fn erf_tail(t: f32) -> f32 {
+    return (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t;
+}
+
 fn erf(x: f32) -> f32 {
     let s = sign(x);
     let a = abs(x);
     let t = 1.0 / (1.0 + 0.3275911 * a);
-    let y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * exp(-a * a);
+    let y = 1.0 - erf_tail(t) * exp(-a * a);
     return s * y;
 }
 
@@ -559,6 +567,145 @@ fn backdrop_sample_level(q: vec2<f32>, level: f32) -> vec4<f32> {
     let k1 = min(k0 + 1u, u32(backdrop_levels) - 1u);
     let hi = backdrop_sample_at(q, k1);
     return mix(lo, hi, phase);
+}
+
+// The variance, in texels², a bilinear read adds along each axis: the
+// least residual a level is read at (`A = 1/6`).
+const BLUR_BILINEAR_VARIANCE: f32 = 0.16666666666666666;
+// The residual variance, in level texels², over which a level's read
+// cross-fades in from the level below.
+const BLUR_FADE: f32 = 0.25;
+// The largest residual a level takes where it is the deepest:
+// `5/4 + 4·A`, the residual at which the next level would begin.
+const BLUR_CAP: f32 = 1.9166666666666667;
+
+// `H(x) = x·Φ(x / s) + s·ϕ(x / s)` for `s > 0`, `Φ` the standard normal
+// CDF and `ϕ` its density: the second antiderivative of the Gaussian of
+// deviation `s`, whose second difference at unit spacing is the
+// Gaussian's weight on a texel. `erf` is Abramowitz & Stegun 7.1.26
+// (`erf_tail`), and the `exp(−u²)` it needs is the one `ϕ` needs.
+fn backdrop_gaussian_h(x: f32, s: f32) -> f32 {
+    let u = x / (s * 1.4142135623730951);
+    let e = exp(-u * u);
+    let t = 1.0 / (1.0 + 0.3275911 * abs(u));
+    let cdf = 0.5 * (1.0 + sign(u) * (1.0 - erf_tail(t) * e));
+    return x * cdf + s * 0.3989422804014327 * e;
+}
+
+// One axis of a level read: four bilinear fetches, `w` their weights
+// (summing to 1) and `pos` their positions in level-texel-index
+// coordinates (texel `i` at `i`).
+struct BackdropTaps {
+    w: vec4<f32>,
+    pos: vec4<f32>,
+}
+
+// The weights of the eight texels `c + n`, `n = −3 ..= 4`, around
+// texel-index coordinate `p` (`c = floor(p)`, `φ = p − c`) under a
+// Gaussian of deviation `s` level texels applied to the bilinearly
+// interpolated level: `w_n = H(n + 1 − φ) − 2·H(n − φ) + H(n − 1 − φ)`,
+// normalised to sum to 1. At (near) zero `s`, `H(x) = max(x, 0)` and the
+// weights are the bilinear `1 − φ` and `φ`. Each adjacent pair
+// `(−3, −2), (−1, 0), (1, 2), (3, 4)` is realised as one hardware
+// bilinear fetch of the pair's total weight at the pair's weighted
+// centre; a pair of zero weight contributes nothing.
+fn backdrop_taps(p: f32, s: f32) -> BackdropTaps {
+    let c = floor(p);
+    let phi = p - c;
+    // `H` at the ten nodes `m − φ`, `m = −4 ..= 5`.
+    var h: array<f32, 10>;
+    for (var i = 0u; i < 10u; i++) {
+        let x = f32(i) - 4.0 - phi;
+        if s < 1e-3 {
+            h[i] = max(x, 0.0);
+        } else {
+            h[i] = backdrop_gaussian_h(x, s);
+        }
+    }
+    var taps: BackdropTaps;
+    var total = 0.0;
+    for (var i = 0u; i < 4u; i++) {
+        // The weights of texels `n_a = 2i − 3` and `n_a + 1`.
+        let a = 2u * i;
+        let wa = h[a + 2u] - 2.0 * h[a + 1u] + h[a];
+        let wb = h[a + 3u] - 2.0 * h[a + 2u] + h[a + 1u];
+        let pair = wa + wb;
+        total += pair;
+        taps.w[i] = pair;
+        taps.pos[i] = c + f32(a) - 3.0 + select(0.5, wb / pair, pair != 0.0);
+    }
+    taps.w /= total;
+    return taps;
+}
+
+// Level `k` of the capture, bilinearly interpolated and convolved with a
+// Gaussian of per-axis variance `rv − 1/6` level-`k` texels² (the
+// bilinear interpolation supplies the other 1/6; no Gaussian below it),
+// at device point `q`: a separable 4×4 of hardware bilinear fetches on
+// mip `k`. Each fetch's coordinate is clamped to the level's extent
+// `ceil(backdrop_size / 2^k)` as `backdrop_sample_at` clamps its texel
+// indices, values unclamped, and converted to UV by the bound mip's own
+// dimensions (the texture is aligned up to the deepest level, so they
+// are at least the extent). It touches level-0 texels up to `4.5·2^k`
+// from `q`.
+fn backdrop_level_read(q: vec2<f32>, k: u32, rv: f32) -> vec4<f32> {
+    let size = vec2<f32>(
+        (vec2<u32>(backdrop_size) + vec2<u32>((1u << k) - 1u)) >> vec2<u32>(k),
+    );
+    let dims = vec2<f32>(textureDimensions(source, i32(k)));
+    let p = (q * backdrop_scale - backdrop_origin) / f32(1u << k) - 0.5;
+    let s = sqrt(max(rv - BLUR_BILINEAR_VARIANCE, 0.0));
+    let tx = backdrop_taps(p.x, s);
+    let ty = backdrop_taps(p.y, s);
+    var sum = vec4<f32>(0.0);
+    for (var j = 0u; j < 4u; j++) {
+        let v = clamp(ty.pos[j] + 0.5, 0.5, size.y - 0.5) / dims.y;
+        var row = vec4<f32>(0.0);
+        for (var i = 0u; i < 4u; i++) {
+            let u = clamp(tx.pos[i] + 0.5, 0.5, size.x - 0.5) / dims.x;
+            row += tx.w[i] * textureSampleLevel(source, backdrop_sampler, vec2<f32>(u, v), f32(k));
+        }
+        sum += ty.w[j] * row;
+    }
+    return sum;
+}
+
+// The capture, bilinearly interpolated, convolved with a Gaussian, at
+// device point `q`: a kernel of mean `q` and variance `sigma²` level-0
+// texels² per axis, read from a Gaussian pyramid (level `k` is the
+// capture under variance `V(k) = 5·(4^k − 1) / 12`). Bilinear
+// interpolation alone has variance 1/6, so the Gaussian's variance is
+// `max(sigma² − 1/6, 0)` and at `sigma ≤ 1/√6` the read is
+// `backdrop_sample`. With `v = sigma²` it reads the deepest level `k`
+// with `V(k) + 4^k / 6 ≤ v` — the deepest whose bilinear read is not
+// already wider than the kernel — at the residual `(v − V(k)) / 4^k`,
+// and cross-fades from level `k − 1` over the first quarter texel² of
+// that residual above `1/6`. `sigma` clamps to
+// `sqrt(V(top) + (23/12)·4^top)` for the deepest level `top`;
+// `sigma = 0` is `backdrop_sample`.
+fn backdrop_sample_blur(q: vec2<f32>, sigma: f32) -> vec4<f32> {
+    let v = sigma * sigma;
+    if v == 0.0 {
+        return backdrop_sample(q);
+    }
+    let top = u32(backdrop_levels) - 1u;
+    let deepest = floor(0.5 * log2((12.0 * v + 5.0) / 7.0));
+    let k = u32(clamp(deepest, 0.0, f32(top)));
+    let texels = f32(1u << (2u * k));
+    var rv = (v - 5.0 * (texels - 1.0) / 12.0) / texels;
+    if k == top {
+        rv = min(rv, BLUR_CAP);
+    }
+    let upper = backdrop_level_read(q, k, rv);
+    if k > 0u {
+        let t = (rv - BLUR_BILINEAR_VARIANCE) / BLUR_FADE;
+        if t < 1.0 {
+            let below = f32(1u << (2u * (k - 1u)));
+            let lower = backdrop_level_read(q, k - 1u, (v - 5.0 * (below - 1.0) / 12.0) / below);
+            return mix(lower, upper, t);
+        }
+    }
+    return upper;
 }
 
 // The effect entry's pixel input: the device-space sample point, the
