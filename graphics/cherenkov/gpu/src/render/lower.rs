@@ -1804,9 +1804,8 @@ pub struct PictureInputs<'a> {
 /// The lowering walk state for one surface frame.
 pub struct Lowering<'a> {
     /// Present only when the surface's content holds a picture, so
-    /// picture-free walks carry no picture state; boxed so it adds one
-    /// pointer, not its fields, to every picture-free walk.
-    pub pictures: Option<Box<PictureInputs<'a>>>,
+    /// picture-free walks carry no picture state.
+    pub pictures: Option<PictureInputs<'a>>,
     #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
     pub(super) preparation: Option<&'a rayon::ThreadPool>,
     #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
