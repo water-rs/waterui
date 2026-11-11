@@ -1090,7 +1090,7 @@ fn lower_program<T: LayerTarget<E>, E: crate::text::TextEngine>(
     } = program;
     let filter = filter
         .as_ref()
-        .map(|runtime| T::filter(cx.host, &mut runtime.borrow_mut()));
+        .and_then(|runtime| T::filter(cx.host, &mut runtime.borrow_mut()));
     let clip = material.as_ref().map_or_else(
         || clip.clone(),
         |request| Some(ShapeData::of(&request.bounds)),
@@ -1248,7 +1248,7 @@ fn lower_inner<T: LayerTarget<E>, E: crate::text::TextEngine>(
             match &mut layers.inner_stretch {
                 Some(stretch) => stretch.show(shown, world),
                 None => {
-                    layers.inner_stretch = Some(StretchFilter::new::<T, E>(cx.host, shown, world));
+                    layers.inner_stretch = StretchFilter::new::<T, E>(cx.host, shown, world);
                 }
             }
             layers.inner_stretch.as_ref().map(StretchFilter::id)

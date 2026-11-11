@@ -83,12 +83,13 @@ impl std::fmt::Debug for StretchFilter {
 }
 
 impl StretchFilter {
-    /// Registers the filter for `shown` under `world`.
+    /// Registers the filter for `shown` under `world`; `None` when the
+    /// backend rejected it, leaving the layer without the stretch.
     pub(super) fn new<T: LayerTarget<E>, E: crate::text::TextEngine>(
         host: &T::Host,
         shown: ShownStretch,
         world: kurbo::Affine,
-    ) -> Self {
+    ) -> Option<Self> {
         let written = shown.params(world);
         let slots = written.map(Binding::container);
         let mut guards = ParamGuards::default();
@@ -101,14 +102,14 @@ impl StretchFilter {
                 size: [width, height],
                 stretch: [stretch_x, stretch_y],
             },
-        );
-        Self {
+        )?;
+        Some(Self {
             slots,
             written,
             shown: Some((shown, world)),
             filter,
             _guards: guards,
-        }
+        })
     }
 
     /// Rewrites the parameters for `shown` under `world`; only the slots

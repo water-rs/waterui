@@ -158,22 +158,41 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
         None
     }
 
-    fn filter(host: &Self::Host, runtime: &mut FilteredRuntime) -> FilterId {
+    fn filter(host: &Self::Host, runtime: &mut FilteredRuntime) -> Option<FilterId> {
         runtime.filter(|source| {
-            FilterHandle::new(
-                host.backend
-                    .register_filter(source, host.effect_wake.clone())
-                    .unwrap_or_else(|error| panic!("{error}")),
-            )
+            match host
+                .backend
+                .register_filter(source, host.effect_wake.clone())
+            {
+                Ok(registration) => Some(FilterHandle::new(registration)),
+                Err(error) => {
+                    contract_violation!(
+                        "hydrolysis HWUI: the filter cannot be registered ({error}); \
+                         the layer draws without it"
+                    );
+                    None
+                }
+            }
         })
     }
 
-    fn stretch_filter(host: &Self::Host, filter: OverscrollStretch<Reactive>) -> FilterHandle {
-        FilterHandle::new(
-            host.backend
-                .register_filter(AnyEffect::filter(filter), host.effect_wake.clone())
-                .unwrap_or_else(|error| panic!("{error}")),
-        )
+    fn stretch_filter(
+        host: &Self::Host,
+        filter: OverscrollStretch<Reactive>,
+    ) -> Option<FilterHandle> {
+        match host
+            .backend
+            .register_filter(AnyEffect::filter(filter), host.effect_wake.clone())
+        {
+            Ok(registration) => Some(FilterHandle::new(registration)),
+            Err(error) => {
+                contract_violation!(
+                    "hydrolysis HWUI: the overscroll stretch filter cannot be registered \
+                     ({error}); the layer draws without it"
+                );
+                None
+            }
+        }
     }
 
     fn mount_material(

@@ -230,20 +230,19 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
         Some(pixels)
     }
 
-    fn filter(host: &CherenkovHost, runtime: &mut FilteredRuntime) -> FilterId {
+    fn filter(host: &CherenkovHost, runtime: &mut FilteredRuntime) -> Option<FilterId> {
         runtime.filter(|source| {
-            FilterHandle::new(
-                host.engine
-                    .effect(crate::renderer::effects::EngineEffect::new(
-                        source,
-                        Arc::clone(&host.metrics),
-                    )),
-            )
+            Some(FilterHandle::new(host.engine.effect(
+                crate::renderer::effects::EngineEffect::new(source, Arc::clone(&host.metrics)),
+            )))
         })
     }
 
-    fn stretch_filter(host: &CherenkovHost, filter: OverscrollStretch<Reactive>) -> FilterHandle {
-        FilterHandle::new(host.engine.filter(filter))
+    fn stretch_filter(
+        host: &CherenkovHost,
+        filter: OverscrollStretch<Reactive>,
+    ) -> Option<FilterHandle> {
+        Some(FilterHandle::new(host.engine.filter(filter)))
     }
 
     fn mount_material(

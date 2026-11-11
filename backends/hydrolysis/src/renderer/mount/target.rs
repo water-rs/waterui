@@ -92,11 +92,18 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
         wake: ProducerWake,
     ) -> Option<(u32, u32)>;
 
-    fn filter(host: &Self::Host, runtime: &mut FilteredRuntime) -> FilterId;
+    /// The filter `runtime`'s layer draws with, registering it on first
+    /// call; `None` when the backend rejected the effect (a contract
+    /// violation it has reported), leaving the layer without a filter.
+    fn filter(host: &Self::Host, runtime: &mut FilteredRuntime) -> Option<FilterId>;
 
     /// Registers the overscroll stretch a scroll node's inner layer draws
-    /// with; the returned handle's drop unregisters it.
-    fn stretch_filter(host: &Self::Host, filter: OverscrollStretch<Reactive>) -> FilterHandle;
+    /// with; the returned handle's drop unregisters it. `None` when the
+    /// backend rejected the filter (a contract violation it has reported).
+    fn stretch_filter(
+        host: &Self::Host,
+        filter: OverscrollStretch<Reactive>,
+    ) -> Option<FilterHandle>;
 
     /// Joins `layer` to the backdrop group `key` names, sharing the
     /// group's filtered capture with every member under the same key,

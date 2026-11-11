@@ -172,10 +172,14 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
         Some(pixels)
     }
 
-    fn filter(host: &MirrorHost, runtime: &mut FilteredRuntime) -> FilterId {
+    fn filter(host: &MirrorHost, runtime: &mut FilteredRuntime) -> Option<FilterId> {
         runtime.filter(|source| {
-            crate::renderer::mount::target::FilterHandle::new(host.engine.effect(
-                crate::renderer::effects::EngineEffect::new(source, Arc::clone(&host.metrics)),
+            Some(crate::renderer::mount::target::FilterHandle::new(
+                host.engine
+                    .effect(crate::renderer::effects::EngineEffect::new(
+                        source,
+                        Arc::clone(&host.metrics),
+                    )),
             ))
         })
     }
@@ -185,8 +189,10 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
         filter: waterui_graphics::backend::filtrate::filters::OverscrollStretch<
             waterui_graphics::backend::Reactive,
         >,
-    ) -> crate::renderer::mount::target::FilterHandle {
-        crate::renderer::mount::target::FilterHandle::new(host.engine.filter(filter))
+    ) -> Option<crate::renderer::mount::target::FilterHandle> {
+        Some(crate::renderer::mount::target::FilterHandle::new(
+            host.engine.filter(filter),
+        ))
     }
 
     fn mount_material(
@@ -567,10 +573,14 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for NoShaderTarget {
         None
     }
 
-    fn filter(host: &NoShaderHost, runtime: &mut FilteredRuntime) -> FilterId {
+    fn filter(host: &NoShaderHost, runtime: &mut FilteredRuntime) -> Option<FilterId> {
         runtime.filter(|source| {
-            crate::renderer::mount::target::FilterHandle::new(host.engine.effect(
-                crate::renderer::effects::EngineEffect::new(source, Arc::clone(&host.metrics)),
+            Some(crate::renderer::mount::target::FilterHandle::new(
+                host.engine
+                    .effect(crate::renderer::effects::EngineEffect::new(
+                        source,
+                        Arc::clone(&host.metrics),
+                    )),
             ))
         })
     }
@@ -580,8 +590,10 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for NoShaderTarget {
         filter: waterui_graphics::backend::filtrate::filters::OverscrollStretch<
             waterui_graphics::backend::Reactive,
         >,
-    ) -> crate::renderer::mount::target::FilterHandle {
-        crate::renderer::mount::target::FilterHandle::new(host.engine.filter(filter))
+    ) -> Option<crate::renderer::mount::target::FilterHandle> {
+        Some(crate::renderer::mount::target::FilterHandle::new(
+            host.engine.filter(filter),
+        ))
     }
 
     fn mount_material(
