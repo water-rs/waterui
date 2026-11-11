@@ -167,6 +167,8 @@ pub enum BandPixels<'a> {
 }
 
 pub use cherenkov_simd::{Level, detect};
+#[cfg(feature = "shaders")]
+pub use render::filter::CpuEffect;
 pub use render::present::{present_linear_p3, present_srgb8};
 
 /// The CPU raster backend: renders the shared front end's layer trees
@@ -191,6 +193,17 @@ where
 {
     fn add_filter(renderer: &mut Self::Renderer, id: cherenkov::FilterId, filter: F) {
         renderer.filters.add(id, filter);
+    }
+}
+
+// A filter without a CPU kernel runs its composed stages on the lane
+// executor, banded like any CPU filter (`render::filter::CpuEffect`).
+#[cfg(feature = "shaders")]
+impl cherenkov::Effects for Raster {
+    type Effect = CpuEffect;
+
+    fn add_effect(renderer: &mut Self::Renderer, id: cherenkov::FilterId, effect: CpuEffect) {
+        renderer.filters.add_effect(id, effect);
     }
 }
 

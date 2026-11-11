@@ -9,7 +9,7 @@ mod blend;
 mod colr;
 pub mod coverage;
 mod damage;
-mod filter;
+pub mod filter;
 mod font;
 mod geometry;
 mod glyph;
@@ -946,6 +946,9 @@ impl RasterRenderer {
         let Some(size) = self.surfaces.get(&id).map(|surf| surf.size) else {
             return Ok(());
         };
+        // Filter lengths are points: this surface's filters run at its
+        // display's scale, as the GPU executor's `length_scale`.
+        self.filters.set_display_scale(sf.display.scale);
         // The frame's transient band-index metrics, shared by the
         // projective realizations and the surface render: each records
         // the frame-local peak.
@@ -1124,7 +1127,10 @@ impl RasterRenderer {
             {
                 used.animated |= lowering.animated_shaders;
             }
-            used.absorb(lowering.take_used_filters(), lowering.take_used_groups());
+            let filters = lowering.take_used_filters();
+            stats.filters_applied +=
+                u32::try_from(filters.len()).expect("a surface runs fewer than 2^32 filters");
+            used.absorb(filters, lowering.take_used_groups());
             surf.layers = caches;
             result
         };
