@@ -33,6 +33,7 @@ use crate::shape::ShapeData;
 use crate::size::LayoutSize;
 use crate::style::{BlendMode, FilterId};
 use crate::target::{BackdropSampling, GpuInstalls, ProjectiveLayers, Queue, Target};
+use crate::tree::RunningTracks;
 use crate::{BackdropSample, Picture, WorkingColor};
 
 /// Declares [`PropKind`] and its `ALL` list from one variant list, so
@@ -439,6 +440,23 @@ impl<T: Target> Shared<T> {
     /// nothing changed.
     pub fn take_changes(&mut self, time: crate::Instant) -> Option<ChangeSet<T>> {
         self.drain(Some(time))
+    }
+
+    /// The operand animations the contents drawn under the root still run
+    /// or have queued: what a surface's frame sampling has yet to settle.
+    /// Detached contents are skipped like in the sampling pass, which never
+    /// advances them.
+    #[must_use]
+    pub fn running_operands(&self) -> RunningTracks {
+        let mut running = RunningTracks::default();
+        for (id, slot) in &self.contents {
+            if let Some(content) = &slot.content
+                && self.hierarchy.reaches_root(*id)
+            {
+                content.note_running(&mut running);
+            }
+        }
+        running
     }
 
     /// Drains pending ops and live content changes into a change set,

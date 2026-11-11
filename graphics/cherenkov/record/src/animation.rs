@@ -768,6 +768,12 @@ impl<T> Keyframes<T> {
     pub const fn duration(&self) -> Duration {
         self.duration
     }
+
+    /// The value the cycle starts at.
+    #[must_use]
+    pub const fn first(&self) -> &T {
+        &self.first
+    }
 }
 
 impl<T: AnimLanes + Clone> Keyframes<T> {
@@ -990,6 +996,11 @@ impl<V: AnimLanes> KeyframeLanes<V> {
 }
 
 impl<V> KeyframeLanes<V> {
+    /// Whether the track repeats until it is replaced, never settling.
+    pub(crate) const fn repeats_forever(&self) -> bool {
+        matches!(self.repeat, Repeat::Forever)
+    }
+
     /// The number of lanes per value.
     pub(crate) const fn width(&self) -> usize {
         self.width
@@ -1011,22 +1022,25 @@ impl<V> KeyframeLanes<V> {
             return false;
         }
         let phase = cycles.fract();
-        let mut previous = 0.0;
-        for (index, (at, easing)) in self.segments.iter().enumerate() {
-            // A zero-length segment is never entered: its value replaces
-            // the previous one at once.
-            if phase < *at {
-                let span = at - previous;
-                let (progress, rate) =
-                    easing.progress((phase - previous) / span, span * self.duration);
-                let (start, end) = (self.value(index), self.value(index + 1));
-                for lane in 0..self.width {
-                    let delta = end[lane] - start[lane];
-                    write(lane, delta.mul_add(progress, start[lane]), delta * rate);
-                }
-                return true;
+        // The first segment whose end the phase has not reached: the
+        // segments are in time order, so this is a binary search. A
+        // zero-length segment is never entered: its value replaces the
+        // previous one at once.
+        let index = self.segments.partition_point(|(at, ..)| phase >= *at);
+        if let Some((at, easing)) = self.segments.get(index) {
+            let previous = index
+                .checked_sub(1)
+                .map_or(0.0, |before| self.segments[before].0);
+            let span = at - previous;
+            let seconds = span * self.duration;
+            let local = (phase - previous) / span;
+            let (progress, rate) = easing.progress(local, seconds);
+            let (start, end) = (self.value(index), self.value(index + 1));
+            for lane in 0..self.width {
+                let delta = end[lane] - start[lane];
+                write(lane, delta.mul_add(progress, start[lane]), delta * rate);
             }
-            previous = *at;
+            return true;
         }
         // Past the last keyframe the track holds its value.
         for (lane, &value) in self.value(self.segments.len()).iter().enumerate() {
@@ -1184,6 +1198,14 @@ pub(crate) enum Motion<V = Operand> {
 }
 
 impl<V> Motion<V> {
+    /// Whether the motion is a keyframe track that repeats until replaced.
+    pub(crate) const fn repeats_forever(&self) -> bool {
+        match self {
+            Self::Keyframes(keyframes) => keyframes.repeats_forever(),
+            Self::Animation(_) => false,
+        }
+    }
+
     /// The animation, unless the motion is a keyframe track.
     pub(crate) const fn animation(&self) -> Option<&Animation> {
         match self {
@@ -1208,6 +1230,11 @@ impl std::fmt::Debug for OperandTrack {
 type Sampled = (Instant, Box<[f64]>, Box<[f64]>);
 
 impl OperandTrack {
+    /// Whether the track is a keyframe track that repeats until replaced.
+    pub(crate) const fn repeats_forever(&self) -> bool {
+        self.motion.repeats_forever()
+    }
+
     /// A track from `from`'s lanes to `target` with zero velocity.
     ///
     /// # Panics

@@ -125,7 +125,7 @@ impl ProgressConfig {
 
 /// Visual style options for progress indicators.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProgressStyle {
     /// A circular spinner-style progress indicator.
     Circular,

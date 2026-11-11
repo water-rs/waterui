@@ -34,6 +34,7 @@ mod identity;
 mod input;
 mod interaction_layers;
 mod lifecycle;
+pub mod live_progress;
 pub mod live_toggle;
 pub mod material;
 mod metadata;
@@ -95,9 +96,8 @@ pub use render::HydrolysisRenderTarget;
 pub use render::WidgetRenderContext;
 pub use render::*;
 pub use render::{
-    anchor_point, circle_arc_path, estimate_layout_intrinsic, gesture_group_identity,
-    normalize_layout_view, normalize_view_for_render, path_commands_to_path,
-    resolved_shape_to_path, transformed_rect,
+    anchor_point, estimate_layout_intrinsic, gesture_group_identity, normalize_layout_view,
+    normalize_view_for_render, path_commands_to_path, resolved_shape_to_path, transformed_rect,
 };
 use rustc_hash::FxHashSet;
 use signals::LayoutDependencies;
@@ -133,7 +133,7 @@ use waterui::border::Border;
 use waterui::component::badge::BadgeConfig;
 use waterui::component::focus::Focused;
 use waterui::component::list::{ListConfig, ListItem};
-use waterui::component::progress::{ProgressConfig, ProgressStyle};
+use waterui::component::progress::ProgressConfig;
 use waterui::component::table::{TableColumn, TableConfig};
 use waterui::cursor::{Cursor, CursorStyle};
 use waterui::drag_drop::{Draggable, DropDestination};
@@ -519,6 +519,9 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// Reserves the address of every owner keying a live renderer-local
     /// slot in `animation_controller`; begins and retires with it.
     animation_owner_pins: AnimationOwnerPins,
+    /// The layer tracks the engine still ran at the last presented frame:
+    /// scheduled work the host-side `animation_controller` cannot see.
+    engine_tracks: cherenkov_record::RunningTracks,
     frame_instant: Instant,
     /// When the platform reports the frame being rendered will reach the
     /// display — Android's Choreographer expected presentation time. `None`
@@ -892,6 +895,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             signals,
             animation_controller: AnimationController::default(),
             animation_owner_pins: AnimationOwnerPins::default(),
+            engine_tracks: cherenkov_record::RunningTracks::default(),
             frame_instant,
             #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
             presentation_target: None,

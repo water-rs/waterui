@@ -33,7 +33,8 @@ use crate::renderer::{HydrolysisRenderer, RenderContext};
 use crate::theme::live::Operand;
 use crate::theme::{
     Change, Chrome, Corners, CustomPart, Driven, Elevation, Fill, FocusIndicator, Inputs,
-    InteractionMotion, LiveDriven, MAX_PRESS_WAVES, Motion, RealizedCustom, Retarget, Ripple, Wash,
+    InteractionMotion, LayerRotation, LiveDriven, MAX_PRESS_WAVES, Motion, RealizedCustom,
+    Retarget, Ripple, Wash,
 };
 use waterui_graphics::color::Color;
 
@@ -57,6 +58,18 @@ pub trait LiveSource {
     /// Fixed content available to scene inspection, when this source owns a recording.
     fn recording(&self) -> Option<&crate::renderer::recording::Recording> {
         None
+    }
+
+    /// The rotations the engine runs on the source's layers, innermost
+    /// first, each nested in the next. The mount binds each to a layer's
+    /// rotation property each time it records the source.
+    fn rotations(&self) -> Vec<LayerRotation> {
+        Vec::new()
+    }
+
+    /// The point the rotation layers turn about, in the layer's own space.
+    fn pivot(&self) -> Vec2 {
+        Vec2::ZERO
     }
 }
 

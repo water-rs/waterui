@@ -277,6 +277,12 @@ pub trait EngineSurface {
     fn core(&self) -> &SurfaceCore;
     /// The engine surface this kind wraps, for resizing.
     fn core_mut(&mut self) -> &mut SurfaceCore;
+
+    /// The layer tracks the engine still ran when it last rendered the
+    /// surface.
+    fn running_tracks(&self) -> cherenkov_record::RunningTracks {
+        self.core().engine_surface().running_tracks()
+    }
 }
 
 /// Android presents retained buffers directly through the system compositor.
