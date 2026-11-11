@@ -166,9 +166,9 @@ pub trait ExternalFrameSource: 'static {
 
 ### Offscreen Rendering
 
-`GpuRuntime::render_content(content, size, scale)` renders a `GpuContent` to an
-`OffscreenImage` without a window; `OffscreenRenderer` does the same for scene
-content on either the GPU or CPU (`OffscreenRenderer::cpu`).
+`GpuRuntime::render_content(content, size, scale).await` renders a `GpuContent`
+to an `OffscreenImage` without a window; `OffscreenRenderer` does the same for
+scene content on either the GPU or CPU (`OffscreenRenderer::cpu`).
 
 ## API Overview
 
@@ -177,7 +177,7 @@ content on either the GPU or CPU (`OffscreenRenderer::cpu`).
 - `GpuContentView::new(content)` - Create a view from a `GpuContent`
 - `ExternalFrameView::new(source)` - Create a view from an `ExternalFrameSource`
 - `FrameOutput` - Where a source publishes frames: `device()`, `queue()`, `present(frame)`
-- `GpuContentRenderer` / `ExternalFrameRenderer` - Host-side renderers presenting either view into a native texture
+- `GpuContentRenderer` / `ExternalFrameRenderer` - Host-side renderers presenting either view into a native texture: `submit` hands a frame to the render thread and returns a `HostedFrame` future, and `composite` draws the resolved frame into the host's texture
 - `Context` - GPU resources during setup (adapter, device, queue, format, redraw)
 - `Frame` - Frame data during render (device, queue, texture, view, dimensions, timings)
 - `GpuRuntime` - Shared wgpu runtime for offscreen and host-driven rendering

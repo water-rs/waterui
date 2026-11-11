@@ -1672,6 +1672,7 @@ dependencies = [
  "cherenkov-record",
  "crossbeam-channel",
  "filtrate-core",
+ "futures-lite",
  "gloo-timers 0.4.0",
  "kurbo",
  "libm",

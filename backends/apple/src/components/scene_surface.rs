@@ -5,9 +5,7 @@ use std::rc::Rc;
 use std::sync::{Arc, mpsc};
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
-use waterui_graphics::backend::cherenkov::{
-    DEFAULT_REFRESH, Display, FrameScope, FrameTime, Next, Surface, SurfaceId,
-};
+use waterui_graphics::backend::cherenkov::{Display, FrameScope, FrameTime, Surface, SurfaceId};
 use waterui_graphics::backend::draw::{Content, Draw};
 use waterui_graphics::backend::{
     HeldResources, SceneFrame, SceneInvalidator, SceneResources, SceneUpdate, SceneView,
@@ -21,8 +19,8 @@ use waterui_graphics::gpu::{
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::offscreen::OffscreenSize;
 
-use super::{HostedError, HostedRenderer, HostedView};
-use crate::gpu_runtime::{EngineGeneration, SceneEngine, SceneParticipant};
+use super::{FrameOutcome, HostedError, HostedRenderer, HostedView, RendererCreation};
+use crate::gpu_runtime::{BatchTicket, EngineGeneration, SceneEngine, SceneParticipant};
 
 /// Content and its structural invalidation survive ordinary frame submissions.
 pub struct Scene {
@@ -174,13 +172,46 @@ impl HostedView for Scene {
         redraw: &RedrawHandle,
         size: OffscreenSize,
         failure_sink: &Rc<dyn Fn(Arc<HostedLayerError>)>,
-    ) -> Result<Box<dyn HostedRenderer>, HostedError> {
-        let generation = self.engines.generation(runtime, context)?;
-        let part = ScenePart::new(&generation, redraw, size, self, failure_sink)?;
-        let participant: Rc<dyn SceneParticipant> = part.clone();
-        generation.mount(&participant);
-        Ok(Box::new(SceneRenderer { generation, part }))
+    ) -> RendererCreation {
+        let creation = self.engines.generation(runtime, context);
+        let scene = self.share();
+        let redraw = redraw.clone();
+        let failure_sink = failure_sink.clone();
+        Box::pin(async move {
+            let generation = creation.await?;
+            let part = ScenePart::new(&generation, &redraw, size, &scene, &failure_sink).await?;
+            let participant: Rc<dyn SceneParticipant> = part.clone();
+            generation.mount(&participant);
+            Ok(Box::new(SceneRenderer {
+                generation,
+                part,
+                batch: None,
+            }) as Box<dyn HostedRenderer>)
+        })
     }
+}
+
+impl Scene {
+    /// The scene state a renderer created on an engine generation shares
+    /// with this mount.
+    fn share(&self) -> SceneShare {
+        SceneShare {
+            view: self.view.clone(),
+            dirty: self.dirty.clone(),
+            produced_for: self.produced_for.clone(),
+            invalidator: self.invalidator.clone(),
+        }
+    }
+}
+
+/// The [`Scene`] state a [`ScenePart`] shares with its mount: the content,
+/// its structural invalidation and production stamp, and the invalidator
+/// the mount installed when the renderer's creation began.
+struct SceneShare {
+    view: Rc<RefCell<SceneView>>,
+    dirty: Rc<Cell<bool>>,
+    produced_for: Rc<Cell<Option<FrameTime>>>,
+    invalidator: Option<SceneInvalidator>,
 }
 
 /// This scene's own share of the generation: its surface, texture target,
@@ -197,8 +228,6 @@ pub struct ScenePart {
     view: Rc<RefCell<SceneView>>,
     dirty: Rc<Cell<bool>>,
     redraw: RedrawHandle,
-    /// The refresh range this scene's texture target declared.
-    refresh: waterui_graphics::backend::cherenkov::RefreshRange,
     /// The geometry the installed recording was made for: the logical size
     /// handed to `build_scene` and the display scale its root transform
     /// carries. A pixel resize that keeps the logical box but changes the
@@ -206,7 +235,7 @@ pub struct ScenePart {
     /// scale together; a headroom-only display update shares the key and
     /// re-records nothing.
     recorded_geometry: Cell<Option<(f32, f32, f64)>>,
-    /// The frame contract `present` last staged — pixel extent plus the
+    /// The frame contract the last submission staged — pixel extent plus the
     /// display update — applied on this surface inside the next batch.
     staged: Cell<(u32, u32, Display)>,
     /// Staged state `prepare` has not applied yet.
@@ -224,32 +253,38 @@ pub struct ScenePart {
 }
 
 /// The mounted `SceneView`'s handle into an [`EngineGeneration`]: the
-/// shared generation plus this scene's own participant state.
+/// shared generation plus this scene's own participant state, and the batch
+/// its submitted frame is produced in.
 struct SceneRenderer {
     generation: Rc<EngineGeneration>,
     part: Rc<ScenePart>,
+    batch: Option<BatchTicket>,
 }
 
 impl ScenePart {
-    pub fn new(
+    /// Creates this scene's surface on the shared generation's engine,
+    /// resolving on the render thread's reply rather than waiting for it.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the scene's state and the !Send engine stay on the main thread that polls the creation"
+    )]
+    async fn new(
         generation: &Rc<EngineGeneration>,
         redraw: &RedrawHandle,
         size: OffscreenSize,
-        scene: &Scene,
+        scene: &SceneShare,
         failure_sink: &Rc<dyn Fn(Arc<HostedLayerError>)>,
     ) -> Result<Rc<Self>, HostedLayerError> {
         let context = generation.context().clone();
         let (target, textures) = TextureTarget::new((size.width(), size.height()));
-        // `TextureTarget::new` always opens on the engine's default range;
-        // a `.rate(...)` builder would replace it at construction.
-        let refresh = DEFAULT_REFRESH;
         // This scene's queued work, completions and reveal requests wake
         // only its own host, coalesced until the surface next participates
         // in a frame.
         let wake = redraw.clone();
         let surface = generation
             .engine()
-            .surface(target, move || wake.request_redraw())?;
+            .surface_async(target, move || wake.request_redraw())
+            .await?;
         let source = textures
             .try_recv()
             .expect("a TextureTarget publishes its texture when its surface is created");
@@ -280,7 +315,6 @@ impl ScenePart {
             view: scene.view.clone(),
             dirty: scene.dirty.clone(),
             redraw: redraw.clone(),
-            refresh,
             recorded_geometry: Cell::new(None),
             staged: Cell::new((
                 size.width(),
@@ -296,7 +330,7 @@ impl ScenePart {
         }))
     }
 
-    /// Stages the frame contract `present` was called with; `prepare`
+    /// Stages the frame contract a submission was made for; `prepare`
     /// applies it inside the batch.
     pub fn stage(&self, pixels: (u32, u32), display: Display) {
         if self.staged.get() != (pixels.0, pixels.1, display) {
@@ -448,32 +482,59 @@ impl SceneParticipant for ScenePart {
     }
 }
 
+impl SceneRenderer {
+    /// This scene as the batch's requester.
+    fn requester(&self) -> Rc<dyn SceneParticipant> {
+        self.part.clone()
+    }
+}
+
 impl HostedRenderer for SceneRenderer {
-    fn present(
+    fn submit(
         &mut self,
-        target: &wgpu::Texture,
+        size: OffscreenSize,
         display: Display,
         target_time: FrameTime,
-    ) -> Result<Next, HostedError> {
-        self.part.stage((target.width(), target.height()), display);
-        // The first requesting surface at this target timestamp runs the
-        // batch: every mounted participant's pending content, geometry and
-        // display changes, then one shared engine.render.
+    ) -> Result<(), HostedError> {
+        self.part.stage((size.width(), size.height()), display);
+        // The first requesting surface at this target timestamp submits
+        // the batch: every mounted participant's pending content, geometry
+        // and display changes, then one shared engine frame — a request
+        // while it is in flight joins it.
         // The requester is this scene: `produce` hands back its own
-        // `prepare` failure so `present` answers `Err` for a frame this
+        // `prepare` failure so the frame answers `Err` for a frame this
         // surface never wrote — a second requester of the same batch is
         // unaffected by another participant's rejection.
-        let requester: Rc<dyn SceneParticipant> = self.part.clone();
-        self.generation.produce(target_time, &requester)?;
-        if !self.part.produced_at(target_time) {
+        self.batch = Some(self.generation.produce(target_time, &self.requester())?);
+        Ok(())
+    }
+
+    fn poll_frame(
+        &mut self,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Result<FrameOutcome, HostedError>> {
+        let requester = self.requester();
+        let batch = self
+            .batch
+            .as_mut()
+            .expect("a scene polls only a submitted frame");
+        let produced = core::task::ready!(self.generation.poll_batch(batch, &requester, cx));
+        let time = batch.time();
+        self.batch = None;
+        produced?;
+        core::task::Poll::Ready(Ok(if self.part.produced_at(time) {
+            // This surface's own deadline — animation/backend demand that
+            // woke it stays routed to it, not to every mounted scene.
+            FrameOutcome::Rendered(self.part.surface.next_frame())
+        } else {
             // Mounted or invalidated after the batch — explicitly owed a
             // later frame, never compositing a stale texture into this
-            // timestamp and never reporting Idle.
-            return Ok(Next::At {
-                time: target_time.instant(),
-                rate: self.part.refresh.clone(),
-            });
-        }
+            // timestamp.
+            FrameOutcome::Unproduced
+        }))
+    }
+
+    fn composite(&mut self, target: &wgpu::Texture, display: Display) {
         for texture in self.part.textures.try_iter() {
             *self.part.source.borrow_mut() = texture;
         }
@@ -498,9 +559,12 @@ impl HostedRenderer for SceneRenderer {
                 headroom: display.headroom,
             },
         );
-        // This surface's own deadline — animation/backend demand that woke
-        // it stays routed to it, not to every mounted scene.
-        Ok(self.part.surface.next_frame())
+    }
+
+    fn discard_frame(&mut self) {
+        // The batch keeps running for every other participant and settles
+        // in whichever one polls it next; this scene only stops waiting.
+        self.batch = None;
     }
 
     /// The scene's submission evidence is its production generation
@@ -509,14 +573,6 @@ impl HostedRenderer for SceneRenderer {
     /// never the owner's mutable flag.
     fn submission_evidence(&self) -> Option<Rc<EngineGeneration>> {
         Some(Rc::clone(&self.generation))
-    }
-
-    /// `present` composites only when this scene's own staged state made
-    /// the produced batch — `produced_at` is the exact predicate its
-    /// early `Next::At` return checked, so it is the exact answer to
-    /// whether the target carries pixels.
-    fn wrote_target(&self, target_time: FrameTime) -> bool {
-        self.part.produced_at(target_time)
     }
 }
 
@@ -629,9 +685,7 @@ mod tests {
             .expect("a GPU adapter is required on test hardware");
         let context = runtime.context();
         let engines = Rc::new(SceneEngine::new());
-        let generation = engines
-            .generation(&runtime, &context)
-            .expect("scene generation settles");
+        let generation = settled_generation(&engines, &runtime, &context);
         let redraws = Arc::new(AtomicU32::new(0));
         let probe = Arc::clone(&redraws);
         let redraw = RedrawHandle::new(move || {
@@ -639,8 +693,7 @@ mod tests {
         });
         let scene = Scene::new(SceneView::new(AnimatingContent), engines);
         let size = OffscreenSize::try_from_pixels(20, 20).expect("nonzero size");
-        let part = ScenePart::new(&generation, &redraw, size, &scene, &sink())
-            .expect("the participant settles");
+        let part = new_part(&generation, &redraw, size, &scene, &sink());
         let time = FrameTime::now();
         part.stage(
             (20, 20),
@@ -676,16 +729,13 @@ mod tests {
             .expect("a GPU adapter is required on test hardware");
         let context = runtime.context();
         let engines = Rc::new(SceneEngine::new());
-        let generation = engines
-            .generation(&runtime, &context)
-            .expect("scene generation settles");
+        let generation = settled_generation(&engines, &runtime, &context);
         let redraw = RedrawHandle::new(|| {});
         let color = binding(RED);
         let mut scene = picture_scene(&color, &engines);
         scene.mount(&redraw);
         let size = OffscreenSize::try_from_pixels(20, 20).expect("nonzero size");
-        let part = ScenePart::new(&generation, &redraw, size, &scene, &sink())
-            .expect("the participant settles");
+        let part = new_part(&generation, &redraw, size, &scene, &sink());
         let time = FrameTime::now();
         part.stage(
             (20, 20),
@@ -722,14 +772,58 @@ mod tests {
             engines.clone(),
         );
         let size = OffscreenSize::try_from_pixels(512, 512).expect("nonzero size");
-        let generation = engines
-            .generation(&runtime, &context)
-            .expect("scene generation settles");
-        let part = ScenePart::new(&generation, &redraw, size, &scene, &sink())
-            .expect("the participant settles");
+        let generation = settled_generation(&engines, &runtime, &context);
+        let part = new_part(&generation, &redraw, size, &scene, &sink());
         let participant: Rc<dyn SceneParticipant> = part.clone();
         generation.mount(&participant);
         (context, part, draws)
+    }
+
+    /// The shared generation `engines` creates on `context`, waited for —
+    /// these trials own no main-thread host to resolve it through.
+    fn settled_generation(
+        engines: &SceneEngine,
+        runtime: &GpuRuntime,
+        context: &Arc<SharedGpuContext>,
+    ) -> Rc<EngineGeneration> {
+        pollster::block_on(engines.generation(runtime, context)).expect("scene generation settles")
+    }
+
+    /// `scene`'s participant on `generation`, created the way
+    /// `Scene::renderer` creates it and waited for.
+    fn new_part(
+        generation: &Rc<EngineGeneration>,
+        redraw: &RedrawHandle,
+        size: OffscreenSize,
+        scene: &Scene,
+        sink: &Rc<dyn Fn(Arc<HostedLayerError>)>,
+    ) -> Rc<ScenePart> {
+        pollster::block_on(ScenePart::new(
+            generation,
+            redraw,
+            size,
+            &scene.share(),
+            sink,
+        ))
+        .expect("the participant settles")
+    }
+
+    /// One host frame through the renderer: submits it for `target`,
+    /// waits for its batch and composites a produced frame into `target`.
+    fn present(
+        renderer: &mut SceneRenderer,
+        target: &wgpu::Texture,
+        display: Display,
+        time: FrameTime,
+    ) -> Result<FrameOutcome, HostedError> {
+        let size = OffscreenSize::try_from_pixels(target.width(), target.height())
+            .expect("a nonempty target");
+        renderer.submit(size, display, time)?;
+        let outcome = pollster::block_on(core::future::poll_fn(|cx| renderer.poll_frame(cx)))?;
+        if matches!(outcome, FrameOutcome::Rendered(_)) {
+            renderer.composite(target, display);
+        }
+        Ok(outcome)
     }
 
     fn target(context: &SharedGpuContext, pixels: u32) -> wgpu::Texture {
@@ -953,9 +1047,7 @@ mod tests {
             .expect("a GPU adapter is required on test hardware");
         let context = runtime.context();
         let engines = Rc::new(SceneEngine::new());
-        let generation = engines
-            .generation(&runtime, &context)
-            .expect("scene generation settles");
+        let generation = settled_generation(&engines, &runtime, &context);
         let redraws = Arc::new(AtomicU32::new(0));
         let redraws_probe = Arc::clone(&redraws);
         let redraw = RedrawHandle::new(move || {
@@ -981,8 +1073,7 @@ mod tests {
         // so a model update on it never dirties or wakes.
         let quiet_color = binding(RED);
         let scene_unmounted = picture_scene(&quiet_color, &engines);
-        let unmounted_part = ScenePart::new(&generation, &redraw, size, &scene_unmounted, &sink())
-            .expect("the participant settles");
+        let unmounted_part = new_part(&generation, &redraw, size, &scene_unmounted, &sink());
         record(&unmounted_part);
         let wakes = redraws.load(Ordering::Relaxed);
         quiet_color.set(GREEN);
@@ -997,8 +1088,7 @@ mod tests {
         );
 
         scene.mount(&redraw);
-        let part = ScenePart::new(&generation, &redraw, size, &scene, &sink())
-            .expect("the participant settles");
+        let part = new_part(&generation, &redraw, size, &scene, &sink());
 
         // The first record clears the seeded dirty bit. A fresh install on an
         // idle engine may itself ask for a frame through the surface's wake;
@@ -1027,8 +1117,7 @@ mod tests {
         // Creating the scene's participant again — the same `ScenePart::new`
         // a rebuilt engine generation runs — re-installs the mounted
         // invalidator on the rebuilt engine-bound state.
-        let part = ScenePart::new(&generation, &redraw, size, &scene, &sink())
-            .expect("the replacement participant settles");
+        let part = new_part(&generation, &redraw, size, &scene, &sink());
         assert_eq!(recorded_color(&part), BLUE);
         record(&part);
         assert!(!scene.dirty.get());
@@ -1096,8 +1185,7 @@ mod tests {
         );
         let routes = Rc::new(Cell::new(0_u32));
         let sink = counting_sink(&routes, typed);
-        let part = ScenePart::new(generation, &redraw, size, &scene, &sink)
-            .expect("the participant settles");
+        let part = new_part(generation, &redraw, size, &scene, &sink);
         // The production mount `Scene::renderer` runs — the generation
         // holds each participant weakly for its batch `prepare`.
         let participant: Rc<dyn SceneParticipant> = part.clone();
@@ -1105,6 +1193,7 @@ mod tests {
         let renderer = SceneRenderer {
             generation: generation.clone(),
             part: part.clone(),
+            batch: None,
         };
         RoutedOwner {
             wakes,
@@ -1128,9 +1217,7 @@ mod tests {
         let context = runtime.context();
         let engines = Rc::new(SceneEngine::new());
         let size = OffscreenSize::try_from_pixels(20, 20).expect("nonzero size");
-        let generation = engines
-            .generation(&runtime, &context)
-            .expect("the shared generation");
+        let generation = settled_generation(&engines, &runtime, &context);
 
         let mut owner_a = routed_owner(&generation, &engines, size, true);
         let mut owner_b = routed_owner(&generation, &engines, size, false);
@@ -1165,14 +1252,17 @@ mod tests {
         );
         assert_eq!(owner_b.wakes.load(Ordering::Relaxed), base_b);
 
-        // Owner A's `present` restages a takeable target and produces —
-        // its earlier failure already settled through the sink. The batch
+        // Owner A's frame restages a takeable target and produces — its
+        // earlier failure already settled through the sink. The batch
         // re-prepares every live participant, so B's still-bad stage
         // routes its failure a second time.
-        owner_a
-            .renderer
-            .present(&target(&context, 20), display, FrameTime::now())
-            .expect("owner A's next present produces");
+        present(
+            &mut owner_a.renderer,
+            &target(&context, 20),
+            display,
+            FrameTime::now(),
+        )
+        .expect("owner A's next frame produces");
         assert_eq!(owner_a.routes.get(), 1, "no failure routes again for A");
         assert_eq!(
             owner_b.routes.get(),
@@ -1181,10 +1271,13 @@ mod tests {
         );
 
         // B restages and produces the same way.
-        owner_b
-            .renderer
-            .present(&target(&context, 20), display, FrameTime::now())
-            .expect("owner B's next present produces");
+        present(
+            &mut owner_b.renderer,
+            &target(&context, 20),
+            display,
+            FrameTime::now(),
+        )
+        .expect("owner B's next frame produces");
         assert_eq!(owner_b.routes.get(), 2, "B's repaired stage routes nothing");
 
         // A scene's own failure never seals the shared generation.
@@ -1195,8 +1288,9 @@ mod tests {
         );
     }
 
-    /// The requester's own `prepare` failure answers `present` with `Err`
-    /// synchronously — `produce` hands the caller its own outcome, so the
+    /// The requester's own `prepare` failure answers its frame's
+    /// submission with `Err` at once — `produce` hands the caller its own
+    /// outcome, so the
     /// capture path's completion contract never receives `Ok` for a frame
     /// the requester never wrote. The same carrier still routes once to
     /// the owner's sink — the `settle_failed` the routed copy enqueues
@@ -1218,9 +1312,7 @@ mod tests {
         let context = runtime.context();
         let engines = Rc::new(SceneEngine::new());
         let size = OffscreenSize::try_from_pixels(20, 20).expect("nonzero size");
-        let generation = engines
-            .generation(&runtime, &context)
-            .expect("the shared generation");
+        let generation = settled_generation(&engines, &runtime, &context);
         let healthy = routed_owner(&generation, &engines, size, false);
         let display = Display {
             scale: 1.0,
@@ -1240,17 +1332,14 @@ mod tests {
         );
         let dead_redraw = RedrawHandle::new(|| {});
         let dead_part = {
-            let dead_generation = Rc::new(SceneEngine::new())
-                .generation(&runtime, &context)
-                .expect("the doomed generation settles");
-            let mut part = ScenePart::new(
+            let dead_generation = settled_generation(&SceneEngine::new(), &runtime, &context);
+            let mut part = new_part(
                 &dead_generation,
                 &dead_redraw,
                 size,
                 &dead_scene,
                 &counting_sink(&dead_routes, true),
-            )
-            .expect("the participant settles");
+            );
             // `ScenePart::new` pins the engine twice through
             // `SceneResources::with_shaders` — by design, so a mounted
             // scene's engine outlives its generation handle. This trial
@@ -1262,13 +1351,18 @@ mod tests {
                 .expect("the fresh participant is exclusively owned")
                 .resources = SceneResources::new(Rc::new(NeverBackend));
             drop(dead_generation);
-            assert!(
-                matches!(
-                    part.surface.display(display),
-                    Err(waterui_graphics::backend::cherenkov::SurfaceError::Lost)
-                ),
-                "the dropped engine's surface channel is closed"
-            );
+            // Dropping the engine never joins its render thread: the
+            // channel closes once the worker has run its ordered shutdown,
+            // so the trial waits — bounded — for that exit.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let lost = loop {
+                match part.surface.display(display) {
+                    Err(waterui_graphics::backend::cherenkov::SurfaceError::Lost) => break true,
+                    _ if std::time::Instant::now() >= deadline => break false,
+                    _ => std::thread::yield_now(),
+                }
+            };
+            assert!(lost, "the dropped engine's surface channel is closed");
             part
         };
         let requester: Rc<dyn SceneParticipant> = dead_part.clone();
@@ -1276,14 +1370,15 @@ mod tests {
         let mut renderer = SceneRenderer {
             generation,
             part: dead_part,
+            batch: None,
         };
 
         let texture = target(&context, 20);
         let time = FrameTime::now();
-        let outcome = renderer.present(&texture, display, time);
+        let outcome = present(&mut renderer, &texture, display, time);
         assert!(
             matches!(outcome, Err(HostedError::Scene(_))),
-            "present reports the requester's own prepare failure as Err"
+            "the frame reports the requester's own prepare failure as Err"
         );
         assert_eq!(
             dead_routes.get(),

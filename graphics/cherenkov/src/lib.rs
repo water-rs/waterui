@@ -79,6 +79,8 @@ pub use crate::display_list::{
     Picture, ScopeError, Slot, SlotUpdate, Splice,
 };
 pub use crate::engine::Engine;
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::engine::PendingFrame;
 pub use crate::engine::{CompletionWaker, FrameScope, SurfaceWakes};
 pub use crate::error::{EngineError, RenderError, ResourceError, SurfaceError, SurfaceRejection};
 pub use crate::frame::{

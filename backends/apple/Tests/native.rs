@@ -4106,23 +4106,23 @@ mod gpu_surface {
     }
 
     /// An onscreen frame whose scene was invalidated after the batch —
-    /// `present` answers `Next::At` and the drawable target is never
-    /// written — is dropped unpresented and the frame re-owed, so the
-    /// recycled drawable never reaches the screen. The trial produces
-    /// the shared batch at the delivered timestamp from a sibling
-    /// surface on the same environment, invalidates the sibling's scene,
-    /// then issues a real drawable checked out of a standalone
-    /// `CAMetalLayer` (a link-bound layer forbids `nextDrawable`):
-    /// `render_drawable` itself runs the guard, and the bound
-    /// renderer's `wrote_target` report proves the guard saw the
-    /// unwritten frame.
+    /// the produced frame carries no content for it and the drawable
+    /// target is never written — is dropped unpresented and the frame
+    /// re-owed, so the recycled drawable never reaches the screen. The
+    /// trial produces the shared batch at the delivered timestamp from a
+    /// sibling surface on the same environment, invalidates the
+    /// sibling's scene, then issues a real drawable checked out of a
+    /// standalone `CAMetalLayer` (a link-bound layer forbids
+    /// `nextDrawable`): `render_drawable` itself runs the guard and
+    /// reports the drawable dropped unwritten.
     ///
-    /// The invalidation is what makes the order deterministic: the
-    /// sibling's link may or may not deliver a first-paint frame during
-    /// the window spin, but between `invalidate_scene` and
-    /// `deliver_frame` there is no run-loop turn for any queued work —
-    /// link delivery or redraw — to re-prepare the scene before the
-    /// guard reads it.
+    /// The order is deterministic: the attached surface first settles —
+    /// its renderer live and holding no frame, its link paused — so no
+    /// link delivery runs during the producer's frame, and between
+    /// `invalidate_scene` and the delivery there is no run-loop turn for
+    /// any queued work — link delivery or redraw — to re-prepare the
+    /// scene. The delivery's frame joins the batch already produced at
+    /// its timestamp, so it settles within the delivery itself.
     pub fn an_unwritten_production_drops_the_frame_unpresented() -> Result<(), libtest_mimic::Failed>
     {
         let mtm = mtm();
@@ -4138,21 +4138,19 @@ mod gpu_surface {
             Some(surface.capture_pixel_format()),
             "the presenter's layer carries the surface's declared presentation format"
         );
+        surface
+            .settle_presentation()
+            .map_err(|error| format!("the attached surface: {error}"))?;
         let media_time = cocoa_ui::objc2_quartz_core::CACurrentMediaTime();
         let target_time = surface.map_frame_time(media_time);
         producer
             .render_scene_frame_at(target_time)
             .map_err(|error| format!("the producing surface's frame: {error}"))?;
         surface.invalidate_scene();
-        assert!(
-            surface.deliver_frame(media_time),
-            "the standalone layer issued a drawable frame"
-        );
-        assert_eq!(
-            surface.wrote_target(target_time),
-            Some(false),
-            "the bound renderer reported the target unwritten"
-        );
+        let wrote = surface
+            .deliver_settled_frame(media_time)
+            .map_err(|error| format!("the delivered frame: {error}"))?;
+        assert!(!wrote, "the produced frame left the target unwritten");
         assert!(
             surface.frame_owed(),
             "the unwritten frame stays owed for the next production"
@@ -4163,11 +4161,12 @@ mod gpu_surface {
     /// A scene whose `build_scene` always answers `true` —
     /// self-animating content — still produces the delivered
     /// timestamp: the batch's `again` only schedules the next frame, so
-    /// the bound renderer reports the target written and the frame takes
-    /// the submit path instead of dropping unwritten and owed. The
-    /// drawable checked out of the standalone layer can mint no
-    /// receipt — the bound renderer's `wrote_target` report and the
-    /// cleared owed flag prove the frame was submitted for presentation.
+    /// the delivered drawable is written and takes the submit path
+    /// instead of dropping unwritten and owed. The drawable checked out
+    /// of the standalone layer can mint no receipt — `render_drawable`'s
+    /// report and the cleared owed flag prove the frame was submitted for
+    /// presentation. Drawables are delivered until one finds the frame
+    /// produced, the run loop turning while it is in flight.
     pub fn an_animating_scene_presents_its_frame() -> Result<(), libtest_mimic::Failed> {
         let mtm = mtm();
         let surface = pollster::block_on(MountedSceneSurface::mount_animating(mtm))
@@ -4175,14 +4174,11 @@ mod gpu_surface {
         surface.set_view_frame(64.0, 64.0);
         surface.ensure_attached();
         let media_time = cocoa_ui::objc2_quartz_core::CACurrentMediaTime();
-        let target_time = surface.map_frame_time(media_time);
+        let wrote = surface
+            .deliver_produced_frame(media_time)
+            .map_err(|error| format!("the delivered frame: {error}"))?;
         assert!(
-            surface.deliver_frame(media_time),
-            "the standalone layer issued a drawable frame"
-        );
-        assert_eq!(
-            surface.wrote_target(target_time),
-            Some(true),
+            wrote,
             "the animating scene's delivered frame wrote its target"
         );
         assert!(
@@ -4221,9 +4217,9 @@ mod gpu_surface {
         // Seal the shared generation the rendered leaf's `SceneView`
         // mounts on — the same typed carrier a real surface rejection
         // produces.
-        let generation = scene_engine(&env)
-            .generation(&runtime, &runtime.context())
-            .map_err(|error| format!("the shared engine generation: {error}"))?;
+        let generation =
+            pollster::block_on(scene_engine(&env).generation(&runtime, &runtime.context()))
+                .map_err(|error| format!("the shared engine generation: {error}"))?;
         let max = runtime.context().device().limits().max_texture_dimension_2d;
         generation.seal_failure_for_test(HostedLayerError::Surface(SurfaceError::TooLarge {
             width: u32::MAX,

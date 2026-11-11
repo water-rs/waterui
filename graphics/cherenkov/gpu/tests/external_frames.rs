@@ -685,9 +685,13 @@ fn release_hook_runs_when_the_engine_drops_the_frame() -> Result<(), Box<dyn std
     engine.render(FrameTime::now())?;
     assert_eq!(release.try_recv().ok(), None);
     drop((surface, layer, video, sink));
+    // Dropping the engine never joins its render thread: the installed
+    // frame is released there, once the worker runs its ordered shutdown.
     drop(engine);
     assert_eq!(
-        release.try_recv().ok(),
+        release
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .ok(),
         Some("blue"),
         "engine teardown releases the installed frame"
     );

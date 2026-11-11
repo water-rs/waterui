@@ -89,17 +89,20 @@ pub trait Renderer: 'static {
     /// presentation, the work that must land on the platform's main
     /// thread for the frame's parts to present (Apple window surfaces:
     /// the `CATransaction` of layer geometry and drawable presents).
-    /// [`Engine::render`](crate::Engine::render) applies it on the
-    /// awaiting thread right after the reply arrives, so a frame's
-    /// present is ordered before the next frame's acquire. `()` where a
-    /// frame commits nothing off the render thread.
+    /// The frame applies it on the thread that resolves it, right after
+    /// the reply arrives, so a frame's present is ordered before the next
+    /// frame's acquire; a frame dropped before it resolves drops its
+    /// commit unapplied on the thread that next claims the frame slot.
+    /// `()` where a frame commits nothing off the render thread.
     type FrameCommit: RenderTransfer + 'static;
 
-    /// Applies the frame's [`Self::FrameCommit`] on the awaiting caller's
-    /// thread. Called by [`Engine::render`](crate::Engine::render) before
-    /// it returns. A backend whose commits are main-thread-bound asserts
-    /// the caller is on that thread here: a render whose surfaces present
-    /// on the platform main thread must be awaited on it.
+    /// Applies the frame's [`Self::FrameCommit`] on the thread that
+    /// resolves the frame: the thread polling the native
+    /// [`PendingFrame`](crate::PendingFrame) [`Engine::submit`](crate::Engine::submit)
+    /// returned, or waiting in [`Engine::render`](crate::Engine::render).
+    /// A backend whose commits are main-thread-bound asserts the caller is
+    /// on that thread here: a frame whose surfaces present on the
+    /// platform main thread must be resolved on it.
     #[cfg(not(target_arch = "wasm32"))]
     fn apply_frame_commit(_commit: Self::FrameCommit) {}
 

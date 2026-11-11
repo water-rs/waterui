@@ -24,7 +24,7 @@ pub use external::{
     PresentedSize, RetiredOutput,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use runtime::RebuildHold;
+pub use runtime::{HostedFrame, RebuildHold, RenderedFrame};
 pub use runtime::{
     DeviceLoss, ExternalFrameRenderer, GpuContentRenderer, GpuRuntime, GpuRuntimeError,
     HostedLayerError, SharedGpuContext, preferred_surface_format,

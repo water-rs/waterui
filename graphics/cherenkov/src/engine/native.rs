@@ -1,10 +1,12 @@
 //! The engine: owns the render thread and every resource's identity.
 //! `!Send`, lives on the UI thread.
 
+use super::pending::{Frontend, PendingFrame};
 use super::{SurfaceWaker, thread};
 
-use crate::transport::{FrameSlot, ReplyRx, SlotPool};
-use std::cell::{Cell, RefCell};
+use crate::transport::ReplyRx;
+use futures_lite::future::block_on;
+use std::cell::Cell;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -19,9 +21,9 @@ use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
 use crate::frame::{FrameStats, FrameTime, FrameTiming, Next};
 use crate::glyph::FontId;
 use crate::image::{Format, ImageData, ImageUpload};
-use cherenkov_record::{ChangeSet, SurfaceId};
+use cherenkov_record::SurfaceId;
 
-use crate::message::{FontData, Message, ProducerId, RegisterOp, RenderReply, ResOp};
+use crate::message::{FontData, Message, ProducerId, RegisterOp, ResOp};
 use crate::paint::ImageId;
 use cherenkov_record::ResourceId;
 
@@ -63,23 +65,15 @@ pub struct Engine<B: Backend> {
     /// The image budget every registration and replacement is admitted
     /// against on the calling thread, read once after init.
     images: Rc<ImageBudget>,
-    stats: RefCell<FrameStats>,
     /// The memory query's persistent reply channel, reused across calls:
     /// the worker answers through the same request guard a frame's reply
     /// uses, so a dropped request closes it and a successful one leaves
     /// it reusable.
     memory_reply: crate::transport::Reply<crate::message::MemoryReply>,
     memory_reply_rx: crate::transport::ReplyRx<crate::message::MemoryReply>,
-    /// The unique reusable frame slot — one `Render` in flight at a
-    /// time, with its persistent response channel and commit buffers.
-    /// The slot is the protocol's frame backpressure: a second `render`
-    /// call waits for the first's lease, and a cancelled `render_async`
-    /// hands it back with `pending` still set so the next owner drains
-    /// the stale response before submitting.
-    frame: SlotPool<FrameSlot<B>>,
-    /// The live surfaces' shared queues, drained into one `Render` message
-    /// per frame.
-    surfaces: RefCell<super::Surfaces<B>>,
+    /// The frame state every [`PendingFrame`] shares: the live surfaces'
+    /// queues, the last frame's stats and the one frame slot.
+    frontend: Rc<Frontend<B>>,
     next_surface: Cell<u64>,
     next_font: Cell<u64>,
     next_text: Cell<u64>,
@@ -105,25 +99,23 @@ impl<B: Backend> std::fmt::Debug for Engine<B> {
 }
 
 impl<B: Backend> Engine<B> {
-    /// Spawns the render thread and runs `B::init` on it, blocking until it
-    /// reports success or failure.
+    /// Spawns the render thread and runs `B::init` on it, waiting on the
+    /// calling thread for [`Engine::new_async`] to resolve — the
+    /// constructor of hosts whose setup is synchronous (Hydrolysis's
+    /// frame pump). A host on a UI thread that must not wait uses
+    /// [`Engine::new_async`].
     ///
     /// # Errors
     /// [`EngineError`] when the backend fails to initialize or the render
     /// thread cannot start.
     pub fn new(config: B::Config) -> Result<Self, EngineError> {
-        let spawn = Self::spawn(config)?;
-        let (info, image_limits) = spawn
-            .init_rx
-            .recv_blocking()
-            .map_err(|_| EngineError::Thread("render thread died during init".into()))??;
-        Ok(Self::from_spawn(spawn, info, image_limits))
+        block_on(Self::new_async(config))
     }
 
-    /// The asynchronous engine constructor the final interface uses:
-    /// the render thread's init reply resolves the future, and a
-    /// cancellation before it arrives posts `Shutdown` to the nascent
-    /// worker without joining it on the caller's thread.
+    /// Spawns the render thread and runs `B::init` on it without making
+    /// the caller wait: the render thread's init reply resolves the
+    /// future, and a cancellation before it arrives posts `Shutdown` to
+    /// the nascent worker without joining it on the caller's thread.
     ///
     /// # Errors
     /// [`EngineError`] when the backend fails to initialize or the render
@@ -155,8 +147,8 @@ impl<B: Backend> Engine<B> {
         Ok(Self::from_spawn(spawn, info, image_limits))
     }
 
-    /// Spawns the render thread and returns the pieces either
-    /// constructor's wait then turns into an `Engine`.
+    /// Spawns the render thread and returns the pieces `new_async`'s wait
+    /// then turns into an `Engine`.
     fn spawn(config: B::Config) -> Result<Spawn<B>, EngineError> {
         let (tx, rx) = crossbeam_channel::unbounded::<Message<B>>();
         let (retire_tx, retire_rx) = crossbeam_channel::unbounded::<ResOp<B>>();
@@ -174,7 +166,7 @@ impl<B: Backend> Engine<B> {
     }
 
     /// Assembles the engine once the render thread reports its
-    /// capabilities — the shared body of `new` and `new_async`.
+    /// capabilities.
     fn from_spawn(spawn: Spawn<B>, info: B::Info, image_limits: crate::ImageLimits) -> Self {
         let Spawn {
             tx,
@@ -194,15 +186,13 @@ impl<B: Backend> Engine<B> {
             }) as ReplaceImage
         };
         Self {
+            frontend: Rc::new(Frontend::new(tx.clone())),
             tx,
             retire: retire_tx,
             info,
             images: ImageBudget::new(image_limits),
-            stats: RefCell::new(FrameStats::default()),
             memory_reply,
             memory_reply_rx,
-            frame: SlotPool::new(FrameSlot::new()),
-            surfaces: RefCell::new(Vec::new()),
             next_surface: Cell::new(0),
             next_font: Cell::new(1),
             next_text: Cell::new(1),
@@ -243,11 +233,11 @@ impl<B: Backend> Engine<B> {
         self.images.limits()
     }
 
-    /// Statistics of the last [`Engine::render`]. GPU timings are kept by
+    /// Statistics of the last frame that resolved. GPU timings are kept by
     /// the render thread and returned by [`Engine::finish_timings`] instead.
     #[must_use]
     pub fn stats(&self) -> FrameStats {
-        self.stats.borrow().clone()
+        self.frontend.stats.borrow().clone()
     }
 
     /// Returns all GPU timings accumulated since the previous call,
@@ -269,7 +259,10 @@ impl<B: Backend> Engine<B> {
         rx.recv().map_err(|_| RenderError::Thread)?
     }
 
-    /// The engine's current memory usage.
+    /// The engine's current memory usage, waiting on the calling thread for
+    /// the render thread's answer. It belongs to tooling and to hosts
+    /// whose frame loop is synchronous, never to a UI thread that must not
+    /// wait.
     ///
     /// # Errors
     /// [`RenderError::Thread`] when the render thread cannot answer — a
@@ -281,10 +274,7 @@ impl<B: Backend> Engine<B> {
                 reply: self.memory_reply.request(),
             })
             .map_err(|_| RenderError::Thread)?;
-        let reply = self
-            .memory_reply_rx
-            .recv_blocking()
-            .map_err(|_| RenderError::Thread)?;
+        let reply = block_on(self.memory_reply_rx.recv()).map_err(|_| RenderError::Thread)?;
         Ok(reply.usage)
     }
 
@@ -399,8 +389,8 @@ impl<B: Backend> Engine<B> {
     /// Changes made outside a frame (a `surface.update`, a layer drop, a
     /// bound signal firing) are queued, not sent. When the display link is
     /// paused after `Next::Idle`, the host must learn that a frame is
-    /// needed: the engine calls `wake` at most once between two
-    /// [`Engine::render`]s the surface participates in — the first time
+    /// needed: the engine calls `wake` at most once between two frames
+    /// ([`Engine::submit`]) the surface participates in — the first time
     /// something is queued on it, a backend completion lands for it, an
     /// image or a producer frame it draws lands, or a producer or filter
     /// it draws asks for a redraw — and once when the surface becomes
@@ -414,8 +404,13 @@ impl<B: Backend> Engine<B> {
     /// A host that keeps one presentation loop behind several surfaces
     /// passes each of them the same request-redraw callback. A host that
     /// drives its own frames opens each with [`Surface::begin_frame`] and
-    /// holds the scope across the frame's render, so the edits it makes
-    /// for that frame do not ask for another.
+    /// holds the scope across the frame's submission, so the edits it
+    /// makes for that frame do not ask for another.
+    ///
+    /// This waits on the calling thread for [`Engine::surface_async`] to
+    /// resolve — the constructor of hosts whose frame loop is synchronous.
+    /// A host on a UI thread that must not wait uses
+    /// [`Engine::surface_async`].
     ///
     /// # Errors
     /// [`SurfaceError`] when the backend cannot draw the target, or
@@ -425,16 +420,14 @@ impl<B: Backend> Engine<B> {
         target: impl Into<B::Target>,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Surface<B>, SurfaceError> {
-        let (id, waker, rx, mut registration) = self.start_surface(target, wake)?;
-        let info = rx.recv_blocking().map_err(|_| SurfaceError::Lost)??;
-        registration.disarm();
-        Ok(self.finish_surface(id, info, waker))
+        block_on(self.surface_async(target, wake))
     }
 
-    /// The asynchronous surface constructor the final interface uses:
-    /// the worker's `CreateSurface` reply resolves the future, and a
-    /// cancellation before or after the worker handles it posts
-    /// `DestroySurface` for the same id — nothing is left registered.
+    /// Creates a surface like [`Engine::surface`] without making the
+    /// caller wait: the worker's `CreateSurface` reply resolves the
+    /// future, and a cancellation before or after the worker handles it
+    /// posts `DestroySurface` for the same id — nothing is left
+    /// registered.
     ///
     /// # Errors
     /// [`SurfaceError`] when the backend refuses the target or the render
@@ -501,7 +494,7 @@ impl<B: Backend> Engine<B> {
         waker: Arc<SurfaceWaker>,
     ) -> Surface<B> {
         let surface = Surface::new(id, info, self.tx.clone(), waker);
-        self.surfaces.borrow_mut().push(super::SurfaceEntry {
+        self.frontend.surfaces.borrow_mut().push(super::SurfaceEntry {
             shared: Rc::downgrade(&surface.shared),
             waker: Arc::clone(&surface.waker),
             next_frame: Rc::downgrade(&surface.next_frame),
@@ -540,187 +533,48 @@ impl<B: Backend> Engine<B> {
     /// The number of surfaces still alive, for leak testing.
     #[doc(hidden)]
     pub fn live_surfaces(&self) -> usize {
-        let mut surfaces = self.surfaces.borrow_mut();
+        let mut surfaces = self.frontend.surfaces.borrow_mut();
         surfaces.retain(|entry| entry.shared.strong_count() > 0);
         surfaces.len()
     }
 
-    /// Renders every dirty visible surface for the frame at `time`,
-    /// blocking until the render thread has applied the queued commits,
-    /// sampled the animations and rendered. A hidden surface is neither
+    /// Submits the frame at `time` and returns at once, before the render
+    /// thread has done anything with it: drains every visible surface's
+    /// queued changes into one `Render` message and hands it to the render
+    /// thread, which applies the commits, samples the animations at `time`
+    /// and renders every dirty visible surface. A hidden surface is neither
     /// sampled nor drawn; its changes were applied as it made them.
+    ///
+    /// The returned [`PendingFrame`] resolves on the thread that polls it,
+    /// woken by the render thread's reply. Dropping it discards the
+    /// frame's presentation without waiting. While an earlier frame is
+    /// still in flight, the new one is queued and posts its render once
+    /// that one resolves or is dropped.
     ///
     /// # Errors
     /// [`RenderError::Hidden`] when every surface is hidden, before
-    /// anything is drained. [`RenderError::Rejected`] when the content of
-    /// some surfaces draws a resource the backend rejected: those surfaces
-    /// were left out of the frame, and every other surface rendered. Any
-    /// other [`RenderError`] fails this call; a surface that failed to
+    /// anything is drained; [`RenderError::Thread`] when the render thread
+    /// is gone. The frame itself resolves to the [`Next`] the render
+    /// produced, [`RenderError::Rejected`] when the content of some
+    /// surfaces draws a resource the backend rejected — those surfaces
+    /// were left out of the frame, and every other surface rendered — or
+    /// the [`RenderError`] that failed the frame; a surface that failed to
     /// render is left in its previous state.
-    pub fn render(&self, time: FrameTime) -> Result<Next, RenderError> {
-        let mut slot = self
-            .frame
-            .acquire_blocking()
-            .map_err(|_| RenderError::Thread)?;
-        self.drain_pending(&mut slot)?;
-        self.submit_render(&mut slot, time)?;
-        let reply = slot
-            .reply_rx
-            .recv_blocking()
-            .map_err(|_| RenderError::Thread)?;
-        slot.pending = false;
-        self.finish_render(&mut slot, reply)
+    pub fn submit(&self, time: FrameTime) -> Result<PendingFrame<B>, RenderError> {
+        self.frontend.submit(time)
     }
 
-    /// The asynchronous frame request the final interface uses: the
-    /// worker's `Render` reply resolves the future, and cancelling it
-    /// returns the frame slot still marked pending — the next owner
-    /// drains and discards the stale response's presentation before
-    /// submitting its own frame, never applying a commit its caller
-    /// is not waiting for.
+    /// Renders the frame at `time`, waiting on the calling thread for the
+    /// frame [`Engine::submit`] hands out to resolve — the frame entry
+    /// point of hosts whose frame loop is synchronous (Hydrolysis's pump).
+    /// A host on a UI thread that must not wait submits and composites
+    /// once the frame resolves.
     ///
     /// # Errors
-    /// [`RenderError`] under the same conditions as [`Engine::render`].
-    #[expect(
-        clippy::future_not_send,
-        reason = "the engine is !Send — its futures run on the UI thread that owns it"
-    )]
-    pub async fn render_async(&self, time: FrameTime) -> Result<Next, RenderError> {
-        let mut slot = self
-            .frame
-            .acquire()
-            .await
-            .map_err(|_| RenderError::Thread)?;
-        self.drain_pending_async(&mut slot).await?;
-        self.submit_render(&mut slot, time)?;
-        let Ok(reply) = slot.reply_rx.recv().await else {
-            slot.pending = false;
-            return Err(RenderError::Thread);
-        };
-        slot.pending = false;
-        self.finish_render(&mut slot, reply)
-    }
-
-    /// The abandoned-reply drain the synchronous `render` bridge uses: a
-    /// cancelled `render_async` leaves the slot marked `pending` with its
-    /// reply posted or still owed — receive it, recycle its buffers and
-    /// drop the presentation commit, which is never applied for a caller
-    /// that is not waiting.
-    fn drain_pending(
-        &self,
-        slot: &mut crate::transport::SlotLease<'_, FrameSlot<B>>,
-    ) -> Result<(), RenderError> {
-        if !slot.pending {
-            return Ok(());
-        }
-        match slot.reply_rx.recv_blocking() {
-            Ok(stale) => self.recycle_stale(slot, stale),
-            Err(_) => return Err(RenderError::Thread),
-        }
-        slot.pending = false;
-        Ok(())
-    }
-
-    /// The awaitable [`Self::drain_pending`] for `render_async`.
-    #[expect(
-        clippy::future_not_send,
-        reason = "the engine is !Send — its futures run on the UI thread that owns it"
-    )]
-    async fn drain_pending_async(
-        &self,
-        slot: &mut crate::transport::SlotLease<'_, FrameSlot<B>>,
-    ) -> Result<(), RenderError> {
-        if !slot.pending {
-            return Ok(());
-        }
-        match slot.reply_rx.recv().await {
-            Ok(stale) => self.recycle_stale(slot, stale),
-            Err(_) => return Err(RenderError::Thread),
-        }
-        slot.pending = false;
-        Ok(())
-    }
-
-    /// The stale reply's buffers recycle into the slot; its presentation
-    /// commit drops un-applied.
-    fn recycle_stale(
-        &self,
-        slot: &mut crate::transport::SlotLease<'_, FrameSlot<B>>,
-        mut stale: RenderReply<B>,
-    ) {
-        self.recycle_commits(&mut stale.commits);
-        stale.commits.clear();
-        slot.commits = stale.commits;
-    }
-
-    /// The shared frame submission: hidden-surfaces check, commit drain,
-    /// `Render` send, then the pending mark — set only after the send
-    /// lands so a failed send leaves the slot clean.
-    fn submit_render(
-        &self,
-        slot: &mut crate::transport::SlotLease<'_, FrameSlot<B>>,
-        time: FrameTime,
-    ) -> Result<(), RenderError> {
-        if super::all_hidden(&self.surfaces.borrow()) {
-            return Err(RenderError::Hidden);
-        }
-        let mut commits = std::mem::take(&mut slot.commits);
-        commits.clear();
-        // Re-arms each drained surface's wake before the render is sent:
-        // completions may arrive while it is in flight, before its reply.
-        super::drain_visible(&mut self.surfaces.borrow_mut(), time, &mut commits);
-        if let Err(error) = self.tx.send(Message::Render {
-            time,
-            commits,
-            reply: slot.reply.request(),
-        }) {
-            if let Message::Render { commits, .. } = error.0 {
-                slot.commits = commits;
-            }
-            return Err(RenderError::Thread);
-        }
-        slot.pending = true;
-        Ok(())
-    }
-
-    /// The shared frame finish: recycle the reply's buffers, apply its
-    /// presentation commit on the caller's thread, publish `next_frame`
-    /// and stats — exactly once, after a live reply.
-    fn finish_render(
-        &self,
-        slot: &mut crate::transport::SlotLease<'_, FrameSlot<B>>,
-        mut reply: RenderReply<B>,
-    ) -> Result<Next, RenderError> {
-        self.recycle_commits(&mut reply.commits);
-        reply.commits.clear();
-        slot.commits = reply.commits;
-        let frame = reply.result?;
-        // The frame's main-thread work applies here, on the awaiting
-        // caller's thread, before the render resolves: a window surface's
-        // drawable presents land inside this call, ordered before the
-        // next frame's acquire — a frame that left surfaces out included.
-        // `RenderError` above drops the commit with its acquired
-        // drawables, which a later render re-acquires.
-        <B::Renderer as crate::backend::Renderer>::apply_frame_commit(frame.commit);
-        super::publish_next(&self.surfaces.borrow(), &frame.surface_next);
-        *self.stats.borrow_mut() = frame.stats;
-        super::rendered(frame.next, frame.rejected)
-    }
-
-    fn recycle_commits(&self, commits: &mut [(SurfaceId, ChangeSet<B>)]) {
-        let surfaces = self.surfaces.borrow();
-        for (id, changes) in commits {
-            let Some(shared) = surfaces
-                .iter()
-                .filter_map(|entry| entry.shared.upgrade())
-                .find(|shared| shared.borrow().id == *id)
-            else {
-                continue;
-            };
-            shared
-                .borrow_mut()
-                .recycle(std::mem::take(&mut changes.ops), &mut changes.recycled);
-        }
+    /// [`RenderError`] under the same conditions as [`Engine::submit`] and
+    /// its frame.
+    pub fn render(&self, time: FrameTime) -> Result<Next, RenderError> {
+        block_on(self.submit(time)?)
     }
 
     /// Queues a registration the backend may reject; the render loop
@@ -1330,6 +1184,15 @@ mod tests {
         );
     }
 
+    /// Points the engine and its frame state at a fake worker's channel,
+    /// keeping the registered surfaces.
+    fn replace_transport(engine: &mut Engine<Null>, tx: crossbeam_channel::Sender<Message<Null>>) {
+        let surfaces = engine.frontend.surfaces.take();
+        engine.frontend = Rc::new(Frontend::new(tx.clone()));
+        *engine.frontend.surfaces.borrow_mut() = surfaces;
+        engine.tx = tx;
+    }
+
     #[test]
     fn completion_before_render_reply_wakes_the_host() {
         let (events, _) = std::sync::mpsc::channel();
@@ -1356,7 +1219,7 @@ mod tests {
         engine.tx.send(Message::Shutdown).unwrap();
         engine.thread.take().unwrap().join().unwrap();
         let (tx, rx) = crossbeam_channel::bounded(1);
-        engine.tx = tx;
+        replace_transport(&mut engine, tx);
         surface.waker.wake();
         let waker = Arc::clone(&surface.waker);
         engine.thread = Some(std::thread::spawn(move || {
@@ -1364,7 +1227,7 @@ mod tests {
                 panic!("expected render");
             };
             waker.wake();
-            reply.send(RenderReply {
+            reply.send(crate::message::RenderReply {
                 result: Ok(crate::message::RenderedFrame {
                     next: Next::Idle,
                     surface_next: rustc_hash::FxHashMap::default(),
@@ -1563,11 +1426,23 @@ mod tests {
             .unwrap()
     }
 
-    /// A render future polled to `Pending` while the render thread sits
-    /// inside `gate_rx`: `report_tx` carries the pending observation to
-    /// the controlling test, which alone holds `gate_tx` and releases it.
+    /// Parks the render thread inside a `Resource` op until `gate` fires.
+    fn park(engine: &Engine<Null>, gate: std::sync::mpsc::Receiver<()>) {
+        engine
+            .tx
+            .send(Message::Resource(Box::new(move |_| {
+                let _ = gate.recv();
+            })))
+            .unwrap();
+    }
+
+    /// `submit` returns to its caller while the render thread sits inside
+    /// `gate_rx`, and the frame it hands out polls `Pending` until the
+    /// reply wakes it: `report_tx` carries the pending observation — made
+    /// after `submit` returned — to the controlling test, which alone holds
+    /// `gate_tx` and releases the worker only once it has the report.
     #[test]
-    fn async_render_yields_while_worker_is_paused() {
+    fn submission_returns_while_the_render_worker_is_paused() {
         let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
         let (report_tx, report_rx) = std::sync::mpsc::channel();
         let helper = std::thread::spawn(move || {
@@ -1577,26 +1452,86 @@ mod tests {
             surface.update(|tx| {
                 tx[surface.root()].opacity(0.5f32);
             });
-            engine
-                .tx
-                .send(Message::Resource(Box::new(move |_| {
-                    let _ = gate_rx.recv();
-                })))
-                .unwrap();
-            drive_gated(engine.render_async(FrameTime::now()), &report_tx)
+            park(&engine, gate_rx);
+            let frame = engine.submit(FrameTime::now()).unwrap();
+            drive_gated(frame, &report_tx)
         });
         let observed = report_rx.recv_timeout(std::time::Duration::from_secs(30));
         gate_tx.send(()).expect("the worker waits on the gate");
         let result = helper.join().expect("helper panicked");
         assert!(
             observed.expect("helper never reported its poll"),
-            "render_async must yield while the worker is parked"
+            "the submitted frame must stay pending while the worker is parked"
         );
-        result.expect("the released render completed");
+        result.expect("the released frame resolved");
+    }
+
+    /// The surface and its pending frame both go away while the render
+    /// thread is parked: nothing waits on the worker, the abandoned reply
+    /// is received and dropped by the next submission, and the engine keeps
+    /// rendering a surface created afterwards.
+    #[test]
+    fn surface_teardown_while_a_frame_is_pending_is_safe() {
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
+        let (events, event_rx) = std::sync::mpsc::channel();
+        let engine = null_engine(events);
+        let surface = offscreen(&engine);
+        surface.update(|tx| {
+            tx[surface.root()].opacity(0.5f32);
+        });
+        park(&engine, gate_rx);
+        let frame = engine.submit(FrameTime::now()).unwrap();
+        let retired = surface.id();
+        drop(frame);
+        drop(surface);
+        gate_tx.send(()).expect("the worker waits on the gate");
+        let replacement = offscreen(&engine);
+        replacement.update(|tx| {
+            tx[replacement.root()].opacity(0.25f32);
+        });
+        engine
+            .render(FrameTime::now())
+            .expect("the engine renders after the teardown");
+        assert_eq!(engine.live_surfaces(), 1);
+        let mut destroyed = false;
+        while let Ok(event) = event_rx.try_recv() {
+            if matches!(event, Event::DestroySurface(id) if id == retired) {
+                destroyed = true;
+            }
+        }
+        assert!(destroyed, "the torn-down surface was destroyed");
+    }
+
+    /// A frame submitted while another is live is queued: it posts its
+    /// render once the live one resolves, woken by that resolution.
+    #[test]
+    fn a_frame_submitted_behind_a_live_one_follows_it() {
+        let (events, _rx) = std::sync::mpsc::channel();
+        let engine = null_engine(events);
+        let surface = offscreen(&engine);
+        surface.update(|tx| {
+            tx[surface.root()].opacity(0.5f32);
+        });
+        let first = engine.submit(FrameTime::now()).unwrap();
+        let mut second = engine.submit(FrameTime::now()).unwrap();
+        let (waker, woken) = wake_signal();
+        assert!(
+            std::future::Future::poll(
+                std::pin::Pin::new(&mut second),
+                &mut std::task::Context::from_waker(&waker)
+            )
+            .is_pending(),
+            "the second frame waits for the first"
+        );
+        block_on(first).expect("the first frame resolves");
+        woken
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the first frame's resolution wakes the queued one");
+        block_on(second).expect("the queued frame resolves");
     }
 
     #[test]
-    fn async_render_cancellation_reuses_producer() {
+    fn a_dropped_pending_frame_keeps_its_producer() {
         let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
         let (report_tx, report_rx) = std::sync::mpsc::channel();
         let helper = std::thread::spawn(move || {
@@ -1609,23 +1544,19 @@ mod tests {
                 tx[surface.root()].push(&layer);
                 tx[&layer].content(producer.at((8, 8)));
             });
-            engine
-                .tx
-                .send(Message::Resource(Box::new(move |_| {
-                    let _ = gate_rx.recv();
-                })))
-                .unwrap();
-            let mut first = Box::pin(engine.render_async(FrameTime::now()));
+            park(&engine, gate_rx);
+            let mut first = engine.submit(FrameTime::now()).unwrap();
             assert!(
-                poll_once(first.as_mut()),
-                "the first render must queue behind the parked worker"
+                poll_once(std::pin::Pin::new(&mut first)),
+                "the first frame must queue behind the parked worker"
             );
             drop(first);
-            // The second render reports its first pending state, then
-            // completes only on a real wake: its drain collects the
-            // cancelled render's reply, recycles the buffers and submits
-            // its own — never applying the abandoned commit.
-            drive_gated(engine.render_async(FrameTime::now()), &report_tx).unwrap();
+            // The second frame reports its first pending state, then
+            // completes only on a real wake: it receives the dropped
+            // frame's reply, recycles the buffers and posts its own —
+            // never applying the abandoned commit.
+            let second = engine.submit(FrameTime::now()).unwrap();
+            drive_gated(second, &report_tx).unwrap();
             // Assertions run while engine, surface, layer and producer
             // are all alive — the cancelled frame's reply was drained and
             // recycled, never applied.
@@ -1712,7 +1643,7 @@ mod tests {
     /// the channel, and the waiting future resolves `Thread` — the
     /// frontend's own sender cannot close it.
     #[test]
-    fn async_queued_render_is_woken_when_the_worker_panics() {
+    fn a_queued_render_is_woken_when_the_worker_panics() {
         let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
         let (report_tx, report_rx) = std::sync::mpsc::channel();
         let helper = std::thread::spawn(move || {
@@ -1729,18 +1660,18 @@ mod tests {
                     panic!("render thread failure");
                 })))
                 .unwrap();
-            drive_gated(engine.render_async(FrameTime::now()), &report_tx)
+            drive_gated(engine.submit(FrameTime::now()).unwrap(), &report_tx)
         });
         let observed = report_rx.recv_timeout(std::time::Duration::from_secs(30));
         gate_tx.send(()).expect("the worker waits on the gate");
         let result = helper.join().expect("helper panicked");
         assert!(
             observed.expect("helper never reported its poll"),
-            "render_async must yield while the worker is parked"
+            "the frame must stay pending while the worker is parked"
         );
         match result {
             Err(RenderError::Thread) => {}
-            other => panic!("render_async resolved {other:?}, not RenderError::Thread"),
+            other => panic!("the frame resolved {other:?}, not RenderError::Thread"),
         }
     }
 
@@ -1748,7 +1679,7 @@ mod tests {
     /// unwinds: the accepted request's guard closes the channel during
     /// the panic — the hole an exit-time armed sender misses.
     #[test]
-    fn async_accepted_render_is_woken_when_the_worker_unwinds() {
+    fn an_accepted_render_is_woken_when_the_worker_unwinds() {
         let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
         let (report_tx, report_rx) = std::sync::mpsc::channel();
         let helper = std::thread::spawn(move || {
@@ -1764,7 +1695,7 @@ mod tests {
             engine.tx.send(Message::Shutdown).unwrap();
             engine.thread.take().unwrap().join().unwrap();
             let (tx, rx) = crossbeam_channel::unbounded();
-            engine.tx = tx;
+            replace_transport(&mut engine, tx);
             engine.thread = Some(std::thread::spawn(move || {
                 let Message::Render { reply, .. } = rx.recv().expect("expected render") else {
                     panic!("expected a Render");
@@ -1773,18 +1704,18 @@ mod tests {
                 let _ = gate_rx.recv();
                 panic!("the worker unwound while it owed a reply");
             }));
-            drive_gated(engine.render_async(FrameTime::now()), &report_tx)
+            drive_gated(engine.submit(FrameTime::now()).unwrap(), &report_tx)
         });
         let observed = report_rx.recv_timeout(std::time::Duration::from_secs(30));
         gate_tx.send(()).expect("the fake worker waits on the gate");
         let result = helper.join().expect("helper panicked");
         assert!(
             observed.expect("helper never reported its poll"),
-            "render_async must yield while the reply is owed"
+            "the frame must stay pending while the reply is owed"
         );
         match result {
             Err(RenderError::Thread) => {}
-            other => panic!("render_async resolved {other:?}, not RenderError::Thread"),
+            other => panic!("the frame resolved {other:?}, not RenderError::Thread"),
         }
     }
 
