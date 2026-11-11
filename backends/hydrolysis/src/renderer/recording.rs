@@ -403,7 +403,7 @@ impl SceneResources {
     #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn new<B>(engine: &Rc<cherenkov::Engine<B>>) -> Self
     where
-        B: waterui_graphics::SceneCaps
+        B: waterui_graphics::backend::SceneCaps
             + cherenkov::Uploads<cherenkov::Rgba8>
             + cherenkov::Uploads<cherenkov::Rgba16F>,
     {
