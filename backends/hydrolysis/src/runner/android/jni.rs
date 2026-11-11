@@ -85,8 +85,12 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// the overscroll stretch stage kind. 27 = `nativeSetMetrics` carries the
 /// `ViewConfiguration` double-tap timeout and slop, and `nativeOnFrame`
 /// carries the vsync callback's expected presentation time in place of the
-/// advisory vsync timestamp.
-pub const JNI_SCHEMA: jint = 27;
+/// advisory vsync timestamp. 28 = the HWUI painter's hosted GPU-content edge:
+/// `nativeHostedSurfaceAttached` / `nativeHostedSurfaceResized` /
+/// `nativeHostedSurfaceDestroyed` carry the `Surface` of the `TextureView`
+/// the painter mounts for each GPU content view, keyed by its placement id
+/// (water-rs/waterui#1812).
+pub const JNI_SCHEMA: jint = 28;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -837,6 +841,91 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformVi
         let id = session.runtime.renderer.platform_view_hit_gpu(point, scale);
         Ok(id.map_or(0, |id| i64::from_ne_bytes(id.to_ne_bytes())))
     })
+}
+
+/// A hosted GPU-content `TextureView` has a `Surface`: the window the view's
+/// frames are presented into, `width` by `height` pixels, keyed by the
+/// placement id of the platform view it is mounted for
+/// (water-rs/waterui#1812).
+#[cfg(hydrolysis_hwui_gpu)]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeHostedSurfaceAttached<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    view: jlong,
+    surface: JObject<'local>,
+    width: jint,
+    height: jint,
+) {
+    guard(&mut env, |env| {
+        let window = unsafe {
+            // SAFETY: env is a live JNI environment and `surface` is the
+            // android.view.Surface the TextureView just produced; the call
+            // acquires the reference the attachment owns. ndk 0.9 binds
+            // `jni-sys` 0.3's JNIEnv while jni 0.22 binds 0.4's — both are
+            // the platform's `JNINativeInterface_` table pointer.
+            ndk::native_window::NativeWindow::from_surface(env.get_raw().cast(), surface.as_raw())
+        };
+        let Some(window) = window else {
+            return Err(JniError(
+                "hydrolysis android: ANativeWindow_fromSurface returned null".to_owned(),
+            ));
+        };
+        session(session_ptr).hwui.hosted.attach(
+            crate::num_cast::i64_as_u64(view),
+            window,
+            crate::num_cast::i32_as_u32(width.max(0)),
+            crate::num_cast::i32_as_u32(height.max(0)),
+        );
+        Ok(())
+    });
+}
+
+/// A hosted GPU-content `TextureView`'s `Surface` changed size.
+#[cfg(hydrolysis_hwui_gpu)]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeHostedSurfaceResized<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    view: jlong,
+    width: jint,
+    height: jint,
+) {
+    guard(&mut env, |_env| {
+        session(session_ptr).hwui.hosted.resize(
+            crate::num_cast::i64_as_u64(view),
+            crate::num_cast::i32_as_u32(width.max(0)),
+            crate::num_cast::i32_as_u32(height.max(0)),
+        );
+        Ok(())
+    });
+}
+
+/// A hosted GPU-content `TextureView` is releasing its `Surface`; the
+/// session drops its swapchain before this returns.
+#[cfg(hydrolysis_hwui_gpu)]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeHostedSurfaceDestroyed<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    view: jlong,
+) {
+    guard(&mut env, |_env| {
+        session(session_ptr)
+            .hwui
+            .hosted
+            .detach(crate::num_cast::i64_as_u64(view));
+        Ok(())
+    });
 }
 
 /// The Kotlin host bound (`true`) or unbound (`false`) its view: the

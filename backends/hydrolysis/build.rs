@@ -93,6 +93,10 @@ fn main() {
         // The Android HWUI render target: the retained layer tree recorded
         // into `RenderNode` display lists, on Android only.
         hydrolysis_hwui: { all(feature = "hwui", android_platform) },
+        // The HWUI painter with GPU content: each GPU content view is hosted
+        // in its own platform surface the painter composites in session
+        // order (water-rs/waterui#1812).
+        hydrolysis_hwui_gpu: { all(hydrolysis_hwui, feature = "gpu") },
         // Runtime implementation exists only when a painter is selected.
         hydrolysis_runtime: { any(hydrolysis_gpu_painter, hydrolysis_hwui) },
         // The Cherenkov GPU engine, its wgpu device stack and the parley

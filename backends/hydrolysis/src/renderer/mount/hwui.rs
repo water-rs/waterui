@@ -125,7 +125,38 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
         });
     }
 
-    #[cfg(hydrolysis_gpu)]
+    #[cfg(hydrolysis_hwui_gpu)]
+    fn mount_gpu_content(
+        _host: &Self::Host,
+        _tx: &mut Transaction<'_, Self>,
+        _layer: &Layer,
+        runtime: &mut GpuContentRuntime,
+        _pixels: (u32, u32),
+        wake: ProducerWake,
+    ) {
+        // The view renders into its own surface at the size the host laid
+        // it out at, so the layer's pixel size does not apply.
+        runtime.hosted.pump(&mut runtime.view, &wake);
+    }
+
+    #[cfg(hydrolysis_hwui_gpu)]
+    fn mount_external_frame(
+        _host: &Self::Host,
+        _tx: &mut Transaction<'_, Self>,
+        _layer: &Layer,
+        runtime: &mut ExternalFrameRuntime,
+        _presented: waterui_graphics::gpu::PresentedSize,
+        wake: ProducerWake,
+    ) -> Option<(u32, u32)> {
+        runtime.hosted.pump(&mut runtime.view, &wake);
+        // The surface stretches the frame itself: the install layer keeps
+        // its identity transform.
+        None
+    }
+
+    /// Host builds compile the HWUI target for tests only; GPU content is
+    /// hosted by the Android runner.
+    #[cfg(all(hydrolysis_gpu, not(hydrolysis_hwui_gpu)))]
     fn mount_gpu_content(
         _host: &Self::Host,
         _tx: &mut Transaction<'_, Self>,
@@ -135,12 +166,11 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
         _wake: ProducerWake,
     ) {
         panic!(
-            "hydrolysis HWUI: GpuContentView requires the hosted GPU-content realization \
-             (water-rs/waterui#1812)"
+            "hydrolysis HWUI: GpuContentView is hosted by the Android runner built with the `gpu` feature"
         );
     }
 
-    #[cfg(hydrolysis_gpu)]
+    #[cfg(all(hydrolysis_gpu, not(hydrolysis_hwui_gpu)))]
     fn mount_external_frame(
         _host: &Self::Host,
         _tx: &mut Transaction<'_, Self>,
@@ -150,8 +180,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
         _wake: ProducerWake,
     ) -> Option<(u32, u32)> {
         panic!(
-            "hydrolysis HWUI: ExternalFrameView requires the hosted GPU-content realization \
-             (water-rs/waterui#1812)"
+            "hydrolysis HWUI: ExternalFrameView is hosted by the Android runner built with the `gpu` feature"
         );
     }
 

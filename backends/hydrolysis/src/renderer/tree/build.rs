@@ -674,14 +674,14 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         #[cfg(hydrolysis_gpu)]
         let view = match view.downcast::<Native<GpuContentView>>() {
             Ok(view) => {
-                return Self::build_gpu_content((*view).into_inner(), renderer);
+                return Self::build_gpu_content((*view).into_inner(), renderer, env);
             }
             Err(view) => view,
         };
         #[cfg(hydrolysis_gpu)]
         let view = match view.downcast::<Native<ExternalFrameView>>() {
             Ok(view) => {
-                return Self::build_external_frame((*view).into_inner(), renderer);
+                return Self::build_external_frame((*view).into_inner(), renderer, env);
             }
             Err(view) => view,
         };
@@ -1211,11 +1211,19 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// producer inside is taken exactly once, when the node's install layer
     /// first commits it on the window's engine.
     #[cfg(hydrolysis_gpu)]
-    fn build_gpu_content(view: GpuContentView, renderer: &SemanticCore<E>) -> Self {
+    fn build_gpu_content(
+        view: GpuContentView,
+        renderer: &SemanticCore<E>,
+        #[cfg_attr(not(hydrolysis_hwui_gpu), expect(unused_variables))] env: &Environment,
+    ) -> Self {
         Self::GpuContent(Box::new(GpuContentNode {
             accessibility_identity: Rc::new(()),
             core: renderer.new_core(),
-            runtime: Rc::new(RefCell::new(GpuContentRuntime::new(view))),
+            runtime: Rc::new(RefCell::new(GpuContentRuntime::new(
+                view,
+                #[cfg(hydrolysis_hwui_gpu)]
+                crate::runner::android::hosted_gpu::HostedLayer::in_environment(env),
+            ))),
             measured: Cell::new(None),
         }))
     }
@@ -1224,11 +1232,19 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// the view keeps its UI-side hooks (measure, a11y); the compositor starts
     /// the stream's source the first time a persistent mount installs it.
     #[cfg(hydrolysis_gpu)]
-    fn build_external_frame(view: ExternalFrameView, renderer: &SemanticCore<E>) -> Self {
+    fn build_external_frame(
+        view: ExternalFrameView,
+        renderer: &SemanticCore<E>,
+        #[cfg_attr(not(hydrolysis_hwui_gpu), expect(unused_variables))] env: &Environment,
+    ) -> Self {
         Self::ExternalFrame(Box::new(ExternalFrameNode {
             accessibility_identity: Rc::new(()),
             core: renderer.new_core(),
-            runtime: Rc::new(RefCell::new(ExternalFrameRuntime::new(view))),
+            runtime: Rc::new(RefCell::new(ExternalFrameRuntime::new(
+                view,
+                #[cfg(hydrolysis_hwui_gpu)]
+                crate::runner::android::hosted_gpu::HostedLayer::in_environment(env),
+            ))),
             measured: Cell::new(None),
         }))
     }

@@ -30,10 +30,14 @@ mod accessibility;
 #[cfg(hydrolysis_gpu_painter)]
 mod gpu;
 mod host;
+#[cfg(hydrolysis_hwui_gpu)]
+pub(crate) mod hosted_gpu;
 #[cfg(hydrolysis_hwui)]
 mod hwui;
 mod ime;
 pub(crate) mod jni;
+#[cfg(hydrolysis_gpu)]
+mod native_window;
 mod platform_views;
 mod preview;
 

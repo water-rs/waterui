@@ -5,6 +5,7 @@ import android.content.res.Configuration
 import android.graphics.ColorSpace
 import android.os.Handler
 import android.os.Looper
+import android.view.Surface
 import android.view.View
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
@@ -161,6 +162,35 @@ class HydrolysisSession internal constructor(
     internal fun requestPlacementPull() {
         if (nativeDepth == 0) hostView?.platformViewRegistry?.publishIfPending()
         else placementPullPending = true
+    }
+
+    /**
+     * The `TextureView` mounted for GPU content placement [id] has a
+     * [surface] the session presents frames into.
+     */
+    fun hostedSurfaceAttached(id: Long, surface: Surface, width: Int, height: Int) {
+        withNativePtr(NativeBridge::nativeHostedSurfaceAttached.name) { ptr ->
+            NativeBridge.nativeHostedSurfaceAttached(ptr, id, surface, width, height)
+        }
+    }
+
+    /** The hosted placement [id]'s surface changed size. */
+    fun hostedSurfaceResized(id: Long, width: Int, height: Int) {
+        withNativePtr(NativeBridge::nativeHostedSurfaceResized.name) { ptr ->
+            NativeBridge.nativeHostedSurfaceResized(ptr, id, width, height)
+        }
+    }
+
+    /**
+     * The hosted placement [id]'s surface is being released. A destroyed
+     * session has already dropped its swapchains with its native peer, so
+     * the late report has nothing to release.
+     */
+    fun hostedSurfaceDestroyed(id: Long) {
+        if (destroyed) return
+        withNativePtr(NativeBridge::nativeHostedSurfaceDestroyed.name) { ptr ->
+            NativeBridge.nativeHostedSurfaceDestroyed(ptr, id)
+        }
     }
 
     /** The view currently presenting this session, or none between bindings. */
