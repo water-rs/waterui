@@ -1234,7 +1234,7 @@ fn styled_button_title<E: crate::text::TextEngine>(
         title
     };
     let resolved = title.resolve(env);
-    state.measure_signal(resolved.content())
+    state.measure_signal(&resolved.content())
 }
 
 /// Subscribes to a label's reactive title content so a change schedules a frame
@@ -1245,7 +1245,7 @@ fn watch_button_title<E: crate::text::TextEngine>(
     label: &Label,
     env: &Environment,
 ) {
-    let _ = renderer.read_signal(label.semantic_text().resolve(env).content());
+    let _ = renderer.read_signal(&label.semantic_text().resolve(env).content());
 }
 
 /// Fills `color` into chunks that have no explicit foreground: the look's

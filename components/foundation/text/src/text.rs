@@ -31,8 +31,12 @@ pub trait Formatter<T>: Clone {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct TextConfig {
-    /// The rich text content to be displayed.
+    /// The rich text content to be displayed, each chunk's font relative to
+    /// [`Self::font`].
     content: Computed<StyledStr>,
+    /// The font of the text as a whole, which every chunk's font inherits
+    /// what it does not set from.
+    font: Computed<Font>,
     /// Paragraph alignment for multiline layout.
     paragraph_alignment: Computed<HorizontalAlignment>,
     /// Maximum number of laid-out lines, or `None` for no limit.
@@ -46,10 +50,18 @@ pub struct TextConfig {
 }
 
 impl TextConfig {
-    /// The rich text content to be displayed.
+    /// The rich text content to be displayed, with [`Self::font`] applied:
+    /// every chunk's font is complete, so a backend resolves it as is.
     #[must_use]
-    pub const fn content(&self) -> &Computed<StyledStr> {
-        &self.content
+    pub fn content(&self) -> Computed<StyledStr> {
+        apply_font(&self.content, &self.font)
+    }
+
+    /// The font of the text as a whole: the font text with no chunks is set
+    /// in, and the one each chunk of [`Self::content`] inherits from.
+    #[must_use]
+    pub const fn font(&self) -> &Computed<Font> {
+        &self.font
     }
 
     /// Paragraph alignment for multiline layout.
@@ -70,13 +82,15 @@ impl TextConfig {
         self.line_limit
     }
 
-    /// Takes the rich text content out of the value.
+    /// Takes the rich text content out of the value, as [`Self::content`]
+    /// returns it.
     #[must_use]
     pub fn into_content(self) -> Computed<StyledStr> {
-        self.content
+        self.content()
     }
 
-    /// Takes the value apart into its fields, in declaration order.
+    /// Takes the value apart into its content as [`Self::content`] returns
+    /// it, its paragraph alignment and its line limit.
     #[must_use]
     pub fn into_parts(
         self,
@@ -85,16 +99,39 @@ impl TextConfig {
         Computed<HorizontalAlignment>,
         Option<NonZeroUsize>,
     ) {
-        (self.content, self.paragraph_alignment, self.line_limit)
+        (self.content(), self.paragraph_alignment, self.line_limit)
     }
 }
 
+/// Flattens a config signal into one config whose fields follow it.
+fn flatten_config(config: &Computed<TextConfig>) -> TextConfig {
+    TextConfig {
+        // A plain field cannot be flattened through the config signal, so the
+        // resolved snapshot's value is the one that holds; every authoring
+        // path sets it before resolution.
+        line_limit: config.snapshot().line_limit,
+        content: flatten_signal(config.map(|config| config.content)),
+        font: flatten_signal(config.map(|config| config.font)),
+        paragraph_alignment: flatten_signal(config.map(|config| config.paragraph_alignment)),
+    }
+}
+
+/// `content` with every chunk's font inheriting from `font`.
+fn apply_font(content: &Computed<StyledStr>, font: &Computed<Font>) -> Computed<StyledStr> {
+    content
+        .zip(font)
+        .map(|(content, font)| content.inherit_font(&font))
+        .computed()
+}
+
 impl TextConfig {
-    /// Creates a raw text config from styled content.
+    /// Creates a raw text config from styled content, set in the font it
+    /// inherits ([`Font::default`]).
     #[must_use]
     pub fn new(content: impl IntoComputed<StyledStr>) -> Self {
         Self {
             content: content.into_signal().map(StyledStr::from).computed(),
+            font: Computed::constant(Font::default()),
             paragraph_alignment: Computed::constant(HorizontalAlignment::Leading),
             line_limit: None,
         }
@@ -254,8 +291,15 @@ where
         Self::from_config_signal(move |env| {
             self.resolve_signal(env)
                 .zip(&rhs.resolve_signal(env))
+                // Each side keeps its own font: it is applied to that side's
+                // chunks, and the sum inherits the font it is set in.
                 .map(|(lhs, rhs)| TextConfig {
-                    content: lhs.content.zip(&rhs.content).map(|(a, b)| a + b).computed(),
+                    content: lhs
+                        .content()
+                        .zip(&rhs.content())
+                        .map(|(a, b)| a + b)
+                        .computed(),
+                    font: Computed::constant(Font::default()),
                     paragraph_alignment: lhs.paragraph_alignment,
                     line_limit: lhs.line_limit,
                 })
@@ -372,19 +416,7 @@ impl Text {
     pub fn resolve(&self, env: &Environment) -> TextConfig {
         match &self.0 {
             TextKind::Raw(config) => config.clone(),
-            TextKind::Signal { resolver } => {
-                let config = resolver(env);
-                TextConfig {
-                    // A plain field cannot be flattened through the config
-                    // signal, so the resolved snapshot's value is the one that
-                    // holds; every authoring path sets it before resolution.
-                    line_limit: config.snapshot().line_limit,
-                    content: flatten_signal(config.map(|config| config.content)),
-                    paragraph_alignment: flatten_signal(
-                        config.map(|config| config.paragraph_alignment),
-                    ),
-                }
-            }
+            TextKind::Signal { resolver } => flatten_config(&resolver(env)),
         }
     }
 
@@ -427,7 +459,7 @@ impl Text {
     #[must_use]
     pub fn content(&self) -> Computed<StyledStr> {
         match &self.0 {
-            TextKind::Raw(config) => config.content.clone(),
+            TextKind::Raw(config) => config.content(),
             TextKind::Signal { .. } => {
                 panic!(
                     "Text::content() is only available for raw text; environment-dependent text must be resolved with Text::resolve(env)"
@@ -462,43 +494,48 @@ impl Text {
         }
     }
 
-    /// Sets the font for this text component.
-    pub fn font(self, font: impl IntoSignal<Font> + 'static) -> Self {
-        let font = font.into_signal();
+    /// Rewrites the text's font, which every chunk inherits from.
+    ///
+    /// The value signal is zipped into the font signal rather than handed to
+    /// the font as a modifier signal, so a change of the value re-emits
+    /// [`TextConfig::content`] and the backend lays the text out again.
+    fn map_font<T: Clone + 'static>(self, value: Computed<T>, apply: fn(Font, T) -> Font) -> Self {
         self.map_config(move |mut config| {
-            config.content = config
-                .content
-                .zip(&font)
-                .map(|(content, font)| content.font(font))
+            config.font = config
+                .font
+                .zip(&value)
+                .map(move |(font, value)| apply(font, value))
                 .computed();
             config
         })
     }
 
-    /// Sets the font size.
+    /// Applies a font over this text's font.
+    ///
+    /// The font merges instead of replacing: a slot such as [`Self::body`]
+    /// replaces the slot and keeps the bold, size and weight already set, on
+    /// the text and on each of its runs, so `.bold().body()` and
+    /// `.body().bold()` are the same text. See
+    /// [`Font::inherit`](crate::font::Font::inherit).
+    pub fn font(self, font: impl IntoSignal<Font> + 'static) -> Self {
+        self.map_font(font.into_signal().computed(), |base, font| {
+            font.inherit(&base)
+        })
+    }
+
+    /// Sets the font size, keeping the font's slot; see
+    /// [`Font::size`](crate::font::Font::size).
     pub fn size(self, size: impl IntoSignal<f64> + 'static) -> Self {
         #[allow(clippy::cast_possible_truncation)]
-        let size = size.into_signal().map(|s| s as f32);
-        self.map_config(move |mut config| {
-            config.content = config
-                .content
-                .zip(&size)
-                .map(|(content, size)| content.size(size))
-                .computed();
-            config
-        })
+        let size = size.into_signal().map(|s| s as f32).computed();
+        self.map_font(size, Font::size)
     }
 
-    /// Sets the font weight.
+    /// Sets the font weight, keeping the font's slot; see
+    /// [`Font::weight`](crate::font::Font::weight).
     pub fn weight(self, weight: impl IntoSignal<FontWeight> + 'static) -> Self {
-        let weight = weight.into_signal();
-        self.map_config(move |mut config| {
-            config.content = config
-                .content
-                .zip(&weight)
-                .map(|(content, weight)| content.weight(weight))
-                .computed();
-            config
+        self.map_font(weight.into_signal().computed(), |font, weight| {
+            font.weight(weight)
         })
     }
 
@@ -598,19 +635,13 @@ impl Text {
     /// while a text style takes its own bold (`.body()` is Semibold on
     /// macOS). See [`Font::bold`](crate::font::Font::bold).
     pub fn bold(self) -> Self {
-        self.map_config(|mut config| {
-            config.content = config.content.map(StyledStr::bold).computed();
-            config
-        })
+        self.map_font(Computed::constant(()), |font, ()| font.bold())
     }
 
     /// Asks for the platform's fixed-pitch face, keeping the font's slot,
     /// size and weight.
     pub fn monospaced(self) -> Self {
-        self.map_config(|mut config| {
-            config.content = config.content.map(StyledStr::monospaced).computed();
-            config
-        })
+        self.map_font(Computed::constant(()), |font, ()| font.monospaced())
     }
 
     /// Sets the italic style.
@@ -630,7 +661,7 @@ macro_rules! impl_text_font {
     ($(($name:ident, $value:expr)),+) => {
         $(
             impl Text {
-                #[doc = concat!("Applies the `", stringify!($name), "` text style preset.")]
+                #[doc = concat!("Applies the `", stringify!($name), "` text style preset, keeping the bold, size and weight already set; see [`Self::font`].")]
                 pub fn $name(self) -> Self {
                     self.font($value)
                 }
@@ -657,18 +688,7 @@ impl View for Text {
     fn body(self, env: &Environment) -> impl View {
         match self.0 {
             TextKind::Raw(config) => RawText(config),
-            TextKind::Signal { resolver } => {
-                let config = resolver(env);
-                RawText(TextConfig {
-                    // See `Text::resolve`: the limit is a plain field settled
-                    // at authoring time, so the resolved snapshot's value holds.
-                    line_limit: config.snapshot().line_limit,
-                    content: flatten_signal(config.map(|config| config.content)),
-                    paragraph_alignment: flatten_signal(
-                        config.map(|config| config.paragraph_alignment),
-                    ),
-                })
-            }
+            TextKind::Signal { resolver } => RawText(flatten_config(&resolver(env))),
         }
     }
 }
@@ -723,6 +743,124 @@ mod tests {
         text += "greeting";
 
         assert_eq!(resolved_plain(&text, &env), "Hi Hello");
+    }
+
+    fn first_resolved_font(text: &Text, env: &Environment) -> crate::font::ResolvedFont {
+        let content = text.resolve(env).content().snapshot();
+        let (_, style) = content.chunks().first().expect("one chunk").clone();
+        style.get_font().resolve(env).snapshot()
+    }
+
+    fn type_scale_env() -> Environment {
+        use crate::font::{Body, Caption, ResolvedFont, Title};
+        use waterui_core::env::Store;
+        let mut env = test_env();
+        env.insert(Store::<Body, _>::new(Computed::constant(
+            ResolvedFont::new(16.0, FontWeight::Normal),
+        )));
+        env.insert(Store::<Title, _>::new(Computed::constant(
+            ResolvedFont::new(22.0, FontWeight::Normal),
+        )));
+        env.insert(Store::<Caption, _>::new(Computed::constant(
+            ResolvedFont::new(12.0, FontWeight::Normal),
+        )));
+        env
+    }
+
+    #[test]
+    fn preset_after_bold_keeps_bold() {
+        let env = type_scale_env();
+        let font = first_resolved_font(&Text::verbatim("x").bold().body(), &env);
+        assert!(font.bold(), "text(..).bold().body() must stay bold");
+        assert!((font.size() - 16.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn preset_after_size_keeps_size() {
+        let env = type_scale_env();
+        let font = first_resolved_font(&Text::verbatim("x").size(40.0).title(), &env);
+        assert!(
+            (font.size() - 40.0).abs() < f32::EPSILON,
+            "text(..).size(40).title() must keep size 40, got {}",
+            font.size()
+        );
+    }
+
+    #[test]
+    fn preset_after_markdown_strong_keeps_bold() {
+        let env = type_scale_env();
+        let text = Text::new(StyledStr::from_markdown("**hi**")).caption();
+        let font = first_resolved_font(&text, &env);
+        assert!(font.bold(), "strong lost by .caption()");
+        assert!((font.size() - 12.0).abs() < f32::EPSILON);
+    }
+
+    /// A preset and a modifier set the same font in either order.
+    #[test]
+    fn preset_and_modifiers_commute() {
+        let env = type_scale_env();
+        let pairs = [
+            (
+                Text::verbatim("x").bold().body(),
+                Text::verbatim("x").body().bold(),
+            ),
+            (
+                Text::verbatim("x").weight(FontWeight::Light).title(),
+                Text::verbatim("x").title().weight(FontWeight::Light),
+            ),
+        ];
+        for (lhs, rhs) in pairs {
+            let (lhs, rhs) = (
+                first_resolved_font(&lhs, &env),
+                first_resolved_font(&rhs, &env),
+            );
+            assert_eq!(lhs.bold(), rhs.bold());
+            assert_eq!(lhs.weight(), rhs.weight());
+            assert!((lhs.size() - rhs.size()).abs() < f32::EPSILON);
+            assert_eq!(lhs.unstyled(), rhs.unstyled());
+        }
+    }
+
+    /// A size signal re-emits the content, so a backend that watches only the
+    /// content lays the text out at the new size.
+    #[test]
+    fn size_signal_re_emits_content() {
+        let env = type_scale_env();
+        let size = Binding::container(20.0_f64);
+        let content = Text::verbatim("x")
+            .size(size.clone())
+            .body()
+            .resolve(&env)
+            .content();
+        let emitted = Rc::new(core::cell::Cell::new(0_u32));
+        let _guard = content.watch({
+            let emitted = emitted.clone();
+            move |_| emitted.set(emitted.get() + 1)
+        });
+
+        size.set(40.0);
+        assert_eq!(emitted.get(), 1);
+        let (_, style) = content.snapshot().chunks()[0].clone();
+        let font = style.get_font().resolve(&env).snapshot();
+        assert!((font.size() - 40.0).abs() < f32::EPSILON);
+    }
+
+    /// Each operand of a sum keeps its own font, and a font set on the sum
+    /// reaches the operands that set none.
+    #[test]
+    fn concatenation_keeps_each_operand_font() {
+        let env = type_scale_env();
+        let text = (Text::verbatim("a").bold() + Text::verbatim("b").title()).caption();
+        let content = text.resolve(&env).content().snapshot();
+        let fonts: alloc::vec::Vec<_> = content
+            .chunks()
+            .iter()
+            .map(|(_, style)| style.get_font().resolve(&env).snapshot())
+            .collect();
+        assert!(fonts[0].bold());
+        assert!((fonts[0].size() - 12.0).abs() < f32::EPSILON);
+        assert!(!fonts[1].bold());
+        assert!((fonts[1].size() - 22.0).abs() < f32::EPSILON);
     }
 
     fn test_env() -> Environment {
