@@ -25,6 +25,7 @@ use crate::canvas::geometry::lower_rect;
 use crate::canvas::names::Names;
 use crate::canvas::paint::{Paint, affine};
 use crate::canvas::resource::{Font, ImageSource, ImageStatus, Pixels};
+use crate::canvas::size::Claim;
 use crate::draw::{
     self, Draw as _, FontId, ImageId, Instant, Recorder, ResourceError, ShapeData, kurbo,
 };
@@ -428,6 +429,8 @@ pub struct CanvasScene {
     label: Computed<Option<Str>>,
     value: Computed<Option<Str>>,
     _attribute_guards: [BoxWatcherGuard; 3],
+    /// Holds the canvas's [`CanvasSize`] until the canvas unmounts.
+    _size_claim: Claim,
 }
 
 impl CanvasScene {
@@ -441,7 +444,8 @@ impl CanvasScene {
             value,
             size,
         } = canvas;
-        let shared = Shared::new(env.clone(), size);
+        let size_claim = size.claim();
+        let shared = Shared::new(env.clone(), size.cell());
         let mut cx = Cx::new(Rc::clone(&shared));
         body(&mut cx);
         let root = Part::new(cx.finish());
@@ -461,6 +465,7 @@ impl CanvasScene {
             label,
             value,
             _attribute_guards: attribute_guards,
+            _size_claim: size_claim,
         }
     }
 
