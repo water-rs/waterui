@@ -1,7 +1,7 @@
 //! Pointer events on a view: hover entry, movement, exit, and cursor
 //! changes.
 //!
-//! [`HostView`](crate::view::HostView)-style surfaces subscribe to a subset
+//! `HostView`-style surfaces subscribe to a subset
 //! of the events through a [`PointerEvents`] flag set and receive each one
 //! as a [`PointerEvent`]. `UIKit` delivers these through a
 //! `UIHoverGestureRecognizer`, `AppKit` through an `NSTrackingArea`; both
