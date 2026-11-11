@@ -1667,10 +1667,12 @@ name = "cherenkov"
 version = "0.0.0"
 dependencies = [
  "arc-swap",
+ "async-channel",
  "cherenkov-oracle",
  "cherenkov-record",
  "crossbeam-channel",
  "filtrate-core",
+ "futures-lite",
  "gloo-timers 0.4.0",
  "kurbo",
  "libm",
@@ -12645,6 +12647,7 @@ dependencies = [
  "block2 0.6.2",
  "blocking",
  "cfg_aliases",
+ "cherenkov",
  "cherenkov-oracle",
  "cocoa-ui",
  "cookie",

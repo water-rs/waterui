@@ -32,6 +32,13 @@ thiserror = "2"
 tracing = "0.1"
 waterui-contract.workspace = true
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+async-channel = { workspace = true, default-features = false, features = ["std"] }
+# `Stream` polls a pending frame's reply channel from its owned future, and
+# `block_on` is the synchronous entry points' wait on the same futures: its
+# parker and waker are cached per thread, so a frame's wait allocates nothing.
+futures-lite = { workspace = true, default-features = false, features = ["std"] }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 gloo-timers = { version = "0.4", default-features = false }
 wasm-bindgen-futures = "0.4"

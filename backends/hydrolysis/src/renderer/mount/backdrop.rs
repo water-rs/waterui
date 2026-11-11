@@ -230,9 +230,13 @@ struct MemberEntry<K, M, E: crate::text::TextEngine> {
 /// key's terms resolved once — as plain values — so a display-scale
 /// rebuild re-runs the same treatment.
 struct MountedBackdrop<P, G> {
-    /// Held for its lifetime: dropping it unregisters the group.
+    /// Held for its lifetime: dropping it unregisters the group. `None`
+    /// while the key's terms are invalid at `display_scale` ([`Unbound`]):
+    /// the entry still holds the membership, every member is left
+    /// unbound, and the next display-scale change rebuilds it and binds
+    /// them all.
     #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
-    group: G,
+    group: Option<G>,
     /// The terms the group's chain runs: kept so a display-scale
     /// rebuild re-runs the same treatment and the test accessors answer
     /// what the group runs.
@@ -245,6 +249,16 @@ struct MountedBackdrop<P, G> {
     /// unmounted. An empty set releases the group at the same commit.
     members: FxHashSet<LayerId>,
 }
+
+/// A backdrop term a group or member could not be built from at its
+/// display scale — a capture class's union smoothing, a member's outer
+/// extent or the recording scale converted to device pixels. The hook that
+/// returns it has already reported the contract violation; the group binds
+/// no member, or the member is left unbound, rather than drawn with a
+/// clamped or substituted term.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+pub struct Unbound;
 
 /// When [`BackdropGroups::join`] binds the joining member's sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -491,12 +505,21 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M, E: crate::text::TextEngine>
     /// A scale rebuild runs it for every *other* member with the payload
     /// its entry holds; `bind` decides whether the joining member's own
     /// payload is built, stored and applied.
+    ///
+    /// Either hook returns [`Unbound`] — having reported the contract
+    /// violation — when a term is invalid at the display scale. A group
+    /// `create` rejects stays in the table without an object: it keeps its
+    /// members' memberships, binds none of them, and the next display-scale
+    /// change rebuilds it and binds them all. A member whose `apply` is
+    /// rejected keeps its membership but is cleared and marked stale, so
+    /// its next join retries the bind from its effect's value then. Either
+    /// way the member's layer samples no group.
     #[expect(
         clippy::too_many_arguments,
         reason = "one join hands the member, the group terms and the target's hooks at once"
     )]
     #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
-    pub(crate) fn join<T: cherenkov_record::Target>(
+    pub(crate) fn join<T: cherenkov_record::BackdropSampling>(
         &mut self,
         tx: &mut Transaction<'_, T>,
         key: K,
@@ -509,8 +532,8 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M, E: crate::text::TextEngine>
             E,
         >,
         hooks: (
-            impl Fn(&P, f64) -> G,
-            impl Fn(&mut Transaction<'_, T>, &Layer, &M, &G, f64),
+            impl Fn(&P, f64) -> Result<G, Unbound>,
+            impl Fn(&mut Transaction<'_, T>, &Layer, &M, &G, f64) -> Result<(), Unbound>,
         ),
         bind: MemberBind,
     ) {
@@ -533,10 +556,17 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M, E: crate::text::TextEngine>
         {
             // Membership unchanged: a lowering stores and binds its fresh
             // payload; a commit with no new program keeps the bind and
-            // the stored payload, and builds nothing.
+            // the stored payload, and builds nothing. A group with no
+            // object binds no one: the member stays unbound until a
+            // display-scale change rebuilds it.
             if bind == MemberBind::Always {
                 entry.payload = payload();
-                apply(tx, member, &entry.payload, &group.group, display_scale);
+                if let Some(object) = &group.group
+                    && apply(tx, member, &entry.payload, object, display_scale).is_err()
+                {
+                    tx[member].clear_backdrop();
+                    entry.stale = true;
+                }
             }
             return;
         }
@@ -549,10 +579,13 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M, E: crate::text::TextEngine>
                     // its entry and is re-pointed at the new group here —
                     // never left to the member's own commit, which a
                     // partial commit may not run — so no member samples a
-                    // released group.
+                    // released group. A rebuild `create` rejects releases
+                    // the old object all the same — its chain was built for
+                    // the old scale — and every member it reaches is
+                    // cleared instead.
                     let params = entry.get().params;
                     let rebuilt = MountedBackdrop {
-                        group: create(&params, display_scale),
+                        group: create(&params, display_scale).ok(),
                         params,
                         display_scale: bits,
                         members: std::mem::take(&mut entry.get_mut().members),
@@ -580,7 +613,16 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M, E: crate::text::TextEngine>
                         if let Some(layers) = &*retained.layers.borrow()
                             && let Some(member) = resolve(layers, *other)
                         {
-                            apply(tx, member, &own.payload, &rebuilt.group, display_scale);
+                            let bound = rebuilt.group.as_ref().map(|object| {
+                                apply(tx, member, &own.payload, object, display_scale)
+                            });
+                            if bound != Some(Ok(())) {
+                                tx[member].clear_backdrop();
+                                // A rejected bind retries at the member's
+                                // next join; an object-less group waits
+                                // for the next rebuild.
+                                own.stale = bound.is_some();
+                            }
                         } else {
                             // Its next join re-binds its own payload rather
                             // than keeping a bind that still samples the
@@ -597,7 +639,7 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M, E: crate::text::TextEngine>
             // scheme, both plain values. Members under one key share both
             // terms, and an appearance flip re-keys them into a new group.
             Entry::Vacant(entry) => entry.insert(MountedBackdrop {
-                group: create(&params, display_scale),
+                group: create(&params, display_scale).ok(),
                 params,
                 display_scale: bits,
                 members: FxHashSet::default(),
@@ -618,7 +660,15 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M, E: crate::text::TextEngine>
                 owner: membership.owner.clone(),
             })
             .into_mut();
-        apply(tx, member, &entry.payload, &group.group, display_scale);
+        let bound = group
+            .group
+            .as_ref()
+            .map(|object| apply(tx, member, &entry.payload, object, display_scale));
+        if bound != Some(Ok(())) {
+            // The layer may still sample the group it left: clear it.
+            tx[member].clear_backdrop();
+            entry.stale = bound.is_some();
+        }
     }
 
     /// Takes `member` out of its group's membership. The member's layer
@@ -671,15 +721,15 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M, E: crate::text::TextEngine>
     }
 
     /// The anchor layer written into `member`'s group's spec — `None`
-    /// for a solo group or while the member holds no membership. A
-    /// test-facing answer.
+    /// for a solo group, while the member holds no membership, or while
+    /// its group has no object. A test-facing answer.
     #[cfg(test)]
     pub(crate) fn backdrop_anchor(&self, member: LayerId) -> Option<LayerId>
     where
         G: SpecCarrier,
     {
         let key = self.members.get(&member)?.key;
-        self.groups.get(&key)?.group.spec().anchor_layer()
+        self.groups.get(&key)?.group.as_ref()?.spec().anchor_layer()
     }
 
     /// How many live backdrop groups the table holds — a test-facing
@@ -709,7 +759,8 @@ impl<E: crate::text::TextEngine>
     BackdropGroups<BackdropGroupKey, MaterialRuntime, cherenkov::BackdropGroup, (), E>
 {
     /// The id of the backdrop group `member` samples — `None` while the
-    /// member holds no membership. Two members answering the same id
+    /// member holds no membership or its group has no object
+    /// ([`Unbound`]). Two members answering the same id
     /// share one capture. A test-facing answer.
     #[cfg(test)]
     pub(crate) fn backdrop_group_id(
@@ -717,7 +768,7 @@ impl<E: crate::text::TextEngine>
         member: LayerId,
     ) -> Option<cherenkov_record::BackdropId> {
         let key = self.members.get(&member)?.key;
-        self.groups.get(&key).map(|group| group.group.id())
+        Some(self.groups.get(&key)?.group.as_ref()?.id())
     }
 }
 
@@ -756,11 +807,12 @@ impl<G, E: crate::text::TextEngine>
     }
 
     /// The group object `member` samples, for identity checks — `None`
-    /// while the member holds no membership.
+    /// while the member holds no membership or its group has no object
+    /// ([`Unbound`]).
     #[cfg(test)]
     pub(crate) fn chrome_group(&self, member: LayerId) -> Option<&G> {
         let key = self.members.get(&member)?.key;
-        self.groups.get(&key).map(|group| &group.group)
+        self.groups.get(&key)?.group.as_ref()
     }
 }
 

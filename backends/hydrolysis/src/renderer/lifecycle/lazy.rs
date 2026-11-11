@@ -1,6 +1,7 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use waterui_core::contract_violation;
 use waterui_core::layout::{LayoutError, PlacementInput};
 use waterui_layout::container::directional_response;
 use waterui_layout::stack::{HStackLayout, LazyStackAxis, VStackLayout};
@@ -250,10 +251,12 @@ impl VirtualExtentIndex {
     }
 
     pub(crate) fn set_measured(&mut self, index: usize, extent: f64) {
-        assert!(
-            extent.is_finite() && extent >= 0.0,
-            "virtualized item extent must be finite and non-negative"
-        );
+        if !(extent.is_finite() && extent >= 0.0) {
+            contract_violation!(
+                "virtualized item extent {extent} must be finite and non-negative; the item keeps its previous extent"
+            );
+            return;
+        }
         let previous = self.measured[index].unwrap_or(self.estimate);
         self.measured[index] = Some(extent);
         let delta = extent - previous;
@@ -444,6 +447,22 @@ mod tests {
         assert_eq!(window.end, 90_010);
         approx::assert_relative_eq!(window.leading_offset, 90_000.0 * 52.0);
         assert!(index.measured(89_999).is_none());
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "virtualized item extent NaN must be finite and non-negative")
+    )]
+    fn a_non_finite_extent_leaves_the_item_at_its_previous_extent() {
+        let mut index = VirtualExtentIndex::default();
+        index.reset(2, 10.0, 0.0);
+        index.set_measured(0, 20.0);
+
+        index.set_measured(0, f64::NAN);
+
+        assert_eq!(index.measured(0), Some(20.0));
+        approx::assert_relative_eq!(index.offset_of(1), 20.0);
     }
 
     #[test]

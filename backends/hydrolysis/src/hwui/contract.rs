@@ -680,17 +680,333 @@ fn a_stretched_layer_defines_its_frame_in_the_nodes_space() {
         .frame(Instant::now(), 2.0)
         .expect("the stretched frame encodes");
     let log = surface.take_log();
-    // The child's extent starts at (10, 20); the world maps it to
-    // (5 + 2·10, 7 + 2·20) = (25, 47), so the frame's offset (50, 70)
-    // becomes (25, 23) in the node's space.
+    // The child's extent starts at (10, 20), so its node's pixel `p` lands
+    // at device (5, 7) + 2·((10, 20) + p) = (25, 47) + 2p. The frame puts
+    // the viewport position `u` at (50, 70) + 2u, which is the node's pixel
+    // (12.5, 11.5) + u: the platform filters the node at its own scale, so
+    // the ancestor's doubling leaves the frame.
+    assert_frame(defined_frame(&log), [1.0, 0.0, 0.0, 1.0, 12.5, 11.5]);
+}
+
+/// A stretched scroll-like layer under a transformed ancestor: `parent`
+/// under the root with the transform `edit` writes, and a 50 × 60 `child`
+/// whose extent starts at (10, 20), drawn with a stretch whose frame is
+/// `[2, 0, 0, 2, 50, 70]` in device pixels.
+struct StretchScene {
+    surface: HwuiSurface,
+    parent: cherenkov_record::Layer,
+    child: cherenkov_record::Layer,
+    registration: super::effects::EffectRegistration,
+    time: Instant,
+}
+
+impl StretchScene {
+    fn new(id: u64, edit: impl FnOnce(&mut cherenkov_record::LayerEdit<HwuiTarget>)) -> Self {
+        use crate::renderer::mount::target::FilterRegistration;
+        use waterui_graphics::backend::AnyEffect;
+        use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
+
+        let surface = HwuiSurface::new(SurfaceId::new(id), || {}).expect("an empty root");
+        let shared = surface.shared().clone();
+        let root = Shared::root(&shared);
+        let parent = Shared::layer(&shared);
+        let child = Shared::layer(&shared);
+        let registration = surface
+            .encoder()
+            .effects()
+            .register(
+                AnyEffect::filter(OverscrollStretch {
+                    frame: [2.0f32, 0.0, 0.0, 2.0, 50.0, 70.0],
+                    size: [50.0, 60.0],
+                    stretch: [0.0, 0.1],
+                }),
+                std::sync::Arc::new(|| {}),
+            )
+            .expect("the stretch registers");
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&root].push(&parent);
+            edit(&mut tx[&parent]);
+            tx[&parent].push(&child);
+            tx[&child]
+                .layout_size(kurbo::Size::new(50.0, 60.0))
+                .filter(registration.filter_id())
+                .record(|c| {
+                    c.fill(
+                        kurbo::Rect::new(10.0, 20.0, 60.0, 80.0),
+                        color(1.0, 0.0, 0.0, 1.0),
+                    );
+                });
+        });
+        Self {
+            surface,
+            parent,
+            child,
+            registration,
+            time: Instant::now(),
+        }
+    }
+
+    /// Encodes one more frame, 16 ms on, and returns its log and whether
+    /// it asks for another.
+    fn frame(&mut self) -> Result<(Vec<String>, bool), HwuiError> {
+        self.time += Duration::from_millis(16);
+        let animating = {
+            let frame = self.surface.frame(self.time, 1.0)?;
+            frame.content_animating() || frame.sampling().rate.is_some()
+        };
+        Ok((self.surface.take_log(), animating))
+    }
+
+    fn transaction(
+        &self,
+        edit: impl FnOnce(&mut cherenkov_record::Transaction<'_, HwuiTarget>, &Self),
+    ) {
+        Shared::run_transaction(self.surface.shared(), None, None, |tx| edit(tx, self));
+    }
+}
+
+/// The frame of the last `DefineEffect` in `log`: `v0`–`v5`.
+fn defined_frame(log: &[String]) -> [f32; 6] {
     let define = log
         .iter()
         .rfind(|line| line.starts_with("DefineEffect"))
         .unwrap_or_else(|| panic!("{log:?}"));
-    for (name, value) in [("v4", 25.0f32), ("v5", 23.0)] {
-        let field = format!(" {name}={:08x}", value.to_bits());
-        assert!(define.contains(&field), "{field}: {define}");
+    std::array::from_fn(|index| {
+        let field = format!(" v{index}=");
+        let at = define.find(&field).unwrap_or_else(|| panic!("{define}")) + field.len();
+        f32::from_bits(u32::from_str_radix(&define[at..at + 8], 16).expect("hex bits"))
+    })
+}
+
+fn assert_frame(actual: [f32; 6], expected: [f32; 6]) {
+    for (actual, expected) in actual.iter().zip(expected) {
+        assert!(
+            (actual - expected).abs() < 1e-3,
+            "{actual:?} against {expected:?}"
+        );
     }
+}
+
+/// A quarter turn under a doubling: the platform draws the filtered node
+/// through the whole turn and scale, so the frame turns into the node's
+/// pixels and loses the scale. By hand: the node's pixel `(x, y)` lands at
+/// `(-2y - 40, 2x + 20)`, and the viewport position `u` the frame puts at
+/// device `(2u.x + 50, 2u.y + 70)` is the node's pixel
+/// `(u.y + 25, -u.x - 45)`.
+#[test]
+fn a_stretched_layer_under_a_rotated_ancestor_defines_its_frame_in_the_nodes_pixels() {
+    let mut scene = StretchScene::new(12, |parent| {
+        parent.transform(Affine::rotate(std::f64::consts::FRAC_PI_2) * Affine::scale(2.0));
+    });
+    let (log, _) = scene.frame().expect("the rotated stretch encodes");
+    assert_frame(defined_frame(&log), [0.0, -1.0, 1.0, 0.0, 25.0, -45.0]);
+}
+
+/// A skewed ancestor (a `Concat` placement) leaves the node's pixels
+/// sheared against device pixels; the frame is carried back through the
+/// whole shear.
+#[test]
+fn a_stretched_layer_under_a_skewed_ancestor_defines_its_frame_in_the_nodes_pixels() {
+    let skew = Affine::new([1.0, 0.0, 0.5, 1.0, 3.0, 4.0]);
+    let mut scene = StretchScene::new(13, |parent| {
+        parent.transform(skew);
+    });
+    let (log, _) = scene.frame().expect("the skewed stretch encodes");
+    let node = skew * Affine::translate((10.0, 20.0));
+    let expected = node.inverse() * Affine::new([2.0, 0.0, 0.0, 2.0, 50.0, 70.0]);
+    let frame = defined_frame(&log);
+    assert_frame(frame, expected.as_coeffs().map(super::geometry::narrow));
+    // The shear is real: the frame is not an axis-aligned scale.
+    assert!(frame[1].abs() > 1e-3 || frame[2].abs() > 1e-3, "{frame:?}");
+}
+
+/// The log of one frame of a scroll container's inner layer under a window
+/// density and a rotated, non-uniformly scaled ancestor, set up as the
+/// scroll mount sets it up: the layer clips to `viewport`, scrolls its
+/// content, and draws the stretch whose frame carries the viewport's own
+/// space to device pixels.
+fn stretched_scroll_log(viewport: kurbo::Rect) -> Vec<String> {
+    use crate::renderer::mount::target::FilterRegistration;
+    use waterui_graphics::backend::AnyEffect;
+    use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
+
+    let density = Affine::scale(2.625);
+    let placement = Affine::translate((16.0, 412.0))
+        * Affine::rotate(10f64.to_radians())
+        * Affine::scale_non_uniform(0.9, 0.7);
+    let frame = (density * placement * Affine::translate(viewport.origin().to_vec2()))
+        .as_coeffs()
+        .map(super::geometry::narrow);
+
+    let mut surface = HwuiSurface::new(SurfaceId::new(16), || {}).expect("an empty root");
+    let shared = surface.shared().clone();
+    let root = Shared::root(&shared);
+    let window = Shared::layer(&shared);
+    let scroll = Shared::layer(&shared);
+    let inner = Shared::layer(&shared);
+    let registration = surface
+        .encoder()
+        .effects()
+        .register(
+            AnyEffect::filter(OverscrollStretch {
+                frame,
+                size: [viewport.width(), viewport.height()].map(super::geometry::narrow),
+                stretch: [0.0, 0.04],
+            }),
+            std::sync::Arc::new(|| {}),
+        )
+        .expect("the stretch registers");
+    Shared::run_transaction(&shared, None, None, |tx| {
+        tx[&root].push(&window);
+        tx[&window].transform(density);
+        tx[&window].push(&scroll);
+        tx[&scroll].transform(placement);
+        tx[&scroll].push(&inner);
+        tx[&inner]
+            .layout_size(kurbo::Size::new(350.0, 828.0))
+            .clip(viewport)
+            .scroll_offset(Vec2::new(0.0, 30.0))
+            .filter(registration.filter_id())
+            .record(|c| {
+                for row in 0..12u8 {
+                    let top = f64::mul_add(f64::from(row), 64.0, 60.0);
+                    c.fill(
+                        kurbo::Rect::new(0.0, top, 350.0, top + 64.0),
+                        color(f32::from(row) / 12.0, 0.5, 0.0, 1.0),
+                    );
+                }
+            });
+    });
+    let _ = surface
+        .frame(Instant::now(), 2.625)
+        .expect("the stretched scroll encodes");
+    drop(registration);
+    surface.take_log()
+}
+
+/// The scroll layer of [`stretched_scroll_log`] clips to its viewport as a
+/// property of the node that draws the effect, so the platform clips the
+/// filtered result; the frame must then span exactly that clip in the
+/// node's pixels, or the warp's pinned far edge lies past the clip and the
+/// pull drags content from inside the clip across it.
+#[test]
+fn a_stretched_scroll_layer_frames_exactly_its_clip_under_a_scaled_rotated_ancestor() {
+    // A viewport off the layer's origin, over content with a top inset, so
+    // the node's extent starts neither at the layer's origin nor at the
+    // viewport's.
+    let viewport = kurbo::Rect::new(8.0, 12.0, 342.0, 232.0);
+    let log = stretched_scroll_log(viewport);
+
+    let node_of = |op: &str| {
+        log.iter()
+            .rfind(|line| line.starts_with(op))
+            .and_then(|line| {
+                line.split_whitespace()
+                    .find_map(|field| field.strip_prefix("node="))
+            })
+            .unwrap_or_else(|| panic!("no {op}: {log:?}"))
+    };
+    assert_eq!(
+        node_of("SetEffect "),
+        node_of("SetClip "),
+        "the clip and the effect share a node: {log:?}"
+    );
+    let set_clip = log
+        .iter()
+        .rfind(|line| line.starts_with("SetClip "))
+        .expect("checked above");
+    let field = |name: &str| -> f64 {
+        set_clip
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix(&format!("{name}=")))
+            .and_then(|value| value.parse::<i32>().ok())
+            .map_or_else(|| panic!("{name}: {set_clip}"), f64::from)
+    };
+    let clip = kurbo::Rect::new(field("left"), field("top"), field("right"), field("bottom"));
+
+    let defined = defined_frame(&log).map(f64::from);
+    let framed = Affine::new(defined).transform_rect_bbox(kurbo::Rect::from_origin_size(
+        kurbo::Point::ORIGIN,
+        viewport.size(),
+    ));
+    for (edge, (framed, clip)) in [
+        ("left", (framed.x0, clip.x0)),
+        ("top", (framed.y0, clip.y0)),
+        ("right", (framed.x1, clip.x1)),
+        ("bottom", (framed.y1, clip.y1)),
+    ] {
+        assert!(
+            (framed - clip).abs() < 1e-3,
+            "the frame's {edge} edge {framed} is not the clip's {clip}: {defined:?} {set_clip}"
+        );
+    }
+    // The node's pixels are where the platform filters it: the frame keeps
+    // neither the density nor the ancestor's rotation and scale.
+    for (actual, expected) in defined[..4].iter().zip([1.0, 0.0, 0.0, 1.0]) {
+        assert!((actual - expected).abs() < 1e-6, "{defined:?}");
+    }
+}
+
+/// A perspective cannot be carried into the filter's affine frame.
+#[test]
+fn a_stretched_layer_under_a_projective_ancestor_is_unsupported() {
+    let mut scene = StretchScene::new(14, |parent| {
+        parent
+            .projection(
+                cherenkov_record::Projective::perspective(800.0).expect("the distance is valid"),
+            )
+            .tilt(Vec2::new(0.3, 0.0));
+    });
+    let error = scene.frame().expect_err("a projective pose has no frame");
+    assert!(matches!(error, HwuiError::Unsupported { .. }), "{error:?}");
+}
+
+/// A pull follows its ancestor: moving the transform redefines the effect
+/// alone; the effect clears at rest, and a rested layer encodes nothing and
+/// asks for no further frame.
+#[test]
+fn a_stretch_follows_its_ancestor_and_clears_at_rest_without_idle_frames() {
+    let mut scene = StretchScene::new(15, |parent| {
+        parent.transform(Affine::translate((5.0, 7.0)));
+    });
+    scene.frame().expect("the first frame encodes");
+
+    let (log, animating) = scene.frame().expect("the idle frame encodes");
+    for op in ["DefineEffect", "SetEffect", "CreateNode", "Record"] {
+        assert!(!log.iter().any(|line| line.starts_with(op)), "{log:?}");
+    }
+    assert!(!animating, "a held stretch asks for no frame");
+
+    // The ancestor moves by (20, 30): the frame's offset follows it.
+    scene.transaction(|tx, scene| {
+        tx[&scene.parent].transform(Affine::translate((25.0, 37.0)));
+    });
+    let (log, animating) = scene.frame().expect("the moved frame encodes");
+    assert_frame(defined_frame(&log), [2.0, 0.0, 0.0, 2.0, 15.0, 13.0]);
+    for op in ["SetEffect", "CreateNode", "Record"] {
+        assert!(!log.iter().any(|line| line.starts_with(op)), "{log:?}");
+    }
+    assert!(!animating, "following a transform asks for no frame");
+
+    // Rest: the layer binds no effect, and later frames encode nothing.
+    scene.transaction(|tx, scene| {
+        tx[&scene.child].clear_filter();
+    });
+    let (log, _) = scene.frame().expect("the rested frame encodes");
+    assert!(
+        log.iter()
+            .any(|line| line.starts_with("SetEffect") && line.contains("effect=4294967295")),
+        "{log:?}"
+    );
+    let (log, animating) = scene.frame().expect("the idle frame after rest encodes");
+    assert!(
+        !log.iter().any(|line| line.starts_with("DefineEffect")
+            || line.starts_with("SetEffect")
+            || line.starts_with("CreateNode")),
+        "{log:?}"
+    );
+    assert!(!animating, "a rested layer asks for no frame");
+    drop(scene.registration);
 }
 
 #[test]

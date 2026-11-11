@@ -25,8 +25,6 @@ pub struct LocalKey {
     pub picture: Option<PictureId>,
     /// `2 * log2(density)`.
     pub bucket: i32,
-    /// Storage representation of these pixels.
-    pub format: LocalFormat,
 }
 
 /// A nested picture's identity: the address of its immutable display list,
@@ -39,27 +37,6 @@ impl PictureId {
     #[must_use]
     pub fn of(picture: &cherenkov::Picture) -> Self {
         Self(std::ptr::NonNull::from(picture.display_list()).addr())
-    }
-}
-
-/// The texture format a local image stores its pixels in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum LocalFormat {
-    /// The working format: every projective layer, and pictures with
-    /// high-dynamic-range content.
-    Working,
-    /// Encoded 8-bit sRGB, for standard-range pictures.
-    Srgb8,
-}
-
-impl LocalFormat {
-    /// The texture format of this storage.
-    #[must_use]
-    pub const fn texture(self) -> wgpu::TextureFormat {
-        match self {
-            Self::Working => super::WORKING_FORMAT,
-            Self::Srgb8 => wgpu::TextureFormat::Rgba8UnormSrgb,
-        }
     }
 }
 
@@ -241,20 +218,26 @@ pub struct Realize {
 }
 
 /// Texel storage for an image's complete mip chain.
-pub fn mip_bytes(format: wgpu::TextureFormat, levels: &[(u32, u32)]) -> u64 {
+pub fn mip_bytes(levels: &[(u32, u32)]) -> u64 {
     levels
         .iter()
-        .map(|&(w, h)| super::texel_bytes(format) * u64::from(w) * u64::from(h))
+        .map(|&(w, h)| super::texel_bytes(super::WORKING_FORMAT) * u64::from(w) * u64::from(h))
         .sum()
 }
 
-/// The texture a local image with mip `levels` in `format` is created as.
+/// The texture a local image with mip `levels` is created as.
+///
+/// Every local image, a retained picture's included, stores the working
+/// format whatever its content's range: a compact 8-bit store moves each
+/// colour by up to half a code, which bands a gradient and shifts a solid
+/// fill visibly away from what the same commands draw unretained
+/// (water-rs/waterui#4235).
 #[must_use]
 #[expect(
     clippy::cast_possible_truncation,
     reason = "a mip chain has at most 32 levels"
 )]
-pub fn descriptor(levels: &[(u32, u32)], format: LocalFormat) -> wgpu::TextureDescriptor<'static> {
+pub fn descriptor(levels: &[(u32, u32)]) -> wgpu::TextureDescriptor<'static> {
     let (width, height) = levels[0];
     wgpu::TextureDescriptor {
         label: Some("projective image"),
@@ -266,7 +249,7 @@ pub fn descriptor(levels: &[(u32, u32)], format: LocalFormat) -> wgpu::TextureDe
         mip_level_count: levels.len() as u32,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: format.texture(),
+        format: super::WORKING_FORMAT,
         // A capture inside the local image copies out of it; a
         // blended composite inside it copies it aside.
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT
@@ -316,8 +299,6 @@ pub struct Entry {
     pub picture: Option<PictureImage>,
     /// Its density bucket.
     pub bucket: i32,
-    /// The storage its texture was created in.
-    pub format: LocalFormat,
     /// What the texture holds; `None` until a realization completed.
     pub key: Option<Key>,
     /// The inputs its realization read.
@@ -346,7 +327,6 @@ pub struct Entry {
 impl Entry {
     pub fn matches(&self, key: LocalKey) -> bool {
         self.bucket == key.bucket
-            && self.format == key.format
             && self.picture.as_ref().map(PictureImage::identity) == key.picture
     }
 
@@ -355,7 +335,6 @@ impl Entry {
             layer,
             picture: self.picture.as_ref().map(PictureImage::identity),
             bucket: self.bucket,
-            format: self.format,
         }
     }
 
@@ -385,7 +364,7 @@ impl Entry {
 
 impl Entry {
     /// A cleared entry for bucket `bucket` holding a new `levels`-level
-    /// texture in `format` of `bytes`, its views and its mip bind groups.
+    /// texture of `bytes`, its views and its mip bind groups.
     #[must_use]
     #[expect(
         clippy::cast_possible_truncation,
@@ -396,10 +375,9 @@ impl Entry {
         pipelines: &Pipelines,
         bucket: i32,
         levels: &[(u32, u32)],
-        format: LocalFormat,
         bytes: u64,
     ) -> Self {
-        let texture = device.create_texture(&descriptor(levels, format));
+        let texture = device.create_texture(&descriptor(levels));
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let views: Vec<wgpu::TextureView> = (0..levels.len() as u32)
             .map(|level| {
@@ -426,7 +404,6 @@ impl Entry {
             .collect();
         Self {
             bucket,
-            format,
             picture: None,
             key: None,
             deps: Deps::default(),
@@ -443,9 +420,9 @@ impl Entry {
 
     /// Whether the texture's base level is `size`.
     #[must_use]
-    pub fn fits(&self, size: (u32, u32), format: LocalFormat) -> bool {
+    pub fn fits(&self, size: (u32, u32)) -> bool {
         let s = self.texture.size();
-        (s.width, s.height) == size && self.format == format
+        (s.width, s.height) == size
     }
 
     /// Release obsolete texture views even while this cached image is undrawn.
@@ -718,7 +695,6 @@ mod tests {
             key: LocalKey {
                 layer: LayerId::new(1),
                 picture: None,
-                format: LocalFormat::Working,
                 bucket: 0,
             },
             inverse,

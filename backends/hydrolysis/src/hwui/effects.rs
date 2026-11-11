@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
+use kurbo::Affine;
 use waterui_graphics::backend::AnyEffect;
 use waterui_graphics::backend::filtrate::{
     AnimatedTarget, AnimationTrack, ColorFilter, ColorStage, FilterLink, Placed, SpatialStage,
@@ -28,6 +29,7 @@ use waterui_graphics::filter_view as fv;
 
 use super::HwuiError;
 use super::buffer::{CommandBuffer, Field};
+use super::geometry::narrow;
 use super::protocol::{Op, effect_kind};
 use super::resources::{Dropped, Kind, SharedRegistry};
 
@@ -75,10 +77,12 @@ struct EffectEntry {
     /// The param watches: dropping them ends wakes.
     _guards: Vec<WatchGuard>,
     plan: Plan,
-    /// Where the drawn node's top-left corner sits in device pixels: the
-    /// stretch stage's frame is carried from device pixels to the node's
-    /// own space by it. Zero until the encoder resolves the node.
-    origin: [f32; 2],
+    /// The map from the drawn node's own pixels — the layer the platform
+    /// rasterizes the node into and runs its filters on — to device
+    /// pixels: the stretch stage's frame is carried from device pixels
+    /// into the node's pixels by its inverse. Identity until the encoder
+    /// resolves the node.
+    pose: Affine,
     /// The declared stage names sampled errors carry.
     names: Vec<&'static str>,
     tracks: Vec<AnimationTrack>,
@@ -184,7 +188,7 @@ impl Effects {
         // Every fallible check precedes the id's allocation and the
         // subscriptions: a rejected registration leaves nothing behind.
         let tracks: Vec<AnimationTrack> = params.iter().map(|&v| AnimationTrack::new(v)).collect();
-        let stages = sample(&plan, &tracks, &names, [0.0; 2])?;
+        let stages = sample(&plan, &tracks, &names, Affine::IDENTITY)?;
         let mut store = self.0.borrow_mut();
         let wire = store.registry.lock().acquire(Kind::Effect)?;
         let dropped = store.registry.dropped();
@@ -206,7 +210,7 @@ impl Effects {
                 _source: source,
                 _guards: guards,
                 plan,
-                origin: [0.0; 2],
+                pose: Affine::IDENTITY,
                 names: names.clone(),
                 tracks,
                 events: rx,
@@ -264,7 +268,7 @@ impl Effects {
             for track in &mut entry.tracks {
                 animating |= track.is_active();
             }
-            let stages = sample(&entry.plan, &entry.tracks, &entry.names, entry.origin)?;
+            let stages = sample(&entry.plan, &entry.tracks, &entry.names, entry.pose)?;
             if entry.emitted.as_ref() != Some(&stages) {
                 emit_effect(buffer, wire, &stages)?;
                 entry.emitted = Some(stages);
@@ -274,8 +278,8 @@ impl Effects {
     }
 
     /// Whether the effect `wire` draws in window device pixels, so its
-    /// node's [origin](Self::set_origin) is part of its definition.
-    pub(crate) fn takes_origin(&self, wire: u32) -> bool {
+    /// node's [pose](Self::set_pose) is part of its definition.
+    pub(crate) fn takes_pose(&self, wire: u32) -> bool {
         self.0.borrow().entries.get(&wire).is_some_and(|entry| {
             entry
                 .plan
@@ -285,16 +289,16 @@ impl Effects {
         })
     }
 
-    /// Records where the node drawing effect `wire` has its top-left
-    /// corner in device pixels; `true` when that moved the node, so the
-    /// next [`encode`](Self::encode) redefines the effect.
-    pub(crate) fn set_origin(&self, wire: u32, origin: [f32; 2]) -> bool {
+    /// Records the map from the own pixels of the node drawing effect
+    /// `wire` to device pixels; `true` when it moved, so
+    /// the next [`encode`](Self::encode) redefines the effect.
+    pub(crate) fn set_pose(&self, wire: u32, pose: Affine) -> bool {
         let mut store = self.0.borrow_mut();
         let Some(entry) = store.entries.get_mut(&wire) else {
             return false;
         };
-        let moved = entry.origin.map(f32::to_bits) != origin.map(f32::to_bits);
-        entry.origin = origin;
+        let moved = entry.pose.as_coeffs().map(f64::to_bits) != pose.as_coeffs().map(f64::to_bits);
+        entry.pose = pose;
         moved
     }
 }
@@ -653,24 +657,26 @@ fn conjugate(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
 }
 
 /// The stretch stage's wire values: the ten filter parameters with the
-/// frame carried from device pixels to the drawn node's own space (the
-/// shader runs in it), then HWUI's interpolation strength.
-fn stretch_values(params: &[f32], origin: [f32; 2]) -> [f32; 12] {
+/// frame carried from device pixels into the drawn node's own pixels, the
+/// space the platform runs the shader in (`pose` maps them to device
+/// pixels), then HWUI's interpolation strength.
+fn stretch_values(params: &[f32], pose: Affine) -> [f32; 12] {
+    let frame = Affine::new(std::array::from_fn(|i| f64::from(params[i])));
+    let node_frame = pose.inverse() * frame;
     let mut values = [0f32; 12];
-    values[..10].copy_from_slice(&params[..10]);
-    values[4] -= origin[0];
-    values[5] -= origin[1];
+    values[..6].copy_from_slice(&node_frame.as_coeffs().map(narrow));
+    values[6..10].copy_from_slice(&params[6..10]);
     values[10] = filters::STRETCH_INTERPOLATION_STRENGTH;
     values
 }
 
-/// The current sample as wire stages, for a node whose top-left corner is
-/// at `origin` device pixels.
+/// The current sample as wire stages, for a node whose own pixels `pose`
+/// maps to device pixels.
 fn sample(
     plan: &Plan,
     tracks: &[AnimationTrack],
     names: &[&'static str],
-    origin: [f32; 2],
+    pose: Affine,
 ) -> Result<Vec<EffectStage>, HwuiError> {
     let params: Vec<f32> = tracks.iter().map(AnimationTrack::value).collect();
     if params.iter().any(|p| !p.is_finite()) {
@@ -692,7 +698,7 @@ fn sample(
             }
             PlanStep::Stretch { param_base } => stages.push(EffectStage {
                 kind: effect_kind::OVERSCROLL_STRETCH,
-                values: stretch_values(&params[*param_base..], origin),
+                values: stretch_values(&params[*param_base..], pose),
             }),
             PlanStep::ColorRun(links) => {
                 // Links compose in application order: the next link's matrix
@@ -788,7 +794,7 @@ mod tests {
     fn blur_radius_is_clamped_nonnegative() {
         let plan = Plan(vec![PlanStep::Blur { param: 0 }]);
         let tracks = vec![AnimationTrack::new(-2.0)];
-        let stages = sample(&plan, &tracks, &[], [0.0; 2]).unwrap();
+        let stages = sample(&plan, &tracks, &[], Affine::IDENTITY).unwrap();
         assert_eq!(stages[0].kind, effect_kind::BLUR);
         assert_eq!(stages[0].values[0], 0.0);
     }
@@ -1291,7 +1297,7 @@ mod tests {
         };
         let plan = Plan(vec![run(0), PlanStep::Blur { param: 0 }, run(1)]);
         let tracks = vec![AnimationTrack::new(0.5), AnimationTrack::new(0.25)];
-        let stages = sample(&plan, &tracks, &[], [0.0; 2]).unwrap();
+        let stages = sample(&plan, &tracks, &[], Affine::IDENTITY).unwrap();
         assert_eq!(
             stages.iter().map(|s| s.kind).collect::<Vec<_>>(),
             vec![
@@ -1316,9 +1322,9 @@ mod tests {
             .register(AnyEffect::filter(stretch), wake)
             .expect("the stretch lowers to a RenderEffect stage");
         let wire = u32::try_from(wire_of(&registration)).unwrap();
-        assert!(effects.takes_origin(wire));
-        assert!(effects.set_origin(wire, [10.0, 4.0]));
-        assert!(!effects.set_origin(wire, [10.0, 4.0]));
+        assert!(effects.takes_pose(wire));
+        assert!(effects.set_pose(wire, Affine::translate((10.0, 4.0))));
+        assert!(!effects.set_pose(wire, Affine::translate((10.0, 4.0))));
 
         let mut buffer = CommandBuffer::new();
         buffer.begin_frame();

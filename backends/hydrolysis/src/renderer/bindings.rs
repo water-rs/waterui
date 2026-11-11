@@ -4,6 +4,7 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use waterui_core::contract_violation;
 
 impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(super) const fn target_hit_priority(
@@ -49,16 +50,17 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         node_id: AccessibilityNodeId,
     ) -> bool {
         self.registries();
-        let focused = self
+        let Some(focused) = self
             .text_editing
             .text_input_targets
             .iter()
             .position(|target| target.accessibility_node_id == Some(node_id))
-            .unwrap_or_else(|| {
-                panic!(
-                    "hydrolysis accessibility focus target node {node_id:?} has no matching text input target"
-                )
-            });
+        else {
+            contract_violation!(
+                "hydrolysis accessibility focus target node {node_id:?} has no matching text input target; the focus request is ignored"
+            );
+            return false;
+        };
         self.set_focused_text_input(Some(focused))
     }
 
@@ -246,10 +248,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         factor: f32,
         env: &Environment,
     ) -> bool {
-        assert!(
-            factor.is_finite() && factor > 0.0,
-            "hydrolysis magnification factor must be finite and positive"
-        );
+        if !(factor.is_finite() && factor > 0.0) {
+            contract_violation!(
+                "hydrolysis magnification factor {factor} must be finite and positive; the gesture is ignored"
+            );
+            return false;
+        }
         let mut changed = self.handle_magnification(x, y, 0.0, TouchPhase::Started, env);
         changed |= self.handle_magnification(x, y, factor - 1.0, TouchPhase::Moved, env);
         changed |= self.handle_magnification(x, y, 0.0, TouchPhase::Ended, env);

@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use cherenkov_record::{FilterId, Layer, MaterialRegistry, ResourceError, Transaction};
 use rustc_hash::FxHashMap;
+use waterui_core::contract_violation;
 use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
 use waterui_graphics::backend::{Handle, Reactive, TextBackend, TextRegistration, TextRequest};
 use waterui_graphics::gpu::PresentedSize;
@@ -17,7 +18,7 @@ use crate::renderer::ProducerWake;
 use crate::renderer::effects::{AppliedFilterMetrics, FilteredRuntime};
 use crate::renderer::mount::backdrop::{
     BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload,
-    MaterialBackdropGroups, MaterialMembership, MemberBind, MemberJoin,
+    MaterialBackdropGroups, MaterialMembership, MemberBind, MemberJoin, Unbound,
 };
 use crate::renderer::recording::SceneResources;
 use crate::text::TextService;
@@ -38,25 +39,26 @@ impl MaterialTerms<cherenkov::BackdropShader> {
 
 /// Attaches `registry` to `engine`: each shader source registers with the
 /// engine and its handle joins the per-engine table a chrome member's
-/// group binds. A source the engine rejects panics at attach, naming the
-/// key — the registry is the theme's own contract, so a rejection is a
-/// programmer error.
+/// group binds. A source the engine rejects is reported at attach, naming
+/// the key, and stays out of the table: the chrome that names it is not
+/// drawn.
 pub fn attach_material_shaders(
     engine: &crate::engine::GpuEngine,
     registry: &MaterialRegistry,
 ) -> FxHashMap<cherenkov_record::MaterialShader, cherenkov::BackdropShader> {
     registry
         .shaders()
-        .map(|(key, source)| {
+        .filter_map(|(key, source)| {
             let shader = engine
                 .backdrop_shader(source.clone())
-                .unwrap_or_else(|error| {
-                    panic!(
+                .inspect_err(|error| {
+                    contract_violation!(
                         "hydrolysis materials: backdrop shader {key:?} failed to register on the \
-                         attached engine: {error}"
-                    )
-                });
-            (key, shader)
+                         attached engine: {error}; the chrome that names it is not drawn"
+                    );
+                })
+                .ok()?;
+            Some((key, shader))
         })
         .collect()
 }
@@ -228,20 +230,19 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
         Some(pixels)
     }
 
-    fn filter(host: &CherenkovHost, runtime: &mut FilteredRuntime) -> FilterId {
+    fn filter(host: &CherenkovHost, runtime: &mut FilteredRuntime) -> Option<FilterId> {
         runtime.filter(|source| {
-            FilterHandle::new(
-                host.engine
-                    .effect(crate::renderer::effects::EngineEffect::new(
-                        source,
-                        Arc::clone(&host.metrics),
-                    )),
-            )
+            Some(FilterHandle::new(host.engine.effect(
+                crate::renderer::effects::EngineEffect::new(source, Arc::clone(&host.metrics)),
+            )))
         })
     }
 
-    fn stretch_filter(host: &CherenkovHost, filter: OverscrollStretch<Reactive>) -> FilterHandle {
-        FilterHandle::new(host.engine.filter(filter))
+    fn stretch_filter(
+        host: &CherenkovHost,
+        filter: OverscrollStretch<Reactive>,
+    ) -> Option<FilterHandle> {
+        Some(FilterHandle::new(host.engine.filter(filter)))
     }
 
     fn mount_material(
@@ -254,10 +255,15 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
         membership: &MaterialMembership<E>,
         bind: MemberBind,
     ) {
-        let surface = host
-            .surface
-            .upgrade()
-            .expect("hydrolysis material: the engine surface was dropped during its commit");
+        let Some(surface) = host.surface.upgrade() else {
+            contract_violation!(
+                "hydrolysis material: the engine surface was dropped during its commit; \
+                 the layer joins no backdrop group"
+            );
+            groups.clear(layer.id());
+            tx[layer].clear_backdrop();
+            return;
+        };
         groups.join(
             tx,
             key,
@@ -278,7 +284,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
                     // A `.material_group()` scope's groups capture beneath
                     // its anchor layer (water-rs/waterui#2097).
                     let spec = key.anchor.map_or(spec, |anchor| spec.anchor(anchor));
-                    surface.backdrop_group(runtime.chain(scale), spec)
+                    Ok(surface.backdrop_group(runtime.chain(scale), spec))
                 },
                 |tx: &mut Transaction<'_, Self>,
                  member: &Layer,
@@ -286,6 +292,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
                  group: &cherenkov::BackdropGroup,
                  _scale: f64| {
                     tx[member].backdrop(group.sample());
+                    Ok(())
                 },
             ),
             bind,
@@ -312,10 +319,15 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
         payload: impl FnOnce() -> ChromeMemberPayload<cherenkov::BackdropShader>,
         bind: MemberBind,
     ) {
-        let surface = host
-            .surface
-            .upgrade()
-            .expect("hydrolysis materials: the engine surface was dropped during its commit");
+        let Some(surface) = host.surface.upgrade() else {
+            contract_violation!(
+                "hydrolysis materials: the engine surface was dropped during its commit; \
+                 the layer joins no chrome group"
+            );
+            groups.clear(layer.id());
+            tx[layer].clear_backdrop();
+            return;
+        };
         groups.join(
             tx,
             key,
@@ -329,14 +341,15 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
             },
             (
                 move |params, scale| {
-                    surface.backdrop_group_unfiltered(chrome_spec(params, scale, key))
+                    Ok(surface.backdrop_group_unfiltered(chrome_spec(params, scale, key)?))
                 },
                 |tx: &mut Transaction<'_, Self>,
                  member: &Layer,
                  payload: &ChromeMemberPayload<cherenkov::BackdropShader>,
                  group: &cherenkov::BackdropGroup,
                  scale: f64| {
-                    tx[member].backdrop(chrome_sample(payload, group.id(), scale));
+                    tx[member].backdrop(chrome_sample(payload, group.id(), scale)?);
+                    Ok(())
                 },
             ),
             bind,
@@ -349,27 +362,29 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
 }
 
 /// The spec a chrome group of `key` is created with at display `scale`:
-/// the class's capture scale, levels and member blend space, its union
+/// the class's capture scale, levels, pyramid and member blend space, its union
 /// field converted at `scale`, and — for a scoped group — its scope's
 /// anchor layer, beneath which it captures like a material group
 /// (water-rs/waterui#2097).
 ///
-/// # Panics
-/// Panics as [`union_of`] does for a union smoothing invalid at `scale`.
+/// # Errors
+/// [`Unbound`], reported as [`union_of`] reports it, for a union smoothing
+/// invalid at `scale`: the group is not built.
 pub fn chrome_spec(
     params: &cherenkov_record::MaterialCapture,
     scale: f64,
     key: ChromeGroupKey,
-) -> cherenkov::BackdropSpec {
-    let mut spec =
-        cherenkov::BackdropSpec::new(params.scale, params.levels).blend_space(params.blend_space);
+) -> Result<cherenkov::BackdropSpec, Unbound> {
+    let mut spec = cherenkov::BackdropSpec::new(params.scale, params.levels)
+        .pyramid(params.pyramid)
+        .blend_space(params.blend_space);
     if let Some(anchor) = key.anchor() {
         spec = spec.anchor(anchor);
     }
-    if let Some(union) = union_of(params, scale, key.class()) {
+    if let Some(union) = union_of(params, scale, key.class())? {
         spec = spec.union(union);
     }
-    spec
+    Ok(spec)
 }
 
 /// The union field `params` declares for a group built at `scale`:
@@ -377,41 +392,51 @@ pub fn chrome_spec(
 /// logical smoothing converted to device pixels — [`BackdropUnion`]'s
 /// input — with its error surfaced, never clamped.
 ///
-/// # Panics
-/// Panics, naming the class, smoothing and scale, when the converted
-/// smoothing is not a valid [`BackdropUnion`].
+/// # Errors
+/// [`Unbound`] when the converted smoothing is not a valid
+/// [`BackdropUnion`], reported through [`contract_violation!`] naming the
+/// class, smoothing and scale.
 pub fn union_of(
     params: &cherenkov_record::MaterialCapture,
     scale: f64,
     class: cherenkov_record::CaptureClass,
-) -> Option<cherenkov::BackdropUnion> {
+) -> Result<Option<cherenkov::BackdropUnion>, Unbound> {
     let cherenkov_record::MaterialGrouping::Union { smoothing } = params.grouping else {
-        return None;
+        return Ok(None);
     };
     let device = f64::from(smoothing.get()) * scale;
-    Some(
-        cherenkov::BackdropUnion::new(crate::num_cast::f64_as_f32(device)).unwrap_or_else(|error| {
-            panic!(
-                "hydrolysis materials: capture class {class:?} union smoothing {} is invalid at display scale {scale}: {error}",
+    cherenkov::BackdropUnion::new(crate::num_cast::f64_as_f32(device))
+        .map(Some)
+        .map_err(|error| {
+            contract_violation!(
+                "hydrolysis materials: capture class {class:?} union smoothing {} is invalid at \
+                 display scale {scale}: {error}; the class's group is not built and its members \
+                 are left unbound",
                 smoothing.get(),
-            )
-        }),
-    )
+            );
+            Unbound
+        })
 }
 
 /// The member's logical outer `extent` as device pixels at `scale` — the
 /// display scale the group was built for.
 ///
-/// # Panics
-/// Panics when `extent` converted to device pixels is not a valid
-/// [`BackdropOuter`]: its error is surfaced, never clamped.
-pub fn outer_of(extent: cherenkov_record::OuterExtent, scale: f64) -> cherenkov::BackdropOuter {
+/// # Errors
+/// [`Unbound`] when `extent` converted to device pixels is not a valid
+/// [`BackdropOuter`], reported through [`contract_violation!`]: its error
+/// is surfaced, never clamped.
+pub fn outer_of(
+    extent: cherenkov_record::OuterExtent,
+    scale: f64,
+) -> Result<cherenkov::BackdropOuter, Unbound> {
     let device = f64::from(extent.get()) * scale;
-    cherenkov::BackdropOuter::new(crate::num_cast::f64_as_f32(device)).unwrap_or_else(|error| {
-        panic!(
-            "hydrolysis materials: outer extent {} is invalid at display scale {scale}: {error}",
+    cherenkov::BackdropOuter::new(crate::num_cast::f64_as_f32(device)).map_err(|error| {
+        contract_violation!(
+            "hydrolysis materials: outer extent {} is invalid at display scale {scale}: {error}; \
+             the member is not bound to it",
             extent.get(),
-        )
+        );
+        Unbound
     })
 }
 
@@ -419,47 +444,80 @@ pub fn outer_of(extent: cherenkov_record::OuterExtent, scale: f64) -> cherenkov:
 /// `id`, built for `scale`: the member's effect rebound from its value
 /// now — a stored payload never restarts stale — and mapped through
 /// [`group_sample_with`].
+///
+/// # Errors
+/// [`Unbound`], reported, when `scale` is not a recording scale or the
+/// effect's outer extent now is invalid at it: the member is not bound.
+/// A later change of a bound effect to an extent invalid at `scale` is
+/// reported the same way, but a bound sample cannot unbind its layer from
+/// inside the signal, so the member keeps the last sample it bound: the
+/// change is rejected, never clamped.
 pub fn chrome_sample(
     payload: &ChromeMemberPayload<cherenkov::BackdropShader>,
     id: cherenkov::BackdropId,
     scale: f64,
-) -> cherenkov_record::SharedLive<cherenkov::BackdropSample> {
+) -> Result<cherenkov_record::SharedLive<cherenkov::BackdropSample>, Unbound> {
+    let recording = recording_scale_of(scale)?;
+    let effect = payload.effect.rebound();
     let shader = payload.shader.clone();
-    payload
-        .effect
-        .rebound()
-        .map(move |effect| group_sample_with(id, &shader, &effect, scale))
+    let bound = RefCell::new(group_sample_with(
+        id,
+        &shader,
+        effect.value(),
+        scale,
+        recording,
+    )?);
+    Ok(effect.map(
+        move |effect| match group_sample_with(id, &shader, &effect, scale, recording) {
+            Ok(sample) => {
+                bound.replace(sample.clone());
+                sample
+            }
+            Err(Unbound) => bound.borrow().clone(),
+        },
+    ))
 }
 
 /// The display `scale` the group was built for as the member's
 /// [`RecordingScale`](cherenkov::RecordingScale): the device pixels one
 /// logical pixel of the recording spans.
 ///
-/// # Panics
-/// Panics when `scale` is not a valid recording scale: its error is
-/// surfaced, never clamped.
-pub fn recording_scale_of(scale: f64) -> cherenkov::RecordingScale {
-    cherenkov::RecordingScale::new(crate::num_cast::f64_as_f32(scale)).unwrap_or_else(|error| {
-        panic!("hydrolysis materials: display scale {scale} is not a recording scale: {error}")
+/// # Errors
+/// [`Unbound`] when `scale` is not a valid recording scale, reported
+/// through [`contract_violation!`]: its error is surfaced, never clamped.
+pub fn recording_scale_of(scale: f64) -> Result<cherenkov::RecordingScale, Unbound> {
+    cherenkov::RecordingScale::new(crate::num_cast::f64_as_f32(scale)).map_err(|error| {
+        contract_violation!(
+            "hydrolysis materials: display scale {scale} is not a recording scale: {error}; \
+             the member is left unbound"
+        );
+        Unbound
     })
 }
 
-/// The live backdrop sample a `ChromeMaterial` member binds: the group's
-/// id and the member's effect mapped through its shader, the effect's
+/// The backdrop sample a `ChromeMaterial` member binds: the group's id
+/// and the member's effect mapped through its shader, the effect's
 /// logical outer extent converted to device pixels at `scale` — the
-/// display scale the group was built for — and `scale` itself as the
-/// member's recording scale, so its shader converts the recipe's
-/// logical lengths.
+/// display scale the group was built for — and `recording`, `scale` as
+/// a [`RecordingScale`](cherenkov::RecordingScale), so its shader
+/// converts the recipe's logical lengths.
+///
+/// # Errors
+/// [`Unbound`], reported as [`outer_of`] reports it, when the effect's
+/// outer extent is invalid at `scale`.
 pub fn group_sample_with(
     id: cherenkov::BackdropId,
     shader: &cherenkov::BackdropShader,
     effect: &cherenkov_record::MaterialEffect,
     scale: f64,
-) -> cherenkov::BackdropSample {
-    let outer = outer_of(effect.outer_extent(), scale);
-    cherenkov::BackdropSample::with_effect(id, shader.effect(effect.uniforms().to_vec()))
-        .outer(outer)
-        .scale(recording_scale_of(scale))
+    recording: cherenkov::RecordingScale,
+) -> Result<cherenkov::BackdropSample, Unbound> {
+    let outer = outer_of(effect.outer_extent(), scale)?;
+    Ok(
+        cherenkov::BackdropSample::with_effect(id, shader.effect(effect.uniforms().to_vec()))
+            .outer(outer)
+            .scale(recording),
+    )
 }
 
 fn external_frame_plane_size(frame: &cherenkov_gpu::interop::ExternalFrame) -> (u32, u32) {

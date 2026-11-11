@@ -27,6 +27,7 @@ use waterui_controls::slider::{SliderConfig, ValueFormatter, snap};
 use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
+use waterui_core::contract_violation;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::Alignment;
 use waterui_core::layout::Size as LayoutSize;
@@ -74,13 +75,26 @@ pub struct SliderRenderState<E: crate::text::TextEngine> {
     indicator_text: Option<RetainedSubview<E>>,
 }
 
+/// `range` when it spans a positive distance. A slider needs `start < end`
+/// (the value normalizes by the span); anything else is a contract violation
+/// by the app, reported, and the slider uses the unit range `0..=1`.
+fn valid_range(range: RangeInclusive<f64>) -> RangeInclusive<f64> {
+    if range.start() < range.end() {
+        return range;
+    }
+    contract_violation!(
+        "hydrolysis slider requires range start < end, got {range:?}; the slider uses the range 0..=1"
+    );
+    0.0..=1.0
+}
+
 impl<E: crate::text::TextEngine> SliderRenderState<E> {
     pub(crate) fn from_config(config: SliderConfig) -> Self {
         let (label, min_value_label, max_value_label, range, value, size, value_indicator, step) =
             config.into_parts();
+        let range = valid_range(range);
         let start = *range.start();
         let end = *range.end();
-        assert!(start < end, "hydrolysis slider requires range start < end");
         let normalized = Computed::new(
             value.map(move |value: f64| (value.clamp(start, end) - start) / (end - start)),
         );
@@ -339,13 +353,16 @@ fn place(look: &SliderLook, spec: &SliderSpec, measured: &Measured, bounds: Rect
         bounds.y1,
     );
     let center_y = f64::midpoint(row.y0, row.y1);
+    let mut track_width = bounds.width() - left - right;
+    if track_width <= 0.0 {
+        contract_violation!(
+            "hydrolysis slider resolved a non-positive track width ({track_width}); the track collapses to zero width"
+        );
+        track_width = 0.0;
+    }
     let track = Rect::from_center_size(
         Point::new(f64::midpoint(bounds.x0 + left, bounds.x1 - right), center_y),
-        Size::new(bounds.width() - left - right, layout.row_height),
-    );
-    assert!(
-        track.width() > 0.0,
-        "hydrolysis slider resolved a non-positive track width"
+        Size::new(track_width, layout.row_height),
     );
     let beside = |size: Size, x0: f64| {
         (size.width > 0.0 && row.height() > 0.0)
@@ -405,7 +422,10 @@ fn slider_accessibility_parts<E: crate::text::TextEngine>(
         }
         let start = *range.start();
         let end = *range.end();
-        assert!(start < end, "hydrolysis slider requires range start < end");
+        debug_assert!(
+            start < end,
+            "the retained slider's range was validated by `SliderRenderState::from_config`"
+        );
         // Read without watching: the node does not re-render for a value
         // change, the tree follows it through `register_live_numeric`.
         let current = value.snapshot().clamp(start, end);
@@ -515,6 +535,10 @@ fn dragged_value(
     local: Point,
     press: Option<(Point, f64)>,
 ) -> Option<f64> {
+    if track.width() <= 0.0 {
+        // A collapsed track (reported when it was placed) has no positions to map to.
+        return None;
+    }
     let rtl = matches!(direction, LayoutDirection::RightToLeft);
     let toward_end = |along: f64| if rtl { -along } else { along };
     let value = match mapping {
@@ -971,4 +995,41 @@ pub fn emit_slider_accessibility<E: crate::text::TextEngine>(
     );
     state.min_value_label.emit_accessibility(renderer, env);
     state.max_value_label.emit_accessibility(renderer, env);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{dragged_value, valid_range};
+    use crate::theme::DragMapping;
+    use kurbo::{Point, Rect};
+    use waterui_core::layout::LayoutDirection;
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "slider requires range start < end")
+    )]
+    fn an_empty_range_is_reported_and_replaced_by_the_unit_range() {
+        assert_eq!(valid_range(2.0..=2.0), 0.0..=1.0);
+    }
+
+    #[test]
+    fn a_positive_range_is_kept() {
+        assert_eq!(valid_range(-5.0..=5.0), -5.0..=5.0);
+    }
+
+    #[test]
+    fn a_collapsed_track_maps_no_drag_position() {
+        let track = Rect::new(10.0, 0.0, 10.0, 20.0);
+        assert_eq!(
+            dragged_value(
+                DragMapping::Absolute,
+                track,
+                LayoutDirection::LeftToRight,
+                Point::new(10.0, 10.0),
+                None,
+            ),
+            None
+        );
+    }
 }

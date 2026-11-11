@@ -6,6 +6,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::platform::{WindowKeyboardArea, WindowSafeArea};
+use waterui_core::contract_violation;
 use waterui_layout::padding::EdgeInsets;
 
 /// The window's container-region insets in logical units, read through the
@@ -854,10 +855,33 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     }
 }
 
+/// `value` when it is a finite non-negative minimum, else `0.0` after a
+/// contract violation: the window then has no minimum on that axis.
 fn validated_minimum_axis(value: f32, axis: &str) -> f32 {
-    assert!(
-        value.is_finite() && value >= 0.0,
-        "hydrolysis window layout reported invalid minimum {axis}: {value}"
+    if value.is_finite() && value >= 0.0 {
+        return value;
+    }
+    contract_violation!(
+        "hydrolysis window layout reported invalid minimum {axis}: {value}; the window has no minimum {axis}"
     );
-    value
+    0.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validated_minimum_axis;
+
+    #[test]
+    fn a_valid_minimum_axis_is_kept() {
+        assert!((validated_minimum_axis(120.0, "width") - 120.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "reported invalid minimum height")
+    )]
+    fn an_invalid_minimum_axis_leaves_the_window_without_a_minimum() {
+        assert!(validated_minimum_axis(f32::NAN, "height").abs() < f32::EPSILON);
+    }
 }

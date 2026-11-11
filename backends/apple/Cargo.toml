@@ -324,6 +324,9 @@ waterui-webview = { workspace = true, features = ["conformance"] }
 # columns with the oracle's LDR-FLIP — the metric the engine tests judge
 # renders by.
 cherenkov-oracle = { path = "../../graphics/cherenkov/oracle" }
+# The scene-surface trials join a dropped engine's render thread through
+# the engine's test seam.
+cherenkov = { workspace = true, features = ["testing"] }
 
 # `preview`'s protocol types arrive only where the preview entry exists —
 # macOS for the AppKit realization, Mac Catalyst for the UIKit one — and an

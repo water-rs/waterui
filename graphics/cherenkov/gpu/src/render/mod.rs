@@ -1192,6 +1192,9 @@ struct BackdropShaderEntry {
     /// The union-shaped module text, validated at registration; the
     /// module is built on the first union use.
     union_source: std::sync::Arc<str>,
+    /// Whether the shader reaches `backdrop_sample_blur`, which is
+    /// defined only on a group whose pyramid is Gaussian.
+    samples_blur: bool,
     /// The union-shaped module, built lazily with the first union slot.
     union_module: Option<wgpu::ShaderModule>,
     /// The plain-variant pipelines by `[replace][format slot]`: the
@@ -1313,7 +1316,7 @@ pub struct GpuRenderer {
     /// The configured isolation texture format.
     scratch_format: wgpu::TextureFormat,
     layout0: wgpu::BindGroupLayout,
-    layout1: wgpu::BindGroupLayout,
+    group1: Group1,
     globals: wgpu::Buffer,
     instances: wgpu::Buffer,
     stops: wgpu::Buffer,
@@ -2071,18 +2074,38 @@ pub fn layout_entries(entries: &[bindings::Entry]) -> Vec<wgpu::BindGroupLayoutE
 
 /// The bind group layouts: group 0 is engine data, group 1 the texture a
 /// composite samples.
-fn create_layouts(device: &wgpu::Device) -> (wgpu::BindGroupLayout, wgpu::BindGroupLayout) {
+fn create_layouts(device: &wgpu::Device) -> (wgpu::BindGroupLayout, Group1) {
     let layout0 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("engine data"),
         entries: &layout_entries(bindings::ENGINE_GROUP0),
     });
-    let layout1 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("source texture"),
         // 0: composite source, 1: blend backdrop, 2: image paint,
-        // 3: clip mask texture.
+        // 3: clip mask texture, 4: the linear sampler.
         entries: &layout_entries(bindings::ENGINE_GROUP1),
     });
-    (layout0, layout1)
+    // Linear magnification and minification, nearest mipmap,
+    // clamp-to-edge: what the hardware bilinear fetches of
+    // `backdrop_sample_blur` need.
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("engine linear sampling"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        ..wgpu::SamplerDescriptor::default()
+    });
+    (layout0, Group1 { layout, sampler })
+}
+
+/// What a group-1 bind group is built from (`ENGINE_GROUP1`): its layout
+/// and the sampler bound at binding 4.
+struct Group1 {
+    layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
 }
 
 /// Resolves the image the canonical draw recorded.
@@ -2136,7 +2159,7 @@ fn image_texture<'a>(
 /// Builds a group-1 bind group; `None` binds the dummy view.
 fn make_bind1(
     device: &wgpu::Device,
-    layout1: &wgpu::BindGroupLayout,
+    group1: &Group1,
     dummy: &wgpu::TextureView,
     source: Option<&wgpu::TextureView>,
     backdrop: Option<&wgpu::TextureView>,
@@ -2145,7 +2168,7 @@ fn make_bind1(
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("source texture"),
-        layout: layout1,
+        layout: &group1.layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -2162,6 +2185,10 @@ fn make_bind1(
             wgpu::BindGroupEntry {
                 binding: 3,
                 resource: wgpu::BindingResource::TextureView(mask.unwrap_or(dummy)),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::Sampler(&group1.sampler),
             },
         ],
     })
@@ -2763,7 +2790,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         } else {
             TimestampSupport::Unsupported
         };
-        let (layout0, layout1) = create_layouts(&device);
+        let (layout0, group1) = create_layouts(&device);
         fire_probe(
             &config,
             CreationPhase::Layouts,
@@ -2798,7 +2825,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             Some(&adapter),
             Some(&device),
         )?;
-        let pipeline_layout = create_pipeline_layout(&device, &layout0, &layout1);
+        let pipeline_layout = create_pipeline_layout(&device, &layout0, &group1.layout);
         let pipeline_cache = open_pipeline_cache(&device, &config);
         let mut pipelines = std::array::from_fn(|_| {
             std::array::from_fn(|_| std::array::from_fn(|_| None::<wgpu::RenderPipeline>))
@@ -3098,7 +3125,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             pipeline_cache,
             scratch_format,
             layout0,
-            layout1,
+            group1,
             globals,
             instances,
             stops,
@@ -3206,7 +3233,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     } else {
         TimestampSupport::Unsupported
     };
-    let (layout0, layout1) = create_layouts(&device);
+    let (layout0, group1) = create_layouts(&device);
     fire_probe(
         &config,
         CreationPhase::Layouts,
@@ -3229,7 +3256,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         Some(&adapter),
         Some(&device),
     )?;
-    let pipeline_layout = create_pipeline_layout(&device, &layout0, &layout1);
+    let pipeline_layout = create_pipeline_layout(&device, &layout0, &group1.layout);
     let pipeline_cache = open_pipeline_cache(&device, &config);
     let mut pipelines = std::array::from_fn(|_| {
         std::array::from_fn(|_| std::array::from_fn(|_| None::<wgpu::RenderPipeline>))
@@ -3463,7 +3490,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         pipeline_cache,
         scratch_format,
         layout0,
-        layout1,
+        group1,
         globals,
         instances,
         stops,
@@ -5635,7 +5662,7 @@ impl GpuRenderer {
         // The union-shaped text validates now — invalid WGSL still
         // fails fast — but its module builds on the first union use.
         let union_source: std::sync::Arc<str> = backdrop_effect_text(&source.source, true).into();
-        shaders::validate_wgsl(&union_source)?;
+        let samples_blur = shaders::reads_backdrop_blur(shaders::validate_wgsl(&union_source)?);
         let module = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -5680,6 +5707,7 @@ impl GpuRenderer {
             BackdropShaderEntry {
                 plain_module: module,
                 union_source,
+                samples_blur,
                 union_module: None,
                 plain,
                 union: Default::default(),
@@ -5704,7 +5732,7 @@ impl GpuRenderer {
         // fails fast — but its module builds on the first union use in
         // `prepare_lazy_pipelines`.
         let union_source: std::sync::Arc<str> = backdrop_effect_text(&source.source, true).into();
-        shaders::validate_wgsl(&union_source)?;
+        let samples_blur = shaders::reads_backdrop_blur(shaders::validate_wgsl(&union_source)?);
         let module = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -5750,6 +5778,7 @@ impl GpuRenderer {
             BackdropShaderEntry {
                 plain_module: module,
                 union_source,
+                samples_blur,
                 union_module: None,
                 plain,
                 union: Default::default(),
@@ -6531,8 +6560,8 @@ impl GpuRenderer {
                 .map_or(WORKING_FORMAT, |surf| surf.format);
             self.ensure_projective(&[surface, self.scratch_format, WORKING_FORMAT])?;
         }
-        for r in &realize {
-            self.ensure_projective(&[r.key.format.texture()])?;
+        if !realize.is_empty() {
+            self.ensure_projective(&[WORKING_FORMAT])?;
         }
         let available = self.projective_available();
         let Some(surf) = self.surfaces.get_mut(&id) else {
@@ -6559,7 +6588,7 @@ impl GpuRenderer {
                 .projective
                 .get(&r.key.layer)
                 .and_then(|entries| entries.iter().find(|entry| entry.matches(r.key)));
-            if old.is_some_and(|entry| entry.fits(r.levels[0], r.key.format)) {
+            if old.is_some_and(|entry| entry.fits(r.levels[0])) {
                 continue;
             }
             let growth = r
@@ -6579,7 +6608,7 @@ impl GpuRenderer {
             let entries = surf.projective.entry(r.key.layer).or_default();
             let slot = entries.iter().position(|e| e.matches(r.key));
             if let Some(entry) = slot.map(|i| &mut entries[i])
-                && entry.fits(r.levels[0], r.key.format)
+                && entry.fits(r.levels[0])
             {
                 entry.key = None;
                 entry.picture.clone_from(&r.picture);
@@ -6587,14 +6616,8 @@ impl GpuRenderer {
             }
             let pipelines = self.projective.as_ref().expect("built above");
             surf.command_damage.forget();
-            let mut entry = projective::Entry::new(
-                &self.device,
-                pipelines,
-                r.key.bucket,
-                &r.levels,
-                r.key.format,
-                r.bytes(),
-            );
+            let mut entry =
+                projective::Entry::new(&self.device, pipelines, r.key.bucket, &r.levels, r.bytes());
             if r.picture.is_some() {
                 // The share admitted what the driver said it would commit;
                 // a texture committing more would overrun it unseen.
@@ -7784,7 +7807,6 @@ impl GpuRenderer {
             let key = projective::LocalKey {
                 layer: plan.layer,
                 picture: None,
-                format: projective::LocalFormat::Working,
                 bucket: projective::bucket(image.density),
             };
             let cache =
@@ -7817,7 +7839,7 @@ impl GpuRenderer {
                     picture: None,
                     key,
                     cache,
-                    bytes: projective::mip_bytes(key.format.texture(), &image.levels),
+                    bytes: projective::mip_bytes(&image.levels),
                     levels: image.levels.clone(),
                     deps,
                 });
@@ -9390,6 +9412,11 @@ impl GpuRenderer {
                 // level above's spec extent.
                 for &(index, levels) in &surf.frame.reduces {
                     let pass = &surf.frame.passes[index];
+                    let group = pass
+                        .capture
+                        .expect("a reduced pass is a capture pass")
+                        .group;
+                    let pyramid = surf.backdrop_groups[&group].spec.capture_pyramid();
                     for k in 1..levels {
                         let dst = (
                             pass.region[2].div_ceil(1 << k),
@@ -9400,7 +9427,7 @@ impl GpuRenderer {
                             pass.region[3].div_ceil(1 << (k - 1)),
                         );
                         let g = lower::globals([dst.0 as f32, dst.1 as f32], [0.0; 2], pass.space);
-                        let params = reduce::params(src);
+                        let params = reduce::params(src, pyramid);
                         let g = bytemuck::bytes_of(&g);
                         let params = bytemuck::bytes_of(&params);
                         entry[..g.len()].copy_from_slice(g);
@@ -9817,7 +9844,7 @@ impl GpuRenderer {
                     &composite::metal::Resources {
                         device: &self.device,
                         layout: &self.pipeline_layout,
-                        layout1: &self.layout1,
+                        group1: &self.group1,
                         dummy: &self.dummy_view,
                         bind0: &self.bind0,
                         images: &self.images,
@@ -10193,7 +10220,7 @@ impl GpuRenderer {
                         stats.bind_groups_created += 1;
                         make_bind1(
                             &self.device,
-                            &self.layout1,
+                            &self.group1,
                             &self.dummy_view,
                             None,
                             None,
@@ -10295,7 +10322,7 @@ impl GpuRenderer {
                         stats.bind_groups_created += 1;
                         make_bind1(
                             &self.device,
-                            &self.layout1,
+                            &self.group1,
                             &self.dummy_view,
                             None,
                             None,
@@ -10423,7 +10450,7 @@ impl GpuRenderer {
                         stats.bind_groups_created += 1;
                         make_bind1(
                             &self.device,
-                            &self.layout1,
+                            &self.group1,
                             &self.dummy_view,
                             None,
                             None,
@@ -10761,6 +10788,25 @@ impl GpuRenderer {
                     ri += 1;
                     continue;
                 }
+                // `backdrop_sample_blur` is defined only on a Gaussian
+                // pyramid: a shader calling it composited over a Box
+                // group is an invalid combination, never a silent
+                // different read.
+                if let PipelineKind::Effect { id, .. } = range.pipeline
+                    && let Some(Source::Backdrop { group, .. }) = range.source
+                    && self
+                        .backdrop_shaders
+                        .get(&id)
+                        .is_some_and(|entry| entry.samples_blur)
+                    && surf.backdrop_groups[&group].spec.capture_pyramid()
+                        == cherenkov::CapturePyramid::Box
+                {
+                    return Err(RenderError::Render(format!(
+                        "backdrop shader {id} calls backdrop_sample_blur on backdrop group \
+                         {group}, whose capture pyramid is Box; the function is defined only \
+                         on a Gaussian pyramid"
+                    )));
+                }
                 let want = if coverage_order {
                     Bound::Coverage(range.gpu.is_some())
                 } else {
@@ -10872,7 +10918,7 @@ impl GpuRenderer {
                             .and_then(|slot| surf.backdrop[slot].as_ref().map(|b| &b.view));
                         &*e.insert(make_bind1(
                             &self.device,
-                            &self.layout1,
+                            &self.group1,
                             &self.dummy_view,
                             source.map(|s| match s {
                                 Source::Scratch(i) => &surf.scratch[&i].view,
@@ -11042,7 +11088,8 @@ impl GpuRenderer {
                 )?;
             }
             // A levelled group's pyramid: each level reduces the filtered
-            // level above by an exact 2×2 box, appended in pass and level
+            // level above by the group's kernel (`CapturePyramid`), the
+            // same pass count either way, appended in pass and level
             // order after `write_uploads`' pass slots.
             if let Some(capture) = pass.capture {
                 let levels = capture.levels;

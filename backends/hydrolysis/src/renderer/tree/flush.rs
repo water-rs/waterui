@@ -482,7 +482,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     WrapperEffect::Transition(declaration) => {
                         // The owning site paints the transition around its
                         // whole instance; the declaration itself draws through.
-                        declaration.assert_owned();
+                        declaration.report_unowned();
                         node.child
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                     }
@@ -1024,7 +1024,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         }
                     }
                     WrapperEffect::Transition(declaration) => {
-                        declaration.assert_owned();
+                        declaration.report_unowned();
                         node.child.emit_accessibility(renderer, child_env);
                     }
                     _ => node.child.emit_accessibility(renderer, child_env),

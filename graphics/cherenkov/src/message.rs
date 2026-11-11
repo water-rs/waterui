@@ -9,12 +9,25 @@
 use crate::local::ReplySender as Sender;
 use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::mpsc::{Sender, SyncSender};
+use std::sync::mpsc::Sender;
 
 #[cfg(target_arch = "wasm32")]
 pub type FrameReplySender<T> = Sender<T>;
+
+/// A `Render`/`Memory` reply hold — the wasm loop's existing sender.
+#[cfg(target_arch = "wasm32")]
+pub type RequestGuard<T> = Sender<T>;
+/// The persistent one-reply sender a request carries; the reply itself
+/// never holds it — a buffered reply retaining its channel's sender keeps
+/// the channel open past the render thread's exit.
 #[cfg(not(target_arch = "wasm32"))]
-pub type FrameReplySender<T> = SyncSender<T>;
+pub type FrameReplySender<T> = crate::transport::Reply<T>;
+
+/// A `Render`/`Memory` reply hold: the worker's `FrameRequest` guard —
+/// a successful send disarms it for the channel's next request, a dropped
+/// or unwinding request closes the channel and wakes the frontend.
+#[cfg(not(target_arch = "wasm32"))]
+pub type RequestGuard<T> = crate::transport::FrameRequest<T>;
 
 use cherenkov_record::{ChangeSet, LayerId, ResourceId, RunningTracks, SurfaceId};
 
@@ -154,10 +167,6 @@ pub struct RenderReply<B: Backend> {
     pub result: RenderOutcome<B>,
     /// The drained commits, including their reusable empty op vectors.
     pub commits: Vec<(SurfaceId, ChangeSet<B>)>,
-    /// The persistent reply sender, returned so a disconnected render thread
-    /// releases the receiver.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub sender: FrameReplySender<Self>,
 }
 
 impl<B: Backend> std::fmt::Debug for RenderReply<B> {
@@ -169,15 +178,11 @@ impl<B: Backend> std::fmt::Debug for RenderReply<B> {
     }
 }
 
-/// Memory usage and its persistent reply sender.
+/// Memory usage read back from the renderer.
 #[derive(Debug)]
 pub struct MemoryReply {
     /// The engine's current usage.
     pub usage: MemoryUsage,
-    /// The persistent reply sender, returned so a disconnected render thread
-    /// releases the receiver.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub sender: FrameReplySender<Self>,
 }
 
 /// A message to the render thread.
@@ -191,7 +196,7 @@ pub enum Message<B: Backend> {
         /// The surface's host wake-up, shared with its UI-thread handle.
         waker: Arc<crate::engine::SurfaceWaker>,
         /// Result of the creation.
-        reply: Sender<Result<SurfaceInfo, SurfaceError>>,
+        reply: FrameReplySender<Result<SurfaceInfo, SurfaceError>>,
     },
     /// Resize a surface.
     ResizeSurface {
@@ -300,7 +305,7 @@ pub enum Message<B: Backend> {
         /// The surfaces' queued change sets, one entry per dirty surface.
         commits: Vec<(SurfaceId, ChangeSet<B>)>,
         /// The render result and the buffers returned to the UI thread.
-        reply: FrameReplySender<RenderReply<B>>,
+        reply: RequestGuard<RenderReply<B>>,
     },
     /// Wait for every outstanding frame timing and return it.
     FinishTimings {
@@ -317,7 +322,7 @@ pub enum Message<B: Backend> {
     /// Report memory usage.
     Memory {
         /// The usage.
-        reply: FrameReplySender<MemoryReply>,
+        reply: RequestGuard<MemoryReply>,
     },
     /// System memory pressure.
     Trim(Pressure),

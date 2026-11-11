@@ -45,6 +45,18 @@ pub fn highlight_text(
         })
 }
 
+/// Lowercases an ASCII identifier at compile time.
+const fn ascii_lowercase<const N: usize>(s: &str) -> [u8; N] {
+    let bytes = s.as_bytes();
+    let mut out = [0; N];
+    let mut i = 0;
+    while i < N {
+        out[i] = bytes[i].to_ascii_lowercase();
+        i += 1;
+    }
+    out
+}
+
 macro_rules! languages {
     ($($ident:ident => $ext:literal),* $(,)?) => {
         /// Supported programming languages for syntax highlighting.
@@ -71,8 +83,12 @@ macro_rules! languages {
             pub const fn token(&self) -> &'static str {
                 match self {
                     $(Self::$ident => const {
-                        const fn to_lower(s: &str) -> &str { s }
-                        to_lower(stringify!($ident))
+                        const BYTES: [u8; stringify!($ident).len()] =
+                            ascii_lowercase(stringify!($ident));
+                        match core::str::from_utf8(&BYTES) {
+                            Ok(token) => token,
+                            Err(_) => panic!("ASCII-lowercased identifier is valid UTF-8"),
+                        }
                     },)*
                 }
             }
@@ -239,7 +255,9 @@ impl Highlighter for DefaultHighlighter {
         let mut h = HighlightLines::new(syntax, &self.theme);
         let mut chunks = Vec::new();
 
-        for line in text.lines() {
+        // The syntax set is in newlines mode: each line keeps its ending so
+        // scopes that close at the newline (line comments) do not leak.
+        for line in text.split_inclusive('\n') {
             let Ok(ranges) = h.highlight_line(line, &self.syntax_set) else {
                 // Fallback: return the whole line with default color
                 chunks.push(HighlightChunk {
@@ -257,22 +275,6 @@ impl Highlighter for DefaultHighlighter {
                     color,
                 });
             }
-
-            // Add newline back (syntect strips it)
-            if text.contains('\n') {
-                chunks.push(HighlightChunk {
-                    text: "\n",
-                    color: self.foreground,
-                });
-            }
-        }
-
-        // Handle trailing content without newline
-        if !text.ends_with('\n')
-            && let Some(last) = chunks.last_mut()
-            && last.text == "\n"
-        {
-            chunks.pop();
         }
 
         chunks

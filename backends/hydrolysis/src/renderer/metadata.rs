@@ -5,6 +5,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::renderer::frame::ScopeClip;
+use waterui_core::contract_violation;
 use waterui_core::handler::ReportExtraction as _;
 
 /// The claim a tap gesture registered for the wrapped view: the node it
@@ -814,7 +815,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     true
                 });
             }
-            _ => panic!("hydrolysis event variant is not supported"),
+            other => contract_violation!(
+                "hydrolysis event variant {other:?} is not supported; its handler is not registered"
+            ),
         }
         render_content(renderer);
     }

@@ -613,17 +613,20 @@ macro_rules! impl_font {
         impl_constant!($name);
     };
 }
+// The default type scale ranks Title > Headline > Body >= Subheadline >
+// Footnote > Caption: the order `heading_style` maps Markdown heading levels
+// onto, and Apple's ordering of the same text styles.
 impl_font!(Body, "Body font style.", 16.0, FontWeight::Normal);
 impl_font!(Title, "Title font style.", 22.0, FontWeight::Normal);
-impl_font!(Headline, "Headline font style.", 24.0, FontWeight::Normal);
+impl_font!(Headline, "Headline font style.", 18.0, FontWeight::Normal);
 impl_font!(
     Subheadline,
     "Subheadline font style.",
     16.0,
     FontWeight::Medium
 );
-impl_font!(Caption, "Caption font style.", 12.0, FontWeight::Normal);
-impl_font!(Footnote, "Footnote font style.", 11.0, FontWeight::Medium);
+impl_font!(Caption, "Caption font style.", 11.0, FontWeight::Normal);
+impl_font!(Footnote, "Footnote font style.", 12.0, FontWeight::Medium);
 
 #[cfg(test)]
 mod tests {

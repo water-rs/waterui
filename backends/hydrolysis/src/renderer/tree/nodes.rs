@@ -1,6 +1,7 @@
 //! The retained node structs a [`RenderNode`] variant carries, with their
 //! small inherent impls (runtime setup, per-frame effect application).
 
+use super::layout::resolved_or_collapsed;
 #[cfg(feature = "frame-profile")]
 use super::layout::{SignatureHasher, hash_size};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
@@ -106,10 +107,11 @@ fn anchored_bounds<E: TextEngine>(
     let theme = renderer.theme();
     let cell = RefCell::new(&mut renderer.state);
     let allocation = Rect::from_size(size);
-    let response = NodeSubView::new(root, &cell, env, &theme)
-        .resolve_extent(allocation, proposal)
-        .unwrap_or_else(|error| panic!("hydrolysis layout: {error}"))
-        .rect;
+    let response = resolved_or_collapsed(
+        NodeSubView::new(root, &cell, env, &theme).resolve_extent(allocation, proposal),
+        allocation,
+    )
+    .rect;
     let target = allocation.align(*response.size(), anchor);
     allocation.translated(target.x() - response.x(), target.y() - response.y())
 }

@@ -40,6 +40,8 @@ mod message;
 mod resource;
 mod surface;
 mod text;
+#[cfg(not(target_arch = "wasm32"))]
+mod transport;
 #[cfg(feature = "workers")]
 pub mod workers;
 
@@ -77,6 +79,8 @@ pub use crate::display_list::{
     Picture, ScopeError, Slot, SlotUpdate, Splice,
 };
 pub use crate::engine::Engine;
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::engine::PendingFrame;
 pub use crate::engine::{CompletionWaker, FrameScope, SurfaceWakes};
 pub use crate::error::{EngineError, RenderError, ResourceError, SurfaceError, SurfaceRejection};
 pub use crate::frame::{
@@ -116,12 +120,12 @@ pub use cherenkov_record::{
     AnimationOrigin, AnimationStart, Axis, BackdropEffect, BackdropId, BackdropOuter,
     BackdropOuterError, BackdropSample, BackdropSampling, BackdropShaderEffect, BackdropShaderId,
     BackdropShaderSource, BackdropSpec, BackdropUnion, BackdropUnionError, CaptureLevels,
-    CaptureLevelsError, CaptureScale, CaptureScaleError, ColorMatrix, ContentOp, GpuInstalls,
-    ImageLimits, ImageStorage, Install, KeyframeProp, Layer, LayerAnimations, LayerContent,
-    LayerEdit, LayerId, LayerKeyframes, LayerNode, LayerOwner, LevelRamp, LevelRampError,
-    Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize, RecordingScale,
-    RecordingScaleError, Refraction, RefreshRange, ResourceId, Rim, Shared, SurfaceId, SurfaceTree,
-    Target, TextLayoutId, TrackOrigin, TrackStart, Transaction, TransformComponents,
-    snap_animating,
+    CaptureLevelsError, CapturePyramid, CaptureScale, CaptureScaleError, ColorMatrix, ContentOp,
+    GpuInstalls, ImageLimits, ImageStorage, Install, KeyframeProp, Layer, LayerAnimations,
+    LayerContent, LayerEdit, LayerId, LayerKeyframes, LayerNode, LayerOwner, LevelRamp,
+    LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize,
+    RecordingScale, RecordingScaleError, Refraction, RefreshRange, ResourceId, Rim, Shared,
+    SurfaceId, SurfaceTree, Target, TextLayoutId, TrackOrigin, TrackStart, Transaction,
+    TransformComponents, snap_animating,
 };
 pub use kurbo::Stroke;
