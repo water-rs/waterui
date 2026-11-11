@@ -12,6 +12,8 @@
 use executor_core::spawn_local;
 use nami::{Binding, Signal, SignalExt as _, signal::IntoComputed};
 use waterui_core::IntoSignalF32;
+#[cfg(feature = "std")]
+use waterui_core::handler::ReportExtraction;
 pub use waterui_core::view::*;
 use waterui_core::{
     AnyView, Environment, IgnorableMetadata, Retain,
@@ -22,8 +24,6 @@ use waterui_core::{
     metadata::MetadataKey,
     plugin::Plugin,
 };
-#[cfg(feature = "std")]
-use waterui_core::handler::ReportExtraction;
 use waterui_graphics::color::Color;
 
 /// All view-level filter modifiers (`.blur()`, `.brightness()`, ...) come

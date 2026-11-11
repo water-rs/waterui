@@ -300,7 +300,7 @@ fn menu_elements(
                 let env = env.clone();
                 Some(platform::MenuElement::Action(
                     platform::MenuAction::command(mtm, key_commands, &kit, move || {
-                        action.call(&env);
+                        action.run(&env);
                     }),
                 ))
             }
