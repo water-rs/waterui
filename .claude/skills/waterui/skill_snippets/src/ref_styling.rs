@@ -1,13 +1,13 @@
 //! Snippets from `.claude/skills/waterui/references/styling.md`, in file order.
 //! Transcription conventions are documented in the crate README.
 //!
-//! The two Material 3 blocks need the `hydrolysis-m3` dev-dependency, so they
+//! The Material 3 blocks need the `hydrolysis-m3` dev-dependency, so they
 //! live behind the `compile-gate-tests` feature at the bottom of this file.
 
 use waterui::prelude::*;
 
 // ---------------------------------------------------------------------------
-// styling.md § "## Theme color tokens" — rust block 1/15
+// styling.md § "## Theme color tokens" — rust block 1/19
 // Listing: three token applications.
 // ---------------------------------------------------------------------------
 pub fn styling_block_01() {
@@ -29,8 +29,9 @@ pub fn styling_block_01() {
 // ---------------------------------------------------------------------------
 pub fn styling_token_as_value_prose() {
     use waterui::prelude::theme_color::{
-        AccentContainer, AccentForeground, Background, Border, Error, ErrorForeground,
-        SelectionContainer, SelectionForeground, SurfaceVariant, Tertiary, TertiaryContainer,
+        AccentContainer, AccentForeground, Background, Border, DisabledForeground, Error,
+        ErrorForeground, Scrim, SelectionContainer, SelectionForeground, SurfaceVariant, Tertiary,
+        TertiaryContainer, TertiaryForeground, UnemphasizedSelection,
     };
 
     let indicator: Color = SurfaceVariant.into();
@@ -44,15 +45,22 @@ pub fn styling_token_as_value_prose() {
         SelectionForeground,
     );
     let _ = (Error, ErrorForeground);
+    let _ = (
+        TertiaryForeground,
+        DisabledForeground,
+        UnemphasizedSelection,
+        Scrim,
+    );
     let _ = SurfaceVariant.size(80.0, 40.0);
 }
 
 // ---------------------------------------------------------------------------
-// styling.md § "## Installing a theme (dark mode, custom fonts)" — rust block 2/15
+// styling.md § "## Installing a theme (dark mode, custom fonts)" — rust block 2/19
 // ---------------------------------------------------------------------------
 pub mod styling_block_02 {
     use waterui::app::App;
     use waterui::prelude::*;
+    use waterui::text::font::{FontWeight, ResolvedFont};
 
     fn root(_dark: Binding<bool>) -> impl View {
         text("root")
@@ -63,15 +71,29 @@ pub mod styling_block_02 {
         env.install(
             Theme::new()
                 .color_scheme(dark.select(ColorScheme::Dark, ColorScheme::Light))
-                .fonts(FontSettings::new()), // per-slot setters, each a signal slot
+                .colors(ColorSettings::new().accent(Srgb::from_hex("#0066CC"))) // per-token setters
+                .fonts(FontSettings::new().body(ResolvedFont::with_family(
+                    16.0,
+                    FontWeight::Normal,
+                    "Inter",
+                ))),
         );
         App::new(move || root(dark.clone()), env)
     }
 }
 
 // ---------------------------------------------------------------------------
-// styling.md § "## Concrete colors" — rust block 3/15
-// Listing: six `Color` constructors, then the `Srgb` group.
+// styling.md § "## Installing a theme (dark mode, custom fonts)" (prose): reading
+// the active color scheme. Not counted as a rust block.
+// ---------------------------------------------------------------------------
+pub fn styling_color_scheme_read_prose(env: &Environment) {
+    let _: Computed<ColorScheme> = waterui::theme::current_color_scheme(env);
+    let _: Option<Computed<ColorScheme>> = waterui::theme::installed_color_scheme(env);
+}
+
+// ---------------------------------------------------------------------------
+// styling.md § "## Concrete colors" — rust block 3/19
+// Listing: seven `Color` constructors, then the `Srgb` group.
 // ---------------------------------------------------------------------------
 pub fn styling_block_03() {
     let (r, g, b) = (0.23_f32, 0.51_f32, 0.96_f32);
@@ -80,6 +102,9 @@ pub fn styling_block_03() {
     let _ = { Color::srgb_hex("#3B82F6") };
     let _ = {
         Color::srgb(59, 130, 246) // 0-255 integers
+    };
+    let _ = {
+        Color::srgb_u32(0x3B82F6) // 0xRRGGBB
     };
     let _ = { Color::srgb_f32(0.23, 0.51, 0.96) };
     let _ = { Color::p3(r, g, b) };
@@ -108,6 +133,8 @@ pub fn styling_color_transforms_prose() {
     let _ = Divider.foreground(Srgb::from_hex("#3B82F6"));
     let _ = Divider.background(Srgb::from_hex("#3B82F6"));
     let _ = Color::from(Srgb::from_hex("#3B82F6"));
+    let _ = Color::try_srgb_hex("#3B82F6");
+    let _ = (Color::red(), Color::deep_orange());
 
     let c = Color::srgb_hex("#3B82F6");
     let _ = c.clone().lighten(0.1);
@@ -120,7 +147,7 @@ pub fn styling_color_transforms_prose() {
 }
 
 // ---------------------------------------------------------------------------
-// styling.md § "## Concrete colors" — rust block 4/15
+// styling.md § "## Concrete colors" — rust block 4/19
 //
 // A bare list of names. Each is a unit struct that is also a `View`, so each is
 // transcribed as its own expression.
@@ -148,7 +175,7 @@ pub fn styling_block_04() {
 }
 
 // ---------------------------------------------------------------------------
-// styling.md § "## Concrete colors" — rust block 5/15
+// styling.md § "## Concrete colors" — rust block 5/19
 // Listing: three uses of a named palette color.
 // ---------------------------------------------------------------------------
 pub fn styling_block_05() {
@@ -161,7 +188,7 @@ pub fn styling_block_05() {
 }
 
 // ---------------------------------------------------------------------------
-// styling.md § "## Reactive colors" — rust block 6/15
+// styling.md § "## Reactive colors" — rust block 6/19
 // ---------------------------------------------------------------------------
 pub fn styling_block_06() -> impl View {
     use waterui::prelude::theme_color::SurfaceVariant;
@@ -176,7 +203,7 @@ pub fn styling_block_06() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// styling.md § "## Backgrounds, materials, gradients" — rust block 7/15
+// styling.md § "## Backgrounds, materials, gradients" — rust block 7/19
 // ---------------------------------------------------------------------------
 pub fn styling_block_07() {
     use waterui::prelude::theme_color::Surface;
@@ -204,10 +231,33 @@ pub fn styling_block_07() {
         // any view is a valid background
         view.background(RoundedRectangle::new(0.18).fill(Surface))
     };
+}
 
-    // ---- glass ----
+// ---------------------------------------------------------------------------
+// styling.md § "## Backgrounds, materials, gradients" (prose): `.material_group()`
+// over two glass backgrounds. Not counted as a rust block.
+// ---------------------------------------------------------------------------
+pub fn styling_material_group_prose() -> impl View {
     use waterui::background::Glass;
+
+    let a = Divider;
+    let b = Divider;
+    hstack((
+        a.background(Glass::regular()),
+        b.background(Glass::regular()),
+    ))
+    .material_group()
+}
+
+// ---------------------------------------------------------------------------
+// styling.md § "## Backgrounds, materials, gradients" — rust block 8/19
+// Listing: three glass backgrounds.
+// ---------------------------------------------------------------------------
+pub fn styling_block_08() {
     use waterui::prelude::theme_color::Accent;
+    use waterui::shape::RoundedRectangle;
+
+    use waterui::background::Glass;
 
     let view = Divider;
     let _ = {
@@ -239,10 +289,11 @@ pub fn styling_prelude_gradients_prose() {
 }
 
 // ---------------------------------------------------------------------------
-// styling.md § "## Backgrounds, materials, gradients" — rust block 8/15
+// styling.md § "## Backgrounds, materials, gradients" — rust block 9/19
 // ---------------------------------------------------------------------------
-pub fn styling_block_08() {
+pub fn styling_block_09() {
     let view = Divider;
+    let vertices: Vec<([f32; 2], waterui::color::WorkingColor)> = Vec::new();
 
     use waterui::color::working::from_linear_srgb;
     use waterui::gradient::{
@@ -267,6 +318,19 @@ pub fn styling_block_08() {
         ))
     };
     let _ = {
+        // radians
+        Gradient::angular(
+            vec![(0.0, rose), (1.0, sky)],
+            [0.5, 0.5],
+            0.0,
+            core::f32::consts::TAU,
+        )
+    };
+    let _ = {
+        // vertices: Vec<([f32; 2], WorkingColor)>, row-major
+        Gradient::mesh(2, 2, vertices, true)
+    };
+    let _ = {
         // colors: any signal of WorkingColors
         MeshGradient::new(3, 3, colors.clone()).size(300.0, 200.0)
     };
@@ -281,14 +345,14 @@ pub fn styling_block_08() {
 }
 
 // ---------------------------------------------------------------------------
-// styling.md § "## Shapes" — rust block 9/15
+// styling.md § "## Shapes" — rust block 10/19
 // ---------------------------------------------------------------------------
-pub fn styling_block_09() {
+pub fn styling_block_10() {
     let photo = Divider;
 
     use waterui::shape::{
-        Capsule, Circle, Ellipse, Path, Rectangle, RoundedRectangle, ShapeExt,
-        UnevenRoundedRectangle,
+        Capsule, Circle, Ellipse, FixedRoundedRectangle, FixedUnevenRoundedRectangle, Path,
+        Rectangle, RoundedRectangle, ShapeExt, UnevenRoundedRectangle,
     };
 
     let _ = {
@@ -297,6 +361,11 @@ pub fn styling_block_09() {
     let _ = {
         photo.clip(Circle) // clip a view to the shape
     };
+    let photo = Divider;
+    let _ = {
+        photo.clip(FixedRoundedRectangle::new(12.0)) // absolute points
+    };
+    let _ = FixedUnevenRoundedRectangle::new(12.0, 12.0, 0.0, 0.0);
 
     let _: Option<Capsule> = None;
     let _: Option<Ellipse> = None;
@@ -309,9 +378,9 @@ pub fn styling_block_09() {
 }
 
 // ---------------------------------------------------------------------------
-// styling.md § "## Shapes" — rust block 10/15
+// styling.md § "## Shapes" — rust block 11/19
 // ---------------------------------------------------------------------------
-pub fn styling_block_10() -> impl View {
+pub fn styling_block_11() -> impl View {
     use waterui::prelude::theme_color::Accent;
     use waterui::shape::{Path, ShapeExt};
 
@@ -324,7 +393,8 @@ pub fn styling_block_10() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// styling.md § "## Shapes" (prose): `cubic_to(c1x, c1y, c2x, c2y, x, y)`.
+// styling.md § "## Shapes" (prose): `quad_to(cx, cy, x, y)`,
+// `cubic_to(c1x, c1y, c2x, c2y, x, y)` and `arc(cx, cy, rx, ry, start, sweep)`.
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn styling_path_cubic_prose() {
@@ -332,14 +402,16 @@ pub fn styling_path_cubic_prose() {
 
     let _ = Path::new()
         .move_to(0.0, 0.0)
+        .quad_to(0.5, 0.0, 1.0, 0.5)
+        .arc(0.5, 0.5, 0.5, 0.5, 0.0, core::f32::consts::PI)
         .cubic_to(0.2, 0.0, 0.8, 1.0, 1.0, 1.0);
 }
 
 // ---------------------------------------------------------------------------
-// styling.md § "## Shapes" — rust block 11/15
+// styling.md § "## Shapes" — rust block 12/19
 // Listing: the fill-carrying form, then the progress-driven form.
 // ---------------------------------------------------------------------------
-pub fn styling_block_11() {
+pub fn styling_block_12() {
     use core::time::Duration;
     use waterui::shape::{Circle, Rectangle, RoundedRectangle, ShapeExt};
 
@@ -378,6 +450,40 @@ pub fn styling_filled_shape_morph_prose() {
 }
 
 // ---------------------------------------------------------------------------
+// styling.md § "## Borders and shadows" — rust block 13/19
+// Listing: a plain border, a configured border, a shadow; then the prose's
+// `Shadow::splat(v)`.
+// ---------------------------------------------------------------------------
+pub fn styling_block_13() {
+    use waterui::border::Border;
+    use waterui::prelude::theme_color::Accent;
+    use waterui::shape::RoundedRectangle;
+
+    let card = Divider;
+    let _ = {
+        card.border(Color::srgb_hex("#E5E7EB"), 1.0) // all edges, square corners
+    };
+    let card = Divider;
+    let _ = {
+        card.border_with(
+            Border::new(Accent, 1.0)
+                .corner_radius(12.0)
+                .edges(EdgeSet::BOTTOM),
+        )
+    };
+    let card = Divider;
+    let _ = {
+        card.shadow(Shadow::new(
+            Color::srgb(0, 0, 0).with_opacity(0.2), // color, with alpha
+            Vector::new(0.0, 2.0),                  // offset
+            8.0,                                    // blur radius
+            RoundedRectangle::new(0.1),             // the caster's own shape
+        ))
+    };
+    let _ = Shadow::splat(4.0);
+}
+
+// ---------------------------------------------------------------------------
 // styling.md § "## Floating surfaces" (prose): `.floating()`,
 // `.floating_with(style)`, and reading a `FloatingStyle` from the environment.
 // Not counted as a rust block.
@@ -393,11 +499,11 @@ pub fn styling_floating_prose() {
 }
 
 // ---------------------------------------------------------------------------
-// styling.md § "## Icons" — rust block 12/15
+// styling.md § "## Icons" — rust block 14/19
 // ---------------------------------------------------------------------------
 // styling.md writes `mdi::`/`lucide::` qualified so the icon set stays visible.
 #[allow(unknown_lints, qualified_waterui_path)]
-pub fn styling_block_12() {
+pub fn styling_block_14() {
     use waterui::prelude::theme_color::Accent;
 
     use waterui_icons_lucide as lucide;
@@ -414,7 +520,7 @@ pub fn styling_block_12() {
 }
 
 // ---------------------------------------------------------------------------
-// styling.md § "## Icons" — rust block 13/15
+// styling.md § "## Icons" — rust block 15/19
 //
 //     #[cfg(target_vendor = "apple")]
 //     use waterui_icons_sf_symbol as sf;
@@ -426,7 +532,7 @@ pub fn styling_block_12() {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// styling.md § "## Material 3 with the Hydrolysis renderer" — blocks 14–17
+// styling.md § "## Material 3 with the Hydrolysis renderer" — blocks 16–19
 // need the `hydrolysis` and `hydrolysis-m3` dev-dependencies, so they sit
 // behind the `compile-gate-tests` feature. They must never be executed.
 // ---------------------------------------------------------------------------
@@ -440,11 +546,11 @@ mod material3 {
     }
 
     // -----------------------------------------------------------------------
-    // styling.md § "## Material 3" — rust block 14/17
+    // styling.md § "## Material 3" — rust block 16/19
     // Listing: the style is a `hydrolysis::Style` value the entry point takes.
     // -----------------------------------------------------------------------
     #[test]
-    fn styling_block_14() {
+    fn styling_block_16() {
         {
             let env = Environment::new();
             hydrolysis::run(app, env, hydrolysis_m3::Material3::defaults()); // light+dark baseline
@@ -456,21 +562,21 @@ mod material3 {
     }
 
     // -----------------------------------------------------------------------
-    // styling.md § "## Material 3" — rust block 15/17
+    // styling.md § "## Material 3" — rust block 17/19
     // -----------------------------------------------------------------------
     fn view() -> impl View {
         vstack((text("demo"),))
     }
 
     #[waterui::test(view, theme = hydrolysis_m3::Material3::defaults(), offscreen)]
-    fn styling_block_15(_app: &mut waterui_testing::OffscreenApp) {}
+    fn styling_block_17(_app: &mut waterui_testing::OffscreenApp) {}
 
     // -----------------------------------------------------------------------
-    // styling.md § "## Material 3" — rust block 16/17
+    // styling.md § "## Material 3" — rust block 18/19
     // Scoped install: the `Style` trait's `install_tokens` on one environment.
     // -----------------------------------------------------------------------
     #[test]
-    fn styling_block_16() {
+    fn styling_block_18() {
         use hydrolysis::Style;
         use hydrolysis_m3::{Material3, MaterialColorScheme};
 
@@ -480,10 +586,10 @@ mod material3 {
     }
 
     // -----------------------------------------------------------------------
-    // styling.md § "## Material 3" — rust block 17/17
+    // styling.md § "## Material 3" — rust block 19/19
     // -----------------------------------------------------------------------
     #[test]
-    fn styling_block_17() {
+    fn styling_block_19() {
         use hydrolysis_m3::{Argb, Material3, MaterialColorMode, MaterialColorSource};
 
         let _ = Material3::with_seed(Argb(0xFF6750A4)); // light

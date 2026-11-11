@@ -19,3 +19,10 @@
 # Slot-only keys used by the locale-aware formatting snippet.
 "{date}" = "{date}"
 "{distance}" = "{distance}"
+
+# Context keys: the string plus `#context`.
+"Open#menu" = "Open"
+"Open#file" = "Open file"
+
+# Dual plural: the table is keyed by both placeholders' categories.
+"{#files} in {#folders}" = { one_one = "{files} file in {folders} folder", one_other = "{files} file in {folders} folders", other_one = "{files} files in {folders} folder", other_other = "{files} files in {folders} folders" }
