@@ -7,7 +7,7 @@ GPU and engine rendering primitives for WaterUI applications.
 `waterui-graphics` hosts the rendering contracts a WaterUI backend consumes:
 
 - **GpuContentView** - a view driven by a `GpuContent` producer drawing raw wgpu frames
-- **SceneView** - a view whose `SceneContent` records vector scenes into `waterui_graphics::draw::Recorder`
+- **SceneView** - a view whose `SceneContent` records vector scenes into `waterui_graphics::backend::draw::Recorder`
 - **ShaderPaintView** - a view painted by a WGSL fragment shader
 - **Gradients** - `Gradient` (linear, radial, angular, mesh), the signal-driven `MeshGradient`, and the canvas-drawn `AnimatedMeshGradient`, and the GPU-animated `FlowingGradient`
 - **OffscreenRenderer** - headless rendering of either kind of content to `OffscreenImage`
@@ -75,11 +75,11 @@ Per-view hooks also exist for input (`on_input`), the IME caret
 
 ### SceneView - Vector Scenes
 
-`SceneContent` records a vector scene into a `waterui_graphics::draw::Recorder` each frame;
+`SceneContent` records a vector scene into a `waterui_graphics::backend::draw::Recorder` each frame;
 the engine resources it names come from `RecordingResources`:
 
 ```rust
-use waterui::graphics::{RecordingResources, SceneContent, SceneView, draw};
+use waterui::graphics::backend::{RecordingResources, SceneContent, SceneView, draw};
 
 struct Graph;
 
@@ -139,7 +139,7 @@ pub trait GpuContent: Send + 'static {
 Frames that already live in GPU memory — a video decoder's `CVPixelBuffer`, an
 `AHardwareBuffer`, a dmabuf — are not drawn by content. An
 `ExternalFrameSource` imports their planes onto the host's device and
-publishes `cherenkov_gpu::interop::ExternalFrame`s, which become the content
+publishes `waterui_graphics::gpu::interop::ExternalFrame`s, which become the content
 of the `ExternalFrameView`'s own engine layer:
 
 ```rust
@@ -192,10 +192,11 @@ scene content on either the GPU or CPU (`OffscreenRenderer::cpu`).
 
 ### Re-exported Dependencies
 
-- `wgpu` - Direct access to wgpu types for `GpuContent` implementations
-- `cherenkov` - The scene engine (`Recorder`, `Engine`, `Display`)
-- `kurbo` - 2D geometry
-- `bytemuck` - Safe byte conversions for uniform buffers
+- `gpu::wgpu` - Direct access to wgpu types for `GpuContent` implementations
+- `gpu::{Display, FrameTime, Offscreen, OffscreenFormat, Readback, Gpu, interop}` - The engine types a `GpuContent` author names
+- `gpu::bytemuck` - Safe byte conversions for uniform buffers
+- `filter_view::{filters, Filter, Effect, ..}` - The filters `.filter(F)` takes and the types a custom `.effect(E)` is written in
+- `backend::{draw, cherenkov, filtrate, ..}` - The backend contract: recorder vocabulary, engine crates and the leaf and resource types a backend realizes
 
 ## Platform Support
 

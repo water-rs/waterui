@@ -16135,8 +16135,9 @@ mod transition {
             transition_context: waterui_core::transition::TransitionContext,
         ) -> impl waterui_backend_core::View {
             *self.frame.borrow_mut() = Some(transition_context.frame().clone());
-            let shader = waterui::graphics::ShaderEffect::new(include_str!("pixel_probe.wgsl"))
-                .expect("the probe shader is valid WGSL");
+            let shader =
+                waterui::graphics::filter_view::ShaderEffect::new(include_str!("pixel_probe.wgsl"))
+                    .expect("the probe shader is valid WGSL");
             waterui::graphics::WithEffect::new(content, shader)
         }
     }

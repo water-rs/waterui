@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use waterui::animation::Animation;
 use waterui::graphics::color::{Blue, Color, Green, Grey, Red};
-use waterui::graphics::filtrate::filters;
+use waterui::graphics::filter_view::filters;
 use waterui::layout::frame::Frame;
 use waterui::prelude::*;
 use waterui::reactive::binding;

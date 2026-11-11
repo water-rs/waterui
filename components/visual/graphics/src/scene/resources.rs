@@ -39,14 +39,14 @@
 //! silent miss; a source in a language the target does not draw is a
 //! [`ResourceError::Shader`] naming the language it got.
 //!
-//! [`SceneContent::build_scene`]: crate::scene_view::SceneContent::build_scene
-//! [`SceneResources`]: crate::resources::SceneResources
-//! [`RecordingResources`]: crate::resources::RecordingResources
-//! [`RecordingResources::name`]: crate::resources::RecordingResources::name
-//! [`Registered`]: crate::resources::Registered
-//! [`HeldResources`]: crate::resources::HeldResources
-//! [`ResourceError::Unsupported`]: crate::source::ResourceError::Unsupported
-//! [`ResourceError::Shader`]: crate::source::ResourceError::Shader
+//! [`SceneContent::build_scene`]: crate::backend::SceneContent::build_scene
+//! [`SceneResources`]: crate::backend::SceneResources
+//! [`RecordingResources`]: crate::backend::RecordingResources
+//! [`RecordingResources::name`]: crate::backend::RecordingResources::name
+//! [`Registered`]: crate::backend::Registered
+//! [`HeldResources`]: crate::backend::HeldResources
+//! [`ResourceError::Unsupported`]: crate::backend::ResourceError::Unsupported
+//! [`ResourceError::Shader`]: crate::backend::ResourceError::Shader
 
 use alloc::borrow::Cow;
 use alloc::rc::{Rc, Weak};
@@ -789,8 +789,8 @@ impl fmt::Debug for HeldResources {
 /// be held only by a set that nobody installs:
 ///
 /// ```compile_fail
-/// # use waterui_graphics::draw::ImageId;
-/// # use waterui_graphics::{RecordingResources, Registered};
+/// # use waterui_graphics::backend::draw::ImageId;
+/// # use waterui_graphics::backend::{RecordingResources, Registered};
 /// fn stale_id(resources: &RecordingResources<'_>, image: &Registered<ImageId>) {
 ///     // The id would be held by a temporary that drops at the semicolon.
 ///     let _ = resources.recording().name(image);
@@ -801,7 +801,7 @@ impl fmt::Debug for HeldResources {
 /// makes, hands it to every [`SceneContent::build_scene`] that records into
 /// that recording, and takes the set with [`finish`](Self::finish).
 ///
-/// [`SceneContent::build_scene`]: crate::scene_view::SceneContent::build_scene
+/// [`SceneContent::build_scene`]: crate::backend::SceneContent::build_scene
 pub struct RecordingResources<'a> {
     resources: &'a SceneResources,
     held: HashMap<usize, Rc<dyn HeldEntry>>,
@@ -838,7 +838,7 @@ impl RecordingResources<'_> {
 
     /// Holds every registration in `held` for this recording too — for a
     /// recording that draws another one, such as a picture recorded with
-    /// [`Picture::record_with`](crate::picture::Picture::record_with).
+    /// [`Picture::record_with`](crate::backend::Picture::record_with).
     ///
     /// # Panics
     ///
@@ -1048,7 +1048,7 @@ impl Table {
 /// [`ResourceError::OverBudget`], before anything is queued, never as a
 /// failed render.
 ///
-/// [`SceneContent::build_scene`]: crate::scene_view::SceneContent::build_scene
+/// [`SceneContent::build_scene`]: crate::backend::SceneContent::build_scene
 pub struct SceneResources {
     table: Rc<Table>,
 }
@@ -1060,7 +1060,7 @@ impl SceneResources {
     /// registration. A target that draws them is built with
     /// [`with_shaders`](Self::with_shaders).
     ///
-    /// [`ResourceError::Unsupported`]: crate::source::ResourceError::Unsupported
+    /// [`ResourceError::Unsupported`]: crate::backend::ResourceError::Unsupported
     pub fn new<B: SceneBackend>(backend: Rc<B>) -> Self {
         Self::over(backend, None)
     }
@@ -1362,7 +1362,7 @@ impl fmt::Debug for SceneResources {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub mod tests {
     use alloc::rc::Rc;
     use alloc::sync::Arc;
     use alloc::vec::Vec;

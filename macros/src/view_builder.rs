@@ -159,15 +159,16 @@ enum FinalWrap {
 }
 
 fn lower_block(block: &mut Block, watch_path: &TokenStream2) {
-    lower_block_with(block, watch_path, None);
+    lower_block_with(block, watch_path, &[]);
 }
 
-fn lower_block_with(block: &mut Block, watch_path: &TokenStream2, final_wrap: Option<FinalWrap>) {
+/// Lowers `block`, applying `wraps` (innermost first) to its tail value.
+fn lower_block_with(block: &mut Block, watch_path: &TokenStream2, wraps: &[FinalWrap]) {
     let last_index = block.stmts.len().checked_sub(1);
 
     for (index, stmt) in block.stmts.iter_mut().enumerate() {
         let is_last = Some(index) == last_index;
-        lower_stmt(stmt, watch_path, is_last, final_wrap);
+        lower_stmt(stmt, watch_path, is_last, wraps);
     }
 
     if (last_index.is_none()
@@ -181,21 +182,15 @@ fn lower_block_with(block: &mut Block, watch_path: &TokenStream2, final_wrap: Op
                     })
             )
         ))
-        && let Some(wrapper) = final_wrap
+        && !wraps.is_empty()
     {
-        let unit = parse_quote!(());
         block
             .stmts
-            .push(Stmt::Expr(wrap_plain_expr(&unit, wrapper), None));
+            .push(Stmt::Expr(wrap_plain_expr(parse_quote!(()), wraps), None));
     }
 }
 
-fn lower_stmt(
-    stmt: &mut Stmt,
-    watch_path: &TokenStream2,
-    is_last: bool,
-    final_wrap: Option<FinalWrap>,
-) {
+fn lower_stmt(stmt: &mut Stmt, watch_path: &TokenStream2, is_last: bool, wraps: &[FinalWrap]) {
     match stmt {
         Stmt::Local(local) => {
             if let Some(init) = &mut local.init {
@@ -209,7 +204,7 @@ fn lower_stmt(
         Stmt::Expr(expr, semicolon) => {
             if is_last && semicolon.is_none() {
                 let original = core::mem::replace(expr, parse_quote!(()));
-                *expr = lower_final_expr(original, watch_path, final_wrap);
+                *expr = lower_wrapped_expr(original, watch_path, wraps);
             } else {
                 lower_returns_in_expr(expr, watch_path);
             }
@@ -220,18 +215,27 @@ fn lower_stmt(
                     attrs: stmt_macro.attrs.clone(),
                     mac: stmt_macro.mac.clone(),
                 });
-                *stmt = Stmt::Expr(lower_final_expr(expr, watch_path, final_wrap), None);
+                *stmt = Stmt::Expr(lower_wrapped_expr(expr, watch_path, wraps), None);
             }
         }
     }
 }
 
-fn lower_final_expr(expr: Expr, watch_path: &TokenStream2, final_wrap: Option<FinalWrap>) -> Expr {
-    let lowered = lower_result_expr(expr, watch_path);
-    final_wrap.map_or_else(
-        || lowered.clone(),
-        |wrapper| wrap_plain_expr(&lowered, wrapper),
-    )
+/// Lowers `expr` and applies `wraps` (innermost first) to its value.
+///
+/// A plain block takes the wrappers on its own tail value instead of being
+/// passed whole as their argument: `Ok({ view })` would carry the braces the
+/// user wrote, at their span, into `unused_braces`.
+fn lower_wrapped_expr(expr: Expr, watch_path: &TokenStream2, wraps: &[FinalWrap]) -> Expr {
+    match expr {
+        Expr::Block(mut expr_block)
+            if !wraps.is_empty() && expr_block.label.is_none() && expr_block.attrs.is_empty() =>
+        {
+            lower_block_with(&mut expr_block.block, watch_path, wraps);
+            Expr::Block(expr_block)
+        }
+        expr => wrap_plain_expr(lower_result_expr(expr, watch_path), wraps),
+    }
 }
 
 fn lower_result_expr(mut expr: Expr, watch_path: &TokenStream2) -> Expr {
@@ -276,20 +280,26 @@ fn lower_if_expr(mut expr_if: ExprIf, watch_path: &TokenStream2) -> Expr {
     let signal_ident = Ident::new("__waterui_condition_signal", Span::call_site());
 
     let else_expr = if let Some((_, else_branch)) = expr_if.else_branch.take() {
-        lower_block_with(&mut expr_if.then_branch, watch_path, Some(FinalWrap::Ok));
-        wrap_lowered_expr(*else_branch, watch_path, FinalWrap::Err)
+        lower_block_with(&mut expr_if.then_branch, watch_path, &[FinalWrap::Ok]);
+        lower_wrapped_expr(*else_branch, watch_path, &[FinalWrap::Err])
     } else {
-        lower_block_with(&mut expr_if.then_branch, watch_path, Some(FinalWrap::Some));
+        lower_block_with(&mut expr_if.then_branch, watch_path, &[FinalWrap::Some]);
         parse_quote!(::core::option::Option::None)
     };
     let then_branch = expr_if.then_branch;
+    // A lowered `else` block is already the branch's block; bracing it again
+    // would nest the user's braces in ours.
+    let else_branch = match else_expr {
+        Expr::Block(else_block) => quote!(#else_block),
+        else_expr => quote!({ #else_expr }),
+    };
 
     match *expr_if.cond {
         Expr::Let(ExprLet { pat, expr, .. }) => syn::parse2(quote! {{
             let #signal_ident = #expr;
             #watch_path(#signal_ident.clone(), move |#condition_ident| {
                 #(#attrs)*
-                if let #pat = #condition_ident #then_branch else { #else_expr }
+                if let #pat = #condition_ident #then_branch else #else_branch
             })
         }})
         .expect("view_builder lowered if-let expression must stay valid Rust"),
@@ -297,7 +307,7 @@ fn lower_if_expr(mut expr_if: ExprIf, watch_path: &TokenStream2) -> Expr {
             let #signal_ident = #condition;
             #watch_path(#signal_ident.clone(), move |#condition_ident| {
                 #(#attrs)*
-                if #condition_ident #then_branch else { #else_expr }
+                if #condition_ident #then_branch else #else_branch
             })
         }})
         .expect("view_builder lowered if expression must stay valid Rust"),
@@ -335,30 +345,24 @@ fn wrap_match_arm_body(
     index: usize,
     arm_count: usize,
 ) -> Expr {
-    let mut wrapped = lower_result_expr(expr, watch_path);
+    // Arm `i` of `n` is `Err^i(Ok(body))`, the last arm `Err^i(body)`, so
+    // every arm has the type of the nested `Result` the arms unify to.
+    let wraps: Vec<FinalWrap> = (index + 1 != arm_count)
+        .then_some(FinalWrap::Ok)
+        .into_iter()
+        .chain(core::iter::repeat_n(FinalWrap::Err, index))
+        .collect();
 
-    if index + 1 != arm_count {
-        wrapped = wrap_plain_expr(&wrapped, FinalWrap::Ok);
-    }
-
-    for _ in 0..index {
-        wrapped = wrap_plain_expr(&wrapped, FinalWrap::Err);
-    }
-
-    wrapped
+    lower_wrapped_expr(expr, watch_path, &wraps)
 }
 
-fn wrap_lowered_expr(expr: Expr, watch_path: &TokenStream2, wrapper: FinalWrap) -> Expr {
-    let lowered = lower_result_expr(expr, watch_path);
-    wrap_plain_expr(&lowered, wrapper)
-}
-
-fn wrap_plain_expr(expr: &Expr, wrapper: FinalWrap) -> Expr {
-    match wrapper {
+/// Applies `wraps` to `expr`, innermost first.
+fn wrap_plain_expr(expr: Expr, wraps: &[FinalWrap]) -> Expr {
+    wraps.iter().fold(expr, |expr, wrapper| match wrapper {
         FinalWrap::Some => parse_quote!(::core::option::Option::Some(#expr)),
         FinalWrap::Ok => parse_quote!(::core::result::Result::Ok(#expr)),
         FinalWrap::Err => parse_quote!(::core::result::Result::Err(#expr)),
-    }
+    })
 }
 
 fn lower_returns_in_expr(expr: &mut Expr, watch_path: &TokenStream2) {
