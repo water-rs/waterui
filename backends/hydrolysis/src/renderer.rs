@@ -442,6 +442,9 @@ pub struct MaterializedPlatformView<E: crate::text::TextEngine> {
     /// The resolved placement (window-space frame, clip, paint-order
     /// rank, visibility).
     pub(crate) placement: crate::platform_view::PlatformViewPlacement,
+    /// The view's paint chain when wrapper motions move it: the view
+    /// follows their tracks frame by frame.
+    pub(crate) following: Option<FollowedChain>,
     /// The retained node that emitted the view.
     #[cfg(any(test, hydrolysis_hwui))]
     pub(crate) owner: Weak<crate::renderer::mount::NodeCell<E>>,
@@ -453,6 +456,29 @@ pub struct MaterializedPlatformView<E: crate::text::TextEngine> {
     /// binds the node, the parameter is phantom.
     #[cfg(not(any(test, hydrolysis_hwui)))]
     _phantom: std::marker::PhantomData<fn() -> E>,
+}
+
+/// A platform view's paint chain under wrapper motions: where the view
+/// sits and the motions that move it, so a frame places it on their tracks
+/// (water-rs/waterui#2203).
+pub struct FollowedChain {
+    /// The placement the view registered at.
+    pub(crate) placement: Rc<mount::Placement>,
+    /// The view's bounds in that placement's local space.
+    pub(crate) local: kurbo::Rect,
+    /// The transform motions on the chain, nearest the window first.
+    pub(crate) motions: Vec<Rc<mount::motion::LayerMotion>>,
+}
+
+impl FollowedChain {
+    /// Whether a track on the chain still runs at `now`.
+    pub(crate) fn runs(&self, now: Instant) -> bool {
+        self.motions.iter().any(|layer| {
+            layer
+                .motions()
+                .any(|motion| motion.status().is_running(now))
+        })
+    }
 }
 
 /// The GPU-free dispatch core: everything the retained view tree's build,
@@ -1567,11 +1593,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
     /// The flat lists at a frame's end: rebuilt when a registry or
     /// placement write made them stale, or once when a wrapper motion's
-    /// track ended — never because a track moved, so a frame never samples
-    /// the motions the engine runs (water-rs/waterui#2203).
+    /// track ended — never because a track moved, so a frame samples the
+    /// motions the engine runs only where a platform view, which the host
+    /// places, is drawn under one (water-rs/waterui#2203).
     pub(crate) fn frame_registries(&mut self) {
         self.placement_clock.settle(self.frame_instant);
         self.materialize_registries();
+        self.follow_platform_views();
     }
 
     /// The focused text-input target's identity and window-space frame

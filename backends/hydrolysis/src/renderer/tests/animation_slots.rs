@@ -19,9 +19,10 @@ fn slide(source: &Binding<i32>, index: i32) -> impl Signal<Output = f32> {
 
 /// An opacity fade is an engine-run motion (water-rs/waterui#2203): the
 /// host asks for no refresh of its own, and the engine's sample of the
-/// fade's layer track reports the rate until the fade finishes.
+/// fade's layer track reports the slow rate until the fade finishes — a
+/// fade moves no geometry, so 30–60 Hz reads smooth.
 #[test]
-fn opacity_fade_refresh_comes_from_the_engine_until_the_fade_finishes() {
+fn opacity_fade_refreshes_at_the_slow_rate_until_the_fade_finishes() {
     let mut renderer = test_renderer();
     let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 200.0, 200.0);
@@ -45,7 +46,10 @@ fn opacity_fade_refresh_comes_from_the_engine_until_the_fade_finishes() {
     let mid = started + Duration::from_millis(50);
     renderer.set_frame_instant(mid);
     assert_eq!(renderer.animation_refresh_range(), None);
-    assert!(renderer.mirror().sample(mid).rate.is_some());
+    assert_eq!(
+        renderer.mirror().sample(mid).rate,
+        Some(cherenkov_record::tree::RATE_SLOW)
+    );
 
     let settled = started + Duration::from_secs(2);
     renderer.set_frame_instant(settled);

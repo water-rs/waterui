@@ -32,7 +32,7 @@ use super::protocol::{MESH_BAND_PATCHES, NONE, Op, effect_kind};
 use super::resources::{Kind, SharedRegistry};
 use super::{HwuiError, HwuiSurface, HwuiTarget};
 use cherenkov_record::TextLayoutId;
-use cherenkov_record::{Fixed, Live, Shared, SurfaceId};
+use cherenkov_record::{Animatable, Fixed, Live, Shared, SurfaceId};
 use std::cell::Cell;
 
 use super::text::{
@@ -53,7 +53,7 @@ const fn color(r: f32, g: f32, b: f32, a: f32) -> WorkingColor {
     }
 }
 
-const fn prop<T>(target: T) -> Prop<T> {
+const fn prop<T: Animatable>(target: T) -> Prop<T> {
     Prop {
         target,
         animation: None,

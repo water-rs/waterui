@@ -9,7 +9,9 @@ use kurbo::{Affine, Vec2};
 use crate::Instant;
 use crate::Target;
 use crate::WorkingColor;
-use crate::animation::{Animation, Keyframes, Repeat};
+use nami_core::watcher::Metadata;
+
+use crate::animation::{Animatable, Animation, Keyframes, Repeat};
 use crate::backdrop::BackdropSample;
 use crate::display_list::{Edit, Picture, SlotUpdate};
 use crate::projective::Projective;
@@ -73,19 +75,93 @@ impl BackdropId {
 
 /// A property target plus the animation that reaches it.
 #[derive(Clone, Debug)]
-pub struct Prop<T> {
+pub struct Prop<T: Animatable> {
     /// The value the property moves to.
     pub target: T,
     /// The animation applied, if any; `None` snaps.
     pub animation: Option<Animation>,
-    /// The instant the animation starts at, on the host's clock. `None`
-    /// keeps the engine's own timing: the track starts at the first frame
-    /// that samples it, and a retarget continues from the previous track's
-    /// last sample. `Some(t)` starts the track at `t`, and a retarget
-    /// continues from the previous track's value and velocity evaluated at
-    /// `t`. A `start` without an `animation` is ignored.
-    pub start: Option<Instant>,
+    /// When, on the host's clock, the animation starts, and from where.
+    /// `None` keeps the engine's own timing: the track starts at the first
+    /// frame that samples it, and a retarget continues from the previous
+    /// track's last sample. A `start` without an `animation` is ignored.
+    pub start: Option<TrackStart<T>>,
 }
+
+/// The instant an animated change's track starts at on the host's clock,
+/// and the state it starts from.
+#[derive(Clone, Debug)]
+pub struct TrackStart<T: Animatable> {
+    /// The instant the track starts at.
+    pub at: Instant,
+    /// The position and velocity the track starts from at `at`. `None`
+    /// continues the previous track evaluated at `at` — its value and
+    /// velocity there, or the property's value at rest. `Some` starts the
+    /// track from exactly this state whatever ran before: a host that
+    /// binds a property while its own track runs hands the binding that
+    /// whole track. Boxed: a host hands one only when it binds a running
+    /// track, and every layer op would otherwise carry its lanes inline.
+    pub origin: Option<Box<TrackOrigin<T>>>,
+}
+
+impl<T: Animatable> TrackStart<T> {
+    /// A start at `at` that continues whatever ran before.
+    #[must_use]
+    pub const fn at(at: Instant) -> Self {
+        Self { at, origin: None }
+    }
+
+    /// The start a bound change's metadata names: its [`AnimationStart`],
+    /// with the [`AnimationOrigin`] next to it, if any.
+    #[must_use]
+    pub fn of(metadata: &Metadata) -> Option<Self> {
+        let at = metadata.try_get::<AnimationStart>()?.0;
+        Some(Self {
+            at,
+            origin: metadata
+                .try_get::<AnimationOrigin<T>>()
+                .map(|origin| Box::new(origin.0)),
+        })
+    }
+
+    /// The same start in another property's lanes, through `lanes`: the
+    /// start of one axis of a two-axis property.
+    pub(crate) fn map<U: Animatable>(&self, lanes: impl Fn(T::Lanes) -> U::Lanes) -> TrackStart<U> {
+        TrackStart {
+            at: self.at,
+            origin: self.origin.as_ref().map(|origin| {
+                Box::new(TrackOrigin {
+                    from: lanes(origin.from),
+                    velocity: lanes(origin.velocity),
+                })
+            }),
+        }
+    }
+}
+
+/// A track's state at its start: its position and its velocity per second,
+/// lane by lane.
+#[derive(Clone, Copy)]
+pub struct TrackOrigin<T: Animatable> {
+    /// The position lanes the track starts from.
+    pub from: T::Lanes,
+    /// The velocity lanes the track starts with, per second.
+    pub velocity: T::Lanes,
+}
+
+impl<T: Animatable> std::fmt::Debug for TrackOrigin<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TrackOrigin")
+            .field("from", &self.from.as_ref())
+            .field("velocity", &self.velocity.as_ref())
+            .finish()
+    }
+}
+
+/// The state a bound change's track starts from, carried in the change's
+/// `Context` metadata next to its [`AnimationStart`]: the change hands the
+/// binding a track already running on the host's clock.
+#[derive(Clone, Copy, Debug)]
+pub struct AnimationOrigin<T: Animatable>(pub TrackOrigin<T>);
 
 /// One axis of a two-axis layer property — translation or scale — which
 /// animates per axis, so x and y can run different animations.

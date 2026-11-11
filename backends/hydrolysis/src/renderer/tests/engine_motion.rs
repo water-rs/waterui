@@ -69,19 +69,30 @@ fn wrappers(renderer: &HydrolysisRenderer<ParleyEngine>) -> Wrappers {
 /// `target` `elapsed` into `animation`: the framework's own evaluation of
 /// the change, independent of the motion's bookkeeping.
 fn evaluated(animation: &Animation, from: f64, target: f64, elapsed: Duration) -> f64 {
+    evaluated_from(animation, (from, 0.0), target, elapsed).0
+}
+
+/// [`evaluated`] from a start that already moves: `(position, velocity)`
+/// `elapsed` into the track.
+fn evaluated_from(
+    animation: &Animation,
+    (from, velocity): (f64, f64),
+    target: f64,
+    elapsed: Duration,
+) -> (f64, f64) {
     let timing = engine_animation(animation)
         .timing()
         .expect("a curve or spring animation has a timing");
-    let (mut position, mut velocity) = ([0.0], [0.0]);
+    let (mut position, mut rate) = ([0.0], [0.0]);
     timing.sample_lanes(
         &[from],
-        &[0.0],
+        &[velocity],
         &[target],
         elapsed.as_secs_f64(),
         &mut position,
-        &mut velocity,
+        &mut rate,
     );
-    position[0]
+    (position[0], rate[0])
 }
 
 /// Every wrapper kind under its own animation — the scale's axes under
@@ -264,4 +275,127 @@ fn hit_testing_places_the_target_where_the_engine_draws_it() {
         settled.x0 > rest.x0 && settled.y0 > rest.y0,
         "the probe rests moved: {rest:?} -> {settled:?}"
     );
+}
+
+/// A device remount in the middle of a spring hands the fresh layer the
+/// whole track — origin, velocity, animation and start — so the engine
+/// keeps running the spring the host evaluates. The spring is retargeted
+/// mid-flight first, so the track it runs at the remount starts moving:
+/// a binding that re-anchored at rest would drop that velocity.
+#[test]
+#[allow(
+    clippy::float_cmp,
+    reason = "both sides run the same evaluator on the same track at the same instant; any difference is a parity defect, not rounding"
+)]
+fn a_remount_mid_spring_keeps_the_track_whole() {
+    let mut renderer = test_renderer();
+    let env = test_environment();
+    let bounds = Rect::new(0.0, 0.0, 320.0, 320.0);
+    let phase = Binding::container(false);
+    let lift = Animation::spring(180.0, 14.0);
+    let view = vstack((button("Probe").action(|| {}).offset(
+        0.0,
+        phase
+            .map(|on| if on { 24.0_f32 } else { 0.0 })
+            .with(lift.clone()),
+    ),));
+
+    capture_root_window(&mut renderer, view, &env, bounds);
+    renderer.commit_mirror();
+    let start: Instant = renderer.frame_instant();
+    phase.set(true);
+    renderer.commit_mirror();
+
+    // Retargeted mid-flight: the second track starts moving.
+    let retarget = start + Duration::from_millis(60);
+    renderer.set_frame_instant(retarget);
+    phase.set(false);
+    renderer.commit_mirror();
+
+    let remount = start + Duration::from_millis(120);
+    renderer.set_frame_instant(remount);
+    renderer.remount_mirror();
+    renderer.commit_mirror();
+
+    let found = wrappers(&renderer);
+    let [(layer, motion, placement)] = found.transforms.as_slice() else {
+        panic!("one offset wrapper");
+    };
+    let y = motion.translation_axes()[1]
+        .clone()
+        .expect("the offset's y axis");
+    let first = evaluated_from(&lift, (0.0, 0.0), 24.0, retarget - start);
+    assert_ne!(first.1, 0.0, "the spring moves at the retarget");
+    for ms in [120, 133, 150, 200, 300, 500, 3_000] {
+        let at = start + Duration::from_millis(ms);
+        renderer.set_frame_instant(at);
+        renderer.mirror().sample(at);
+        assert_eq!(
+            renderer.mirror().layer(*layer).transform,
+            motion.matrix(placement.transform(), Some(at)),
+            "the remounted layer's transform at {ms}ms"
+        );
+        let (expected, _) = evaluated_from(&lift, first, 0.0, at - retarget);
+        let expected = if y.status().is_running(at) {
+            expected
+        } else {
+            0.0
+        };
+        assert_eq!(
+            y.value_at(at),
+            expected,
+            "the y track at {ms}ms is the retargeted spring, velocity kept"
+        );
+    }
+}
+
+/// A platform view under a moving offset is placed on the track every
+/// frame: the host places the view, so it follows the motion the engine
+/// draws its layer with, and rests where the track ends.
+#[test]
+fn a_platform_view_under_a_moving_offset_follows_the_track() {
+    let mut env = test_environment();
+    env.insert(crate::platform_view::PlatformViewSink::new());
+    let phase = Binding::container(false);
+    let slide = Animation::linear(Duration::from_millis(200));
+    let builder = {
+        let phase = phase.clone();
+        let slide = slide.clone();
+        waterui_core::handler::AnyViewBuilder::<AnyView>::new(move || {
+            AnyView::new(
+                AnyView::new(waterui_core::Native::new(
+                    crate::platform_view::PlatformView::new("probe"),
+                ))
+                .size(100.0, 100.0)
+                .offset(
+                    phase
+                        .clone()
+                        .map(|on| if on { 80.0_f32 } else { 0.0 })
+                        .with(slide.clone()),
+                    0.0,
+                ),
+            )
+        })
+    };
+    let mut runtime =
+        crate::HeadlessRuntime::new_for_tests(env, builder, 400, 400, MinimalTestTheme::default());
+    let start = std::time::Instant::now();
+    let _ = runtime.pump_at(true, start);
+    let placed_x = |runtime: &crate::HeadlessRuntime| {
+        let [view] = runtime.renderer().materialized_platform_views.as_slice() else {
+            panic!("the probe view is placed exactly once");
+        };
+        f64::from(view.placement.x())
+    };
+    let rest = placed_x(&runtime);
+
+    phase.set(true);
+    for ms in [16, 50, 100, 150, 184] {
+        let at = start + Duration::from_millis(ms);
+        let _ = runtime.pump_at(true, at);
+        let expected = rest + evaluated(&slide, 0.0, 80.0, at - start);
+        approx::assert_relative_eq!(placed_x(&runtime), expected, epsilon = 1e-3);
+    }
+    let _ = runtime.pump_at(true, start + Duration::from_millis(400));
+    approx::assert_relative_eq!(placed_x(&runtime), rest + 80.0, epsilon = 1e-3);
 }

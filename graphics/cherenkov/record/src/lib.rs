@@ -88,8 +88,8 @@ pub use crate::material::{
     OuterExtentError, UnionSmoothing, UnionSmoothingError,
 };
 pub use crate::ops::{
-    AnimationStart, Axis, BackdropId, ChangeSet, ContentOp, Install, KeyframeProp, LayerId,
-    LayerKeyframes, LayerOp, Op, Prop, SurfaceId,
+    AnimationOrigin, AnimationStart, Axis, BackdropId, ChangeSet, ContentOp, Install, KeyframeProp,
+    LayerId, LayerKeyframes, LayerOp, Op, Prop, SurfaceId, TrackOrigin, TrackStart,
 };
 pub use crate::paint::{
     ColorStop, Extend, ImageId, ImagePattern, Interpolation, LinearGradient,

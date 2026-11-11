@@ -78,12 +78,20 @@ const fn lane(value: &mut Vec2, axis: Axis) -> &mut f64 {
     }
 }
 
-/// `prop`'s value on one axis, under the same animation and start.
-const fn axis_prop(prop: &Prop<Vec2>, axis: Axis) -> Prop<f64> {
+/// `prop`'s value on one axis, under the same animation and start, from
+/// that axis's lane of the start's origin.
+fn axis_prop(prop: &Prop<Vec2>, axis: Axis) -> Prop<f64> {
+    let lane = match axis {
+        Axis::X => 0,
+        Axis::Y => 1,
+    };
     Prop {
         target: axis.of(prop.target),
         animation: prop.animation,
-        start: prop.start,
+        start: prop
+            .start
+            .as_ref()
+            .map(|start| start.map::<f64>(|lanes: [f64; 2]| [lanes[lane]])),
     }
 }
 
@@ -350,7 +358,7 @@ impl LayerNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ops::LayerOp;
+    use crate::ops::{LayerOp, TrackStart};
     use crate::{Curve, LayerId, SurfaceTree};
     use std::f64::consts::{PI, TAU};
     use std::time::Duration;
@@ -506,7 +514,7 @@ mod tests {
             Prop {
                 target: 2.,
                 animation: Some(curve),
-                start: Some(start),
+                start: Some(TrackStart::at(start)),
             },
         ));
         tree.apply(LayerOp::ScaleAxis(
@@ -515,7 +523,7 @@ mod tests {
             Prop {
                 target: 3.,
                 animation: Some(spring),
-                start: Some(later),
+                start: Some(TrackStart::at(later)),
             },
         ));
         for ms in [0, 50, 100, 250, 400, 600, 2000] {
@@ -541,7 +549,7 @@ mod tests {
             Prop {
                 target,
                 animation: Some(animation),
-                start: Some(start),
+                start: Some(TrackStart::at(start)),
             },
         ));
         for axis in Axis::BOTH {
@@ -551,7 +559,7 @@ mod tests {
                 Prop {
                     target: axis.of(target),
                     animation: Some(animation),
-                    start: Some(start),
+                    start: Some(TrackStart::at(start)),
                 },
             ));
         }
@@ -581,7 +589,7 @@ mod tests {
                     Prop {
                         target,
                         animation: Some(curve),
-                        start: Some(start),
+                        start: Some(TrackStart::at(start)),
                     },
                 ));
             }

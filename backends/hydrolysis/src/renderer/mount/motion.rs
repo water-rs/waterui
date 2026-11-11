@@ -13,7 +13,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
-use cherenkov_record::{Animatable, Animation, AnimationStart, Lanes, Live, TransformComponents};
+use cherenkov_record::{
+    Animatable, Animation, AnimationOrigin, AnimationStart, Lanes, Live, TrackOrigin,
+    TransformComponents,
+};
 use nami::Signal;
 use nami::watcher::{BoxWatcherGuard, Context, Metadata, WatcherManager, WatcherManagerGuard};
 use waterui_backend_core::frame_signals::FrameSignals;
@@ -195,9 +198,10 @@ struct MotionCell<T: Animatable> {
 /// It follows `signal` from construction on. Every change starts a track at
 /// the frame clock's instant, from the previous track's value and velocity
 /// at that instant, and hands the engine the same change through
-/// [`Motion::live`]: the value with the change's animation and an
-/// [`AnimationStart`] at that instant. A change that names no animation
-/// snaps.
+/// [`Motion::live`]: the value with the change's animation, an
+/// [`AnimationStart`] at that instant and the track's [`AnimationOrigin`],
+/// so the engine starts the very track this side holds. A change that
+/// names no animation snaps.
 pub struct Motion<T: Animatable>(Rc<MotionCell<T>>);
 
 impl<T: Animatable> Clone for Motion<T> {
@@ -303,30 +307,20 @@ impl<T: Animatable + PartialEq> Motion<T> {
 
     /// Hands a newly bound layer property the running track, if one runs.
     ///
-    /// A binding starts at the value [`Self::live`] read — the track's value
-    /// at that instant — and receives later changes only, so the track
-    /// re-anchors at the frame clock's instant: from its value there, at
-    /// rest, toward the same target under the same animation. The host's
-    /// copy re-anchors with it, so both still evaluate the same track.
+    /// A binding starts at the value [`Self::live`] read and receives later
+    /// changes only, so the running track reaches it as one: its origin,
+    /// velocity, animation and start, whole — a layer bound mid-spring (a
+    /// first mount, a device remount) runs the very track the host
+    /// evaluates, velocity included.
     pub fn rebind(&self) {
         let now = self.0.frames.frame_clock();
-        let mut state = self.0.state.borrow_mut();
+        let state = self.0.state.borrow();
         let Some(track) = state.track.filter(|_| self.0.status.is_running(now)) else {
             return;
         };
-        // The binding read the value as `T`, so the anchor goes through it.
-        let from = state.value_at(now).into_lanes();
-        let anchored = Track {
-            from,
-            velocity: T::Lanes::zero(),
-            animation: track.animation,
-            start: now,
-        };
-        state.track = Some(anchored);
         let target = state.target;
         drop(state);
-        self.0.status.until.set(Some(anchored.until(target)));
-        self.notify(target, Some(track.animation), now);
+        self.notify(target, Some(track));
     }
 
     /// Applies a change of the property to `target` under `animation`,
@@ -365,14 +359,21 @@ impl<T: Animatable + PartialEq> Motion<T> {
                 .settle_record
                 .set((rest > 0.0) != (reach_after > 0.0));
         }
-        self.notify(target, animation, now);
+        self.notify(target, track);
     }
 
-    /// Tells the bound layer properties: `target`, animated from `now` by
-    /// `animation`, or snapped.
-    fn notify(&self, target: T, animation: Option<Animation>, now: Instant) {
-        let metadata = animation.map_or_else(Metadata::new, |animation| {
-            Metadata::new().with(animation).with(AnimationStart(now))
+    /// Tells the bound layer properties: `target`, reached by `track` —
+    /// its animation, its start and the state it starts from, so every
+    /// binding runs the host's track exactly — or snapped.
+    fn notify(&self, target: T, track: Option<Track<T>>) {
+        let metadata = track.map_or_else(Metadata::new, |track| {
+            Metadata::new()
+                .with(track.animation)
+                .with(AnimationStart(track.start))
+                .with(AnimationOrigin(TrackOrigin::<T> {
+                    from: track.from,
+                    velocity: track.velocity,
+                }))
         });
         self.0.watchers.notify_owned(Context::new(target, metadata));
     }

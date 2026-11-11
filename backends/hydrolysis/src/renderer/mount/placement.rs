@@ -391,13 +391,38 @@ impl Placement {
         self.clock.bump();
     }
 
-    /// The node's transform into its parent's space with its motion at the
-    /// clock's instant — the layer's transform as the engine draws it then.
-    fn local_transform(&self) -> kurbo::Affine {
+    /// The node's transform into its parent's space with its motion at
+    /// `at` (at rest with `None`) — the layer's transform as the engine
+    /// draws it then.
+    fn local_transform(&self, at: Option<Instant>) -> kurbo::Affine {
         let transform = self.transform.get();
-        self.motion.borrow().as_ref().map_or(transform, |motion| {
-            motion.matrix(transform, self.clock.instant())
-        })
+        self.motion
+            .borrow()
+            .as_ref()
+            .map_or(transform, |motion| motion.matrix(transform, at))
+    }
+
+    /// The motions moving this placement's paint chain, itself included:
+    /// the wrappers whose tracks carry content drawn here.
+    pub fn paint_chain_motions(&self) -> Vec<Rc<LayerMotion>> {
+        self.ancestors(false)
+            .iter()
+            .map(Rc::as_ref)
+            .chain(std::iter::once(self))
+            .filter_map(|placement| placement.motion.borrow().clone())
+            .collect()
+    }
+
+    /// The paint chain's `(transform, clip, alpha)` with every motion on it
+    /// evaluated at `at`, uncached — what the engine draws for a frame
+    /// presented then, for the one consumer placed per frame: a platform
+    /// view under a running motion.
+    pub fn resolved_paint_chain_at(
+        &self,
+        at: Instant,
+    ) -> (kurbo::Affine, Option<kurbo::Rect>, f32) {
+        let resolved = self.resolve_chain(false, Some(at));
+        (resolved.transform, resolved.clip, resolved.alpha)
     }
 
     /// Sets the clip bounding box in the node's own space.
@@ -499,8 +524,10 @@ impl Placement {
     /// Every overscroll stretch on the paint chain down to this placement,
     /// outermost first, as a platform view at this placement is warped by
     /// them: the window's logical units are the device space the
-    /// parameters carry.
-    pub fn resolved_stretches(&self) -> Vec<ResolvedStretch> {
+    /// parameters carry. Motions on the chain evaluate at `at`; `None`
+    /// evaluates them at the clock's instant.
+    pub fn resolved_stretches(&self, at: Option<Instant>) -> Vec<ResolvedStretch> {
+        let at = at.or_else(|| self.clock.instant());
         let ancestors = self.ancestors(false);
         let mut transform = kurbo::Affine::IDENTITY;
         let mut stretches = Vec::new();
@@ -510,7 +537,7 @@ impl Placement {
             .map(Rc::as_ref)
             .chain(std::iter::once(self))
         {
-            transform *= placement.local_transform();
+            transform *= placement.local_transform(at);
             if let Some(shown) = placement.stretch.get() {
                 stretches.push(ResolvedStretch {
                     params: shown.params(transform),
@@ -543,26 +570,28 @@ impl Placement {
     /// the clock epoch, so any placement write anywhere in the window
     /// invalidates it.
     fn resolution(&self, hit: bool) -> ChainResolution {
+        let at = self.clock.instant();
         if !hit {
-            return self.resolve_chain(false);
+            return self.resolve_chain(false, at);
         }
         let epoch = self.clock.epoch();
-        if let Some((at, resolved)) = *self.resolved_hit.borrow()
-            && at == epoch
+        if let Some((cached, resolved)) = *self.resolved_hit.borrow()
+            && cached == epoch
         {
             return resolved;
         }
-        let resolved = self.resolve_chain(true);
+        let resolved = self.resolve_chain(true, at);
         *self.resolved_hit.borrow_mut() = Some((epoch, resolved));
         resolved
     }
 
     /// Composes transform, clip, alpha and removed kinds down the chain —
-    /// `hit` walks the structural parents, otherwise the paint parents.
+    /// `hit` walks the structural parents, otherwise the paint parents —
+    /// with every motion on the chain at `at`.
     ///
     /// The walk collects `Rc` clones bottom-up then composes top-down, so
     /// no level can disappear mid-resolve.
-    fn resolve_chain(&self, hit: bool) -> ChainResolution {
+    fn resolve_chain(&self, hit: bool, at: Option<Instant>) -> ChainResolution {
         let ancestors = self.ancestors(hit);
         let mut transform = kurbo::Affine::IDENTITY;
         let mut clip: Option<kurbo::Rect> = None;
@@ -575,7 +604,7 @@ impl Placement {
             .chain(std::iter::once(self))
         {
             removes = removes.union(placement.removes.get());
-            transform *= placement.local_transform();
+            transform *= placement.local_transform(at);
             alpha *= placement.alpha.get();
             if let Some(rect) = placement.clip.get() {
                 // The clip lives in the placement's own frame, outside its

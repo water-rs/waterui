@@ -79,12 +79,12 @@ impl State {
 #[cfg(test)]
 mod tests {
     use crate::ops::{LayerOp, Prop};
-    use crate::{Curve, Instant, LayerId, Projective, SurfaceTree};
+    use crate::{Animatable, Curve, Instant, LayerId, Projective, SurfaceTree};
     use kurbo::{Affine, Vec2};
     use std::f64::consts::PI;
     use std::time::Duration;
 
-    fn snap<T>(target: T) -> Prop<T> {
+    fn snap<T: Animatable>(target: T) -> Prop<T> {
         Prop {
             target,
             animation: None,

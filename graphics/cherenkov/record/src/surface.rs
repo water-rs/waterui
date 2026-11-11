@@ -17,15 +17,15 @@ use std::ops::{Index, IndexMut};
 use std::rc::{Rc, Weak};
 
 use kurbo::{Affine, Size, Vec2};
-use nami_core::watcher::Context;
+use nami_core::watcher::{Context, Metadata};
 use rustc_hash::{FxHashMap, FxHashSet};
 use waterui_contract::contract_violation;
 
 use crate::Instant;
 use crate::animation::{Animation, KeyframeAnimation};
 use crate::ops::{
-    AnimationStart, Axis, BackdropId, ChangeSet, ContentOp, Install, KeyframeProp, LayerId,
-    LayerKeyframes, LayerOp, Op, Prop, SurfaceId,
+    Axis, BackdropId, ChangeSet, ContentOp, Install, KeyframeProp, LayerId, LayerKeyframes,
+    LayerOp, Op, Prop, SurfaceId, TrackStart,
 };
 use crate::projective::Projective;
 use crate::record::{Binding, Content, ContentSpare, Live, LiveOwner, SampleFlag};
@@ -791,7 +791,8 @@ impl<T: Target> Shared<T> {
     }
 
     /// Binds `live` so its later changes queue `op(layer, value, animation,
-    /// start)` and notify the queue, returning the value the binding starts
+    /// metadata)` — the change's metadata names its start — and notify the
+    /// queue, returning the value the binding starts
     /// from: the signal's value now. Replaces the property's previous
     /// binding. While a transaction is open the changes queue through
     /// [`Shared::deferred`] for the outermost commit to resolve.
@@ -805,7 +806,7 @@ impl<T: Target> Shared<T> {
     ) -> V
     where
         V: 'static,
-        F: Fn(LayerId, V, Option<Animation>, Option<Instant>) -> LayerOp + 'static,
+        F: Fn(LayerId, V, Option<Animation>, &Metadata) -> LayerOp + 'static,
     {
         Self::bind_keyframed(shared, layer, kind, live, op, None)
     }
@@ -824,7 +825,7 @@ impl<T: Target> Shared<T> {
     ) -> V
     where
         V: 'static,
-        F: Fn(LayerId, V, Option<Animation>, Option<Instant>) -> LayerOp + 'static,
+        F: Fn(LayerId, V, Option<Animation>, &Metadata) -> LayerOp + 'static,
     {
         // The watcher carries the generation the binding will be kept
         // under, taken before the watch starts: it fires only while the
@@ -878,14 +879,13 @@ impl<T: Target> Shared<T> {
     ) -> impl Fn(Context<V>) + 'static
     where
         V: 'static,
-        F: Fn(LayerId, V, Option<Animation>, Option<Instant>) -> LayerOp + 'static,
+        F: Fn(LayerId, V, Option<Animation>, &Metadata) -> LayerOp + 'static,
     {
         let weak = Rc::downgrade(shared);
         move |context: Context<V>| {
-            let track = context.metadata().try_get::<KeyframeAnimation>();
-            let animation = context.metadata().try_get::<Animation>();
-            let start = context.metadata().try_get::<AnimationStart>();
-            let target = context.into_value();
+            let (target, metadata) = context.into_parts();
+            let track = metadata.try_get::<KeyframeAnimation>();
+            let animation = metadata.try_get::<Animation>();
             if let Some(shared) = weak.upgrade() {
                 // `op` runs user code — a clip's `Shape::into_data` — so
                 // the op is built before the surface is borrowed.
@@ -920,7 +920,7 @@ impl<T: Target> Shared<T> {
                             repeat,
                         },
                     ),
-                    None => op(layer, target, animation, start.map(|s| s.0)),
+                    None => op(layer, target, animation, &metadata),
                 });
                 let mut shared = shared.borrow_mut();
                 // `mark.generation()` captures the whole mark: the watcher
@@ -1305,8 +1305,10 @@ impl<T: Target> From<Picture> for LayerContent<T> {
 /// constant. The last write in program order wins: a bound signal's
 /// change made while a transaction is open lands at the outermost
 /// commit, after the transaction's edits, only if the binding is still
-/// the property's current one. An [`AnimationStart`] next to it starts
-/// the track at that instant instead of the first frame that samples it.
+/// the property's current one. An [`AnimationStart`](crate::AnimationStart)
+/// next to it starts the track at that instant instead of the first frame
+/// that samples it, and an [`AnimationOrigin`](crate::AnimationOrigin)
+/// beside that starts it from that exact state.
 pub struct LayerEdit<T: Target> {
     /// The layer the handle currently points at.
     layer: LayerId,
@@ -1397,13 +1399,13 @@ impl<T: ProjectiveLayers> LayerEdit<T> {
             self.layer,
             PropKind::Tilt,
             value.into(),
-            |layer, target, animation, start| {
+            |layer, target, animation, metadata| {
                 LayerOp::Tilt(
                     layer,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
@@ -1413,7 +1415,7 @@ impl<T: ProjectiveLayers> LayerEdit<T> {
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -1428,13 +1430,13 @@ impl<T: ProjectiveLayers> LayerEdit<T> {
             self.layer,
             PropKind::Depth,
             value.into(),
-            |layer, target, animation, start| {
+            |layer, target, animation, metadata| {
                 LayerOp::Depth(
                     layer,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
@@ -1444,7 +1446,7 @@ impl<T: ProjectiveLayers> LayerEdit<T> {
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -1500,13 +1502,13 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::Transform,
             transform.into(),
-            |layer, target, animation, start| {
+            |layer, target, animation, metadata| {
                 LayerOp::Transform(
                     layer,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
@@ -1517,7 +1519,7 @@ impl<T: Target> LayerEdit<T> {
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -1538,13 +1540,13 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::Translation,
             value.into(),
-            |layer, target, animation, start| {
+            |layer, target, animation, metadata| {
                 LayerOp::Translation(
                     layer,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
@@ -1555,7 +1557,7 @@ impl<T: Target> LayerEdit<T> {
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -1573,13 +1575,13 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::Rotation,
             value.into(),
-            |layer, target, animation, start| {
+            |layer, target, animation, metadata| {
                 LayerOp::Rotation(
                     layer,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
@@ -1590,7 +1592,7 @@ impl<T: Target> LayerEdit<T> {
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -1612,14 +1614,14 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             kind,
             value.into(),
-            move |layer, target, animation, start| {
+            move |layer, target, animation, metadata| {
                 LayerOp::TranslationAxis(
                     layer,
                     axis,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
@@ -1630,7 +1632,7 @@ impl<T: Target> LayerEdit<T> {
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -1651,13 +1653,13 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::Scale,
             value.into(),
-            |layer, target, animation, start| {
+            |layer, target, animation, metadata| {
                 LayerOp::Scale(
                     layer,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
@@ -1668,7 +1670,7 @@ impl<T: Target> LayerEdit<T> {
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -1690,14 +1692,14 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             kind,
             value.into(),
-            move |layer, target, animation, start| {
+            move |layer, target, animation, metadata| {
                 LayerOp::ScaleAxis(
                     layer,
                     axis,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
@@ -1708,7 +1710,7 @@ impl<T: Target> LayerEdit<T> {
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -1725,13 +1727,13 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::Skew,
             value.into(),
-            |layer, target, animation, start| {
+            |layer, target, animation, metadata| {
                 LayerOp::Skew(
                     layer,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
@@ -1741,7 +1743,7 @@ impl<T: Target> LayerEdit<T> {
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -1757,13 +1759,13 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::Pivot,
             value.into(),
-            |layer, target, animation, start| {
+            |layer, target, animation, metadata| {
                 LayerOp::Pivot(
                     layer,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
@@ -1773,7 +1775,7 @@ impl<T: Target> LayerEdit<T> {
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -1786,13 +1788,13 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::Opacity,
             opacity.into(),
-            |layer, target, animation, start| {
+            |layer, target, animation, metadata| {
                 LayerOp::Opacity(
                     layer,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
@@ -1803,7 +1805,7 @@ impl<T: Target> LayerEdit<T> {
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -1816,13 +1818,13 @@ impl<T: Target> LayerEdit<T> {
             self.layer,
             PropKind::ScrollOffset,
             offset.into(),
-            |layer, target, animation, start| {
+            |layer, target, animation, metadata| {
                 LayerOp::ScrollOffset(
                     layer,
                     Prop {
                         target,
                         animation,
-                        start,
+                        start: TrackStart::of(metadata),
                     },
                 )
             },
@@ -1832,7 +1834,7 @@ impl<T: Target> LayerEdit<T> {
             Prop {
                 target,
                 animation: self.default_animation,
-                start: self.default_start,
+                start: self.default_start.map(TrackStart::at),
             },
         )));
         self
@@ -2109,6 +2111,8 @@ mod tests {
     use nami::{SignalExt, binding};
     use nami_core::Signal;
     use std::time::Duration;
+
+    use crate::ops::AnimationStart;
 
     /// A target for queue tests: always visible (never drains inline),
     /// installs nothing.
@@ -3670,11 +3674,11 @@ mod tests {
         for op in &changes.ops {
             match op {
                 Op::Layer(LayerOp::Opacity(_, prop)) => {
-                    assert_eq!(prop.start, Some(start));
+                    assert_eq!(prop.start.as_ref().map(|named| named.at), Some(start));
                     seen += 1;
                 }
                 Op::Layer(LayerOp::Scale(_, prop)) => {
-                    assert_eq!(prop.start, Some(start));
+                    assert_eq!(prop.start.as_ref().map(|named| named.at), Some(start));
                     seen += 1;
                 }
                 _ => {}
@@ -3785,6 +3789,124 @@ mod tests {
         assert_eq!(prop.keyframes, fade);
     }
 
+    /// The scale ops a change set carries: the joint ones and the per-axis
+    /// ones, in order.
+    fn scale_ops(changes: Option<ChangeSet<TestTarget>>) -> (usize, Vec<Axis>) {
+        let Some(changes) = changes else {
+            return (0, Vec::new());
+        };
+        let mut joint = 0;
+        let mut per_axis = Vec::new();
+        for op in &changes.ops {
+            match op {
+                Op::Layer(LayerOp::Scale(..)) => joint += 1,
+                Op::Layer(LayerOp::ScaleAxis(_, axis, _)) => per_axis.push(*axis),
+                _ => {}
+            }
+        }
+        (joint, per_axis)
+    }
+
+    /// Binding a scale axis drops the joint `scale` binding: the joint
+    /// signal's later changes no longer reach the layer, the axis's do.
+    #[test]
+    fn a_scale_axis_binding_drops_the_joint_scale_binding() {
+        let shared = shared();
+        let layer = layer(&shared);
+        let joint = binding(Vec2::new(1.0, 1.0));
+        let x = binding(1.0_f64);
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer].scale(joint.clone());
+        });
+        let _ = shared.borrow_mut().take_changes(crate::Instant::now());
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer].scale_axis(Axis::X, x.clone());
+        });
+        let _ = shared.borrow_mut().take_changes(crate::Instant::now());
+
+        joint.set(Vec2::new(2.0, 2.0));
+        assert_eq!(
+            scale_ops(shared.borrow_mut().take_changes(crate::Instant::now())),
+            (0, Vec::new()),
+            "the joint binding was dropped"
+        );
+        x.set(3.0);
+        assert_eq!(
+            scale_ops(shared.borrow_mut().take_changes(crate::Instant::now())),
+            (0, vec![Axis::X]),
+            "the axis binding drives the layer"
+        );
+    }
+
+    /// Binding the joint `scale` drops both axes' bindings.
+    #[test]
+    fn a_joint_scale_binding_drops_the_axis_bindings() {
+        let shared = shared();
+        let layer = layer(&shared);
+        let x = binding(1.0_f64);
+        let y = binding(1.0_f64);
+        let joint = binding(Vec2::new(1.0, 1.0));
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer]
+                .scale_axis(Axis::X, x.clone())
+                .scale_axis(Axis::Y, y.clone());
+        });
+        let _ = shared.borrow_mut().take_changes(crate::Instant::now());
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer].scale(joint.clone());
+        });
+        let _ = shared.borrow_mut().take_changes(crate::Instant::now());
+
+        x.set(2.0);
+        y.set(0.5);
+        assert_eq!(
+            scale_ops(shared.borrow_mut().take_changes(crate::Instant::now())),
+            (0, Vec::new()),
+            "both axis bindings were dropped"
+        );
+        joint.set(Vec2::new(3.0, 3.0));
+        assert_eq!(
+            scale_ops(shared.borrow_mut().take_changes(crate::Instant::now())),
+            (1, Vec::new()),
+            "the joint binding drives the layer"
+        );
+    }
+
+    /// A bound change's `AnimationOrigin` reaches the prop's start next to
+    /// its `AnimationStart`.
+    #[test]
+    fn a_bound_change_reads_its_animation_origin_from_metadata() {
+        let shared = shared();
+        let layer = layer(&shared);
+        let start = crate::Instant::now();
+        let opacity = binding(1.0_f32);
+        let origin = crate::ops::TrackOrigin::<f32> {
+            from: [0.25],
+            velocity: [-2.0],
+        };
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer].opacity(
+                opacity
+                    .clone()
+                    .with(Animation::from(Curve::linear(Duration::from_millis(400))))
+                    .with(AnimationStart(start))
+                    .with(crate::ops::AnimationOrigin(origin)),
+            );
+        });
+        let _ = shared.borrow_mut().take_changes(crate::Instant::now());
+        opacity.set(0.5);
+        let Some(changes) = shared.borrow_mut().take_changes(crate::Instant::now()) else {
+            panic!("the bound change queued an op");
+        };
+        let [Op::Layer(LayerOp::Opacity(_, prop))] = changes.ops.as_slice() else {
+            panic!("one opacity op: {:?}", changes.ops);
+        };
+        let named = prop.start.as_ref().expect("the change names its start");
+        assert_eq!(named.at, start);
+        let carried = named.origin.as_ref().expect("the change names its origin");
+        assert_eq!((carried.from, carried.velocity), ([0.25], [-2.0]));
+    }
+
     #[test]
     fn a_bound_change_reads_its_animation_start_from_metadata() {
         let shared = shared();
@@ -3810,7 +3932,7 @@ mod tests {
         let Op::Layer(LayerOp::Opacity(_, prop)) = op else {
             panic!("an opacity op: {op:?}");
         };
-        assert_eq!(prop.start, Some(start));
+        assert_eq!(prop.start.as_ref().map(|named| named.at), Some(start));
         assert!(matches!(prop.animation, Some(Animation::Curve(_))));
     }
 
@@ -3845,7 +3967,7 @@ mod tests {
                 continue;
             };
             assert_eq!(prop.target.to_bits(), 0.5_f32.to_bits());
-            assert_eq!(prop.start, Some(start));
+            assert_eq!(prop.start.as_ref().map(|named| named.at), Some(start));
             assert!(matches!(prop.animation, Some(Animation::Curve(_))));
             seen += 1;
         }
