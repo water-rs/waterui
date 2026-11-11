@@ -98,12 +98,12 @@ mod imp {
         let session = Session::start(parts.termination, &mut app_env, parts.last_window, mtm);
         assert!(
             launch.termination.set(session).is_ok(),
-            "the termination machine starts once"
+            "`prepared` consumes the one-shot `Launch`, so the termination slot is still empty"
         );
         let session = launch
             .termination
             .get()
-            .expect("the termination machine was just started");
+            .expect("the termination machine was stored on the line above");
         // `installMenuBar`: the declared menus resolve and rebuild under the
         // environment `app` returned, exactly as windows do. The guard lives
         // for the process.
@@ -186,7 +186,7 @@ mod imp {
             .should_terminate_after_last_window_closed(move |_| {
                 termination
                     .get()
-                    .expect("windows are realized after the termination machine starts")
+                    .expect("`AppKit` asks after the last window closed, and windows are realized only after `prepared` started the termination machine")
                     .no_window_left();
                 // `AppKit`'s own `terminate:` would arrive as a cancellable
                 // quit; the session filed a required request instead.
@@ -241,10 +241,11 @@ mod imp {
         let env = unsafe { &mut *launch.env };
         crate::windows::install_manager(env);
         let parts = app(env.clone()).into_parts();
-        assert!(
-            !parts.windows.is_empty(),
-            "an iOS application must declare at least one window"
-        );
+        if parts.windows.is_empty() {
+            waterui::contract_violation!(
+                "an iOS application must declare at least one window; the app shows no window"
+            );
+        }
         // iOS ends the process without notice, so `on_quit_request` and
         // `on_terminate` are never called: the machine is never started and
         // no `Quit` is installed, so extracting `Quit` fails here.

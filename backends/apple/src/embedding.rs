@@ -88,8 +88,9 @@ impl HostEnvironment {
     /// `(size, weight, bold_weight_coordinate, line_height)` group per
     /// style, in that order.
     ///
-    /// # Panics
-    /// Panics when `locale` is not valid UTF-8 or a valid BCP-47 tag.
+    /// A `locale` that is not valid UTF-8 or a valid BCP-47 tag is a host
+    /// contract violation: a debug build panics, a release build reports it
+    /// and the mount takes English.
     ///
     /// # Safety
     /// `locale` is a live NUL-terminated string and `fonts` points to
@@ -103,11 +104,18 @@ impl HostEnvironment {
         fonts: *const f64,
     ) -> Self {
         // SAFETY: the caller contract supplies a live NUL-terminated string.
-        let locale = unsafe { CStr::from_ptr(locale) }
+        let tag = unsafe { CStr::from_ptr(locale) };
+        let locale = tag
             .to_str()
-            .expect("the host locale is valid UTF-8")
-            .parse::<Locale>()
-            .expect("the host locale is a valid BCP-47 tag");
+            .map_err(|error| format!("{error}"))
+            .and_then(|tag| tag.parse::<Locale>().map_err(|error| format!("{error}")))
+            .unwrap_or_else(|error| {
+                waterui::contract_violation!(
+                    "the host locale {tag:?} is not valid UTF-8 and a valid BCP-47 tag: \
+                     {error}; English is used"
+                );
+                waterui_locale::locales::EN
+            });
         // SAFETY: the caller contract supplies the readable doubles.
         let slice =
             unsafe { std::slice::from_raw_parts(fonts, HOST_FONT_STYLES.len() * HOST_FONT_FIELDS) };
@@ -595,8 +603,10 @@ pub unsafe extern "C" fn waterui_apple_update_visibility(mount: *const c_void) {
 /// the theme and direction without remounting.
 ///
 /// # Panics
-/// Panics off the main thread, or on a mount created without a host
-/// environment — the ambient path owns its own observers.
+/// Panics off the main thread. A mount created without a host environment
+/// — the ambient path owns its own observers — is a host contract
+/// violation: a debug build panics, a release build reports it and ignores
+/// the update.
 ///
 /// # Safety
 /// `mount` is a live mount handle borrowed on the main thread, created with
@@ -616,10 +626,13 @@ pub unsafe extern "C" fn waterui_apple_update_environment(
     // SAFETY: the caller borrows a live mount and passes a live locale
     // string and the readable doubles per the documented ABI.
     let mount = unsafe { &*mount.cast::<Mount>() };
-    let scope = mount
-        .host_scope
-        .as_ref()
-        .expect("environment updates require a mount created with a host environment");
+    let Some(scope) = mount.host_scope.as_ref() else {
+        waterui::contract_violation!(
+            "environment updates require a mount created with a host environment; \
+             the update is ignored"
+        );
+        return;
+    };
     // SAFETY: `locale` and `host_fonts` follow `from_abi`'s contract.
     let host = unsafe { HostEnvironment::from_abi(dark, rtl, locale, host_fonts) };
     crate::theme::refresh_host(&scope.signals, host.scheme, &host.fonts);

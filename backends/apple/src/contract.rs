@@ -394,6 +394,11 @@ fn view_is_ghost(view: &PlatformView) -> bool {
         || cocoa_ui::view::has_retired_ancestor(view)
 }
 
+/// The invariant behind every `Mounted` accessor: the leaf is taken only by
+/// `unmount`, `into_retired_leaf`, which consume the handle, and by `Drop`.
+const LIVE_MOUNTED: &str =
+    "a `Mounted` holds its leaf until `unmount`, `into_retired_leaf` or `Drop` takes it";
+
 /// A child leaf attached to a parent view. Dropping it detaches the view
 /// from its superview, then drops the leaf: this is how a container
 /// releases a child it replaces or removes.
@@ -409,7 +414,7 @@ impl Mounted {
     /// outside `Drop`.
     #[must_use]
     pub fn view(&self) -> &PlatformView {
-        self.0.as_ref().expect("a live Mounted").view()
+        self.0.as_ref().expect(LIVE_MOUNTED).view()
     }
 
     /// The child's measure handle — the query its `SubView` layout face
@@ -421,7 +426,7 @@ impl Mounted {
     #[cfg(all(target_os = "ios", feature = "context_menu"))]
     #[must_use]
     pub(crate) fn layout_handle(&self) -> Rc<dyn SubView> {
-        self.0.as_ref().expect("a live Mounted").layout_handle()
+        self.0.as_ref().expect(LIVE_MOUNTED).layout_handle()
     }
 
     /// The child's layout face.
@@ -431,7 +436,7 @@ impl Mounted {
     /// When called on a `Mounted` that is already unmounting.
     #[must_use]
     pub fn layout(&self) -> &dyn SubView {
-        self.0.as_ref().expect("a live Mounted").layout()
+        self.0.as_ref().expect(LIVE_MOUNTED).layout()
     }
 
     /// Detaches the view and hands the leaf back, for moving it elsewhere.
@@ -441,7 +446,7 @@ impl Mounted {
     /// When called on a `Mounted` that is already unmounting.
     #[must_use]
     pub fn unmount(mut self) -> NativeLeaf {
-        let mut leaf = self.0.take().expect("a live Mounted");
+        let mut leaf = self.0.take().expect(LIVE_MOUNTED);
         leaf.detach();
         leaf
     }
@@ -454,17 +459,21 @@ impl Mounted {
     ///
     /// # Panics
     ///
-    /// When the view is no retired `HostView` and none of its strict
-    /// ancestors is either — the internal invariant of the hand-off.
+    /// In a debug build, when the view is no retired `HostView` and none
+    /// of its strict ancestors is either — the internal invariant of the
+    /// hand-off. A release build logs the violation and unwinds the
+    /// containment as a plain unmount does.
     #[cfg(feature = "transition_sites")]
     #[must_use]
     pub(crate) fn into_retired_leaf(mut self) -> NativeLeaf {
-        let mut leaf = self.0.take().expect("a live Mounted");
-        assert!(
-            view_is_ghost(&leaf.view),
-            "waterui-apple: `into_retired_leaf` needs a retired `HostView` — \
-             retire the transition host before ending the mount"
-        );
+        let mut leaf = self.0.take().expect(LIVE_MOUNTED);
+        if !view_is_ghost(&leaf.view) {
+            waterui::contract_violation!(
+                "waterui-apple: `into_retired_leaf` needs a retired `HostView` — \
+                 retire the transition host before ending the mount; \
+                 the containment ends as a plain unmount does"
+            );
+        }
         leaf.unwind();
         leaf
     }
@@ -561,24 +570,18 @@ impl<'a> RenderContext<'a> {
         self.mtm
     }
 
-    /// Renders `view` into a leaf: registered handlers claim it, composers
-    /// expand through `body()`, and anything the backend does not own yet
-    /// crosses to the fallback.
-    ///
-    /// # Panics
-    ///
-    /// When the fallback also declines the view — the same contract
-    /// `WuiAnyView` enforced with a fatal error.
+    /// Renders `view` into a leaf: registered handlers claim it and
+    /// composers expand through `body()` until one does.
     #[must_use]
     pub fn render(&self, view: impl Into<AnyView>) -> NativeLeaf {
-        self.try_render(view)
-            .expect("native view has no backend handler")
+        self.dispatcher.render(view.into(), self.env, self.mtm)
     }
 
-    /// Renders `view`, answering `None` when nothing claims it.
+    /// Renders `view`. Always `Some`: a view no handler claims expands
+    /// through `body()` until one does.
     #[must_use]
     pub fn try_render(&self, view: impl Into<AnyView>) -> Option<NativeLeaf> {
-        self.dispatcher.render(view.into(), self.env, self.mtm)
+        Some(self.render(view))
     }
 
     /// The same context under another environment — for metadata handlers
@@ -617,20 +620,15 @@ pub struct Renderer {
 impl Renderer {
     /// Renders `view` under the captured environment.
     ///
-    /// # Panics
-    ///
-    /// When nothing claims the view — same contract as
-    /// [`RenderContext::render`].
     #[must_use]
     pub fn render(&self, view: impl Into<AnyView>) -> NativeLeaf {
-        self.try_render(view)
-            .expect("native view has no backend handler")
+        self.dispatcher.render(view.into(), &self.env, self.mtm)
     }
 
-    /// Renders `view`, answering `None` when nothing claims it.
+    /// Renders `view`. Always `Some`, as [`RenderContext::try_render`].
     #[must_use]
     pub fn try_render(&self, view: impl Into<AnyView>) -> Option<NativeLeaf> {
-        self.dispatcher.render(view.into(), &self.env, self.mtm)
+        Some(self.render(view))
     }
 
     /// Renders `view` and answers the environment its leaf resolved

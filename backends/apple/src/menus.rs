@@ -102,9 +102,9 @@ fn kit_command_fields(
 /// ⌫ key, W3C `Backspace`, sends `NSDeleteCharacter` (U+007F), not
 /// `NSBackspaceCharacter`.
 ///
-/// # Panics
-///
-/// On a named key `AppKit` has no key equivalent for.
+/// A named key `AppKit` has no key equivalent for is a contract violation:
+/// a debug build panics, a release build reports it and answers the empty
+/// key equivalent, which arms no shortcut.
 #[cfg(target_os = "macos")]
 pub fn key_equivalent_for(key: &ShortcutKey) -> String {
     use cocoa_ui::objc2_app_kit as appkit;
@@ -176,10 +176,13 @@ pub fn key_equivalent_for(key: &ShortcutKey) -> String {
         NamedKey::F33 => appkit::NSF33FunctionKey,
         NamedKey::F34 => appkit::NSF34FunctionKey,
         NamedKey::F35 => appkit::NSF35FunctionKey,
-        _ => panic!(
-            "the shortcut key `{named}` has no AppKit key equivalent, so a macOS menu item cannot \
-             arm it; choose a key AppKit menus support"
-        ),
+        _ => {
+            waterui::contract_violation!(
+                "the shortcut key `{named}` has no AppKit key equivalent, so a macOS menu item \
+                 cannot arm it; choose a key AppKit menus support; the item has no shortcut"
+            );
+            return String::new();
+        }
     };
     String::from(
         char::from_u32(code).expect("AppKit key-equivalent constants are Unicode scalar values"),
@@ -190,9 +193,9 @@ pub fn key_equivalent_for(key: &ShortcutKey) -> String {
 /// `UIKeyInput*` constant for a named key `UIKit` names, and the control
 /// characters of Backspace, Tab and Return, which `UIKit` takes as inputs.
 ///
-/// # Panics
-///
-/// On a named key `UIKit` has no key-command input for.
+/// A named key `UIKit` has no key-command input for is a contract
+/// violation: a debug build panics, a release build reports it and answers
+/// the empty input, which arms no shortcut.
 #[cfg(not(target_os = "macos"))]
 pub fn key_equivalent_for(key: &ShortcutKey) -> String {
     use cocoa_ui::objc2_foundation::NSString;
@@ -239,10 +242,14 @@ pub fn key_equivalent_for(key: &ShortcutKey) -> String {
             NamedKey::F10 => uikit::UIKeyInputF10,
             NamedKey::F11 => uikit::UIKeyInputF11,
             NamedKey::F12 => uikit::UIKeyInputF12,
-            _ => panic!(
-                "the shortcut key `{named}` has no UIKeyCommand input, so a UIKit menu command \
-                 cannot arm it; choose a key UIKit key commands support"
-            ),
+            _ => {
+                waterui::contract_violation!(
+                    "the shortcut key `{named}` has no UIKeyCommand input, so a UIKit menu \
+                     command cannot arm it; choose a key UIKit key commands support; the \
+                     command has no shortcut"
+                );
+                return String::new();
+            }
         }
     };
     input.to_string()
@@ -594,11 +601,15 @@ mod imp {
                 tracing::debug!("main menu built before the application declared its menus");
                 return;
             };
-            let mtm = MainThreadMarker::new().expect("build_menus runs on the main thread");
+            let mtm =
+                MainThreadMarker::new().expect("UIKit calls `build_menus` on the main thread");
             let items = resolved.snapshot();
             for (index, item) in items.iter().enumerate() {
                 let ResolvedMenuItem::Menu(menu) = item else {
-                    panic!("App::menu_bar only accepts top-level Menu values");
+                    waterui::contract_violation!(
+                        "App::menu_bar only accepts top-level Menu values; the item is skipped"
+                    );
+                    continue;
                 };
                 let identifier = alloc::format!("dev.waterui.menu.{index}");
                 let command = kit_command_for_menu(menu);
@@ -678,9 +689,15 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "has no AppKit key equivalent")]
-    fn a_named_key_without_an_appkit_equivalent_panics() {
-        let _ = key_equivalent_for(&ShortcutKey::from(NamedKey::AudioVolumeUp));
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "has no AppKit key equivalent")
+    )]
+    fn a_named_key_without_an_appkit_equivalent_arms_no_shortcut() {
+        assert_eq!(
+            key_equivalent_for(&ShortcutKey::from(NamedKey::AudioVolumeUp)),
+            ""
+        );
     }
 
     /// `menus` resolved as the declared menu bar.

@@ -166,18 +166,22 @@ pub fn platform_color(color: &WorkingColor) -> Retained<cocoa_ui::objc2_app_kit:
 /// resolves against the drawing view's own appearance — and its current
 /// value otherwise.
 ///
-/// # Panics
-///
-/// When `env` has no Apple theme installed.
+/// An `env` with no Apple theme installed is a contract violation: a debug
+/// build panics, a release build reports it and draws the signal's current
+/// value.
 #[cfg(target_os = "macos")]
 #[must_use]
 pub fn token_color(
     env: &Environment,
     signal: &impl Signal<Output = WorkingColor>,
 ) -> Retained<cocoa_ui::objc2_app_kit::NSColor> {
-    let slots = env
-        .get::<SystemLabelSlots>()
-        .expect("the Apple theme installs its label slots with the color slots");
+    let Some(slots) = env.get::<SystemLabelSlots>() else {
+        waterui::contract_violation!(
+            "the environment has no Apple theme installed, so no label slot is known; \
+             the color's current value is drawn"
+        );
+        return platform_color(&signal.snapshot());
+    };
     slots.system_color(signal).map_or_else(
         || platform_color(&signal.snapshot()),
         cocoa_ui::appkit::colors::dynamic,
@@ -484,6 +488,16 @@ mod tests {
     fn font_weight_clamps_outside_the_table() {
         assert_eq!(font_weight(-2.0), FontWeight::UltraLight);
         assert_eq!(font_weight(5.0), FontWeight::Black);
+    }
+
+    /// An environment without the Apple theme draws the signal's value.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "no Apple theme installed"))]
+    fn token_color_without_a_theme_draws_the_current_value() {
+        let color =
+            waterui::reactive::Computed::constant(into_working(Rgba::new(1.0, 0.0, 0.0, 1.0)));
+        let _ = super::token_color(&waterui_backend_core::Environment::new(), &color);
     }
 
     #[test]

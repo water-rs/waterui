@@ -278,9 +278,7 @@ mod imp {
         // host each layout pass, at the safe-area-aware frame `content_frame`
         // resolves.
         let content = declaration.build_content();
-        let leaf = crate::dispatch::dispatcher(env)
-            .render(content, env, mtm)
-            .expect("window content must render: no handler or fallback claims it");
+        let leaf = crate::dispatch::dispatcher(env).render(content, env, mtm);
 
         let host = HostView::new(mtm, window.content_rect());
         host.add_subview(leaf.view());
@@ -334,9 +332,7 @@ mod imp {
         // system's capsule, spacing and overflow.
         if let Some(toolbar) = declaration.toolbar {
             let toolbar_env = crate::toolbar_chrome::toolbar_environment(env);
-            let toolbar_leaf = crate::dispatch::dispatcher(env)
-                .render(toolbar, &toolbar_env, mtm)
-                .expect("window toolbar must render: no handler or fallback claims it");
+            let toolbar_leaf = crate::dispatch::dispatcher(env).render(toolbar, &toolbar_env, mtm);
             install_toolbar(
                 window.native(),
                 toolbar_leaf.view(),
@@ -738,7 +734,7 @@ mod imp {
                 );
                 let layer = painted
                     .layer()
-                    .expect("a layer-backed view always answers `layer`");
+                    .expect("`setWantsLayer(true)` above made the view layer-backed");
                 // SAFETY: `layer` is the view's live backing layer; the `CGColor`
                 // `color.CGColor` produces outlives the call.
                 unsafe {
@@ -752,7 +748,8 @@ mod imp {
     }
 
     fn mtm() -> MainThreadMarker {
-        MainThreadMarker::new().expect("window realization runs on the main thread")
+        MainThreadMarker::new()
+            .expect("the `WindowManager` is an `Rc` built on the main thread, so `show` runs on it")
     }
 }
 
@@ -887,7 +884,7 @@ mod imp {
                     .env
                     .borrow()
                     .clone()
-                    .expect("declared scenes have an environment");
+                    .expect("`declare` stores the environment before it declares any scene");
                 let id = pending.session_id.clone();
                 let host = realize(&declaration, pending, &env, mtm);
                 self.hosts.borrow_mut().insert(id, host);
@@ -907,7 +904,7 @@ mod imp {
     fn scene_id(window: &cocoa_ui::objc2_ui_kit::UIWindow) -> String {
         window
             .windowScene()
-            .expect("a scene window has its scene")
+            .expect("every window here is created from the scene being connected")
             .session()
             .persistentIdentifier()
             .to_string()
@@ -918,7 +915,9 @@ mod imp {
     /// fails the way the Swift implementation did.
     pub fn install_manager(env: &mut Environment) {
         env.insert(waterui::window::WindowManager::new(|_| {
-            panic!("WaterUI multi-window is unsupported on iOS");
+            waterui::contract_violation!(
+                "WaterUI multi-window is unsupported on iOS; the window is not shown"
+            );
         }));
     }
 
@@ -947,7 +946,7 @@ mod imp {
         });
 
         let native_window = cocoa_ui::uikit::window_of(controller.host_view())
-            .expect("a visible root controller belongs to its scene window");
+            .expect("the controller was made the root of the visible window just above");
         let veil = Veil::cover(&native_window, background);
         let pending = Pending {
             session_id: scene_id(&native_window),
@@ -970,11 +969,9 @@ mod imp {
         let window = UIWindow::initWithWindowScene(UIWindow::alloc(mtm), scene);
         let controller = ViewController::new(mtm, window_root(mtm));
         window.setRootViewController(Some(&controller));
-        let mut env = scenes
-            .env
-            .borrow()
-            .clone()
-            .expect("an embedded mount has declared its windows");
+        let mut env = scenes.env.borrow().clone().expect(
+            "`mount` declares its windows before it returns the scene id the host connects by",
+        );
         let theme = Rc::new(crate::theme::install(&mut env, controller.color_scheme()));
         let observation =
             controller.observe_color_scheme(move |scheme| crate::theme::refresh(&theme, scheme));
@@ -983,7 +980,9 @@ mod imp {
         window.makeKeyAndVisible();
         let veil = Veil::cover(&window, &Color::new(Background).resolve(&env));
         // Scene-local appearance overlays the mount's resources and services.
-        let declaration = scenes.claim().expect("an embedded app has a root window");
+        let declaration = scenes
+            .claim()
+            .expect("`mount` declares at least the root window before the host connects a scene");
         let session_id = scene.session().persistentIdentifier().to_string();
         let host = realize(
             &declaration,
@@ -1118,9 +1117,7 @@ mod imp {
         );
 
         let content = declaration.build_content();
-        let leaf = crate::dispatch::dispatcher(env)
-            .render(content, env, mtm)
-            .expect("window content must render: no handler or fallback claims it");
+        let leaf = crate::dispatch::dispatcher(env).render(content, env, mtm);
         let leaf_view = cocoa_ui::view::retain_base(leaf.view());
         #[cfg(feature = "gpu_surface")]
         let reveal_view = leaf_view.clone();

@@ -32,19 +32,33 @@ impl FontRegistrations {
     /// Successful registrations survive unmounting and are reused on remount.
     /// Original registered files must remain in place until process exit, as
     /// required by Core Text. Distinct data is submitted to Core Text even if
-    /// it names an existing family: invalid data and catalog conflicts fail.
-    /// A missing directory means the bundle declares no fonts.
+    /// it names an existing family: invalid data and catalog conflicts are
+    /// logged and the font stays unregistered, so text that names its family
+    /// resolves as it does without it. A missing directory means the bundle
+    /// declares no fonts.
     pub fn register_bundle_fonts(&mut self, resources: &waterui_core::ResourceContext) {
         let entries = match std::fs::read_dir(resources.fonts()) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
-            Err(error) => panic!(
-                "cannot read font directory {}: {error}",
-                resources.fonts().display()
-            ),
+            Err(error) => {
+                tracing::error!(
+                    "cannot read font directory {}: {error}; no bundled font is registered",
+                    resources.fonts().display()
+                );
+                return;
+            }
         };
         for entry in entries {
-            let path = entry.expect("font directory entry must be readable").path();
+            let path = match entry {
+                Ok(entry) => entry.path(),
+                Err(error) => {
+                    tracing::error!(
+                        "cannot read an entry of font directory {}: {error}; it is skipped",
+                        resources.fonts().display()
+                    );
+                    continue;
+                }
+            };
             // The CLI also stages its family-to-file JSON manifest here.
             if path
                 .file_name()
@@ -52,27 +66,39 @@ impl FontRegistrations {
             {
                 continue;
             }
-            let metadata = std::fs::metadata(&path).unwrap_or_else(|error| {
-                panic!(
-                    "cannot read bundled font metadata {}: {error}",
-                    path.display()
-                )
-            });
+            let metadata = match std::fs::metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    tracing::error!(
+                        "cannot read bundled font metadata {}: {error}; the font is skipped",
+                        path.display()
+                    );
+                    continue;
+                }
+            };
             if !metadata.is_file() {
                 continue;
             }
-            let data = std::fs::read(&path).unwrap_or_else(|error| {
-                panic!("cannot read bundled font {}: {error}", path.display())
-            });
+            let data = match std::fs::read(&path) {
+                Ok(data) => data,
+                Err(error) => {
+                    tracing::error!(
+                        "cannot read bundled font {}: {error}; the font is skipped",
+                        path.display()
+                    );
+                    continue;
+                }
+            };
             if self.registered.contains_key(data.as_slice()) {
                 continue;
             }
-            cocoa_ui::fonts::register_font(&path).unwrap_or_else(|error| {
-                panic!(
-                    "failed to register bundled font {}: {error}",
+            if let Err(error) = cocoa_ui::fonts::register_font(&path) {
+                tracing::error!(
+                    "failed to register bundled font {}: {error}; the font is skipped",
                     path.display()
-                )
-            });
+                );
+                continue;
+            }
             self.registered.insert(data.into_boxed_slice(), path);
         }
     }

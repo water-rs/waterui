@@ -393,7 +393,7 @@ impl WindowContext {
             let root = window
                 .rootViewController()
                 .and_then(|controller| controller.view())
-                .expect("a capture window is mounted through its root controller");
+                .expect("a capture window is created only with its root controller, which owns the capture root view");
             return Self {
                 window: window_frame(&root),
                 container: EdgeInsets::ZERO,

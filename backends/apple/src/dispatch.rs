@@ -64,8 +64,8 @@ impl Dispatcher {
             let native = view
                 .downcast::<waterui_backend_core::Native<C>>()
                 .unwrap_or_else(|_| {
-                    panic!(
-                        "dispatcher claimed {} but the erased view was not one",
+                    unreachable!(
+                        "the handler is keyed by the `TypeId` of {}, so the erased view is one",
                         core::any::type_name::<C>()
                     )
                 });
@@ -94,8 +94,8 @@ impl Dispatcher {
     ) {
         let wrapped: Handler = Box::new(move |view, ctx| {
             let typed = view.downcast::<T>().unwrap_or_else(|_| {
-                panic!(
-                    "dispatcher claimed {} but the erased view was not one",
+                unreachable!(
+                    "the handler is keyed by the `TypeId` of {}, so the erased view is one",
                     core::any::type_name::<T>()
                 )
             });
@@ -112,7 +112,7 @@ impl Dispatcher {
     fn claim(&mut self, type_id: TypeId, handler: Handler, name: &'static str) {
         assert!(
             self.handlers.insert(type_id, handler).is_none(),
-            "dispatcher already has a handler for {name}"
+            "the registry claims each type once, but {name} already has a handler"
         );
         #[cfg(debug_assertions)]
         self.names.push(name);
@@ -134,21 +134,19 @@ impl Dispatcher {
     /// Renders `view` under `env` into the platform view it becomes.
     ///
     /// The walk: a registered handler claims the view; otherwise it expands
-    /// through `body()`; a `Native<T>`/`Metadata<T>` that no handler claims
-    /// crosses to the fallback. Returns `None` only when the fallback itself
-    /// declines the view.
+    /// through `body()` until a handler claims it.
     pub(crate) fn render(
         self: &Rc<Self>,
         view: AnyView,
         env: &Environment,
         mtm: cocoa_ui::MainThreadMarker,
-    ) -> Option<NativeLeaf> {
+    ) -> NativeLeaf {
         let mut view = view;
         let ctx = RenderContext::new(env, self.clone(), mtm);
         loop {
             let type_id = view.type_id();
             if let Some(handler) = self.handler(type_id) {
-                return Some(handler(view, &ctx));
+                return handler(view, &ctx);
             }
             view = AnyView::new(view.body(env));
         }
@@ -164,7 +162,7 @@ pub fn install(env: &mut Environment) {
 
 pub(crate) fn dispatcher(env: &Environment) -> Rc<Dispatcher> {
     env.get::<Rc<Dispatcher>>()
-        .expect("Apple dispatcher must be installed before rendering")
+        .expect("`install` runs when an environment is built, before anything renders under it")
         .clone()
 }
 
@@ -179,11 +177,11 @@ pub(crate) fn is_native_boundary(view: &AnyView) -> bool {
 /// Renders native content using the owning environment's dispatcher.
 ///
 /// # Panics
-/// Panics on an unhandled native component or off the main thread.
+/// Panics off the main thread: platform views exist only there, so no
+/// leaf can answer the call.
 #[must_use]
 pub fn render(view: AnyView, env: &Environment) -> NativeLeaf {
-    let mtm = cocoa_ui::MainThreadMarker::new().expect("rendering runs on the main thread");
-    dispatcher(env)
-        .render(view, env, mtm)
-        .expect("native view must render")
+    let mtm = cocoa_ui::MainThreadMarker::new()
+        .expect("platform views are built on the main thread; the caller's contract");
+    dispatcher(env).render(view, env, mtm)
 }

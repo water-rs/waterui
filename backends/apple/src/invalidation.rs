@@ -88,6 +88,20 @@ unsafe impl Send for SendableWeak {}
 ))]
 static SINKS: Mutex<Option<HashMap<usize, SendableWeak>>> = Mutex::new(None);
 
+/// The invariant behind locking [`SINKS`]: every critical section is a
+/// single map operation that cannot panic, so the lock is never poisoned.
+#[cfg(any(
+    feature = "applied_filter",
+    feature = "container",
+    feature = "fixed_container",
+    feature = "gpu_surface",
+    feature = "picture",
+    feature = "resolved_shape",
+    feature = "view_effect"
+))]
+const REGISTRY_UNPOISONED: &str =
+    "the rendered-content invalidation registry's critical sections cannot panic";
+
 /// The map key for a platform view.
 #[cfg(any(
     feature = "applied_filter",
@@ -111,7 +125,7 @@ fn key(view: &PlatformView) -> usize {
 pub fn register_sink(view: &PlatformView, callback: Rc<dyn Fn()>) {
     SINKS
         .lock()
-        .expect("rendered-content invalidation registry")
+        .expect(REGISTRY_UNPOISONED)
         .get_or_insert_with(HashMap::new)
         .insert(key(view), SendableWeak(Rc::downgrade(&callback)));
 }
@@ -120,11 +134,7 @@ pub fn register_sink(view: &PlatformView, callback: Rc<dyn Fn()>) {
 /// callback would die on its own.
 #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
 pub fn unregister_sink(view: &PlatformView) {
-    if let Some(sinks) = SINKS
-        .lock()
-        .expect("rendered-content invalidation registry")
-        .as_mut()
-    {
+    if let Some(sinks) = SINKS.lock().expect(REGISTRY_UNPOISONED).as_mut() {
         sinks.remove(&key(view));
     }
 }
@@ -165,7 +175,7 @@ pub fn invalidate_rendered_content(view: &PlatformView) {
     while let Some(current) = ancestor {
         let sink = SINKS
             .lock()
-            .expect("rendered-content invalidation registry")
+            .expect(REGISTRY_UNPOISONED)
             .as_ref()
             .and_then(|sinks| sinks.get(&key(&current)).map(|sink| sink.0.clone()))
             .and_then(|sink| sink.upgrade());
