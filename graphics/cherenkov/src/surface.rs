@@ -328,8 +328,9 @@ impl<B: Backend> Surface<B> {
     /// its render still delivers what was asked for meanwhile when the
     /// scope drops; [`FrameScope`] states the exact semantics.
     ///
-    /// # Panics
-    /// Panics if a scope is already open on the surface.
+    /// # Contract
+    /// A scope already open on the surface is a contract violation: the
+    /// returned scope is then inert, see [`FrameScope`].
     #[must_use = "dropping the scope ends the frame; keep it until the frame's render"]
     pub fn begin_frame(&self) -> FrameScope {
         FrameScope::open(&self.waker)

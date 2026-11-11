@@ -1343,7 +1343,7 @@ mod render {
             rgb(0.6, 0.2, 0.9),
             rgba(0.1, 0.2, 0.4, 0.4),
         ];
-        MeshGradient::new(2, 2, points, colors)
+        MeshGradient::new(2, 2, points, colors).expect("a 2 x 2 grid with its 3 x 3 vertices")
     }
 
     /// The mesh drawn as layers (left) and by Core Graphics in a run

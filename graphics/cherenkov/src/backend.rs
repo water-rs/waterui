@@ -21,6 +21,7 @@ pub trait RenderTransfer {}
 impl<T: ?Sized> RenderTransfer for T {}
 
 use rustc_hash::FxHashSet;
+use waterui_contract::contract_violation;
 
 use crate::config::{MemoryUsage, Pressure};
 use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
@@ -142,12 +143,16 @@ pub trait Renderer: 'static {
     /// region with no band, and its content is not shown rather than
     /// drawn beneath a window it covers.
     ///
-    /// # Panics
+    /// # Contract
     /// The default: the renderer has no band realization, so a host that
-    /// splits a surface into bands is using the wrong renderer.
+    /// splits a surface into bands is using the wrong renderer. That is a
+    /// contract violation; the band is dropped and its content is not
+    /// shown.
     fn set_band(&mut self, id: SurfaceId, window: u64, target: Option<Self::Target>) {
-        let _ = target;
-        panic!("surface {id:?}: this renderer cannot present host window {window}'s band");
+        drop(target);
+        contract_violation!(
+            "surface {id:?}: this renderer cannot present host window {window}'s band; the band is dropped and its content is not shown"
+        );
     }
 
     /// Destroys a surface's render-side state.

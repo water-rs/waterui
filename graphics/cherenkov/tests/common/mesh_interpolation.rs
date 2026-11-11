@@ -25,6 +25,7 @@ fn mesh(mode: MeshColorInterpolation) -> MeshGradient {
             WorkingColor::WHITE,
         ],
     )
+    .expect("a single patch with its four vertices")
     .interpolation(mode)
 }
 }

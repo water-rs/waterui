@@ -37,9 +37,11 @@
 //! scope — in any class — sees another; a group of its own samples it as
 //! it stood at its member.
 
+use std::collections::hash_map::Entry;
 use std::num::NonZeroU64;
 
 use rustc_hash::FxHashMap;
+use waterui_contract::contract_violation;
 
 use crate::backdrop::{BackdropShaderSource, CaptureLevels, CaptureScale};
 use crate::record::{Content, SharedLive};
@@ -260,22 +262,33 @@ impl MaterialEffect {
 
     /// An effect with `uniforms` in the shader's declared order.
     ///
-    /// # Panics
-    /// Panics, naming the violated rule, unless there are at most
-    /// [`MAX_UNIFORMS`](Self::MAX_UNIFORMS) uniforms and each is finite.
+    /// # Contract
+    /// There are at most [`MAX_UNIFORMS`](Self::MAX_UNIFORMS) uniforms and
+    /// each is finite. Otherwise it is a contract violation naming the
+    /// rule: the surplus uniforms are dropped and a non-finite one becomes
+    /// zero.
     #[must_use]
-    pub fn new(uniforms: Vec<f32>) -> Self {
-        assert!(
-            uniforms.len() <= Self::MAX_UNIFORMS,
-            "a backdrop material effect carries {} uniforms; a backdrop shader takes at most {}",
-            uniforms.len(),
-            Self::MAX_UNIFORMS,
-        );
+    pub fn new(mut uniforms: Vec<f32>) -> Self {
+        if uniforms.len() > Self::MAX_UNIFORMS {
+            contract_violation!(
+                "a backdrop material effect carries {} uniforms; a backdrop shader takes at most \
+                 {}; the surplus is dropped",
+                uniforms.len(),
+                Self::MAX_UNIFORMS,
+            );
+            uniforms.truncate(Self::MAX_UNIFORMS);
+        }
         if let Some(index) = uniforms.iter().position(|u| !u.is_finite()) {
-            panic!(
-                "backdrop material uniform {index} is {}; every uniform must be finite",
+            contract_violation!(
+                "backdrop material uniform {index} is {}; every uniform must be finite; it \
+                 becomes zero",
                 uniforms[index]
             );
+            for uniform in &mut uniforms {
+                if !uniform.is_finite() {
+                    *uniform = 0.0;
+                }
+            }
         }
         Self {
             uniforms,
@@ -467,35 +480,45 @@ impl MaterialRegistry {
 
     /// Registers the backdrop shader `source` under `key`.
     ///
-    /// # Panics
-    /// Panics when `key` is already registered.
+    /// # Contract
+    /// A `key` registered twice is a contract violation; the first
+    /// registration stays and `source` is dropped.
     pub fn register_shader(
         &mut self,
         key: MaterialShader,
         source: BackdropShaderSource,
     ) -> &mut Self {
-        let previous = self.shaders.insert(key, source);
-        assert!(
-            previous.is_none(),
-            "backdrop material shader {key:?} is registered twice"
-        );
+        match self.shaders.entry(key) {
+            Entry::Vacant(slot) => {
+                slot.insert(source);
+            }
+            Entry::Occupied(_) => contract_violation!(
+                "backdrop material shader {key:?} is registered twice; the first registration \
+                 stays"
+            ),
+        }
         self
     }
 
     /// Registers the capture class `capture` under `key`.
     ///
-    /// # Panics
-    /// Panics when `key` is already registered.
+    /// # Contract
+    /// A `key` registered twice is a contract violation; the first
+    /// registration stays and `capture` is dropped.
     pub fn register_capture_class(
         &mut self,
         key: CaptureClass,
         capture: MaterialCapture,
     ) -> &mut Self {
-        let previous = self.captures.insert(key, capture);
-        assert!(
-            previous.is_none(),
-            "backdrop material capture class {key:?} is registered twice"
-        );
+        match self.captures.entry(key) {
+            Entry::Vacant(slot) => {
+                slot.insert(capture);
+            }
+            Entry::Occupied(_) => contract_violation!(
+                "backdrop material capture class {key:?} is registered twice; the first \
+                 registration stays"
+            ),
+        }
         self
     }
 
@@ -761,58 +784,92 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "opened with `Content::record_layered`")]
-    fn a_material_in_a_plain_recording_panics() {
-        let _ = Content::record(&LayoutSize::new(), |r| material(r, 0.));
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "opened with `Content::record_layered`")
+    )]
+    fn a_material_in_a_plain_recording_is_dropped() {
+        let mut content = Content::record(&LayoutSize::new(), |r| {
+            r.fill(Rect::new(0., 0., 1., 1.), white());
+            material(r, 0.);
+        });
+        assert_eq!(fills(&mut content), [Rect::new(0., 0., 1., 1.)]);
     }
 
-    fn layered(body: impl FnOnce(&mut Recorder)) {
-        let _ = Content::record_layered(&LayoutSize::new(), MaterialScope::SOLO, body);
+    /// The runs a layered recording split into: one per material.
+    fn layered(body: impl FnOnce(&mut Recorder)) -> usize {
+        let LayeredContent { runs, .. } =
+            Content::record_layered(&LayoutSize::new(), MaterialScope::SOLO, body);
+        runs.len()
     }
 
     #[test]
-    #[should_panic(expected = "outside every clip, transform and group scope")]
-    fn a_material_inside_a_clip_panics() {
-        layered(|r| r.clip(Rect::new(0., 0., 5., 5.), |r| material(r, 0.)));
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "outside every clip, transform and group scope")
+    )]
+    fn a_material_inside_a_clip_is_dropped() {
+        assert_eq!(
+            layered(|r| r.clip(Rect::new(0., 0., 5., 5.), |r| material(r, 0.))),
+            0
+        );
     }
 
     #[test]
-    #[should_panic(expected = "outside every clip, transform and group scope")]
-    fn a_material_inside_a_transform_panics() {
-        layered(|r| r.transform(Affine::IDENTITY, |r| material(r, 0.)));
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "outside every clip, transform and group scope")
+    )]
+    fn a_material_inside_a_transform_is_dropped() {
+        assert_eq!(
+            layered(|r| r.transform(Affine::IDENTITY, |r| material(r, 0.))),
+            0
+        );
     }
 
     #[test]
-    #[should_panic(expected = "outside every clip, transform and group scope")]
-    fn a_material_inside_a_group_panics() {
-        layered(|r| r.group(Group::default(), |r| material(r, 0.)));
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "outside every clip, transform and group scope")
+    )]
+    fn a_material_inside_a_group_is_dropped() {
+        assert_eq!(
+            layered(|r| r.group(Group::default(), |r| material(r, 0.))),
+            0
+        );
     }
 
     #[test]
     fn a_material_after_a_closed_scope_is_top_level() {
-        layered(|r| {
+        let runs = layered(|r| {
             r.clip(Rect::new(0., 0., 5., 5.), |r| {
                 r.fill(Circle::new((1., 1.), 1.), white());
             });
             material(r, 0.);
         });
+        assert_eq!(runs, 1);
     }
 
     #[test]
-    #[should_panic(expected = "a backdrop shader takes at most 64")]
-    fn an_effect_with_more_than_64_uniforms_panics() {
-        let _ = MaterialEffect::new(vec![0.; 65]);
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a backdrop shader takes at most 64")
+    )]
+    fn an_effect_with_more_than_64_uniforms_drops_the_surplus() {
+        let effect = MaterialEffect::new(vec![0.5; 65]);
+        assert_eq!(effect, MaterialEffect::new(vec![0.5; 64]));
     }
 
     #[test]
-    #[should_panic(expected = "uniform 1 is NaN")]
-    fn an_effect_with_a_non_finite_uniform_panics() {
-        let _ = MaterialEffect::new(vec![0., f32::NAN]);
+    #[cfg_attr(debug_assertions, should_panic(expected = "uniform 1 is NaN"))]
+    fn an_effect_with_a_non_finite_uniform_zeroes_it() {
+        let effect = MaterialEffect::new(vec![0.5, f32::NAN, f32::INFINITY]);
+        assert_eq!(effect, MaterialEffect::new(vec![0.5, 0., 0.]));
     }
 
     #[test]
-    #[should_panic(expected = "uniform 0 is inf")]
-    fn a_non_finite_uniform_change_panics_in_its_signal_map() {
+    #[cfg_attr(debug_assertions, should_panic(expected = "uniform 0 is inf"))]
+    fn a_non_finite_uniform_change_zeroes_it_in_its_signal_map() {
         let gain = binding(1.0_f32);
         let LayeredContent { runs, .. } =
             Content::record_layered(&LayoutSize::new(), MaterialScope::SOLO, |r| {
@@ -830,31 +887,50 @@ mod tests {
             .material
             .effect()
             .clone();
-        let (_, _guard) = effect.watch(|_| {});
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let (_, _guard) = effect.watch({
+            let seen = Rc::clone(&seen);
+            move |context| seen.borrow_mut().push(context.into_value())
+        });
         gain.set(f32::INFINITY);
+        assert_eq!(*seen.borrow(), [MaterialEffect::new(vec![0.])]);
     }
 
     #[test]
-    #[should_panic(expected = "shader MaterialShader(1) is registered twice")]
-    fn a_duplicate_shader_key_panics() {
-        let source = || BackdropShaderSource::wgsl("");
-        MaterialRegistry::new()
-            .register_shader(GLASS, source())
-            .register_shader(GLASS, source());
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "shader MaterialShader(1) is registered twice")
+    )]
+    fn a_duplicate_shader_key_keeps_the_first_registration() {
+        let mut registry = MaterialRegistry::new();
+        registry
+            .register_shader(GLASS, BackdropShaderSource::wgsl("first"))
+            .register_shader(GLASS, BackdropShaderSource::wgsl("second"));
+        let kept = registry.shader(GLASS).expect("registered");
+        assert_eq!(kept.source, "first");
     }
 
     #[test]
-    #[should_panic(expected = "capture class CaptureClass(7) is registered twice")]
-    fn a_duplicate_capture_class_key_panics() {
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "capture class CaptureClass(7) is registered twice")
+    )]
+    fn a_duplicate_capture_class_key_keeps_the_first_registration() {
         let capture = MaterialCapture {
             scale: CaptureScale::FULL,
             levels: CaptureLevels::ONE,
             grouping: MaterialGrouping::Shared,
             blend_space: BlendSpace::Linear,
         };
-        MaterialRegistry::new()
+        let other = MaterialCapture {
+            grouping: MaterialGrouping::Solo,
+            ..capture
+        };
+        let mut registry = MaterialRegistry::new();
+        registry
             .register_capture_class(CHROME, capture)
-            .register_capture_class(CHROME, capture);
+            .register_capture_class(CHROME, other);
+        assert_eq!(registry.capture_class(CHROME), Some(&capture));
     }
 
     #[test]

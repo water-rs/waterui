@@ -447,17 +447,48 @@ pub enum MeshGradientError {
     },
 }
 
-impl TryFrom<MeshGradientData> for MeshGradient {
-    type Error = MeshGradientError;
-
-    fn try_from(data: MeshGradientData) -> Result<Self, Self::Error> {
+impl<'de> Deserialize<'de> for MeshGradient {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let MeshGradientData {
             columns,
             rows,
             points,
             colors,
             interpolation,
-        } = data;
+        } = MeshGradientData::deserialize(deserializer)?;
+        Self::new(columns, rows, points, colors)
+            .map(|mesh| mesh.interpolation(interpolation))
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// A mesh gradient: a grid of `columns` × `rows` patches whose corner points
+/// carry colours, interpolated across each patch.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct MeshGradient {
+    columns: u32,
+    rows: u32,
+    points: Vec<Point>,
+    colors: Vec<Color>,
+    #[serde(default, skip_serializing_if = "MeshColorInterpolation::is_linear")]
+    interpolation: MeshColorInterpolation,
+}
+
+impl MeshGradient {
+    /// Creates a mesh gradient. `points` and `colors` list the
+    /// `(columns + 1) × (rows + 1)` grid vertices row by row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MeshGradientError`] when the grid is empty, its vertex
+    /// count overflows addressable storage, or either list does not hold
+    /// one entry per vertex.
+    pub fn new(
+        columns: u32,
+        rows: u32,
+        points: Vec<Point>,
+        colors: Vec<Color>,
+    ) -> Result<Self, MeshGradientError> {
         if columns == 0 || rows == 0 {
             return Err(MeshGradientError::Empty { columns, rows });
         }
@@ -481,42 +512,8 @@ impl TryFrom<MeshGradientData> for MeshGradient {
             rows,
             points,
             colors,
-            interpolation,
-        })
-    }
-}
-
-/// A mesh gradient: a grid of `columns` × `rows` patches whose corner points
-/// carry colours, interpolated across each patch.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "MeshGradientData")]
-pub struct MeshGradient {
-    columns: u32,
-    rows: u32,
-    points: Vec<Point>,
-    colors: Vec<Color>,
-    #[serde(default, skip_serializing_if = "MeshColorInterpolation::is_linear")]
-    interpolation: MeshColorInterpolation,
-}
-
-impl MeshGradient {
-    /// Creates a mesh gradient. `points` and `colors` list the
-    /// `(columns + 1) × (rows + 1)` grid vertices row by row.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the grid is empty or when either list does not hold one
-    /// entry per vertex.
-    #[must_use]
-    pub fn new(columns: u32, rows: u32, points: Vec<Point>, colors: Vec<Color>) -> Self {
-        Self::try_from(MeshGradientData {
-            columns,
-            rows,
-            points,
-            colors,
             interpolation: MeshColorInterpolation::Linear,
         })
-        .unwrap_or_else(|error| panic!("{error}"))
     }
 
     /// Selects the colour weights without changing the mesh geometry.
@@ -732,14 +729,27 @@ pub enum Draw {
 mod mesh_overflow_tests {
     #[test]
     fn overflowing_grid_is_rejected_before_vertex_access() {
-        let error = super::MeshGradient::try_from(super::MeshGradientData {
-            columns: u32::MAX,
-            rows: u32::MAX,
-            points: vec![],
-            colors: vec![],
-            interpolation: super::MeshColorInterpolation::Linear,
-        })
-        .expect_err("unaddressable grid");
+        let error = super::MeshGradient::new(u32::MAX, u32::MAX, vec![], vec![])
+            .expect_err("unaddressable grid");
         assert_eq!(error, super::MeshGradientError::GridOverflow);
+    }
+
+    #[test]
+    fn a_malformed_grid_is_an_error() {
+        assert_eq!(
+            super::MeshGradient::new(0, 1, vec![], vec![]),
+            Err(super::MeshGradientError::Empty {
+                columns: 0,
+                rows: 1
+            })
+        );
+        assert_eq!(
+            super::MeshGradient::new(1, 1, vec![], vec![]),
+            Err(super::MeshGradientError::VertexCount {
+                list: "point",
+                vertices: 4,
+                len: 0
+            })
+        );
     }
 }

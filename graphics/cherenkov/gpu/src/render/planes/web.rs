@@ -33,6 +33,7 @@
 use kurbo::{Affine, Size};
 use rustc_hash::FxHashMap;
 use wasm_bindgen::JsCast as _;
+use waterui_contract::contract_violation;
 use web_sys::{Element, HtmlCanvasElement, HtmlElement};
 
 use cherenkov::{FillRule, LayerId, RenderError, ShapeData, SurfaceError};
@@ -110,15 +111,18 @@ impl DomTarget {
     /// Sets the refresh range for backend animation and presentation
     /// retries.
     ///
-    /// # Panics
-    /// When the range is empty or includes zero.
+    /// # Contract
+    /// An empty range or one that includes zero is a contract violation;
+    /// the request is ignored and the previous refresh range stays.
     #[must_use]
     pub fn rate(mut self, rate: cherenkov::RefreshRange) -> Self {
-        assert!(
-            *rate.start() > 0 && !rate.is_empty(),
-            "refresh range must be positive and ordered"
-        );
-        self.refresh = rate;
+        if *rate.start() > 0 && !rate.is_empty() {
+            self.refresh = rate;
+        } else {
+            contract_violation!(
+                "refresh range must be positive and ordered; the request is ignored and the previous range stays"
+            );
+        }
         self
     }
 

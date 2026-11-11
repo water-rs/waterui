@@ -29,6 +29,7 @@ half = "2"
 rayon = "1"
 rustc-hash = "2"
 tracing = "0.1"
+waterui-contract.workspace = true
 cherenkov-simd = { version = "0.0.0", path = "../simd", default-features = false, features = ["std"] }
 
 [dev-dependencies]

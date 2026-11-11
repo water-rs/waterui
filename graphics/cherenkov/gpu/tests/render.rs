@@ -80,7 +80,9 @@ fn a_red_rect_renders_and_reads_back() -> Result<(), Box<dyn std::error::Error>>
 split_test! {
 /// Pushing a layer under its own subtree — the surface root under a
 /// descendant included — would close a cycle the lowering recursion
-/// cannot escape; the commit must reject the op.
+/// cannot escape; the commit must reject the op. It is a contract
+/// violation: a debug build panics on the render thread, a release build
+/// refuses the attachment and renders the acyclic tree.
 fn a_cyclic_layer_tree_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
     let Some(engine) = wait!(engine()) else {
         return Ok(());
@@ -93,11 +95,13 @@ fn a_cyclic_layer_tree_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
         tx[&a].push(&b);
         tx[&b].push(&a);
     });
-    // The shared tree fails before lowering can recurse into the cycle.
-    assert!(matches!(
-        wait!(engine.render(cherenkov::FrameTime::now())),
-        Err(RenderError::Thread)
-    ));
+    // The shared tree refuses the cycle before lowering can recurse into it.
+    let rendered = wait!(engine.render(cherenkov::FrameTime::now()));
+    if cfg!(debug_assertions) {
+        assert!(matches!(rendered, Err(RenderError::Thread)));
+    } else {
+        rendered?;
+    }
     Ok(())
 }
 }

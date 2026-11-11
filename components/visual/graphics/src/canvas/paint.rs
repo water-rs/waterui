@@ -344,6 +344,7 @@ impl MeshGradient {
             self.points.iter().copied().map(kpoint).collect(),
             self.colors.clone(),
         )
+        .expect("`MeshGradient::new` validated the grid this lowers")
     }
 }
 

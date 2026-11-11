@@ -49,6 +49,8 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
 
 use rustc_hash::{FxHashMap, FxHashSet};
+#[cfg(any(target_vendor = "apple", target_os = "android"))]
+use waterui_contract::contract_violation;
 use wgpu::util::DeviceExt;
 
 use crate::interop::ExternalFrame;
@@ -3792,13 +3794,17 @@ impl Renderer for GpuRenderer {
     /// the reply hands it back before the next frame's acquire (#2261).
     /// The marker is demanded only when the frame carried a commit: a
     /// caller off-main that awaits a frame covering an Apple window
-    /// surface fails here, while frames with nothing to commit apply to
-    /// nothing.
+    /// surface breaks the contract here and the frame is not presented,
+    /// while frames with nothing to commit apply to nothing.
     #[cfg(all(not(target_arch = "wasm32"), target_vendor = "apple"))]
     fn apply_frame_commit(commit: Self::FrameCommit) {
         for commit in commit.into_iter().flatten() {
-            let mtm = objc2::MainThreadMarker::new()
-                .expect("an Apple window surface's frame must be awaited on the main thread");
+            let Some(mtm) = objc2::MainThreadMarker::new() else {
+                contract_violation!(
+                    "an Apple window surface's frame must be awaited on the main thread; the commit is dropped and its drawables are released unpresented"
+                );
+                continue;
+            };
             commit.apply(mtm);
         }
     }
@@ -3831,7 +3837,7 @@ impl Renderer for GpuRenderer {
                 // Only Apple windows complete work after a render: a
                 // promoted plane's attach on the main queue.
                 #[cfg(target_vendor = "apple")]
-                let surface = self.open_window(id, window, size, waker.clone());
+                let surface = self.open_window(id, window, size, waker.clone())?;
                 #[cfg(not(target_vendor = "apple"))]
                 let surface = self.open_window(id, window, size)?;
                 (surface, None, refresh, true)
@@ -3985,18 +3991,17 @@ impl Renderer for GpuRenderer {
     /// swapchain is the band's presentation surface, which the surface's
     /// plane system fills with that region's engine composition.
     ///
-    /// # Panics
-    /// When the target is not a window, when the surface presents through
-    /// no `SurfaceControl` plane system, or when the band's swapchain
-    /// cannot be created.
+    /// # Contract
+    /// A target that is not a window, or a surface that presents through no
+    /// `SurfaceControl` plane system, is a contract violation; the request is
+    /// ignored. A band whose swapchain cannot be created is logged and
+    /// cleared, so its content is not shown.
     #[cfg(target_os = "android")]
     fn set_band(&mut self, id: SurfaceId, window_id: u64, target: Option<Self::Target>) {
-        let band = target.map(|target| {
-            let crate::GpuTarget::Window(window) = target else {
-                panic!("surface {id:?}: a band presents through a window target");
-            };
-            surface_control::planes::Band::new(
-                present::WindowSurface::new(
+        let band = match target {
+            None => None,
+            Some(crate::GpuTarget::Window(window)) => {
+                match present::WindowSurface::new(
                     &self.instance,
                     &self.adapter,
                     &self.device,
@@ -4005,15 +4010,37 @@ impl Renderer for GpuRenderer {
                     window.output,
                     None,
                 )
-                .unwrap_or_else(|error| {
-                    panic!("surface {id:?}: host window {window_id}'s band swapchain: {error}")
-                }),
-            )
-        });
-        self.planes
-            .get_mut(&id)
-            .unwrap_or_else(|| panic!("surface {id:?} has no plane system to present bands"))
-            .set_band(window_id, band);
+                .map_err(|error| error.to_string())
+                .and_then(|swapchain| {
+                    surface_control::planes::Band::new(swapchain).map_err(|format| {
+                        format!(
+                            "a band's RGBA_8888 reader cannot hold the swapchain's {format:?} images"
+                        )
+                    })
+                }) {
+                    Ok(band) => Some(band),
+                    Err(error) => {
+                        tracing::error!(
+                            "surface {id:?}: host window {window_id}'s band swapchain: {error}; the band is cleared and its content is not shown"
+                        );
+                        None
+                    }
+                }
+            }
+            Some(_) => {
+                contract_violation!(
+                    "surface {id:?}: a band presents through a window target; the request is ignored"
+                );
+                return;
+            }
+        };
+        let Some(planes) = self.planes.get_mut(&id) else {
+            contract_violation!(
+                "surface {id:?} has no plane system to present bands; the request is ignored"
+            );
+            return;
+        };
+        planes.set_band(window_id, band);
     }
 
     fn destroy_surface(&mut self, id: SurfaceId) {
@@ -5925,13 +5952,13 @@ impl GpuRenderer {
         window: crate::WindowTarget,
         size: (u32, u32),
         waker: cherenkov::CompletionWaker,
-    ) -> Option<present::WindowSurface> {
+    ) -> Result<Option<present::WindowSurface>, SurfaceError> {
         let system = planes::apple::LayerPlanes::new(
             &self.instance,
             &self.adapter,
             &self.device,
             &self.queue,
-            window.parent,
+            window.parent?,
             size,
             window.output,
             window.probe,
@@ -5945,7 +5972,7 @@ impl GpuRenderer {
                 self.pipeline_cache.clone(),
             )
         });
-        None
+        Ok(None)
     }
 
     /// Opens a window target: one swapchain the surface's target is blitted
@@ -12336,6 +12363,38 @@ fn notify_texture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A commit that records whether it was applied.
+    #[cfg(all(not(target_arch = "wasm32"), target_vendor = "apple"))]
+    struct Applied(Arc<std::sync::atomic::AtomicBool>);
+
+    #[cfg(all(not(target_arch = "wasm32"), target_vendor = "apple"))]
+    impl planes::apple::CommitApply for Applied {
+        fn apply(self: Box<Self>, _mtm: objc2::MainThreadMarker) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// A frame awaited off the main thread drops its commit unapplied.
+    #[cfg(all(not(target_arch = "wasm32"), target_vendor = "apple"))]
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(
+            expected = "an Apple window surface's frame must be awaited on the main thread"
+        )
+    )]
+    fn a_frame_commit_off_the_main_thread_is_dropped() {
+        let applied = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let commit: FrameCommits = vec![None, Some(Box::new(Applied(applied.clone())))];
+        // A spawned thread is never the main thread.
+        if let Err(panic) =
+            std::thread::spawn(move || GpuRenderer::apply_frame_commit(commit)).join()
+        {
+            std::panic::resume_unwind(panic);
+        }
+        assert!(!applied.load(Ordering::Relaxed), "the commit is dropped");
+    }
 
     /// Drives the window decision with scripted poll outcomes and a
     /// scripted retirement frontier — no device needed.

@@ -392,7 +392,8 @@ impl<B: Backend> Engine<B> {
     /// beneath the next mark presents into `target`, which the host stacks
     /// right above the window (water-rs/waterui#2225). `None` leaves the
     /// region with no band, and its content is not shown. A renderer
-    /// without a band realization panics on the render thread
+    /// without a band realization reports a contract violation on the render
+    /// thread and drops the band
     /// ([`Renderer::set_band`](crate::Renderer::set_band)).
     ///
     /// # Errors
@@ -960,6 +961,33 @@ mod tests {
             wakes.load(Ordering::Relaxed),
             1,
             "the delivered wake coalesces until a render"
+        );
+    }
+
+    /// A second scope on a surface is inert: dropping it leaves the first
+    /// scope's frame open.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a surface has at most one open FrameScope")
+    )]
+    fn a_second_frame_scope_is_inert() {
+        let (_engine, surface, wakes) = counted_surface();
+        let first = surface.begin_frame();
+        let second = surface.begin_frame();
+        edit(&surface, 0.5);
+        drop(second);
+        edit(&surface, 0.25);
+        assert_eq!(
+            wakes.load(Ordering::Relaxed),
+            0,
+            "the first scope still holds the frame"
+        );
+        drop(first);
+        assert_eq!(
+            wakes.load(Ordering::Relaxed),
+            1,
+            "the first scope's end woke"
         );
     }
 

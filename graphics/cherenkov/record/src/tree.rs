@@ -9,6 +9,7 @@ mod projective;
 
 use crate::Instant;
 use rustc_hash::FxHashMap;
+use waterui_contract::contract_violation;
 
 use kurbo::{Affine, Vec2};
 
@@ -24,6 +25,14 @@ use crate::projective::{Projective, ProjectiveError};
 use crate::shape::ShapeData;
 use crate::style::{BlendMode, FilterId};
 use crate::target::Target;
+
+/// `prop` for a property other than `scroll_offset`, which takes no
+/// `Decay`: one that carries it lands without animation, after a contract
+/// violation.
+fn without_decay<T>(mut prop: Prop<T>) -> Prop<T> {
+    prop.animation = prop.animation.and_then(Animation::except_decay);
+    prop
+}
 
 /// Folds slot updates into a layer's content flags: an update can only
 /// add a non-`Normal` group or a translucent operand.
@@ -471,7 +480,9 @@ impl<T: Animatable> Track<T> {
     where
         T: AnimLanes,
     {
-        let lanes = prop.keyframes.lanes(prop.repeat);
+        let lanes = prop.keyframes.lanes(prop.repeat).expect(
+            "a layer property is an affine, vector or scalar: its values share one lane layout",
+        );
         assert_eq!(
             lanes.width(),
             T::Lanes::N,
@@ -770,8 +781,8 @@ impl SurfaceTree {
     fn apply_projective(&mut self, op: LayerOp) {
         match op {
             LayerOp::Projection(id, base) => self.projective_mut(id).set_projection(base),
-            LayerOp::Tilt(id, prop) => self.projective_mut(id).set_tilt(&prop),
-            LayerOp::Depth(id, prop) => self.projective_mut(id).set_depth(&prop),
+            LayerOp::Tilt(id, prop) => self.projective_mut(id).set_tilt(&without_decay(prop)),
+            LayerOp::Depth(id, prop) => self.projective_mut(id).set_depth(&without_decay(prop)),
             LayerOp::ClearProjection(id) => {
                 assert!(
                     self.nodes.contains_key(&id.raw()),
@@ -916,8 +927,14 @@ impl SurfaceTree {
     /// # Panics
     /// Panics on an op naming a layer that is not in the tree: after
     /// `Create` ordering is respected, an unknown layer is an invariant
-    /// violation. Attaching the root or closing a cycle also panics before
-    /// mutating the tree.
+    /// violation.
+    ///
+    /// # Contract
+    /// Attaching the root, closing a cycle, detaching from a layer that is
+    /// not the child's parent, and a `Decay` animation on a property other
+    /// than `scroll_offset` are contract violations. The op then changes
+    /// nothing, except that the `Decay` property change lands without
+    /// animation.
     pub fn apply(&mut self, op: LayerOp) {
         let content = matches!(&op, LayerOp::Content(..));
         let touched = match &op {
@@ -994,6 +1011,7 @@ impl SurfaceTree {
             }
             LayerOp::Remove(_) => unreachable!("Remove goes through `apply_op` or `remove`"),
             LayerOp::Transform(id, prop) => {
+                let prop = without_decay(prop);
                 let node = self.node_mut(id);
                 if let Some(components) = &mut node.components {
                     set_prop(&mut node.transform_track, &mut components.base, &prop);
@@ -1012,6 +1030,7 @@ impl SurfaceTree {
             | LayerOp::Depth(..)
             | LayerOp::ClearProjection(_)) => self.apply_projective(op),
             LayerOp::Opacity(id, prop) => {
+                let prop = without_decay(prop);
                 let node = self.node_mut(id);
                 set_prop(&mut node.opacity_track, &mut node.opacity, &prop);
             }
@@ -1043,15 +1062,7 @@ impl SurfaceTree {
                     "pushing unknown layer {}",
                     child.raw()
                 );
-                self.assert_attachment(parent, child);
-                self.detach(child);
-                let blends = self.layer(child).blend != BlendMode::Normal;
-                self.node_mut(child).parent = Some(parent);
-                let parent_node = self.node_mut(parent);
-                parent_node.children.push(child);
-                parent_node.blending_children += u32::from(blends);
-                let attached = parent_node.attached;
-                self.set_attached(child, attached);
+                self.attach(parent, usize::MAX, child);
             }
             LayerOp::Insert {
                 parent,
@@ -1063,27 +1074,37 @@ impl SurfaceTree {
                     "inserting unknown layer {}",
                     child.raw()
                 );
-                self.assert_attachment(parent, child);
-                self.detach(child);
-                let blends = self.layer(child).blend != BlendMode::Normal;
-                self.node_mut(child).parent = Some(parent);
-                let node = self.node_mut(parent);
-                let index = index.min(node.children.len());
-                node.children.insert(index, child);
-                node.blending_children += u32::from(blends);
-                let attached = node.attached;
-                self.set_attached(child, attached);
+                self.attach(parent, index, child);
             }
             LayerOp::Detach { parent, child } => {
-                assert_eq!(
-                    self.layer(child).parent,
-                    Some(parent),
-                    "detaching from the wrong parent"
-                );
+                if self.layer(child).parent != Some(parent) {
+                    contract_violation!(
+                        "detaching from the wrong parent; the layer stays where it is"
+                    );
+                    return;
+                }
                 self.detach(child);
                 self.set_attached(child, false);
             }
         }
+    }
+
+    /// Moves `child` under `parent` at `index`, or after the last child
+    /// when `index` is past them, unless the attachment is refused (see
+    /// [`attachable`](Self::attachable)).
+    fn attach(&mut self, parent: LayerId, index: usize, child: LayerId) {
+        if !self.attachable(parent, child) {
+            return;
+        }
+        self.detach(child);
+        let blends = self.layer(child).blend != BlendMode::Normal;
+        self.node_mut(child).parent = Some(parent);
+        let node = self.node_mut(parent);
+        let index = index.min(node.children.len());
+        node.children.insert(index, child);
+        node.blending_children += u32::from(blends);
+        let attached = node.attached;
+        self.set_attached(child, attached);
     }
 
     /// Marks `id`'s subtree as reaching the root or not. A subtree
@@ -1104,13 +1125,25 @@ impl SurfaceTree {
         }
     }
 
-    fn assert_attachment(&self, parent: LayerId, child: LayerId) {
-        assert_ne!(child, self.root, "the root layer cannot be attached");
+    /// Whether `child` can be attached under `parent`. Attaching the root
+    /// or closing a cycle is a contract violation: the attachment is
+    /// refused and the tree stays as it is.
+    fn attachable(&self, parent: LayerId, child: LayerId) -> bool {
+        if child == self.root {
+            contract_violation!("the root layer cannot be attached; the attachment is refused");
+            return false;
+        }
         let mut cursor = Some(parent);
         while let Some(id) = cursor {
-            assert_ne!(id, child, "layer attachment would create a cycle");
+            if id == child {
+                contract_violation!(
+                    "layer attachment would create a cycle; the attachment is refused"
+                );
+                return false;
+            }
             cursor = self.layer(id).parent;
         }
+        true
     }
 
     fn detach(&mut self, child: LayerId) {
@@ -1360,17 +1393,25 @@ mod hierarchy_tests {
     }
 
     #[test]
-    #[should_panic(expected = "layer attachment would create a cycle")]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "layer attachment would create a cycle")
+    )]
     fn attaching_a_layer_under_its_subtree_is_a_cycle() {
         let mut tree = tree();
         tree.apply(LayerOp::Push {
             parent: LayerId::new(2),
             child: LayerId::new(1),
         });
+        assert_eq!(tree.layer(LayerId::new(1)).parent, Some(tree.root()));
+        assert_eq!(tree.layer(LayerId::new(2)).children, []);
     }
 
     #[test]
-    #[should_panic(expected = "layer attachment would create a cycle")]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "layer attachment would create a cycle")
+    )]
     fn inserting_a_layer_under_itself_is_a_cycle() {
         let mut tree = tree();
         tree.apply(LayerOp::Insert {
@@ -1378,16 +1419,59 @@ mod hierarchy_tests {
             child: LayerId::new(1),
             index: 0,
         });
+        assert_eq!(tree.layer(LayerId::new(1)).parent, Some(tree.root()));
+        assert_eq!(tree.layer(LayerId::new(1)).children, [LayerId::new(2)]);
     }
 
     #[test]
-    #[should_panic(expected = "the root layer cannot be attached")]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "the root layer cannot be attached")
+    )]
     fn attaching_the_root_is_rejected() {
         let mut tree = tree();
         tree.apply(LayerOp::Push {
             parent: LayerId::new(2),
             child: tree.root(),
         });
+        assert_eq!(tree.layer(tree.root()).parent, None);
+        assert_eq!(tree.layer(LayerId::new(2)).children, []);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "detaching from the wrong parent")
+    )]
+    fn detaching_from_the_wrong_parent_leaves_the_layer_in_place() {
+        let mut tree = tree();
+        tree.apply(LayerOp::Detach {
+            parent: tree.root(),
+            child: LayerId::new(2),
+        });
+        assert_eq!(tree.layer(LayerId::new(2)).parent, Some(LayerId::new(1)));
+        assert_eq!(tree.layer(LayerId::new(1)).children, [LayerId::new(2)]);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "Decay is only legal on scroll_offset")
+    )]
+    fn a_decay_on_opacity_lands_the_change_without_animation() {
+        let mut tree = tree();
+        let id = LayerId::new(1);
+        tree.apply(LayerOp::Opacity(
+            id,
+            Prop {
+                target: 0.25,
+                animation: Some(Decay::new(Vec2::new(0., 100.)).into()),
+                start: None,
+            },
+        ));
+        assert!((tree.layer(id).opacity - 0.25).abs() < f32::EPSILON);
+        let sampling = tree.sample(Instant::now(), 1.0);
+        assert!(!sampling.stepped, "no track runs");
     }
 
     /// A commit never emits `Remove` before `Push` for one layer; a

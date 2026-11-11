@@ -7,6 +7,7 @@ use std::ops::Range;
 
 use kurbo::Affine;
 use smallvec::SmallVec;
+use waterui_contract::contract_violation;
 
 use crate::{
     BlendMode, Command, Dirty, DisplayList, FillRule, Group, RenderError, ShapeData, TextLayouts,
@@ -549,13 +550,16 @@ impl<O: Operation, E> Content<O, E> {
     /// command structure, so the content is lowered again at the next
     /// prepare, as after a replacement, while the layer keeps it.
     ///
-    /// # Panics
-    /// When the edit targets immutable picture content.
+    /// # Contract
+    /// An edit targeting immutable picture content is a contract violation;
+    /// the content stays as it is.
     pub fn edit(&mut self, edit: crate::Edit) {
-        assert!(
-            self.live,
-            "a structural edit targets immutable picture content"
-        );
+        if !self.live {
+            contract_violation!(
+                "a structural edit targets immutable picture content; the edit is dropped"
+            );
+            return;
+        }
         self.list.edit(edit);
         self.dirty = Dirty::default();
         self.emissions.clear();
@@ -568,10 +572,16 @@ impl<O: Operation, E> Content<O, E> {
 
     /// Accumulate every commit arriving before the next render.
     ///
-    /// # Panics
-    /// When slot updates target immutable picture content.
+    /// # Contract
+    /// Slot updates targeting immutable picture content are a contract
+    /// violation; the content stays as it is.
     pub fn update(&mut self, updates: Vec<crate::SlotUpdate>) {
-        assert!(self.live, "slot update targets immutable picture content");
+        if !self.live {
+            contract_violation!(
+                "slot update targets immutable picture content; the updates are dropped"
+            );
+            return;
+        }
         self.dirty.union(self.list.apply(updates));
     }
 
@@ -3034,5 +3044,41 @@ mod content_tests {
             (replacement.clone(), false)
         );
         assert_eq!(content.into_picture(), replacement);
+    }
+
+    fn immutable() -> Content<TestOp, ()> {
+        Content::picture(crate::Picture::record(|c| {
+            c.fill(
+                crate::kurbo::Rect::new(0., 0., 1., 1.),
+                crate::WorkingColor::WHITE,
+            );
+        }))
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a structural edit targets immutable picture content")
+    )]
+    fn an_edit_of_immutable_content_is_dropped() {
+        let mut content = immutable();
+        let before = content.list.clone();
+        content.edit(crate::Edit::default());
+        assert!(!content.rebuild, "the dropped edit forces no rebuild");
+        assert_eq!(content.list, before);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "slot update targets immutable picture content")
+    )]
+    fn slot_updates_of_immutable_content_are_dropped() {
+        let mut content = immutable();
+        content.update(Vec::new());
+        assert!(
+            content.dirty.is_empty(),
+            "the dropped updates dirty nothing"
+        );
     }
 }

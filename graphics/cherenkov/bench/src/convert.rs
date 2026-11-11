@@ -1330,6 +1330,7 @@ mod front {
                 mesh.points().to_vec(),
                 mesh.colors().iter().map(working).collect(),
             )
+            .expect("a scene mesh already passed the same grid validation")
             .interpolation(match mesh.interpolation_mode() {
                 cherenkov_scene::MeshColorInterpolation::Linear => {
                     cherenkov::MeshColorInterpolation::Linear

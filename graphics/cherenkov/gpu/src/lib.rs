@@ -390,7 +390,7 @@ pub struct WindowTarget {
     handle: Box<dyn wgpu::WindowHandle>,
     /// The view's backing layer, captured on the caller's thread.
     #[cfg(target_vendor = "apple")]
-    parent: render::planes::apple::Parent,
+    parent: Result<render::planes::apple::Parent, cherenkov::SurfaceError>,
     size: (u32, u32),
     refresh: cherenkov::RefreshRange,
     output: render::present::OutputRequest,
@@ -401,16 +401,22 @@ impl WindowTarget {
     /// Wraps `handle` (any `raw-window-handle` window, e.g. an
     /// `Arc<winit::window::Window>`) at `size` device pixels.
     ///
-    /// # Panics
-    /// On Apple platforms, off the main thread: the view's layer is captured
-    /// here and a view is main-thread state. Also when the handle is
-    /// unavailable or is not an `AppKit` or `UIKit` view there.
+    /// # Contract
+    /// On Apple platforms the view's layer is captured here and a view is
+    /// main-thread state: a call off the main thread, or with a handle that
+    /// is unavailable or is not an `AppKit` or `UIKit` view, is a contract
+    /// violation, and creating the surface fails with
+    /// [`SurfaceError::UnsupportedTarget`](cherenkov::SurfaceError::UnsupportedTarget).
     pub fn new(handle: impl wgpu::WindowHandle + 'static, size: (u32, u32)) -> Self {
         Self {
             #[cfg(not(target_vendor = "apple"))]
             handle: Box::new(handle),
             #[cfg(target_vendor = "apple")]
-            parent: render::planes::apple::Parent::capture(Box::new(handle)),
+            parent: render::planes::apple::Parent::capture(Box::new(handle)).inspect_err(|error| {
+                waterui_contract::contract_violation!(
+                    "{error}; creating this window target's surface fails"
+                );
+            }),
             size,
             refresh: cherenkov::DEFAULT_REFRESH,
             output: render::present::OutputRequest {
