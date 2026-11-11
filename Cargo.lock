@@ -2169,7 +2169,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -13407,7 +13407,7 @@ dependencies = [
 [[package]]
 name = "waterui-math"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/math?branch=dev#ec88928076fa1e1e4da9613e6224dc0a921a3ca9"
+source = "git+https://github.com/water-rs/math?branch=dev#4f4e006ebd8015a721cc7579b768e87e3b581a23"
 dependencies = [
  "kurbo",
  "mathcat",
