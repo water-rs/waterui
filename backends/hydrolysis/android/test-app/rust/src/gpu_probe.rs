@@ -83,9 +83,9 @@ pub fn view(title: &'static str, gpu: impl View) -> impl View {
 pub fn video() -> impl View {
     use waterui::video::{PlaybackSession, Playlist, Url, VideoPlayer, video::ContentMode};
 
-    /// Sintel's 10 s H.264 clip, the same source the video-player example lists.
+    /// The 10 s H.264 clip the video-player example opens with.
     const SOURCE: &str =
-        "https://test-videos.co.uk/vids/sintel/mp4/h264/720/Sintel_720_10s_1MB.mp4";
+        "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4";
     let url = Url::parse(SOURCE).expect("the probe's source URL is valid");
     view(
         "GPU video player",
