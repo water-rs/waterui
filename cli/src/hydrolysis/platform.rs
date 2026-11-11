@@ -1093,6 +1093,7 @@ mod tests {
             crate::templates::BrowserAnswers {
                 webview_enabled: true,
                 engine: Some(ResolvedWebViewBackend::Cef),
+                video_gpu: false,
             },
         );
         let package_name = "demo-hydrolysis-deadbeef";
@@ -1236,6 +1237,7 @@ mod tests {
             crate::templates::BrowserAnswers {
                 webview_enabled: false,
                 engine: Some(ResolvedWebViewBackend::Wpe),
+                video_gpu: false,
             },
         );
         assert_eq!(rendered_bin_names(&ctx, package_name), [package_name]);
