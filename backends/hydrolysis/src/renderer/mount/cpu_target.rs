@@ -4,9 +4,10 @@
 //! What a CPU cannot realize without a device is refused at mount, naming the
 //! view and the missing GPU: GPU content and external GPU frames. A theme's
 //! backdrop shaders run on the CPU backend's lane executor, through the same
-//! material and chrome groups as on the GPU target. Applied filters are not
-//! realized on this target yet (water-rs/waterui#4065): a filtered view
-//! panics at mount.
+//! material and chrome groups as on the GPU target, and so does a filtered
+//! view's filter: its composed stages run on the raster's bands. A filtered
+//! view the raster cannot run — an arbitrary GPU effect, or a declared output
+//! size — is refused at mount with the reason.
 
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -95,11 +96,15 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_cpu::Raster {
         crate::renderer::unsupported_gpu_device_view("ExternalFrameView", NO_GPU);
     }
 
-    fn filter(_host: &RasterHost, _runtime: &mut FilteredRuntime) -> FilterId {
-        panic!(
-            "hydrolysis: a filtered view runs a shader effect, which the Cherenkov CPU backend \
-             does not realize yet (water-rs/waterui#4065)"
-        );
+    fn filter(host: &RasterHost, runtime: &mut FilteredRuntime) -> FilterId {
+        runtime.filter(|source| {
+            let effect = source.into_cpu().unwrap_or_else(|error| {
+                panic!(
+                    "hydrolysis: a filtered view cannot run on the Cherenkov CPU backend: {error}"
+                )
+            });
+            FilterHandle::new(host.engine.effect(effect))
+        })
     }
 
     fn stretch_filter(host: &RasterHost, filter: OverscrollStretch<Reactive>) -> FilterHandle {

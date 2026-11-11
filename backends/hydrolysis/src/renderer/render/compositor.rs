@@ -556,6 +556,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
     }
 
     /// Records the applied-filter work the frame's render reported.
+    #[cfg(hydrolysis_gpu_painter)]
     fn take_applied_filter_metrics(&mut self) {
         (
             self.frame_applied_filter_count,
@@ -619,10 +620,12 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             frame,
             headroom,
         );
-        self.applied_filter_metrics.reset();
         let rendered = window.surface.render(self.frame_time());
         drop(scope);
-        self.take_applied_filter_metrics();
+        // The raster applies each filter inside its bands: the frame reports
+        // the filters it ran, with no encode leg of its own to time.
+        self.frame_applied_filter_count = state.engine.stats().filters_applied;
+        self.frame_applied_filter_effect = std::time::Duration::ZERO;
         self.engine_tracks = crate::engine::EngineSurface::running_tracks(&window.surface);
         let pixels = match rendered {
             Ok(next) => {

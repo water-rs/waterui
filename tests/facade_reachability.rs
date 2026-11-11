@@ -35,17 +35,18 @@ use waterui::easing::{EasingCurve, Interpolatable};
 #[cfg(feature = "std")]
 use waterui::Intensity;
 
-// `.filter(F)` requires `F: Filter + RenderTransfer` and `.effect(E)` requires
-// `E: Effect + RenderTransfer`; the filter set, the `Filter` and `Effect`
-// traits with the types an effect is written in, and the render-transfer trait
-// answer at `graphics::filter_view` so an app links the same copies the
-// engine runs.
+// `.filter(F)` requires `F: Reach + RenderTransfer` (`Reach` covers every
+// `Filter` of a colour or spatial kind) and `.effect(E)` requires
+// `E: Effect + RenderTransfer`; the filter set, the `Filter`, `Reach` and
+// `Effect` traits with the types an effect is written in, and the
+// render-transfer trait answer at `graphics::filter_view` so an app links the
+// same copies the engine runs.
 #[cfg(feature = "gpu")]
 use waterui::graphics::RenderTransfer;
 #[cfg(feature = "gpu")]
 use waterui::graphics::filter_view::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
-    Filter, RetainedMemory, SHADER_EFFECT_MAX_PARAMS, ShaderEffect, ShaderEffectError,
+    Filter, Reach, RetainedMemory, SHADER_EFFECT_MAX_PARAMS, ShaderEffect, ShaderEffectError,
     TextureViews, filters,
 };
 

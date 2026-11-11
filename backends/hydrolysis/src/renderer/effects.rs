@@ -15,9 +15,9 @@
 //! reactive parameter subscriptions alive exactly as long as the filter can
 //! write them.
 
-#[cfg(hydrolysis_cherenkov)]
+#[cfg(hydrolysis_gpu_painter)]
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-#[cfg(hydrolysis_cherenkov)]
+#[cfg(hydrolysis_gpu_painter)]
 use std::time::Duration;
 
 use super::mount::target::FilterHandle;
@@ -35,7 +35,7 @@ use waterui_graphics::backend::{AnyEffect, ParamGuards};
 /// is no separate capture number to measure: this cell counts the encodes it
 /// can see and their CPU time only.
 #[derive(Debug, Default)]
-#[cfg(hydrolysis_cherenkov)]
+#[cfg(hydrolysis_gpu_painter)]
 pub struct AppliedFilterMetrics {
     /// `encode_render` calls observed this frame.
     encoded: AtomicU32,
@@ -43,7 +43,7 @@ pub struct AppliedFilterMetrics {
     effect_nanos: AtomicU64,
 }
 
-#[cfg(hydrolysis_cherenkov)]
+#[cfg(hydrolysis_gpu_painter)]
 impl AppliedFilterMetrics {
     /// Zeroes the frame counters before the engine renders.
     pub(crate) fn reset(&self) {
@@ -60,13 +60,6 @@ impl AppliedFilterMetrics {
     }
 
     /// Records one completed effect encode.
-    #[cfg_attr(
-        not(hydrolysis_gpu_painter),
-        expect(
-            dead_code,
-            reason = "only the GPU target encodes filters; the CPU target refuses them (water-rs/waterui#4065)"
-        )
-    )]
     fn record(&self, elapsed: Duration) {
         self.encoded.fetch_add(1, Ordering::Relaxed);
         self.effect_nanos.fetch_add(
@@ -90,18 +83,18 @@ pub use gpu::EngineEffect;
 /// long as the layer can draw, and tears them down when the node is dropped.
 pub struct FilteredRuntime {
     #[cfg_attr(
-        not(any(test, hydrolysis_gpu_painter, hydrolysis_hwui)),
+        not(any(test, hydrolysis_runtime)),
         expect(
             dead_code,
-            reason = "the CPU target refuses filters before registering one (water-rs/waterui#4065)"
+            reason = "a build without a painter mounts no filtered view"
         )
     )]
     source: Option<AnyEffect>,
     #[cfg_attr(
-        not(any(test, hydrolysis_gpu_painter, hydrolysis_hwui)),
+        not(any(test, hydrolysis_runtime)),
         expect(
             dead_code,
-            reason = "the CPU target refuses filters before registering one (water-rs/waterui#4065)"
+            reason = "a build without a painter mounts no filtered view"
         )
     )]
     filter: Option<FilterHandle>,
@@ -129,10 +122,10 @@ impl FilteredRuntime {
     /// Registers the effect on first call and returns its id — the runtime
     /// retains the registration until the mount drops it.
     #[cfg_attr(
-        not(any(test, hydrolysis_gpu_painter, hydrolysis_hwui)),
+        not(any(test, hydrolysis_runtime)),
         expect(
             dead_code,
-            reason = "the CPU target refuses filters before registering one (water-rs/waterui#4065)"
+            reason = "a build without a painter mounts no filtered view"
         )
     )]
     pub(crate) fn filter(

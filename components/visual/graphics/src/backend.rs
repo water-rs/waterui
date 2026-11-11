@@ -55,6 +55,8 @@ pub use crate::scene::source::{
 #[cfg(feature = "cpu")]
 pub use crate::scene::raster;
 
+#[cfg(all(feature = "cpu", feature = "effects"))]
+pub use crate::effects::filter_view::CpuEffectError;
 #[cfg(feature = "gpu")]
 pub use crate::effects::filter_view::ErasedEffect;
 #[cfg(feature = "effects")]

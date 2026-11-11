@@ -31,10 +31,9 @@ mod cpu_refusals;
 mod drag_drop;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod dynamic_remeasure;
-// The patch-free capture this pins is an applied filter's, which only the
-// GPU painter realizes until the CPU backend gains shader effects
-// (water-rs/waterui#4065); that issue lifts the painter gate.
-#[cfg(all(hydrolysis_gpu_painter, not(target_arch = "wasm32")))]
+// The patch-free capture this pins is an applied filter's, which both
+// Cherenkov painters realize.
+#[cfg(all(hydrolysis_cherenkov, not(target_arch = "wasm32")))]
 mod emoji_atlas;
 mod gesture_buttons;
 mod gesture_capture;

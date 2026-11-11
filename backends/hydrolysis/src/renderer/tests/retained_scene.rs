@@ -40,7 +40,7 @@ use waterui_layout::container::LazyContainer;
 use waterui_layout::frame::Frame;
 use waterui_layout::stack::ZStackLayout;
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use super::pumped_test_environment;
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
@@ -1115,15 +1115,12 @@ fn collection_membership_enter_reversal_holds_the_allocated_slot() {
     );
 }
 
-// The applied-filter and blur-transition tests below, with their helpers, run
-// on the GPU painter only: the CPU backend realizes no shader effects until
-// water-rs/waterui#4065, which lifts these gates.
-
 /// Pump frames until every filter of `content` has been set up and run once,
 /// then return the frame that rendered them all. Filter setup is asynchronous
-/// (`AppliedFilterRuntime::ensure_setup` spawns it), so the first frames draw
-/// nothing for the filter.
-#[cfg(hydrolysis_gpu_painter)]
+/// on the GPU painter (`AppliedFilterRuntime::ensure_setup` spawns it), so
+/// its first frames draw nothing for the filter; the CPU raster runs a
+/// filter from its first frame.
+#[cfg(hydrolysis_cherenkov)]
 fn pump_until_filters_render(
     runtime: &mut HeadlessRuntime,
     expected_filters: u32,
@@ -1140,7 +1137,7 @@ fn pump_until_filters_render(
     panic!("{expected_filters} applied filter(s) never ran within eight frames");
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 fn pixel(snapshot: &crate::runner::HeadlessSnapshot, x: u32, y: u32) -> [u8; 4] {
     let index = ((y * snapshot.width() + x) * 4) as usize;
     snapshot.rgba8()[index..index + 4]
@@ -1148,7 +1145,7 @@ fn pixel(snapshot: &crate::runner::HeadlessSnapshot, x: u32, y: u32) -> [u8; 4] 
         .expect("four channels per pixel")
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 fn assert_red(snapshot: &crate::runner::HeadlessSnapshot, col: u32, row: u32) {
     let [red, green, blue, _] = pixel(snapshot, col, row);
     assert!(
@@ -1157,7 +1154,7 @@ fn assert_red(snapshot: &crate::runner::HeadlessSnapshot, col: u32, row: u32) {
     );
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 fn assert_blue(snapshot: &crate::runner::HeadlessSnapshot, col: u32, row: u32) {
     let [red, green, blue, _] = pixel(snapshot, col, row);
     assert!(
@@ -1169,7 +1166,7 @@ fn assert_blue(snapshot: &crate::runner::HeadlessSnapshot, col: u32, row: u32) {
 /// Sibling filtered subtrees mount as separate engine filter layers, and each
 /// filter still receives its own subtree's pixels: the two mounts must not
 /// overlap or swap.
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 #[test]
 fn sibling_applied_filters_each_render_their_own_subtree() {
     fn filtered_boxes() -> AnyView {
@@ -1201,7 +1198,7 @@ fn sibling_applied_filters_each_render_their_own_subtree() {
 /// A filter inside a filtered subtree is captured one level deeper, and that
 /// level is rendered first, so the outer filter sees the inner filter's output
 /// rather than an empty slot.
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 #[test]
 fn nested_applied_filters_capture_inner_before_outer() {
     fn nested_boxes() -> AnyView {
@@ -1582,9 +1579,8 @@ fn reduced_pixel_transition_runs_as_opacity() {
 /// A blur transition on a row is realized as a property: halfway through the
 /// removal the ghost still holds its slot and draws blurred — different from
 /// both the rest frame and the settled frame — and the removal then settles
-/// exactly like any other. GPU painter only until water-rs/waterui#4065: the
-/// blur is a shader effect.
-#[cfg(hydrolysis_gpu_painter)]
+/// exactly like any other.
+#[cfg(hydrolysis_cherenkov)]
 #[test]
 fn blur_transition_on_a_collection_item_blurs_the_ghost() {
     let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);

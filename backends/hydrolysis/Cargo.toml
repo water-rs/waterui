@@ -457,8 +457,8 @@ gpu = [
 # the same parley text stack, with no `wgpu` in the graph. Views that need a
 # GPU device (`GpuContentView`, which `ShaderPaintView`, `FlowingGradient` and
 # the GPU video player render through, and `ExternalFrameView`) panic at mount
-# on it; so do filtered views until water-rs/waterui#4065. A theme's backdrop
-# shaders run on the CPU backend's lane executor. With `gpu` as well, the
+# on it. A theme's backdrop shaders and a filtered view's filter run on the CPU
+# backend's lane executor. With `gpu` as well, the
 # offscreen runtime renders on the GPU when adapter selection finds a usable
 # hardware adapter and on the CPU otherwise. The windowed runner presents
 # through the GPU only (water-rs/waterui#4064).
