@@ -239,7 +239,9 @@ impl Highlighter for DefaultHighlighter {
         let mut h = HighlightLines::new(syntax, &self.theme);
         let mut chunks = Vec::new();
 
-        for line in text.lines() {
+        // The syntax set is in newlines mode: each line keeps its ending so
+        // scopes that close at the newline (line comments) do not leak.
+        for line in text.split_inclusive('\n') {
             let Ok(ranges) = h.highlight_line(line, &self.syntax_set) else {
                 // Fallback: return the whole line with default color
                 chunks.push(HighlightChunk {
@@ -257,22 +259,6 @@ impl Highlighter for DefaultHighlighter {
                     color,
                 });
             }
-
-            // Add newline back (syntect strips it)
-            if text.contains('\n') {
-                chunks.push(HighlightChunk {
-                    text: "\n",
-                    color: self.foreground,
-                });
-            }
-        }
-
-        // Handle trailing content without newline
-        if !text.ends_with('\n')
-            && let Some(last) = chunks.last_mut()
-            && last.text == "\n"
-        {
-            chunks.pop();
         }
 
         chunks
