@@ -21,11 +21,6 @@ mod text {
 mod view_builder {
     fn takes_view(_: impl waterui::View) {}
 
-    #[expect(
-        clippy::unused_unit,
-        clippy::semicolon_if_nothing_returned,
-        reason = "the `()` arm is the empty view the builder must accept"
-    )]
     #[waterui::view_builder]
     fn choose(flag: bool) -> impl waterui::View {
         let content = if flag { Some("ready") } else { None };
@@ -40,6 +35,20 @@ mod view_builder {
     #[test]
     fn fn_if_let() {
         let _ = choose(true);
+    }
+
+    // An `else` block is the user's own braces: the lowering must not hand it
+    // to `Err` as an argument, or every plain `if`/`else` warns about braces
+    // the user had to write.
+    #[deny(unused_braces)]
+    #[waterui::view_builder]
+    fn branch_blocks(flag: bool) -> impl waterui::View {
+        if flag { "on" } else { "off" }
+    }
+
+    #[test]
+    fn branch_blocks_lower_without_unused_braces() {
+        takes_view(branch_blocks(false));
     }
 
     struct Sample(bool);
@@ -75,11 +84,8 @@ mod view_builder {
 
     #[test]
     #[expect(
-        clippy::unused_unit,
-        clippy::semicolon_if_nothing_returned,
         clippy::no_effect,
-        reason = "`view!` drops `;`-terminated statements and accepts a `()` arm; \
-                  those token shapes are what this case pins"
+        reason = "`view!` drops `;`-terminated statements; that token shape is what this case pins"
     )]
     fn semicolon_drop() {
         takes_view(waterui::view! {

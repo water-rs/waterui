@@ -4,13 +4,13 @@ use waterui::Binding;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::graphics::color::{Srgb, WorkingColor};
-use waterui::graphics::draw::Draw as _;
-use waterui::graphics::draw::kurbo::{Rect, Shape as _};
 use waterui::layout::Size;
 use waterui::reactive::constant;
+use waterui_graphics::backend::Picture;
+use waterui_graphics::backend::draw::Draw as _;
+use waterui_graphics::backend::draw::kurbo::{Rect, Shape as _};
 use waterui_graphics::{
-    AnimatedMeshGradient, AnimatedMeshGradientConfig, Gradient, MeshGradient, Picture,
-    ShaderPaintView,
+    AnimatedMeshGradient, AnimatedMeshGradientConfig, Gradient, MeshGradient, ShaderPaintView,
 };
 use waterui_testing::{Role, SemanticApp};
 

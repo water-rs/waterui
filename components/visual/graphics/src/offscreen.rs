@@ -403,7 +403,7 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     ///
     /// The renderer makes the drawing its own first:
     /// [`rebuild_for_engine`](PictureRecording::rebuild_for_engine) replays
-    /// the recording's semantic [`PictureSource`](crate::picture::PictureSource)
+    /// the recording's semantic [`PictureSource`](crate::backend::PictureSource)
     /// against this engine's [`SceneResources`], so a recording made on
     /// another engine draws here — even after that engine is gone — and a
     /// recording that names no resource keeps its exact recorded snapshot.
@@ -440,7 +440,7 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     ///
     /// The renderer makes the drawing its own first:
     /// [`rebuild_for_engine`](PictureRecording::rebuild_for_engine) replays
-    /// the recording's semantic [`PictureSource`](crate::picture::PictureSource)
+    /// the recording's semantic [`PictureSource`](crate::backend::PictureSource)
     /// against this engine's [`SceneResources`], so a recording made on
     /// another engine draws here — even after that engine is gone — and a
     /// recording that names no resource keeps its exact recorded snapshot.
@@ -635,9 +635,8 @@ mod tests {
         use crate::scene::source::{ImageColorSpace, ImageData, Rgba8};
         use cherenkov_cpu::Raster;
 
+        use crate::backend::{Picture, PictureSource, RecordingResources};
         use crate::offscreen::{OffscreenImage, OffscreenRenderer, OffscreenSize};
-        use crate::picture::{Picture, PictureSource};
-        use crate::resources::RecordingResources;
 
         /// A 2×1 image: left texel red, right texel blue.
         struct TwoPixels {

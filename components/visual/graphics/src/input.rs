@@ -7,8 +7,8 @@
 //! Two kinds of view receive them: a `GpuContentView` (with the `gpu`
 //! feature), whose engine-hosted GPU content gets them through its
 //! `on_input` handler, and a
-//! [`SceneContent`](crate::scene_view::SceneContent), which records into a
-//! `waterui_graphics::draw::Recorder` and lets the backend decide how the scene reaches
+//! [`SceneContent`](crate::backend::SceneContent), which records into a
+//! `waterui_graphics::backend::draw::Recorder` and lets the backend decide how the scene reaches
 //! the screen.
 //! Every backend used to invent its own adapter for this, so an engine had to
 //! be ported once per backend. This module is the single vocabulary they all
@@ -125,7 +125,7 @@ pub enum ScrollPhase {
 /// One input event delivered to a view that asked for input.
 ///
 /// The receiver is a `GpuContentView`'s `on_input` handler or a
-/// [`SceneContent`](crate::scene_view::SceneContent) returning `true` from its
+/// [`SceneContent`](crate::backend::SceneContent) returning `true` from its
 /// `wants_input_events`.
 ///
 /// Positions are logical and surface-local (see the [module

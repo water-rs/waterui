@@ -7,8 +7,8 @@
 //! rejected at registration with a [`ResourceError`] naming the problem,
 //! never silently dropped.
 //!
-//! [`SceneResources`]: crate::resources::SceneResources
-//! [`SceneBackend`]: crate::resources::SceneBackend
+//! [`SceneResources`]: crate::backend::SceneResources
+//! [`SceneBackend`]: crate::backend::SceneBackend
 //! [`ResourceError`]: crate::draw::ResourceError
 
 use alloc::borrow::Cow;

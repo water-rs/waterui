@@ -113,11 +113,11 @@ pub trait SceneContent: 'static {
     /// it still holds returns the same registration without a new upload.
     /// A new registration is validated on the calling thread and queued on
     /// the target — an image beyond
-    /// [`RecordingResources::image_limits`](crate::resources::RecordingResources::image_limits)
+    /// [`RecordingResources::image_limits`](crate::backend::RecordingResources::image_limits)
     /// fails right there with `ResourceError::TooLarge`, and one that does
     /// not fit the image budget beside the images already registered with
     /// `ResourceError::OverBudget`; see the contract on
-    /// [`SceneResources`](crate::resources::SceneResources#blocking).
+    /// [`SceneResources`](crate::backend::SceneResources#blocking).
     /// The id to record comes from [`RecordingResources::name`], which holds
     /// the registration for this recording. It is the only way to get an id
     /// from a handle, so name the resource in every call that draws it rather
@@ -132,12 +132,12 @@ pub trait SceneContent: 'static {
     ///
     /// A host calls this with the [`RecordingResources`] of the recording
     /// `recorder` records into, and keeps that recording's
-    /// [`HeldResources`](crate::resources::HeldResources) for as long as the
+    /// [`HeldResources`](crate::backend::HeldResources) for as long as the
     /// recording is installed.
     ///
     /// Returns true when the content requires another frame to be rendered.
     ///
-    /// [`Registered`]: crate::resources::Registered
+    /// [`Registered`]: crate::backend::Registered
     fn build_scene(
         &mut self,
         recorder: &mut Recorder,
@@ -160,7 +160,7 @@ pub trait SceneContent: 'static {
     /// Content that owns no engine-bound state must implement this explicitly
     /// as an empty reset.
     /// Content that caches a [`Registered`](crate::scene::resources::Registered),
-    /// a [`PictureRecording`](crate::picture::PictureRecording), or another
+    /// a [`PictureRecording`](crate::backend::PictureRecording), or another
     /// generation-bound value must preserve its semantic inputs while
     /// rebuilding that value.
     fn rebuild_for_engine(&mut self);
