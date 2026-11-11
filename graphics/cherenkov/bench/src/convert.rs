@@ -1046,6 +1046,10 @@ mod front {
         let levels = cherenkov::CaptureLevels::new(group.levels)
             .map_err(|error| BenchError::Engine(format!("backdrop group {}: {error}", group.id)))?;
         let mut spec = cherenkov::BackdropSpec::new(scale, levels)
+            .pyramid(match group.pyramid {
+                cherenkov_scene::CapturePyramid::Box => cherenkov::CapturePyramid::Box,
+                cherenkov_scene::CapturePyramid::Gaussian => cherenkov::CapturePyramid::Gaussian,
+            })
             .blend_space(engine_blend_space(group.blend_space));
         if let Some(k) = group.union {
             let narrowed = k as f32;
