@@ -601,19 +601,29 @@ less can still be sent to the sweep by a loose row; tightening the rows
 (water-rs/waterui#3238) is what brings such content back to the GPU
 route.
 
-Where the allocator suballocates device memory from bounded blocks
-(Vulkan: `interop::suballocation_limit`), every scratch buffer is also
-held to that block, so generation memory comes from and returns to the
-suballocator instead of a dedicated driver allocation per frame
-(water-rs/waterui#4108). Draws are batched so no batch passes it, and a
-path that alone would is generated in slices of whole strips across
-batches: each slice is the path with its clip narrowed to those rows,
-which is exact because winding is carried only along a row, and all of
-a path's slices fill one arena block replayed as one entry. A path whose
-row-independent part — elements, stroke records, segments and stroker
-scratch — alone passes the block cannot shrink by slicing and is drawn
-whole in a batch of its own under the binding limit. The block never
-decides the route.
+The generation scratch buffers are retained across frames, so a scratch
+set larger than the allocator's suballocated blocks is allocated once
+rather than as a dedicated driver allocation per frame
+(water-rs/waterui#4108, water-rs/waterui#4174). Each is sized to the
+largest batch any frame since the last release has needed and grows only
+when a frame needs more; a submitted frame that generates no coverage
+releases them, and so does a memory trim. Draws are batched under the
+binding limit, so an ordinary frame runs in as few batches as it allows,
+and a path that alone would pass the limit (one the route does not admit,
+forced onto the GPU) is generated in slices of whole strips across
+batches: each slice is the path with its clip narrowed to those rows
+and its inputs narrowed to the units reaching them, which is exact
+because winding is carried only along a row, and all of a path's slices
+fill one arena block replayed as one entry. A unit is a fill element or
+a stroke subpath, whose vertex links, joins and dash scan stay within
+it; it reaches the rows its control hull, or its subpath's outline
+charges, spans, widened by a row for the kernels' f32 evaluation. A
+slice uploads, flattens and strokes only its units, renumbered as one
+range, so a sliced path's inputs are read about once per frame rather
+than once per slice (water-rs/waterui#4131), and its grid is the bbox
+of those units within its rows. A path one of whose strips alone passes
+the limit cannot shrink by slicing and is drawn whole in a batch of its
+own. The allocator's block size never decides batching or the route.
 
 *Alternatives considered:* grow-and-retry across frames (needs a
 readback of the overflow flag, and makes a frame's output depend on

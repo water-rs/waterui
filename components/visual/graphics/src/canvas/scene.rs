@@ -8,7 +8,6 @@ use alloc::string::{String, ToString as _};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
-use core::time::Duration;
 use std::collections::HashMap;
 
 use nami::watcher::{BoxWatcherGuard, Context, Metadata};
@@ -26,6 +25,7 @@ use crate::canvas::geometry::lower_rect;
 use crate::canvas::names::Names;
 use crate::canvas::paint::{Paint, affine};
 use crate::canvas::resource::{Font, ImageSource, ImageStatus, Pixels};
+use crate::canvas::size::Claim;
 use crate::canvas::text::TextPlacement;
 use crate::draw::{
     self, Draw as _, FontId, ImageId, Instant, Recorder, ResourceError, ShapeData, kurbo,
@@ -501,6 +501,8 @@ pub struct CanvasScene {
     label: Computed<Option<Str>>,
     value: Computed<Option<Str>>,
     _attribute_guards: [BoxWatcherGuard; 3],
+    /// Holds the canvas's [`CanvasSize`] until the canvas unmounts.
+    _size_claim: Claim,
 }
 
 impl CanvasScene {
@@ -512,8 +514,10 @@ impl CanvasScene {
             intrinsic,
             label,
             value,
+            size,
         } = canvas;
-        let shared = Shared::new(env.clone());
+        let size_claim = size.claim();
+        let shared = Shared::new(env.clone(), size.cell());
         let mut cx = Cx::new(Rc::clone(&shared));
         body(&mut cx);
         let root = Part::new(cx.finish());
@@ -533,6 +537,7 @@ impl CanvasScene {
             label,
             value,
             _attribute_guards: attribute_guards,
+            _size_claim: size_claim,
         }
     }
 
@@ -540,12 +545,8 @@ impl CanvasScene {
     fn follow(&mut self, width: f32, height: f32, time: Option<Instant>) {
         if let Some(time) = time {
             let mounted = *self.mounted.get_or_insert(time);
-            if self.shared.clock.observed() {
-                let elapsed: Duration = time.saturating_duration_since(mounted);
-                if self.shared.clock.snapshot() != elapsed {
-                    self.shared.clock.set(&Context::from(elapsed));
-                }
-            }
+            self.shared
+                .advance_clocks(time.saturating_duration_since(mounted));
         }
         let size = Size::new(width, height);
         if self.shared.size.snapshot() != size {
@@ -583,7 +584,7 @@ impl SceneContent for CanvasScene {
             session.record(part, recorder);
         });
         session.publish_statuses();
-        self.shared.clock.observed()
+        self.shared.clocks_running()
     }
 
     fn update_scene(&mut self, resources: &SceneResources, frame: SceneFrame) -> SceneUpdate {
@@ -617,7 +618,7 @@ impl SceneContent for CanvasScene {
         }
         session.publish_statuses();
         SceneUpdate::Retained {
-            again: self.shared.clock.observed(),
+            again: self.shared.clocks_running(),
         }
     }
 

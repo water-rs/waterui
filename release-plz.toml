@@ -65,6 +65,10 @@ name = "waterui-meta"
 version_group = "waterui"
 
 [[package]]
+name = "waterui-contract"
+version_group = "waterui"
+
+[[package]]
 name = "waterui-testing"
 version_group = "waterui"
 

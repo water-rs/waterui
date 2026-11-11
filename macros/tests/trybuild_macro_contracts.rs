@@ -17,6 +17,10 @@
 //!   `IntoLabel`; the `.stderr` files pin the WaterUI-specific message, label
 //!   and note each trait reports instead of rustc's bare "trait is not
 //!   implemented".
+//! - `list_selection`: `List::content` rejecting a selection type its rows
+//!   are not tagged by, and a selection over rows none of which is tagged.
+//!   Untagged rows beside tagged ones and `ForEach` sections compile in the
+//!   selection tests of `waterui-testing`.
 //! - `state`: the `#[state]` attribute's own diagnostics — non-item input,
 //!   unions, attribute arguments and a missing `Clone`.
 //! - `text`, `view_builder`, `waterui_test`, `waterui_bench`: the `text!`
@@ -34,6 +38,10 @@ fn macro_contracts() {
     cases.compile_fail("tests/ui/first_contact/identifiable.rs");
     cases.compile_fail("tests/ui/first_contact/into_text.rs");
     cases.compile_fail("tests/ui/first_contact/into_label.rs");
+
+    cases.compile_fail("tests/ui/list_selection/fail_untagged_selection.rs");
+    cases.compile_fail("tests/ui/list_selection/fail_untagged_multi_selection.rs");
+    cases.compile_fail("tests/ui/list_selection/fail_other_tag.rs");
 
     cases.compile_fail("tests/ui/state/fail_on_fn.rs");
     cases.compile_fail("tests/ui/state/fail_union.rs");

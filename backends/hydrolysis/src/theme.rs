@@ -11,11 +11,12 @@
 //!   [`WidgetInteractionState`] with its [`PressWaves`], and
 //!   [`RadioIndicatorState`];
 //! - the motion and metric token tables a theme returns, such as
-//!   [`InteractionMotion`] and [`ProgressMotion`];
+//!   [`InteractionMotion`] and [`NavigationMotion`];
 //! - the looks a theme returns for the widgets ported to the declarative
 //!   contract (water-rs/waterui#1434), such as [`ButtonLook`] for a
-//!   [`ButtonSpec`] and [`SwitchLook`] for a [`ToggleSpec`], built from the
-//!   look vocabulary: [`Driven`] values over
+//!   [`ButtonSpec`], [`SwitchLook`] for a [`ToggleSpec`] and
+//!   [`LinearProgressLook`] for a [`ProgressSpec`], built from the look
+//!   vocabulary: [`Driven`] values over
 //!   the widget's [`Inputs`] with their [`Motion`], [`Custom`] parts,
 //!   [`Label`] styling and [`HitRegion`]s;
 //! - the engine-provided chrome primitives a theme describes interactive
@@ -52,6 +53,7 @@ mod chrome;
 #[cfg(hydrolysis_runtime)]
 pub(crate) mod live;
 mod look;
+mod progress;
 mod toggle;
 mod widget;
 
@@ -65,16 +67,18 @@ pub use look::{
     ValueMotion,
 };
 #[cfg(hydrolysis_runtime)]
-pub(crate) use look::{Change, CustomPart, LiveDriven, RealizedCustom, Retarget};
+pub(crate) use look::{Change, CustomPart, LayerRotation, LiveDriven, RealizedCustom, Retarget};
+pub use progress::{
+    IndicatorLook, LinearLayout, LinearProgressLook, ProgressControl, ProgressSpec,
+};
 pub use toggle::{CheckboxLook, SwitchDrag, SwitchLook, ToggleBackdrop, ToggleControl, ToggleSpec};
 pub use widget::{
     BadgeMetrics, DividerMetrics, InputFieldMetrics, InteractionFocusBinding, InteractionMotion,
     ListDividerMetrics, ListMetrics, ListRowMetrics, ListSectionMetrics,
     ListTrailingControlMetrics, MAX_PRESS_WAVES, ModalInteraction, NavigationMetrics,
-    NavigationMotion, PickerMetrics, PressWave, PressWaves, ProgressIndicatorStyle,
-    ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, StepperEnd,
-    StepperMetrics, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion,
-    TextContextMenuMetrics, WidgetInteractionState, WidgetTheme,
+    NavigationMotion, PickerMetrics, PressWave, PressWaves, RadioIndicatorState,
+    RadioSelectionMotion, StepperEnd, StepperMetrics, TabItemGeometry, TabItemLayout, TableMetrics,
+    TabsMetrics, TextCaretMotion, TextContextMenuMetrics, WidgetInteractionState, WidgetTheme,
 };
 
 #[cfg(hydrolysis_runtime)]

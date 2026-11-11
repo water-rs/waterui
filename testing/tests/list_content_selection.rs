@@ -3,6 +3,8 @@
 //! the value it is tagged with, a `ForEach` row by its item's id, and an
 //! untagged row not at all — with no row index anywhere in the app's code.
 
+use std::collections::BTreeSet;
+
 use waterui::component::list::{List, ListItem, Section, row};
 use waterui::component::text;
 use waterui::id::SelfId;
@@ -73,6 +75,37 @@ fn selecting_a_tagged_static_row_writes_its_value() {
         Some(Mailbox::Drafts),
         "a row without a tag is not selectable: tapping it leaves the selection alone",
     );
+    assert_selected(&mut app, "Storage 3 GB", false);
+}
+
+/// Multiple selection over untagged rows beside a section mixing tagged and
+/// untagged rows: the tagged rows are selected by their values, and the
+/// untagged ones stay out of the selection.
+#[test]
+fn multi_selecting_tagged_rows_beside_untagged_ones() {
+    let selection = Binding::container(BTreeSet::<Mailbox>::new());
+    let mut app = ui().mount({
+        let selection = selection.clone();
+        move || {
+            List::content((
+                row("Storage", "3 GB"),
+                Section::new("Mailboxes").content((
+                    (|| ListItem::new(text("Inbox"))).tag(Mailbox::Inbox),
+                    || ListItem::new(text("받은 편지함 정리")),
+                    row("Archive", "12").tag(Mailbox::Archive),
+                )),
+            ))
+            .multi_selection(&selection)
+        }
+    });
+
+    app.query().role(Role::LIST_ITEM).label("Archive 12").tap();
+    assert_eq!(selection.snapshot(), BTreeSet::from([Mailbox::Archive]));
+
+    selection.set(BTreeSet::from([Mailbox::Inbox, Mailbox::Archive]));
+    assert_selected(&mut app, "Inbox", true);
+    assert_selected(&mut app, "Archive 12", true);
+    assert_selected(&mut app, "받은 편지함 정리", false);
     assert_selected(&mut app, "Storage 3 GB", false);
 }
 

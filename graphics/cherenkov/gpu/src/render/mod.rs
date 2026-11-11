@@ -1455,6 +1455,9 @@ pub struct GpuRenderer {
     /// Window of every native GPU wait and the deadline of every browser
     /// wait; see [`GpuConfig::wait_timeout`].
     wait_timeout: Duration,
+    /// How long the coverage generation scratch outlives the last frame
+    /// that needed it; see [`GpuConfig::scratch_idle`].
+    scratch_idle: Duration,
     /// The queue's retirement frontier; every native wait reads it between
     /// windows to tell a slow queue (still retiring) from a wedged one.
     tracker: Arc<SubmissionTracker>,
@@ -3025,7 +3028,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         };
         let gpu_cov = gpu_cov::GpuCoverage::new(
             &device,
-            adapter.get_info().backend,
+            crate::interop::suballocation_limit(info.backend),
             config.budget.gpu.0 / gpu_cov::BUDGET_SHARE,
             PipelineCache::new(pipeline_cache.as_ref(), &config),
         );
@@ -3145,6 +3148,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             frame_pass_count: 0,
             pass_meta: Vec::new(),
             wait_timeout: config.wait_timeout,
+            scratch_idle: config.scratch_idle,
             tracker: Arc::new(SubmissionTracker::default()),
             diag: config.alloc_diag.clone(),
             config,
@@ -3398,7 +3402,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     )?;
     let gpu_cov = gpu_cov::GpuCoverage::new(
         &device,
-        adapter.get_info().backend,
+        crate::interop::suballocation_limit(info.backend),
         config.budget.gpu.0 / gpu_cov::BUDGET_SHARE,
         PipelineCache::new(pipeline_cache.as_ref(), &config),
     );
@@ -3499,6 +3503,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         frame_pass_count: 0,
         pass_meta: Vec::new(),
         wait_timeout: config.wait_timeout,
+        scratch_idle: config.scratch_idle,
         tracker: Arc::new(SubmissionTracker::default()),
         diag: config.alloc_diag.clone(),
         config,
@@ -4512,6 +4517,14 @@ impl Renderer for GpuRenderer {
         self.planes
             .get(&surface)
             .map_or(&[], |planes| planes::SystemPlanes::owned_animations(planes))
+    }
+
+    fn idle_release_deadline(&self) -> Option<cherenkov::Instant> {
+        self.gpu_cov.idle_deadline(self.scratch_idle)
+    }
+
+    fn release_idle(&mut self, now: cherenkov::Instant) {
+        self.gpu_cov.release_idle(now, self.scratch_idle);
     }
 
     fn memory(&self) -> MemoryUsage {
@@ -6817,9 +6830,7 @@ impl GpuRenderer {
 
     /// The device's coverage binding limit, when it computes.
     fn coverage_limit(&self, has_compute: bool) -> Option<gpu_cov::CoverageLimit> {
-        has_compute.then(|| {
-            gpu_cov::CoverageLimit::new(&self.device.limits(), self.adapter.get_info().backend)
-        })
+        has_compute.then(|| gpu_cov::CoverageLimit::new(&self.device.limits()))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -7592,7 +7603,7 @@ impl GpuRenderer {
     ) {
         // The frame's GPU coverage context restarts with its lowers
         // (issue #2543).
-        self.gpu_cov.begin_frame();
+        self.gpu_cov.begin_frame(cherenkov::Instant::now());
         let rasters: Vec<&glyph::PendingRaster> = results
             .iter()
             .filter_map(|r| r.as_ref().ok())

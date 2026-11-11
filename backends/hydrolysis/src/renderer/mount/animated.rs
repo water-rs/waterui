@@ -8,7 +8,6 @@ use std::rc::Rc;
 use nami::Signal;
 
 use super::Dirty;
-use crate::animation::AnimationKey;
 use crate::renderer::signals::SubscribedSnapshot;
 use crate::renderer::{Retain, SemanticCore};
 
@@ -65,41 +64,5 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         armed.set(true);
         self.push_guard(Retain::new(guard));
         handle.sample(now)
-    }
-
-    /// Samples the time-based morph phase of the shape retained as `owner`,
-    /// so the timeline survives frames and structural changes around it.
-    pub fn sample_morph_progress<T: 'static>(
-        &mut self,
-        animation: waterui_shape::MorphAnimation,
-        owner: &Rc<T>,
-    ) -> f32 {
-        if animation.duration().is_zero() {
-            return 1.0;
-        }
-        let key = AnimationKey::renderer_local_repeating(self.animation_owner_pins.pin(owner));
-        let elapsed = self.animation_controller.bind_timeline_phase(
-            key,
-            animation.duration(),
-            animation.repeat(),
-            self.frame_instant,
-        );
-        let raw = elapsed.as_secs_f32() / animation.duration().as_secs_f32();
-        let cycle = if animation.repeat() {
-            let base = raw.fract();
-            assert!(
-                raw.is_finite() && raw >= 0.0,
-                "morph animation cycle index must be finite and non-negative"
-            );
-            let index = crate::num_cast::f32_as_u64(raw.floor());
-            if animation.autoreverse() && index % 2 == 1 {
-                1.0 - base
-            } else {
-                base
-            }
-        } else {
-            raw.clamp(0.0, 1.0)
-        };
-        animation.easing().ease(cycle).clamp(0.0, 1.0)
     }
 }

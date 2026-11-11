@@ -293,6 +293,12 @@ pub struct GpuConfig {
     /// not on duration. On wasm32, where a wait resolves on the page's event
     /// loop, it is a hard timeout.
     pub wait_timeout: std::time::Duration,
+    /// How long the GPU coverage route keeps its generation scratch after
+    /// the last frame that generated coverage. Consecutive generating frames
+    /// within it reuse the same buffers; once it passes with no such frame,
+    /// the render thread releases them, so an idle application holds none.
+    /// Zero releases right after the next wake. Defaults to one second.
+    pub scratch_idle: std::time::Duration,
     /// Memory budgets.
     pub budget: cherenkov::Budget,
     /// When set and the adapter supports pipeline caches, the closed
@@ -332,6 +338,7 @@ impl Default for GpuConfig {
             power_preference: wgpu::PowerPreference::HighPerformance,
             timestamps: false,
             wait_timeout: std::time::Duration::from_secs(30),
+            scratch_idle: std::time::Duration::from_secs(1),
             budget: cherenkov::Budget::default(),
             pipeline_cache: None,
             scratch_format: ScratchFormat::default(),

@@ -22,7 +22,6 @@ impl<T: ?Sized> RenderTransfer for T {}
 
 use rustc_hash::FxHashSet;
 
-use crate::Picture;
 use crate::config::{MemoryUsage, Pressure};
 use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
 use crate::frame::{FrameId, FrameStats, FrameTime, FrameTiming, Readback};
@@ -31,6 +30,7 @@ use crate::image::ImageUpload;
 use crate::message::FontData;
 use crate::paint::ImageId;
 use crate::text::TextLayoutData;
+use crate::{Instant, Picture};
 use cherenkov_record::{ContentOp, LayerId, SurfaceId, TextLayoutId};
 use cherenkov_record::{ResourceId, SurfaceTree};
 
@@ -355,6 +355,28 @@ pub trait Renderer: 'static {
 
     /// Releases memory under system `pressure`.
     fn trim(&mut self, pressure: Pressure);
+
+    /// When resources the renderer retains across frames only to serve the
+    /// next one (the GPU coverage generation scratch) become due for
+    /// release: the idle interval after the last frame that used them.
+    /// `None` while it retains nothing of the kind, which is every
+    /// renderer's default.
+    ///
+    /// The render thread waits for this deadline in its message wait, so a
+    /// frame that never comes still releases them, and applies
+    /// [`Renderer::release_idle`] when it passes. A later frame that uses
+    /// the resources moves the deadline out; consecutive frames therefore
+    /// keep reusing them while an input-driven `Next::Idle` between frames
+    /// releases nothing.
+    fn idle_release_deadline(&self) -> Option<Instant> {
+        None
+    }
+
+    /// Releases what [`Renderer::idle_release_deadline`] reported due as of
+    /// `now`. Afterwards the deadline is `None` or after `now`.
+    fn release_idle(&mut self, now: Instant) {
+        let _ = now;
+    }
 
     /// Submits the native external-frame releases retirement work has
     /// queued since the last submission. An external frame's release

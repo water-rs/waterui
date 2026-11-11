@@ -75,6 +75,8 @@ pub enum Event {
     Visibility(SurfaceId, Visibility),
     /// One rendered surface, in `frame.surfaces` order.
     Frame(FrameRecord),
+    /// `release_idle` ran, [`NULL_IDLE_RELEASE`] after the last frame.
+    IdleRelease,
 }
 
 /// One surface's sampled tree, recorded per rendered frame.
@@ -197,7 +199,14 @@ pub struct NullRenderer {
     /// producer's own retire queue can beat its add; the add skips an
     /// id found here.
     pending_retire: HashSet<crate::ProducerId>,
+    /// When the last frame rendered, until [`Renderer::release_idle`]
+    /// releases the stand-in for retained scratch it models.
+    last_render: Option<crate::Instant>,
 }
+
+/// How long after a frame [`Null`] reports its stand-in for retained
+/// scratch due for release ([`Renderer::idle_release_deadline`]).
+pub const NULL_IDLE_RELEASE: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// A [`Null`] producer: rendered (`content` `Some`) or submitted-frame.
 #[derive(Debug)]
@@ -258,6 +267,7 @@ impl NullRenderer {
             removed: HashSet::new(),
             producers: FxHashMap::default(),
             pending_retire: HashSet::new(),
+            last_render: None,
         }
     }
 
@@ -504,6 +514,7 @@ impl Renderer for NullRenderer {
         _stats: &mut crate::FrameStats,
     ) -> Result<(FrameRedraw, Self::FrameCommit), RenderError> {
         self.assert_frame_contract(frame);
+        self.last_render = Some(crate::Instant::now());
         for surface in frame.surfaces {
             let layers = surface
                 .tree
@@ -541,6 +552,7 @@ impl Renderer for NullRenderer {
     ) -> impl core::future::Future<Output = Result<(FrameRedraw, Self::FrameCommit), RenderError>>
     {
         self.assert_frame_contract(frame);
+        self.last_render = Some(crate::Instant::now());
         for surface in frame.surfaces {
             let layers = surface
                 .tree
@@ -598,6 +610,20 @@ impl Renderer for NullRenderer {
     }
 
     fn trim(&mut self, _pressure: Pressure) {}
+
+    fn idle_release_deadline(&self) -> Option<crate::Instant> {
+        self.last_render
+            .map(|rendered| rendered + NULL_IDLE_RELEASE)
+    }
+
+    fn release_idle(&mut self, now: crate::Instant) {
+        let due = self
+            .idle_release_deadline()
+            .expect("release_idle runs only while a deadline is reported");
+        assert!(now >= due, "released before the deadline");
+        self.last_render = None;
+        let _ = self.events.send(Event::IdleRelease);
+    }
 
     /// `Null` imports no native frames — nothing to submit.
     fn submit_native_releases(&mut self) {}

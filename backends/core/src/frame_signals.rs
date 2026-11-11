@@ -3,6 +3,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use waterui_core::contract_violation;
+
 use crate::time::Instant;
 
 /// The renderer's frame triggers, shared as one cloneable handle.
@@ -94,13 +96,20 @@ impl FrameSignals {
     /// re-arms it. A request already pending when the wake is installed
     /// fires it now — the edge it never saw still owes the host a frame.
     ///
-    /// # Panics
+    /// # Contract
     ///
-    /// Panics if a host wake has already been installed.
+    /// Installing a second host wake breaks the contract: a debug build
+    /// panics, and a release build logs the error and keeps the wake already
+    /// installed.
     pub fn install_host_wake(&self, wake: Rc<dyn Fn()>) {
         {
             let mut host_wake = self.inner.host_wake.borrow_mut();
-            assert!(host_wake.is_none(), "host wake already installed");
+            if host_wake.is_some() {
+                contract_violation!(
+                    "host wake already installed: the second wake is dropped and the first stays"
+                );
+                return;
+            }
             *host_wake = Some(HostWake(wake));
         }
         if self.has_pending_request() {
@@ -203,7 +212,7 @@ impl FrameSignals {
                 .rebuild_generation
                 .get()
                 .checked_add(1)
-                .expect("hydrolysis renderer rebuild generation overflow"),
+                .expect("a u64 generation advancing once per rebuild does not overflow"),
         );
     }
 
@@ -325,11 +334,18 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "host wake already installed")]
-    fn host_wake_rejects_a_second_install() {
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "host wake already installed")
+    )]
+    fn host_wake_keeps_the_first_install() {
         let signals = signals();
-        signals.install_host_wake(Rc::new(|| {}));
-        signals.install_host_wake(Rc::new(|| {}));
+        let (first, first_fires) = counting_wake();
+        let (second, second_fires) = counting_wake();
+        signals.install_host_wake(first);
+        signals.install_host_wake(second);
+        signals.request_refresh();
+        assert_eq!((first_fires.get(), second_fires.get()), (1, 0));
     }
 
     #[test]

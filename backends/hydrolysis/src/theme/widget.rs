@@ -3,7 +3,7 @@
 
 use cherenkov_record::{MaterialRegistry, Paint, Recorder};
 use core::time::Duration;
-use kurbo::{BezPath, Point, Rect};
+use kurbo::{Point, Rect};
 use nami::signal::IntoComputed;
 use waterui::navigation::tab::NativeTabStyle;
 use waterui_core::EasingCurve;
@@ -243,26 +243,6 @@ pub struct InteractionMotion {
     pub touch_delay: Duration,
 }
 
-/// Motion policy for progress indicators.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ProgressMotion {
-    /// Animation used for linear determinate value changes.
-    pub linear_determinate: Animation,
-    /// Animation used for circular determinate value changes.
-    pub circular_determinate: Animation,
-    /// Full cycle duration for linear indeterminate progress.
-    pub linear_indeterminate_cycle: Duration,
-    /// Full cycle duration for circular indeterminate progress.
-    pub circular_indeterminate_cycle: Duration,
-    /// Full cycle duration for the loading indicator.
-    ///
-    /// The indicator runs two beats at once — it morphs on one and rotates on
-    /// another — and they do not divide each other, so this is the period over
-    /// which both come back into phase. It is long, which is the point: the
-    /// animation never visibly repeats.
-    pub loading_cycle: Duration,
-}
-
 /// Motion policy for radio selection indicators.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RadioSelectionMotion {
@@ -454,87 +434,6 @@ pub struct PickerMetrics {
     /// `horizontal_inset` padding on both sides (M3 `ButtonDefaults.MinWidth`
     /// is 58dp per segment; unused by non-segmented styles).
     pub segment_min_width: f64,
-}
-
-/// Progress indicator layout metrics.
-#[derive(Debug, Clone, Copy)]
-pub struct ProgressMetrics {
-    /// Height reserved for labels.
-    pub label_height: f64,
-    /// Offset from label baseline to the linear bar.
-    pub bar_top_offset: f64,
-    /// Linear progress bar height.
-    pub bar_height: f64,
-    /// Horizontal inset for the linear bar.
-    pub bar_horizontal_inset: f64,
-    /// Gap above the value label.
-    pub value_label_top_spacing: f64,
-    /// Minimum linear track width.
-    pub min_track_width: f64,
-    /// Circular progress diameter. For the loading style this is the
-    /// container's side, and `loading_indicator_size` the shape drawn in it.
-    pub circular_diameter: f64,
-    /// Circular progress stroke width.
-    pub circular_stroke_width: f64,
-    /// Side of the morphing shape inside a loading indicator's container.
-    pub loading_indicator_size: f64,
-}
-
-impl ProgressMetrics {
-    /// Create linear progress layout metrics.
-    #[must_use]
-    pub const fn linear(
-        label_height: f64,
-        bar_top_offset: f64,
-        bar_height: f64,
-        bar_horizontal_inset: f64,
-        value_label_top_spacing: f64,
-        min_track_width: f64,
-    ) -> Self {
-        Self {
-            label_height,
-            bar_top_offset,
-            bar_height,
-            bar_horizontal_inset,
-            value_label_top_spacing,
-            min_track_width,
-            circular_diameter: 0.0,
-            circular_stroke_width: 0.0,
-            loading_indicator_size: 0.0,
-        }
-    }
-
-    /// Create circular progress layout metrics.
-    #[must_use]
-    pub const fn circular(circular_diameter: f64, circular_stroke_width: f64) -> Self {
-        Self {
-            label_height: 0.0,
-            bar_top_offset: 0.0,
-            bar_height: 0.0,
-            bar_horizontal_inset: 0.0,
-            value_label_top_spacing: 0.0,
-            min_track_width: 0.0,
-            circular_diameter,
-            circular_stroke_width,
-            loading_indicator_size: 0.0,
-        }
-    }
-
-    /// Create loading-indicator layout metrics.
-    #[must_use]
-    pub const fn loading(container_size: f64, indicator_size: f64) -> Self {
-        Self {
-            label_height: 0.0,
-            bar_top_offset: 0.0,
-            bar_height: 0.0,
-            bar_horizontal_inset: 0.0,
-            value_label_top_spacing: 0.0,
-            min_track_width: 0.0,
-            circular_diameter: container_size,
-            circular_stroke_width: 0.0,
-            loading_indicator_size: indicator_size,
-        }
-    }
 }
 
 /// How a tab bar lays out each item's icon and label.
@@ -882,8 +781,6 @@ pub struct TableMetrics {
 pub trait WidgetTheme {
     /// Return motion policy for interactive widget chrome.
     fn interaction_motion(&self) -> InteractionMotion;
-    /// Return motion policy for progress indicators.
-    fn progress_motion(&self) -> ProgressMotion;
     /// Return motion policy for text input carets.
     fn text_caret_motion(&self) -> TextCaretMotion;
     /// Return motion policy for navigation transitions.
@@ -1098,67 +995,32 @@ pub trait WidgetTheme {
     /// the look alone.
     fn slider(&self, spec: &super::SliderSpec, env: &Environment) -> super::SliderLook;
 
-    /// Return progress indicator metrics.
-    fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics;
-    /// Draw the linear progress track.
+    /// The look of a linear progress indicator, determinate or not.
     ///
-    /// `active_end` is the x the active indicator reaches, or `None` while the
-    /// indicator is indeterminate. Material's Expressive linear indicator leaves
-    /// a gap between the active bar and the track and marks the track's end with
-    /// a stop indicator, so the track cannot be drawn without knowing where the
-    /// active portion stops.
-    fn draw_progress_linear_track(
+    /// Hydrolysis measures, places, records and animates the indicator from
+    /// the returned look, and requests it again only when `spec` changes;
+    /// the value reaches the look through its [`Driven`](super::Driven)
+    /// values, which follow it through the look's value motion. An
+    /// indeterminate indicator's motion is the look's repeating values and
+    /// rotating parts, which the engine runs.
+    fn linear_progress(
         &self,
-        recorder: &mut Recorder,
-        bounds: Rect,
-        active_end: Option<f64>,
-    );
-    /// Draw the linear progress fill.
-    fn draw_progress_linear_fill(&self, recorder: &mut Recorder, bounds: Rect);
-    /// Draw the linear indeterminate progress indicator.
-    fn draw_progress_linear_indeterminate(
+        spec: &super::ProgressSpec,
+        env: &Environment,
+    ) -> super::LinearProgressLook;
+    /// The look of a circular progress indicator, determinate or not.
+    fn circular_progress(
         &self,
-        recorder: &mut Recorder,
-        bounds: Rect,
-        elapsed: Duration,
-        four_color: bool,
-    );
-    /// Draw the circular progress track.
-    ///
-    /// `active_turns` is how much of the circle the active arc covers (`0.0..=1.0`),
-    /// or `None` while the indicator is indeterminate. As with the linear bar,
-    /// Material's Expressive circular indicator separates track from indicator by
-    /// `TrackActiveSpace`, so the track needs to know where the active arc ends.
-    fn draw_progress_circular_track(
+        spec: &super::ProgressSpec,
+        env: &Environment,
+    ) -> super::IndicatorLook;
+    /// The look of a loading indicator: an indeterminate indicator that says
+    /// work is under way, with no reading to fill.
+    fn loading_indicator(
         &self,
-        recorder: &mut Recorder,
-        center: Point,
-        radius: f64,
-        width: f64,
-        active_turns: Option<f64>,
-    );
-    /// Draw the circular progress fill path.
-    fn draw_progress_circular_fill(&self, recorder: &mut Recorder, path: &BezPath, width: f64);
-    /// Draw the loading indicator at `elapsed` into its cycle.
-    ///
-    /// `bounds` is the container; the theme insets the shape itself.
-    fn draw_progress_loading(
-        &self,
-        recorder: &mut Recorder,
-        bounds: Rect,
-        elapsed: Duration,
-        four_color: bool,
-    );
-    /// Draw the circular indeterminate progress indicator.
-    fn draw_progress_circular_indeterminate(
-        &self,
-        recorder: &mut Recorder,
-        center: Point,
-        radius: f64,
-        width: f64,
-        elapsed: Duration,
-        four_color: bool,
-    );
+        spec: &super::ProgressSpec,
+        env: &Environment,
+    ) -> super::IndicatorLook;
 
     /// Return navigation bar layout metrics.
     fn navigation_metrics(&self) -> NavigationMetrics;
@@ -1274,19 +1136,4 @@ pub trait WidgetTheme {
     fn draw_table_cell_border(&self, recorder: &mut Recorder, bounds: Rect);
     /// Draw a table column separator.
     fn draw_table_column_separator(&self, recorder: &mut Recorder, from: Point, to: Point);
-}
-
-/// Progress indicator visual style understood by backend theme packages.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "every style package draws each progress style variant by variant"
-)]
-pub enum ProgressIndicatorStyle {
-    /// Horizontal linear indicator.
-    Linear,
-    /// Circular indicator.
-    Circular,
-    /// Material's morphing loading indicator.
-    Loading,
 }

@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use cherenkov_record::Live;
+use cherenkov_record::{KeyframeAnimation, Live};
 use nami::Signal;
 use nami::watcher::{Context, Metadata, WatcherManager, WatcherManagerGuard};
 use waterui_core::animation::Animation;
@@ -43,6 +43,15 @@ impl<T: Clone + PartialEq + 'static> Operand<T> {
         let metadata = animation.map_or_else(Metadata::new, |animation| {
             Metadata::new().with(engine_animation(animation))
         });
+        self.0.watchers.notify_owned(Context::new(value, metadata));
+    }
+
+    /// Runs `track` along the operand: the engine samples its keyframes on
+    /// its own clock until the operand changes again. The operand keeps its
+    /// value; the track decides what is drawn while it runs.
+    pub(crate) fn run(&self, track: &KeyframeAnimation) {
+        let value = self.0.value.borrow().clone();
+        let metadata = Metadata::new().with(track.clone());
         self.0.watchers.notify_owned(Context::new(value, metadata));
     }
 

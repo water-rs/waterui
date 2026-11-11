@@ -42,7 +42,10 @@ macro_rules! impl_into_f32 {
                 #[inline]
                 fn into_f32(self) -> f32 {
                     self.to_f32().unwrap_or_else(|| {
-                        panic!("failed to convert `{}` into f32", stringify!($t))
+                        unreachable!(
+                            "`ToPrimitive::to_f32` is total for the primitive numeric type `{}`: it rounds or saturates to infinity rather than failing",
+                            stringify!($t)
+                        )
                     })
                 }
             }

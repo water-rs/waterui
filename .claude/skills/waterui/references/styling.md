@@ -245,8 +245,9 @@ path-drawn corner stretches with the aspect ratio — that is why built-in shape
 their kind instead of path commands, and why shape code is tested against a deliberately
 non-square rectangle, never a square.
 
-Morphing is a self-animating view over the **SDF-backed built-ins only** (Rectangle,
-Circle, Ellipse, RoundedRectangle, UnevenRoundedRectangle, Capsule — not `Path`):
+Morphing is a self-animating view over the **built-in shapes only** (Rectangle,
+Circle, Ellipse, RoundedRectangle, UnevenRoundedRectangle, Capsule — not `Path`); the
+shapes' parameters interpolate and every backend draws the same path:
 
 ```rust
 Circle
