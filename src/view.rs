@@ -17,11 +17,13 @@ use waterui_core::{
     AnyView, Environment, IgnorableMetadata, Retain,
     env::{UseEnv, With},
     extract::State,
-    handler::{EventHandler, Handler, HandlerOnce, ReportExtraction},
+    handler::{EventHandler, Handler, HandlerOnce},
     layout::{HorizontalAlignment, VerticalAlignment, ViewDimensions},
     metadata::MetadataKey,
     plugin::Plugin,
 };
+#[cfg(feature = "std")]
+use waterui_core::handler::ReportExtraction;
 use waterui_graphics::color::Color;
 
 /// All view-level filter modifiers (`.blur()`, `.brightness()`, ...) come
