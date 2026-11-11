@@ -43,7 +43,7 @@ use std::num::NonZeroU64;
 use rustc_hash::FxHashMap;
 use waterui_contract::contract_violation;
 
-use crate::backdrop::{BackdropShaderSource, CaptureLevels, CaptureScale};
+use crate::backdrop::{BackdropShaderSource, CaptureLevels, CapturePyramid, CaptureScale};
 use crate::record::{Content, SharedLive};
 use crate::shape::ShapeData;
 use crate::style::BlendSpace;
@@ -107,6 +107,10 @@ pub struct MaterialCapture {
     /// ([`CaptureLevels`]): the pyramid a `backdrop_sample_level` shader
     /// reads.
     pub levels: CaptureLevels,
+    /// How the class's pyramids reduce a level into the next
+    /// ([`CapturePyramid`]): a Gaussian pyramid is the one a
+    /// `backdrop_sample_blur` shader reads.
+    pub pyramid: CapturePyramid,
     /// How the class's members form groups inside a material scope.
     pub grouping: MaterialGrouping,
     /// The space the class's members composite their samples onto their
@@ -919,6 +923,7 @@ mod tests {
         let capture = MaterialCapture {
             scale: CaptureScale::FULL,
             levels: CaptureLevels::ONE,
+            pyramid: CapturePyramid::Box,
             grouping: MaterialGrouping::Shared,
             blend_space: BlendSpace::Linear,
         };
@@ -938,6 +943,7 @@ mod tests {
         let capture = MaterialCapture {
             scale: CaptureScale::new(0.25).expect("in range"),
             levels: CaptureLevels::new(3).expect("in range"),
+            pyramid: CapturePyramid::Gaussian,
             grouping: MaterialGrouping::Solo,
             blend_space: BlendSpace::SrgbEncoded,
         };
