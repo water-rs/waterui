@@ -7,7 +7,9 @@ require(painter in setOf("gpu", "hwui")) {
     "hydrolysis.painter must be \"gpu\" or \"hwui\", got \"$painter\""
 }
 val scene = providers.gradleProperty("hydrolysis.scene").getOrElse("host")
-require(scene in setOf("host", "filters")) { "hydrolysis.scene must be host or filters" }
+require(scene in setOf("host", "filters", "gpu-video", "gpu-map")) {
+    "hydrolysis.scene must be host, filters, gpu-video or gpu-map"
+}
 
 val targetAbis =
     providers.gradleProperty("hydrolysis.abis")
@@ -27,7 +29,8 @@ android {
         applicationId =
             if (painter == "hwui") "dev.waterui.hydrolysis.testapp.hwui"
             else "dev.waterui.hydrolysis.testapp"
-        minSdk = 33
+        // The HWUI painter's API floor is 34 (drawMesh); the GPU painter's is 33.
+        minSdk = if (painter == "hwui") 34 else 33
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
@@ -90,7 +93,14 @@ for (buildType in listOf("debug", "release")) {
                 "--output-dir", output.absolutePath,
                 "build", "--no-default-features",
                 "--features",
-                if (scene == "filters") "$painter,filter-probe" else painter,
+                when (scene) {
+                    "filters" -> "$painter,filter-probe"
+                    // The HWUI painter with the GPU crates present: the
+                    // combination that hosts GPU content (water-rs/waterui#1812).
+                    "gpu-video" -> "$painter,gpu-video-probe"
+                    "gpu-map" -> "$painter,gpu-map-probe"
+                    else -> painter
+                },
             ),
         )
         if (buildType == "release") args.add("--release")

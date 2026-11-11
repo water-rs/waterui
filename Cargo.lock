@@ -4721,6 +4721,9 @@ dependencies = [
  "jni 0.22.4",
  "waterui",
  "waterui-core",
+ "waterui-map",
+ "waterui-map-gpu",
+ "waterui-url",
 ]
 
 [[package]]
