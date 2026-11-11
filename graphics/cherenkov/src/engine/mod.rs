@@ -3,12 +3,16 @@
 mod browser;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
+#[cfg(not(target_arch = "wasm32"))]
+mod pending;
 pub mod thread;
 mod wake;
 #[cfg(target_arch = "wasm32")]
 pub use browser::Engine;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::Engine;
+#[cfg(not(target_arch = "wasm32"))]
+pub use pending::PendingFrame;
 pub use wake::{CompletionWaker, FrameScope, SurfaceWaker, SurfaceWakes};
 
 use std::cell::{Cell, RefCell};

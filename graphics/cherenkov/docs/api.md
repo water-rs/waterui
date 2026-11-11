@@ -150,7 +150,7 @@ pub trait Renderer: 'static {
   ```
 
   The clip applies in the layer's own space (`transform`); content and children are drawn in `content_transform()`, so scrolling moves them inside the clip and never re-records anything. `changed` is true when a property op, a content op or an animation step touched the surface since the last render; the backend renders exactly those surfaces.
-- **One wake-up per frame.** `Surface::update`, layer drops and bound-signal changes only queue owned ops on the UI thread. `Engine::render(time)` drains every surface's queue into one `Message::Render { time, commits, reply }` and blocks on the reply, so the render thread wakes once per frame and applies the commits, samples the animations at `time`, renders, and answers with `Next` and the `FrameStats`. Surface creation, readback, `memory()` and `finish_timings()` are request/reply messages; everything else, resource registration and image replacement included, is fire-and-forget and ordered with the renders (see Resources).
+- **One wake-up per frame.** `Surface::update`, layer drops and bound-signal changes only queue owned ops on the UI thread. `Engine::submit(time)` drains every surface's queue into one `Message::Render { time, commits, reply }` and returns at once with a `PendingFrame`, so the render thread wakes once per frame and applies the commits, samples the animations at `time`, renders, and answers with `Next` and the `FrameStats`; the reply's own wake resolves the frame on the thread that polls it, which applies the frame's presentation commit there. Dropping the `PendingFrame` discards its presentation without waiting for the render thread. One render is in flight at a time: a frame submitted behind a live one posts its render once that one resolves or is dropped. On native targets `Engine::render(time)` is `submit(time)` waited on the calling thread, for hosts whose frame loop is synchronous; on the web `render` is the awaitable form. Surface creation, readback, `memory()` and `finish_timings()` are request/reply messages; everything else, resource registration and image replacement included, is fire-and-forget and ordered with the renders (see Resources).
 - **Capabilities carry their render-side hooks.** A capability trait is not a marker: it declares the function the render loop calls, so a backend without the capability has no code path to reach, and no default or stub exists.
 
   ```rust
@@ -204,7 +204,7 @@ let engine: Engine<Gpu> = Engine::new(GpuConfig {
 }).await?; // creates the device and asynchronously precompiles the closed pipeline set
 
 engine.trim(Pressure::Critical);       // system memory warning
-let usage: MemoryUsage = engine.memory();
+let usage: MemoryUsage = engine.memory()?; // RenderError::Thread when the render thread cannot answer
 ```
 
 - The engine owns its render state and may create its device or accept a `cherenkov_gpu::interop::SharedDevice` from the host. `GpuContent` implementations reach wgpu through their backend's `interop::wgpu`. See [retained host integrations](retained-integrations.md) for presentation, producer, shader and filter contracts.
@@ -299,6 +299,7 @@ match engine.render(FrameTime::at(target_presentation_time))? {
 }
 ```
 
+- A native host whose UI thread must not wait on the render thread calls `engine.submit(time)?` instead, keeps the `PendingFrame` beside its surface, and presents once the frame resolves to the same `Next`; engine and surface creation have the matching awaitable forms `Engine::new_async` and `Engine::surface_async`.
 - `Next::At` is returned while any animation track of a visible surface is unsettled, or a backend source (custom GPU content, an animated shader paint) on a visible surface asked for a redraw. `time` is the frame time plus one interval at the top of `rate`; `rate` is `60..=120` while a spring, curve or fast decay runs and `30..=60` while only a decay slower than one device pixel per frame at 60 Hz remains. A curve that ends before the next frame is sampled at its endpoint on that frame and then settles.
 - Animation tracks start on the first frame that samples them, so a transaction committed between frames starts at the next presentation time, never at wall-clock commit time.
 

@@ -71,13 +71,13 @@ fn size(width: usize, height: usize) -> OffscreenSize {
 }
 
 fn renderer(runtime: &GpuRuntime, view: &ExternalFrameView) -> ExternalFrameRenderer {
-    ExternalFrameRenderer::new(
+    pollster::block_on(ExternalFrameRenderer::new(
         runtime,
         runtime.context(),
         &view.stream(),
         size(FRAME.0, FRAME.1),
         RedrawHandle::new(|| {}),
-    )
+    ))
     .expect("the external frame renderer settles")
 }
 
@@ -376,8 +376,7 @@ fn planes_are_sampled_in_place() {
         .expect("the output is live");
 
     let first = host_target(device, (64, 32));
-    renderer
-        .present(&first, SDR, FrameTime::now())
+    pollster::block_on(renderer.present(&first, SDR, FrameTime::now()))
         .expect("the frame presents");
     let shown = read(device, queue, &first).pixel(32, 16);
     assert!(
@@ -388,8 +387,7 @@ fn planes_are_sampled_in_place() {
     fill(&buffer, Layout::Nv12, dimensions, flat(BLUE));
     // A resize forces the next pass to draw; nothing new was published.
     let second = host_target(device, (96, 48));
-    renderer
-        .present(&second, SDR, FrameTime::now())
+    pollster::block_on(renderer.present(&second, SDR, FrameTime::now()))
         .expect("the frame presents");
     let shown = read(device, queue, &second).pixel(48, 24);
     assert!(
@@ -431,8 +429,7 @@ fn frames_add_no_textures_beyond_their_planes() {
 
     // The first frame builds the engine's external-frame pipeline state.
     publish(RED);
-    renderer
-        .present(&target, SDR, FrameTime::now())
+    pollster::block_on(renderer.present(&target, SDR, FrameTime::now()))
         .expect("the frame presents");
     device
         .poll(wgpu::PollType::wait_indefinitely())
@@ -441,8 +438,7 @@ fn frames_add_no_textures_beyond_their_planes() {
 
     for code in [BLUE, RED, BLUE] {
         publish(code);
-        renderer
-            .present(&target, SDR, FrameTime::now())
+        pollster::block_on(renderer.present(&target, SDR, FrameTime::now()))
             .expect("the frame presents");
         device
             .poll(wgpu::PollType::wait_indefinitely())
@@ -494,8 +490,7 @@ fn frames_are_released_once_the_host_is_done_with_them() {
     };
     let output = outputs.borrow()[0].clone();
     let pass = |renderer: &mut ExternalFrameRenderer| {
-        renderer
-            .present(&target, SDR, FrameTime::now())
+        pollster::block_on(renderer.present(&target, SDR, FrameTime::now()))
             .expect("the frame presents");
     };
 
@@ -523,9 +518,13 @@ fn frames_are_released_once_the_host_is_done_with_them() {
         "a replaced frame is released"
     );
 
+    // Dropping the host never waits on the render thread: the installed
+    // frame is released there, once the worker runs its ordered shutdown.
     drop(renderer);
     assert_eq!(
-        release.try_recv().ok(),
+        release
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .ok(),
         Some("second"),
         "dropping the host releases its installed frame"
     );
@@ -542,7 +541,7 @@ fn the_source_sees_the_presented_size_and_can_request_a_pass() {
     let (view, outputs) = producer_view();
     let wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let woken = std::sync::Arc::clone(&wakes);
-    let mut renderer = ExternalFrameRenderer::new(
+    let mut renderer = pollster::block_on(ExternalFrameRenderer::new(
         &runtime,
         runtime.context(),
         &view.stream(),
@@ -550,7 +549,7 @@ fn the_source_sees_the_presented_size_and_can_request_a_pass() {
         RedrawHandle::new(move || {
             woken.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }),
-    )
+    ))
     .expect("the external frame renderer settles");
     let output = outputs.borrow()[0].clone();
     assert_eq!(
@@ -566,8 +565,7 @@ fn the_source_sees_the_presented_size_and_can_request_a_pass() {
     };
     for (width, height) in [(96, 48), (64, 32)] {
         let target = host_target(&device, (width, height));
-        renderer
-            .present(&target, retina, FrameTime::now())
+        pollster::block_on(renderer.present(&target, retina, FrameTime::now()))
             .expect("the pass runs without a frame");
         assert_eq!(
             output.presented_size(),
@@ -653,13 +651,13 @@ fn the_renderer_reports_the_generation_of_the_context_it_was_given() {
         "the rebuild advanced the lost runtime past the live one"
     );
     let (view, _outputs) = producer_view();
-    let renderer = ExternalFrameRenderer::new(
+    let renderer = pollster::block_on(ExternalFrameRenderer::new(
         &lost_runtime,
         live_runtime.context(),
         &view.stream(),
         size(FRAME.0, FRAME.1),
         RedrawHandle::new(|| {}),
-    )
+    ))
     .expect("the external frame renderer settles");
     assert_eq!(
         renderer.generation(),
@@ -685,13 +683,13 @@ fn an_idle_device_loss_recovers_through_context_publication() {
     drop(stale_renderer);
 
     let device = fresh.device().clone();
-    let mut second = ExternalFrameRenderer::new(
+    let mut second = pollster::block_on(ExternalFrameRenderer::new(
         &runtime,
         fresh.clone(),
         &view.stream(),
         size(FRAME.0, FRAME.1),
         RedrawHandle::new(|| {}),
-    )
+    ))
     .expect("the rebuilt external frame renderer settles");
     assert_eq!(second.generation(), fresh.generation());
     let dimensions = (64, 32);
@@ -708,9 +706,7 @@ fn an_idle_device_loss_recovers_through_context_publication() {
         .present(red)
         .expect("the restarted source's output is live");
     let target = host_target(&device, dimensions);
-    second
-        .present(&target, SDR, FrameTime::now())
-        .expect("the frame presents");
+    pollster::block_on(second.present(&target, SDR, FrameTime::now())).expect("the frame presents");
     let shown = read(&device, fresh.queue(), &target).pixel(32, 16);
     assert!(
         shown[0] > 200 && shown[2] < 40,
@@ -885,8 +881,7 @@ fn gpu_export_external_frame_images() {
             .present(frame)
             .expect("the output is live");
         let target = host_target(device, FRAME);
-        renderer
-            .present(&target, SDR, FrameTime::now())
+        pollster::block_on(renderer.present(&target, SDR, FrameTime::now()))
             .expect("the frame presents");
         read(device, queue, &target)
             .save_png(directory.join(name))
