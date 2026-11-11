@@ -212,8 +212,8 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
                 resolve: NodeLayers::frame_layer,
             },
             (
-                |_runtime, _scale| key_id(&key),
-                |_tx, _member, _p: &(), _group, _scale| {},
+                |_runtime, _scale| Ok(key_id(&key)),
+                |_tx, _member, _p: &(), _group, _scale| Ok(()),
             ),
             bind,
         );
@@ -262,11 +262,11 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
                     let mut log = host.spec_log.borrow_mut();
                     log.push(crate::renderer::mount::target::chrome_spec(
                         params, scale, key,
-                    ));
+                    )?);
                     // Every group built gets an id of its own, as the
                     // engine's do: a member left on a released group
                     // carries an id no live group has.
-                    key_id(&(key, log.len()))
+                    Ok(key_id(&(key, log.len())))
                 },
                 |tx: &mut Transaction<'_, Self>,
                  member: &Layer,
@@ -277,7 +277,8 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
                  scale: f64| {
                     tx[member].backdrop(crate::renderer::mount::target::chrome_sample(
                         payload, *id, scale,
-                    ));
+                    )?);
+                    Ok(())
                 },
             ),
             bind,

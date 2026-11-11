@@ -230,4 +230,6 @@ mod gpu;
 #[cfg(hydrolysis_gpu_painter)]
 pub use gpu::CherenkovHost;
 #[cfg(all(test, hydrolysis_gpu_painter))]
-pub use gpu::{attach_material_shaders, chrome_sample, chrome_spec, install_gpu_text};
+pub use gpu::{
+    attach_material_shaders, chrome_sample, chrome_spec, install_gpu_text, recording_scale_of,
+};

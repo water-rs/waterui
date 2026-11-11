@@ -6,7 +6,7 @@ use crate::text::{Affinity, TextEngine as _, TextLayout as _, TextPosition};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::future::Future;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::mpsc;
 
 use executor_core::LocalExecutor;
@@ -397,6 +397,26 @@ pub fn window_mount(
         .as_ref()
         .expect("the frame installed into a window")
         .mount
+}
+
+/// Swaps the window host's engine-surface link for `surface` and returns
+/// the link it held: swapping in `Weak::new()` stands in for a surface
+/// dropped during the window's commit, swapping the returned link back
+/// restores it.
+pub fn swap_host_surface(
+    runtime: &mut crate::HeadlessRuntime,
+    surface: Weak<cherenkov::Surface<cherenkov_gpu::Gpu>>,
+) -> Weak<cherenkov::Surface<cherenkov_gpu::Gpu>> {
+    std::mem::replace(
+        &mut runtime
+            .renderer_mut()
+            .cherenkov_window
+            .as_mut()
+            .expect("the frame installed into a window")
+            .host
+            .surface,
+        surface,
+    )
 }
 
 /// The window's backdrop-group table — the test renders one window.

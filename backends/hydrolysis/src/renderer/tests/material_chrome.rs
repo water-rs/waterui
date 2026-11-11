@@ -9,7 +9,7 @@
 //! An unregistered key panics at install; a CPU engine panics on attach
 //! with a non-empty registry; a rejected source panics naming the key.
 
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use waterui_core::Binding;
 
@@ -30,12 +30,13 @@ use waterui_core::handler::AnyViewBuilder;
 
 use super::mirror::{mirror_engine, no_shader_mount};
 use super::{
-    ChromeDraw, ChromePlan, MinimalTestTheme, pumped_test_environment, test_renderer_with_theme,
+    ChromeDraw, ChromePlan, MinimalTestTheme, pumped_test_environment, swap_host_surface,
+    test_renderer_with_theme,
 };
 use crate::HeadlessRuntime;
 use crate::platform::{InputEvent, PointerButton, PointerKind};
-use crate::renderer::mount::backdrop::BackdropScope;
-use crate::renderer::mount::target::attach_material_shaders;
+use crate::renderer::mount::backdrop::{BackdropScope, Unbound};
+use crate::renderer::mount::target::{attach_material_shaders, recording_scale_of};
 use crate::theme::{
     Backdrop, Chrome, CornerShape, Corners, Custom, Driven, FocusIndicator, Inputs, PressFeedback,
     Surface,
@@ -1413,12 +1414,17 @@ fn an_invalid_union_smoothing_is_rejected_by_the_logical_type() {
 }
 
 /// A valid logical union smoothing whose device-pixel conversion fails —
-/// here, overflowing `f32` — panics at group build inside the mounted
+/// here, overflowing `f32` — is reported at group build inside the mounted
 /// commit, naming the class and the scale. The error is surfaced, never
-/// clamped.
+/// clamped: the group is not built, so the member keeps its membership but
+/// binds no sample, and a later frame at a scale the smoothing converts at
+/// builds the group and binds it.
 #[test]
-#[should_panic(expected = "invalid at display scale 4: the union smoothing is not finite")]
-fn a_union_smoothing_that_overflows_device_pixels_panics_at_group_build() {
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "invalid at display scale 4: the union smoothing is not finite")
+)]
+fn a_union_smoothing_that_overflows_device_pixels_leaves_the_member_unbound() {
     let theme = MinimalTestTheme {
         chrome: {
             let mut plan = glass_plan(vec![chrome_draw(UNION_GLASS, GLASS_SHADER, vec![])]);
@@ -1440,6 +1446,40 @@ fn a_union_smoothing_that_overflows_device_pixels_panics_at_group_build() {
     let plan = theme.chrome.clone();
     let mut renderer = test_renderer_with_theme(theme);
     mirror_frame_at(&mut renderer, &plan, tap_view(), 4.0);
+    let member = mirror_chrome_layers(&renderer)[0];
+    assert!(
+        mirrored_node(&renderer, member).backdrop.is_none(),
+        "the member binds no sample",
+    );
+    assert_eq!(
+        renderer.mirror().chrome_groups().chrome_group(member),
+        None,
+        "no group object was built",
+    );
+    assert_eq!(
+        renderer
+            .mirror()
+            .chrome_groups()
+            .chrome_display_scale(member),
+        Some(4.0),
+        "the member keeps its membership for the next rebuild",
+    );
+    assert_eq!(
+        renderer.mirror().union_log(),
+        Vec::new(),
+        "the failed build logs no spec",
+    );
+
+    mirror_frame_at(&mut renderer, &plan, tap_view(), 1.0);
+    assert_eq!(
+        renderer.mirror().union_log().as_slice(),
+        &[Some(cherenkov::BackdropUnion::new(1e38).expect("in range"))],
+        "the rebuild at a convertible scale builds the group",
+    );
+    assert!(
+        mirrored_node(&renderer, member).backdrop.is_some(),
+        "the member binds once its group is built",
+    );
 }
 
 /// A non-finite or negative logical outer extent is rejected by
@@ -1462,13 +1502,17 @@ fn an_invalid_outer_extent_is_rejected_by_the_logical_type() {
 }
 
 /// A finite logical outer extent whose device-pixel conversion overflows
-/// `f32` panics at the member's bind inside the mounted commit, naming
-/// the extent and the scale. The error is surfaced, never clamped.
+/// `f32` is reported at the member's bind inside the mounted commit,
+/// naming the extent and the scale. The error is surfaced, never clamped:
+/// the member keeps its group membership but binds no sample.
 #[test]
-#[should_panic(
-    expected = "outer extent 340282350000000000000000000000000000000 is invalid at display scale 2: the outer extent is not finite"
+#[cfg_attr(
+    debug_assertions,
+    should_panic(
+        expected = "outer extent 340282350000000000000000000000000000000 is invalid at display scale 2: the outer extent is not finite"
+    )
 )]
-fn an_outer_extent_that_overflows_device_pixels_panics_at_bind() {
+fn an_outer_extent_that_overflows_device_pixels_leaves_the_member_unbound() {
     let theme = MinimalTestTheme {
         chrome: glass_plan(vec![ChromeDraw {
             effect: Live::from(
@@ -1482,6 +1526,123 @@ fn an_outer_extent_that_overflows_device_pixels_panics_at_bind() {
     let plan = theme.chrome.clone();
     let mut renderer = test_renderer_with_theme(theme);
     mirror_frame_at(&mut renderer, &plan, tap_view(), DISPLAY_SCALE);
+    let member = mirror_chrome_layers(&renderer)[0];
+    assert!(
+        mirrored_node(&renderer, member).backdrop.is_none(),
+        "the member binds no sample",
+    );
+    assert!(
+        renderer
+            .mirror()
+            .chrome_groups()
+            .chrome_group(member)
+            .is_some(),
+        "the member keeps its group membership",
+    );
+
+    mirror_frame_at(&mut renderer, &plan, tap_view(), 1.0);
+    assert_eq!(
+        mirrored_node(&renderer, member)
+            .backdrop
+            .as_ref()
+            .map(cherenkov::BackdropSample::outer_extent),
+        Some(cherenkov::BackdropOuter::new(f32::MAX).expect("finite")),
+        "at a scale the extent converts at, the member binds",
+    );
+}
+
+/// A bound member's live effect changing to an outer extent that overflows
+/// device pixels is reported from the binding; the sample cannot unbind
+/// its layer from inside the signal, so the member keeps the last sample
+/// it bound — the change is rejected, never clamped.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(
+        expected = "outer extent 340282350000000000000000000000000000000 is invalid at display scale 2: the outer extent is not finite"
+    )
+)]
+fn a_live_outer_extent_that_overflows_keeps_the_last_bound_sample() {
+    let extent = nami::binding(3.0_f32);
+    let effect = Live::from(extent.clone())
+        .map(|px: f32| MaterialEffect::new(vec![px]).outer(OuterExtent::new(px).expect("finite")))
+        .into_shared();
+    let plan = glass_plan(vec![ChromeDraw {
+        effect,
+        ..chrome_draw(GLASS, GLASS_SHADER, vec![])
+    }]);
+    let mut renderer = test_renderer_with_theme(MinimalTestTheme {
+        chrome: plan.clone(),
+        ..Default::default()
+    });
+    mirror_frame_at(&mut renderer, &plan, tap_view(), DISPLAY_SCALE);
+    let member = mirror_chrome_layers(&renderer)[0];
+    let bound = |renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>| {
+        mirrored_node(renderer, member)
+            .backdrop
+            .clone()
+            .expect("the member binds a sample")
+    };
+    let before = bound(&renderer);
+    assert_eq!(
+        before.outer_extent(),
+        cherenkov::BackdropOuter::new(6.0).expect("in range"),
+    );
+
+    extent.set(f32::MAX);
+    assert_eq!(
+        bound(&renderer),
+        before,
+        "the rejected change leaves the last bound sample in place",
+    );
+}
+
+/// A display scale that is not a recording scale is reported and binds
+/// nothing: the helper hands back [`Unbound`] rather than a clamped scale.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "display scale 0 is not a recording scale")
+)]
+fn an_invalid_recording_scale_is_reported_and_unbound() {
+    assert_eq!(recording_scale_of(0.0), Err(Unbound));
+}
+
+/// A chrome member whose commit finds the engine surface dropped reports
+/// the contract violation and joins no group — its membership ends and the
+/// emptied group releases rather than outliving its surface; once the
+/// surface is back, the member's next commit joins again.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "the engine surface was dropped during its commit")
+)]
+fn a_dropped_surface_leaves_the_chrome_member_unbound() {
+    let theme = MinimalTestTheme {
+        chrome: glass_plan(vec![chrome_draw(GLASS, GLASS_SHADER, vec![])]),
+        ..Default::default()
+    };
+    let mut runtime = rendered(tap_view, theme, DISPLAY_SCALE);
+    let member = chrome_layers(&runtime)[0];
+    assert!(chrome_mount(&runtime).chrome_group(member).is_some());
+
+    let surface = swap_host_surface(&mut runtime, Weak::new());
+    runtime.set_scale_factor(4.0);
+    let _ = runtime.pump(false);
+    assert!(
+        chrome_mount(&runtime).chrome_group(member).is_none(),
+        "the member joins no group without the surface",
+    );
+    assert_eq!(chrome_mount(&runtime).chrome_group_count(), 0);
+
+    swap_host_surface(&mut runtime, surface);
+    runtime.set_scale_factor(DISPLAY_SCALE);
+    let _ = runtime.pump(false);
+    assert_eq!(
+        chrome_mount(&runtime).chrome_display_scale(member),
+        Some(DISPLAY_SCALE),
+        "the member joins again with the surface back",
+    );
 }
 
 /// Two members of one shared group carry different uniforms; a display-scale
