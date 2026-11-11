@@ -171,6 +171,7 @@ fn a_translucent_material_and_label_fade_together() {
 fn a_translucent_segment_over_a_chrome_member_fades_once() {
     let plan = ChromePlan {
         shaders: vec![(GLASS_SHADER, BackdropShaderSource::wgsl(TINT_WGSL))],
+        containers: Vec::new(),
         captures: vec![(
             GLASS,
             MaterialCapture {

@@ -27,7 +27,7 @@ use crate::hwui::text::TextLayoutResource;
 use crate::renderer::ProducerWake;
 use crate::renderer::effects::FilteredRuntime;
 use crate::renderer::mount::backdrop::{
-    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload,
+    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload, ChromeParams,
     MaterialBackdropGroups, MaterialMembership, MemberBind,
 };
 use crate::renderer::mount::target::{FilterHandle, LayerTarget, MaterialTerms};
@@ -221,7 +221,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
         _groups: &mut ChromeBackdropGroups<Self::Group, Self::Shader, E>,
         _layer: &Layer,
         _key: ChromeGroupKey,
-        _params: cherenkov_record::MaterialCapture,
+        _params: ChromeParams,
         _display_scale: f64,
         _membership: &MaterialMembership<E>,
         _payload: impl FnOnce() -> ChromeMemberPayload<Self::Shader>,

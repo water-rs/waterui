@@ -15,7 +15,7 @@ use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::ProducerWake;
 use crate::renderer::effects::FilteredRuntime;
 use crate::renderer::mount::backdrop::{
-    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload,
+    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload, ChromeParams,
     MaterialBackdropGroups, MaterialMembership, MemberBind,
 };
 use crate::renderer::recording::SceneResources;
@@ -140,9 +140,12 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
 
     /// Joins `layer` — a `ChromeMaterial` member — to the chrome group
     /// `key` names, sharing the group's unfiltered capture with every
-    /// member under the same `(scope, class, canvas)` key, rebuilding it
+    /// member under the same `(scope, class, canvas)` key — or, for a
+    /// container member, `(scope, shader, canvas)` — rebuilding it
     /// when `display_scale` changes. `params` is the class's registered
-    /// capture terms; `payload` builds the member's own shader handle and
+    /// capture terms (the member's own, until the commit's
+    /// [`settle_chrome`](Self::settle_chrome) resolves a container's);
+    /// `payload` builds the member's own shader handle and
     /// live effect — the terms the member binds and a group rebuild
     /// rebinds — and runs only when `bind` binds the member
     /// (water-rs/waterui#1788).
@@ -156,7 +159,7 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
         groups: &mut ChromeBackdropGroups<Self::Group, Self::Shader, E>,
         layer: &Layer,
         key: ChromeGroupKey,
-        params: cherenkov_record::MaterialCapture,
+        params: ChromeParams,
         display_scale: f64,
         membership: &MaterialMembership<E>,
         payload: impl FnOnce() -> ChromeMemberPayload<Self::Shader>,
@@ -168,6 +171,20 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
     /// default no-op.
     fn clear_chrome(tx: &mut Transaction<'_, Self>, layer: &Layer) {
         let _ = (tx, layer);
+    }
+
+    /// Resolves the container groups whose membership or member
+    /// recordings changed in this commit, through
+    /// [`BackdropGroups::settle`](super::backdrop::BackdropGroups::settle),
+    /// at the commit's end before the sweeps (water-rs/waterui#2834).
+    /// Targets that never join a chrome group leave the default no-op.
+    fn settle_chrome(
+        host: &Self::Host,
+        tx: &mut Transaction<'_, Self>,
+        groups: &mut ChromeBackdropGroups<Self::Group, Self::Shader, E>,
+        display_scale: f64,
+    ) {
+        let _ = (host, tx, groups, display_scale);
     }
 }
 

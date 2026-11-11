@@ -18,6 +18,7 @@
 mod animated;
 pub mod backdrop;
 pub mod cell;
+pub mod container;
 #[cfg(any(test, hydrolysis_hwui))]
 pub mod hwui;
 pub mod layers;
