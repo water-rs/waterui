@@ -568,6 +568,57 @@ fn backdrop_levels_default_to_one_and_skip_one() {
 }
 
 #[test]
+fn backdrop_pyramid_defaults_to_box_and_skips_box() {
+    use cherenkov_scene::CapturePyramid;
+    let dir = std::env::temp_dir().join(format!(
+        "cherenkov-scene-pyramid-kind-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let scene = |pyramid| {
+        let mut b = Scene::builder(64, 64);
+        b.backdrop_group(BackdropGroup {
+            pyramid,
+            ..BackdropGroup::new(7, Vec::new(), 1.0, 3)
+        });
+        b.root().layer(|m| {
+            m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
+            m.backdrop(7);
+        });
+        b.build()
+    };
+    let json = |name: &str| std::fs::read_to_string(dir.join(name).join("scene.json")).unwrap();
+
+    // A box group serializes exactly as before the field existed.
+    let boxed = scene(CapturePyramid::Box);
+    boxed.save(&dir.join("box")).unwrap();
+    assert!(
+        !json("box").contains("pyramid"),
+        "a box group omits `pyramid`: {}",
+        json("box")
+    );
+    assert!(!boxed.features.contains(&Feature::BackdropGaussianPyramid));
+    assert_eq!(Scene::load(&dir.join("box")).unwrap(), boxed);
+
+    let gaussian = scene(CapturePyramid::Gaussian);
+    gaussian.save(&dir.join("gaussian")).unwrap();
+    assert!(
+        json("gaussian").contains("\"pyramid\": \"gaussian\""),
+        "{}",
+        json("gaussian")
+    );
+    assert!(
+        gaussian
+            .features
+            .contains(&Feature::BackdropGaussianPyramid)
+    );
+    let loaded = Scene::load(&dir.join("gaussian")).unwrap();
+    assert_eq!(loaded.backdrop_groups[0].pyramid, CapturePyramid::Gaussian);
+    assert_eq!(loaded, gaussian);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn backdrop_union_and_outer_roundtrip_and_validate() {
     use cherenkov_scene::{BackdropFilter, BackdropGroup, SceneError};
     let dir = std::env::temp_dir().join(format!("cherenkov-scene-union-{}", std::process::id()));
