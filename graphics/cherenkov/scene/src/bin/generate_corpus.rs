@@ -12,6 +12,8 @@ mod authored;
 mod compressed;
 #[path = "generate_corpus/gradient_search.rs"]
 mod gradient_search;
+#[path = "generate_corpus/shaders.rs"]
+mod shaders;
 #[path = "generate_corpus/stroke_gpu.rs"]
 mod stroke_gpu;
 #[path = "generate_corpus/text_layout.rs"]
@@ -2793,6 +2795,7 @@ fn run(root: &Path) -> Result<(), SceneError> {
 
     let white = srgb(0.95, 0.95, 0.95);
     let dark = srgb(0.1, 0.1, 0.12);
+    shaders::generate(&mut corpus, white);
 
     // ---- Basic shapes ------------------------------------------------------
 
@@ -4079,6 +4082,25 @@ fn run(root: &Path) -> Result<(), SceneError> {
                 filter_blur_content(group, colors);
             });
         });
+    }
+
+    // A filter with no CPU kernel, which the CPU raster runs from its
+    // stage description: a sharpen that overshoots both ways at edges.
+    for &(suffix, colors) in &filter_color_variants {
+        corpus.scene(
+            format!("filter-convolution3x3{suffix}"),
+            128,
+            128,
+            white,
+            |l| {
+                l.layer(|group| {
+                    group.filter(LayerFilter::Convolution3x3 {
+                        kernel: [0.0, -1.0, 0.0, -1.0, 5.0, -1.0, 0.0, -1.0, 0.0],
+                    });
+                    filter_blur_content(group, colors);
+                });
+            },
+        );
     }
 
     // HWUI's overscroll stretch at Android's largest drawn intensity

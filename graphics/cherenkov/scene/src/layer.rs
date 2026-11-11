@@ -236,6 +236,13 @@ pub enum LayerFilter {
         /// Standard deviation in pixels.
         sigma: f64,
     },
+    /// A 3×3 convolution of all four premultiplied channels (filtrate's
+    /// `Convolution3x3`): `out(x, y) = Σ kernel[3·(j+1) + (i+1)] ·
+    /// in(x + i, y + j)` for `i, j ∈ {−1, 0, 1}`, unnormalised.
+    Convolution3x3 {
+        /// The weights, row-major from the top-left.
+        kernel: [f64; 9],
+    },
     /// A separable box blur: the mean of `2r + 1` texels per axis,
     /// `r = round(radius)`.
     BoxBlur {

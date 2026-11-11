@@ -110,6 +110,9 @@ pub enum RenderError {
     /// without a clip, a projective backdrop member, a backdrop group
     /// spanning composition spaces, or no finite density bound.
     Projective(String),
+    /// A shader paint or backdrop shader whose composed module does not
+    /// parse.
+    Shader(String),
 }
 
 impl std::fmt::Display for RenderError {
@@ -119,6 +122,7 @@ impl std::fmt::Display for RenderError {
             Self::Resource(e) => write!(f, "resource error: {e}"),
             Self::Backdrop(e) => write!(f, "backdrop error: {e}"),
             Self::Projective(e) => write!(f, "projective error: {e}"),
+            Self::Shader(e) => write!(f, "shader error: {e}"),
         }
     }
 }
@@ -1349,27 +1353,7 @@ impl Renderer {
         };
         if let Some(capture) = backdrops.captures.get(&gid) {
             let cap_space = capture.space;
-            // SDF effects and field members need the member clip's
-            // analytic box (the GPU errors the same name for a mask or
-            // path clip).
-            let sdf_clip = match &child.backdrop_effect {
-                None | Some(cherenkov_scene::BackdropEffectSpec::ColorMatrix { .. })
-                    if !field_member =>
-                {
-                    None
-                }
-                _ => Some(
-                    crate::sdf::box_params(clip)
-                        .map(|(shape, extra)| (shape, tf * extra))
-                        .ok_or_else(|| {
-                            if field_member {
-                                union_member_clip_error(clip)
-                            } else {
-                                RenderError::Backdrop("backdrop-effect-sdf-path".to_string())
-                            }
-                        })?,
-                ),
-            };
+            let sdf_clip = member_sdf_clip(child, clip, tf, field_member)?;
             // The member's position in the group's paint order — the
             // ownership tie-break's `ord`.
             let ord = if union.is_some() {
@@ -1380,6 +1364,25 @@ impl Renderer {
             } else {
                 0
             };
+            // A shader effect's capture reads, bound once for the member.
+            let shader_module = member_shader(child)?;
+            let union_members = || {
+                backdrops
+                    .unions
+                    .get(&gid)
+                    .expect("union members are collected before sampling")
+                    .as_slice()
+            };
+            let reads = MemberReads {
+                capture,
+                union: union.map(|k| (union_members(), k, ord)),
+                sdf_clip: sdf_clip.as_ref(),
+                inv_tf: tf.inverse(),
+                bounds: tf.transform_rect_bbox(clip.bounding_box()),
+            };
+            let shader = shader_module
+                .as_ref()
+                .map(|(module, params)| (module.eval(&reads), params));
             let cw = canvas.width;
             #[expect(
                 clippy::cast_precision_loss,
@@ -1391,11 +1394,7 @@ impl Renderer {
                 // outer, w)` for a union member, `coverage(d − outer, 1)`
                 // for a lone `outer` member (an own field's gradient is
                 // unit), 1 otherwise.
-                let (field_cov, field) = if let Some(k) = union {
-                    let members = backdrops
-                        .unions
-                        .get(&gid)
-                        .expect("union members are collected before sampling");
+                let (field_cov, field) = if let Some((members, k, ord)) = reads.union {
                     let (d, n, w_own, w) = union_field(members, k, ord, p);
                     (
                         w_own * (0.5 - (d - outer) / w).clamp(0.0, 1.0),
@@ -1413,7 +1412,10 @@ impl Renderer {
                 if c == 0.0 {
                     continue;
                 }
-                let src = sample_backdrop(child, capture, p, sdf_clip.as_ref(), field);
+                let src = match &shader {
+                    Some((eval, params)) => eval.at(&reads.pixel(p, field), params),
+                    None => sample_backdrop(child, capture, p, sdf_clip.as_ref(), field),
+                };
                 // The sample at its coverage blends source-over in the
                 // group's member space: the canvas converts into it and
                 // the result back.
@@ -1533,6 +1535,55 @@ impl Renderer {
         Ok(())
     }
 
+    /// Composite a fill's shader paint over `canvas`, multiplied by
+    /// `coverage`: the shader is evaluated at each pixel centre, at the
+    /// `uv` its user-space point takes across `bounds`. `resolution` is the
+    /// ceiled device size of `bounds`, the texture an engine renders the
+    /// paint into.
+    /// # Errors
+    /// [`RenderError::Shader`] when the composed module does not parse.
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        reason = "pixel indices are far below 2^53; the shader's inputs are f32"
+    )]
+    fn composite_shader(
+        canvas: &mut Canvas,
+        space: BlendSpace,
+        coverage: &[f64],
+        shader: &cherenkov_scene::ShaderPaint,
+        bounds: kurbo::Rect,
+        tf: Affine,
+    ) -> Result<(), RenderError> {
+        let module = crate::shader::PaintModule::new(&shader.source)?;
+        let device = tf.transform_rect_bbox(bounds);
+        let resolution = [
+            device.width().ceil().max(1.0) as f32,
+            device.height().ceil().max(1.0) as f32,
+        ];
+        let eval = module.eval(&shader.params, resolution);
+        let inv_tf = tf.inverse();
+        let w = canvas.width;
+        for (idx, &c) in coverage.iter().enumerate() {
+            if c <= 0.0 {
+                continue;
+            }
+            let p = inv_tf * Point::new((idx % w) as f64 + 0.5, (idx / w) as f64 + 0.5);
+            let uv = [
+                ((p.x - bounds.x0) / bounds.width()) as f32,
+                ((p.y - bounds.y0) / bounds.height()) as f32,
+            ];
+            let position = [uv[0] * resolution[0], uv[1] * resolution[1]];
+            let src = move_space(
+                eval.at(uv, position).map(|v| v * c),
+                BlendSpace::Linear,
+                space,
+            );
+            canvas.pixels[idx] = src_over(canvas.pixels[idx], src);
+        }
+        Ok(())
+    }
+
     #[allow(clippy::many_single_char_names)] // u/v/w/h/x/y are the natural names
     #[expect(
         clippy::cast_precision_loss,
@@ -1552,7 +1603,13 @@ impl Renderer {
             Draw::Fill { shape, rule, paint } => {
                 let coverage = self.shape_coverage(shape, *rule, tf, clips);
                 let space = chain.last().map_or(BlendSpace::Linear, |l| l.space);
-                Self::composite_paint(top(chain), space, &coverage, paint, inv_tf, resources)?;
+                let canvas = top(chain);
+                if let Paint::Shader(shader) = paint {
+                    let bounds = shape.bounding_box();
+                    Self::composite_shader(canvas, space, &coverage, shader, bounds, tf)?;
+                } else {
+                    Self::composite_paint(canvas, space, &coverage, paint, inv_tf, resources)?;
+                }
             }
             Draw::Stroke {
                 shape,
@@ -1666,34 +1723,11 @@ fn sample_backdrop(
     field: Option<(f64, [f64; 2])>,
 ) -> [f64; 4] {
     use cherenkov_scene::BackdropEffectSpec as E;
-    let (base, levels, scale) = (&capture.canvas, &capture.levels, capture.scale);
+    let (base, scale) = (&capture.canvas, capture.scale);
     let (width, height) = (base.width, base.height);
     let pixels = &base.pixels;
-    let at =
-        |q: [f64; 2]| crate::sdf::bilinear(pixels, width, height, [q[0] * scale, q[1] * scale]);
-    // `backdrop_sample_level(q, level)`: `level` clamped to `[0, n−1]`,
-    // bilinear at `floor`/`ceil` mixed by `fract`, at level-k texel
-    // coordinate `q · s / 2^k`.
-    let at_level = |q: [f64; 2], level: f64| {
-        let n = f64::from(u32::try_from(levels.len()).expect("levels ≤ 8")) + 1.0;
-        let lc = level.clamp(0.0, n - 1.0);
-        let k0 = lc.floor();
-        let k1 = (k0 + 1.0).min(n - 1.0);
-        let read = |k: f64| {
-            let k = k as usize;
-            let c = if k == 0 { base } else { &levels[k - 1] };
-            let div = f64::from(1u32 << k);
-            crate::sdf::bilinear(
-                &c.pixels,
-                c.width,
-                c.height,
-                [q[0] * scale / div, q[1] * scale / div],
-            )
-        };
-        let (lo, hi) = (read(k0), read(k1));
-        let t = lc - k0;
-        std::array::from_fn(|i| (hi[i] - lo[i]).mul_add(t, lo[i]))
-    };
+    let at = |q: [f64; 2]| capture_at(capture, q);
+    let at_level = |q: [f64; 2], level: f64| capture_level(capture, q, level);
     // The SDF effects' `(d, n)`: the union field when the group has
     // one, else the member's own box SDF — evaluated once, lazily.
     let dn = || {
@@ -1762,7 +1796,165 @@ fn sample_backdrop(
             let t = (1.0 + d / depth).clamp(0.0, 1.0);
             at_level(p, (edge_level - interior_level).mul_add(t, *interior_level))
         }
+        Some(E::Shader { .. }) => {
+            unreachable!("a shader effect evaluates through `crate::shader`")
+        }
     }
+}
+
+/// The member clip's analytic box and box → device transform, which SDF
+/// effects and field members need (the GPU errors the same name for a mask
+/// or path clip); `None` for an effect that reads only the member pixel.
+///
+/// # Errors
+/// [`RenderError::Backdrop`] when the clip has no analytic box.
+fn member_sdf_clip(
+    layer: &Layer,
+    clip: &Shape,
+    tf: Affine,
+    field_member: bool,
+) -> Result<Option<(crate::sdf::BoxShape, Affine)>, RenderError> {
+    match &layer.backdrop_effect {
+        None | Some(cherenkov_scene::BackdropEffectSpec::ColorMatrix { .. }) if !field_member => {
+            Ok(None)
+        }
+        _ => crate::sdf::box_params(clip)
+            .map(|(shape, extra)| Some((shape, tf * extra)))
+            .ok_or_else(|| {
+                if field_member {
+                    union_member_clip_error(clip)
+                } else {
+                    RenderError::Backdrop("backdrop-effect-sdf-path".to_string())
+                }
+            }),
+    }
+}
+
+/// A union group's members: each one's box shape and box → device
+/// transform.
+type UnionMembers = [(crate::sdf::BoxShape, Affine)];
+
+/// A member's backdrop shader effect: its parsed module and packed params.
+///
+/// # Errors
+/// [`RenderError::Shader`] when the module does not parse.
+fn member_shader(
+    layer: &Layer,
+) -> Result<Option<(crate::shader::BackdropModule, cherenkov_shader::eval::Value)>, RenderError> {
+    let Some(cherenkov_scene::BackdropEffectSpec::Shader { source, params, .. }) =
+        &layer.backdrop_effect
+    else {
+        return Ok(None);
+    };
+    Ok(Some((
+        crate::shader::BackdropModule::new(source)?,
+        crate::shader::params(params),
+    )))
+}
+
+/// A backdrop member as its shader effect sees it: the group's capture,
+/// the field it draws against and its own geometry.
+struct MemberReads<'a> {
+    capture: &'a Capture,
+    /// The group's union members, smoothing and this member's ord, when
+    /// the group has a union field.
+    union: Option<(&'a UnionMembers, f64, usize)>,
+    /// The member clip's box shape and box → device transform.
+    sdf_clip: Option<&'a (crate::sdf::BoxShape, Affine)>,
+    /// Device → member-layer space.
+    inv_tf: Affine,
+    /// The member's device bounds.
+    bounds: kurbo::Rect,
+}
+
+impl MemberReads<'_> {
+    fn own_field(&self, q: [f64; 2]) -> (f64, [f64; 2]) {
+        let (shape, clip_tf) = self.sdf_clip.expect("a shader effect carries a box clip");
+        crate::sdf::distance_and_normal(shape, clip_tf, q)
+    }
+
+    /// The `BackdropPixel` at device pixel centre `p`, whose union field
+    /// is `field` when the group has one.
+    fn pixel(&self, p: [f64; 2], field: Option<(f64, [f64; 2])>) -> crate::shader::BackdropPixel {
+        let (own_sdf, own_normal) = self.own_field(p);
+        let (sdf, normal) = field.unwrap_or((own_sdf, own_normal));
+        let local = self.inv_tf * Point::new(p[0], p[1]);
+        crate::shader::BackdropPixel {
+            p,
+            sdf,
+            normal,
+            own_sdf,
+            size: [self.bounds.width(), self.bounds.height()],
+            // The scene records at one device pixel per logical pixel.
+            scale: 1.0,
+            local: [local.x, local.y],
+        }
+    }
+}
+
+impl crate::shader::BackdropReads for MemberReads<'_> {
+    fn sample(&self, q: [f64; 2]) -> [f64; 4] {
+        capture_at(self.capture, q)
+    }
+
+    fn sample_level(&self, q: [f64; 2], level: f64) -> [f64; 4] {
+        capture_level(self.capture, q, level)
+    }
+
+    fn field(&self, q: [f64; 2]) -> (f64, [f64; 2], f64) {
+        self.union.map_or_else(
+            || {
+                let (d, n) = self.own_field(q);
+                (d, n, 1.0)
+            },
+            |(members, smoothing, ord)| {
+                let (d, n, own, _) = union_field(members, smoothing, ord, q);
+                (d, n, own)
+            },
+        )
+    }
+}
+
+/// `backdrop_sample(q)`: the capture's bilinear read at device point `q`,
+/// texel coordinate `q · s`.
+fn capture_at(capture: &Capture, q: [f64; 2]) -> [f64; 4] {
+    let (base, scale) = (&capture.canvas, capture.scale);
+    crate::sdf::bilinear(
+        &base.pixels,
+        base.width,
+        base.height,
+        [q[0] * scale, q[1] * scale],
+    )
+}
+
+/// `backdrop_sample_level(q, level)`: `level` clamped to `[0, n−1]`,
+/// bilinear at `floor`/`ceil` mixed by `fract`, at level-k texel
+/// coordinate `q · s / 2^k`.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the clamped level indexes the pyramid"
+)]
+fn capture_level(capture: &Capture, q: [f64; 2], level: f64) -> [f64; 4] {
+    let (base, levels, scale) = (&capture.canvas, &capture.levels, capture.scale);
+    let n = f64::from(u32::try_from(levels.len()).expect("levels ≤ 8")) + 1.0;
+    let lc = level.clamp(0.0, n - 1.0);
+    let k0 = lc.floor();
+    let k1 = (k0 + 1.0).min(n - 1.0);
+    let read = |k: f64| {
+        let k = k as usize;
+        let c = if k == 0 { base } else { &levels[k - 1] };
+        let div = f64::from(1u32 << k);
+        crate::sdf::bilinear(
+            &c.pixels,
+            c.width,
+            c.height,
+            [q[0] * scale / div, q[1] * scale / div],
+        )
+    };
+    let (lo, hi) = (read(k0), read(k1));
+    let t = lc - k0;
+    std::array::from_fn(|i| (hi[i] - lo[i]).mul_add(t, lo[i]))
 }
 
 /// The `Backdrop` error for a union member whose clip gives

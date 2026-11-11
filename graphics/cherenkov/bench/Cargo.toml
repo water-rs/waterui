@@ -38,7 +38,7 @@ cherenkov = [
     "objc2-metal/objc2-io-surface",
     "dep:objc2-core-foundation", "dep:ndk-sys",
 ]
-cherenkov-cpu = ["dep:cherenkov", "dep:cherenkov-cpu", "dep:filtrate", "cherenkov-scene/text"]
+cherenkov-cpu = ["dep:cherenkov", "dep:cherenkov-cpu", "cherenkov-cpu/shaders", "dep:filtrate", "cherenkov-scene/text"]
 
 [dependencies]
 cherenkov = { path = "..", optional = true }

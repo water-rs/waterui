@@ -48,6 +48,8 @@ pub enum Feature {
     Image,
     /// Image pattern paints.
     ImagePaint,
+    /// User WGSL shader paints.
+    ShaderPaint,
     /// A non-trivial blend mode (the payload is the mode).
     Blend(BlendMode),
     /// A group compositing in a non-linear space (the payload is the space).
@@ -97,6 +99,8 @@ pub enum Feature {
     BackdropColorMatrix,
     /// A member layer carries a per-member backdrop sampling effect.
     BackdropEffect,
+    /// That effect is a user WGSL backdrop shader.
+    BackdropShader,
     /// A backdrop group captures below device resolution (`scale < 1`).
     BackdropScale,
     /// A backdrop group captures a blur pyramid (`levels > 1`).
@@ -248,7 +252,7 @@ impl Scene {
         // it from the layer tree and reject scenes that lie about what they
         // use (a stale or hand-edited file would otherwise bypass an
         // adapter's capability check).
-        scene.validate_image_encodings()?;
+        scene.validate_paints()?;
         let declared = std::mem::take(&mut scene.features);
         scene.compute_features();
         if scene.features != declared {
@@ -539,6 +543,10 @@ impl Scene {
                     ))
                 }
             }
+            E::Shader { reach, .. } if !(reach.is_finite() && *reach >= 0.0) => Err(
+                SceneError::InvalidBackdropEffect("shader reach must be finite and non-negative"),
+            ),
+            E::Shader { params, .. } => shader_params(params),
         }
     }
 
@@ -641,25 +649,30 @@ fn collect_resource_refs(layer: &Layer, out: &mut Vec<ResourceHash>) {
 }
 
 impl Scene {
-    /// Validates every `Draw::Image`/`Paint::Image` encoding declaration.
+    /// Validates every `Draw::Image`/`Paint::Image` encoding declaration
+    /// and every `Paint::Shader`'s parameters.
     ///
     /// # Errors
-    /// [`SceneError::InvalidImageEncoding`] on the first bad declaration.
-    fn validate_image_encodings(&self) -> Result<(), SceneError> {
-        fn paint_encoding(paint: &Paint) -> Option<&ImageEncoding> {
+    /// [`SceneError::InvalidImageEncoding`] or
+    /// [`SceneError::InvalidShaderParams`] on the first bad declaration.
+    fn validate_paints(&self) -> Result<(), SceneError> {
+        // `fill`: the paint is a fill's own paint, the one place a shader
+        // paint's bounds are the scene's to define.
+        fn paint_valid(paint: &Paint, fill: bool) -> Result<(), SceneError> {
             match paint {
-                Paint::Transformed { paint, .. } => paint_encoding(paint),
-                Paint::Image(ip) => Some(&ip.encoding),
-                _ => None,
+                Paint::Transformed { paint, .. } => paint_valid(paint, false),
+                Paint::Image(ip) => ip.encoding.validate(),
+                Paint::Shader(_) if !fill => Err(SceneError::ShaderPaintPlacement),
+                Paint::Shader(shader) => shader_params(&shader.params),
+                _ => Ok(()),
             }
         }
         fn draw_encoding(draw: &Draw) -> Result<(), SceneError> {
             match draw {
                 Draw::Image { encoding, .. } => encoding.validate(),
-                Draw::Fill { paint, .. }
-                | Draw::Stroke { paint, .. }
-                | Draw::Glyphs(crate::GlyphRun { paint, .. }) => {
-                    paint_encoding(paint).map_or(Ok(()), super::draw::ImageEncoding::validate)
+                Draw::Fill { paint, .. } => paint_valid(paint, true),
+                Draw::Stroke { paint, .. } | Draw::Glyphs(crate::GlyphRun { paint, .. }) => {
+                    paint_valid(paint, false)
                 }
                 Draw::Shadow { .. } => Ok(()),
             }
@@ -684,6 +697,15 @@ impl Scene {
             Ok(())
         }
         visit(&self.root)
+    }
+}
+
+/// A shader's `params` fit the prelude's array and are finite.
+fn shader_params(params: &[f64]) -> Result<(), SceneError> {
+    if params.len() <= crate::ShaderPaint::MAX_PARAMS && params.iter().all(|v| v.is_finite()) {
+        Ok(())
+    } else {
+        Err(SceneError::InvalidShaderParams)
     }
 }
 
@@ -738,6 +760,9 @@ fn collect_paint_features(paint: &Paint, f: &mut BTreeSet<Feature>) {
             if ip.extend_x == Extend::None || ip.extend_y == Extend::None {
                 f.insert(Feature::ExtendNone);
             }
+        }
+        Paint::Shader(_) => {
+            f.insert(Feature::ShaderPaint);
         }
     }
 }
@@ -886,8 +911,11 @@ fn collect_layer_features(layer: &Layer, f: &mut BTreeSet<Feature>) {
     if layer.backdrop.is_some() {
         f.insert(Feature::Backdrop);
     }
-    if layer.backdrop_effect.is_some() {
+    if let Some(effect) = &layer.backdrop_effect {
         f.insert(Feature::BackdropEffect);
+        if matches!(effect, crate::BackdropEffectSpec::Shader { .. }) {
+            f.insert(Feature::BackdropShader);
+        }
     }
     if layer.backdrop_outer != 0.0 {
         f.insert(Feature::BackdropOuter);

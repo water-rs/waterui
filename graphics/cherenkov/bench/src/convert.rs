@@ -160,6 +160,7 @@ impl Prepared {
                     api: Some("independent paint transform adapter"),
                 });
             }
+            Paint::Shader(_) => return Err(shader_paint_unsupported(engine)),
             Paint::Mesh(_) => {
                 return Err(BenchError::Unsupported {
                     engine,
@@ -654,6 +655,17 @@ pub fn image_brush(
     })
 }
 
+/// The scene's shader paint on an adapter whose engine has no WGSL paint
+/// (the peniko-based adapters and Skia).
+#[must_use]
+pub const fn shader_paint_unsupported(engine: &'static str) -> BenchError {
+    BenchError::Unsupported {
+        engine,
+        feature: Feature::ShaderPaint,
+        api: Some("user WGSL shader paint"),
+    }
+}
+
 /// Resolves a scene [`Paint`] to a `peniko::Brush`.
 ///
 /// # Errors
@@ -671,6 +683,7 @@ pub fn brush(engine: &'static str, paint: &Paint, blobs: &Blobs) -> Result<Brush
                 api: Some("independent paint transform adapter"),
             });
         }
+        Paint::Shader(_) => return Err(shader_paint_unsupported(engine)),
         Paint::Mesh(_) => {
             return Err(BenchError::Unsupported {
                 engine,
@@ -989,6 +1002,79 @@ mod front {
     use super::{Blobs, coord_bits};
     use crate::BenchError;
 
+    /// The engine resources a scene's paints and backdrop effects name,
+    /// registered before lowering.
+    #[derive(Default)]
+    pub struct PaintResources {
+        /// Images by content hash and declared encoding.
+        pub images: HashMap<(ResourceHash, cherenkov_scene::ImageEncoding), cherenkov::ImageId>,
+        /// Shader paints by fragment source.
+        pub shaders: HashMap<String, cherenkov::Shader>,
+        /// Backdrop shaders by source.
+        pub backdrop_shaders: HashMap<String, cherenkov::BackdropShader>,
+    }
+
+    /// The engine uniforms of a scene shader's `params`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "shader params are f32 at the engine boundary"
+    )]
+    pub fn shader_uniforms(params: &[f64]) -> Vec<f32> {
+        params.iter().map(|&v| v as f32).collect()
+    }
+
+    /// Registers the shader paints `paint` names, once per source.
+    ///
+    /// # Errors
+    /// `BenchError::Engine` when the engine rejects the source.
+    pub fn register_shader_paint<B: cherenkov::ShaderPaintCapability>(
+        resources: &mut PaintResources,
+        engine: &cherenkov::Engine<B>,
+        paint: &Paint,
+    ) -> Result<(), BenchError> {
+        let Paint::Shader(shader) = paint else {
+            return Ok(());
+        };
+        if !resources.shaders.contains_key(&shader.source) {
+            let registered = engine
+                .shader(cherenkov::ShaderSource::wgsl(shader.source.clone()))
+                .map_err(|e| BenchError::Engine(format!("cherenkov shader paint: {e}")))?;
+            resources.shaders.insert(shader.source.clone(), registered);
+        }
+        Ok(())
+    }
+
+    /// Registers `layer`'s backdrop shader effect, once per source.
+    ///
+    /// # Errors
+    /// `BenchError::Engine` when the engine rejects the source.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the reach is f32 at the engine boundary"
+    )]
+    pub fn register_backdrop_shader<B: cherenkov::BackdropShaders>(
+        resources: &mut PaintResources,
+        engine: &cherenkov::Engine<B>,
+        layer: &cherenkov_scene::Layer,
+    ) -> Result<(), BenchError> {
+        let Some(cherenkov_scene::BackdropEffectSpec::Shader { source, reach, .. }) =
+            &layer.backdrop_effect
+        else {
+            return Ok(());
+        };
+        if !resources.backdrop_shaders.contains_key(source) {
+            let registered = engine
+                .backdrop_shader(
+                    cherenkov::BackdropShaderSource::wgsl(source.clone()).reach(*reach as f32),
+                )
+                .map_err(|e| BenchError::Engine(format!("cherenkov backdrop shader: {e}")))?;
+            resources
+                .backdrop_shaders
+                .insert(source.clone(), registered);
+        }
+        Ok(())
+    }
+
     /// A scene backdrop group's capture scale at the engine's `f32`
     /// boundary. The scene's `f64` must narrow exactly, so the oracle and
     /// the engine run the same scale; a scale that does not is an error,
@@ -1096,9 +1182,16 @@ mod front {
     )]
     pub fn backdrop_effect(
         spec: &cherenkov_scene::BackdropEffectSpec,
+        resources: &PaintResources,
     ) -> Result<cherenkov::BackdropEffect, BenchError> {
         use cherenkov_scene::BackdropEffectSpec as S;
         Ok(match spec {
+            S::Shader { source, params, .. } => resources
+                .backdrop_shaders
+                .get(source)
+                .expect("backdrop shaders are registered before lowering")
+                .effect(shader_uniforms(params))
+                .into(),
             S::ColorMatrix { matrix } => cherenkov::ColorMatrix(matrix.map(|v| v as f32)).into(),
             S::Refraction { depth, strength } => cherenkov::Refraction {
                 depth: *depth as f32,
@@ -1317,13 +1410,21 @@ mod front {
     /// [`BenchError`] on an unregistered image or an unsupported feature.
     pub fn front_paint(
         paint: &Paint,
-        images: &HashMap<(ResourceHash, cherenkov_scene::ImageEncoding), cherenkov::ImageId>,
+        resources: &PaintResources,
         front: &Front,
     ) -> Result<cherenkov::Paint, BenchError> {
         Ok(match paint {
             Paint::Transformed { paint, transform } => {
-                front_paint(paint, images, front)?.transformed(*transform)
+                front_paint(paint, resources, front)?.transformed(*transform)
             }
+            Paint::Shader(shader) => cherenkov::Paint::Shader(cherenkov::ShaderPaint {
+                shader: resources
+                    .shaders
+                    .get(&shader.source)
+                    .expect("shader paints are registered before lowering")
+                    .id(),
+                uniforms: shader_uniforms(&shader.params),
+            }),
             Paint::Mesh(mesh) => cherenkov::MeshGradient::new(
                 mesh.columns(),
                 mesh.rows(),
@@ -1366,7 +1467,8 @@ mod front {
                 interpolation: interpolation(front, g.interpolation)?,
             }),
             Paint::Image(p) => cherenkov::Paint::Image(cherenkov::ImagePattern {
-                image: *images
+                image: *resources
+                    .images
                     .get(&(p.image, p.encoding))
                     .ok_or(cherenkov_scene::SceneError::MissingResource(p.image))?,
                 transform: p.transform,
@@ -1413,7 +1515,7 @@ mod front {
     pub fn op(
         draw: &Draw,
         fonts: &HashMap<(ResourceHash, u32), cherenkov::Font>,
-        images: &HashMap<(ResourceHash, cherenkov_scene::ImageEncoding), cherenkov::ImageId>,
+        resources: &PaintResources,
         blobs: &Blobs,
         front: &Front,
     ) -> Result<Op, BenchError> {
@@ -1421,7 +1523,7 @@ mod front {
             Draw::Fill { shape, rule, paint } => Op::Fill {
                 shape: shape_kind(shape, (front.fill_rule)(*rule)),
                 rule: *rule,
-                paint: front_paint(paint, images, front)?,
+                paint: front_paint(paint, resources, front)?,
             },
             Draw::Stroke {
                 shape,
@@ -1430,7 +1532,7 @@ mod front {
             } => Op::Stroke {
                 shape: shape_kind(shape, cherenkov::FillRule::NonZero),
                 stroke: super::stroke(stroke),
-                paint: front_paint(paint, images, front)?,
+                paint: front_paint(paint, resources, front)?,
             },
             Draw::Shadow {
                 shape,
@@ -1444,7 +1546,7 @@ mod front {
             },
             Draw::Glyphs(run) => Op::Glyphs {
                 run: glyph_run(run, fonts, blobs)?,
-                paint: front_paint(&run.paint, images, front)?,
+                paint: front_paint(&run.paint, resources, front)?,
             },
             Draw::Image {
                 image,
@@ -1452,7 +1554,8 @@ mod front {
                 dst,
                 sampling,
             } => Op::Image {
-                image: *images
+                image: *resources
+                    .images
                     .get(&(*image, *encoding))
                     .ok_or(cherenkov_scene::SceneError::MissingResource(*image))?,
                 dst: *dst,
@@ -1478,7 +1581,7 @@ mod front {
     pub fn group_op(
         group: &cherenkov_scene::Group,
         fonts: &HashMap<(ResourceHash, u32), cherenkov::Font>,
-        images: &HashMap<(ResourceHash, cherenkov_scene::ImageEncoding), cherenkov::ImageId>,
+        resources: &PaintResources,
         blobs: &Blobs,
         front: &Front,
         filter: &mut dyn FnMut(
@@ -1488,9 +1591,9 @@ mod front {
         let mut ops = Vec::with_capacity(group.items.len());
         for item in &group.items {
             ops.push(match item {
-                cherenkov_scene::GroupItem::Draw(d) => op(d, fonts, images, blobs, front)?,
+                cherenkov_scene::GroupItem::Draw(d) => op(d, fonts, resources, blobs, front)?,
                 cherenkov_scene::GroupItem::Group(inner) => {
-                    group_op(inner, fonts, images, blobs, front, filter)?
+                    group_op(inner, fonts, resources, blobs, front, filter)?
                 }
             });
         }
@@ -1517,13 +1620,13 @@ mod front {
     pub fn text_op(
         source: &cherenkov_scene::TextSource,
         fonts: &HashMap<(ResourceHash, u32), cherenkov::Font>,
-        images: &HashMap<(ResourceHash, cherenkov_scene::ImageEncoding), cherenkov::ImageId>,
+        resources: &PaintResources,
         blobs: &Blobs,
         front: &Front,
     ) -> Result<Op, BenchError> {
         let cherenkov_scene::ShapedText { layout, resources } = source.shape(
             |hash| blobs.get(hash).map(Vec::as_slice),
-            |paint| front_paint(paint, images, front),
+            |paint| front_paint(paint, resources, front),
         )?;
         let fonts_of = |data: &cherenkov::parley::FontData| {
             resources
