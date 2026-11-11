@@ -7660,13 +7660,13 @@ impl GpuRenderer {
                 )
             })
             .sum();
-        lowering.pictures = Some(lower::PictureInputs::new(
+        lowering.pictures = Some(Box::new(lower::PictureInputs::new(
             (retained, inputs, device),
             inputs
                 .picture_bytes
                 .min(inputs.limits.max_bytes.saturating_sub(projective_bytes)),
             layers,
-        ));
+        )));
         let result = lowering.run(
             frame.tree,
             layers,
