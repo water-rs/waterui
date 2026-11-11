@@ -502,12 +502,19 @@ impl HeadlessRuntime {
     /// between monitors of different densities reports a scale change, and
     /// the runtime rebuilds its scale-dependent state — capture chains and
     /// other texel-parameterized content — for the frames after this call.
+    /// A new scale wakes the window the way a host's scale change does: the
+    /// next pump refreshes and renders at it, so the change never waits on
+    /// unrelated work to reach the scene.
     ///
-    /// # Panics
-    ///
-    /// Panics when `scale_factor` is not finite and positive.
+    /// A `scale_factor` that is not finite and positive is reported as a
+    /// contract violation and ignored: the window keeps its scale factor.
     pub fn set_scale_factor(&mut self, scale_factor: f64) {
+        let before = self.runtime.platform.scale_factor();
         self.runtime.platform.set_scale_factor(scale_factor);
+        if self.runtime.platform.scale_factor().to_bits() != before.to_bits() {
+            self.runtime.request_refresh();
+            self.runtime.request_redraw();
+        }
     }
 
     /// Creates a headless runtime for `WaterUI` test hosts.
