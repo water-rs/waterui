@@ -364,7 +364,7 @@ fn layout_demo() -> impl View {
 fn morph_demo() -> impl View {
     vstack((
         text("Morph Animation").size(18.0),
-        "SDF-based shape morphing for built-in shapes",
+        "Shape morphing for built-in shapes",
         hstack((
             Circle
                 .morph_to(RoundedRectangle::new(0.22), Color::srgb_hex("#3B82F6"))
