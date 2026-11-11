@@ -358,11 +358,11 @@ GpuContentView::new(terminal)
   not delivered as a `PointerButton`: the menu claims it. Build per-click menu contents from
   state the surface already tracks, such as the last pointer position.
 - Move input-method candidate panels with `.on_ime_caret(|| Option<Rect>)`, a surface-local
-  `waterui::graphics::draw::kurbo::Rect`.
+  `waterui::graphics::gpu::Rect`.
 
 Built-in filters are `FilterViewExt` methods on any view (prelude; feature `effects`, on by
 default through `gpu`), each parameter an `impl IntoSignalF32` (a literal or a signal) unless
-noted; `.filter(F)` applies a value from `waterui::graphics::filtrate::filters` directly.
+noted; `.filter(F)` applies a value from `waterui::graphics::filter_view::filters` directly.
 Attach them after inherent builders like `Photo::on_event`. Auxiliary inputs — `FilterImage`
 (`FilterImage::from_rgba8(w, h, bytes)` or `::from_encoded(&bytes)?`), `LutImage`,
 `BlendMode`, `TransitionDirection` — are in `waterui::graphics::filter_view`; besides the last

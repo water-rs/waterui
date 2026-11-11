@@ -658,7 +658,7 @@ pub fn media_block_10() -> impl View {
 // ---------------------------------------------------------------------------
 pub fn media_gpu_input_prose<C: waterui::graphics::GpuContent>(content: C) -> impl View {
     use waterui::graphics::GpuContentView;
-    use waterui::graphics::draw::kurbo::Rect;
+    use waterui::graphics::gpu::Rect;
 
     GpuContentView::new(content)
         .labeled("Terminal")
@@ -672,8 +672,8 @@ pub fn media_gpu_input_prose<C: waterui::graphics::GpuContent>(content: C) -> im
 // `FilterImage`'s constructors. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn media_filter_table_prose(png: &[u8]) -> Result<impl View, waterui::Error> {
+    use waterui::graphics::filter_view::filters::Invert;
     use waterui::graphics::filter_view::{BlendMode, FilterImage, LutImage, TransitionDirection};
-    use waterui::graphics::filtrate::filters::Invert;
     use waterui::media::Photo;
 
     let _: Option<(LutImage, TransitionDirection)> = None;
