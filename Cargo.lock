@@ -1729,6 +1729,7 @@ dependencies = [
  "vello_common",
  "vello_cpu",
  "vello_gpu",
+ "waterui-git-head",
  "wgpu",
 ]
 
@@ -12968,6 +12969,7 @@ dependencies = [
  "walkdir",
  "waterui-assets-core",
  "waterui-assets-planner",
+ "waterui-git-head",
  "waterui-inspector-protocol",
  "waterui-mcp-protocol",
  "waterui-meta",
@@ -13071,6 +13073,13 @@ dependencies = [
  "waterui-text",
  "waterui-url",
  "zeroize",
+]
+
+[[package]]
+name = "waterui-git-head"
+version = "0.5.1"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]
@@ -13237,6 +13246,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "waterui-git-head",
  "windows-sys 0.61.2",
 ]
 

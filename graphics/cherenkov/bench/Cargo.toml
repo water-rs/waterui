@@ -78,6 +78,9 @@ glifo = { version = "0.4", optional = true, features = ["png"] }
 # Minimal surface: CPU list + brand string for `cpu_model`.
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 
+[build-dependencies]
+waterui-git-head.workspace = true
+
 # `sched_setaffinity` / `sched_getcpu` for `measure --cpu`; `kill` to
 # stop `powermetrics` for `measure --energy`.
 [target.'cfg(unix)'.dependencies]

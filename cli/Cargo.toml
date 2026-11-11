@@ -234,6 +234,7 @@ zenwave = { version = "0.7.1", default-features = false, features = ["hyper-back
 
 [build-dependencies]
 toml = "1.1.8"
+waterui-git-head.workspace = true
 
 [lints]
 workspace = true
