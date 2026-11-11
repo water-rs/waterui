@@ -3,6 +3,7 @@ use quote::quote;
 use syn::{Data, DeriveInput, Field, Fields, Member, Meta, Type, spanned::Spanned};
 
 pub fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
+    let waterui = crate::core_or_facade_path("#[derive(Identifiable)]")?;
     reject_type_level_marker(&input)?;
 
     let identifier = match &input.data {
@@ -28,7 +29,7 @@ pub fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
 
     Ok(quote! {
-        impl #impl_generics Identifiable for #name #type_generics #where_clause {
+        impl #impl_generics #waterui::id::Identifiable for #name #type_generics #where_clause {
             type Id = #identifier_type;
 
             fn id(&self) -> Self::Id {
