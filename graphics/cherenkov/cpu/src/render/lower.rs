@@ -1402,7 +1402,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             bitmap_fonts: self.bitmap_fonts,
         };
         for content in caches.values_mut() {
-            self.commands_lowered += content.prepare(&mut lowerer, text)?;
+            self.commands_lowered += content.prepare(&mut lowerer, text)?.commands;
         }
         // The registry borrow must leave `self` for the planning walk.
         let mut filters = self.filters.take();

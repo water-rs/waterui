@@ -73,6 +73,7 @@ These are target architecture and acceptance criteria; in-tree code that does no
 - **A split or merge is complete only when both development lines are reconciled:** compare the in-tree code, the standalone repository and the artifact actually consumed; preserve unique fixes, tests, fixtures, documentation, traceable history, and local uncommitted work; verify both sides together before removing either. If the needed foundation APIs are unreleased, prepare compatible releases through the release workflow rather than consume an older artifact that loses functionality or keep a second implementation.
 - **Keep top-level folders semantic and minimal.** No generic crate buckets (`crates/`), implementation-detail roots (`internal/`, `facade/`), or top-level folders holding a single manifest. Crates go under their domain folder (`components/`, `graphics/`, `utils/`, `backends/`, …; icon sets under `components/icon/`) or `src/` for the root package; a family sharing a non-`waterui` prefix shares one directory (`graphics/filtrate/`), not sibling folders.
 - No dependency, direct or transitive, comes from the Tauri project (crates published by tauri-apps); the capability is implemented in waterkit instead.
+- A platform capability comes from waterkit in preference to any other third-party crate; one waterkit lacks is added to waterkit.
 
 ## CI
 

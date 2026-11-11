@@ -16,24 +16,61 @@ use super::instance::Stop;
 use super::lower::ImageSource;
 
 /// A retained local image: the projective layer and its density bucket,
-/// `log2` of the texels per layer unit.
+/// Half-octave exponent of the texels per layer unit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LocalKey {
     /// The projective layer.
     pub layer: LayerId,
-    /// `log2(density)`.
-    pub bucket: u32,
+    /// Retained picture allocation, or the entire projective layer.
+    pub picture: Option<PictureId>,
+    /// `2 * log2(density)`.
+    pub bucket: i32,
+    /// Storage representation of these pixels.
+    pub format: LocalFormat,
 }
 
-/// The density bucket of `density`, a power of two of at least one.
+/// A nested picture's identity: the address of its immutable display list,
+/// which the retained snapshot keeps alive for as long as its pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PictureId(std::num::NonZeroUsize);
+
+impl PictureId {
+    /// The identity of `picture`'s display list.
+    #[must_use]
+    pub fn of(picture: &cherenkov::Picture) -> Self {
+        Self(std::ptr::NonNull::from(picture.display_list()).addr())
+    }
+}
+
+/// The texture format a local image stores its pixels in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LocalFormat {
+    /// The working format: every projective layer, and pictures with
+    /// high-dynamic-range content.
+    Working,
+    /// Encoded 8-bit sRGB, for standard-range pictures.
+    Srgb8,
+}
+
+impl LocalFormat {
+    /// The texture format of this storage.
+    #[must_use]
+    pub const fn texture(self) -> wgpu::TextureFormat {
+        match self {
+            Self::Working => super::WORKING_FORMAT,
+            Self::Srgb8 => wgpu::TextureFormat::Rgba8UnormSrgb,
+        }
+    }
+}
+
+/// The signed half-octave exponent of the raster density.
 #[must_use]
 #[expect(
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "the planner's density is a power of two in 1..=2^20"
+    reason = "a finite positive raster density has an exponent within i32"
 )]
-pub fn bucket(density: f64) -> u32 {
-    density.log2() as u32
+pub fn bucket(density: f64) -> i32 {
+    (density.log2() * 2.0).round() as i32
 }
 
 /// How a planned layer composes into its parent raster this frame.
@@ -187,6 +224,8 @@ impl Deps {
 /// current once the frame's encode succeeded.
 #[derive(Clone, Debug)]
 pub struct Realize {
+    /// Keeps picture identity alive until its pixels are retired.
+    pub picture: Option<PictureImage>,
     /// Where it is stored.
     pub key: LocalKey,
     /// What it is realized from.
@@ -195,6 +234,52 @@ pub struct Realize {
     pub levels: Vec<(u32, u32)>,
     /// What its rendering read.
     pub deps: Deps,
+    /// The bytes its texture holds: what the driver commits for a picture
+    /// image, which the picture share admits, and texel storage for a
+    /// projective layer, which the core planner admits.
+    pub bytes: u64,
+}
+
+/// Texel storage for an image's complete mip chain.
+pub fn mip_bytes(format: wgpu::TextureFormat, levels: &[(u32, u32)]) -> u64 {
+    levels
+        .iter()
+        .map(|&(w, h)| super::texel_bytes(format) * u64::from(w) * u64::from(h))
+        .sum()
+}
+
+/// The texture a local image with mip `levels` in `format` is created as.
+#[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a mip chain has at most 32 levels"
+)]
+pub fn descriptor(levels: &[(u32, u32)], format: LocalFormat) -> wgpu::TextureDescriptor<'static> {
+    let (width, height) = levels[0];
+    wgpu::TextureDescriptor {
+        label: Some("projective image"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: levels.len() as u32,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: format.texture(),
+        // A capture inside the local image copies out of it; a
+        // blended composite inside it copies it aside.
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    }
+}
+
+impl Realize {
+    pub const fn bytes(&self) -> u64 {
+        self.bytes
+    }
 }
 
 /// What one surface's lowering needs to plan and reuse local images.
@@ -208,12 +293,31 @@ pub struct Inputs {
     /// Retained images whose renderer-side inputs changed since they were
     /// realized.
     pub stale: FxHashSet<LocalKey>,
+    /// Optional picture storage admitted beside this frame's raster resources.
+    pub picture_bytes: u64,
+}
+
+/// Immutable source and raster bounds of a retained picture.
+#[derive(Clone, Debug)]
+pub struct PictureImage {
+    pub source: cherenkov::Picture,
+    pub domain: super::planes::static_layer::Domain,
+}
+
+impl PictureImage {
+    pub fn identity(&self) -> PictureId {
+        PictureId::of(&self.source)
+    }
 }
 
 /// One retained local image and its mip chain.
 pub struct Entry {
+    /// Snapshot and local raster domain for a nested picture.
+    pub picture: Option<PictureImage>,
     /// Its density bucket.
-    pub bucket: u32,
+    pub bucket: i32,
+    /// The storage its texture was created in.
+    pub format: LocalFormat,
     /// What the texture holds; `None` until a realization completed.
     pub key: Option<Key>,
     /// The inputs its realization read.
@@ -235,23 +339,53 @@ pub struct Entry {
     pub binds_stamp: (u64, u64),
     /// The renderer frame count that last composed it.
     pub last_used: u64,
+    /// The bytes its texture holds, as its [`Realize::bytes`] admitted.
+    bytes: u64,
 }
 
 impl Entry {
-    /// Bytes of the texture: `8 · Σ w·h` over its levels.
+    pub fn matches(&self, key: LocalKey) -> bool {
+        self.bucket == key.bucket
+            && self.format == key.format
+            && self.picture.as_ref().map(PictureImage::identity) == key.picture
+    }
+
+    pub fn local_key(&self, layer: LayerId) -> LocalKey {
+        LocalKey {
+            layer,
+            picture: self.picture.as_ref().map(PictureImage::identity),
+            bucket: self.bucket,
+            format: self.format,
+        }
+    }
+
+    /// CPU allocations retained by an image, including the immutable source.
+    /// Shared source allocations follow Content's per-retain accounting.
+    pub fn cpu_bytes(&self) -> u64 {
+        (std::mem::size_of::<Self>()
+            + self.levels.capacity() * std::mem::size_of::<wgpu::TextureView>()
+            + self.mips.capacity() * std::mem::size_of::<wgpu::BindGroup>()
+            + self.binds.capacity()
+                * std::mem::size_of::<((Option<usize>, Option<u64>), wgpu::BindGroup)>())
+            as u64
+            + self.picture.as_ref().map_or(0, |picture| {
+                picture
+                    .source
+                    .display_list()
+                    .heap_bytes(cherenkov::lowering::memory::command_bytes)
+            })
+    }
+
+    /// The bytes its texture holds, every mip level included.
     #[must_use]
-    pub fn bytes(&self) -> u64 {
-        let size = self.texture.size();
-        cherenkov::lowering::projective::mip_levels((size.width, size.height))
-            .iter()
-            .map(|&(w, h)| 8 * u64::from(w) * u64::from(h))
-            .sum()
+    pub const fn bytes(&self) -> u64 {
+        self.bytes
     }
 }
 
 impl Entry {
     /// A cleared entry for bucket `bucket` holding a new `levels`-level
-    /// RGBA16F texture, its views and its mip bind groups.
+    /// texture in `format` of `bytes`, its views and its mip bind groups.
     #[must_use]
     #[expect(
         clippy::cast_possible_truncation,
@@ -260,28 +394,12 @@ impl Entry {
     pub fn new(
         device: &wgpu::Device,
         pipelines: &Pipelines,
-        bucket: u32,
+        bucket: i32,
         levels: &[(u32, u32)],
+        format: LocalFormat,
+        bytes: u64,
     ) -> Self {
-        let (w, h) = levels[0];
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("projective image"),
-            size: wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: levels.len() as u32,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
-            // A capture inside the local image copies out of it; a
-            // blended composite inside it copies it aside.
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
+        let texture = device.create_texture(&descriptor(levels, format));
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let views: Vec<wgpu::TextureView> = (0..levels.len() as u32)
             .map(|level| {
@@ -308,6 +426,8 @@ impl Entry {
             .collect();
         Self {
             bucket,
+            format,
+            picture: None,
             key: None,
             deps: Deps::default(),
             texture,
@@ -317,14 +437,23 @@ impl Entry {
             binds: FxHashMap::default(),
             binds_stamp: (u64::MAX, u64::MAX),
             last_used: 0,
+            bytes,
         }
     }
 
     /// Whether the texture's base level is `size`.
     #[must_use]
-    pub fn fits(&self, size: (u32, u32)) -> bool {
+    pub fn fits(&self, size: (u32, u32), format: LocalFormat) -> bool {
         let s = self.texture.size();
-        (s.width, s.height) == size
+        (s.width, s.height) == size && self.format == format
+    }
+
+    /// Release obsolete texture views even while this cached image is undrawn.
+    pub fn retire_binds(&mut self, stamp: (u64, u64)) {
+        if self.binds_stamp != stamp {
+            self.binds.clear();
+            self.binds_stamp = stamp;
+        }
     }
 
     /// The composite bind group reading this image with the blend backdrop
@@ -339,10 +468,7 @@ impl Entry {
         stamp: (u64, u64),
         dummy: &wgpu::TextureView,
     ) -> &wgpu::BindGroup {
-        if self.binds_stamp != stamp {
-            self.binds.clear();
-            self.binds_stamp = stamp;
-        }
+        self.retire_binds(stamp);
         let view = &self.view;
         self.binds.entry((slot, mask_key)).or_insert_with(|| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -390,7 +516,11 @@ impl Entry {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&pipelines.mip);
+            pass.set_pipeline(
+                pipelines.mip[super::format_slot(self.texture.format())]
+                    .as_ref()
+                    .expect("mip format prepared"),
+            );
             pass.set_bind_group(0, bind, &[]);
             pass.draw(0..3, 0..1);
         }
@@ -416,7 +546,9 @@ pub struct Pipelines {
     /// The mip level pipeline's layout.
     pub mip_layout: wgpu::BindGroupLayout,
     /// The mip level pipeline.
-    pub mip: wgpu::RenderPipeline,
+    mip: super::FormatCells<Option<wgpu::RenderPipeline>>,
+    mip_program: super::shaders::RenderProgram,
+    mip_pipeline_layout: wgpu::PipelineLayout,
 }
 
 impl Pipelines {
@@ -459,14 +591,7 @@ impl Pipelines {
             bind_group_layouts: &[Some(&mip_layout)],
             immediate_size: 0,
         });
-        let mip = quad_pipeline(
-            device,
-            &mip_pipeline_layout,
-            &delivery.mip_program(device),
-            wgpu::TextureFormat::Rgba16Float,
-            None,
-            &cache,
-        );
+        let mip_program = delivery.mip_program(device);
         Self {
             cache,
             layout,
@@ -475,7 +600,9 @@ impl Pipelines {
             composite: Default::default(),
             sampler,
             mip_layout,
-            mip,
+            mip: Default::default(),
+            mip_program,
+            mip_pipeline_layout,
         }
     }
 
@@ -487,6 +614,16 @@ impl Pipelines {
     /// Builds the source-over and replace composites into `format`,
     /// unless they exist.
     pub fn prepare(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) {
+        self.mip[super::format_slot(format)].get_or_insert_with(|| {
+            quad_pipeline(
+                device,
+                &self.mip_pipeline_layout,
+                &self.mip_program,
+                format,
+                None,
+                &self.cache,
+            )
+        });
         let cell = &mut self.composite[super::format_slot(format)];
         if cell.is_some() {
             return;
@@ -580,6 +717,8 @@ mod tests {
         let placement = Placement {
             key: LocalKey {
                 layer: LayerId::new(1),
+                picture: None,
+                format: LocalFormat::Working,
                 bucket: 0,
             },
             inverse,

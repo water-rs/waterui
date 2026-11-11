@@ -13,6 +13,7 @@ use crate::{
 };
 
 mod disjoint;
+pub mod memory;
 pub mod projective;
 pub mod rounded_box;
 pub mod scanline;
@@ -116,6 +117,19 @@ pub trait Compiler {
     /// # Errors
     /// Returns a backend error for unsupported or invalid content.
     fn group(&mut self, group: &Group, isolate: bool) -> Result<Option<Self::Op>, Self::Error>;
+    /// Preserve a nested picture boundary when the backend retains its raster.
+    /// Returning `None` keeps the ordinary inline command traversal.
+    ///
+    /// # Errors
+    /// Propagates the backend compiler's error.
+    fn picture(
+        &mut self,
+        _picture: &crate::Picture,
+        _ambient: Affine,
+    ) -> Result<Option<Self::Op>, Self::Error> {
+        Ok(None)
+    }
+
     /// Close a retained scope.
     fn end(&mut self) -> Self::Op;
 }
@@ -132,6 +146,9 @@ pub struct Lowered<T> {
     /// Draws and paired scopes in painter order.
     pub ops: Vec<T>,
     spans: Vec<Span>,
+    /// Whether the operations open a picture scope. Only a full walk can add
+    /// or remove one: a patch preserves every operation's kind.
+    pictures: bool,
 }
 
 impl<T: Operation> Lowered<T> {
@@ -147,6 +164,7 @@ impl<T: Operation> Lowered<T> {
         let mut lowered = Self {
             ops: Vec::with_capacity(list.len()),
             spans: Vec::with_capacity(list.len()),
+            pictures: false,
         };
         lowered.refill(list, compiler, text)?;
         Ok(lowered)
@@ -160,7 +178,7 @@ impl<T: Operation> Lowered<T> {
     ) -> Result<(), C::Error> {
         self.ops.clear();
         self.spans.clear();
-        walk(
+        self.pictures = walk(
             Source { list, text },
             0..list.len(),
             Affine::IDENTITY,
@@ -168,7 +186,8 @@ impl<T: Operation> Lowered<T> {
             &mut self.ops,
             &mut self.spans,
             true,
-        )
+        )?;
+        Ok(())
     }
 
     /// Patch dirty command spans in place. `None` means the operation count or
@@ -280,7 +299,8 @@ fn append_with<C: Compiler>(
         ops,
         &mut spans,
         false,
-    )
+    )?;
+    Ok(())
 }
 
 /// A display list and the text layouts its `Command::Text`s may name.
@@ -290,6 +310,8 @@ struct Source<'a> {
     text: &'a TextLayouts,
 }
 
+/// Lowers `range` of `source`'s list, returning whether it opened a picture
+/// scope.
 fn walk<C: Compiler>(
     source: Source<'_>,
     range: Range<usize>,
@@ -298,8 +320,9 @@ fn walk<C: Compiler>(
     ops: &mut Vec<C::Op>,
     spans: &mut Vec<Span>,
     root: bool,
-) -> Result<(), C::Error> {
+) -> Result<bool, C::Error> {
     let Source { list, text } = source;
+    let mut pictures = false;
     let mut i = range.start;
     while i < range.end {
         let start = u32::try_from(ops.len()).expect("op index fits u32");
@@ -321,13 +344,19 @@ fn walk<C: Compiler>(
                 Some((*end as usize, ambient, compiler.group(group, isolate)?))
             }
             Command::Picture { picture, transform } => {
-                append_with(
-                    picture.display_list(),
-                    ambient * *transform,
-                    compiler,
-                    text,
-                    ops,
-                )?;
+                let inner = ambient * *transform;
+                let opener = compiler.picture(picture, inner)?;
+                let emitted = opener.is_some();
+                pictures |= emitted;
+                ops.extend(opener);
+                append_with(picture.display_list(), inner, compiler, text, ops)?;
+                if emitted {
+                    let close = u32::try_from(ops.len()).expect("op index fits u32");
+                    *ops[start as usize]
+                        .end_mut()
+                        .expect("picture opener has an end") = close;
+                    ops.push(compiler.end());
+                }
                 None
             }
             Command::Text {
@@ -358,7 +387,7 @@ fn walk<C: Compiler>(
                 ops: start..u32::try_from(ops.len()).expect("op index fits u32"),
                 ambient,
             });
-            walk(source, i + 1..end, inner, compiler, ops, spans, root)?;
+            pictures |= walk(source, i + 1..end, inner, compiler, ops, spans, root)?;
             let close = u32::try_from(ops.len()).expect("op index fits u32");
             if emitted {
                 *ops[start as usize]
@@ -379,7 +408,7 @@ fn walk<C: Compiler>(
             i += 1;
         }
     }
-    Ok(())
+    Ok(pictures)
 }
 
 /// A retained device realization. Invalidation keeps the storage available for
@@ -399,6 +428,16 @@ impl<T> Default for Realization<T> {
             valid: false,
         }
     }
+}
+
+/// What one [`Content::prepare`] did and found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Prepared {
+    /// Source commands lowered by this call.
+    pub commands: u32,
+    /// Whether the prepared operations open a picture scope, which happens
+    /// only where the compiler preserved a picture boundary.
+    pub pictures: bool,
 }
 
 /// One layer's display list, accumulated dirty commands, and retained output.
@@ -536,7 +575,7 @@ impl<O: Operation, E> Content<O, E> {
         self.dirty.union(self.list.apply(updates));
     }
 
-    /// Resolve dirty source commands; return the number lowered.
+    /// Resolve dirty source commands.
     ///
     /// # Errors
     /// Propagates the backend compiler's error.
@@ -547,8 +586,9 @@ impl<O: Operation, E> Content<O, E> {
         &mut self,
         compiler: &mut C,
         text: &TextLayouts,
-    ) -> Result<u32, C::Error> {
+    ) -> Result<Prepared, C::Error> {
         let count;
+        let pictures;
         if self.rebuild
             && let Some(lowered) = &mut self.lowered
         {
@@ -557,13 +597,18 @@ impl<O: Operation, E> Content<O, E> {
                 .resize_with(lowered.ops.len(), Realization::default);
             self.dirty = Dirty::default();
             self.rebuild = false;
-            return Ok(
-                u32::try_from(self.list.display_list().len()).expect("command count fits u32")
-            );
+            return Ok(Prepared {
+                commands: u32::try_from(self.list.display_list().len())
+                    .expect("command count fits u32"),
+                pictures: lowered.pictures,
+            });
         }
         if let Some(lowered) = &mut self.lowered {
             if self.dirty.is_empty() {
-                return Ok(0);
+                return Ok(Prepared {
+                    commands: 0,
+                    pictures: lowered.pictures,
+                });
             }
             if let Some(patches) =
                 lowered.patch(self.list.display_list(), &self.dirty, compiler, text)?
@@ -581,16 +626,21 @@ impl<O: Operation, E> Content<O, E> {
                 count =
                     u32::try_from(self.list.display_list().len()).expect("command count fits u32");
             }
+            pictures = lowered.pictures;
         } else {
             let lowered = Lowered::full(self.list.display_list(), compiler, text)?;
             self.emissions
                 .resize_with(lowered.ops.len(), Realization::default);
+            pictures = lowered.pictures;
             self.lowered = Some(lowered);
             count = u32::try_from(self.list.display_list().len()).expect("command count fits u32");
         }
         self.dirty = Dirty::default();
         self.rebuild = false;
-        Ok(count)
+        Ok(Prepared {
+            commands: count,
+            pictures,
+        })
     }
 
     /// The prepared ops and their independently mutable device realizations.
