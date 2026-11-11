@@ -20,6 +20,7 @@ use objc2::ffi::{
 use objc2::runtime::AnyObject;
 use objc2_foundation::NSNumber;
 use objc2_quartz_core::{CADynamicRangeHigh, CADynamicRangeStandard, CALayer};
+use waterui_contract::contract_violation;
 
 use crate::{PlatformView, Retained};
 
@@ -201,14 +202,19 @@ pub fn resolve(view: &PlatformView) -> Option<DynamicRange> {
 /// Resolves the inherited mode for content inside `view`: tagged ancestors
 /// are considered before the display's EDR capability.
 ///
-/// # Panics
-///
-/// When `view` is not attached to a display and no ancestor is tagged.
+/// A `view` that is not attached to a display, with no ancestor tagged,
+/// breaks the contract: it is reported and standard dynamic range is
+/// answered.
 #[must_use]
 pub fn require_inherited(view: &PlatformView) -> DynamicRange {
     override_starting_at(superview(view).as_deref())
         .or_else(|| display_mode(view))
-        .expect("Dynamic range resolution requires a view attached to a display")
+        .unwrap_or_else(|| {
+            contract_violation!(
+                "dynamic range resolution requires a view attached to a display; standard dynamic range is used"
+            );
+            DynamicRange::Standard
+        })
 }
 
 /// Resolves `view`'s effective dynamic range and applies it to `layer`.

@@ -276,8 +276,13 @@ pub fn resolve_native(color: &NSColor, scheme: ColorScheme) -> Option<Rgba> {
             ColorScheme::Dark => NSAppearanceNameDarkAqua,
         }
     };
-    let appearance = NSAppearance::appearanceNamed(name)
-        .expect("AppKit ships appearances under both standard names");
+    let Some(appearance) = NSAppearance::appearanceNamed(name) else {
+        tracing::error!(
+            ?scheme,
+            "AppKit has no appearance for the scheme; the color is not resolved"
+        );
+        return None;
+    };
     let color = objc2::Message::retain(color);
     let rgba = RefCell::new(None);
     {

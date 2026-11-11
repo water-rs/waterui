@@ -6,9 +6,11 @@
 //! standard output, and neither has one running in the simulator. Messages
 //! are logged as public, so their text is readable outside the device too.
 
+use std::borrow::Cow;
 use std::fmt;
 
 use oslog::{Level, OsLog};
+use waterui_contract::contract_violation;
 
 /// A log handle for one subsystem and category.
 ///
@@ -24,26 +26,24 @@ pub struct Log {
 impl Log {
     /// A handle logging under `subsystem` and `category`.
     ///
-    /// # Panics
-    ///
-    /// If either name contains a NUL character.
+    /// A NUL character in either name breaks the contract: it is reported
+    /// and the NULs are removed from the name.
     #[must_use]
     pub fn new(subsystem: &str, category: &str) -> Self {
-        assert_no_nul(subsystem, "subsystem");
-        assert_no_nul(category, "category");
+        let subsystem = without_nul(subsystem, "subsystem");
+        let category = without_nul(category, "category");
         Self {
-            subsystem: subsystem.to_owned(),
-            category: category.to_owned(),
-            inner: OsLog::new(subsystem, category),
+            inner: OsLog::new(&subsystem, &category),
+            subsystem: subsystem.into_owned(),
+            category: category.into_owned(),
         }
     }
 
     /// Logs `message` at the debug level, which is kept only while a client
     /// is streaming it.
     ///
-    /// # Panics
-    ///
-    /// If `message` contains a NUL character.
+    /// A NUL character in `message` breaks the contract: it is reported and
+    /// the NULs are removed from the logged text.
     pub fn debug(&self, message: &str) {
         self.log(Level::Debug, message);
     }
@@ -51,9 +51,8 @@ impl Log {
     /// Logs `message` at the info level, kept in memory until the buffer
     /// wraps.
     ///
-    /// # Panics
-    ///
-    /// If `message` contains a NUL character.
+    /// A NUL character in `message` breaks the contract: it is reported and
+    /// the NULs are removed from the logged text.
     pub fn info(&self, message: &str) {
         self.log(Level::Info, message);
     }
@@ -61,34 +60,31 @@ impl Log {
     /// Logs `message` at the default level, the one Swift's `Logger.notice`
     /// uses: persisted to disk.
     ///
-    /// # Panics
-    ///
-    /// If `message` contains a NUL character.
+    /// A NUL character in `message` breaks the contract: it is reported and
+    /// the NULs are removed from the logged text.
     pub fn notice(&self, message: &str) {
         self.log(Level::Default, message);
     }
 
     /// Logs `message` at the error level.
     ///
-    /// # Panics
-    ///
-    /// If `message` contains a NUL character.
+    /// A NUL character in `message` breaks the contract: it is reported and
+    /// the NULs are removed from the logged text.
     pub fn error(&self, message: &str) {
         self.log(Level::Error, message);
     }
 
     /// Logs `message` at the fault level, for a bug in the process itself.
     ///
-    /// # Panics
-    ///
-    /// If `message` contains a NUL character.
+    /// A NUL character in `message` breaks the contract: it is reported and
+    /// the NULs are removed from the logged text.
     pub fn fault(&self, message: &str) {
         self.log(Level::Fault, message);
     }
 
     fn log(&self, level: Level, message: &str) {
-        assert_no_nul(message, "log message");
-        self.inner.with_level(level, message);
+        self.inner
+            .with_level(level, &without_nul(message, "log message"));
     }
 }
 
@@ -102,10 +98,29 @@ impl fmt::Debug for Log {
 }
 
 /// The C API takes NUL-terminated strings; an interior NUL would cut the text
-/// short, so it is refused rather than logged truncated or rewritten.
-fn assert_no_nul(text: &str, what: &str) {
-    assert!(
-        !text.contains('\0'),
-        "the {what} {text:?} contains a NUL character, which the unified log cannot carry"
-    );
+/// short, so a NUL is reported and removed rather than logged truncated.
+fn without_nul<'a>(text: &'a str, what: &str) -> Cow<'a, str> {
+    if text.contains('\0') {
+        contract_violation!(
+            "the {what} {text:?} contains a NUL character, which the unified log cannot carry; the NULs are removed"
+        );
+        return Cow::Owned(text.replace('\0', ""));
+    }
+    Cow::Borrowed(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::without_nul;
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "contains a NUL character"))]
+    fn nul_characters_are_removed_from_logged_text() {
+        assert_eq!(without_nul("a\0b", "log message"), "ab");
+    }
+
+    #[test]
+    fn text_without_nul_is_borrowed_unchanged() {
+        assert_eq!(without_nul("ab", "log message"), "ab");
+    }
 }

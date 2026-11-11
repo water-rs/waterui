@@ -94,15 +94,10 @@ mod imp {
         // SAFETY: the traits attribute is an `NSDictionary` by contract; the
         // weight trait inside it an `NSNumber`.
         unsafe {
-            let traits = traits.downcast_ref::<NSDictionary>().expect("font traits");
+            let traits = traits.downcast_ref::<NSDictionary>()?;
             let value: Option<Retained<AnyObject>> =
                 msg_send![traits, objectForKey: objc2_app_kit::NSFontWeightTrait];
-            value.map(|value| {
-                value
-                    .downcast_ref::<NSNumber>()
-                    .expect("font weight")
-                    .doubleValue()
-            })
+            value?.downcast_ref::<NSNumber>().map(NSNumber::doubleValue)
         }
     }
 }
@@ -161,15 +156,10 @@ mod imp {
         // SAFETY: the traits attribute is an `NSDictionary` by contract; the
         // weight trait inside it an `NSNumber`.
         unsafe {
-            let traits = traits.downcast_ref::<NSDictionary>().expect("font traits");
+            let traits = traits.downcast_ref::<NSDictionary>()?;
             let value: Option<Retained<AnyObject>> =
                 msg_send![traits, objectForKey: objc2_ui_kit::UIFontWeightTrait];
-            value.map(|value| {
-                value
-                    .downcast_ref::<NSNumber>()
-                    .expect("font weight")
-                    .doubleValue()
-            })
+            value?.downcast_ref::<NSNumber>().map(NSNumber::doubleValue)
         }
     }
 }
@@ -194,8 +184,10 @@ pub(crate) fn font_weight(font: &crate::font::Font) -> f64 {
 /// Heavy for the macOS headline style. Read from the face drawn, because
 /// the variant keeps the weight trait of the descriptor it came from.
 fn bold_weight(font: &crate::font::Font) -> f64 {
-    let bold =
-        crate::font::bold_variant(font).expect("the system text-style face has a bold variant");
+    let Some(bold) = crate::font::bold_variant(font) else {
+        tracing::error!("the system text-style face has no bold variant; its own weight is used");
+        return crate::font::drawn_weight(font);
+    };
     crate::font::drawn_weight(&bold)
 }
 

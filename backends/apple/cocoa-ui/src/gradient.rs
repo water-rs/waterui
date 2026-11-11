@@ -14,6 +14,7 @@ use objc2_foundation::{NSNull, NSObjectProtocol, NSString};
 use objc2_quartz_core::{
     CAAction, CADynamicRangeHigh, CALayer, CALayerDelegate, kCAContentsFormatRGBA16Float,
 };
+use waterui_contract::contract_violation;
 
 use crate::callback::guarded;
 use crate::geometry::{Point, Rect};
@@ -98,40 +99,68 @@ enum ShapeInPoints {
     },
 }
 
+/// The flattened components and locations of `stops`.
+///
+/// A stop breaking the gradient contract is reported and corrected: an empty
+/// list becomes one transparent stop, a location is clamped into `[0, 1]`
+/// (a non-finite one becomes `0`) and raised to the previous stop's, and a
+/// non-finite component becomes `0`.
 fn validate_stops(stops: &[GradientStop]) -> (Vec<f64>, Vec<f64>) {
-    assert!(!stops.is_empty(), "a gradient must have at least one stop");
+    const TRANSPARENT: GradientStop = GradientStop {
+        location: 0.0,
+        components: [0.0; 4],
+    };
+    let stops = if stops.is_empty() {
+        contract_violation!(
+            "a gradient must have at least one stop; a single transparent stop is used"
+        );
+        &[TRANSPARENT][..]
+    } else {
+        stops
+    };
 
     let mut components = Vec::with_capacity(stops.len() * 4);
     let mut locations = Vec::with_capacity(stops.len());
     let mut previous_location = None;
     for stop in stops {
-        assert!(
-            stop.location.is_finite(),
-            "gradient stop location must be finite, got {}",
-            stop.location
-        );
-        assert!(
-            (0.0..=1.0).contains(&stop.location),
-            "gradient stop location must be in [0, 1], got {}",
-            stop.location
-        );
-        if let Some(previous_location) = previous_location {
-            assert!(
-                previous_location <= stop.location,
-                "gradient stop locations must be ascending, got {previous_location} then {}",
-                stop.location
+        let mut location = stop.location;
+        if !location.is_finite() {
+            contract_violation!(
+                "gradient stop location must be finite, got {location}; the location is 0"
             );
+            location = 0.0;
+        } else if !(0.0..=1.0).contains(&location) {
+            contract_violation!(
+                "gradient stop location must be in [0, 1], got {location}; the location is clamped"
+            );
+            location = location.clamp(0.0, 1.0);
         }
-        assert!(
-            stop.components
-                .iter()
-                .all(|component| component.is_finite()),
-            "gradient stop components must be finite, got {:?}",
-            stop.components
-        );
-        components.extend(stop.components);
-        locations.push(stop.location);
-        previous_location = Some(stop.location);
+        if let Some(previous_location) = previous_location
+            && previous_location > location
+        {
+            contract_violation!(
+                "gradient stop locations must be ascending, got {previous_location} then {location}; the location is raised to the previous one"
+            );
+            location = previous_location;
+        }
+        let mut stop_components = stop.components;
+        if stop_components
+            .iter()
+            .any(|component| !component.is_finite())
+        {
+            contract_violation!(
+                "gradient stop components must be finite, got {:?}; the non-finite components are 0",
+                stop.components
+            );
+            for component in &mut stop_components {
+                if !component.is_finite() {
+                    *component = 0.0;
+                }
+            }
+        }
+        components.extend(stop_components);
+        locations.push(location);
+        previous_location = Some(location);
     }
     (components, locations)
 }
@@ -306,7 +335,7 @@ impl GradientLayer {
                 CGColorSpace::with_name(Some(unsafe { kCGColorSpaceExtendedSRGB }))
             }
         }
-        .expect("Core Graphics must provide the requested extended colour space");
+        .expect("Core Graphics names both extended colour spaces: the names are its own constants");
         // SAFETY: both slices are valid for the call; there are four
         // components per stop and one location per stop.
         let gradient = unsafe {
@@ -317,7 +346,7 @@ impl GradientLayer {
                 locations.len(),
             )
         }
-        .expect("Core Graphics must create a gradient from validated stops");
+        .expect("Core Graphics creates a gradient from finite, ascending stops: `validate_stops` made them so");
         let painter = Painter::new(mtm, gradient, paint.shape);
         let layer = CALayer::new();
         if needs_extended_range(&paint.stops) {
@@ -357,14 +386,15 @@ impl GradientLayer {
 
     /// Sets the device-pixels-per-point scale and invalidates when it changes.
     ///
-    /// # Panics
-    ///
-    /// Panics when `scale` is not finite and greater than zero.
+    /// A `scale` that is not finite and greater than zero breaks the
+    /// contract: it is reported and the call is ignored.
     pub fn set_contents_scale(&self, scale: f64) {
-        assert!(
-            scale.is_finite() && scale > 0.0,
-            "gradient contents scale must be finite and > 0, got {scale}"
-        );
+        if !(scale.is_finite() && scale > 0.0) {
+            contract_violation!(
+                "gradient contents scale must be finite and > 0, got {scale}; the call is ignored"
+            );
+            return;
+        }
         if self.layer.contentsScale().to_bits() != scale.to_bits() {
             self.layer.setContentsScale(scale);
             self.layer.setNeedsDisplay();
@@ -467,9 +497,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "ascending")]
-    fn gradient_stop_validation_rejects_descending_locations() {
-        validate_stops(&[
+    #[cfg_attr(debug_assertions, should_panic(expected = "ascending"))]
+    fn gradient_stop_validation_raises_descending_locations() {
+        let (_, locations) = validate_stops(&[
             GradientStop {
                 location: 0.75,
                 components: [0.0; 4],
@@ -479,6 +509,24 @@ mod tests {
                 components: [0.0; 4],
             },
         ]);
+        assert_eq!(locations, vec![0.75, 0.75]);
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "at least one stop"))]
+    fn gradient_stop_validation_replaces_an_empty_list_with_a_transparent_stop() {
+        assert_eq!(validate_stops(&[]), (vec![0.0; 4], vec![0.0]));
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "must be finite"))]
+    fn gradient_stop_validation_zeroes_non_finite_components_and_locations() {
+        let (components, locations) = validate_stops(&[GradientStop {
+            location: f64::NAN,
+            components: [f64::INFINITY, 0.5, f64::NAN, 1.0],
+        }]);
+        assert_eq!(components, vec![0.0, 0.5, 0.0, 1.0]);
+        assert_eq!(locations, vec![0.0]);
     }
 
     #[test]
@@ -517,11 +565,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "[0, 1]")]
-    fn gradient_stop_validation_rejects_out_of_range_locations() {
-        validate_stops(&[GradientStop {
+    #[cfg_attr(debug_assertions, should_panic(expected = "[0, 1]"))]
+    fn gradient_stop_validation_clamps_out_of_range_locations() {
+        let (_, locations) = validate_stops(&[GradientStop {
             location: 1.5,
             components: [0.0; 4],
         }]);
+        assert_eq!(locations, vec![1.0]);
     }
 }

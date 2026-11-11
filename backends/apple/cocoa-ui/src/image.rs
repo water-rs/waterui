@@ -10,6 +10,8 @@ use objc2_app_kit::NSImage;
 #[cfg(target_os = "ios")]
 use objc2_ui_kit::UIImage;
 
+use waterui_contract::contract_violation;
+
 use crate::geometry::Rect;
 
 /// The platform image object: `NSImage` on macOS, `UIImage` on iOS.
@@ -78,9 +80,10 @@ fn gravity(start: f64, extent: f64, length: f64) -> Gravity {
     } else if (start + extent - length).abs() < TOLERANCE {
         Gravity::End
     } else {
-        panic!(
+        contract_violation!(
             "an image view draws its unscaled image at the start, centre or end of its bounds; \
-             {extent} at {start} in {length} is none of them"
-        )
+             {extent} at {start} in {length} is none of them; the image is drawn at the start"
+        );
+        Gravity::Start
     }
 }

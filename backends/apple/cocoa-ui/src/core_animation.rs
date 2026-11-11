@@ -68,10 +68,9 @@ const CORE_ANIMATION_COMMIT_ORDER: CFIndex = 2_000_000;
 ///
 /// # Panics
 ///
-/// If Core Foundation hands back no main run loop or no observer — both
-/// exist for every process with a main thread.
+/// Never in practice: every process with a main thread has a main run loop.
 pub fn on_commit(mtm: MainThreadMarker, body: impl FnOnce() + 'static) {
-    let run_loop = CFRunLoop::main().expect("the main thread has a run loop");
+    let run_loop = CFRunLoop::main().expect("every process with a main thread has a main run loop");
     observe_turn_once(mtm, CORE_ANIMATION_COMMIT_ORDER + 1, move || {
         body();
         // Layer changes `body` made join a transaction opened after this
@@ -93,10 +92,6 @@ pub fn on_commit(mtm: MainThreadMarker, body: impl FnOnce() + 'static) {
 /// observers are already being called — from another `before_commit`
 /// body — runs before the next turn's commit.
 ///
-/// # Panics
-///
-/// If Core Foundation hands back no main run loop or no observer — both
-/// exist for every process with a main thread.
 pub fn before_commit(mtm: MainThreadMarker, body: impl FnOnce() + 'static) {
     observe_turn_once(mtm, CORE_ANIMATION_COMMIT_ORDER - 1, body);
 }
@@ -104,7 +99,7 @@ pub fn before_commit(mtm: MainThreadMarker, body: impl FnOnce() + 'static) {
 /// Runs `body` once from a one-shot main run-loop observer at `order` on
 /// `BeforeWaiting | Exit`, in the common modes.
 fn observe_turn_once(_mtm: MainThreadMarker, order: CFIndex, body: impl FnOnce() + 'static) {
-    let run_loop = CFRunLoop::main().expect("the main thread has a run loop");
+    let run_loop = CFRunLoop::main().expect("every process with a main thread has a main run loop");
     // The handler is `Fn`; the run loop calls a non-repeating observer
     // once and then invalidates it, releasing the handler and `body`.
     let body = Cell::new(Some(body));
@@ -118,7 +113,7 @@ fn observe_turn_once(_mtm: MainThreadMarker, order: CFIndex, body: impl FnOnce()
     // handler block, which the observer copies.
     let observer =
         unsafe { CFRunLoopObserver::with_handler(None, activities, false, order, Some(&handler)) }
-            .expect("CFRunLoopObserverCreateWithHandler answers an observer");
+            .expect("CFRunLoopObserverCreateWithHandler answers an observer for a valid allocator, mask and handler");
     // SAFETY: `kCFRunLoopCommonModes` is a Core Foundation constant.
     run_loop.add_observer(Some(&observer), unsafe { kCFRunLoopCommonModes });
     // A registration made while the run loop is already calling this
@@ -225,9 +220,8 @@ pub enum Timing {
 /// damping coefficient for `Spring` (the animator's `duration` argument is
 /// unused there; the spring's physics sets it).
 ///
-/// # Panics
-///
-/// When called off the main thread.
+/// Off the main thread this breaks the contract: it is reported and `body`
+/// runs at once, unanimated.
 #[cfg(target_os = "ios")]
 pub fn animate_with(timing: Timing, body: impl FnOnce() + 'static) {
     use objc2::MainThreadOnly;
@@ -240,7 +234,13 @@ pub fn animate_with(timing: Timing, body: impl FnOnce() + 'static) {
     };
     use std::cell::RefCell;
 
-    let mtm = objc2::MainThreadMarker::new().expect("animation runs on the main thread");
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        waterui_contract::contract_violation!(
+            "animation runs on the main thread; the body runs unanimated"
+        );
+        body();
+        return;
+    };
     // `addAnimations` may evaluate its block once only; the option still
     // guards a double evaluation.
     let body = RefCell::new(Some(body));

@@ -288,7 +288,7 @@ fn apply_paragraph_alignment(storage: &NSTextStorage, alignment: NSTextAlignment
             style.setParagraphStyle(
                 existing
                     .downcast::<NSParagraphStyle>()
-                    .expect("the paragraph-style attribute carries an NSParagraphStyle")
+                    .expect("`NSParagraphStyleAttributeName` values are `NSParagraphStyle`: the attribute's documented type")
                     .as_ref(),
             );
         }

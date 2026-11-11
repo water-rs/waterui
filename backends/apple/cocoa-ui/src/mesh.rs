@@ -49,6 +49,8 @@ use objc2_metal::{
 };
 use objc2_quartz_core::CALayer;
 
+use waterui_contract::contract_violation;
+
 use crate::patch::patches;
 
 /// The shader's metallib, precompiled at build time with
@@ -118,7 +120,9 @@ struct Uniforms {
 
 /// A mesh uploaded for painting.
 pub struct Mesh {
-    patches: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// The patches' buffer; `None` for a mesh with no patches, which paints
+    /// nothing.
+    patches: Option<Retained<ProtocolObject<dyn MTLBuffer>>>,
     count: u32,
     smooth: bool,
 }
@@ -181,13 +185,13 @@ impl MeshPass {
             .newLibraryWithData_error(&dispatch2::DispatchData::from_static_bytes(
                 MESH_GRADIENT_METALLIB,
             ))
-            .expect("the precompiled mesh gradient library loads");
+            .expect("the mesh gradient metallib is compiled by build.rs into the binary and loads");
         let vertex = library
             .newFunctionWithName(&NSString::from_str("mesh_gradient_vertex"))
-            .expect("the mesh library has its vertex stage");
+            .expect("the mesh gradient metallib defines mesh_gradient_vertex");
         let fragment = library
             .newFunctionWithName(&NSString::from_str("mesh_gradient_fragment"))
-            .expect("the mesh library has its fragment stage");
+            .expect("the mesh gradient metallib defines mesh_gradient_fragment");
         let descriptor = MTLRenderPipelineDescriptor::new();
         descriptor.setVertexFunction(Some(&vertex));
         descriptor.setFragmentFunction(Some(&fragment));
@@ -217,10 +221,15 @@ impl MeshPass {
     /// in the mesh's space and `colors` as straight linear Display P3
     /// RGBA.
     ///
+    /// Grids that do not match the dimensions, or a mesh with no patches,
+    /// break the contract ([`patches`]): it is reported and the mesh paints
+    /// nothing. So does a device that refuses the patch buffer, which is
+    /// logged.
+    ///
     /// # Panics
     ///
-    /// When the grids do not match the dimensions, or the mesh has no
-    /// patches.
+    /// Never in practice: the patch count of a buffer Metal just made fits
+    /// `u32`.
     #[must_use]
     pub fn mesh(
         &self,
@@ -231,21 +240,34 @@ impl MeshPass {
         smooth: bool,
     ) -> Mesh {
         let mut patches = patches(columns, rows, points, colors);
-        // SAFETY: `patches` is a live buffer of `repr(C)` patches; Metal
-        // copies it into the new buffer.
-        let buffer = unsafe {
-            self.device
-                .newBufferWithBytes_length_options(
-                    NonNull::new(patches.as_mut_ptr().cast::<c_void>())
-                        .expect("a non-empty vector has a pointer"),
-                    core::mem::size_of_val(patches.as_slice()),
-                    MTLResourceOptions::StorageModeShared,
-                )
-                .expect("a mesh's patches fit a Metal buffer")
+        let buffer = NonNull::new(patches.as_mut_ptr().cast::<c_void>())
+            .filter(|_| !patches.is_empty())
+            .and_then(|bytes| {
+                // SAFETY: `patches` is a live buffer of `repr(C)` patches;
+                // Metal copies it into the new buffer.
+                unsafe {
+                    self.device.newBufferWithBytes_length_options(
+                        bytes,
+                        core::mem::size_of_val(patches.as_slice()),
+                        MTLResourceOptions::StorageModeShared,
+                    )
+                }
+            });
+        if buffer.is_none() && !patches.is_empty() {
+            tracing::error!(
+                patches = patches.len(),
+                "the device refused the mesh's patch buffer; the mesh paints nothing"
+            );
+        }
+        let count = if buffer.is_some() {
+            u32::try_from(patches.len())
+                .expect("a mesh's patches fit the Metal buffer just made, far below 2^32")
+        } else {
+            0
         };
         Mesh {
             patches: buffer,
-            count: u32::try_from(patches.len()).expect("a mesh has fewer than 2^32 patches"),
+            count,
             smooth,
         }
     }
@@ -312,7 +334,7 @@ impl MeshPass {
             let size = core::mem::size_of::<Uniforms>();
             encoder.setVertexBytes_length_atIndex(bytes, size, 0);
             encoder.setFragmentBytes_length_atIndex(bytes, size, 0);
-            encoder.setFragmentBuffer_offset_atIndex(Some(&mesh.patches), 0, 1);
+            encoder.setFragmentBuffer_offset_atIndex(mesh.patches.as_deref(), 0, 1);
             encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 3);
         }
         encoder.endEncoding();
@@ -340,14 +362,25 @@ impl MeshPass {
     /// linear Display P3 so Core Animation reads its half floats as the
     /// pass writes them.
     ///
+    /// A zero `width` or `height` breaks the contract: it is reported and
+    /// the side is one pixel.
+    ///
     /// # Panics
     ///
     /// When the system refuses the surface or a texture over it.
     #[must_use]
     pub fn surface(&self, width: usize, height: usize) -> MeshSurface {
-        assert!(width > 0 && height > 0, "a mesh surface has pixels");
+        if width == 0 || height == 0 {
+            contract_violation!(
+                "a mesh surface has pixels, got {width}x{height}; a zero side is one pixel"
+            );
+        }
+        let (width, height) = (width.max(1), height.max(1));
         let count = |value: usize| {
-            CFNumber::new_i64(i64::try_from(value).expect("a surface side fits an i64"))
+            CFNumber::new_i64(
+                i64::try_from(value)
+                    .expect("a surface side fits an i64: IOSurface limits it far lower"),
+            )
         };
         // SAFETY: the statics are `CFString` constants IOSurface exports.
         let keys: [&CFString; 4] = unsafe {
@@ -412,7 +445,10 @@ impl MeshPass {
         self.encode(&command_buffer, mesh, placement, &target.texture);
         let done = Mutex::new(Some(done));
         let handler = RcBlock::new(move |_: NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
-            let done = done.lock().expect("the completion runs once").take();
+            let done = done
+                .lock()
+                .expect("the completion slot is never locked across a panic")
+                .take();
             if let Some(done) = done {
                 done();
             }

@@ -28,6 +28,8 @@ use objc2_ui_kit::{
     UITextContentTypePassword, UITextField, UITextFieldDelegate, UITextInput,
 };
 
+use waterui_contract::contract_violation;
+
 use crate::ActionTarget;
 use crate::action::ControlEvents;
 use crate::callback::guarded;
@@ -377,13 +379,15 @@ impl TextField {
     /// `utf16` is empty. Requires an editing session; see
     /// [`Self::begin_editing`].
     ///
-    /// # Panics
-    ///
-    /// If `utf16` reaches past the field's text.
+    /// A `utf16` that reaches past the field's text breaks the contract: it
+    /// is reported and the call is ignored.
     pub fn set_selected_range(&self, utf16: NSRange) {
-        let range = self
-            .text_range(utf16)
-            .expect("set_selected_range reaches past the field's text");
+        let Some(range) = self.text_range(utf16) else {
+            contract_violation!(
+                "set_selected_range reaches past the field's text; the call is ignored"
+            );
+            return;
+        };
         self.setSelectedTextRange(Some(&range));
     }
 
@@ -392,13 +396,13 @@ impl TextField {
     /// change surfaces as the same edit a typed replacement produces and
     /// the caret lands after the inserted text.
     ///
-    /// # Panics
-    ///
-    /// If `utf16` reaches past the field's text.
+    /// A `utf16` that reaches past the field's text breaks the contract: it
+    /// is reported and the call is ignored.
     pub fn replace_range(&self, utf16: NSRange, text: &NSString) {
-        let range = self
-            .text_range(utf16)
-            .expect("replace_range reaches past the field's text");
+        let Some(range) = self.text_range(utf16) else {
+            contract_violation!("replace_range reaches past the field's text; the call is ignored");
+            return;
+        };
         self.replaceRange_withText(&range, text);
     }
 }

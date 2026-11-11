@@ -24,7 +24,7 @@ pub fn enqueue(work: impl FnOnce(MainThreadMarker) + Send + 'static) {
     DispatchQueue::main().exec_async(move || {
         guarded("main queue work", || {
             let mtm = MainThreadMarker::new()
-                .expect("the main dispatch queue must run its work on the main thread");
+                .expect("`DispatchQueue::main` runs its blocks on the main thread");
             work(mtm);
         });
     });

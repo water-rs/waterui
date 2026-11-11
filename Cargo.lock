@@ -2156,6 +2156,7 @@ dependencies = [
  "objc2-web-kit",
  "oslog",
  "tracing",
+ "waterui-contract",
  "waterui-easing",
  "wgpu",
  "wgpu-hal",

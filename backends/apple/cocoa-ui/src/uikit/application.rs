@@ -487,9 +487,12 @@ define_class!(
             _options: &UISceneConnectionOptions,
         ) {
             guarded("scene:willConnectToSession:options:", || {
-                let scene = scene
-                    .downcast_ref::<UIWindowScene>()
-                    .unwrap_or_else(|| panic!("the application scene is not a window scene: {scene:?}"));
+                let Some(scene) = scene.downcast_ref::<UIWindowScene>() else {
+                    waterui_contract::contract_violation!(
+                        "the application scene is not a window scene: {scene:?}; it is not connected"
+                    );
+                    return;
+                };
                 let connect_scene = Rc::clone(&AppDelegate::current(self.mtm()).ivars().connect_scene);
                 let window = connect_scene(&WindowScene {
                     scene: scene.retain(),
