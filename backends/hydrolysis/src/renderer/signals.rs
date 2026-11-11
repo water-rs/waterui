@@ -603,7 +603,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         {
             Some(cherenkov_record::tree::RATE_FAST)
         } else {
-            self.animation_controller.refresh_range(now)
+            self.animation_controller.refresh_range()
         }
     }
 
@@ -643,19 +643,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
     }
 
+    /// Whether a host-side animation is still running: a controller slot, an
+    /// interaction release or a navigation transition. All of them finish,
+    /// so the answer does not depend on whether perpetual work counts.
     pub fn animations_active(&self) -> bool {
-        self.animations_active_with(PerpetualAnimation::Counts)
-    }
-
-    /// [`Self::animations_active`] with a choice of whether repeat-forever
-    /// animations count.
-    pub(crate) fn animations_active_with(&self, perpetual: PerpetualAnimation) -> bool {
         let now = self.frame_instant;
-        let controller_active = match perpetual {
-            PerpetualAnimation::Counts => self.animation_controller.has_active(now),
-            PerpetualAnimation::Ignored => self.animation_controller.has_finite_active(now),
-        };
-        controller_active
+        self.animation_controller.has_active()
             || self.has_pending_interaction_releases(now)
             || self.navigation_animating(now)
     }

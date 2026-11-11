@@ -201,7 +201,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     fn scheduled_semantic_work(&self, perpetual: PerpetualAnimation) -> bool {
         self.has_pending_semantic_update()
             || self.os_file_drop_pending()
-            || self.animations_active_with(perpetual)
+            || self.animations_active()
             || self.engine_tracks_active(perpetual)
             || self.next_gesture_deadline().is_some()
             || self.has_gliding_smooth_scrolls()
