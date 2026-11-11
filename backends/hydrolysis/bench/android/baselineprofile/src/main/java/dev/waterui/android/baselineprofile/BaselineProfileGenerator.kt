@@ -43,9 +43,16 @@ class BaselineProfileGenerator {
         val spec = loadInteractionSpec(
             InstrumentationRegistry.getInstrumentation().context,
         )
+        // `fixtures` narrows a generation run to a comma-separated subset
+        // (run.py generate-profile --fixture); absent, every journey runs.
+        val requested = args.getString("fixtures")?.split(",")
         val fixtures = spec.getJSONObject("fixtures").keys().asSequence()
+            .filter { requested == null || it in requested }
             .toList()
             .sorted()
+        require(fixtures.isNotEmpty()) {
+            "no journey matches fixtures=$requested"
+        }
         baselineProfileRule.collect(
             packageName = packageName,
             includeInStartupProfile = true,

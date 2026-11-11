@@ -21,8 +21,16 @@ implementation in scripts/e2e.py — imported verbatim and hash-pinned by
 toolchain-lock.json as a frozen record of the old backend's measurement
 semantics. Those scripts cannot run against the current CLI.
 
-APK production is parameterized: supply fixtures with `--apk-dir`, or build
-the Hydrolysis APKs with `water package --platform android`.
+APK production: `build-hydrolysis` builds each fixture's Hydrolysis app
+through `water package` for each painter (`gpu`, `hwui`, named as the CLI
+names them) into `<out>/<painter>/<fixture>.apk`; `build` builds the Compose
+reference with Gradle (release, R8, resource shrinking, a baseline profile
+`run` verifies ART applied). Both are arm64-v8a and signed with the Gradle
+debug keystore. `run --apk-dir <dir>` launches each fixture's APK, replays
+its journey's input ops and writes the result record. `--painter` names the
+Hydrolysis painter of the app under test and is absent for `--backend
+compose`. A `build-hydrolysis --frame-profile` app additionally logs the
+HWUI painter's per-frame counters, which `run` collects from logcat.
 
 The Gradle trees (`reference/` here, `android/` for the host) are the
 callers of `scripts/fetch-gradle-wrapper.py`: their `gradlew` scripts
@@ -35,12 +43,22 @@ the tree, hash-verified against the published checksums.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
+import re
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+# The Android painters the Hydrolysis host draws with, spelled as
+# `water package --painter` spells them. Result records carry these names.
+PAINTERS = ("gpu", "hwui")
+
+# Records of the Compose reference name no Hydrolysis painter.
+COMPOSE_PAINTER = "none"
 
 BENCH_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BENCH_DIR))
@@ -50,6 +68,7 @@ import metrics  # noqa: E402
 from metrics import frames as frame_metrics  # noqa: E402
 from metrics import memory as memory_metrics  # noqa: E402
 from metrics import input_latency as latency_metrics  # noqa: E402
+from metrics import frame_profile  # noqa: E402
 
 # The imported frozen implementation; see toolchain-lock.json for its hash.
 import e2e  # noqa: E402
@@ -62,6 +81,114 @@ def fixture_env(fixture: dict, defaults: dict) -> dict:
     return env
 
 
+def sdk_tool(*parts: str) -> str:
+    """The newest `build-tools` binary named by `parts` under the SDK."""
+    sdk = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
+    if not sdk:
+        sys.exit("ANDROID_HOME/ANDROID_SDK_ROOT unset — cannot locate build-tools")
+    candidates = sorted(
+        Path(sdk).glob("build-tools/*/" + "/".join(parts)),
+        key=lambda path: [int(p) for p in path.parent.name.split(".")],
+    )
+    if not candidates:
+        sys.exit(f"no {'/'.join(parts)} under {sdk}/build-tools")
+    return str(candidates[-1])
+
+
+def apk_package(apk: Path) -> str:
+    """The application id `apk` installs as — read from the APK, because the
+    Hydrolysis app's bundle identifier comes from its Water.toml, not from the
+    frozen CI inventory's `package`."""
+    return subprocess.run(
+        [sdk_tool("aapt2"), "dump", "packagename", str(apk)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def start_launcher(serial: str, package: str, env: dict) -> None:
+    """Starts `package`'s launcher activity, killing any prior run — the
+    same intent for the generated Hydrolysis host and the Compose reference,
+    so neither depends on the other's activity name. `env` reaches the app as
+    `waterui.env.*` string extras."""
+    args = [
+        "shell", "am", "start", "-S",
+        "-a", "android.intent.action.MAIN",
+        "-c", "android.intent.category.LAUNCHER",
+        "-p", package,
+    ]
+    for key, value in env.items():
+        args += ["--es", f"waterui.env.{key}", value]
+    output = e2e.adb_out(serial, *args).decode("utf-8", "replace")
+    if "Error" in output:
+        sys.exit(f"am start {package} failed: {output.strip()}")
+
+
+# Scroll and swipe geometry of the shared journey runner (shared/kotlin
+# Journey.kt `swipeDirection`): a full-screen fling between 20% and 80% of
+# the display, along the centre line.
+_FLING = {
+    "up": (0.5, 0.8, 0.5, 0.2),
+    "down": (0.5, 0.2, 0.5, 0.8),
+    "left": (0.8, 0.5, 0.2, 0.5),
+    "right": (0.2, 0.5, 0.8, 0.5),
+}
+# UiObject.scroll moves the content, so the finger travels the other way.
+_SCROLL_FINGER = {"down": "up", "up": "down", "left": "right", "right": "left"}
+FLING_MS = 120
+
+
+def display_size(serial: str) -> tuple[int, int]:
+    out = metrics.adb_out(serial, "shell", "wm", "size").decode()
+    match = re.search(r"Physical size:\s*(\d+)x(\d+)", out)
+    if match is None:
+        sys.exit(f"cannot read the display size from `wm size`: {out!r}")
+    return int(match.group(1)), int(match.group(2))
+
+
+def replay_journey(serial: str, steps: list[dict], size: tuple[int, int]) -> list[str]:
+    """Runs the shared journey's input-only ops through `adb shell input`.
+
+    Returns the ops it could not run: selector ops (`tap`, `drag`,
+    `input_text`, ...) need the UiAutomator runner in the macrobenchmark
+    module, so a journey containing one replays only its coordinate ops and
+    the record says which were left out.
+    """
+    width, height = size
+    unsupported: list[str] = []
+    for step in steps:
+        op = step["op"]
+        if op == "settle":
+            continue  # the launch already waited for a settled frame
+        if op == "wait_ms":
+            time.sleep(step["ms"] / 1000)  # the spec's own scripted pacing
+        elif op in ("swipe", "scroll"):
+            direction = step["direction"]
+            if op == "scroll":
+                direction = _SCROLL_FINGER[direction]
+            fx0, fy0, fx1, fy1 = _FLING[direction]
+            for _ in range(step.get("times", 1)):
+                e2e.adb(
+                    serial, "shell", "input", "swipe",
+                    str(int(width * fx0)), str(int(height * fy0)),
+                    str(int(width * fx1)), str(int(height * fy1)),
+                    str(FLING_MS),
+                )
+        elif op == "back":
+            e2e.adb(serial, "shell", "input", "keyevent", "4")
+        elif op == "key":
+            e2e.adb(serial, "shell", "input", "keyevent", str(step["code"]))
+        elif op == "home":
+            e2e.adb(serial, "shell", "input", "keyevent", "3")
+        elif op == "repeat":
+            for _ in range(step.get("times", 1)):
+                unsupported += replay_journey(serial, step["steps"], size)
+        else:
+            unsupported.append(op)
+    return unsupported
+
+
 def launch_and_capture(
     serial: str,
     name: str,
@@ -69,15 +196,18 @@ def launch_and_capture(
     apk: Path,
     defaults: dict,
     artifacts: Path,
+    painter: str | None,
+    journey: list[dict] | None,
 ) -> dict:
-    """One launch: install, start, settle, verify or smoke-check.
+    """One launch: install, start, settle, verify or smoke-check, replay the
+    fixture's journey, then collect the round's frame and painter counters.
 
     Returns the round's result `metrics` payload; artifacts land under
     `artifacts/<name>/`.
     """
     out = artifacts / name
     out.mkdir(parents=True, exist_ok=True)
-    package = fixture["package"]
+    package = apk_package(apk)
     mode = fixture["mode"]
     settle_s = fixture.get(
         "settle_timeout_seconds", defaults["settle_timeout_seconds"]
@@ -86,10 +216,28 @@ def launch_and_capture(
 
     e2e.install_apk(serial, str(apk))
     e2e.force_stop(serial, package)
+    if painter is None:
+        # The Compose reference ships a baseline profile; verify ART applied
+        # it rather than assuming the APK entry did its job.
+        compile_with_profile(serial, package)
+        applied, block = speed_profile_state(serial, package)
+        if not applied:
+            sys.exit(f"{package}: baseline profile not applied:\n{block}")
+        result_profile = {"baseline_profile_applied": True}
+    else:
+        result_profile = {}
+    # Reset the frame statistics and the log so the round counts only its
+    # own frames and painter lines.
+    e2e.adb(serial, "shell", "dumpsys", "gfxinfo", package, "reset")
+    frame_profile.clear_logcat(serial)
     launch_ms = e2e.device_now_ms(serial)
-    e2e.launch_app(serial, package, fixture_env(fixture, defaults))
+    start_launcher(serial, package, fixture_env(fixture, defaults))
     watch = e2e.ProcessWatch(serial, package)
-    result: dict = {"apk_bytes": apk.stat().st_size}
+    result: dict = {
+        "apk_bytes": apk.stat().st_size,
+        "package": package,
+        **result_profile,
+    }
 
     anr: list[str] = []
     foreign: list[str] = []
@@ -154,10 +302,21 @@ def launch_and_capture(
         # settled non-blank content is the check.
         result["verify"] = "pass" if settled and result.get("nonblank") else "fail"
 
-    # Round metrics: frames over the launch window + a memory snapshot. The
-    # expensive dumps stay a separate replay per section 6 — here they run in
-    # the launch round because launch IS the measured script; interaction
-    # replays are the metrics/ callers' job.
+    # The short interaction: the shared journey's input-only ops, so the
+    # frames below include scrolling work and not only the launch.
+    if journey is None:
+        result["replay"] = "no journey in interactions.json"
+    else:
+        unsupported = replay_journey(serial, journey, display_size(serial))
+        result["replay"] = "partial" if unsupported else "complete"
+        if unsupported:
+            result["replay_unsupported_ops"] = sorted(set(unsupported))
+    if painter is not None:
+        result.update(frame_profile.collect(serial, painter, out, "frame_profile"))
+
+    # Round metrics: frames over the launch + interaction window and a memory
+    # snapshot. The expensive dumps stay a separate replay per section 6 —
+    # here they run in the round because the round IS the measured script.
     result.update(frame_metrics.collect(serial, package, out, "frames"))
     result.update(
         memory_metrics.collect_at(
@@ -186,6 +345,15 @@ def cmd_run(args: argparse.Namespace) -> int:
     }
     if args.reference_apk:
         e2e.adb(serial, "install", "-r", args.reference_apk)
+    if args.backend == "hydrolysis":
+        if args.painter not in PAINTERS:
+            sys.exit(f"--painter {' or '.join(PAINTERS)} is required for the hydrolysis backend")
+        painter = args.painter
+    else:
+        if args.painter is not None:
+            sys.exit(f"--painter names a Hydrolysis painter; backend {args.backend!r} has none")
+        painter = None
+    interactions = json.loads((BENCH_DIR / "interactions" / "interactions.json").read_text())
     apk_dir = Path(args.apk_dir) if args.apk_dir else None
     selected = args.fixture or sorted(suite["fixtures"].keys())
     failures = []
@@ -200,10 +368,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         if apk is None or not apk.exists():
             print(f"== {name}: no APK under {apk_dir} — not run")
             continue
+        if args.no_golden and fixture["mode"] == "verify":
+            # Settled non-blank content is the check; the round measures
+            # frames and counters, not pixels.
+            fixture = {**fixture, "mode": "smoke"}
         print(f"== {name}: {fixture['mode']} on {serial} ({apk.name})")
         record = metrics.make_result(
             backend=args.backend,
-            painter=args.painter,
+            painter=painter or COMPOSE_PAINTER,
             fixture=name,
             script="launch",
             round_index=args.round,
@@ -216,6 +388,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                 apk,
                 suite["defaults"],
                 Path(args.out),
+                painter,
+                interactions["fixtures"].get(name, {}).get("journey"),
             ),
         )
         path = metrics.write_result(
@@ -310,9 +484,18 @@ def cmd_lock_campaign(args: argparse.Namespace) -> int:
     return 0
 
 
-def _gradle(*tasks: str, project: Path) -> None:
+def gradle_env() -> dict:
+    """The environment Gradle runs under: the caller's, with the CI image's
+    JDK 21 where that path exists and `java` on PATH (JDK 21) elsewhere."""
     env = dict(os.environ)
-    env.setdefault("JAVA_HOME", "/usr/lib/jvm/java-21-openjdk-amd64")
+    jdk = Path("/usr/lib/jvm/java-21-openjdk-amd64")
+    if jdk.is_dir():
+        env.setdefault("JAVA_HOME", str(jdk))
+    return env
+
+
+def _gradle(*tasks: str, project: Path) -> None:
+    env = gradle_env()
     subprocess.run(
         [str(project / "gradlew"), *tasks],
         cwd=project,
@@ -326,6 +509,50 @@ def _apk_out(project: Path, module: str) -> list[Path]:
     return sorted(root.glob("**/*.apk")) if root.is_dir() else []
 
 
+BASELINE_PROFILE_ENTRY = "assets/dexopt/baseline.prof"
+
+
+def apk_has_baseline_profile(apk: Path) -> bool:
+    """Whether `apk` ships the compiled baseline profile ART installs."""
+    import zipfile
+
+    with zipfile.ZipFile(apk) as archive:
+        return BASELINE_PROFILE_ENTRY in archive.namelist()
+
+
+_DEPENDENCY = re.compile(
+    r"([\w.\-]+:[\w.\-]+)(?::([\w.\-]+))?(?:\s*->\s*([\w.\-]+))?(?:\s|$)"
+)
+
+
+def record_resolved_dependencies(project: Path, flavors: list[str]) -> int:
+    """Records every dependency Gradle resolved for the release runtime
+    classpath into campaign-lock.json, so the campaign's BOM resolution is
+    auditable and cannot drift mid-campaign. Returns the dependency count.
+    """
+    flavor = next((f for f in flavors if f != "suite"), "suite")
+    configuration = f"{flavor[0].lower() + flavor[1:]}ReleaseRuntimeClasspath"
+    env = gradle_env()
+    tree = subprocess.run(
+        [str(project / "gradlew"), "-q", ":app:dependencies",
+         "--configuration", configuration],
+        cwd=project, env=env, check=True, capture_output=True, text=True,
+    ).stdout
+    resolved: dict[str, str] = {}
+    for line in tree.splitlines():
+        match = _DEPENDENCY.search(line)
+        version = match and (match.group(3) or match.group(2))
+        if version:
+            # `a:b:1.0 -> 2.0` and BOM-managed `a:b -> 2.0` resolve to 2.0.
+            resolved[match.group(1)] = version
+    lock_path = BENCH_DIR / "campaign-lock.json"
+    lock = json.loads(lock_path.read_text())
+    lock["resolved_dependencies"] = dict(sorted(resolved.items()))
+    lock["resolved_dependencies_configuration"] = configuration
+    lock_path.write_text(json.dumps(lock, indent=2, sort_keys=True) + "\n")
+    return len(resolved)
+
+
 def cmd_build(args: argparse.Namespace) -> int:
     """Build the release APK set for a campaign.
 
@@ -337,23 +564,22 @@ def cmd_build(args: argparse.Namespace) -> int:
     """
     project = BENCH_DIR / "reference"
     suite = metrics.load_suite(Path(args.suite))
-    fixtures = [
+    fixtures = args.fixture or [
         n for n, f in sorted(suite["fixtures"].items()) if f["mode"] != "skip"
     ]
-    flavors = {"suite"} | {flavor_for_fixture(n) for n in fixtures}
-
-    # Gradle capitalizes only the first letter of the flavor in task names:
-    # anchored_overlay -> assembleAnchored_overlayRelease.
-    tasks = [
-        f":app:assemble{f[0].upper() + f[1:]}Release" for f in sorted(flavors)
-    ]
-    tasks += [":macrobenchmark:assemble", ":baselineprofile:assemble"]
-    print("gradle:", *tasks)
-    _gradle(*tasks, project=project)
+    for name in fixtures:
+        if name not in suite["fixtures"]:
+            sys.exit(f"unknown fixture {name!r}; not in suite.toml")
+        if suite["fixtures"][name]["mode"] == "skip":
+            sys.exit(f"{name} is a documented skip: {suite['fixtures'][name]['reason']}")
+    flavors = {flavor_for_fixture(n) for n in fixtures}
+    if not args.fixture:
+        flavors.add("suite")
 
     # Propagate the suite-generated baseline profile into every per-fixture
-    # variant's profile source (see BaselineProfileGenerator's docstring);
-    # skipped quietly until generation has run once on device.
+    # variant's profile source (see BaselineProfileGenerator's docstring)
+    # BEFORE assembling, so the APKs carry it. `generate-profile` produces the
+    # source on the device; without it nothing below can ship a profile.
     gen = project / "app/src/suiteRelease/generated/baselineProfiles"
     propagated = 0
     if gen.is_dir():
@@ -364,6 +590,16 @@ def cmd_build(args: argparse.Namespace) -> int:
                 if src_file.is_file():
                     (dst / src_file.name).write_bytes(src_file.read_bytes())
             propagated += 1
+
+    # Gradle capitalizes only the first letter of the flavor in task names:
+    # anchored_overlay -> assembleAnchored_overlayRelease.
+    tasks = [
+        f":app:assemble{f[0].upper() + f[1:]}Release" for f in sorted(flavors)
+    ]
+    if not args.app_only:
+        tasks += [":macrobenchmark:assemble", ":baselineprofile:assemble"]
+    print("gradle:", *tasks)
+    _gradle(*tasks, project=project)
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -378,21 +614,27 @@ def cmd_build(args: argparse.Namespace) -> int:
                 manifest["apks"][fixture] = {
                     "path": str(dst),
                     "apk_bytes": dst.stat().st_size,
+                    "baseline_profile_in_apk": apk_has_baseline_profile(dst),
                 }
-        if flavor == "suite":
+        if flavor == "suite" and "suite" in flavors:
             dst = out_dir / "suite.apk"
             dst.write_bytes(apk.read_bytes())
             manifest["apks"]["suite"] = {
                 "path": str(dst),
                 "apk_bytes": dst.stat().st_size,
+                "baseline_profile_in_apk": apk_has_baseline_profile(dst),
             }
-    for module, key in (("macrobenchmark", "macrobenchmark_apks"),
-                        ("baselineprofile", "baselineprofile_apks")):
-        manifest["apks"][key] = [
-            {"path": str(p), "apk_bytes": p.stat().st_size}
-            for p in _apk_out(project, module)
-        ]
+    if not args.app_only:
+        for module, key in (("macrobenchmark", "macrobenchmark_apks"),
+                            ("baselineprofile", "baselineprofile_apks")):
+            manifest["apks"][key] = [
+                {"path": str(p), "apk_bytes": p.stat().st_size}
+                for p in _apk_out(project, module)
+            ]
     manifest["baseline_profiles_propagated"] = propagated
+    manifest["resolved_dependencies"] = record_resolved_dependencies(
+        project, sorted(flavors)
+    )
     (out_dir / "artifacts.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     )
@@ -400,7 +642,195 @@ def cmd_build(args: argparse.Namespace) -> int:
         f"built {len(manifest['apks'])} artifacts -> {out_dir} "
         f"(profiles propagated to {propagated} variants)"
     )
+    unprofiled = [
+        name
+        for name, entry in manifest["apks"].items()
+        if isinstance(entry, dict) and not entry["baseline_profile_in_apk"]
+    ]
+    if unprofiled:
+        print(
+            "BASELINE PROFILE MISSING from: " + ", ".join(unprofiled)
+            + " — run `run.py generate-profile` on the device, then rebuild"
+        )
+        return 1
     return 0
+
+
+# `water package` has no feature switch, so a `frame-profile` build enables
+# the feature through the application's own manifest: Cargo unifies the
+# feature onto the launcher's `hydrolysis`. The stanza is appended for the
+# duration of one build only.
+_FRAME_PROFILE_STANZA = """
+[target.'cfg(target_os = "android")'.dependencies]
+hydrolysis = { workspace = true, features = ["frame-profile"] }
+"""
+
+
+@contextlib.contextmanager
+def frame_profile_manifest(project: Path, lock: Path):
+    """Temporarily adds the `frame-profile` dependency to `project`'s manifest
+    and restores the manifest and the workspace `lock` the edit rewrites."""
+    manifest = project / "Cargo.toml"
+    original = manifest.read_text()
+    original_lock = lock.read_text()
+    if "target_os = \"android\"" in original and "hydrolysis" in original:
+        sys.exit(f"{manifest} already declares an Android hydrolysis dependency")
+    manifest.write_text(original + _FRAME_PROFILE_STANZA)
+    try:
+        yield
+    finally:
+        manifest.write_text(original)
+        lock.write_text(original_lock)
+
+
+def debug_keystore() -> Path:
+    """The keystore the Compose release build signs with: Gradle's own debug
+    keystore (`signingConfigs.getByName("debug")`), so both apps share one
+    signing mode."""
+    path = Path.home() / ".android" / "debug.keystore"
+    if not path.is_file():
+        sys.exit(f"{path} is missing — run any Gradle Android build once to create it")
+    return path
+
+
+def package_hydrolysis(
+    water: str, waterui: Path, fixture: dict, painter: str, frame_profile_build: bool
+) -> Path:
+    """Builds one fixture's Hydrolysis APK through `water package` and returns
+    the artifact it reports, unsigned."""
+    project = waterui / fixture["source"]
+    cmd = [
+        water, "package",
+        "--platform", "android", "--backend", "hydrolysis",
+        "--painter", painter,
+        "--arch", "arm64",
+        "--path", str(project),
+        "--unsigned", "--yes",
+    ]
+    with contextlib.ExitStack() as stack:
+        if frame_profile_build:
+            stack.enter_context(frame_profile_manifest(project, waterui / "Cargo.lock"))
+        print("water:", " ".join(cmd[1:]), flush=True)
+        done = subprocess.run(cmd, capture_output=True, text=True)
+    sys.stdout.write(done.stdout)
+    sys.stderr.write(done.stderr)
+    if done.returncode != 0:
+        sys.exit(f"water package failed for {project} ({painter}): exit {done.returncode}")
+    ansi = re.compile(r"\x1b\[[0-9;]*m")
+    match = re.search(r"Packaged at (\S+\.apk)", ansi.sub("", done.stdout + done.stderr))
+    if match is None:
+        sys.exit(f"water package reported no .apk artifact for {project}")
+    return Path(match.group(1))
+
+
+def sign_with_debug_keystore(apk: Path, dst: Path) -> None:
+    """Signs `apk` into `dst` with the shared debug keystore."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            sdk_tool("apksigner"), "sign",
+            "--ks", str(debug_keystore()),
+            "--ks-key-alias", "androiddebugkey",
+            "--ks-pass", "pass:android",
+            "--key-pass", "pass:android",
+            "--out", str(dst),
+            str(apk),
+        ],
+        check=True,
+    )
+
+
+def cmd_build_hydrolysis(args: argparse.Namespace) -> int:
+    """Build the Hydrolysis app of each fixture for each painter.
+
+    Each APK is arm64-v8a, built by `water package` for the release profile
+    and signed with the keystore the Compose reference signs with. They land
+    in --out/<painter>/<fixture>.apk — the layout `run --apk-dir` reads — with
+    their sizes in --out/artifacts.json.
+    """
+    suite = metrics.load_suite(Path(args.suite))
+    waterui = Path(args.waterui)
+    selected = args.fixture or sorted(
+        n for n, f in suite["fixtures"].items() if f["mode"] != "skip"
+    )
+    manifest: dict = {"schema": "bench/android/artifacts@1", "apks": {}}
+    out_dir = Path(args.out)
+    for painter in args.painter or PAINTERS:
+        for name in selected:
+            fixture = suite["fixtures"].get(name)
+            if fixture is None:
+                sys.exit(f"unknown fixture {name!r}; not in suite.toml")
+            if fixture["mode"] == "skip":
+                sys.exit(f"{name} is a documented skip: {fixture['reason']}")
+            built = package_hydrolysis(
+                args.water, waterui, fixture, painter, args.frame_profile
+            )
+            dst = out_dir / painter / f"{name}.apk"
+            sign_with_debug_keystore(built, dst)
+            manifest["apks"][f"{painter}/{name}"] = {
+                "path": str(dst),
+                "apk_bytes": dst.stat().st_size,
+                "painter": painter,
+                "frame_profile": args.frame_profile,
+            }
+            print(f"built {painter}/{name}: {dst.stat().st_size} bytes -> {dst}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "artifacts.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    )
+    return 0
+
+
+def cmd_generate_profile(args: argparse.Namespace) -> int:
+    """Generate the suite variant's baseline profile on the attached device.
+
+    Runs the shared journeys (all of them, or --fixture's subset) against the
+    suite APK through the androidx.baselineprofile producer module; the
+    profile lands in app/src/suiteRelease/generated/baselineProfiles, where
+    `build` propagates it into every per-fixture variant. Needs the device
+    held by the caller.
+    """
+    project = BENCH_DIR / "reference"
+    task = ":app:generateSuiteReleaseBaselineProfile"
+    extra = []
+    if args.fixture:
+        extra.append(
+            "-Pandroid.testInstrumentationRunnerArguments.fixtures="
+            + ",".join(args.fixture)
+        )
+    print("gradle:", task, *extra)
+    _gradle(task, *extra, project=project)
+    generated = project / "app/src/suiteRelease/generated/baselineProfiles"
+    files = sorted(p.name for p in generated.glob("*")) if generated.is_dir() else []
+    if not files:
+        sys.exit(f"generation produced no profile under {generated}")
+    print(f"generated {', '.join(files)} -> {generated}")
+    return 0
+
+
+def compile_with_profile(serial: str, package: str) -> None:
+    """Forces the profile-guided compilation `BaselineProfileMode.Require`
+    expects, once at install and outside any measured window."""
+    out = metrics.adb_out(
+        serial, "shell", "cmd", "package", "compile",
+        "-f", "-m", "speed-profile", package,
+    ).decode("utf-8", "replace")
+    if "Success" not in out:
+        sys.exit(f"cmd package compile {package} failed: {out.strip()}")
+
+
+def speed_profile_state(serial: str, package: str) -> tuple[bool, str]:
+    """Whether `package`'s dexopt state is `speed-profile`, and that state's
+    text — the evidence the installed baseline profile was applied."""
+    dump = metrics.adb_out(
+        serial, "shell", "dumpsys", "package", package
+    ).decode("utf-8", "replace")
+    section = dump.split("Dexopt state:", 1)
+    block = ""
+    if len(section) == 2:
+        lines = section[1].splitlines()
+        block = "\n".join(line.rstrip() for line in lines[:8])
+    return "status=speed-profile" in block, block
 
 
 def cmd_verify_profile(args: argparse.Namespace) -> int:
@@ -413,16 +843,7 @@ def cmd_verify_profile(args: argparse.Namespace) -> int:
     """
     serial = args.serial or metrics.detect_serial()
     pkg = package_for_fixture(args.fixture)
-    dexopt = metrics.adb_out(
-        serial, "shell", "dumpsys", "package", "dexopt"
-    ).decode("utf-8", "replace")
-    block = ""
-    lines = dexopt.splitlines()
-    for i, line in enumerate(lines):
-        if line.strip() == pkg or line.strip().startswith(pkg + ":"):
-            block = "\n".join(lines[i : i + 8])
-            break
-    status = "speed-profile" in block
+    status, block = speed_profile_state(serial, pkg)
     result = {
         "package": pkg,
         "dexopt_block": block,
@@ -537,6 +958,16 @@ def cmd_check_inventory(args: argparse.Namespace) -> int:
             f"twin set {sorted(registered)} != SuiteDispatch.kt "
             f"{sorted(twins_in_source)}"
         )
+    for name, fixture in fixtures.items():
+        skipped = fixture.get("compose_twin") == "skipped"
+        if (fixture["mode"] == "skip") != skipped:
+            errors.append(
+                f"{name}: compose_twin {fixture.get('compose_twin')!r} "
+                f"disagrees with mode {fixture['mode']!r} — exactly the "
+                "documented skip entries carry compose_twin = \"skipped\""
+            )
+        if skipped and not fixture.get("compose_twin_skip_reason"):
+            errors.append(f"{name}: a skipped twin needs compose_twin_skip_reason")
     unfinished = suite.get("unfinished", {}).get("compose_twins", {})
     listed = set(
         unfinished.get("verify", [])
@@ -572,10 +1003,17 @@ def main() -> int:
                      help="built APK of bench/android/reference — required to "
                           "generate goldens for fixtures with registered twins")
     run.add_argument("--fixture", action="append", default=None)
+    run.add_argument("--no-golden", action="store_true",
+                     help="check settled non-blank content only, for verify "
+                          "fixtures too — no golden is read or generated")
     run.add_argument("--run-skipped", action="store_true",
                      help="also attempt the two documented skip entries")
     run.add_argument("--backend", default="hydrolysis")
-    run.add_argument("--painter", default="cherenkov")
+    run.add_argument("--painter", choices=PAINTERS, default=None,
+                     help="Android painter of the Hydrolysis app under test, "
+                          "named as `water package --painter` names it; "
+                          "required for --backend hydrolysis, absent for the "
+                          "Compose reference (--backend compose)")
     run.add_argument("--revision", default="unknown",
                      help="source revision of the backend under test")
     run.add_argument("--round", type=int, default=0)
@@ -605,7 +1043,40 @@ def main() -> int:
     )
     build.add_argument("--suite", default=str(BENCH_DIR / "suite.toml"))
     build.add_argument("--out", default=str(BENCH_DIR / "out" / "apks"))
+    build.add_argument("--fixture", action="append", default=None,
+                       help="build only this fixture's variant (repeatable)")
+    build.add_argument("--app-only", action="store_true",
+                       help="skip the macrobenchmark and baselineprofile APKs")
     build.set_defaults(func=cmd_build)
+
+    build_hydrolysis = sub.add_parser(
+        "build-hydrolysis",
+        help="build each fixture's Hydrolysis app per painter through "
+             "`water package`",
+    )
+    build_hydrolysis.add_argument("--suite", default=str(BENCH_DIR / "suite.toml"))
+    build_hydrolysis.add_argument("--waterui", required=True,
+                                  help="waterui checkout holding the fixtures' sources")
+    build_hydrolysis.add_argument("--water", default="water",
+                                  help="the `water` CLI to build with")
+    build_hydrolysis.add_argument("--painter", action="append", choices=PAINTERS,
+                                  default=None,
+                                  help="painter to build (repeatable; default both)")
+    build_hydrolysis.add_argument("--fixture", action="append", default=None)
+    build_hydrolysis.add_argument("--frame-profile", action="store_true",
+                                  help="build with the `frame-profile` feature so "
+                                       "the HWUI painter logs its per-frame counters "
+                                       "— an attribution build, not a measured one")
+    build_hydrolysis.add_argument("--out", default=str(BENCH_DIR / "out" / "hydrolysis"))
+    build_hydrolysis.set_defaults(func=cmd_build_hydrolysis)
+
+    generate = sub.add_parser(
+        "generate-profile",
+        help="generate the Compose reference's baseline profile on the device",
+    )
+    generate.add_argument("--fixture", action="append", default=None,
+                          help="journey subset to profile (repeatable; default all)")
+    generate.set_defaults(func=cmd_generate_profile)
 
     verify = sub.add_parser(
         "verify-profile",
@@ -630,6 +1101,9 @@ def main() -> int:
     instr.set_defaults(func=cmd_instrument)
 
     args = parser.parse_args()
+    # A deadline's SIGTERM unwinds as SystemExit so `finally` blocks restore
+    # what a build temporarily edited and `subprocess.run` kills its child.
+    signal.signal(signal.SIGTERM, lambda _signo, _frame: sys.exit(143))
     return args.func(args)
 
 
