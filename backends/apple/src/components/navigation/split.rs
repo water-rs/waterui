@@ -318,7 +318,9 @@ mod platform {
         // not the safe-area rect.
         let host = HostView::new(mtm, Rect::ZERO);
         host.set_manages_safe_area(true);
-        let split_view = nav_for_binds.view().expect("split view");
+        let split_view = nav_for_binds
+            .view()
+            .expect("a split view controller always has a view");
         view::add_subview(&host, &split_view);
         host.set_primary_content_handler({
             let split_view = split_view.clone();

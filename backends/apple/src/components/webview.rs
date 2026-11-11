@@ -133,9 +133,17 @@ impl Shared {
             }
             *last = Some(url.to_string());
         }
-        self.emit(WebViewEvent::WillNavigate {
-            url: parse_url(url),
-        });
+        if let Some(url) = parse_url(url) {
+            self.emit(WebViewEvent::WillNavigate { url });
+        }
+    }
+
+    /// Emits a `Redirect` between two engine-reported URLs; one that does
+    /// not parse drops the event.
+    fn emit_redirect(&self, from: &str, to: &str) {
+        if let (Some(from), Some(to)) = (parse_url(from), parse_url(to)) {
+            self.emit(WebViewEvent::Redirect { from, to });
+        }
     }
 
     /// Registers the single `__wateruiSend` script-message handler every
@@ -412,14 +420,19 @@ impl Shared {
     /// The navigation policy's answer to a page-initiated navigation:
     /// whether the engine proceeds. `OpenExternally` has already been
     /// carried out by [`NavigationPolicy::allows`] when it answers `false`.
-    /// An action naming no URL is allowed — nothing would navigate anyway.
+    /// An action naming no URL is allowed — nothing would navigate anyway; one
+    /// naming a URL the policy cannot read is refused, as the policy cannot
+    /// admit it.
     fn policy_allows(&self, url: Option<&str>, is_main_frame: bool, user_initiated: bool) -> bool {
         let (Some(policy), Some(url)) = (&self.navigation_policy, url) else {
             return true;
         };
+        let Some(target) = parse_url(url) else {
+            return false;
+        };
         policy.allows(&NavigationRequest::new(
-            parse_url(url),
-            self.view().url_string().map(|url| parse_url(&url)),
+            target,
+            self.view().url_string().and_then(|url| parse_url(&url)),
             is_main_frame,
             user_initiated,
         ))
@@ -499,10 +512,7 @@ impl Shared {
             .map_or_else(String::new, |location| {
                 web_kit::resolve_redirect(&info.url, location)
             });
-        self.emit(WebViewEvent::Redirect {
-            from: parse_url(&info.url),
-            to: parse_url(&to),
-        });
+        self.emit_redirect(&info.url, &to);
         self.view().stop_loading();
         web_kit::Policy::Cancel
     }
@@ -520,10 +530,12 @@ impl Shared {
             match web_kit::evaluate_server_trust(trust) {
                 Ok(()) => return web_kit::ChallengeDecision::UseCredential,
                 Err(message) => {
-                    self.emit(WebViewEvent::Error(WebViewError::Ssl {
-                        url: parse_url(&challenge.current_url),
-                        message: Str::from(message),
-                    }));
+                    if let Some(url) = parse_url(&challenge.current_url) {
+                        self.emit(WebViewEvent::Error(WebViewError::Ssl {
+                            url,
+                            message: Str::from(message),
+                        }));
+                    }
                     return web_kit::ChallengeDecision::Cancel;
                 }
             }
@@ -544,10 +556,7 @@ impl Shared {
                 let to = self.view().url_string().unwrap_or_default();
                 let from = self.last_navigation.borrow().clone().unwrap_or_default();
                 if !self.redirects_enabled.get() {
-                    self.emit(WebViewEvent::Redirect {
-                        from: parse_url(&from),
-                        to: parse_url(&to),
-                    });
+                    self.emit_redirect(&from, &to);
                     self.view().stop_loading();
                     return;
                 }
@@ -639,9 +648,11 @@ impl WebViewHandle for WkWebViewHandle {
 
     fn set_cookie(&self, cookie: Cookie<'static>) {
         let header = cookie.to_string();
-        self.controller()
-            .set_cookie_header(&header)
-            .expect("WebView received an invalid Set-Cookie value");
+        if let Err(error) = self.controller().set_cookie_header(&header) {
+            tracing::error!(
+                "WebView received an invalid Set-Cookie value: {error}; the cookie is not set"
+            );
+        }
     }
 
     fn set_redirects_enabled(&self, enabled: impl Signal<Output = bool>) {
@@ -790,12 +801,16 @@ const fn injection_time(time: ScriptInjectionTime) -> web_kit::InjectionTime {
     }
 }
 
-/// A URL the event payloads carry: backend-emitted strings that do not
-/// parse are a bug loud enough to stop for, matching the FFI layer.
-fn parse_url(string: &str) -> Url {
-    string.parse().unwrap_or_else(|error| {
-        panic!("the web view backend emitted an unparseable URL {string:?}: {error}")
-    })
+/// A URL the event payloads carry. A string the web engine reports that does
+/// not parse is logged and answers `None`: the event it belongs to is dropped.
+fn parse_url(string: &str) -> Option<Url> {
+    match string.parse() {
+        Ok(url) => Some(url),
+        Err(error) => {
+            tracing::error!("the web view engine reported an unparseable URL {string:?}: {error}");
+            None
+        }
+    }
 }
 
 /// The leaf's layout face: `WuiWebViewComponent.sizeThatFits` — the

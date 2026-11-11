@@ -138,16 +138,18 @@ fn to_working(rgba: cocoa_ui::Rgba, headroom: f64) -> WorkingColor {
 
 /// The well's current color on `AppKit`.
 #[cfg(target_os = "macos")]
-fn read_well_color(well: &ColorWell, support_hdr: bool) -> WorkingColor {
+fn read_well_color(well: &ColorWell, support_hdr: bool) -> Option<WorkingColor> {
     let color = well.color();
     let (base, headroom) = if support_hdr {
         platform::colors::sdr_base_and_headroom(&color)
     } else {
         (color, 0.0)
     };
-    let rgba = platform::colors::srgb_components(&base)
-        .expect("NSColorWell returned a color with no sRGB form");
-    to_working(rgba, headroom)
+    let rgba = platform::colors::srgb_components(&base);
+    if rgba.is_none() {
+        tracing::error!("NSColorWell returned a color with no sRGB form; the pick is ignored");
+    }
+    rgba.map(|rgba| to_working(rgba, headroom))
 }
 
 /// The `UIKit` variant; `UIColorWell.selectedColor` may be `nil`, which
@@ -160,9 +162,13 @@ fn read_well_color(well: &ColorWell, support_hdr: bool) -> Option<WorkingColor> 
     } else {
         (color, 0.0)
     };
-    let rgba = platform::well_colors::srgb_components(&base)
-        .expect("UIColorWell returned a color that cannot convert to sRGB");
-    Some(to_working(rgba, headroom))
+    let rgba = platform::well_colors::srgb_components(&base);
+    if rgba.is_none() {
+        tracing::error!(
+            "UIColorWell returned a color that cannot convert to sRGB; the pick is ignored"
+        );
+    }
+    rgba.map(|rgba| to_working(rgba, headroom))
 }
 
 /// The leaf's live state, shared between the watchers, the layout face and
@@ -365,9 +371,6 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 if syncing.get() {
                     return;
                 }
-                #[cfg(target_os = "macos")]
-                let resolved = read_well_color(&well, support_hdr);
-                #[cfg(target_os = "ios")]
                 let Some(resolved) = read_well_color(&well, support_hdr) else {
                     return;
                 };

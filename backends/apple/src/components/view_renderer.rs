@@ -83,9 +83,10 @@ fn render_error(failure: crate::capture_image::CaptureFailure) -> RenderError {
 ///
 /// # Panics
 ///
-/// On a failure to confirm the main thread.
+/// Off the main thread: the backend installs its services while starting on it.
 pub fn install_service(env: &mut Environment) {
-    let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
+    let mtm = cocoa_ui::MainThreadMarker::new()
+        .expect("the backend installs its services on the main thread");
     let renderer =
         crate::contract::RenderContext::new(env, crate::dispatch::dispatcher(env), mtm).renderer();
     env.insert(ViewRenderer::new(AppleViewRenderer { renderer, mtm }));
@@ -255,7 +256,9 @@ mod host {
             mtm: cocoa_ui::MainThreadMarker,
         ) -> Result<Self, RenderError> {
             let window = cocoa_ui::bitmap::capture_window(mtm, proposed);
-            let content = window.contentView().expect("offscreen window content");
+            let content = window
+                .contentView()
+                .expect("a window built by `capture_window` has a content view");
             cocoa_ui::view::add_subview(&content, view);
             Ok(Self { _window: window })
         }

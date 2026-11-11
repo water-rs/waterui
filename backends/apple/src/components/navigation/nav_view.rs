@@ -278,7 +278,7 @@ mod platform {
         keep: &mut KeepAlive,
         env: &waterui::Environment,
     ) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIBarButtonItem> {
-        let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
+        let mtm = cocoa_ui::MainThreadMarker::new().expect("views render on the main thread");
         crate::components::navigation::button_bar_item(item, keep, mtm, |icon, action, keep| {
             view_icon_item(item, icon, action, env, keep, mtm)
         })
@@ -589,11 +589,13 @@ mod platform {
                 }
                 let owner = Rc::as_ptr(&bar) as usize;
                 if bar.hidden.snapshot() || view::is_hidden_in_hierarchy(host) {
-                    slot.as_ref().expect("attached").clear_content(owner);
+                    slot.as_ref()
+                        .expect("the window toolbar slot is filled just above")
+                        .clear_content(owner);
                     return;
                 }
                 slot.as_ref()
-                    .expect("attached")
+                    .expect("the window toolbar slot is filled just above")
                     .set_content(toolbar_content(&bar, search_field.as_ref(), &icons), owner);
                 view::set_hidden(&header, true);
                 host_weak.set_needs_layout();

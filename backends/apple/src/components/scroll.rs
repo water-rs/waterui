@@ -157,7 +157,7 @@ fn scroll_min_size(
                 },
             )
         }
-        _ => panic!("unsupported WaterUI scroll axis: {axis:?}"),
+        _ => unreachable!("`render` normalizes the axis to vertical, horizontal or all"),
     }
 }
 
@@ -196,7 +196,7 @@ fn scroll_measured_content(
             }
             measured
         }
-        _ => panic!("unsupported WaterUI scroll axis: {axis:?}"),
+        _ => unreachable!("`render` normalizes the axis to vertical, horizontal or all"),
     }
 }
 
@@ -234,7 +234,7 @@ fn scroll_content_placement(axis: Axis, viewport: Size, measured: Size) -> Scrol
             content_frame: Rect::new(Point::zero(), measured),
             scroll_extent: measured,
         },
-        _ => panic!("unsupported WaterUI scroll axis: {axis:?}"),
+        _ => unreachable!("`render` normalizes the axis to vertical, horizontal or all"),
     }
 }
 
@@ -406,10 +406,12 @@ fn clamped_offset(scroll: &ScrollSurface, target: Point) -> cocoa_ui::Point {
 #[cfg(target_os = "ios")]
 fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) {
     scroll.layout_if_needed();
-    assert!(
-        request.target().x.is_finite() && request.target().y.is_finite(),
-        "WaterUI ScrollView target must contain finite coordinates"
-    );
+    if !(request.target().x.is_finite() && request.target().y.is_finite()) {
+        waterui::contract_violation!(
+            "WaterUI ScrollView target must contain finite coordinates; the request is ignored"
+        );
+        return;
+    }
     let offset = clamped_offset(scroll, *request.target());
     match request.animation() {
         None => scroll.set_content_offset(offset, false),
@@ -433,10 +435,12 @@ fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) 
 #[cfg(target_os = "macos")]
 fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) {
     scroll.layout_if_needed();
-    assert!(
-        request.target().x.is_finite() && request.target().y.is_finite(),
-        "WaterUI ScrollView target must contain finite coordinates"
-    );
+    if !(request.target().x.is_finite() && request.target().y.is_finite()) {
+        waterui::contract_violation!(
+            "WaterUI ScrollView target must contain finite coordinates; the request is ignored"
+        );
+        return;
+    }
     // The target is relative to the inset content edge; the kit's jump and
     // flights clamp the raw offset to the clip's scrollable bounds.
     let target = raw_content_offset(*request.target(), scroll.adjusted_content_inset());
@@ -455,11 +459,21 @@ fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) 
 fn render(config: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
     let (axis, content, controller, offset) = config.into_inner().into_parts();
     let mtm = ctx.mtm();
+    // An axis the backend does not know is a contract violation of the
+    // framework above; the scroll view scrolls vertically, its default.
+    let axis = match axis {
+        Axis::Vertical | Axis::Horizontal | Axis::All => axis,
+        axis => {
+            waterui::contract_violation!(
+                "unsupported WaterUI scroll axis: {axis:?}; the scroll view scrolls vertically"
+            );
+            Axis::Vertical
+        }
+    };
     let (vertical, horizontal) = match axis {
-        Axis::Vertical => (true, false),
         Axis::Horizontal => (false, true),
         Axis::All => (true, true),
-        axis => panic!("unsupported WaterUI scroll axis: {axis:?}"),
+        _ => (true, false),
     };
     let scroll = ScrollSurface::new(mtm, vertical, horizontal);
     let child_leaf = ctx.render(content);

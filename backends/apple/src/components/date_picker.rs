@@ -107,30 +107,34 @@ fn parts_of(value: DateTime) -> DateTimeParts {
 /// # Panics
 ///
 /// When the parts fall outside `jiff`'s range — impossible for control
-/// output, matching the Swift `fatalError`.
+/// output: the control only reports components of a real Gregorian date.
 fn to_jiff(parts: DateTimeParts) -> DateTime {
     let date = waterui::component::form::picker::date::Date::new(
-        i16::try_from(parts.date.year).expect("year in range"),
-        i8::try_from(parts.date.month).expect("month in range"),
-        i8::try_from(parts.date.day).expect("day in range"),
+        i16::try_from(parts.date.year).expect("the control reports a year that fits i16"),
+        i8::try_from(parts.date.month).expect("the control reports a month that fits i8"),
+        i8::try_from(parts.date.day).expect("the control reports a day that fits i8"),
     )
-    .expect("picker date parts are always valid");
+    .expect("the control reports the parts of a real Gregorian date");
     date.at(
-        i8::try_from(parts.time.hour).expect("hour in range"),
-        i8::try_from(parts.time.minute).expect("minute in range"),
-        i8::try_from(parts.time.second).expect("second in range"),
+        i8::try_from(parts.time.hour).expect("the control reports an hour that fits i8"),
+        i8::try_from(parts.time.minute).expect("the control reports a minute that fits i8"),
+        i8::try_from(parts.time.second).expect("the control reports a second that fits i8"),
         0,
     )
 }
 
-/// The `NSDate` `value` names — `wuiDateTimeToDate`, `fatalError` included.
-///
-/// # Panics
-///
-/// When the Gregorian calendar cannot resolve `value`.
-fn ns_date(value: DateTime) -> Retained<objc2_foundation::NSDate> {
-    cocoa_ui::date::ns_date(&parts_of(value))
-        .expect("WaterUI DatePicker cannot represent the date-time")
+/// The `NSDate` `value` names — `wuiDateTimeToDate`. `None`, logged, when
+/// the Gregorian calendar cannot resolve `value`: the caller skips the step
+/// that needed the date.
+fn ns_date(value: DateTime) -> Option<Retained<objc2_foundation::NSDate>> {
+    let date = cocoa_ui::date::ns_date(&parts_of(value));
+    if date.is_none() {
+        tracing::error!(
+            "the Gregorian calendar cannot resolve the DatePicker date-time {value}; \
+             the date is not applied"
+        );
+    }
+    date
 }
 
 /// Whether `value` is a `jiff` full-range sentinel — `nil` on the platform
@@ -160,18 +164,23 @@ fn is_full_range_bound(value: DateTime) -> bool {
 
 /// A range bound as `NSDate`; `None` for the `jiff` full-range sentinels.
 fn range_bound(value: DateTime) -> Option<Retained<objc2_foundation::NSDate>> {
-    (!is_full_range_bound(value)).then(|| ns_date(value))
+    (!is_full_range_bound(value))
+        .then(|| ns_date(value))
+        .flatten()
 }
 
 /// The parts the control's `NSDate` carries — `NativeDateComponents`'s
-/// fatal-on-incomplete check.
-///
-/// # Panics
-///
-/// When the Gregorian calendar cannot resolve `date`.
-fn read_parts(date: &objc2_foundation::NSDate) -> DateTimeParts {
-    cocoa_ui::date::date_time_parts(date)
-        .expect("Gregorian calendar failed to resolve DatePicker components")
+/// incomplete-components check. `None`, logged, when the Gregorian calendar
+/// cannot resolve `date`: the binding keeps its value.
+fn read_parts(date: &objc2_foundation::NSDate) -> Option<DateTimeParts> {
+    let parts = cocoa_ui::date::date_time_parts(date);
+    if parts.is_none() {
+        tracing::error!(
+            "the Gregorian calendar failed to resolve the DatePicker components; \
+             the binding keeps its value"
+        );
+    }
+    parts
 }
 
 /// The binding value after the user edited the control: the fields `ty`
@@ -277,7 +286,9 @@ fn set_seconds_text(controls: &SecondsControls) {
 /// Mirrors `syncControls(with:)` — push `value` onto the control and, on
 /// `UIKit`, the seconds controls.
 fn sync_controls(state: &DatePickerState, value: DateTime) {
-    state.picker.set_date(&ns_date(value));
+    if let Some(date) = ns_date(value) {
+        state.picker.set_date(&date);
+    }
     #[cfg(target_os = "ios")]
     if let Some(seconds) = &state.seconds {
         seconds.value.set(i32::from(value.second()));
@@ -304,7 +315,9 @@ fn update_binding(state: &Rc<RefCell<DatePickerState>>, binding: &Binding<DateTi
     if borrowed.syncing.get() {
         return;
     }
-    let picker_parts = read_parts(&borrowed.picker.date());
+    let Some(picker_parts) = read_parts(&borrowed.picker.date()) else {
+        return;
+    };
     #[cfg(target_os = "ios")]
     let seconds_override = borrowed
         .seconds

@@ -116,8 +116,9 @@ fn apply_outline(glass: &GlassView, shape: ShapeKind, bounds: Rect) {
             );
         }
         ShapeKind::Ellipse | ShapeKind::CustomPath => {
-            panic!(
-                "WaterUI glass takes its outline from a corner configuration; {shape:?} (ellipse or custom path) cannot be a glass outline"
+            waterui::contract_violation!(
+                "WaterUI glass takes its outline from a corner configuration; {shape:?} (ellipse or custom path) cannot be a glass outline; \
+                 the glass keeps its current outline"
             );
         }
     }
@@ -142,8 +143,9 @@ fn apply_outline(glass: &GlassView, shape: ShapeKind, bounds: Rect) {
         | ShapeKind::UnevenRoundedRect { .. }
         | ShapeKind::FixedUnevenRoundedRect { .. }
         | ShapeKind::CustomPath => {
-            panic!(
-                "WaterUI glass on macOS takes one corner radius; {shape:?} (ellipse, per-corner radii, or custom path) cannot be a glass outline"
+            waterui::contract_violation!(
+                "WaterUI glass on macOS takes one corner radius; {shape:?} (ellipse, per-corner radii, or custom path) cannot be a glass outline; \
+                 the glass keeps its current outline"
             );
         }
     }
@@ -237,7 +239,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 .env()
                 .get::<crate::theme::SystemLabelSlots>()
                 .copied()
-                .expect("the Apple theme installs its label slots with the color slots");
+                .expect("the Apple theme installs its label slots with the color slots, and the glass handler runs under that theme");
             let mut env = ctx.env().clone();
             env.insert(slots.in_glass());
             ctx.with_env(&env).render(metadata.content)
