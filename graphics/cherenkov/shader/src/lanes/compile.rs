@@ -52,7 +52,9 @@ struct Dynamic {
 enum Cx {
     Val(Val),
     Ptr(Ptr),
-    /// A texture or sampler.
+    /// A texture or sampler global. The host binds textures and samplers
+    /// as function arguments, whose handle registers are values; a global
+    /// has no register to bind.
     Opaque,
 }
 
@@ -73,6 +75,8 @@ struct FnCx<'f> {
     exprs: Vec<Option<Cx>>,
     locals: Vec<Rc<[Reg]>>,
     args: Vec<Val>,
+    /// Whether each argument is a pointer ([`Compiler::pointer_args`]).
+    pointers: Vec<bool>,
     result: Option<Val>,
 }
 
@@ -315,6 +319,7 @@ impl<'m> Compiler<'m> {
             exprs: vec![None; function.expressions.len()],
             locals: Vec::with_capacity(function.local_variables.len()),
             args: args.clone(),
+            pointers: self.pointer_args(function),
             result: result.clone(),
         };
         let mut body = Vec::new();
@@ -336,6 +341,22 @@ impl<'m> Compiler<'m> {
         }
         body.extend(self.block(&mut fx, &function.body)?);
         Ok((body, args, result))
+    }
+
+    /// Which of `function`'s arguments are pointers. A pointer argument's
+    /// registers hold the pointee: a call copies it in and stores it back,
+    /// which WGSL's aliasing rules make the same as passing the reference.
+    fn pointer_args(&self, function: &Function) -> Vec<bool> {
+        function
+            .arguments
+            .iter()
+            .map(|argument| {
+                matches!(
+                    self.module.types[argument.ty].inner,
+                    naga::TypeInner::Pointer { .. }
+                )
+            })
+            .collect()
     }
 
     fn frame(&mut self, handle: Handle<Function>) -> Result<Frame, LaneError> {
@@ -465,7 +486,13 @@ impl<'m> Compiler<'m> {
             } => {
                 let mut args = Vec::with_capacity(arguments.len());
                 for &argument in arguments {
-                    args.push(self.operand(fx, argument)?);
+                    let arg = self.operand(fx, argument)?;
+                    if matches!(arg, Cx::Opaque) {
+                        return Err(LaneError::unsupported(
+                            "a texture or sampler global passed to a function",
+                        ));
+                    }
+                    args.push(arg);
                 }
                 let callee = &self.module.functions[function];
                 let host = callee.name.as_deref().and_then(|name| {
@@ -477,8 +504,13 @@ impl<'m> Compiler<'m> {
                 let value = if let Some(host) = host {
                     let mut regs = Vec::new();
                     for arg in &args {
-                        if let Cx::Val(val) = arg {
-                            regs.extend(&val.regs);
+                        match arg {
+                            Cx::Val(val) => regs.extend(&val.regs),
+                            _ => {
+                                return Err(LaneError::unsupported(
+                                    "a pointer passed to a host function",
+                                ));
+                            }
                         }
                     }
                     let ty = match &callee.result {
@@ -496,14 +528,26 @@ impl<'m> Compiler<'m> {
                     ty.map(|ty| Val { ty, regs: outs })
                 } else {
                     let frame = self.frame(function)?;
+                    // A pointer argument copies its pointee in, and the
+                    // callee's writes back out after the call.
+                    let mut written = Vec::new();
                     for (arg, param) in args.iter().zip(&frame.args) {
-                        if let Cx::Val(val) = arg {
-                            for (&dst, &src) in param.regs.iter().zip(&val.regs) {
-                                out.push(Node::Op(Op::Copy { dst, src }));
+                        let val = match arg {
+                            Cx::Val(val) => val.clone(),
+                            Cx::Ptr(ptr) => {
+                                written.push((ptr.clone(), param.clone()));
+                                self.load(ptr, out)?
                             }
+                            Cx::Opaque => unreachable!("rejected above"),
+                        };
+                        for (&dst, &src) in param.regs.iter().zip(&val.regs) {
+                            out.push(Node::Op(Op::Copy { dst, src }));
                         }
                     }
                     out.push(Node::Call(frame.index));
+                    for (ptr, param) in &written {
+                        self.store(ptr, param, out)?;
+                    }
                     match frame.result {
                         Some(result) => {
                             let regs = self.alloc(result.regs.len());
@@ -887,11 +931,16 @@ impl<'m> Compiler<'m> {
                 })
             }
             Expression::FunctionArgument(index) => {
-                let val = fx.args[index as usize].clone();
-                if val.ty == Ty::Opaque {
-                    Cx::Opaque
+                let arg = fx.args[index as usize].clone();
+                if fx.pointers[index as usize] {
+                    Cx::Ptr(Ptr {
+                        root: arg.regs.into(),
+                        ty: arg.ty,
+                        offset: 0,
+                        dynamic: Vec::new(),
+                    })
                 } else {
-                    Cx::Val(val)
+                    Cx::Val(arg)
                 }
             }
             Expression::GlobalVariable(global) => match self.globals.get(&global) {
@@ -1051,6 +1100,9 @@ impl<'m> Compiler<'m> {
                 };
                 Cx::Val(Val { ty, regs })
             }
+            Expression::ImageSample { .. }
+            | Expression::ImageLoad { .. }
+            | Expression::ImageQuery { .. } => Cx::Val(self.image(fx, handle, out)?),
             Expression::CallResult(_) => {
                 return Err(LaneError::unsupported("a call result read before its call"));
             }
@@ -1058,6 +1110,161 @@ impl<'m> Compiler<'m> {
                 return Err(LaneError::unsupported(format!("the expression {other:?}")));
             }
         })
+    }
+
+    /// The handle register of a texture or sampler operand.
+    fn handle(&mut self, fx: &mut FnCx<'m>, handle: Handle<Expression>) -> Result<Reg, LaneError> {
+        match self.operand(fx, handle)? {
+            Cx::Val(Val {
+                ty: Ty::Opaque,
+                regs,
+            }) => Ok(regs[0]),
+            Cx::Opaque => Err(LaneError::unsupported(
+                "a texture or sampler global; the host binds them as arguments",
+            )),
+            other => Err(LaneError::unsupported(format!(
+                "{other:?} used as a texture or sampler"
+            ))),
+        }
+    }
+
+    /// A 2D coordinate operand's two registers.
+    fn coordinate(
+        &mut self,
+        fx: &mut FnCx<'m>,
+        handle: Handle<Expression>,
+    ) -> Result<(Kind, [Reg; 2]), LaneError> {
+        let value = self.value(fx, handle)?;
+        match value.ty {
+            Ty::Vector(2, kind) => Ok((kind, [value.regs[0], value.regs[1]])),
+            ty => Err(LaneError::unsupported(format!(
+                "a texture coordinate of {ty:?}; only 2D textures are bound"
+            ))),
+        }
+    }
+
+    /// Requires a load or query level to be the constant 0: the host
+    /// binds single-level images.
+    fn level_zero(
+        &mut self,
+        fx: &mut FnCx<'m>,
+        level: Option<Handle<Expression>>,
+    ) -> Result<(), LaneError> {
+        let Some(level) = level else {
+            return Ok(());
+        };
+        let reg = self.value(fx, level)?.regs[0];
+        if self.known(reg) == Some(0) {
+            Ok(())
+        } else {
+            Err(LaneError::unsupported(
+                "a texture level other than the constant 0",
+            ))
+        }
+    }
+
+    /// `textureSample*`, `textureLoad` and `textureDimensions`, as host
+    /// image ops. The host binds single-level 2D images, so every sample
+    /// level, bias or gradient reads level 0, as WGSL clamps it there.
+    fn image(
+        &mut self,
+        fx: &mut FnCx<'m>,
+        handle: Handle<Expression>,
+        out: &mut Vec<Node>,
+    ) -> Result<Val, LaneError> {
+        let ty = self.result_ty(fx, handle)?;
+        let texel = matches!(ty, Ty::Vector(4, _));
+        match fx.function.expressions[handle] {
+            Expression::ImageSample { .. } | Expression::ImageLoad { .. } if !texel => {
+                Err(LaneError::unsupported("a depth texture"))
+            }
+            Expression::ImageSample {
+                image,
+                sampler,
+                gather,
+                coordinate,
+                array_index,
+                offset,
+                level: _,
+                depth_ref,
+                clamp_to_edge: _,
+            } => {
+                if gather.is_some() || array_index.is_some() || depth_ref.is_some() {
+                    return Err(LaneError::unsupported(
+                        "a gather, arrayed or depth-compare sample",
+                    ));
+                }
+                let image = self.handle(fx, image)?;
+                let sampler = self.handle(fx, sampler)?;
+                let (_, uv) = self.coordinate(fx, coordinate)?;
+                let offset = match offset {
+                    Some(offset) => {
+                        let (_, regs) = self.coordinate(fx, offset)?;
+                        let known = |reg| {
+                            self.known(reg)
+                                .map(u32::cast_signed)
+                                .ok_or_else(|| LaneError::unsupported("a non-constant offset"))
+                        };
+                        [known(regs[0])?, known(regs[1])?]
+                    }
+                    None => [0, 0],
+                };
+                let dst = self.alloc(4);
+                Self::emit(
+                    out,
+                    Op::Sample {
+                        image,
+                        sampler,
+                        uv,
+                        offset,
+                        dst: [dst[0], dst[1], dst[2], dst[3]],
+                    },
+                );
+                Ok(Val { ty, regs: dst })
+            }
+            Expression::ImageLoad {
+                image,
+                coordinate,
+                array_index,
+                sample,
+                level,
+            } => {
+                if array_index.is_some() || sample.is_some() {
+                    return Err(LaneError::unsupported("an arrayed or multisampled load"));
+                }
+                self.level_zero(fx, level)?;
+                let image = self.handle(fx, image)?;
+                let (kind, texel) = self.coordinate(fx, coordinate)?;
+                let dst = self.alloc(4);
+                Self::emit(
+                    out,
+                    Op::Load {
+                        image,
+                        texel,
+                        signed: kind == Kind::Sint,
+                        dst: [dst[0], dst[1], dst[2], dst[3]],
+                    },
+                );
+                Ok(Val { ty, regs: dst })
+            }
+            Expression::ImageQuery {
+                image,
+                query: naga::ImageQuery::Size { level },
+            } => {
+                self.level_zero(fx, level)?;
+                let image = self.handle(fx, image)?;
+                let dst = self.alloc(2);
+                Self::emit(
+                    out,
+                    Op::Size {
+                        image,
+                        dst: [dst[0], dst[1]],
+                    },
+                );
+                Ok(Val { ty, regs: dst })
+            }
+            ref other => Err(LaneError::unsupported(format!("the image op {other:?}"))),
+        }
     }
 
     fn binary(

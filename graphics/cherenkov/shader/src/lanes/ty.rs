@@ -36,7 +36,8 @@ pub enum Ty {
     Array(Box<Self>, u32),
     /// Members laid out in declaration order.
     Struct(Vec<Self>),
-    /// A texture or sampler: no slots.
+    /// A texture or sampler: one slot holding the handle the host bound
+    /// to it, the same in every lane.
     Opaque,
 }
 
@@ -91,12 +92,11 @@ impl Ty {
     /// The number of slots.
     pub fn slots(&self) -> usize {
         match self {
-            Self::Scalar(_) => 1,
+            Self::Scalar(_) | Self::Opaque => 1,
             Self::Vector(n, _) => *n as usize,
             Self::Matrix { columns, rows } => (*columns * *rows) as usize,
             Self::Array(element, count) => element.slots() * *count as usize,
             Self::Struct(members) => members.iter().map(Self::slots).sum(),
-            Self::Opaque => 0,
         }
     }
 

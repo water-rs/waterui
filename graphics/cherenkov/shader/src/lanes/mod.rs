@@ -20,7 +20,9 @@
 //! an [`Interface`] names go to [`Host::call`] instead of their WGSL bodies,
 //! and the private globals it lists are inputs the host writes, not memory
 //! the program resets. Uniform globals are bound by writing their
-//! registers ([`Program::global`]). Every construct the executor does not
+//! registers ([`Program::global`]). A texture or sampler argument holds a
+//! handle the host writes, and samples, loads and size queries of it go
+//! to [`Host::image`]. Every construct the executor does not
 //! model is a [`LaneError::Unsupported`] at compile time, never a wrong
 //! result at run time.
 //!
@@ -58,13 +60,60 @@ pub struct Interface<'a> {
     pub inputs: &'a [&'a str],
 }
 
-/// The functions an [`Interface`] names.
+/// The functions an [`Interface`] names, and the images the function's
+/// texture and sampler arguments bind.
 pub trait Host {
     /// Calls host function `function` (its index in
     /// [`Interface::functions`]) for the lanes of `active`: `args` are the
     /// flattened arguments, `out` the flattened result to fill. Lanes
     /// outside `active` may hold any values and are ignored.
     fn call(&mut self, function: usize, args: &[Lanes], out: &mut [Lanes], active: &Mask);
+
+    /// Runs `op` for the lanes of `active`, filling `out`: the texel's
+    /// four components for a sample or a load, the width and height as
+    /// `u32` bits in `out[0]` and `out[1]` for a size.
+    ///
+    /// Images and samplers are the handles the caller wrote into the
+    /// function's texture and sampler argument registers. Images are
+    /// single-level and 2D: every sample level reads level 0, as WGSL
+    /// clamps it to an image's only level. A program reaches this only
+    /// through such arguments; a function without any never calls it.
+    fn image(&mut self, op: ImageOp<'_>, out: &mut [Lanes; 4], active: &Mask);
+}
+
+/// One image access of a [`Host::image`] call.
+#[derive(Clone, Copy, Debug)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "hosts serve each access variant by variant; a new access must fail their build instead of falling into a wildcard arm"
+)]
+pub enum ImageOp<'a> {
+    /// `textureSample*`: `image` through `sampler` at the normalized
+    /// coordinates `uv`, displaced by `offset` texels.
+    Sample {
+        /// The image handle.
+        image: u32,
+        /// The sampler handle.
+        sampler: u32,
+        /// The normalized `u` and `v` of each lane.
+        uv: [&'a Lanes; 2],
+        /// The constant texel offset.
+        offset: [i32; 2],
+    },
+    /// `textureLoad`: the texel of `image` at the integer coordinates
+    /// `texel`. A coordinate outside the image reads what WGSL's bounds
+    /// rules allow: zero, or any texel of the image.
+    Load {
+        /// The image handle.
+        image: u32,
+        /// The texel column and row of each lane.
+        texel: [&'a [i32; LANES]; 2],
+    },
+    /// `textureDimensions`: the image's size in texels.
+    Size {
+        /// The image handle.
+        image: u32,
+    },
 }
 
 /// Why a function could not be compiled.
@@ -230,5 +279,9 @@ struct NoHost;
 impl Host for NoHost {
     fn call(&mut self, _: usize, _: &[Lanes], _: &mut [Lanes], _: &Mask) {
         unreachable!("the constant prologue calls no host function")
+    }
+
+    fn image(&mut self, _: ImageOp<'_>, _: &mut [Lanes; 4], _: &Mask) {
+        unreachable!("the constant prologue reads no image")
     }
 }

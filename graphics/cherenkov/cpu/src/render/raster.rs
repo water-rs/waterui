@@ -1106,6 +1106,17 @@ impl cherenkov_shader::lanes::Host for BackdropHost<'_> {
             }
         }
     }
+
+    fn image(
+        &mut self,
+        op: cherenkov_shader::lanes::ImageOp<'_>,
+        _: &mut [cherenkov_shader::lanes::Lanes; 4],
+        _: &cherenkov_shader::lanes::Mask,
+    ) {
+        unreachable!(
+            "a backdrop effect's entry takes a pixel and its parameters, no texture: {op:?}"
+        );
+    }
 }
 
 /// The distance, normal and union coverage of pixel `(px, py)`, shared

@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use cherenkov::{BackdropShaderSource, RenderError, ResourceError, ShaderSource};
-use cherenkov_shader::lanes::{Host, Interface, LANES, Lanes, Mask, Program, Reg};
+use cherenkov_shader::lanes::{Host, ImageOp, Interface, LANES, Lanes, Mask, Program, Reg};
 use cherenkov_shader::naga;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -129,6 +129,10 @@ struct NoCalls;
 impl Host for NoCalls {
     fn call(&mut self, function: usize, _: &[Lanes], _: &mut [Lanes], _: &Mask) {
         unreachable!("a shader paint's interface names no host function, got {function}");
+    }
+
+    fn image(&mut self, op: ImageOp<'_>, _: &mut [Lanes; 4], _: &Mask) {
+        unreachable!("a shader paint's entry takes its varyings, no texture: {op:?}");
     }
 }
 

@@ -6,7 +6,7 @@
 //! op computed for it. Only state that outlives an expression — locals,
 //! private globals, results — is written under the mask.
 
-use super::{Host, LANES, Lanes, Mask, Reg};
+use super::{Host, ImageOp, LANES, Lanes, Mask, Reg};
 
 /// A one-operand float function.
 #[derive(Clone, Copy, Debug)]
@@ -236,6 +236,27 @@ pub enum Op {
         function: u32,
         args: Box<[Reg]>,
         outs: Box<[Reg]>,
+    },
+    /// A texture sample through the host ([`ImageOp::Sample`]).
+    Sample {
+        image: Reg,
+        sampler: Reg,
+        uv: [Reg; 2],
+        offset: [i32; 2],
+        dst: [Reg; 4],
+    },
+    /// A texel load through the host ([`ImageOp::Load`]); `signed` when
+    /// the coordinate is `i32`.
+    Load {
+        image: Reg,
+        texel: [Reg; 2],
+        signed: bool,
+        dst: [Reg; 4],
+    },
+    /// A texture's size through the host ([`ImageOp::Size`]), as `u32`.
+    Size {
+        image: Reg,
+        dst: [Reg; 2],
     },
 }
 
@@ -773,8 +794,81 @@ impl Op {
                     st.regs[reg as usize] = *value;
                 }
             }
+            Self::Sample {
+                image,
+                sampler,
+                uv,
+                offset,
+                dst,
+            } => {
+                let mut texel = [[0.0; LANES]; 4];
+                host.image(
+                    ImageOp::Sample {
+                        image: handle(&st.regs, image),
+                        sampler: handle(&st.regs, sampler),
+                        uv: [&st.regs[uv[0] as usize], &st.regs[uv[1] as usize]],
+                        offset,
+                    },
+                    &mut texel,
+                    mask,
+                );
+                for (&reg, value) in dst.iter().zip(&texel) {
+                    st.regs[reg as usize] = *value;
+                }
+            }
+            Self::Load {
+                image,
+                texel,
+                signed,
+                dst,
+            } => {
+                // An unsigned coordinate past `i32::MAX` is out of bounds
+                // either way.
+                let coordinate = |reg: Reg| -> [i32; LANES] {
+                    let lanes = &st.regs[reg as usize];
+                    std::array::from_fn(|l| {
+                        if signed {
+                            s(lanes[l])
+                        } else {
+                            i32::try_from(u(lanes[l])).unwrap_or(i32::MAX)
+                        }
+                    })
+                };
+                let (x, y) = (coordinate(texel[0]), coordinate(texel[1]));
+                let mut value = [[0.0; LANES]; 4];
+                host.image(
+                    ImageOp::Load {
+                        image: handle(&st.regs, image),
+                        texel: [&x, &y],
+                    },
+                    &mut value,
+                    mask,
+                );
+                for (&reg, lanes) in dst.iter().zip(&value) {
+                    st.regs[reg as usize] = *lanes;
+                }
+            }
+            Self::Size { image, dst } => {
+                let mut size = [[0.0; LANES]; 4];
+                host.image(
+                    ImageOp::Size {
+                        image: handle(&st.regs, image),
+                    },
+                    &mut size,
+                    mask,
+                );
+                for (&reg, lanes) in dst.iter().zip(&size) {
+                    st.regs[reg as usize] = *lanes;
+                }
+            }
         }
     }
+}
+
+/// The handle a texture or sampler register holds. Every op writes all
+/// lanes and a handle comes from one argument, so lane 0 holds it.
+const fn handle(regs: &[Lanes], reg: Reg) -> u32 {
+    u(regs[reg as usize][0])
 }
 
 /// A compiled program's functions; `functions[0]` is the entry.

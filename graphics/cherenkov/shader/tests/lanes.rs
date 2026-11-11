@@ -2,7 +2,7 @@
 
 #![cfg(feature = "lanes")]
 
-use cherenkov_shader::lanes::{Host, Interface, LANES, LaneError, Lanes, Mask, Program};
+use cherenkov_shader::lanes::{Host, ImageOp, Interface, LANES, LaneError, Lanes, Mask, Program};
 
 /// No host functions.
 struct None_;
@@ -10,6 +10,10 @@ struct None_;
 impl Host for None_ {
     fn call(&mut self, function: usize, _: &[Lanes], _: &mut [Lanes], _: &Mask) {
         panic!("unexpected host call {function}");
+    }
+
+    fn image(&mut self, op: ImageOp<'_>, _: &mut [Lanes; 4], _: &Mask) {
+        panic!("unexpected image op {op:?}");
     }
 }
 
@@ -342,6 +346,138 @@ impl Host for Doubler {
             }
         }
     }
+
+    fn image(&mut self, op: ImageOp<'_>, _: &mut [Lanes; 4], _: &Mask) {
+        panic!("unexpected image op {op:?}");
+    }
+}
+
+/// A host binding one 4×3 image, handle 7, whose texel `(x, y)` is
+/// `(x, y, 10x + y, 1)`, and one sampler, handle 2, that returns the
+/// coordinate it was given.
+struct Images;
+
+impl Host for Images {
+    fn call(&mut self, function: usize, _: &[Lanes], _: &mut [Lanes], _: &Mask) {
+        panic!("unexpected host call {function}");
+    }
+
+    #[expect(clippy::cast_precision_loss, reason = "texel coordinates are small")]
+    fn image(&mut self, op: ImageOp<'_>, out: &mut [Lanes; 4], active: &Mask) {
+        for l in (0..LANES).filter(|&l| active[l]) {
+            match op {
+                ImageOp::Sample {
+                    image,
+                    sampler,
+                    uv,
+                    offset,
+                } => {
+                    assert_eq!((image, sampler), (7, 2));
+                    out[0][l] = uv[0][l];
+                    out[1][l] = uv[1][l];
+                    out[2][l] = offset[0] as f32;
+                    out[3][l] = offset[1] as f32;
+                }
+                ImageOp::Load { image, texel } => {
+                    assert_eq!(image, 7);
+                    let (x, y) = (texel[0][l].clamp(0, 3), texel[1][l].clamp(0, 2));
+                    out[0][l] = x as f32;
+                    out[1][l] = y as f32;
+                    out[2][l] = (10 * x + y) as f32;
+                    out[3][l] = 1.0;
+                }
+                ImageOp::Size { image } => {
+                    assert_eq!(image, 7);
+                    out[0][l] = f32::from_bits(4);
+                    out[1][l] = f32::from_bits(3);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[expect(clippy::cast_precision_loss, reason = "lane indices are small")]
+fn image_ops_reach_the_host_through_helpers() {
+    let source = "
+        fn texel(t: texture_2d<f32>, p: vec2<i32>) -> vec4<f32> {
+            return textureLoad(t, p, 0);
+        }
+        fn f(t: texture_2d<f32>, s: sampler, uv: vec2<f32>) -> vec4<f32> {
+            let size = vec2<f32>(textureDimensions(t, 0));
+            let sampled = textureSampleLevel(t, s, uv, 0.0, vec2<i32>(1, -2));
+            let loaded = texel(t, vec2<i32>(uv * size));
+            return vec4<f32>(sampled.xy * size, sampled.z + sampled.w * 10.0, loaded.z);
+        }";
+    let program = Program::wgsl(source, "f", &Interface::default()).expect("compiles");
+    let mut regs = program.registers();
+    regs.splat(program.argument(0)[0], f32::from_bits(7));
+    regs.splat(program.argument(1)[0], f32::from_bits(2));
+    let u: Lanes = std::array::from_fn(|l| (l % 4) as f32 / 4.0 + 0.1);
+    let v: Lanes = std::array::from_fn(|l| (l / 8) as f32 / 3.0 + 0.1);
+    *regs.get_mut(program.argument(2)[0]) = u;
+    *regs.get_mut(program.argument(2)[1]) = v;
+    program.run(&mut regs, [true; LANES], &mut Images);
+    let out: Vec<Lanes> = program.result().iter().map(|&r| *regs.get(r)).collect();
+    assert_lanes(&out[0], |l| u[l] * 4.0, "sampled u in texels");
+    assert_lanes(&out[1], |l| v[l] * 3.0, "sampled v in texels");
+    assert_lanes(&out[2], |_| -19.0, "the constant offset");
+    assert_lanes(
+        &out[3],
+        |l| (10 * (l % 4) + (l / 8).min(2)) as f32,
+        "the loaded texel",
+    );
+}
+
+#[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the absolute lane value is small"
+)]
+#[expect(clippy::suboptimal_flops, reason = "mirrors the shader's expression")]
+fn pointer_arguments_write_back_for_the_lanes_that_call() {
+    let source = "
+        fn bump(p: ptr<function, vec2<f32>>, k: f32) {
+            (*p).x += k;
+            *p = *p * 2.0;
+        }
+        fn add(p: ptr<function, f32>, k: f32) { *p += k; }
+        fn f(x: f32) -> vec3<f32> {
+            var v = vec2<f32>(x, 1.0);
+            if x > 0.0 { bump(&v, 3.0); }
+            var a = array<f32, 3>(10.0, 20.0, 30.0);
+            add(&a[u32(abs(x)) % 3u], x);
+            return vec3<f32>(v, a[0] + 2.0 * a[1] + 4.0 * a[2]);
+        }";
+    let x = x_lanes();
+    let out = run(source, "f", &[x]);
+    assert_lanes(
+        &out[0],
+        |l| if x[l] > 0.0 { (x[l] + 3.0) * 2.0 } else { x[l] },
+        "pointee x",
+    );
+    assert_lanes(&out[1], |l| if x[l] > 0.0 { 2.0 } else { 1.0 }, "pointee y");
+    assert_lanes(
+        &out[2],
+        |l| {
+            let mut a = [10.0, 20.0, 30.0];
+            a[(x[l].abs() as usize) % 3] += x[l];
+            a[0] + 2.0 * a[1] + 4.0 * a[2]
+        },
+        "an element pointer",
+    );
+}
+
+#[test]
+fn a_texture_global_is_unsupported() {
+    let source = "
+        @group(0) @binding(0) var t: texture_2d<f32>;
+        fn f(p: vec2<i32>) -> vec4<f32> { return textureLoad(t, p, 0); }";
+    assert!(matches!(
+        Program::wgsl(source, "f", &Interface::default()),
+        Err(LaneError::Unsupported(_))
+    ));
 }
 
 #[test]
