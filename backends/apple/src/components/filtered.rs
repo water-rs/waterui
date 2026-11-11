@@ -2324,7 +2324,7 @@ fn effects_from_body(
                 if body.downcast::<waterui_core::Native<()>>().is_ok() {
                     return Some(effects);
                 }
-                crate::transition::transition_violation!(
+                waterui::contract_violation!(
                     "waterui-apple: a `captures_content` transition's body must expand to a \
                      `FilteredView` chain over the empty content"
                 );
