@@ -49,6 +49,8 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
 
 use rustc_hash::{FxHashMap, FxHashSet};
+#[cfg(any(target_vendor = "apple", target_os = "android"))]
+use waterui_contract::contract_violation;
 use wgpu::util::DeviceExt;
 
 use crate::interop::ExternalFrame;
@@ -1403,6 +1405,8 @@ pub struct GpuRenderer {
     /// add to this thread. The add skips a `ProducerId` found here.
     pending_retire: FxHashSet<ProducerId>,
     fonts: FxHashMap<u64, FontData>,
+    /// Registered text layouts, expanded to glyph runs in lowering.
+    text_layouts: cherenkov::TextLayouts,
     /// Registered images.
     images: FxHashMap<u64, GpuImage>,
     bitmaps: FxHashMap<BitmapKey, GpuBitmap>,
@@ -1495,6 +1499,8 @@ impl std::fmt::Debug for GpuRenderer {
 struct GlyphResources<'a> {
     atlas: &'a Atlas,
     fonts: &'a FxHashMap<u64, FontData>,
+    /// The registered text layouts a `Command::Text` expands to.
+    text: &'a cherenkov::TextLayouts,
     images: &'a FxHashMap<u64, GpuImage>,
     bitmaps: &'a FxHashMap<BitmapKey, GpuBitmap>,
     /// The producers' current frames by id — every binding samples the
@@ -3135,6 +3141,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             producers: FxHashMap::default(),
             pending_retire: FxHashSet::default(),
             fonts: FxHashMap::default(),
+            text_layouts: cherenkov::TextLayouts::default(),
             images: FxHashMap::default(),
             bitmaps: FxHashMap::default(),
             images_gen: 0,
@@ -3491,6 +3498,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         producers: FxHashMap::default(),
         pending_retire: FxHashSet::default(),
         fonts: FxHashMap::default(),
+        text_layouts: cherenkov::TextLayouts::default(),
         images: FxHashMap::default(),
         bitmaps: FxHashMap::default(),
         images_gen: 0,
@@ -3786,13 +3794,17 @@ impl Renderer for GpuRenderer {
     /// the reply hands it back before the next frame's acquire (#2261).
     /// The marker is demanded only when the frame carried a commit: a
     /// caller off-main that awaits a frame covering an Apple window
-    /// surface fails here, while frames with nothing to commit apply to
-    /// nothing.
+    /// surface breaks the contract here and the frame is not presented,
+    /// while frames with nothing to commit apply to nothing.
     #[cfg(all(not(target_arch = "wasm32"), target_vendor = "apple"))]
     fn apply_frame_commit(commit: Self::FrameCommit) {
         for commit in commit.into_iter().flatten() {
-            let mtm = objc2::MainThreadMarker::new()
-                .expect("an Apple window surface's frame must be awaited on the main thread");
+            let Some(mtm) = objc2::MainThreadMarker::new() else {
+                contract_violation!(
+                    "an Apple window surface's frame must be awaited on the main thread; the commit is dropped and its drawables are released unpresented"
+                );
+                continue;
+            };
             commit.apply(mtm);
         }
     }
@@ -3825,7 +3837,7 @@ impl Renderer for GpuRenderer {
                 // Only Apple windows complete work after a render: a
                 // promoted plane's attach on the main queue.
                 #[cfg(target_vendor = "apple")]
-                let surface = self.open_window(id, window, size, waker.clone());
+                let surface = self.open_window(id, window, size, waker.clone())?;
                 #[cfg(not(target_vendor = "apple"))]
                 let surface = self.open_window(id, window, size)?;
                 (surface, None, refresh, true)
@@ -3979,18 +3991,17 @@ impl Renderer for GpuRenderer {
     /// swapchain is the band's presentation surface, which the surface's
     /// plane system fills with that region's engine composition.
     ///
-    /// # Panics
-    /// When the target is not a window, when the surface presents through
-    /// no `SurfaceControl` plane system, or when the band's swapchain
-    /// cannot be created.
+    /// # Contract
+    /// A target that is not a window, or a surface that presents through no
+    /// `SurfaceControl` plane system, is a contract violation; the request is
+    /// ignored. A band whose swapchain cannot be created is logged and
+    /// cleared, so its content is not shown.
     #[cfg(target_os = "android")]
     fn set_band(&mut self, id: SurfaceId, window_id: u64, target: Option<Self::Target>) {
-        let band = target.map(|target| {
-            let crate::GpuTarget::Window(window) = target else {
-                panic!("surface {id:?}: a band presents through a window target");
-            };
-            surface_control::planes::Band::new(
-                present::WindowSurface::new(
+        let band = match target {
+            None => None,
+            Some(crate::GpuTarget::Window(window)) => {
+                match present::WindowSurface::new(
                     &self.instance,
                     &self.adapter,
                     &self.device,
@@ -3999,15 +4010,37 @@ impl Renderer for GpuRenderer {
                     window.output,
                     None,
                 )
-                .unwrap_or_else(|error| {
-                    panic!("surface {id:?}: host window {window_id}'s band swapchain: {error}")
-                }),
-            )
-        });
-        self.planes
-            .get_mut(&id)
-            .unwrap_or_else(|| panic!("surface {id:?} has no plane system to present bands"))
-            .set_band(window_id, band);
+                .map_err(|error| error.to_string())
+                .and_then(|swapchain| {
+                    surface_control::planes::Band::new(swapchain).map_err(|format| {
+                        format!(
+                            "a band's RGBA_8888 reader cannot hold the swapchain's {format:?} images"
+                        )
+                    })
+                }) {
+                    Ok(band) => Some(band),
+                    Err(error) => {
+                        tracing::error!(
+                            "surface {id:?}: host window {window_id}'s band swapchain: {error}; the band is cleared and its content is not shown"
+                        );
+                        None
+                    }
+                }
+            }
+            Some(_) => {
+                contract_violation!(
+                    "surface {id:?}: a band presents through a window target; the request is ignored"
+                );
+                return;
+            }
+        };
+        let Some(planes) = self.planes.get_mut(&id) else {
+            contract_violation!(
+                "surface {id:?} has no plane system to present bands; the request is ignored"
+            );
+            return;
+        };
+        planes.set_band(window_id, band);
     }
 
     fn destroy_surface(&mut self, id: SurfaceId) {
@@ -4111,6 +4144,14 @@ impl Renderer for GpuRenderer {
 
     fn add_font(&mut self, id: FontId, font: PreparedFont) {
         self.fonts.insert(id.raw(), font.into());
+    }
+
+    fn add_text_layout(&mut self, id: cherenkov::TextLayoutId, layout: cherenkov::TextLayoutData) {
+        self.text_layouts.add(id, layout);
+    }
+
+    fn remove_text_layout(&mut self, id: cherenkov::TextLayoutId) {
+        self.text_layouts.remove(id);
     }
 
     fn remove_font(&mut self, id: FontId) {
@@ -4241,7 +4282,7 @@ impl Renderer for GpuRenderer {
             state
                 .layers
                 .values()
-                .any(|content| content.references(resource))
+                .any(|content| content.references(resource, &self.text_layouts))
         })
     }
 
@@ -5911,13 +5952,13 @@ impl GpuRenderer {
         window: crate::WindowTarget,
         size: (u32, u32),
         waker: cherenkov::CompletionWaker,
-    ) -> Option<present::WindowSurface> {
+    ) -> Result<Option<present::WindowSurface>, SurfaceError> {
         let system = planes::apple::LayerPlanes::new(
             &self.instance,
             &self.adapter,
             &self.device,
             &self.queue,
-            window.parent,
+            window.parent?,
             size,
             window.output,
             window.probe,
@@ -5931,7 +5972,7 @@ impl GpuRenderer {
                 self.pipeline_cache.clone(),
             )
         });
-        None
+        Ok(None)
     }
 
     /// Opens a window target: one swapchain the surface's target is blitted
@@ -7033,6 +7074,7 @@ impl GpuRenderer {
         let mut results: Vec<Result<Lowered, RenderError>> = if pending.len() > 1 {
             let (atlas, images, bitmaps, device) =
                 (&self.atlas, &self.images, &self.bitmaps, &self.device);
+            let text = &self.text_layouts;
             // `FontData`'s COLR cache is a `RefCell` — !Sync — so
             // each worker moves in its own snapshot built here.
             let snapshots: Vec<FxHashMap<u64, FontData>> = pending
@@ -7061,6 +7103,7 @@ impl GpuRenderer {
                                 GlyphResources {
                                     atlas,
                                     fonts: &fonts,
+                                    text,
                                     images,
                                     bitmaps,
                                     producers,
@@ -7104,6 +7147,7 @@ impl GpuRenderer {
                         GlyphResources {
                             atlas: &self.atlas,
                             fonts: &self.fonts,
+                            text: &self.text_layouts,
                             images: &self.images,
                             bitmaps: &self.bitmaps,
                             producers,
@@ -7164,6 +7208,7 @@ impl GpuRenderer {
                     GlyphResources {
                         atlas: &self.atlas,
                         fonts: &self.fonts,
+                        text: &self.text_layouts,
                         images: &self.images,
                         bitmaps: &self.bitmaps,
                         producers,
@@ -7225,11 +7270,14 @@ impl GpuRenderer {
             for content in surf.layers.values_mut() {
                 lowered.commands += content
                     .retained
-                    .prepare(&mut prepared::Lowerer {
-                        fonts: &self.fonts,
-                        images: &self.images,
-                        pending: &mut lowered.pending,
-                    })?
+                    .prepare(
+                        &mut prepared::Lowerer {
+                            fonts: &self.fonts,
+                            images: &self.images,
+                            pending: &mut lowered.pending,
+                        },
+                        &self.text_layouts,
+                    )?
                     .commands;
             }
             if lowered.commands != 0 {
@@ -7587,50 +7635,52 @@ impl GpuRenderer {
             let _ = lowering.preparation.insert(preparation);
             lowering.coverage_route = coverage_options.1;
             lowering.pending = std::mem::take(&mut lowered.pending);
-            let result = lowering.prepare(&mut layers, &glyphs).and_then(|pictures| {
-                for placement in &surf.plan.planes {
-                    if let Some(entry) = surf.static_layers.get(&placement.layer)
-                        && entry.capture.as_ref().is_none_or(|capture| capture.dirty)
-                    {
-                        lowering.run_plane(
-                            frame.tree,
-                            &mut layers,
-                            &glyphs,
-                            groups,
-                            placement.layer,
-                            entry.domain.expect("a static candidate has a domain"),
-                        )?;
+            let result = lowering
+                .prepare(&mut layers, &glyphs, resources.text)
+                .and_then(|pictures| {
+                    for placement in &surf.plan.planes {
+                        if let Some(entry) = surf.static_layers.get(&placement.layer)
+                            && entry.capture.as_ref().is_none_or(|capture| capture.dirty)
+                        {
+                            lowering.run_plane(
+                                frame.tree,
+                                &mut layers,
+                                &glyphs,
+                                groups,
+                                placement.layer,
+                                entry.domain.expect("a static candidate has a domain"),
+                            )?;
+                        }
                     }
-                }
-                let placed = Self::lower_projective(
-                    &mut lowering,
-                    frame,
-                    &mut layers,
-                    (&glyphs, groups),
-                    (&surf.projective, inputs, surf.size),
-                    lowered,
-                )?;
-                if pictures {
-                    return Self::run_pictures(
+                    let placed = Self::lower_projective(
                         &mut lowering,
                         frame,
                         &mut layers,
-                        (&glyphs, groups, resources.device),
-                        (&surf.projective, inputs, &surf.plan),
-                        placed,
+                        (&glyphs, groups),
+                        (&surf.projective, inputs, surf.size),
                         lowered,
-                    );
-                }
-                lowering.run(
-                    frame.tree,
-                    &mut layers,
-                    frame.clear,
-                    &glyphs,
-                    groups,
-                    placed,
-                    &surf.plan,
-                )
-            });
+                    )?;
+                    if pictures {
+                        return Self::run_pictures(
+                            &mut lowering,
+                            frame,
+                            &mut layers,
+                            (&glyphs, groups, resources.device),
+                            (&surf.projective, inputs, &surf.plan),
+                            placed,
+                            lowered,
+                        );
+                    }
+                    lowering.run(
+                        frame.tree,
+                        &mut layers,
+                        frame.clear,
+                        &glyphs,
+                        groups,
+                        placed,
+                        &surf.plan,
+                    )
+                });
             lowered.commands += lowering.commands_lowered;
             lowered.layers = lowering.layers_composed;
             lowered.glyphs = lowering.glyphs_rasterized();
@@ -12313,6 +12363,38 @@ fn notify_texture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A commit that records whether it was applied.
+    #[cfg(all(not(target_arch = "wasm32"), target_vendor = "apple"))]
+    struct Applied(Arc<std::sync::atomic::AtomicBool>);
+
+    #[cfg(all(not(target_arch = "wasm32"), target_vendor = "apple"))]
+    impl planes::apple::CommitApply for Applied {
+        fn apply(self: Box<Self>, _mtm: objc2::MainThreadMarker) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// A frame awaited off the main thread drops its commit unapplied.
+    #[cfg(all(not(target_arch = "wasm32"), target_vendor = "apple"))]
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(
+            expected = "an Apple window surface's frame must be awaited on the main thread"
+        )
+    )]
+    fn a_frame_commit_off_the_main_thread_is_dropped() {
+        let applied = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let commit: FrameCommits = vec![None, Some(Box::new(Applied(applied.clone())))];
+        // A spawned thread is never the main thread.
+        if let Err(panic) =
+            std::thread::spawn(move || GpuRenderer::apply_frame_commit(commit)).join()
+        {
+            std::panic::resume_unwind(panic);
+        }
+        assert!(!applied.load(Ordering::Relaxed), "the commit is dropped");
+    }
 
     /// Drives the window decision with scripted poll outcomes and a
     /// scripted retirement frontier — no device needed.

@@ -20,7 +20,9 @@ use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::effects::{AppliedFilterMetrics, FilteredRuntime};
 use crate::renderer::mount::backdrop::{MemberBind, MemberJoin};
 use crate::renderer::mount::layers::{LayerVisitor, NodeLayers, visit};
-use crate::renderer::mount::target::{LayerTarget, MaterialTerms, attach_material_shaders};
+use crate::renderer::mount::target::{
+    LayerTarget, MaterialTerms, attach_material_shaders, install_gpu_text,
+};
 use crate::renderer::mount::{Mount, MountStats};
 use crate::renderer::recording::{Recording, SceneResources};
 use crate::renderer::{HydrolysisRenderer, ProducerWake};
@@ -132,6 +134,10 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
 
     fn resources(host: &MirrorHost) -> &Rc<SceneResources> {
         &host.resources
+    }
+
+    fn install_text(host: &MirrorHost, text: &Arc<crate::text::TextService<E>>) {
+        install_gpu_text(&host.resources, &host.engine, text);
     }
 
     fn mount_gpu_content(

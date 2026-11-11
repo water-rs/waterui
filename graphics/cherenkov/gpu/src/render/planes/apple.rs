@@ -685,25 +685,38 @@ pub struct Parent {
 impl Parent {
     /// Captures the view's layer on main.
     ///
-    /// # Panics
-    /// Off main, or if the handle does not name a live Apple view.
-    pub fn capture(handle: Box<dyn wgpu::WindowHandle>) -> Self {
+    /// # Errors
+    /// [`SurfaceError::UnsupportedTarget`] off main, or if the handle is
+    /// unavailable or does not name an Apple view.
+    pub fn capture(handle: Box<dyn wgpu::WindowHandle>) -> Result<Self, SurfaceError> {
         use wgpu::rwh::{HasWindowHandle as _, RawWindowHandle};
-        let mtm = MainThreadMarker::new().expect("WindowTarget::new must run on main");
+        let unsupported = |why: String| SurfaceError::UnsupportedTarget(why);
+        let Some(mtm) = MainThreadMarker::new() else {
+            return Err(unsupported(
+                "a window target's view is captured on the main thread".into(),
+            ));
+        };
+        let raw = handle
+            .window_handle()
+            .map_err(|error| unsupported(format!("the window handle is unavailable: {error}")))?
+            .as_raw();
         #[cfg(target_os = "macos")]
-        let (layer, host_view): (Retained<CALayer>, Retained<NSView>) =
-            match handle.window_handle().expect("window handle").as_raw() {
-                RawWindowHandle::AppKit(view) => {
-                    // SAFETY: the window handle guarantees a live view; we are on main.
-                    let view: &objc2_app_kit::NSView = unsafe { view.ns_view.cast().as_ref() };
-                    view.setWantsLayer(true);
-                    (
-                        view.layer().expect("layer-backed view"),
-                        Retained::from(view),
-                    )
-                }
-                other => panic!("expected an AppKit view, found {other:?}"),
-            };
+        let (layer, host_view): (Retained<CALayer>, Retained<NSView>) = match raw {
+            RawWindowHandle::AppKit(view) => {
+                // SAFETY: the window handle guarantees a live view; we are on main.
+                let view: &objc2_app_kit::NSView = unsafe { view.ns_view.cast().as_ref() };
+                view.setWantsLayer(true);
+                (
+                    view.layer().expect("layer-backed view"),
+                    Retained::from(view),
+                )
+            }
+            other => {
+                return Err(unsupported(format!(
+                    "expected an AppKit view, found {other:?}"
+                )));
+            }
+        };
         // The engine-owned stand-in for the host's layer: inside the
         // engine's bottommost subview — a layer-hosting view — pending
         // display layers park in the committed hierarchy `readyForDisplay`
@@ -729,13 +742,17 @@ impl Parent {
             (flipped, layer, view)
         };
         #[cfg(not(target_os = "macos"))]
-        let layer = match handle.window_handle().expect("window handle").as_raw() {
+        let layer = match raw {
             RawWindowHandle::UiKit(view) => {
                 // SAFETY: the window handle guarantees a live view; we are on main.
                 let view: &objc2_ui_kit::UIView = unsafe { view.ui_view.cast().as_ref() };
                 view.layer()
             }
-            other => panic!("expected a UIKit view, found {other:?}"),
+            other => {
+                return Err(unsupported(format!(
+                    "expected a UIKit view, found {other:?}"
+                )));
+            }
         };
         let _tx = Transaction::begin();
         #[cfg(not(target_os = "macos"))]
@@ -745,7 +762,7 @@ impl Parent {
             layer.addSublayer(&root);
             root
         };
-        Self {
+        Ok(Self {
             scene: MainOwned::new(
                 LayerScene {
                     _window: handle,
@@ -776,7 +793,7 @@ impl Parent {
                 },
                 mtm,
             ),
-        }
+        })
     }
 }
 
@@ -2309,15 +2326,15 @@ impl LayerScene {
         // SAFETY: `renderer` is this display layer's own renderer, used only
         // on main, and `sample` is a live CMSampleBuffer it may enqueue.
         unsafe { renderer.enqueueSampleBuffer(&sample) };
-        assert_ne!(
-            // SAFETY: same renderer, still on main.
-            unsafe { renderer.status() },
-            AVQueuedSampleBufferRenderingStatus::Failed,
-            "system compositor rejected the frame: {:?}",
-            // SAFETY: same renderer, still on main; `error` is read only on
-            // the failure path this assertion takes.
-            unsafe { renderer.error() }
-        );
+        // SAFETY: same renderer, still on main.
+        if unsafe { renderer.status() } == AVQueuedSampleBufferRenderingStatus::Failed {
+            tracing::error!(
+                // SAFETY: same renderer, still on main; `error` is read only
+                // on this failure path.
+                error = ?unsafe { renderer.error() },
+                "system compositor rejected the frame; the plane keeps showing its previous image"
+            );
+        }
         shown.display.setNeedsLayout();
         shown.display.layoutIfNeeded();
         shown.generation = Some(generation);
@@ -2525,7 +2542,9 @@ impl LayerPlanes {
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    panic!("main part creation lost its reply")
+                    return Err(RenderError::Render(
+                        "main part creation lost its reply".into(),
+                    ));
                 }
             }
         }

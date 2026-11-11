@@ -7,6 +7,8 @@
 //! constructs its own concrete engine ([`ParleyEngine`] today), so there is
 //! no `dyn` dispatch and no runtime choice.
 
+#[cfg(any(test, hydrolysis_runtime))]
+mod canvas;
 mod declared;
 mod engine;
 mod input;
@@ -17,6 +19,8 @@ mod service;
 mod tests;
 pub mod types;
 
+#[cfg(any(test, hydrolysis_runtime))]
+pub use canvas::{CanvasLayout, shape as shape_canvas_text};
 pub use declared::DeclaredFonts;
 #[cfg(test)]
 pub use engine::Affinity;

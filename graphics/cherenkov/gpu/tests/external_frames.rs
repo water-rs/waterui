@@ -588,6 +588,31 @@ fn frame_producer_shows_each_submitted_frame_on_two_surfaces()
     Ok(())
 }
 
+/// A frame has one release point: a second `on_release` hook is a contract
+/// violation, and a release build drops it unrun while the first still runs.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "ExternalFrame::on_release called twice")
+)]
+fn a_second_release_hook_is_dropped() {
+    let Some((_engine, device, queue)) = engine().expect("engine") else {
+        return;
+    };
+    let (released, release) = std::sync::mpsc::channel();
+    let first = released.clone();
+    let frame = solid(&device, &queue, [255, 0, 0, 255])
+        .expect("a solid frame")
+        .on_release(move || first.send("first").expect("the test receives the release"))
+        .on_release(move || {
+            released
+                .send("second")
+                .expect("the test receives the release");
+        });
+    drop(frame);
+    assert_eq!(release.try_iter().collect::<Vec<_>>(), ["first"]);
+}
+
 /// A wgpu-plane frame's `on_release` hook runs exactly once, when the
 /// engine drops the last copy of the frame: not while the frame is shown,
 /// when a newer submission replaces it, when its producer is detached

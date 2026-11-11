@@ -15,3 +15,4 @@ workspace = true
 [dependencies]
 kurbo = { version = "0.13.1", default-features = false, features = ["std"] }
 num-bigint = { version = "0.4.8", default-features = false }
+waterui-contract.workspace = true

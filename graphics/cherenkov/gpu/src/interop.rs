@@ -11,6 +11,8 @@ use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use waterui_contract::contract_violation;
+
 /// The device types and drawing contexts exposed to custom GPU producers.
 pub mod wgpu {
     pub use ::wgpu::*;
@@ -945,10 +947,11 @@ impl ExternalFrame {
     /// writing into a buffer the system may still display checks the
     /// buffer's own in-use state.
     ///
-    /// # Panics
-    /// When the frame already has a release hook — one frame has one
-    /// release point — or when a `Native` frame's generation has already
-    /// retired.
+    /// # Contract
+    /// One frame has one release point: a second hook is a contract
+    /// violation and is dropped unrun. A hook on a `Native` frame whose
+    /// generation has already retired is one too; the frame is already
+    /// released, so the hook runs at once.
     #[must_use]
     pub fn on_release(mut self, release: impl FnOnce() + Send + 'static) -> Self {
         let release: ReleaseFn = Box::new(release);
@@ -956,10 +959,12 @@ impl ExternalFrame {
             #[cfg(all(unix, not(target_vendor = "apple")))]
             FramePlanes::Native(frame) => frame.generation.on_release(release),
             FramePlanes::Yuv { .. } | FramePlanes::Rgb { .. } => {
-                assert!(
-                    self.release.is_none(),
-                    "ExternalFrame::on_release called twice: a frame has one release hook"
-                );
+                if self.release.is_some() {
+                    contract_violation!(
+                        "ExternalFrame::on_release called twice: a frame has one release hook; the second hook is dropped"
+                    );
+                    return self;
+                }
                 self.release = Some(FrameRelease {
                     _hook: Arc::new(ReleaseOnDrop(std::sync::Mutex::new(Some(release)))),
                 });

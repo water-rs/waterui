@@ -704,6 +704,34 @@ pub fn draw_run(layer: &CALayer, commands: &[Command], range: Range<usize>, ctx:
     set_dynamic_range(layer, replay::extended(commands, range));
 }
 
+/// The transforms of `old` and `new` when the layer differs between them
+/// only by where it is placed: a transform scope, or a picture or text
+/// drawn under one. A text of another layout or colour is another layer.
+fn moved<'a>(old: &'a Node, new: &'a Node) -> Option<(&'a Affine, &'a Affine)> {
+    match (old, new) {
+        (Node::Transform(from), Node::Transform(to))
+        | (
+            Node::Picture {
+                transform: from, ..
+            },
+            Node::Picture { transform: to, .. },
+        ) => Some((from, to)),
+        (
+            Node::Text {
+                layout: old_layout,
+                transform: from,
+                paint: old_paint,
+            },
+            Node::Text {
+                layout,
+                transform: to,
+                paint,
+            },
+        ) if old_layout == layout && old_paint == paint => Some((from, to)),
+        _ => None,
+    }
+}
+
 impl Built {
     /// The layer covering `geometry` with `paint`: a shape layer for a
     /// colour, otherwise a drawn or mesh layer under the geometry's mask.
@@ -818,7 +846,9 @@ impl Built {
                 set_clip(&mut built, shape);
                 built
             }
-            Node::Transform(transform) | Node::Picture { transform, .. } => {
+            Node::Transform(transform)
+            | Node::Picture { transform, .. }
+            | Node::Text { transform, .. } => {
                 let layer = container();
                 layer.setAffineTransform(cg::transform(*transform));
                 Self {
@@ -850,6 +880,12 @@ impl Built {
     /// kind with a live operand moved — and answers whether it could;
     /// `false` means the layer must be built again.
     pub fn update(&mut self, old: &Node, new: &Node, ctx: Ctx<'_>) -> bool {
+        if let Some((from, to)) = moved(old, new) {
+            if to != from {
+                self.layer.setAffineTransform(cg::transform(*to));
+            }
+            return true;
+        }
         match (old, new) {
             (
                 Node::Painted {
@@ -908,19 +944,6 @@ impl Built {
             (Node::Clip(old_shape), Node::Clip(shape)) => {
                 if shape != old_shape {
                     set_clip(self, shape);
-                }
-                true
-            }
-            (Node::Transform(old_transform), Node::Transform(transform))
-            | (
-                Node::Picture {
-                    transform: old_transform,
-                    ..
-                },
-                Node::Picture { transform, .. },
-            ) => {
-                if transform != old_transform {
-                    self.layer.setAffineTransform(cg::transform(*transform));
                 }
                 true
             }

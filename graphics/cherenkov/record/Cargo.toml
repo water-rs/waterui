@@ -23,6 +23,7 @@ nami-core = { version = "0.5", features = ["kurbo"] }
 rustc-hash = "2"
 serde = { version = "1", features = ["derive", "rc"], optional = true }
 thiserror = "2"
+waterui-contract.workspace = true
 web-time = "1"
 
 [dev-dependencies]

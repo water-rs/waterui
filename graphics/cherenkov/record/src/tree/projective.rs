@@ -3,7 +3,7 @@
 //! `projection`, `tilt` or `depth` op and removed by `ClearProjection`.
 
 use super::components::sample;
-use super::{Animation, Instant, LayerNode, Prop, Track, Vec2, set_prop};
+use super::{Instant, LayerNode, Prop, Track, Vec2, set_prop};
 use crate::projective::{Pose, Projective, ProjectiveError};
 
 /// One projective layer's projection base, depth components and their
@@ -36,12 +36,10 @@ impl State {
     }
 
     pub(super) fn set_tilt(&mut self, prop: &Prop<Vec2>) {
-        assert_not_decay(prop.animation);
         set_prop(&mut self.tilt_track, &mut self.tilt, prop);
     }
 
     pub(super) fn set_depth(&mut self, prop: &Prop<f64>) {
-        assert_not_decay(prop.animation);
         set_prop(&mut self.depth_track, &mut self.depth, prop);
     }
 
@@ -76,13 +74,6 @@ impl State {
         );
         self.pose = pose.matrix();
     }
-}
-
-fn assert_not_decay(animation: Option<Animation>) {
-    assert!(
-        !matches!(animation, Some(Animation::Decay(_))),
-        "Decay is only legal on scroll_offset"
-    );
 }
 
 #[cfg(test)]

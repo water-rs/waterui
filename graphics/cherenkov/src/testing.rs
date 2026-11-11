@@ -19,7 +19,7 @@ use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
 use crate::frame::Readback;
 use crate::glyph::FontId;
 use crate::image::{ImageUpload, Rgba8, Rgba16F};
-use cherenkov_record::{ContentOp, LayerId, ResourceId, SurfaceId};
+use cherenkov_record::{ContentOp, LayerId, ResourceId, SurfaceId, TextLayoutId};
 
 use crate::message::FontData;
 use crate::paint::{ImageId, ShaderId};
@@ -39,6 +39,10 @@ pub enum Event {
     AddFont(FontId),
     /// `remove_font` ran.
     RemoveFont(FontId),
+    /// `add_text_layout` ran.
+    AddTextLayout(TextLayoutId),
+    /// `remove_text_layout` ran.
+    RemoveTextLayout(TextLayoutId),
     /// `add_image` ran.
     AddImage(ImageId),
     /// `replace_image` ran, with the new dimensions.
@@ -183,6 +187,7 @@ pub struct NullRenderer {
     /// The surfaces the host announced hidden.
     hidden: HashSet<SurfaceId>,
     fonts: HashSet<FontId>,
+    text_layouts: crate::TextLayouts,
     images: HashSet<ImageId>,
     shaders: HashSet<ShaderId>,
     pictures: FxHashMap<(SurfaceId, LayerId), Picture>,
@@ -255,6 +260,7 @@ impl NullRenderer {
             surfaces: HashSet::new(),
             hidden: HashSet::new(),
             fonts: HashSet::new(),
+            text_layouts: crate::TextLayouts::default(),
             images: HashSet::new(),
             shaders: HashSet::new(),
             pictures: FxHashMap::default(),
@@ -396,6 +402,17 @@ impl Renderer for NullRenderer {
         let _ = self.events.send(Event::RemoveFont(id));
     }
 
+    fn add_text_layout(&mut self, id: TextLayoutId, layout: crate::TextLayoutData) {
+        self.text_layouts.add(id, layout);
+        let _ = self.events.send(Event::AddTextLayout(id));
+    }
+
+    fn remove_text_layout(&mut self, id: TextLayoutId) {
+        self.text_layouts.remove(id);
+        self.removed.insert(ResourceId::TextLayout(id));
+        let _ = self.events.send(Event::RemoveTextLayout(id));
+    }
+
     fn image_limits(&self) -> crate::ImageLimits {
         self.image_limits
     }
@@ -432,7 +449,7 @@ impl Renderer for NullRenderer {
 
     fn samples(&self, surface: SurfaceId, resource: ResourceId) -> bool {
         self.pictures.iter().any(|((owner, _), picture)| {
-            *owner == surface && picture.display_list().references(resource)
+            *owner == surface && self.text_layouts.samples(picture.display_list(), resource)
         })
     }
 
@@ -1766,6 +1783,8 @@ mod balance {
                 Event::RemoveImage(id) => ("image", id.raw(), false),
                 Event::AddShader(id) => ("shader", id.raw(), true),
                 Event::RemoveShader(id) => ("shader", id.raw(), false),
+                Event::AddTextLayout(id) => ("text layout", id.raw(), true),
+                Event::RemoveTextLayout(id) => ("text layout", id.raw(), false),
                 Event::CreateSurface(id) => ("surface", id.raw(), true),
                 Event::DestroySurface(id) => ("surface", id.raw(), false),
                 _ => continue,
@@ -2316,9 +2335,58 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "a hosted extent is a finite, non-negative size")]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a hosted extent is a finite, non-negative size")
+    )]
     fn a_hosted_extent_must_be_finite() {
-        let _ = crate::Hosted::<Null>::new(()).at(kurbo::Size::new(f64::NAN, 1.0));
+        let (engine, rx) = engine();
+        let surface = engine
+            .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
+            .expect("surface");
+        let web = surface.layer();
+        let content = crate::Hosted::<Null>::new(()).at(kurbo::Size::new(f64::NAN, 1.0));
+        surface.update(|tx| {
+            tx[surface.root()].push(&web);
+            tx[&web].content(content);
+        });
+        engine.render(FrameTime::now()).expect("render");
+        let events: Vec<_> = rx.try_iter().collect();
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                Event::BindHosted(_, _, size) if *size == kurbo::Size::ZERO
+            )),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "refresh range must be positive and ordered")
+    )]
+    fn an_invalid_refresh_range_keeps_the_previous_one() {
+        let target = Offscreen::new((8, 8), OffscreenFormat::LinearF16);
+        let before = target.refresh.clone();
+        let target = target.rate(0..=30);
+        assert_eq!(target.refresh, before);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "this renderer cannot present host window 3's band")
+    )]
+    fn a_renderer_without_bands_drops_the_band() {
+        let (events, rx) = std::sync::mpsc::channel();
+        let mut renderer = NullRenderer::new(NullConfig {
+            events,
+            reject: HashSet::default(),
+            image_limits: crate::ImageLimits::UNLIMITED,
+        });
+        renderer.set_band(SurfaceId::new(1), 3, None);
+        assert!(rx.try_iter().next().is_none(), "no band event");
     }
 
     #[test]
@@ -3133,6 +3201,88 @@ mod tests {
             removed < freed && freed < frame,
             "the font is removed with the layer that drew it, before the frame: {events:?}"
         );
+    }
+
+    /// A text layout expands in lowering, holds its fonts, and is released
+    /// with the layer that drew it, ahead of the fonts it held; dropping
+    /// the handles earlier frees nothing the installed content still names.
+    #[test]
+    fn a_text_layout_is_released_with_the_content_that_draws_it() {
+        use crate::text::{TextCommand, TextLayout};
+        use crate::{Draw as _, WorkingColor};
+
+        let (engine, rx) = engine();
+        let surface = engine
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
+            .expect("surface");
+        let font = engine.font(FontSource::bytes(vec![0u8; 8])).expect("font");
+        let font_id = font.id();
+        let layout = engine
+            .text_layout(TextLayout::from_commands(
+                vec![TextCommand::Glyphs(
+                    one_glyph(font_id),
+                    WorkingColor::WHITE.into(),
+                )],
+                vec![font],
+            ))
+            .expect("text layout");
+        let layout_id = layout.id();
+        let text = surface.layer();
+        surface.update(|tx| {
+            tx[surface.root()].push(&text);
+            tx[&text].record(|c| c.text(layout_id, Affine::IDENTITY));
+        });
+        engine.render(FrameTime::now()).expect("render");
+        drop(layout);
+        engine
+            .render(FrameTime::now())
+            .expect("the installed content still draws the released layout and its font");
+        let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::AddTextLayout(id) if *id == layout_id)),
+            "the layout was registered: {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::RemoveTextLayout(_) | Event::RemoveFont(_))),
+            "a layout or font the installed text names was removed: {events:?}"
+        );
+
+        drop(text);
+        engine.render(FrameTime::now()).expect("render");
+        let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let layout_removed = position(
+            &events,
+            |e| matches!(e, Event::RemoveTextLayout(id) if *id == layout_id),
+        )
+        .unwrap_or_else(|| panic!("no text layout removal in {events:?}"));
+        let font_removed = position(
+            &events,
+            |e| matches!(e, Event::RemoveFont(id) if *id == font_id),
+        )
+        .unwrap_or_else(|| panic!("no font removal in {events:?}"));
+        let frame = position(&events, |e| matches!(e, Event::Frame(_))).expect("frame");
+        assert!(
+            layout_removed < frame && font_removed < frame,
+            "both are freed before the frame: {events:?}"
+        );
+    }
+
+    /// An unused text layout releases its registration, balanced.
+    #[test]
+    fn a_text_layout_releases_on_drop() {
+        use crate::text::TextLayout;
+
+        let (engine, rx) = engine();
+        let layout = engine
+            .text_layout(TextLayout::from_commands(Vec::new(), Vec::new()))
+            .expect("text layout");
+        drop(layout);
+        let _ = engine.memory();
+        balance::assert_balanced(&rx);
     }
 
     /// Content installed after the handle dropped that names a pending

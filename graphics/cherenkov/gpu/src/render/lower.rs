@@ -8,6 +8,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
+use waterui_contract::contract_violation;
 
 use super::MAX_PASS_INSTANCES;
 use super::prepared::{ClipShape, Op, OutlineRef, PaintData, ResolvedPaint, box_shape};
@@ -460,12 +461,15 @@ const fn f32_f64(v: f64) -> f32 {
 
 /// `count` stays a valid coverage-order index: `shader.wgsl` derives each
 /// instance's depth as `bitcast<f32>(0x3e000000u + ii * 8u)`, injective only
-/// below `MAX_PASS_INSTANCES` — fail fast rather than alias two depths.
+/// below `MAX_PASS_INSTANCES`. A scene that draws more into one pass is a
+/// contract violation; the instances past the bound alias the depths of
+/// earlier ones and may composite out of order.
 fn check_instance_bound(count: usize) {
-    assert!(
-        count <= MAX_PASS_INSTANCES,
-        "a coverage-order pass emits at most MAX_PASS_INSTANCES ({MAX_PASS_INSTANCES}) instances"
-    );
+    if count > MAX_PASS_INSTANCES {
+        contract_violation!(
+            "a coverage-order pass emits at most MAX_PASS_INSTANCES ({MAX_PASS_INSTANCES}) instances, found {count}; instances past the bound share depths with earlier ones and may composite out of order"
+        );
+    }
 }
 
 #[expect(clippy::cast_possible_truncation, reason = "bounded above")]
@@ -789,8 +793,12 @@ impl ContentData {
     }
 
     /// Whether the content samples `resource`.
-    pub fn references(&self, resource: cherenkov::ResourceId) -> bool {
-        self.retained.references(resource)
+    pub fn references(
+        &self,
+        resource: cherenkov::ResourceId,
+        text: &cherenkov::TextLayouts,
+    ) -> bool {
+        self.retained.references(resource, text)
     }
 
     /// Discards the lowering of content that samples image `id`, whose
@@ -2360,14 +2368,18 @@ impl<'a> Lowering<'a> {
         &mut self,
         caches: &mut FxHashMap<LayerId, ContentData>,
         glyphs: &GlyphContext<'_>,
+        text: &cherenkov::TextLayouts,
     ) -> Result<bool, RenderError> {
         let mut pictures = false;
         for content in caches.values_mut() {
-            let prepared = content.retained.prepare(&mut super::prepared::Lowerer {
-                fonts: glyphs.fonts,
-                images: glyphs.images,
-                pending: &mut self.pending,
-            })?;
+            let prepared = content.retained.prepare(
+                &mut super::prepared::Lowerer {
+                    fonts: glyphs.fonts,
+                    images: glyphs.images,
+                    pending: &mut self.pending,
+                },
+                text,
+            )?;
             self.commands_lowered += prepared.commands;
             pictures |= prepared.pictures;
         }
@@ -7080,6 +7092,21 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a coverage-order pass emits at most MAX_PASS_INSTANCES")
+    )]
+    fn an_instance_past_the_pass_bound_still_gets_an_index() {
+        let index = |count: usize| u32::try_from(count).unwrap();
+        assert_eq!(
+            instance_index(MAX_PASS_INSTANCES),
+            index(MAX_PASS_INSTANCES)
+        );
+        let past = MAX_PASS_INSTANCES + 1;
+        assert_eq!(instance_index(past), index(past));
+    }
+
+    #[test]
     fn command_damage_survives_content_replacement_and_resource_invalidation() {
         use cherenkov::{Draw as _, Picture};
 
@@ -7114,7 +7141,9 @@ mod tests {
                 &mut rasters,
                 Some(test_limit()),
             );
-            lowering.prepare(caches, &glyphs).expect("prepare content");
+            lowering
+                .prepare(caches, &glyphs, &cherenkov::TextLayouts::default())
+                .expect("prepare content");
             lowering
                 .run(
                     &tree,
@@ -8282,7 +8311,9 @@ mod tests {
                 &mut raster_scratch,
                 Some(test_limit()),
             );
-            lowering.prepare(&mut caches, &glyphs).expect("prepared");
+            lowering
+                .prepare(&mut caches, &glyphs, &cherenkov::TextLayouts::default())
+                .expect("prepared");
             lowering
                 .run(
                     &tree,
@@ -8417,7 +8448,9 @@ mod tests {
                 &mut raster_scratch,
                 Some(test_limit()),
             );
-            lowering.prepare(&mut caches, &glyphs).expect("prepared");
+            lowering
+                .prepare(&mut caches, &glyphs, &cherenkov::TextLayouts::default())
+                .expect("prepared");
             lowering
                 .run(
                     &tree,
@@ -8477,7 +8510,9 @@ mod tests {
             &mut raster_scratch,
             Some(test_limit()),
         );
-        lowering.prepare(&mut caches, &glyphs).expect("prepared");
+        lowering
+            .prepare(&mut caches, &glyphs, &cherenkov::TextLayouts::default())
+            .expect("prepared");
         lowering
             .run(
                 tree,
@@ -8738,7 +8773,9 @@ mod tests {
             &mut raster_scratch,
             Some(test_limit()),
         );
-        lowering.prepare(&mut caches, &glyphs).expect("prepared");
+        lowering
+            .prepare(&mut caches, &glyphs, &cherenkov::TextLayouts::default())
+            .expect("prepared");
         lowering
             .run(
                 &tree,

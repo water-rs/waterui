@@ -4,6 +4,7 @@
 //! [`Engine::render`]: crate::Engine::render
 
 use cherenkov_record::RefreshRange;
+use waterui_contract::contract_violation;
 
 use crate::Instant;
 
@@ -245,14 +246,18 @@ pub struct Offscreen {
 impl Offscreen {
     /// Configure the refresh range of this target.
     ///
-    /// # Panics
-    /// When the range is empty or contains zero hertz.
+    /// # Contract
+    /// An empty range or one containing zero hertz is a contract
+    /// violation; the refresh range stays as it was.
     #[must_use]
     pub fn rate(mut self, rate: RefreshRange) -> Self {
-        assert!(
-            *rate.start() > 0 && !rate.is_empty(),
-            "refresh range must be positive and ordered"
-        );
+        if *rate.start() == 0 || rate.is_empty() {
+            contract_violation!(
+                "refresh range must be positive and ordered, not {rate:?}; the range stays {:?}",
+                self.refresh
+            );
+            return self;
+        }
         self.refresh = rate;
         self
     }

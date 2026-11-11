@@ -1682,6 +1682,7 @@ dependencies = [
  "tracing",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
+ "waterui-contract",
  "web-time",
 ]
 
@@ -1753,6 +1754,7 @@ dependencies = [
  "rustc-hash 2.1.3",
  "skrifa 0.48.0",
  "tracing",
+ "waterui-contract",
 ]
 
 [[package]]
@@ -1810,6 +1812,7 @@ dependencies = [
  "tracing-subscriber",
  "wasm-bindgen",
  "wasm-bindgen-test",
+ "waterui-contract",
  "web-sys",
  "wgpu",
 ]
@@ -1852,6 +1855,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "waterui-contract",
  "web-time",
 ]
 
@@ -1900,6 +1904,7 @@ version = "0.0.0"
 dependencies = [
  "kurbo",
  "num-bigint",
+ "waterui-contract",
 ]
 
 [[package]]
@@ -2160,7 +2165,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -4719,7 +4724,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#b3a2f4590c6df2459b3c0407c7acee3b689ea9a9"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#fe30ff333f0e3f2f5befcf41356c8c526c36330f"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -8758,7 +8763,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "syn 2.0.119",
@@ -12361,7 +12366,7 @@ dependencies = [
 [[package]]
 name = "waterkit-core"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#b4f93fd62acfece53061e7c3125b5b954e66d86c"
 dependencies = [
  "dispatch2",
  "executor-core",
@@ -13108,6 +13113,7 @@ dependencies = [
  "waterui-color",
  "waterui-core",
  "waterui-testing",
+ "waterui-text",
  "wgpu",
  "wgpu-external-frame",
 ]
@@ -13303,8 +13309,8 @@ dependencies = [
  "num-traits",
  "smallvec",
  "waterui",
+ "waterui-color",
  "waterui-core",
- "waterui-graphics",
  "waterui-testing",
 ]
 

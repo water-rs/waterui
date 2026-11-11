@@ -27,9 +27,12 @@ use cherenkov_record::ResourceId;
 
 use crate::resource::{
     Filter, Font, FontSource, FrameSink, GpuProducer, Image, ImageBudget, ReplaceImage, Shader,
+    TextLayoutHandle,
 };
 use crate::style::FilterId;
 use crate::surface::Surface;
+use crate::text::{TextLayout, TextLayoutData};
+use cherenkov_record::TextLayoutId;
 
 /// The engine: owns the device and the render thread. `!Send`, lives on
 /// the UI thread.
@@ -69,6 +72,7 @@ pub struct Engine<B: Backend> {
     surfaces: RefCell<super::Surfaces<B>>,
     next_surface: Cell<u64>,
     next_font: Cell<u64>,
+    next_text: Cell<u64>,
     next_image: Cell<u64>,
     next_shader: Cell<u64>,
     next_filter: Cell<u64>,
@@ -134,6 +138,7 @@ impl<B: Backend> Engine<B> {
             surfaces: RefCell::new(Vec::new()),
             next_surface: Cell::new(0),
             next_font: Cell::new(1),
+            next_text: Cell::new(1),
             next_image: Cell::new(1),
             next_shader: Cell::new(1),
             next_filter: Cell::new(1),
@@ -260,6 +265,29 @@ impl<B: Backend> Engine<B> {
         ))
     }
 
+    /// Registers a laid-out text. The layout's fonts, registered when it
+    /// was lowered, stay registered as long as the handle lives.
+    ///
+    /// # Errors
+    /// [`ResourceError::Lost`] when the render thread is gone.
+    pub fn text_layout(&self, layout: TextLayout) -> Result<TextLayoutHandle, ResourceError> {
+        let (commands, default, fonts) = layout.into_parts();
+        let data = TextLayoutData::new(commands, default, &fonts);
+        let id = TextLayoutId::new(Self::alloc(&self.next_text));
+        self.tx
+            .send(Message::Resource(Box::new(move |r: &mut B::Renderer| {
+                r.add_text_layout(id, data);
+            })))
+            .map_err(|_| ResourceError::Lost)?;
+        Ok(TextLayoutHandle::new(
+            id,
+            fonts,
+            self.on_release(ResourceId::TextLayout(id), move |r| {
+                r.remove_text_layout(id);
+            }),
+        ))
+    }
+
     /// Registers an image. [`Image::replace`] later swaps its pixels
     /// behind the same id.
     ///
@@ -364,7 +392,8 @@ impl<B: Backend> Engine<B> {
     /// beneath the next mark presents into `target`, which the host stacks
     /// right above the window (water-rs/waterui#2225). `None` leaves the
     /// region with no band, and its content is not shown. A renderer
-    /// without a band realization panics on the render thread
+    /// without a band realization reports a contract violation on the render
+    /// thread and drops the band
     /// ([`Renderer::set_band`](crate::Renderer::set_band)).
     ///
     /// # Errors
@@ -932,6 +961,33 @@ mod tests {
             wakes.load(Ordering::Relaxed),
             1,
             "the delivered wake coalesces until a render"
+        );
+    }
+
+    /// A second scope on a surface is inert: dropping it leaves the first
+    /// scope's frame open.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a surface has at most one open FrameScope")
+    )]
+    fn a_second_frame_scope_is_inert() {
+        let (_engine, surface, wakes) = counted_surface();
+        let first = surface.begin_frame();
+        let second = surface.begin_frame();
+        edit(&surface, 0.5);
+        drop(second);
+        edit(&surface, 0.25);
+        assert_eq!(
+            wakes.load(Ordering::Relaxed),
+            0,
+            "the first scope still holds the frame"
+        );
+        drop(first);
+        assert_eq!(
+            wakes.load(Ordering::Relaxed),
+            1,
+            "the first scope's end woke"
         );
     }
 

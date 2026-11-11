@@ -21,6 +21,7 @@ pub trait RenderTransfer {}
 impl<T: ?Sized> RenderTransfer for T {}
 
 use rustc_hash::FxHashSet;
+use waterui_contract::contract_violation;
 
 use crate::config::{MemoryUsage, Pressure};
 use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
@@ -29,8 +30,9 @@ use crate::glyph::FontId;
 use crate::image::ImageUpload;
 use crate::message::FontData;
 use crate::paint::ImageId;
+use crate::text::TextLayoutData;
 use crate::{Instant, Picture};
-use cherenkov_record::{ContentOp, LayerId, SurfaceId};
+use cherenkov_record::{ContentOp, LayerId, SurfaceId, TextLayoutId};
 use cherenkov_record::{ResourceId, SurfaceTree};
 
 /// The render-thread contract, a zero-sized marker type (`Gpu`, `Raster`).
@@ -141,12 +143,16 @@ pub trait Renderer: 'static {
     /// region with no band, and its content is not shown rather than
     /// drawn beneath a window it covers.
     ///
-    /// # Panics
+    /// # Contract
     /// The default: the renderer has no band realization, so a host that
-    /// splits a surface into bands is using the wrong renderer.
+    /// splits a surface into bands is using the wrong renderer. That is a
+    /// contract violation; the band is dropped and its content is not
+    /// shown.
     fn set_band(&mut self, id: SurfaceId, window: u64, target: Option<Self::Target>) {
-        let _ = target;
-        panic!("surface {id:?}: this renderer cannot present host window {window}'s band");
+        drop(target);
+        contract_violation!(
+            "surface {id:?}: this renderer cannot present host window {window}'s band; the band is dropped and its content is not shown"
+        );
     }
 
     /// Destroys a surface's render-side state.
@@ -165,6 +171,15 @@ pub trait Renderer: 'static {
 
     /// Unregisters a font no installed content draws any more.
     fn remove_font(&mut self, id: FontId);
+
+    /// Registers a laid-out text. Content that draws it as a
+    /// `Command::Text` is expanded through the renderer's
+    /// [`TextLayouts`](crate::TextLayouts), and the fonts its runs name are
+    /// registered before this runs.
+    fn add_text_layout(&mut self, id: TextLayoutId, layout: TextLayoutData);
+
+    /// Unregisters a text layout no installed content draws any more.
+    fn remove_text_layout(&mut self, id: TextLayoutId);
 
     /// The images this renderer admits: the largest image in each
     /// dimension (the device's texture limit), and the image budget, the

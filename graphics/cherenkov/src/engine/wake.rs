@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use arc_swap::ArcSwap;
 
+use waterui_contract::contract_violation;
+
 use crate::backend::Visibility;
 
 /// A host's wake-up callback. It may run on any thread a wake starts on —
@@ -54,13 +56,17 @@ impl WakeState {
     }
 
     /// The host opens a frame: it answers every wake delivered before it.
-    fn opened(self) -> Self {
+    /// A frame already open stays as it is.
+    const fn opened(self) -> Self {
         match self {
             Self::Armed | Self::Disarmed => Self::InFrame,
-            Self::InFrame | Self::InFrameOwed => {
-                panic!("a surface has at most one open FrameScope")
-            }
+            Self::InFrame | Self::InFrameOwed => self,
         }
+    }
+
+    /// Whether a [`FrameScope`] is open.
+    const fn in_frame(self) -> bool {
+        matches!(self, Self::InFrame | Self::InFrameOwed)
     }
 
     /// The frame scope ends. A render inside it already left it; without
@@ -157,9 +163,9 @@ impl SurfaceWaker {
         self.state.swap(WakeState::Armed as u8, Ordering::AcqRel);
     }
 
-    /// Opens the frame scope.
-    fn open_frame(&self) {
-        self.transition(WakeState::opened);
+    /// Opens the frame scope; `false` when one is already open.
+    fn open_frame(&self) -> bool {
+        !self.transition(WakeState::opened).in_frame()
     }
 
     /// Ends the frame scope, waking the host for what it owes.
@@ -229,22 +235,35 @@ impl SurfaceWaker {
 /// A wake that lands inside the scope is therefore deferred, never lost.
 /// A wake delivered before the scope opened counts as answered by this
 /// frame; if the frame fails without rendering, retrying it is the host's
-/// job. A surface has at most one open scope: opening a second panics.
+/// job.
+///
+/// # Contract
+/// A surface has at most one open scope: opening a second is a contract
+/// violation, and the second scope is inert — it changes nothing, and its
+/// drop ends nothing — while the first stays in charge of the frame.
 #[derive(Debug)]
 #[must_use = "dropping the scope ends the frame; keep it until the frame's render"]
-pub struct FrameScope(Arc<SurfaceWaker>);
+pub struct FrameScope(Option<Arc<SurfaceWaker>>);
 
 impl FrameScope {
     /// Opens the frame scope on the surface's wake.
     pub(crate) fn open(waker: &Arc<SurfaceWaker>) -> Self {
-        waker.open_frame();
-        Self(Arc::clone(waker))
+        if waker.open_frame() {
+            Self(Some(Arc::clone(waker)))
+        } else {
+            contract_violation!(
+                "a surface has at most one open FrameScope; the second scope is inert"
+            );
+            Self(None)
+        }
     }
 }
 
 impl Drop for FrameScope {
     fn drop(&mut self) {
-        self.0.close_frame();
+        if let Some(waker) = &self.0 {
+            waker.close_frame();
+        }
     }
 }
 

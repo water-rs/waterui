@@ -194,6 +194,13 @@ impl<P: PlatformText> TextEngine for HwuiTextEngine<P> {
         );
     }
 
+    fn platform_text(
+        &self,
+        layout: &Self::Layout,
+    ) -> Option<Arc<crate::hwui::text::TextLayoutResource>> {
+        layout.resource()
+    }
+
     /// The engine holds no shape or ink caches of its own — [`TextService`]
     /// invalidates the layouts above it, and the provider's family-list
     /// cache drops its typefaces on registration. There is no fallback.

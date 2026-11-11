@@ -566,6 +566,12 @@ impl Region {
         }
     }
 
+    /// A handle to no region: not recorded, and every operation on it does
+    /// nothing.
+    pub(crate) const fn gone() -> Self {
+        Self::new(Weak::new(), 0, 0)
+    }
+
     /// Whether the region is still recorded: its content has not retired
     /// or dropped, and the region has not been recorded over or removed.
     #[must_use]
@@ -586,6 +592,9 @@ impl Region {
         let Some(live) = self.live() else {
             return;
         };
+        if !live.begin_region_recording() {
+            return;
+        }
         let recorded = Recorder::record_region(&live, self.slot, body);
         live.edit(|table| Some(table.replace(self.slot, recorded)));
     }
@@ -594,14 +603,16 @@ impl Region {
     /// `index`-th child region, or after the last when `index` is the
     /// number of children.
     ///
-    /// # Panics
-    ///
-    /// When the region is gone.
+    /// When the region is gone nothing is recorded and the returned handle
+    /// is gone too, like every other operation on a gone region.
     #[must_use = "a region is removed only through its handle"]
     pub fn insert(&self, index: usize, body: impl FnOnce(&mut Recorder)) -> Self {
-        let live = self
-            .live()
-            .expect("a region inserts children only while it is recorded");
+        let Some(live) = self.live() else {
+            return Self::gone();
+        };
+        if !live.begin_region_recording() {
+            return Self::gone();
+        }
         let (slot, generation) = live.allocate(Parent::Region(self.slot));
         let recorded = Recorder::record_region(&live, slot, body);
         live.edit(|table| Some(table.insert(Parent::Region(self.slot), index, slot, recorded)));

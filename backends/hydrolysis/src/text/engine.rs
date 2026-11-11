@@ -98,6 +98,43 @@ pub trait TextEngine: Send + Sync + 'static {
         counters: &mut FrameWorkCounters,
     );
 
+    /// `layout` as Cherenkov text, each font its runs draw with registered
+    /// through `font`: how the GPU target draws the text a canvas names.
+    ///
+    /// # Errors
+    ///
+    /// The error `font` returns.
+    ///
+    /// # Panics
+    ///
+    /// When the engine does not lay text out for the Cherenkov GPU target.
+    #[cfg(hydrolysis_gpu_painter)]
+    fn cherenkov_text(
+        &self,
+        layout: &Self::Layout,
+        font: &mut dyn FnMut(
+            &parley::FontData,
+        ) -> Result<cherenkov::Font, cherenkov::ResourceError>,
+    ) -> Result<cherenkov::TextLayout, cherenkov::ResourceError> {
+        let _ = (layout, font);
+        panic!("hydrolysis: this text engine does not lay text out for the Cherenkov GPU target");
+    }
+
+    /// The lease on the platform layout `layout` is: how the HWUI target
+    /// draws the text a canvas names. `None` for a layout of no text.
+    ///
+    /// # Panics
+    ///
+    /// When the engine does not lay text out on the platform.
+    #[cfg(any(test, hydrolysis_hwui))]
+    fn platform_text(
+        &self,
+        layout: &Self::Layout,
+    ) -> Option<std::sync::Arc<crate::hwui::text::TextLayoutResource>> {
+        let _ = layout;
+        panic!("hydrolysis: this text engine does not lay text out on the HWUI platform");
+    }
+
     /// The collection the engine shapes with gained faces: drops every
     /// result the engine keeps that was made against the old set.
     #[cfg(all(target_arch = "wasm32", feature = "web"))]

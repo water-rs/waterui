@@ -293,58 +293,6 @@ pub struct NavigationMotion {
     pub fade_through_threshold: f32,
 }
 
-/// Which of a stepper's two buttons is being drawn.
-///
-/// A stepper is a pair, and Material joins a pair into one silhouette: the two
-/// far ends are fully round while the corners either side of the seam are
-/// tucked in. A theme cannot tell those apart from bounds alone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "closed: a stepper has a decrement end and an increment end"
-)]
-pub enum StepperEnd {
-    /// The decrement button, at the leading end.
-    Decrement,
-    /// The increment button, at the trailing end.
-    Increment,
-}
-
-/// Stepper layout metrics.
-#[derive(Debug, Clone, Copy)]
-pub struct StepperMetrics {
-    /// Minimum size for each stepper button.
-    pub button_min_size: f64,
-    /// Maximum size for each stepper button.
-    pub button_max_size: f64,
-    /// Preferred size for each stepper button.
-    pub button_intrinsic_size: f64,
-    /// Spacing between stepper buttons.
-    pub button_spacing: f64,
-    /// Spacing between label and buttons.
-    pub label_spacing: f64,
-}
-
-impl StepperMetrics {
-    /// Create stepper layout metrics.
-    #[must_use]
-    pub const fn new(
-        button_min_size: f64,
-        button_max_size: f64,
-        button_intrinsic_size: f64,
-        button_spacing: f64,
-        label_spacing: f64,
-    ) -> Self {
-        Self {
-            button_min_size,
-            button_max_size,
-            button_intrinsic_size,
-            button_spacing,
-            label_spacing,
-        }
-    }
-}
-
 /// Text input layout metrics.
 #[derive(Debug, Clone, Copy)]
 pub struct InputFieldMetrics {
@@ -842,32 +790,15 @@ pub trait WidgetTheme {
     /// [`Self::switch`] but taking taps only.
     fn checkbox(&self, spec: &super::ToggleSpec, env: &Environment) -> super::CheckboxLook;
 
-    /// Return stepper metrics.
-    fn stepper_metrics(&self) -> StepperMetrics;
-    /// Draw one stepper button.
+    /// The look of a stepper.
     ///
-    /// `end` says which of the pair this is, because a theme may join them into
-    /// one silhouette whose outer corners differ from the seam between them.
-    fn draw_stepper_button(
-        &self,
-        recorder: &mut Recorder,
-        bounds: Rect,
-        end: StepperEnd,
-        state: WidgetInteractionState,
-    );
-    /// Draw a stepper decrement icon.
-    fn draw_stepper_decrement_icon(&self, recorder: &mut Recorder, bounds: Rect);
-    /// Draw a stepper increment icon.
-    fn draw_stepper_increment_icon(&self, recorder: &mut Recorder, bounds: Rect);
-    /// Draw one stepper button state layer.
-    fn draw_stepper_button_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _end: StepperEnd,
-        _state: WidgetInteractionState,
-    ) {
-    }
+    /// Hydrolysis measures, places, hit-tests and records the stepper from
+    /// the returned look, and requests it again only when `spec` changes;
+    /// everything else reaches the look through its ends'
+    /// [`Chrome`](super::Chrome) values, so a press, a hover or a value
+    /// change moves live operands and records nothing. An end at the limit
+    /// of the stepper's range is disabled.
+    fn stepper(&self, spec: &super::StepperSpec, env: &Environment) -> super::StepperLook;
 
     /// Return text input metrics.
     fn input_field_metrics(&self) -> InputFieldMetrics;
