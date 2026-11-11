@@ -1258,6 +1258,14 @@ fn gpu_runtime_window(
     ))
 }
 
+/// An HWUI window: the painter peer and the runtime window rendering
+/// through it.
+#[cfg(hydrolysis_hwui)]
+type HwuiRuntimeWindow = (
+    super::hwui::HwuiWindow,
+    RuntimeWindow<AndroidHostWindow, super::AndroidTextEngine>,
+);
+
 /// The HWUI build's runtime window and the painter peer it renders
 /// through: the renderer is wired to the surface's `SurfaceId`, the
 /// registry's window id and the host's redraw handle.
@@ -1270,13 +1278,7 @@ fn hwui_runtime_window(
     theme: Rc<dyn WidgetTheme>,
     window_id: crate::renderer::WindowId,
     env: &Environment,
-) -> Result<
-    Option<(
-        super::hwui::HwuiWindow,
-        RuntimeWindow<AndroidHostWindow, super::AndroidTextEngine>,
-    )>,
-    JniError,
-> {
+) -> Result<Option<HwuiRuntimeWindow>, JniError> {
     let ordinal = match window_id {
         crate::renderer::WindowId::Runner(id) => id,
         crate::renderer::WindowId::Orphan => {

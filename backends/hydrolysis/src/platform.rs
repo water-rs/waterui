@@ -348,7 +348,7 @@ pub struct GpuContextHandle {
 /// The handle also carries the context it was created on, so a caller that
 /// only sees surface handles — adapter, device, queue and this handle —
 /// still reaches the device's full creation chain. It exists only for an
-/// observed device: [`Self::observe`] is its one constructor.
+/// observed device: `DeviceLoss::observe` is its one constructor.
 #[derive(Clone, Debug)]
 #[cfg(hydrolysis_gpu_painter)]
 pub struct DeviceLoss {
@@ -3366,7 +3366,7 @@ pub async fn open_engine_device(
     Ok(adapter.request_device(descriptor).await?)
 }
 
-/// Why [`open_engine_device`] could not open the shared device — the
+/// Why opening the engine's shared device failed — the
 /// source of [`GpuUnavailable::Device`].
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
