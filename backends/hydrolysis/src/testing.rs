@@ -60,6 +60,31 @@ pub fn plain_toggle_control() -> crate::theme::ToggleControl {
     .label_spacing(3.0)
 }
 
+/// A stepper look with ends 14 by 14 points, 4 points apart and 8 points from
+/// the label, drawing nothing: what a test style's steppers measure, place
+/// and hit-test as.
+#[must_use]
+pub fn plain_stepper_look() -> crate::theme::StepperLook {
+    use crate::theme::{Chrome, CornerShape, FocusIndicator, Motion, PressFeedback, StateLayer};
+    use crate::theme::{StepperLook, Surface};
+    let end = || {
+        Chrome::new(
+            Surface::clear(CornerShape::radius(0.0)),
+            StateLayer::new(waterui::graphics::Color::new(
+                waterui::theme::color::Foreground,
+            )),
+            PressFeedback::new(),
+            FocusIndicator::Tint,
+            Motion::uniform(waterui::animation::Animation::linear(
+                std::time::Duration::from_millis(15),
+            )),
+        )
+    };
+    StepperLook::new(end(), end(), kurbo::Size::new(14.0, 14.0))
+        .spacing(4.0)
+        .label_spacing(8.0)
+}
+
 mod test_style {
     use std::time::Duration;
 
@@ -68,8 +93,8 @@ mod test_style {
         FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionMotion, Knob,
         Label, LinearProgressLook, ListMetrics, Motion, NavigationMetrics, NavigationMotion,
         PickerMetrics, PressFeedback, ProgressControl, ProgressSpec, RadioIndicatorState,
-        RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec, StateLayer, StepperEnd,
-        StepperMetrics, Surface, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics,
+        RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook,
+        StepperSpec, Surface, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics,
         TextCaretMotion, TextContextMenuMetrics, ToggleSpec, WidgetInteractionState, WidgetTheme,
     };
     use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
@@ -207,26 +232,9 @@ mod test_style {
             CheckboxLook::new(super::plain_toggle_control())
         }
 
-        fn stepper_metrics(&self) -> StepperMetrics {
-            StepperMetrics {
-                button_min_size: 12.0,
-                button_max_size: 18.0,
-                button_intrinsic_size: 14.0,
-                button_spacing: 4.0,
-                label_spacing: 8.0,
-            }
+        fn stepper(&self, _spec: &StepperSpec, _env: &Environment) -> StepperLook {
+            super::plain_stepper_look()
         }
-
-        fn draw_stepper_button(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _end: StepperEnd,
-            _state: WidgetInteractionState,
-        ) {
-        }
-        fn draw_stepper_decrement_icon(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_stepper_increment_icon(&self, _recorder: &mut Recorder, _bounds: Rect) {}
 
         fn input_field_metrics(&self) -> InputFieldMetrics {
             InputFieldMetrics {

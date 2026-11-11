@@ -87,6 +87,7 @@ mod scroll_hit_clip;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod semantic_runtime;
 mod shadow;
+mod stepper_look;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod structural_transitions;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
@@ -138,7 +139,7 @@ use crate::theme::{
     InteractionMotion, Knob, Label, LinearProgressLook, ListMetrics, ModalInteraction, Motion,
     NavigationMetrics, NavigationMotion, PickerMetrics, PressFeedback, ProgressControl,
     ProgressSpec, RadioIndicatorState, RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec,
-    StateLayer, StepperEnd, StepperMetrics, Surface, TabItemGeometry, TabItemLayout, TableMetrics,
+    StateLayer, StepperLook, StepperSpec, Surface, TabItemGeometry, TabItemLayout, TableMetrics,
     TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleSpec, ValueIndicator,
     WidgetInteractionState,
 };
@@ -2700,6 +2701,9 @@ fn inactive_modal_scope_does_not_trap_keyboard_focus() {
 /// The switch look a test theme hands out for a toggle spec.
 type SwitchLookFor = Rc<dyn Fn(&ToggleSpec, &Environment) -> SwitchLook>;
 
+/// The stepper look a test theme hands out for a stepper spec.
+type StepperLookFor = Rc<dyn Fn(&StepperSpec, &Environment) -> StepperLook>;
+
 /// A linear progress bar the theme realized: `(frame, value)`.
 type ProgressBarRealization = (Rect, f64);
 /// A recorded `draw_radio_indicator` call: `(center, state)`.
@@ -2766,6 +2770,11 @@ pub struct MinimalTestTheme {
     /// The switch look the theme hands out for a spec and environment;
     /// `None` answers a plain control with no parts.
     switch_look: Option<SwitchLookFor>,
+    /// The stepper look the theme hands out for a spec and environment;
+    /// `None` answers [`crate::testing::plain_stepper_look`].
+    stepper_look: Option<StepperLookFor>,
+    /// Every spec the theme was asked for a stepper look.
+    stepper_specs: Rc<RefCell<Vec<StepperSpec>>>,
     /// Every linear progress bar the theme's look realized, with the value
     /// its part read.
     progress_bar_realizations: Rc<RefCell<Vec<ProgressBarRealization>>>,
@@ -2836,6 +2845,13 @@ impl MinimalTestTheme {
         look: impl Fn(&ToggleSpec, &Environment) -> SwitchLook + 'static,
     ) -> Self {
         self.switch_look = Some(Rc::new(look));
+        self
+    }
+
+    /// Hands out `look` for every stepper.
+    #[must_use]
+    pub fn with_stepper_look(mut self, look: StepperLook) -> Self {
+        self.stepper_look = Some(Rc::new(move |_, _| look.clone()));
         self
     }
 
@@ -2993,26 +3009,12 @@ impl WidgetTheme for MinimalTestTheme {
         CheckboxLook::new(crate::testing::plain_toggle_control())
     }
 
-    fn stepper_metrics(&self) -> StepperMetrics {
-        StepperMetrics {
-            button_min_size: 12.0,
-            button_max_size: 18.0,
-            button_intrinsic_size: 14.0,
-            button_spacing: 4.0,
-            label_spacing: 8.0,
-        }
+    fn stepper(&self, spec: &StepperSpec, env: &Environment) -> StepperLook {
+        self.stepper_specs.borrow_mut().push(spec.clone());
+        self.stepper_look
+            .as_ref()
+            .map_or_else(crate::testing::plain_stepper_look, |look| look(spec, env))
     }
-
-    fn draw_stepper_button(
-        &self,
-        _draw: &mut Recorder,
-        _bounds: Rect,
-        _end: StepperEnd,
-        _state: WidgetInteractionState,
-    ) {
-    }
-    fn draw_stepper_decrement_icon(&self, _draw: &mut Recorder, _bounds: Rect) {}
-    fn draw_stepper_increment_icon(&self, _draw: &mut Recorder, _bounds: Rect) {}
 
     fn input_field_metrics(&self) -> InputFieldMetrics {
         self.input_metrics.unwrap_or(InputFieldMetrics {

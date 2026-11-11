@@ -299,8 +299,8 @@ mod token_probe {
         FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionMotion, Knob,
         Label, LinearProgressLook, ListMetrics, Motion, NavigationMetrics, NavigationMotion,
         PickerMetrics, PressFeedback, ProgressControl, ProgressSpec, RadioIndicatorState,
-        RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec, StateLayer, StepperEnd,
-        StepperMetrics, Surface, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics,
+        RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook,
+        StepperSpec, Surface, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics,
         TextCaretMotion, TextContextMenuMetrics, ToggleSpec, WidgetInteractionState, WidgetTheme,
     };
     use hydrolysis::theme::{CheckboxLook, SwitchDrag, SwitchLook};
@@ -416,26 +416,9 @@ mod token_probe {
             CheckboxLook::new(hydrolysis::testing::plain_toggle_control())
         }
 
-        fn stepper_metrics(&self) -> StepperMetrics {
-            StepperMetrics {
-                button_min_size: 12.0,
-                button_max_size: 18.0,
-                button_intrinsic_size: 14.0,
-                button_spacing: 4.0,
-                label_spacing: 8.0,
-            }
+        fn stepper(&self, _spec: &StepperSpec, _env: &Environment) -> StepperLook {
+            hydrolysis::testing::plain_stepper_look()
         }
-
-        fn draw_stepper_button(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _end: StepperEnd,
-            _state: WidgetInteractionState,
-        ) {
-        }
-        fn draw_stepper_decrement_icon(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_stepper_increment_icon(&self, _recorder: &mut Recorder, _bounds: Rect) {}
 
         fn input_field_metrics(&self) -> InputFieldMetrics {
             InputFieldMetrics {
