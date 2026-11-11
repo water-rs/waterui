@@ -81,6 +81,10 @@ sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 [build-dependencies]
 waterui-git-head.workspace = true
 
+# `waterui-git-head` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
+[package.metadata.cargo-machete]
+ignored = ["waterui-git-head"]
+
 # `sched_setaffinity` / `sched_getcpu` for `measure --cpu`; `kill` to
 # stop `powermetrics` for `measure --energy`.
 [target.'cfg(unix)'.dependencies]
