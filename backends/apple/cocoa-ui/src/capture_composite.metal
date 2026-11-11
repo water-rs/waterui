@@ -52,6 +52,7 @@ vertex CaptureCompositeVertexOut capture_composite_vertex(
 // The conversion from the sampled texture's colour to the target's, matching
 // the `CompositeConversion` struct the host passes through fragment buffer 0
 // — `repr(C, align(16))`, so the offsets and the 96-byte size line up.
+// The four trailing `uint`s fill the last 16 bytes exactly.
 //
 // Each source and the target carry their own colour contract: the native
 // raster holds (extended) sRGB-encoded values, an `_sRGB` texture samples as
@@ -73,6 +74,11 @@ struct CaptureCompositeConversion {
     uint decode_source;
     // Whether the target expects the sRGB transfer.
     uint encode_target;
+    // Whether the target stores only [0, 1]: the straight colour is
+    // clipped into that range before it is premultiplied again, so a
+    // colour outside the target's gamut keeps every channel within its
+    // alpha instead of the store clamping each premultiplied channel.
+    uint clip_target;
 };
 
 // The sRGB transfer of linear light, mirrored through zero so extended
@@ -117,6 +123,9 @@ static float4 convert(float4 color, constant CaptureCompositeConversion& convers
         dot(conversion.rows[2].xyz, straight));
     if (conversion.encode_target != 0) {
         straight = srgb_encode(straight, conversion);
+    }
+    if (conversion.clip_target != 0) {
+        straight = clamp(straight, 0.0, 1.0);
     }
     return float4(straight * color.a, color.a);
 }
