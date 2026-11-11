@@ -73,8 +73,8 @@
 use std::collections::{HashMap, HashSet};
 
 use cherenkov_scene::{
-    BackdropFilter, BackdropGroup, BlendMode, BlendSpace, Draw, FillRule, Group, GroupItem, Item,
-    Layer, LayerFilter, Paint, Scene, Shape,
+    BackdropFilter, BackdropGroup, BlendMode, BlendSpace, CapturePyramid, Draw, FillRule, Group,
+    GroupItem, Item, Layer, LayerFilter, Paint, Scene, Shape,
 };
 use kurbo::{Affine, Point, Rect, Vec2};
 
@@ -338,8 +338,10 @@ fn backdrop_capture(chain: &[Level], group: &BackdropGroup) -> Capture {
         }
         move_canvas(&mut capture, BlendSpace::Linear, space);
     }
-    // The blur pyramid: level `k` is the exact 2×2 box reduction of level
-    // `k − 1` (the filtered capture), matching the GPU's mip chain.
+    // The blur pyramid: level `k` is the group's reduction of level
+    // `k − 1` (the filtered capture) — the exact 2×2 box, or the
+    // `[1, 5, 10, 10, 5, 1] / 32` kernel centred on it — matching the GPU's mip
+    // chain.
     let deeper = group
         .levels
         .checked_sub(1)
@@ -348,7 +350,10 @@ fn backdrop_capture(chain: &[Level], group: &BackdropGroup) -> Capture {
     let mut levels = Vec::with_capacity(deeper);
     for _ in 1..group.levels {
         let src = levels.last().unwrap_or(&capture);
-        levels.push(reduce_level(src));
+        levels.push(match group.pyramid {
+            CapturePyramid::Box => reduce_level(src),
+            CapturePyramid::Gaussian => reduce_level_gaussian(src),
+        });
     }
     Capture {
         space,
@@ -1939,6 +1944,44 @@ fn reduce_level(src: &Canvas) -> Canvas {
     }
 }
 
+/// The next Gaussian pyramid level: texel `(i, j)` is
+/// `Σ_{a, b ∈ 0..=5} w[a]·w[b]·src(2i − 2 + a, 2j − 2 + b)` with
+/// `w = [1, 5, 10, 10, 5, 1] / 32`, source indices clamped to the source
+/// extent, values unclamped. The extents are the box reduction's.
+fn reduce_level_gaussian(src: &Canvas) -> Canvas {
+    const W: [f64; 6] = [
+        1.0 / 32.0,
+        5.0 / 32.0,
+        10.0 / 32.0,
+        10.0 / 32.0,
+        5.0 / 32.0,
+        1.0 / 32.0,
+    ];
+    let (w, h) = (src.width.div_ceil(2), src.height.div_ceil(2));
+    let tap = |centre: usize, a: usize, len: usize| (2 * centre + a).saturating_sub(2).min(len - 1);
+    let mut pixels = vec![[0.0; 4]; w * h];
+    for j in 0..h {
+        for i in 0..w {
+            let mut acc = [0.0; 4];
+            for (b, wy) in W.iter().enumerate() {
+                let y = tap(j, b, src.height);
+                for (a, wx) in W.iter().enumerate() {
+                    let c = src.pixels[y * src.width + tap(i, a, src.width)];
+                    for (s, &v) in acc.iter_mut().zip(&c) {
+                        *s = (wx * wy).mul_add(v, *s);
+                    }
+                }
+            }
+            pixels[j * w + i] = acc;
+        }
+    }
+    Canvas {
+        pixels,
+        width: w,
+        height: h,
+    }
+}
+
 /// `⌈len · scale⌉`: the capture grid's texel count over `len` device pixels.
 #[expect(
     clippy::cast_possible_truncation,
@@ -2027,7 +2070,7 @@ fn scene_clip_stack(layer: &Layer, tf: Affine, _w: usize, _h: usize) -> Vec<Vec<
 
 #[cfg(test)]
 mod tests {
-    use super::{Canvas, reduce_level};
+    use super::{Canvas, reduce_level, reduce_level_gaussian};
 
     /// Texel `(x, y)` of the source level: every channel varies, alpha
     /// included.
@@ -2071,5 +2114,43 @@ mod tests {
         assert_texel(at(1, 2), mean(&[(2, 4), (3, 4)]));
         // The corner: the single texel present.
         assert_texel(at(2, 2), texel(4, 4));
+    }
+
+    /// The Gaussian kernel weight of tap `a` in `0..=5`.
+    fn weight(a: usize) -> f64 {
+        [1.0, 5.0, 10.0, 10.0, 5.0, 1.0][a] / 32.0
+    }
+
+    #[test]
+    fn gaussian_pyramid_weights_a_clamped_six_by_six_footprint() {
+        let src = Canvas {
+            pixels: (0..5)
+                .flat_map(|y| (0..5).map(move |x| texel(x, y)))
+                .collect(),
+            width: 5,
+            height: 5,
+        };
+        let level = reduce_level_gaussian(&src);
+        assert_eq!((level.width, level.height), (3, 3));
+        // The footprint of texel `(i, j)` is source texels `2i − 2 ..= 2i + 3`
+        // by `2j − 2 ..= 2j + 3`, indices clamped to `0..=4`.
+        let expected = |i: usize, j: usize| {
+            let mut acc = [0.0; 4];
+            for b in 0..6 {
+                for a in 0..6 {
+                    let x = u8::try_from((2 * i + a).saturating_sub(2).min(4)).expect("clamped");
+                    let y = u8::try_from((2 * j + b).saturating_sub(2).min(4)).expect("clamped");
+                    for (s, v) in acc.iter_mut().zip(texel(x, y)) {
+                        *s = (weight(a) * weight(b)).mul_add(v, *s);
+                    }
+                }
+            }
+            acc
+        };
+        for j in 0..3 {
+            for i in 0..3 {
+                assert_texel(level.pixels[j * 3 + i], expected(i, j));
+            }
+        }
     }
 }

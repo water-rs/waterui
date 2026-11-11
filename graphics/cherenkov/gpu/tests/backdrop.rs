@@ -3815,3 +3815,391 @@ fn a_member_inside_the_anchors_blended_child_is_unsupported() -> Result<(), Box<
     Ok(())
 }
 }
+
+/// The capture the `backdrop_sample_blur` tests read, a 256×160 grid of
+/// values exact in `f16`: a grid of 4-texel lines on an 8-texel pitch
+/// (x < 64), flat 0.25 (64..128) and 0.75 (128..192) with step edges
+/// between the zones, and past x = 192 a three-texel stripe period over the
+/// top half (y < 80) with a flat 0.5 below it.
+fn blur_capture(x: usize, y: usize) -> f64 {
+    if x < 64 {
+        f64::from(u8::from(x % 8 < 4 || y % 8 < 4))
+    } else if x < 128 {
+        0.25
+    } else if x < 192 {
+        0.75
+    } else if y < STRIPE_ROWS {
+        f64::from(u8::from(!x.is_multiple_of(3)))
+    } else {
+        0.5
+    }
+}
+
+const BLUR_SIZE: (usize, usize) = (256, 160);
+/// The first column of [`blur_capture`]'s stripe zone.
+const STRIPE_COLUMN: usize = 192;
+/// The stripe zone's height.
+const STRIPE_ROWS: usize = 80;
+/// The tolerance of a blurred read over band-limited content (step edges,
+/// flat zones, the grid of period 8): 2% of the capture's unit contrast.
+const BAND_LIMITED: f64 = 0.02;
+/// The tolerance where a pixel's kernel reaches the period-3 stripes: the
+/// reduction kernel leaks 3.1% of that frequency (f = 1/3 cycles per
+/// texel) into level 1, times the read's response there, plus the
+/// reference's own residual on a contrast-1 pattern.
+const STRIPED: f64 = 0.05;
+
+/// A 5-level Gaussian pyramid over [`blur_capture`], read per pixel by
+/// `shader` with `params`: the whole-surface member's readback.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the capture's size is 256×160"
+)]
+fn render_blur_capture(
+    engine: &Engine<Gpu>,
+    shader: &cherenkov::BackdropShader,
+    params: Vec<f32>,
+    pyramid: cherenkov::CapturePyramid,
+) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
+    let surface = wait!(engine.surface(
+        Offscreen::new(
+            (BLUR_SIZE.0 as u32, BLUR_SIZE.1 as u32),
+            OffscreenFormat::LinearF16
+        ),
+        || {}
+    ))?;
+    let spec = cherenkov::BackdropSpec::new(
+        cherenkov::CaptureScale::FULL,
+        cherenkov::CaptureLevels::new(5)?,
+    )
+    .pyramid(pyramid);
+    let group = surface.backdrop_group_unfiltered(spec);
+    let member = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            let gray = |v: f32| WorkingColor::new([v, v, v, 1.0]);
+            r.fill(Rect::new(0.0, 0.0, 256.0, 160.0), gray(0.0));
+            r.fill(Rect::new(64.0, 0.0, 128.0, 160.0), gray(0.25));
+            r.fill(Rect::new(128.0, 0.0, 192.0, 160.0), gray(0.75));
+            r.fill(Rect::new(192.0, 80.0, 256.0, 160.0), gray(0.5));
+            for i in 0..8u8 {
+                let x = f64::from(i) * 8.0;
+                r.fill(Rect::new(x, 0.0, x + 4.0, 160.0), gray(1.0));
+            }
+            for j in 0..20u8 {
+                let y = f64::from(j) * 8.0;
+                r.fill(Rect::new(0.0, y, 64.0, y + 4.0), gray(1.0));
+            }
+            for x in (192..256u16).filter(|x| x % 3 != 0) {
+                let x = f64::from(x);
+                r.fill(Rect::new(x, 0.0, x + 1.0, 80.0), gray(1.0));
+            }
+        }));
+        tx[surface.root()].push(&member);
+        tx[&member]
+            .clip(Rect::new(0.0, 0.0, 256.0, 160.0))
+            .backdrop(group.sample_with(shader.effect(params)));
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    Ok(wait!(surface.readback())?)
+}
+
+/// `erf` in `f64`: the Maclaurin series, whose cancellation at |x| < 4
+/// leaves far more than the reference needs; beyond that `erfc < 2e-8`.
+fn erf(x: f64) -> f64 {
+    if x.abs() >= 4.0 {
+        return x.signum();
+    }
+    let (mut term, mut sum) = (x, x);
+    for n in 1..80 {
+        let n = f64::from(n);
+        term *= -x * x / n;
+        sum += term / 2.0f64.mul_add(n, 1.0);
+    }
+    sum * 2.0 / std::f64::consts::PI.sqrt()
+}
+
+/// `H(x) = x·Φ(x / s) + s·ϕ(x / s)`, the second antiderivative of the
+/// Gaussian of deviation `s` (`max(x, 0)` for `s² ≤ 0`), in `f64`.
+fn gaussian_h(x: f64, variance: f64) -> f64 {
+    if variance <= 0.0 {
+        return x.max(0.0);
+    }
+    let s = variance.sqrt();
+    let z = x / s;
+    let cdf = f64::midpoint(1.0, erf(z / std::f64::consts::SQRT_2));
+    let pdf = (-0.5 * z * z).exp() / (2.0 * std::f64::consts::PI).sqrt();
+    s.mul_add(pdf, x * cdf)
+}
+
+/// Per output pixel `p` along one axis of `len` texels, the weight of each
+/// texel `t` in the bilinearly interpolated capture convolved with a
+/// Gaussian of variance `variance` (`sigma² − 1/6`; the bilinear weights
+/// when it is not positive), centred at `p + 0.5 + offset` (texel `t`
+/// spans `[t, t + 1)`, its centre at `t + 0.5`). A texel's weight is the
+/// second difference of `H` at unit spacing, `F(t) − F(t − 1)` with
+/// `F(t) = H(t + 1 − c) − H(t − c)` for `c = p + offset`, the first and
+/// last texels extending to infinity (clamp to edge): `F(0)` and
+/// `1 − F(len − 2)`.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "texel indices are below 256, exact in f64"
+)]
+fn gaussian_weights(len: usize, variance: f64, offset: f64) -> Vec<Vec<f64>> {
+    (0..len)
+        .map(|p| {
+            let c = p as f64 + offset;
+            let f = |t: usize| {
+                gaussian_h(t as f64 + 1.0 - c, variance) - gaussian_h(t as f64 - c, variance)
+            };
+            (0..len)
+                .map(|t| {
+                    if t == 0 {
+                        f(0)
+                    } else if t + 1 == len {
+                        1.0 - f(t - 1)
+                    } else {
+                        f(t) - f(t - 1)
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// [`blur_capture`] under `backdrop_sample_blur`'s contract in `f64`: the
+/// capture bilinearly interpolated, convolved with a Gaussian of variance
+/// `max(sigma² − 1/6, 0)` texels² per axis (bilinear interpolation alone
+/// has variance 1/6), at the pixel centres shifted by `offset`.
+fn reference_blur(sigma: f64, offset: (f64, f64)) -> Vec<Vec<f64>> {
+    let (w, h) = BLUR_SIZE;
+    let variance = sigma.mul_add(sigma, -(1.0 / 6.0));
+    let wx = gaussian_weights(w, variance, offset.0);
+    let wy = gaussian_weights(h, variance, offset.1);
+    // Horizontal pass: `rows[t_y][x]`.
+    let rows: Vec<Vec<f64>> = (0..h)
+        .map(|ty| {
+            (0..w)
+                .map(|x| (0..w).map(|tx| blur_capture(tx, ty) * wx[x][tx]).sum())
+                .collect()
+        })
+        .collect();
+    (0..h)
+        .map(|y| {
+            (0..w)
+                .map(|x| (0..h).map(|ty| rows[ty][x] * wy[y][ty]).sum())
+                .collect()
+        })
+        .collect()
+}
+
+/// How far from the sample point (level-0 texels) a `backdrop_sample_blur`
+/// of deviation `sigma` over a pyramid reads: `4.5 · 2^k` for the deepest
+/// level `k` the read takes, the deepest with `V(k) + 4^k / 6 ≤ sigma²`
+/// (level 0 below that), among the five levels the pyramid keeps.
+fn blur_footprint(sigma: f64) -> f64 {
+    let v = sigma * sigma;
+    let k = (0.5 * (12.0f64.mul_add(v, 5.0) / 7.0).log2())
+        .floor()
+        .clamp(0.0, 4.0);
+    4.5 * k.exp2()
+}
+
+/// The pixel margin a comparison skips at the surface edge for `sigma`: the
+/// Gaussian's `3σ` plus the read's footprint, so no compared pixel's
+/// kernel reaches a level's clamped edge texel.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the margin is a small positive pixel count"
+)]
+fn blur_margin(sigma: f64) -> usize {
+    3.0f64.mul_add(sigma, blur_footprint(sigma)).ceil() as usize
+}
+
+/// The most a pixel exceeds its tolerance by: `(excess, error, at)` over
+/// every pixel and channel at least `margin` pixels from the surface edge,
+/// `tolerance(x, y)` the allowed `|readback − expected|` there (`expected`
+/// is the gray value; the capture is opaque). A non-positive excess means
+/// every pixel is within its tolerance.
+fn max_blur_excess(
+    readback: &cherenkov::Readback,
+    expected: &[Vec<f64>],
+    margin: usize,
+    tolerance: impl Fn(usize, usize) -> f64,
+) -> (f64, f64, (usize, usize)) {
+    let mut worst = (f64::NEG_INFINITY, 0.0, (0, 0));
+    for (y, row) in expected.iter().enumerate() {
+        for (x, &e) in row.iter().enumerate() {
+            if x < margin || y < margin || x + margin >= row.len() || y + margin >= expected.len() {
+                continue;
+            }
+            let p = pixel(readback, x, y);
+            let err = (0..3)
+                .map(|c| (f64::from(p[c]) - e).abs())
+                .chain([(f64::from(p[3]) - 1.0).abs()])
+                .fold(0.0, f64::max);
+            let excess = err - tolerance(x, y);
+            if excess > worst.0 {
+                worst = (excess, err, (x, y));
+            }
+        }
+    }
+    worst
+}
+
+split_test! {
+/// `backdrop_sample_blur(q, sigma)` over a Gaussian pyramid against its
+/// contract computed independently in `f64` (`reference_blur`): the
+/// capture, bilinearly interpolated, convolved with a Gaussian of variance
+/// `max(sigma² − 1/6, 0)` with unbounded support. `sigma` 0 — equal to
+/// `backdrop_sample` —, the bilinear range (σ ≤ 1/√6 ≈ 0.41), single-level
+/// reads on levels 0 to 3 (σ = 0.5, 1.0, 1.3 on level 0, 2.0 on level 1,
+/// 4.5 on level 2, 9.0 on level 3), the cross-fades into levels 1 to 3
+/// (σ = 1.4, 1.5, 1.7; 3.0, 3.3; 6.5) and the clamp
+/// `sqrt(V(4) + (23/12)·256)` ≈ 24.43 (past which the read must not
+/// change), at pixel centres, at a fractional offset and at a half-texel
+/// offset. A level `k` read touches texels `4.5·2^k` away, so the
+/// comparison skips the pixels within `3σ` plus that footprint of the
+/// surface edge.
+fn sample_blur_matches_a_true_gaussian() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let blur = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+        "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            return backdrop_sample_blur(px.p + params[0].yz, params[0].x);
+        }",
+    ))?;
+    let plain = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+        "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            return backdrop_sample(px.p + params[0].yz);
+        }",
+    ))?;
+    let gaussian = cherenkov::CapturePyramid::Gaussian;
+    // The capture the reference is computed over is the one on screen.
+    let capture = render_blur_capture(&engine, &plain, vec![0.0, 0.0, 0.0], gaussian)?;
+    for y in 0..BLUR_SIZE.1 {
+        for x in 0..BLUR_SIZE.0 {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the capture's values are exact in f16"
+            )]
+            let v = blur_capture(x, y) as f32;
+            assert_pixel(pixel(&capture, x, y), [v, v, v, 1.0], 1e-3);
+        }
+    }
+    // `sigma = 0` is the bilinear read `backdrop_sample` makes, at pixel
+    // centres and between them.
+    for offset in [[0.0, 0.0], [0.37, -0.21]] {
+        let want = render_blur_capture(&engine, &plain, vec![0.0, offset[0], offset[1]], gaussian)?;
+        let got = render_blur_capture(&engine, &blur, vec![0.0, offset[0], offset[1]], gaussian)?;
+        for y in 0..BLUR_SIZE.1 {
+            for x in 0..BLUR_SIZE.0 {
+                assert_pixel(pixel(&got, x, y), pixel(&want, x, y), 1e-3);
+            }
+        }
+    }
+    // The two tolerances are fixed, neither adjusted to a case.
+    let sigmas = [
+        0.3f32, 0.5, 1.0, 1.3, 1.4, 1.5, 1.7, 2.0, 3.0, 3.3, 4.5, 6.5, 9.0,
+    ];
+    let offsets = [(0.0f32, 0.0f32), (0.37, -0.21), (0.5, 0.5)];
+    let cases = sigmas
+        .into_iter()
+        .flat_map(|sigma| offsets.into_iter().map(move |offset| (sigma, offset)));
+    let mut failures = Vec::new();
+    for (sigma, offset) in cases {
+        let readback = render_blur_capture(
+            &engine,
+            &blur,
+            vec![sigma, offset.0, offset.1],
+            gaussian,
+        )?;
+        let reference = reference_blur(
+            f64::from(sigma),
+            (f64::from(offset.0), f64::from(offset.1)),
+        );
+        let margin = blur_margin(f64::from(sigma));
+        // A pixel whose kernel (`margin` texels) reaches the stripe zone.
+        let tolerance = |x: usize, y: usize| {
+            if x + margin >= STRIPE_COLUMN && y < STRIPE_ROWS + margin {
+                STRIPED
+            } else {
+                BAND_LIMITED
+            }
+        };
+        let (excess, error, at) = max_blur_excess(&readback, &reference, margin, tolerance);
+        if excess > 0.0 {
+            failures.push(format!(
+                "sigma {sigma} offset {offset:?}: error {error} at {at:?} exceeds its tolerance {}",
+                tolerance(at.0, at.1)
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    // Past the clamp `sqrt(V(4) + (23/12)·256)` ≈ 24.43 the read holds.
+    let reach = render_blur_capture(&engine, &blur, vec![24.5, 0.0, 0.0], gaussian)?;
+    let beyond = render_blur_capture(&engine, &blur, vec![40.0, 0.0, 0.0], gaussian)?;
+    for y in 0..BLUR_SIZE.1 {
+        for x in 0..BLUR_SIZE.0 {
+            assert_pixel(pixel(&beyond, x, y), pixel(&reach, x, y), 1e-3);
+        }
+    }
+    Ok(())
+}
+}
+
+split_test! {
+/// `backdrop_sample_blur` is defined only on a Gaussian pyramid: a shader
+/// reaching it fails the frame when it composites over a Box group, and
+/// the same shader renders over a Gaussian one.
+fn sample_blur_over_a_box_group_fails_the_frame() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+        "fn blurred(q: vec2<f32>) -> vec4<f32> {
+            return backdrop_sample_blur(q, 2.0);
+        }
+        fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+            return blurred(px.p);
+        }",
+    ))?;
+    for (pyramid, ok) in [
+        (cherenkov::CapturePyramid::Box, false),
+        (cherenkov::CapturePyramid::Gaussian, true),
+    ] {
+        let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+        let spec = cherenkov::BackdropSpec::new(
+            cherenkov::CaptureScale::FULL,
+            cherenkov::CaptureLevels::new(3)?,
+        )
+        .pyramid(pyramid);
+        let group = surface.backdrop_group_unfiltered(spec);
+        let member = surface.layer();
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|r| {
+                r.fill(
+                    Rect::new(0.0, 0.0, 32.0, 32.0),
+                    WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+                );
+            }));
+            tx[surface.root()].push(&member);
+            tx[&member]
+                .clip(Rect::new(0.0, 0.0, 32.0, 32.0))
+                .backdrop(group.sample_with(shader.effect(Vec::new())));
+        });
+        let result = wait!(engine.render(FrameTime::now()));
+        if ok {
+            result?;
+        } else {
+            assert!(
+                matches!(
+                    &result,
+                    Err(cherenkov::RenderError::Render(message))
+                        if message.contains("backdrop_sample_blur") && message.contains("Box")
+                ),
+                "unexpected result {result:?}"
+            );
+        }
+    }
+    Ok(())
+}
+}
