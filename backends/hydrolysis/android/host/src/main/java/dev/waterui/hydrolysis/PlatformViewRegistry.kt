@@ -180,6 +180,12 @@ class PlatformViewRegistry internal constructor(
     private val factories = HashMap<String, (Context) -> View>()
     private val slots = LinkedHashMap<Long, Slot>()
 
+    init {
+        // The decoder plane of the GPU video player belongs to the backend,
+        // whichever painter draws the window.
+        factories[VideoSurfaceHostView.KIND] = { context -> VideoSurfaceHostView(context) }
+    }
+
     /**
      * The [OrderedContent] recorder: records the mounted view's own display
      * list into the painter's portal canvas — the real child's `onDraw`,

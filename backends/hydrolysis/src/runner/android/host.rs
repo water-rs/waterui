@@ -1145,6 +1145,11 @@ fn session_mounts(
     env.insert(Rc::new(super::hosted_gpu::HostedGpu::new(
         platform_views.clone(),
     )));
+    // The GPU video player's decoder planes, placed through the same sink.
+    #[cfg(hydrolysis_video_plane)]
+    env.insert(Rc::new(super::video_plane::VideoPlanes::new(
+        platform_views.clone(),
+    )));
     // The session-wide "focus sits inside a platform-view container"
     // state the Kotlin registry reports through
     // `onNativePlatformViewFocus`: while a mounted child holds the IME,

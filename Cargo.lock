@@ -4699,6 +4699,7 @@ dependencies = [
  "waterui-text",
  "waterui-url",
  "waterui-video",
+ "waterui-video-gpu",
  "waterui-watcher-set",
  "waterui-webview",
  "wayland-client",

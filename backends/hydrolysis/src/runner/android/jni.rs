@@ -89,8 +89,11 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// `nativeHostedSurfaceAttached` / `nativeHostedSurfaceResized` /
 /// `nativeHostedSurfaceDestroyed` carry the `Surface` of the `TextureView`
 /// the painter mounts for each GPU content view, keyed by its placement id
-/// (water-rs/waterui#1812).
-pub const JNI_SCHEMA: jint = 28;
+/// (water-rs/waterui#1812). 29 = the GPU video player's decoder-plane edge:
+/// `nativeVideoPlaneAttached` hands the Kotlin host object of a placement to
+/// the player and `nativeVideoPlaneSurfaceDestroyed` reports the loss of its
+/// `Surface`.
+pub const JNI_SCHEMA: jint = 29;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -924,6 +927,47 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeHostedSurf
             .hwui
             .hosted
             .detach(crate::num_cast::i64_as_u64(view));
+        Ok(())
+    });
+}
+
+/// The Kotlin host object of a GPU video player's decoder plane exists:
+/// the session hands it to the player, keyed by the placement id of the
+/// platform view it is mounted for.
+#[cfg(hydrolysis_video_plane)]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeVideoPlaneAttached<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    plane: jlong,
+    host: JObject<'local>,
+) {
+    guard(&mut env, |env| {
+        super::video_plane::VideoPlanes::in_environment(&session(session_ptr).env).host_attached(
+            env,
+            crate::num_cast::i64_as_u64(plane),
+            &host,
+        );
+        Ok(())
+    });
+}
+
+/// Android invalidated the `Surface` of a decoder plane: the player's
+/// decoder must stop rendering into it.
+#[cfg(hydrolysis_video_plane)]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeVideoPlaneSurfaceDestroyed<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    plane: jlong,
+) {
+    guard(&mut env, |_env| {
+        super::video_plane::VideoPlanes::in_environment(&session(session_ptr).env)
+            .surface_destroyed(crate::num_cast::i64_as_u64(plane));
         Ok(())
     });
 }

@@ -292,6 +292,8 @@ ndk = { version = "0.9.0", features = ["nativewindow", "api-level-33"] }
 # panics without it; published once in `nativeCreateSession`.
 ndk-context = "0.1"
 libc = "0.2"
+# The GPU video player's Android decoder plane (the `video-gpu` feature).
+waterui-video-gpu = { workspace = true, optional = true }
 # The Cherenkov GPU stack on Android is optional: a pure-HWUI build
 # (`--no-default-features --features hwui`, water-rs/waterui#1811) selects
 # the platform painter and never links a GPU engine, a wgpu device or the
@@ -469,6 +471,11 @@ inspector-signals = ["waterui/inspector-signals"]
 # (water-rs/waterui#1811). On other targets the feature selects nothing; the
 # subsystem still compiles for tests.
 hwui = ["dep:read-fonts"]
+# The Android realization of the GPU video player's decoder plane
+# (`AndroidVideoSurfaceHost`), for an application that links
+# `waterui-video-gpu`. The CLI enables it for such an application; elsewhere
+# the feature selects nothing.
+video-gpu = ["gpu", "dep:waterui-video-gpu"]
 # The platform's own web engine: `WKWebView` on macOS, an `<iframe>` on the web,
 # each hosted on a compositor plane, and `android.webkit.WebView` on Android,
 # mounted as a platform-view instance. Every other engine is a crate the

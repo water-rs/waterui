@@ -235,6 +235,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     core: renderer.new_core(),
                     _retain: value,
                     child: Self::build_view(content, env, renderer),
+                    #[cfg(hydrolysis_video_plane)]
+                    plane: None,
                 }));
             }
             Err(view) => view,
@@ -682,6 +684,40 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let view = match view.downcast::<Native<ExternalFrameView>>() {
             Ok(view) => {
                 return Self::build_external_frame((*view).into_inner(), renderer, env);
+            }
+            Err(view) => view,
+        };
+        // The GPU video player's host, built straight from a view no
+        // normalization unwrapped.
+        #[cfg(hydrolysis_video_plane)]
+        let view = match view.downcast::<Native<waterui_video_gpu::AndroidVideoSurfaceHost>>() {
+            Ok(host) => {
+                return Self::build_view(
+                    crate::runner::android::video_plane::unwrap_host(*host),
+                    env,
+                    renderer,
+                );
+            }
+            Err(view) => view,
+        };
+        // The picture of the GPU video player with the decoder plane the
+        // Android backend places below it.
+        #[cfg(hydrolysis_video_plane)]
+        let view = match view
+            .downcast::<Metadata<crate::runner::android::video_plane::VideoPlaneHost>>()
+        {
+            Ok(meta) => {
+                let Metadata { content, value } = *meta;
+                let planes = crate::runner::android::video_plane::VideoPlanes::in_environment(env);
+                return Self::Retain(Box::new(RetainNode {
+                    core: renderer.new_core(),
+                    _retain: Retain::new(()),
+                    child: Self::build_view(content, env, renderer),
+                    plane: Some(crate::runner::android::video_plane::VideoPlane::new(
+                        &planes,
+                        value.into_bridge(),
+                    )),
+                }));
             }
             Err(view) => view,
         };

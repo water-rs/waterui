@@ -97,6 +97,10 @@ fn main() {
         // in its own platform surface the painter composites in session
         // order (water-rs/waterui#1812).
         hydrolysis_hwui_gpu: { all(hydrolysis_hwui, feature = "gpu") },
+        // The GPU video player's Android decoder plane: the backend realizes
+        // `waterui-video-gpu`'s `AndroidVideoSurfaceHost` only when the
+        // application links the player (the `video-gpu` feature).
+        hydrolysis_video_plane: { all(android_platform, feature = "video-gpu") },
         // Runtime implementation exists only when a painter is selected.
         hydrolysis_runtime: { any(hydrolysis_gpu_painter, hydrolysis_hwui) },
         // The Cherenkov GPU engine, its wgpu device stack and the parley

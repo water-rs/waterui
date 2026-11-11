@@ -358,9 +358,15 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 }
                 node.flush_content(renderer, ctx, env);
             }
-            Self::Retain(node) => node
-                .child
-                .flush(renderer, ctx, env, kurbo::Affine::IDENTITY),
+            Self::Retain(node) => {
+                #[cfg(hydrolysis_video_plane)]
+                if let Some(plane) = &node.plane {
+                    let (table, placement) = plane.placement();
+                    renderer.register_platform_view_placement(ctx.bounds(), table, placement);
+                }
+                node.child
+                    .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
+            }
             Self::Env(node) => {
                 renderer.register_modal_scope(&node.env);
                 node.child

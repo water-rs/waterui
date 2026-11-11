@@ -193,6 +193,21 @@ class HydrolysisSession internal constructor(
         }
     }
 
+    /** The Java host of the GPU video player's decoder plane [id] exists. */
+    fun videoPlaneAttached(id: Long, host: Any) {
+        withNativePtr(NativeBridge::nativeVideoPlaneAttached.name) { ptr ->
+            NativeBridge.nativeVideoPlaneAttached(ptr, id, host)
+        }
+    }
+
+    /** The decoder plane [id]'s `Surface` was destroyed by the platform. */
+    fun videoPlaneSurfaceDestroyed(id: Long) {
+        if (destroyed) return
+        withNativePtr(NativeBridge::nativeVideoPlaneSurfaceDestroyed.name) { ptr ->
+            NativeBridge.nativeVideoPlaneSurfaceDestroyed(ptr, id)
+        }
+    }
+
     /** The view currently presenting this session, or none between bindings. */
     internal var hostView: HydrolysisHostView? = null
         private set
