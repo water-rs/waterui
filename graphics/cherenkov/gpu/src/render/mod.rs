@@ -33,6 +33,7 @@ mod programs;
 mod projective;
 mod raster;
 mod reduce;
+mod resident;
 mod resolve;
 pub mod shaders;
 mod shadow;
@@ -701,6 +702,12 @@ impl SurfaceState {
             + (self.part_ranges.capacity() * std::mem::size_of::<present::ColorRange>()) as u64
             + self.raster_scratch.heap_bytes()
             + self
+                .projective
+                .values()
+                .flatten()
+                .map(projective::Entry::cpu_bytes)
+                .sum::<u64>()
+            + self
                 .layers
                 .values()
                 .map(ContentData::gpu_input_bytes)
@@ -814,10 +821,7 @@ impl SurfaceState {
                         _ => false,
                     })
             })
-            .map(|(layer, e)| projective::LocalKey {
-                layer,
-                bucket: e.bucket,
-            })
+            .map(|(layer, e)| e.local_key(layer))
             .collect()
     }
 
@@ -942,7 +946,7 @@ fn stored_format(
 ) -> Result<wgpu::TextureFormat, RenderError> {
     match target {
         Target::Part(_) | Target::Plane(_) => Ok(surf.format),
-        Target::Projected(_) => Ok(WORKING_FORMAT),
+        Target::Projected(key) => Ok(projective_entry(&surf.projective, key).texture.format()),
         Target::Scratch(_) => Ok(surf.scratch[&surf.composition.scratch_slot(pass, target)]
             .texture
             .format()),
@@ -1033,7 +1037,7 @@ fn projective_entry(
 ) -> &projective::Entry {
     entries
         .get(&key.layer)
-        .and_then(|entries| entries.iter().find(|e| e.bucket == key.bucket))
+        .and_then(|entries| entries.iter().find(|e| e.matches(key)))
         .expect("a composed local image is retained")
 }
 
@@ -1044,7 +1048,7 @@ fn projective_entry_mut(
 ) -> &mut projective::Entry {
     entries
         .get_mut(&key.layer)
-        .and_then(|entries| entries.iter_mut().find(|e| e.bucket == key.bucket))
+        .and_then(|entries| entries.iter_mut().find(|e| e.matches(key)))
         .expect("a composed local image is retained")
 }
 
@@ -1064,10 +1068,7 @@ fn retire_projective(
                 return true;
             }
             bytes += entry.bytes();
-            let key = projective::LocalKey {
-                layer: *layer,
-                bucket: entry.bucket,
-            };
+            let key = entry.local_key(*layer);
             let before = surf.composed.len();
             surf.composed.retain(|k| *k != key);
             composed |= surf.composed.len() != before;
@@ -1118,6 +1119,9 @@ fn retire_binds1(
         diag::bind_groups_dropped(device, dropped as u64, reason);
     }
     surf.binds1_stamp = (surf.bind_gen, images_gen, mask_gen);
+    for entry in surf.projective.values_mut().flatten() {
+        entry.retire_binds((surf.bind_gen, mask_gen));
+    }
 }
 
 impl SurfaceState {
@@ -1126,6 +1130,9 @@ impl SurfaceState {
     /// by the caller; the direct-resolve drops report their own count.
     fn retire_binds(&mut self, device: &wgpu::Device) {
         self.binds1.clear();
+        for entry in self.projective.values_mut().flatten() {
+            entry.binds.clear();
+        }
         self.drop_resolve_binds(device, "backdrop resolve");
     }
 
@@ -1470,6 +1477,8 @@ pub struct GpuRenderer {
     projective: Option<projective::Pipelines>,
     /// Counts rendered frames; the projective cache's recency clock.
     frame_count: u64,
+    #[cfg(not(target_arch = "wasm32"))]
+    picture_commands_pending: bool,
 }
 
 impl std::fmt::Debug for GpuRenderer {
@@ -1492,6 +1501,9 @@ struct GlyphResources<'a> {
     /// one its producer holds. The producers themselves stay on the
     /// render thread: a rendered producer's content is `!Sync`.
     producers: &'a FxHashMap<ProducerId, &'a external::Slot>,
+    /// The engine's device, asked what a picture image will commit before
+    /// the picture share admits it.
+    device: &'a wgpu::Device,
 }
 
 /// Cell origins and raster resolutions produced by one deferred raster.
@@ -3149,6 +3161,8 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             config,
             projective: None,
             frame_count: 0,
+            #[cfg(not(target_arch = "wasm32"))]
+            picture_commands_pending: false,
         };
         Ok((
             renderer,
@@ -3503,6 +3517,8 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         config,
         projective: None,
         frame_count: 0,
+        #[cfg(not(target_arch = "wasm32"))]
+        picture_commands_pending: false,
     };
     Ok((
         renderer,
@@ -4272,15 +4288,7 @@ impl Renderer for GpuRenderer {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
         diag::set_phase("trim");
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            // Free cached encoders now and in-flight storage after retirement.
-            // Normal frames retain their command-buffer reuse.
-            let device = self.device.clone();
-            self.queue.on_submitted_work_done(move || {
-                device.free_unused_command_encoders();
-            });
-            self.device.free_unused_command_encoders();
-        }
+        self.reclaim_command_memory();
         self.gpu_cov.trim();
         if self.gpu_cov.arena_generation() != self.bound_arena_gen {
             let atlas = &self.atlas;
@@ -4367,10 +4375,7 @@ impl Renderer for GpuRenderer {
             let mut bytes = 0;
             for (layer, entries) in &mut surf.projective {
                 entries.retain(|e| {
-                    let keep = composed.contains(&projective::LocalKey {
-                        layer: *layer,
-                        bucket: e.bucket,
-                    });
+                    let keep = composed.contains(&e.local_key(*layer));
                     if !keep {
                         bytes += e.bytes();
                     }
@@ -4521,50 +4526,6 @@ impl Renderer for GpuRenderer {
     }
 
     fn memory(&self) -> MemoryUsage {
-        let gpu = self.instances.size()
-            // The GPU coverage route's arena, draws and scratch buffers.
-            + self.gpu_cov.bytes()
-            + self
-                .planes
-                .values()
-                .map(planes::SystemPlanes::native_bytes)
-                .sum::<u64>()
-            + self.uploads.gpu_bytes()
-            + self.stops.size()
-            + self.image_decode.size()
-            + self.globals.size()
-            + self.atlas.gpu_bytes()
-            + self.atlas.mask_texture_bytes()
-            + self
-                .surfaces
-                .values()
-                .map(SurfaceState::gpu_bytes)
-                .sum::<u64>()
-            + self
-                .producers
-                .values()
-                .map(gpu_content::Producer::gpu_bytes)
-                .sum::<u64>()
-            + self.images.values().map(GpuImage::bytes).sum::<u64>()
-            + self
-                .bitmaps
-                .values()
-                .map(|bitmap| bitmap.image.bytes())
-                .sum::<u64>();
-        let captures = self
-            .surfaces
-            .values()
-            .map(SurfaceState::backdrop_bytes)
-            .sum();
-        let filter_targets = self.filters.target_bytes();
-        let filter_images = self.filters.image_bytes();
-        let capture_format = self
-            .surfaces
-            .values()
-            .flat_map(|surf| surf.backdrop_groups.values())
-            .flat_map(|g| &g.captures)
-            .map(|c| format_name(c.target.texture.format()))
-            .next();
         let glyph_cache =
             self.atlas.cpu_bytes() + self.fonts.values().map(FontData::bounds_bytes).sum::<u64>();
         let cpu = glyph_cache
@@ -4591,42 +4552,10 @@ impl Renderer for GpuRenderer {
                         as u64
                 })
                 .sum::<u64>();
-        // The tile executor's attachments, reported apart from the rest
-        // because they are the one allocation the engine makes that it
-        // expects device memory *not* to back (#2191). Apple's are
-        // memoryless and have no commitment to read; Vulkan's are
-        // lazily allocated, and the driver says how much of them it had
-        // to commit. Only the committed part is real device memory, so
-        // only it joins `gpu`.
-        #[cfg(target_vendor = "apple")]
-        let (tile_reserved, tile_committed) = (
-            self.surfaces
-                .values()
-                .map(|surf| surf.tile_targets.reserved_bytes())
-                .sum(),
-            None,
-        );
-        #[cfg(all(unix, not(target_vendor = "apple")))]
-        let (tile_reserved, tile_committed) = self.tile_mirror.as_ref().map_or((0, None), |m| {
-            (m.reserved_bytes(), Some(m.committed_total_bytes()))
-        });
-        #[cfg(not(unix))]
-        let (tile_reserved, tile_committed) = (0, None);
         MemoryUsage {
-            gpu: cherenkov::Bytes(
-                gpu + filter_targets
-                    + filter_images
-                    + self.shadow_blur.as_ref().map_or(0, shadow::Blur::gpu_bytes)
-                    + tile_committed.unwrap_or(0),
-            ),
             cpu: cherenkov::Bytes(cpu),
             glyph_cache: cherenkov::Bytes(glyph_cache),
-            tile_reserved: cherenkov::Bytes(tile_reserved),
-            tile_committed: tile_committed.map(cherenkov::Bytes),
-            backdrop_captures: cherenkov::Bytes(captures),
-            backdrop_capture_format: capture_format,
-            filter_targets: cherenkov::Bytes(filter_targets),
-            filter_images: cherenkov::Bytes(filter_images),
+            ..self.gpu_memory()
         }
     }
 
@@ -5200,7 +5129,7 @@ impl GpuRenderer {
             })
             .collect();
         diag::set_phase("lower");
-        let results = self.lower_all(&mut pending, &dirty, &inputs, prepared);
+        let results = self.lower_all(&mut pending, &dirty, inputs, prepared);
         // GPU coverage generations count once per commit, wherever the
         // entry landed (water-rs/waterui#3081).
         stats.paths_rasterized += self.gpu_cov.generated();
@@ -5278,7 +5207,10 @@ impl GpuRenderer {
                     || surface.promotes
                     || self.exports.contains_key(&sf.id);
             }
-            self.evict_projective();
+            if result.is_ok() {
+                self.finish_picture_coverage();
+            }
+            self.evict_projective(0, 0);
             // Set once the encode has consumed the filters' redraw
             // requests (`SurfaceWakes::set`).
             self.update_filter_activity();
@@ -5381,7 +5313,7 @@ impl GpuRenderer {
             })
             .collect();
         diag::set_phase("lower");
-        let results = self.lower_all(&mut pending, &dirty, &inputs, prepared);
+        let results = self.lower_all(&mut pending, &dirty, inputs, prepared);
         // GPU coverage generations count once per commit, wherever the
         // entry landed (water-rs/waterui#3081).
         stats.paths_rasterized += self.gpu_cov.generated();
@@ -5450,7 +5382,10 @@ impl GpuRenderer {
                     || surface.promotes
                     || self.exports.contains_key(&sf.id);
             }
-            self.evict_projective();
+            if result.is_ok() {
+                self.finish_picture_coverage();
+            }
+            self.evict_projective(0, 0);
             // Set once the encode has consumed the filters' redraw
             // requests (`SurfaceWakes::set`).
             self.update_filter_activity();
@@ -6374,6 +6309,90 @@ impl GpuRenderer {
         Ok(())
     }
 
+    fn gpu_memory(&self) -> MemoryUsage {
+        let gpu = self.instances.size()
+            // The GPU coverage route's arena, draws and scratch buffers.
+            + self.gpu_cov.bytes()
+            + self
+                .planes
+                .values()
+                .map(planes::SystemPlanes::native_bytes)
+                .sum::<u64>()
+            + self.uploads.gpu_bytes()
+            + self.stops.size()
+            + self.image_decode.size()
+            + self.globals.size()
+            + self.atlas.gpu_bytes()
+            + self.atlas.mask_texture_bytes()
+            + self
+                .surfaces
+                .values()
+                .map(SurfaceState::gpu_bytes)
+                .sum::<u64>()
+            + self
+                .producers
+                .values()
+                .map(gpu_content::Producer::gpu_bytes)
+                .sum::<u64>()
+            + self.images.values().map(GpuImage::bytes).sum::<u64>()
+            + self
+                .bitmaps
+                .values()
+                .map(|bitmap| bitmap.image.bytes())
+                .sum::<u64>();
+        let captures = self
+            .surfaces
+            .values()
+            .map(SurfaceState::backdrop_bytes)
+            .sum();
+        let filter_targets = self.filters.target_bytes();
+        let filter_images = self.filters.image_bytes();
+        let capture_format = self
+            .surfaces
+            .values()
+            .flat_map(|surf| surf.backdrop_groups.values())
+            .flat_map(|g| &g.captures)
+            .map(|c| format_name(c.target.texture.format()))
+            .next();
+        // The tile executor's attachments, reported apart from the rest
+        // because they are the one allocation the engine makes that it
+        // expects device memory *not* to back (#2191). Apple's are
+        // memoryless and have no commitment to read; Vulkan's are
+        // lazily allocated, and the driver says how much of them it had
+        // to commit. Only the committed part is real device memory, so
+        // only it joins `gpu`.
+        #[cfg(target_vendor = "apple")]
+        let (tile_reserved, tile_committed) = (
+            self.surfaces
+                .values()
+                .map(|surf| surf.tile_targets.reserved_bytes())
+                .sum(),
+            None,
+        );
+        #[cfg(all(unix, not(target_vendor = "apple")))]
+        let (tile_reserved, tile_committed) = self.tile_mirror.as_ref().map_or((0, None), |m| {
+            (m.reserved_bytes(), Some(m.committed_total_bytes()))
+        });
+        #[cfg(not(unix))]
+        let (tile_reserved, tile_committed) = (0, None);
+        MemoryUsage {
+            gpu: cherenkov::Bytes(
+                gpu + filter_targets
+                    + filter_images
+                    + self.shadow_blur.as_ref().map_or(0, shadow::Blur::gpu_bytes)
+                    + tile_committed.unwrap_or(0),
+            ),
+            cpu: cherenkov::Bytes(0),
+            glyph_cache: cherenkov::Bytes(0),
+            tile_reserved: cherenkov::Bytes(tile_reserved),
+            tile_committed: tile_committed.map(cherenkov::Bytes),
+            backdrop_captures: cherenkov::Bytes(captures),
+            backdrop_capture_format: capture_format,
+            filter_targets: cherenkov::Bytes(filter_targets),
+            filter_images: cherenkov::Bytes(filter_images),
+        }
+    }
+
     /// Bytes of every retained local image.
     fn projective_bytes(&self) -> u64 {
         self.surfaces
@@ -6382,10 +6401,27 @@ impl GpuRenderer {
             .sum()
     }
 
+    /// Bytes of the retained picture images the latest frames of the
+    /// registered surfaces composed, which [`Self::evict_projective`] never
+    /// evicts. Surfaces being lowered are out of the map.
+    fn composed_picture_bytes(&self) -> u64 {
+        self.surfaces
+            .values()
+            .flat_map(|surf| {
+                surf.projective.iter().flat_map(move |(layer, entries)| {
+                    entries.iter().filter(move |entry| {
+                        entry.picture.is_some() && surf.composed.contains(&entry.local_key(*layer))
+                    })
+                })
+            })
+            .map(projective::Entry::bytes)
+            .sum()
+    }
+
     /// Every resident GPU byte except the local images, which are
     /// evictable and give way to everything else.
     fn resident_bytes(&self) -> u64 {
-        self.memory().gpu.0 - self.projective_bytes()
+        self.gpu_memory().gpu.0 - self.projective_bytes()
     }
 
     /// The bytes local images may hold: the GPU budget less every other
@@ -6412,6 +6448,9 @@ impl GpuRenderer {
             &self.device,
             "projective content changed",
             |layer, entry| {
+                if entry.picture.is_some() {
+                    return !entry.key.is_some_and(|key| key.is_current(0, replacements));
+                }
                 tree.projective_pose(layer).is_none()
                     || !entry
                         .key
@@ -6427,6 +6466,10 @@ impl GpuRenderer {
             replacements,
             interop: surf.interop,
             stale: surf.stale_projective(&self.filters, &self.shaders, &self.producers),
+            picture_bytes: self
+                .projective_available()
+                .saturating_sub(self.gpu_cov.generation_reservation())
+                .min(self.config.budget.gpu.0 / gpu_cov::BUDGET_SHARE),
         }
     }
 
@@ -6447,6 +6490,9 @@ impl GpuRenderer {
                 .map_or(WORKING_FORMAT, |surf| surf.format);
             self.ensure_projective(&[surface, self.scratch_format, WORKING_FORMAT])?;
         }
+        for r in &realize {
+            self.ensure_projective(&[r.key.format.texture()])?;
+        }
         let available = self.projective_available();
         let Some(surf) = self.surfaces.get_mut(&id) else {
             return Ok(());
@@ -6455,12 +6501,7 @@ impl GpuRenderer {
         for key in &composed {
             required += realize.iter().find(|r| r.key == *key).map_or_else(
                 || projective_entry(&surf.projective, *key).bytes(),
-                |r| {
-                    r.levels
-                        .iter()
-                        .map(|&(w, h)| 8 * u64::from(w) * u64::from(h))
-                        .sum()
-                },
+                projective::Realize::bytes,
             );
             if required > available {
                 return Err(RenderError::ProjectiveUnsupported {
@@ -6471,18 +6512,60 @@ impl GpuRenderer {
                 });
             }
         }
+        let (mut incoming_bytes, mut incoming_pictures) = (0_u64, 0_u64);
+        for r in &realize {
+            let old = surf
+                .projective
+                .get(&r.key.layer)
+                .and_then(|entries| entries.iter().find(|entry| entry.matches(r.key)));
+            if old.is_some_and(|entry| entry.fits(r.levels[0], r.key.format)) {
+                continue;
+            }
+            let growth = r
+                .bytes()
+                .saturating_sub(old.map_or(0, projective::Entry::bytes));
+            incoming_bytes += growth;
+            if r.picture.is_some() {
+                incoming_pictures += growth;
+            }
+        }
+        surf.composed = composed;
+        // Release unused images before allocating their replacements, rather
+        // than holding both sets until this frame has been encoded.
+        self.evict_projective(incoming_bytes, incoming_pictures);
+        let surf = self.surfaces.get_mut(&id).expect("registered surface");
         for r in &realize {
             let entries = surf.projective.entry(r.key.layer).or_default();
-            let slot = entries.iter().position(|e| e.bucket == r.key.bucket);
+            let slot = entries.iter().position(|e| e.matches(r.key));
             if let Some(entry) = slot.map(|i| &mut entries[i])
-                && entry.fits(r.levels[0])
+                && entry.fits(r.levels[0], r.key.format)
             {
                 entry.key = None;
+                entry.picture.clone_from(&r.picture);
                 continue;
             }
             let pipelines = self.projective.as_ref().expect("built above");
             surf.command_damage.forget();
-            let entry = projective::Entry::new(&self.device, pipelines, r.key.bucket, &r.levels);
+            let mut entry = projective::Entry::new(
+                &self.device,
+                pipelines,
+                r.key.bucket,
+                &r.levels,
+                r.key.format,
+                r.bytes(),
+            );
+            if r.picture.is_some() {
+                // The share admitted what the driver said it would commit;
+                // a texture committing more would overrun it unseen.
+                let committed = resident::committed_bytes(&self.device, &entry.texture);
+                assert!(
+                    committed <= r.bytes(),
+                    "picture image {:?} committed {committed} bytes; its admission counted {}",
+                    r.levels[0],
+                    r.bytes()
+                );
+            }
+            entry.picture.clone_from(&r.picture);
             let bytes = entry.bytes();
             if let Some(i) = slot {
                 let old = std::mem::replace(&mut entries[i], entry);
@@ -6501,7 +6584,6 @@ impl GpuRenderer {
             }
         }
         surf.realized = realize;
-        surf.composed = composed;
         Ok(())
     }
 
@@ -6529,13 +6611,24 @@ impl GpuRenderer {
         }
     }
 
-    /// Evicts least-recently-used local images until the retained set fits
-    /// the budget; the images each surface's latest frame composed are
-    /// required and never evicted.
-    fn evict_projective(&mut self) {
-        let available = self.projective_available();
+    /// Evicts least-recently-used local images until the retained set,
+    /// together with the `incoming_bytes` about to be allocated, fits the
+    /// budget, and retained picture images together with the
+    /// `incoming_pictures` among them fit the picture share; the images
+    /// each surface's latest frame composed are required and never evicted.
+    fn evict_projective(&mut self, incoming_bytes: u64, incoming_pictures: u64) {
+        let available = self.projective_available().saturating_sub(incoming_bytes);
         let mut total = self.projective_bytes();
-        if total <= available {
+        let mut pictures: u64 = self
+            .surfaces
+            .values()
+            .flat_map(|surface| surface.projective.values().flatten())
+            .filter(|entry| entry.picture.is_some())
+            .map(projective::Entry::bytes)
+            .sum();
+        let picture_limit =
+            (self.config.budget.gpu.0 / gpu_cov::BUDGET_SHARE).saturating_sub(incoming_pictures);
+        if total <= available && pictures <= picture_limit {
             return;
         }
         let mut optional: Vec<(u64, SurfaceId, projective::LocalKey)> = self
@@ -6545,24 +6638,18 @@ impl GpuRenderer {
                 surf.projective.iter().flat_map(move |(layer, entries)| {
                     entries
                         .iter()
-                        .map(move |e| {
-                            (
-                                e.last_used,
-                                *sid,
-                                projective::LocalKey {
-                                    layer: *layer,
-                                    bucket: e.bucket,
-                                },
-                            )
-                        })
+                        .map(move |e| (e.last_used, *sid, e.local_key(*layer)))
                         .filter(|(_, _, key)| !surf.composed.contains(key))
                 })
             })
             .collect();
         optional.sort_unstable_by_key(|(last, ..)| *last);
         for (_, sid, key) in optional {
-            if total <= available {
+            if total <= available && pictures <= picture_limit {
                 break;
+            }
+            if total <= available && key.picture.is_none() {
+                continue;
             }
             let Some(entries) = self
                 .surfaces
@@ -6571,9 +6658,12 @@ impl GpuRenderer {
             else {
                 continue;
             };
-            if let Some(i) = entries.iter().position(|e| e.bucket == key.bucket) {
+            if let Some(i) = entries.iter().position(|e| e.matches(key)) {
                 let entry = entries.swap_remove(i);
                 total -= entry.bytes();
+                if entry.picture.is_some() {
+                    pictures -= entry.bytes();
+                }
                 diag::retire(
                     &self.device,
                     diag::RetireArgs {
@@ -6826,12 +6916,95 @@ impl GpuRenderer {
         has_compute.then(|| gpu_cov::CoverageLimit::new(&self.device.limits()))
     }
 
+    /// Commit raster storage before accepting optional picture images. Every
+    /// revision lowers the picture allowance, rather than letting new images
+    /// refill space just released by rejected images.
+    fn lower_all(
+        &mut self,
+        pending: &mut [SurfaceState],
+        frames: &[&SurfaceFrame<'_>],
+        mut inputs: Vec<projective::Inputs>,
+        prepared: FxHashMap<SurfaceId, Lowered>,
+    ) -> Vec<Result<Lowered, RenderError>> {
+        let mut results = self.lower_batch(pending, frames, &inputs, prepared);
+        loop {
+            let mut required = 0_u64;
+            let mut pictures = Vec::new();
+            for (surf, result) in pending.iter().zip(&results) {
+                let mut picture_bytes = 0_u64;
+                let Ok(lowered) = result else {
+                    return results;
+                };
+                for key in &lowered.composed {
+                    let bytes = lowered.realize.iter().find(|r| r.key == *key).map_or_else(
+                        || projective_entry(&surf.projective, *key).bytes(),
+                        projective::Realize::bytes,
+                    );
+                    required += bytes;
+                    if key.picture.is_some() {
+                        picture_bytes += bytes;
+                    }
+                }
+                pictures.push(picture_bytes);
+            }
+            if pictures.iter().all(|bytes| *bytes == 0) {
+                break;
+            }
+            let resident = self.resident_bytes() + self.gpu_cov.planned_bytes()
+                - self.gpu_cov.bytes()
+                + pending
+                    .iter()
+                    .map(|surf| surf.gpu_bytes() - surf.projective_bytes())
+                    .sum::<u64>();
+            let available = self.config.budget.gpu.0.saturating_sub(resident);
+            // The picture share is engine-wide: every surface's composed
+            // pictures, those of surfaces outside this batch included, are
+            // never evicted, so together they must fit it.
+            let picture_excess = (pictures.iter().sum::<u64>() + self.composed_picture_bytes())
+                .saturating_sub(self.config.budget.gpu.0 / gpu_cov::BUDGET_SHARE);
+            let mut excess = required.saturating_sub(available).max(picture_excess);
+            if excess == 0 {
+                break;
+            }
+            for (input, bytes) in inputs.iter_mut().zip(pictures).rev() {
+                let reduction = excess.min(bytes);
+                input.picture_bytes = input.picture_bytes.min(bytes - reduction);
+                excess -= reduction;
+                if excess == 0 {
+                    break;
+                }
+            }
+            for surf in pending.iter_mut() {
+                for content in surf.layers.values_mut() {
+                    content.discard_emissions();
+                }
+            }
+            results = self.lower_batch(pending, frames, &inputs, FxHashMap::default());
+        }
+        // Publish every surface's working set before any allocation can evict
+        // a cached image that a later surface is about to reuse.
+        for (surf, result) in pending.iter_mut().zip(&results) {
+            if let Ok(lowered) = result {
+                if lowered.composed.is_empty() {
+                    surf.composed.clear();
+                } else {
+                    surf.composed.clone_from(&lowered.composed);
+                }
+            }
+        }
+        results
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[expect(
         clippy::cast_possible_truncation,
         reason = "validated display scale fits f32"
     )]
-    fn lower_all(
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the scoped-thread and single-surface preparations share one batch commit"
+    )]
+    fn lower_batch(
         &mut self,
         pending: &mut [SurfaceState],
         frames: &[&SurfaceFrame<'_>],
@@ -6858,7 +7031,8 @@ impl GpuRenderer {
             .collect();
         let producers = &currents;
         let mut results: Vec<Result<Lowered, RenderError>> = if pending.len() > 1 {
-            let (atlas, images, bitmaps) = (&self.atlas, &self.images, &self.bitmaps);
+            let (atlas, images, bitmaps, device) =
+                (&self.atlas, &self.images, &self.bitmaps, &self.device);
             // `FontData`'s COLR cache is a `RefCell` — !Sync — so
             // each worker moves in its own snapshot built here.
             let snapshots: Vec<FxHashMap<u64, FontData>> = pending
@@ -6877,7 +7051,7 @@ impl GpuRenderer {
                     .zip(frames)
                     .zip(group_maps.iter().zip(inputs).zip(self.ready_sets.iter()))
                     .map(|(((surf, fonts), frame), ((groups, inputs), ready))| {
-                        let prepared = prepared.remove(&frame.id).unwrap_or_default();
+                        let mut prepared = prepared.remove(&frame.id).unwrap_or_default();
                         s.spawn(move || {
                             let result = Self::lower_content(
                                 #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
@@ -6890,14 +7064,15 @@ impl GpuRenderer {
                                     images,
                                     bitmaps,
                                     producers,
+                                    device,
                                 },
                                 groups,
                                 inputs,
                                 ready,
                                 coverage_options,
-                                prepared,
+                                &mut prepared,
                             );
-                            (result, fonts)
+                            (result.map(|()| prepared), fonts)
                         })
                     })
                     .collect::<Vec<_>>()
@@ -6920,6 +7095,7 @@ impl GpuRenderer {
                 .zip(frames)
                 .zip(group_maps.iter().zip(inputs).zip(self.ready_sets.iter()))
                 .map(|((surf, frame), ((groups, inputs), ready))| {
+                    let mut prepared = prepared.remove(&frame.id).unwrap_or_default();
                     Self::lower_content(
                         #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
                         preparation,
@@ -6931,13 +7107,15 @@ impl GpuRenderer {
                             images: &self.images,
                             bitmaps: &self.bitmaps,
                             producers,
+                            device: &self.device,
                         },
                         groups,
                         inputs,
                         ready,
                         coverage_options,
-                        prepared.remove(&frame.id).unwrap_or_default(),
+                        &mut prepared,
                     )
+                    .map(|()| prepared)
                 })
                 .collect()
         };
@@ -6954,7 +7132,7 @@ impl GpuRenderer {
         clippy::cast_possible_truncation,
         reason = "validated display scale fits f32"
     )]
-    fn lower_all(
+    fn lower_batch(
         &mut self,
         pending: &mut [SurfaceState],
         frames: &[&SurfaceFrame<'_>],
@@ -6979,6 +7157,7 @@ impl GpuRenderer {
             .zip(frames)
             .zip(group_maps.iter().zip(inputs).zip(self.ready_sets.iter()))
             .map(|((surf, frame), ((groups, inputs), ready))| {
+                let mut prepared = prepared.remove(&frame.id).unwrap_or_default();
                 Self::lower_content(
                     surf,
                     frame,
@@ -6988,13 +7167,15 @@ impl GpuRenderer {
                         images: &self.images,
                         bitmaps: &self.bitmaps,
                         producers,
+                        device: &self.device,
                     },
                     groups,
                     inputs,
                     ready,
                     coverage_options,
-                    prepared.remove(&frame.id).unwrap_or_default(),
+                    &mut prepared,
                 )
+                .map(|()| prepared)
             })
             .collect();
         // The batch's pending rasters commit transactionally
@@ -7042,11 +7223,14 @@ impl GpuRenderer {
             }
             let mut lowered = Lowered::default();
             for content in surf.layers.values_mut() {
-                lowered.commands += content.retained.prepare(&mut prepared::Lowerer {
-                    fonts: &self.fonts,
-                    images: &self.images,
-                    pending: &mut lowered.pending,
-                })?;
+                lowered.commands += content
+                    .retained
+                    .prepare(&mut prepared::Lowerer {
+                        fonts: &self.fonts,
+                        images: &self.images,
+                        pending: &mut lowered.pending,
+                    })?
+                    .commands;
             }
             if lowered.commands != 0 {
                 prepared.insert(sf.id, lowered);
@@ -7334,6 +7518,10 @@ impl GpuRenderer {
         clippy::too_many_arguments,
         reason = "one surface's prepared inputs and lowering resources"
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one surface transaction assembles local images before composition"
+    )]
     fn lower_content(
         #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
         preparation: &rayon::ThreadPool,
@@ -7344,8 +7532,8 @@ impl GpuRenderer {
         inputs: &projective::Inputs,
         ready: &FxHashSet<LayerId>,
         coverage_options: (Option<gpu_cov::CoverageLimit>, path::CoverageRoute),
-        mut lowered: Lowered,
-    ) -> Result<Lowered, RenderError> {
+        lowered: &mut Lowered,
+    ) -> Result<(), RenderError> {
         surf.frame.reset();
         surf.plan_dirty = false;
         let mut candidates = FxHashMap::default();
@@ -7399,7 +7587,7 @@ impl GpuRenderer {
             let _ = lowering.preparation.insert(preparation);
             lowering.coverage_route = coverage_options.1;
             lowering.pending = std::mem::take(&mut lowered.pending);
-            let result = lowering.prepare(&mut layers, &glyphs).and_then(|()| {
+            let result = lowering.prepare(&mut layers, &glyphs).and_then(|pictures| {
                 for placement in &surf.plan.planes {
                     if let Some(entry) = surf.static_layers.get(&placement.layer)
                         && entry.capture.as_ref().is_none_or(|capture| capture.dirty)
@@ -7420,8 +7608,19 @@ impl GpuRenderer {
                     &mut layers,
                     (&glyphs, groups),
                     (&surf.projective, inputs, surf.size),
-                    &mut lowered,
+                    lowered,
                 )?;
+                if pictures {
+                    return Self::run_pictures(
+                        &mut lowering,
+                        frame,
+                        &mut layers,
+                        (&glyphs, groups, resources.device),
+                        (&surf.projective, inputs, &surf.plan),
+                        placed,
+                        lowered,
+                    );
+                }
                 lowering.run(
                     frame.tree,
                     &mut layers,
@@ -7450,7 +7649,63 @@ impl GpuRenderer {
         surf.frame.content.sort_unstable_by_key(|(id, _)| id.raw());
         surf.frame.external.sort_unstable_by_key(|id| id.raw());
         surf.frame.external.dedup();
-        result.map(|()| lowered)
+        result
+    }
+
+    /// Runs the surface walk of content holding a retained picture: admits
+    /// picture images into the local-image budget the projective layers left,
+    /// and records the picture images the walk realizes and composes.
+    #[inline(never)]
+    fn run_pictures<'a>(
+        lowering: &mut Lowering<'a>,
+        frame: &SurfaceFrame<'_>,
+        layers: &mut FxHashMap<LayerId, ContentData>,
+        (glyphs, groups, device): (
+            &GlyphContext<'_>,
+            &FxHashMap<u64, BackdropGroupInfo>,
+            &'a wgpu::Device,
+        ),
+        (retained, inputs, plan): (
+            &'a FxHashMap<LayerId, Vec<projective::Entry>>,
+            &'a projective::Inputs,
+            &planes::Plan,
+        ),
+        placed: FxHashMap<LayerId, projective::Placement>,
+        lowered: &mut Lowered,
+    ) -> Result<(), RenderError> {
+        let projective_bytes: u64 = lowered
+            .composed
+            .iter()
+            .map(|key| {
+                lowered.realize.iter().find(|r| r.key == *key).map_or_else(
+                    || projective_entry(retained, *key).bytes(),
+                    projective::Realize::bytes,
+                )
+            })
+            .sum();
+        lowering.pictures = Some(lower::PictureInputs::new(
+            (retained, inputs, device),
+            inputs
+                .picture_bytes
+                .min(inputs.limits.max_bytes.saturating_sub(projective_bytes)),
+            layers,
+        ));
+        let result = lowering.run(
+            frame.tree,
+            layers,
+            frame.clear,
+            glyphs,
+            groups,
+            placed,
+            plan,
+        );
+        let mut pictures = lowering
+            .pictures
+            .take()
+            .expect("the surface walk restores its picture inputs");
+        lowered.realize.append(&mut pictures.realize);
+        lowered.composed.append(&mut pictures.composed);
+        result
     }
 
     /// Plans the surface's projective layers and lowers the local image of
@@ -7478,6 +7733,8 @@ impl GpuRenderer {
             let nested = placed.remove(&Some(plan.layer)).unwrap_or_default();
             let key = projective::LocalKey {
                 layer: plan.layer,
+                picture: None,
+                format: projective::LocalFormat::Working,
                 bucket: projective::bucket(image.density),
             };
             let cache =
@@ -7486,7 +7743,7 @@ impl GpuRenderer {
                 && retained.get(&plan.layer).is_some_and(|entries| {
                     entries
                         .iter()
-                        .any(|e| e.bucket == key.bucket && e.key == Some(cache))
+                        .any(|e| e.matches(key) && e.key == Some(cache))
                 });
             if !current {
                 let (filters, passes) = (
@@ -7507,8 +7764,10 @@ impl GpuRenderer {
                 let deps = projective::Deps::of(lowered_frame, filters, passes, inputs.interop);
                 lowering.push_mips(last, key);
                 lowered.realize.push(projective::Realize {
+                    picture: None,
                     key,
                     cache,
+                    bytes: projective::mip_bytes(key.format.texture(), &image.levels),
                     levels: image.levels.clone(),
                     deps,
                 });
@@ -7590,14 +7849,14 @@ impl GpuRenderer {
         // frame draws (water-rs/waterui#3081).
         let mut draws_coverage = false;
         for raster in &rasters {
-            if let glyph::PendingRaster::GpuPath(draw) = raster {
+            if let glyph::PendingRaster::GpuPath { draw, .. } = raster {
                 self.gpu_cov.touch(draw.key);
                 draws_coverage = true;
             }
         }
         // One eviction and compaction pass per commit, ahead of every
         // miss's allocation.
-        self.gpu_cov.settle(&self.device, draws_coverage);
+        self.gpu_cov.settle(draws_coverage);
         let n_cells: usize = rasters.iter().map(|r| r.cell_count()).sum();
         // A frame whose batch places strictly needs no replay pins and
         // no eviction, so no emission scan and no touch decoding runs —
@@ -8174,8 +8433,8 @@ impl GpuRenderer {
                 }
                 Ok(PendingOrigin::None)
             }
-            PendingRaster::GpuPath(draw) => {
-                let index = self.gpu_cov.draw(&self.device, &draw)?;
+            PendingRaster::GpuPath { draw, retain } => {
+                let index = self.gpu_cov.draw(&draw, retain)?;
                 Ok(PendingOrigin::Gpu(index))
             }
         }
@@ -8275,8 +8534,21 @@ impl GpuRenderer {
         stats.layers_composed += layers;
         stats.glyphs_rasterized += glyphs;
         stats.paths_rasterized += paths;
-        stats.projective_realized += u32::try_from(realize.len()).unwrap_or(u32::MAX);
-        stats.projective_composed += u32::try_from(composed.len()).unwrap_or(u32::MAX);
+        stats.projective_realized += u32::try_from(
+            realize
+                .iter()
+                .filter(|image| image.key.picture.is_none())
+                .count(),
+        )
+        .unwrap_or(u32::MAX);
+        stats.projective_composed +=
+            u32::try_from(composed.iter().filter(|key| key.picture.is_none()).count())
+                .unwrap_or(u32::MAX);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.picture_commands_pending |=
+                realize.iter().any(|image| image.key.picture.is_some());
+        }
         self.allocate_projective(id, realize, composed)?;
         // What the backend's tile executor can hold, read before the
         // surface is borrowed for the frame's attachment planning.
@@ -8882,6 +9154,46 @@ impl GpuRenderer {
         Ok(())
     }
 
+    fn finish_picture_coverage(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::mem::take(&mut self.picture_commands_pending) {
+            self.reclaim_command_memory();
+        }
+        self.gpu_cov.finish_pictures();
+        self.rebind_coverage_arena();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn reclaim_command_memory(&self) {
+        let device = self.device.clone();
+        self.queue.on_submitted_work_done(move || {
+            device.free_unused_command_encoders();
+        });
+        self.device.free_unused_command_encoders();
+    }
+
+    fn rebind_coverage_arena(&mut self) {
+        if self.gpu_cov.arena_generation() != self.bound_arena_gen {
+            let atlas = &self.atlas;
+            diag::bind_groups_dropped(&self.device, 1, "coverage arena");
+            self.bind0 = make_bind0(
+                &self.device,
+                &self.layout0,
+                &EngineBuffers {
+                    globals: &self.globals,
+                    instances: &self.instances,
+                    stops: &self.stops,
+                    arena: self.gpu_cov.arena().unwrap_or(&self.arena_placeholder),
+                    image_decode: &self.image_decode,
+                },
+                atlas,
+            );
+            self.bound_atlas = atlas.generation();
+            self.bound_arena_gen = self.gpu_cov.arena_generation();
+            self.invalidate_painter_replays();
+        }
+    }
+
     fn invalidate_painter_replays(&mut self) {
         for surface in self.surfaces.values_mut() {
             surface.painter_replays.clear();
@@ -9192,27 +9504,9 @@ impl GpuRenderer {
         let gpu_active = self.gpu_cov.has_draws();
         if gpu_active {
             self.gpu_cov.validate_output_sizes(&self.device.limits())?;
-            self.gpu_cov.ensure(&self.device);
-            if self.gpu_cov.arena_generation() != self.bound_arena_gen {
-                let atlas = &self.atlas;
-                diag::bind_groups_dropped(&self.device, 1, "coverage arena");
-                self.bind0 = make_bind0(
-                    &self.device,
-                    &self.layout0,
-                    &EngineBuffers {
-                        globals: &self.globals,
-                        instances: &self.instances,
-                        stops: &self.stops,
-                        arena: self.gpu_cov.arena().expect("coverage arena sized"),
-                        image_decode: &self.image_decode,
-                    },
-                    atlas,
-                );
-                self.bound_atlas = atlas.generation();
-                self.bound_arena_gen = self.gpu_cov.arena_generation();
-                self.invalidate_painter_replays();
-            }
+            self.gpu_cov.ensure(&self.device)?;
         }
+        self.rebind_coverage_arena();
         let Some(surf) = self.surfaces.get_mut(&id) else {
             return Ok(());
         };
@@ -9293,6 +9587,9 @@ impl GpuRenderer {
         surf.painter_replays
             .retain(|index, _| *index < surf.frame.passes.len());
         let mask_gen = self.atlas.mask_texture_generation();
+        for entry in surf.projective.values_mut().flatten() {
+            entry.retire_binds((surf.bind_gen, mask_gen));
+        }
         // Decision S2: the whole frame's coverage dispatch runs once,
         // in this encoder ahead of the raster passes — whichever dirty
         // surface is encoded first records it (#2543).
@@ -9325,7 +9622,7 @@ impl GpuRenderer {
                 &mut encoder,
                 self.shader_delivery,
                 timestamp_writes,
-            )?;
+            );
         }
         let mut i = 0;
         // The pyramid steps' globals-slot index within this surface:
@@ -11741,7 +12038,9 @@ impl GpuRenderer {
                         .texture
                         .format(),
                     Target::Part(_) | Target::Plane(_) => surface.format,
-                    Target::Projected(_) => WORKING_FORMAT,
+                    Target::Projected(key) => {
+                        projective_entry(&surface.projective, key).texture.format()
+                    }
                 };
                 (*id, format)
             })
@@ -11802,7 +12101,9 @@ impl GpuRenderer {
                     .texture
                     .format(),
                 Target::Part(_) | Target::Plane(_) => surface.format,
-                Target::Projected(_) => WORKING_FORMAT,
+                Target::Projected(key) => {
+                    projective_entry(&surface.projective, key).texture.format()
+                }
             };
             let format_i = format_slot(format);
             // Init builds every eager cell of the working and scratch

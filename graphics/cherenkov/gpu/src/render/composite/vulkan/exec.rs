@@ -289,7 +289,21 @@ pub fn encode(
             state: wgpu::TextureUses::RESOURCE,
         }
     }));
-    encoder.transition_resources(std::iter::empty(), textures.into_iter());
+    // Native descriptor reads are invisible to wgpu's pass tracker. Include
+    // buffers as well as textures so pending uploads become shader-visible
+    // before the native epoch consumes them.
+    let buffers_read = [
+        (resources.globals, wgpu::BufferUses::UNIFORM),
+        (resources.instances, wgpu::BufferUses::STORAGE_READ_ONLY),
+        (resources.stops, wgpu::BufferUses::STORAGE_READ_ONLY),
+        (resources.image_decode, wgpu::BufferUses::STORAGE_READ_ONLY),
+    ];
+    encoder.transition_resources(
+        buffers_read
+            .into_iter()
+            .map(|(buffer, state)| wgpu::BufferTransition { buffer, state }),
+        textures.into_iter(),
+    );
     if let Some((query_set, begin, _)) = timestamps {
         encoder.write_timestamp(query_set, begin);
     }

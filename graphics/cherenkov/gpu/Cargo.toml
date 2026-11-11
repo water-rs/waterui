@@ -61,7 +61,7 @@ objc2-core-graphics = { version = "0.3", default-features = false, features = ["
 block2 = "0.6"
 dispatch2 = { version = "0.3", default-features = false, features = ["std", "objc2"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes", "CFString", "CFDictionary", "CFArray", "CFNumber", "CFPropertyList"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSError", "NSDictionary", "NSNotification", "NSObject"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSError", "NSDictionary", "NSNotification", "NSObject", "NSZone"] }
 objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "objc2-metal", "CALayer", "CAMetalLayer", "CATransaction", "CABase", "CAAnimation", "CAMediaTiming", "CAMediaTimingFunction"] }
 objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "objc2-core-media", "objc2-quartz-core", "AVAnimation", "AVQueuedSampleBufferRendering", "AVSampleBufferDisplayLayer", "AVSampleBufferVideoRenderer"] }
 objc2-core-media = { version = "0.3", default-features = false, features = ["std", "objc2-core-video", "CMBase", "CMFormatDescription", "CMSampleBuffer", "CMTime"] }
