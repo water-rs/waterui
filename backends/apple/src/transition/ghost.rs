@@ -231,11 +231,14 @@ impl Ghost {
             .expect("a collection ghost holds a slot");
         let expected =
             cocoa_ui::Size::new(f64::from(slot.size().width), f64::from(slot.size().height));
-        assert!(
-            frame.size.width.to_bits() == expected.width.to_bits()
-                && frame.size.height.to_bits() == expected.height.to_bits(),
-            "container placed a ghost at {frame:?}, not its frozen slot size {expected:?}"
-        );
+        if frame.size.width.to_bits() != expected.width.to_bits()
+            || frame.size.height.to_bits() != expected.height.to_bits()
+        {
+            waterui::contract_violation!(
+                "container placed a ghost at {frame:?}, not its frozen slot size {expected:?}; \
+                 the ghost is placed at the given frame"
+            );
+        }
         view::set_frame_pixel_aligned(&self.0.visual.host, frame, offset);
     }
 }

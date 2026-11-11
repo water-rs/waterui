@@ -179,9 +179,8 @@ pub fn bounds(path: &CGPath) -> Option<Rect> {
 /// through Core Graphics' path operations: every point within `|spread|`
 /// of the region is in the region or within `|spread|` of its outline.
 ///
-/// # Panics
-///
-/// If Core Graphics refuses an operation on a live path.
+/// A path operation Core Graphics refuses is logged and leaves the shape
+/// unspread.
 #[must_use]
 pub fn spread(shape: &ShapeData, spread: f64) -> CFRetained<CGPath> {
     if spread == 0.0 {
@@ -214,33 +213,39 @@ pub fn spread(shape: &ShapeData, spread: f64) -> CFRetained<CGPath> {
         return path(&analytic);
     }
     let source = path(shape);
-    let region =
-        CGPath::new_copy_by_normalizing(Some(&source), fill_rule(shape) == FillRule::EvenOdd)
-            .expect("Core Graphics normalizes a live path");
-    let band = |outline: &CGPath| {
-        // SAFETY: a null transform is the documented no-transform argument.
-        unsafe {
-            CGPath::new_copy_by_stroking_path(
-                Some(outline),
-                ptr::null(),
-                2.0 * spread.abs(),
-                CGLineCap::Round,
-                CGLineJoin::Round,
-                1.0,
-            )
+    let spread_of = |source: &CGPath| {
+        let region =
+            CGPath::new_copy_by_normalizing(Some(source), fill_rule(shape) == FillRule::EvenOdd)?;
+        let band = |outline: &CGPath| {
+            // SAFETY: a null transform is the documented no-transform argument.
+            unsafe {
+                CGPath::new_copy_by_stroking_path(
+                    Some(outline),
+                    ptr::null(),
+                    2.0 * spread.abs(),
+                    CGLineCap::Round,
+                    CGLineJoin::Round,
+                    1.0,
+                )
+            }
+        };
+        if spread > 0.0 {
+            // Growing, the band follows the shape's own outline: a line or any
+            // other region-less part grows too, and the band of an edge inside
+            // the region lies inside the grown region anyway.
+            CGPath::new_copy_by_unioning_path(Some(&region), Some(&*band(source)?), false)
+        } else {
+            // Shrinking, only the region's boundary eats into it.
+            CGPath::new_copy_by_subtracting_path(Some(&region), Some(&*band(&region)?), false)
         }
-        .expect("Core Graphics strokes a live path")
     };
-    if spread > 0.0 {
-        // Growing, the band follows the shape's own outline: a line or any
-        // other region-less part grows too, and the band of an edge inside
-        // the region lies inside the grown region anyway.
-        CGPath::new_copy_by_unioning_path(Some(&region), Some(&band(&source)), false)
-    } else {
-        // Shrinking, only the region's boundary eats into it.
-        CGPath::new_copy_by_subtracting_path(Some(&region), Some(&band(&region)), false)
-    }
-    .expect("Core Graphics combines live paths")
+    spread_of(&source).unwrap_or_else(|| {
+        tracing::error!(
+            "Core Graphics refused a path operation for a spread of {spread}; \
+             the shape is not spread"
+        );
+        source
+    })
 }
 
 /// Whether a colour needs more than SDR.

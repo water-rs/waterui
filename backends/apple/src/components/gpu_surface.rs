@@ -806,12 +806,19 @@ impl SurfaceState {
 
     /// Every target — drawable or external capture — is allocated in the
     /// surface's declared presentation format.
-    fn assert_declared_format(&self, pixel_format: MTLPixelFormat) {
-        assert_eq!(
-            pixel_format,
-            state_format(self),
-            "GpuSurface target must be in the surface's declared presentation format"
-        );
+    ///
+    /// A target in another format is a contract violation of the capture
+    /// pipeline that allocated it; the target is not drawn into.
+    fn declares_format(&self, pixel_format: MTLPixelFormat) -> bool {
+        let declared = state_format(self);
+        if pixel_format != declared {
+            waterui::contract_violation!(
+                "GpuSurface target must be in the surface's declared presentation format \
+                 ({declared:?}), got {pixel_format:?}; the target is not drawn"
+            );
+            return false;
+        }
+        true
     }
 
     /// One frame step through the retained engine for a target the host
@@ -923,15 +930,23 @@ impl SurfaceState {
 }
 
 /// The wgpu texture format an `MTLTexture` imports at — the ffi
-/// `metal_texture_format`.
+/// `metal_texture_format`. A format the surface never negotiates is a
+/// contract violation of whoever allocated the texture; the answer is
+/// `None` and the frame is not drawn.
 fn metal_texture_format(
     texture: &objc2::runtime::ProtocolObject<dyn MTLTexture>,
-) -> wgpu::TextureFormat {
+) -> Option<wgpu::TextureFormat> {
     match texture.pixelFormat() {
-        MTLPixelFormat::BGRA8Unorm => wgpu::TextureFormat::Bgra8Unorm,
-        MTLPixelFormat::BGRA8Unorm_sRGB => wgpu::TextureFormat::Bgra8UnormSrgb,
-        MTLPixelFormat::RGBA16Float => wgpu::TextureFormat::Rgba16Float,
-        other => panic!("GpuSurface external Metal texture has unsupported format {other:?}"),
+        MTLPixelFormat::BGRA8Unorm => Some(wgpu::TextureFormat::Bgra8Unorm),
+        MTLPixelFormat::BGRA8Unorm_sRGB => Some(wgpu::TextureFormat::Bgra8UnormSrgb),
+        MTLPixelFormat::RGBA16Float => Some(wgpu::TextureFormat::Rgba16Float),
+        other => {
+            waterui::contract_violation!(
+                "GpuSurface external Metal texture has unsupported format {other:?}; \
+                 the frame is not drawn"
+            );
+            None
+        }
     }
 }
 
@@ -1068,7 +1083,9 @@ fn render_to_metal_texture(
     target_time: FrameTime,
     pipelining: Pipelining,
 ) -> Result<FrameRender, HostedError> {
-    state.assert_declared_format(metal_texture.pixelFormat());
+    if !state.declares_format(metal_texture.pixelFormat()) {
+        return Ok(FrameRender::Unwritten);
+    }
     // The surface's own geometry, never one read back from this frame's
     // pixels: a drawable issued before a resize or a capture's texture must
     // not tell the content it shrank back.
@@ -1077,7 +1094,9 @@ fn render_to_metal_texture(
         state.current_logical.get(),
         state.current_scale.get(),
     );
-    let format = metal_texture_format(&metal_texture);
+    let Some(format) = metal_texture_format(&metal_texture) else {
+        return Ok(FrameRender::Unwritten);
+    };
     if context.device_lost_reason().is_some() {
         return Ok(FrameRender::PendingRebuild);
     }
@@ -2126,11 +2145,11 @@ fn refresh_visibility_watch(state: &Rc<SurfaceState>, view: &Retained<SurfaceVie
 fn install_input(
     view: &Retained<SurfaceView>,
     state: &Rc<SurfaceState>,
+    mtm: cocoa_ui::MainThreadMarker,
 ) -> Option<Retained<cocoa_ui::PlatformView>> {
     if !state.wants_input_events {
         return None;
     }
-    let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
     let input = platform_input_view(mtm);
     let weak = Rc::downgrade(state);
     // The input responder is a subview of `view`: the view retains it, its
@@ -2247,10 +2266,12 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
 
     fn end_capture_suppression(&self) {
         let count = self.state.capture_suppression.get();
-        assert!(
-            count > 0,
-            "GpuSurface capture suppression scopes are unbalanced"
-        );
+        if count == 0 {
+            waterui::contract_violation!(
+                "GpuSurface capture suppression scopes are unbalanced; the end is ignored"
+            );
+            return;
+        }
         self.state.capture_suppression.set(count - 1);
         if count == 1 {
             set_presentation_hidden(&self.view, false);
@@ -2300,10 +2321,12 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
                 // Nothing resumes on a dead surface, and an end beyond the
                 // recorded count is the unbalance the assert names.
                 let orphaned = self.state.orphaned_external_scopes.get();
-                assert!(
-                    orphaned > 0,
-                    "GpuSurface external rendering scopes are unbalanced"
-                );
+                if orphaned == 0 {
+                    waterui::contract_violation!(
+                        "GpuSurface external rendering scopes are unbalanced; the end is ignored"
+                    );
+                    return;
+                }
                 self.state.orphaned_external_scopes.set(orphaned - 1);
                 return;
             }
@@ -2317,8 +2340,7 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
         &self,
         texture: &objc2::runtime::ProtocolObject<dyn MTLTexture>,
     ) -> bool {
-        self.state.assert_declared_format(texture.pixelFormat());
-        true
+        self.state.declares_format(texture.pixelFormat())
     }
 
     fn has_presented_frame(&self) -> bool {
@@ -2381,7 +2403,7 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
                 std::ptr::from_ref(texture).cast_mut(),
             )
         }
-        .expect("GpuSurface external render received a null texture");
+        .expect("`retain` of a pointer made from a reference is non-null");
         let context = self.state.runtime.context();
         // An explicit capture renders at the shared anchor's capture time —
         // its own exact instant, never a borrowed or approximated frame
@@ -2580,11 +2602,17 @@ fn submit_external_marker(
     );
 }
 
-const fn state_format(state: &SurfaceState) -> MTLPixelFormat {
-    state
-        .presentation_format
-        .get()
-        .expect("GpuSurface must have a configured dynamic range before external capture")
+/// The presentation format the surface negotiated. A capture before the
+/// dynamic range is configured is a contract violation of the capture
+/// pipeline; the standard-range format is used.
+fn state_format(state: &SurfaceState) -> MTLPixelFormat {
+    state.presentation_format.get().unwrap_or_else(|| {
+        waterui::contract_violation!(
+            "GpuSurface must have a configured dynamic range before external capture; \
+             the standard-range format is used"
+        );
+        MTLPixelFormat::BGRA8Unorm_sRGB
+    })
 }
 
 /// Shows or hides the presentation layer — `setPresentationHidden`.
@@ -2827,7 +2855,7 @@ fn build_surface_parts<V: HostedView + 'static>(
         platform_view.capturable_slot().install(&registered);
 
         wire_view_handlers(&platform_view, &state);
-        let input_view = install_input(&platform_view, &state);
+        let input_view = install_input(&platform_view, &state, mtm);
 
         let mount_guard = MountGuard {
             view: platform_view.clone(),

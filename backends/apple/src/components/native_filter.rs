@@ -78,7 +78,6 @@ use waterui_graphics::backend::{AnyEffect, ParamGuards};
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
 
 type MetalTexture = ProtocolObject<dyn objc2_metal::MTLTexture>;
-type MetalDevice = ProtocolObject<dyn objc2_metal::MTLDevice>;
 type MetalQueue = ProtocolObject<dyn objc2_metal::MTLCommandQueue>;
 type MetalCommandBuffer = ProtocolObject<dyn objc2_metal::MTLCommandBuffer>;
 
@@ -1390,7 +1389,12 @@ fn build_capture_filter(owner: &NativeFilterOwner, index: usize, now: f64) -> Re
     // SAFETY: `filterWithName:` on an unattached lookup is a legal
     // constructor — the class comes from the approved mapping table.
     let filter = unsafe { CIFilter::filterWithName(&NSString::from_str(capture.class)) }
-        .unwrap_or_else(|| panic!("CIFilter class {} is unavailable", capture.class));
+        .unwrap_or_else(|| {
+            unreachable!(
+                "CIFilter class {} resolved when the filter host was built",
+                capture.class
+            )
+        });
     for (key, bound) in &capture.inputs {
         let path = key_path(screen, key);
         let name = NSString::from_str(key);
@@ -1498,30 +1502,19 @@ impl std::fmt::Debug for NativeFilterCapturable {
     }
 }
 
-/// A private-storage texture for the owned-content capture, allocated on
-/// `device` at `format`.
-fn new_capture_texture(
-    device: &MetalDevice,
-    format: objc2_metal::MTLPixelFormat,
-    width: u32,
-    height: u32,
-) -> Retained<MetalTexture> {
-    // SAFETY: creates a valid descriptor; Metal validates the arguments.
-    let descriptor = unsafe {
-        objc2_metal::MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-            format,
-            width as usize,
-            height as usize,
-            false,
-        )
-    };
-    descriptor.setUsage(
-        objc2_metal::MTLTextureUsage::ShaderRead | objc2_metal::MTLTextureUsage::RenderTarget,
-    );
-    descriptor.setStorageMode(objc2_metal::MTLStorageMode::Private);
-    device
-        .newTextureWithDescriptor(&descriptor)
-        .expect("Failed to create the native-filter capture texture")
+/// What the owned-content capture's Core Image / Metal calls can refuse —
+/// operational failures the capture answers as `Failed`.
+#[derive(Debug, thiserror::Error)]
+enum CaptureFilterError {
+    /// A configured capture `CIFilter` answered no `outputImage`.
+    #[error("a native capture filter produced no output image")]
+    OutputImage,
+    /// The device refused a command queue for the capture.
+    #[error("the GPU device could not create the capture command queue")]
+    CommandQueue,
+    /// The queue refused a command buffer for the capture.
+    #[error("the capture command queue could not create a command buffer")]
+    CommandBuffer,
 }
 
 impl CapturableSurface for NativeFilterCapturable {
@@ -1557,10 +1550,12 @@ impl CapturableSurface for NativeFilterCapturable {
             return;
         };
         let count = owner.capture_suppression.get();
-        assert!(
-            count > 0,
-            "native filter capture suppression scopes are unbalanced"
-        );
+        if count == 0 {
+            waterui::contract_violation!(
+                "native filter capture suppression scopes are unbalanced; the end is ignored"
+            );
+            return;
+        }
         owner.capture_suppression.set(count - 1);
         if count == 1 {
             owner.layer.setHidden(owner.suppressed_hidden.get());
@@ -1595,10 +1590,12 @@ impl CapturableSurface for NativeFilterCapturable {
             return;
         };
         let count = owner.external_count.get();
-        assert!(
-            count > 0,
-            "native filter external rendering scopes are unbalanced"
-        );
+        if count == 0 {
+            waterui::contract_violation!(
+                "native filter external rendering scopes are unbalanced; the end is ignored"
+            );
+            return;
+        }
         owner.external_count.set(count - 1);
         if count == 1 {
             *owner.external_redraw.borrow_mut() = None;
@@ -1620,7 +1617,7 @@ impl CapturableSurface for NativeFilterCapturable {
         // this capture; `retain` takes our own reference on it.
         let retained =
             unsafe { Retained::<MetalTexture>::retain(std::ptr::from_ref(texture).cast_mut()) }
-                .expect("native filter external render received a null texture");
+                .expect("`retain` of a pointer made from a reference is non-null");
         // The exact context that issued this frame — its `Arc` is the
         // identity, carried so completion never re-fetches a replacement
         // issue of the same generation.
@@ -1633,9 +1630,22 @@ impl CapturableSurface for NativeFilterCapturable {
             // cannot drive — a stale or foreign target, not a failure.
             return false;
         }
-        let width = u32::try_from(retained.width()).expect("capture width exceeds u32");
-        let height = u32::try_from(retained.height()).expect("capture height exceeds u32");
-        let input = new_capture_texture(&retained.device(), retained.pixelFormat(), width, height);
+        let width = u32::try_from(retained.width())
+            .expect("a Metal texture's width is at most 16384, which fits u32");
+        let height = u32::try_from(retained.height())
+            .expect("a Metal texture's height is at most 16384, which fits u32");
+        let input = match super::filtered::new_capture_texture(
+            &retained.device(),
+            retained.pixelFormat(),
+            width,
+            height,
+        ) {
+            Ok(input) => input,
+            Err(error) => {
+                tracing::error!("native filter: {error}; the frame is deferred");
+                return false;
+            }
+        };
         // Inputs sync at the issue timestamp on the shared CA clock;
         // mapping that into `FrameTime` is the #1725 `PresentationTime`
         // integration edge, recorded in the report — no stub field.
@@ -1824,8 +1834,12 @@ fn finish_capture(work: &Shared<CaptureWork>, captured: bool, mtm: MainThreadMar
             );
         }
         // SAFETY: a filter with an `inputImage` produces `outputImage`.
-        image = unsafe { filter.outputImage() }
-            .expect("native capture filter produced no output image");
+        let Some(output) = (unsafe { filter.outputImage() }) else {
+            settle!(Err(CaptureError::Failed(Arc::new(
+                CaptureFilterError::OutputImage
+            ))));
+        };
+        image = output;
     }
     // The exact-issue context — cached per `SharedGpuContext` instance
     // and bound to its device. The work's own context is authoritative;
@@ -1864,9 +1878,12 @@ fn finish_capture(work: &Shared<CaptureWork>, captured: bool, mtm: MainThreadMar
             // SAFETY: `device` is the prepared context's own Metal device.
             let ci_context =
                 unsafe { CIContext::contextWithMTLDevice_options(&device, Some(&options)) };
-            let queue = device
-                .newCommandQueue()
-                .expect("capture command queue creation failed");
+            let Some(queue) = device.newCommandQueue() else {
+                drop(slot);
+                settle!(Err(CaptureError::Failed(Arc::new(
+                    CaptureFilterError::CommandQueue
+                ))));
+            };
             *slot = Some(CaptureGpu {
                 context: Arc::clone(&work_inner.prepared.context),
                 ci_context,
@@ -1876,10 +1893,11 @@ fn finish_capture(work: &Shared<CaptureWork>, captured: bool, mtm: MainThreadMar
     }
     let gpu = owner.capture_gpu.borrow();
     let gpu = gpu.as_ref().expect("capture context just ensured");
-    let command_buffer = gpu
-        .queue
-        .commandBuffer()
-        .expect("capture command buffer creation failed");
+    let Some(command_buffer) = gpu.queue.commandBuffer() else {
+        settle!(Err(CaptureError::Failed(Arc::new(
+            CaptureFilterError::CommandBuffer
+        ))));
+    };
     // The completion settles on the main queue after Metal reports —
     // `Ok` only on `MTLCommandBufferStatus::Completed`, never merely a
     // nil `NSError` (a nil error is legal on non-completed statuses).
@@ -2012,11 +2030,17 @@ pub fn mount(
     for (index, plan) in plan.iter().enumerate() {
         for stage in &plan.stages {
             // SAFETY: `filterWithName:` returns the named filter or nil —
-            // nil fails loudly, never switches realization.
-            let filter = unsafe { CIFilter::filterWithName(&NSString::from_str(stage.class)) }
-                .unwrap_or_else(|| {
-                    panic!("native filter: CIFilter {} is unavailable", stage.class)
-                });
+            // nil is the OS lacking the class, reported and the stage left
+            // out; the realization never switches.
+            let Some(filter) =
+                (unsafe { CIFilter::filterWithName(&NSString::from_str(stage.class)) })
+            else {
+                tracing::error!(
+                    "native filter: CIFilter {} is unavailable; the stage is not applied",
+                    stage.class
+                );
+                continue;
+            };
             let name = format!("wui-filter-{}", filters.len());
             // SAFETY: `setName:` is a plain property write on a freshly
             // created, not-yet-attached filter.
@@ -2033,7 +2057,7 @@ pub fn mount(
             // mapping table.
             let capture_filter =
                 unsafe { CIFilter::filterWithName(&NSString::from_str(stage.class)) }
-                    .expect("native filter: capture CIFilter must exist");
+                    .expect("the same CIFilter class resolved a few lines above");
             capture_filters.push(BoundFilter {
                 filter: capture_filter,
                 class: stage.class,

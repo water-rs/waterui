@@ -18,7 +18,7 @@
 
 use alloc::rc::{Rc, Weak};
 use core::cell::{Cell, RefCell};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use cocoa_ui::capture::{CaptureError, ViewCapture};
 use cocoa_ui::{MainThreadMarker, PlatformView, Retained, view};
@@ -84,8 +84,12 @@ impl FrozenInput {
             on_ready(Err(CaptureError::Deferred));
             return Rc::new(Self { capture });
         }
-        let window =
-            view::window(&visual.host).expect("a ghost runs only while its host is windowed");
+        let Some(window) = view::window(&visual.host) else {
+            // The host's window closed mid-flight — nothing to size the
+            // capture by; the next tick retries until the clock ends the run.
+            on_ready(Err(CaptureError::Deferred));
+            return Rc::new(Self { capture });
+        };
         #[cfg(target_os = "macos")]
         let scale = window.backingScaleFactor();
         #[cfg(target_os = "ios")]
@@ -98,7 +102,13 @@ impl FrozenInput {
             on_ready(Err(CaptureError::Deferred));
             return Rc::new(Self { capture });
         }
-        let target = crate::components::filtered::new_capture_input(&context, width, height);
+        let target = match crate::components::filtered::new_capture_input(&context, width, height) {
+            Ok(target) => target,
+            Err(error) => {
+                on_ready(Err(CaptureError::Failed(Arc::new(error))));
+                return Rc::new(Self { capture });
+            }
+        };
         // The completion is `Fn` and `Send`-bound — the texture and the
         // non-`Send` callback cross it inside slots, and `ViewCapture`
         // lands them on the main queue.
@@ -158,18 +168,16 @@ impl core::fmt::Debug for PixelOverlay {
 
 /// The view a pixel overlay mounts into for `within`'s window — the
 /// content view on `AppKit`, the `UIWindow` itself on `UIKit`.
-fn overlay_parent(within: &PlatformView) -> Retained<PlatformView> {
-    let window =
-        view::window(within).expect("a pixel transition runs only while its host is windowed");
+/// `None` while `within` is in no window — a window that closes mid-flight.
+fn overlay_parent(within: &PlatformView) -> Option<Retained<PlatformView>> {
+    let window = view::window(within)?;
     #[cfg(target_os = "macos")]
     {
-        window
-            .contentView()
-            .expect("an `NSWindow` with a mounted transition host has a content view")
+        window.contentView()
     }
     #[cfg(target_os = "ios")]
     {
-        Retained::into_super(window)
+        Some(Retained::into_super(window))
     }
 }
 
@@ -177,7 +185,8 @@ impl PixelOverlay {
     /// A fresh retired overlay covering `within`'s window.
     pub fn over(within: &PlatformView) -> Self {
         let mtm = MainThreadMarker::new().expect("a pixel overlay builds on the main thread");
-        let parent = overlay_parent(within);
+        let parent = overlay_parent(within)
+            .expect("a pixel transition starts only while its host is in a window");
         let host = HostView::new(mtm, view::bounds(&parent));
         host.retire();
         let view: &PlatformView = &host;
@@ -190,9 +199,12 @@ impl PixelOverlay {
     }
 
     /// Re-homes the overlay when `within` moved to another window — an
-    /// insertion whose host changed windows mid-flight.
+    /// insertion whose host changed windows mid-flight. A host in no window
+    /// leaves the overlay where it is.
     fn sync_window(&self, within: &PlatformView) {
-        let current = overlay_parent(within);
+        let Some(current) = overlay_parent(within) else {
+            return;
+        };
         let mut stored = self.window.borrow_mut();
         if !core::ptr::eq(&raw const *current, &raw const **stored) {
             view::remove_from_superview(&self.host);

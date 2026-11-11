@@ -53,17 +53,26 @@ pub unsafe fn prepare(env: *mut Environment, then: impl FnOnce() + 'static) {
         let runtime = receiver
             .recv()
             .await
-            .expect("GPU runtime creation task ended without producing a runtime")
-            .unwrap_or_else(|error| panic!("GPU runtime creation failed: {error}"));
-        // SAFETY: `env` is lent for the process and this task is pinned to the
-        // main executor — the same thread the launch handler runs on.
-        let env = unsafe { &mut *env };
-        env.insert(runtime);
-        #[cfg(feature = "gpu_surface")]
-        install_owners(
-            env,
-            objc2::MainThreadMarker::new().expect("the GPU services install on the main executor"),
-        );
+            .expect("the creation task above sends its result before it ends");
+        match runtime {
+            Ok(runtime) => {
+                // SAFETY: `env` is lent for the process and this task is pinned to the
+                // main executor — the same thread the launch handler runs on.
+                let env = unsafe { &mut *env };
+                env.insert(runtime);
+                #[cfg(feature = "gpu_surface")]
+                install_owners(
+                    env,
+                    objc2::MainThreadMarker::new()
+                        .expect("`spawn_local` above runs on the main executor"),
+                );
+            }
+            // The device refused a runtime: the app launches without GPU
+            // services instead of crashing at launch.
+            Err(error) => {
+                tracing::error!("GPU runtime creation failed: {error}; no GPU services installed");
+            }
+        }
         then();
     })
     .detach();

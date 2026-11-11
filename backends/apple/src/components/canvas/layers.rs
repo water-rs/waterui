@@ -631,9 +631,8 @@ pub fn run_layer(commands: &[Command], range: Range<usize>, ctx: Ctx<'_>) -> Ret
 /// The bitmap holds half floats in extended sRGB: an encoded space, which
 /// is where the run's groups blend, with room for colours above SDR white.
 ///
-/// # Panics
-///
-/// When Core Graphics refuses a bitmap the size of the run.
+/// When Core Graphics refuses a bitmap the size of the run, the failure is
+/// logged and the run is not drawn.
 pub fn draw_run(layer: &CALayer, commands: &[Command], range: Range<usize>, ctx: Ctx<'_>) {
     let scale = ctx.scale;
     let Some(extent) = replay::extent(commands, range.clone(), ctx.registry) else {
@@ -675,8 +674,17 @@ pub fn draw_run(layer: &CALayer, commands: &[Command], range: Range<usize>, ctx:
                 | CGImageComponentInfo::Float.0
                 | CGImageByteOrderInfo::Order16Little.0,
         )
-    }
-    .unwrap_or_else(|| panic!("Core Graphics makes a {width}x{height} half-float bitmap"));
+    };
+    let Some(context) = context else {
+        tracing::error!(
+            "Core Graphics could not make a {width}x{height} half-float bitmap; \
+             the run is not drawn"
+        );
+        // SAFETY: nil clears the contents.
+        unsafe { layer.setContents(None) };
+        place(layer, Rect::ZERO);
+        return;
+    };
     // The bitmap is y-up; the canvas is y-down with the extent's corner at
     // the bitmap's top-left.
     #[expect(
@@ -697,7 +705,13 @@ pub fn draw_run(layer: &CALayer, commands: &[Command], range: Range<usize>, ctx:
         commands,
         range.clone(),
     );
-    let image = CGBitmapContextCreateImage(Some(&context)).expect("a bitmap context captures");
+    let Some(image) = CGBitmapContextCreateImage(Some(&context)) else {
+        tracing::error!("Core Graphics could not capture the run's bitmap; the run is not drawn");
+        // SAFETY: nil clears the contents.
+        unsafe { layer.setContents(None) };
+        place(layer, Rect::ZERO);
+        return;
+    };
     set_contents(layer, &image);
     layer.setContentsScale(scale);
     place(layer, extent);
@@ -861,11 +875,7 @@ impl Built {
                 layer.setAllowsGroupOpacity(true);
                 layer.setOpacity(group.opacity);
                 set_composite(&layer, group.blend);
-                assert!(
-                    group.filter.is_none(),
-                    "a canvas group records no filter; got {:?}",
-                    group.filter
-                );
+                plan::reject_group_filter(group);
                 Self {
                     layer,
                     parts: Parts::Plain,

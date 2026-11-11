@@ -120,21 +120,23 @@ impl PropertyTarget {
 
     /// Writes one sample inside `core_animation::without_animation`.
     ///
-    /// # Panics
-    ///
-    /// When a property is not finite or `blur` is negative — the same
-    /// contract `record_blurred` declares in Hydrolysis.
+    /// A property that is not finite or a negative `blur` — the same
+    /// contract `record_blurred` declares in Hydrolysis — is a contract
+    /// violation, and the sample is not applied.
     pub fn apply(&self, sample: &TransitionProperties) {
-        assert!(
-            sample.opacity().is_finite()
-                && sample.scale().iter().all(|value| value.is_finite())
-                && sample.translation().iter().all(|value| value.is_finite())
-                && sample.rotation().is_finite()
-                && sample.blur().is_finite()
-                && sample.blur() >= 0.0,
-            "waterui-apple: a transition sampled {sample:?} — every property must be finite \
-             and the blur radius non-negative"
-        );
+        if !(sample.opacity().is_finite()
+            && sample.scale().iter().all(|value| value.is_finite())
+            && sample.translation().iter().all(|value| value.is_finite())
+            && sample.rotation().is_finite()
+            && sample.blur().is_finite()
+            && sample.blur() >= 0.0)
+        {
+            waterui::contract_violation!(
+                "waterui-apple: a transition sampled {sample:?} — every property must be finite \
+                 and the blur radius non-negative; the sample is not applied"
+            );
+            return;
+        }
         cocoa_ui::core_animation::without_animation(|| {
             view::set_alpha(&self.host, f64::from(sample.opacity()));
             #[cfg(target_os = "macos")]

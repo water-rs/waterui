@@ -49,12 +49,8 @@ pub enum PaintClass<'a> {
     Drawn,
 }
 
-/// Classifies `paint`.
-///
-/// # Panics
-///
-/// On a shader paint, which only an engine surface draws: a canvas records
-/// none.
+/// Classifies `paint`. A shader paint, which only an engine surface draws,
+/// classifies as drawn: Core Graphics reports it and paints nothing.
 #[must_use]
 pub fn classify(paint: &Paint) -> PaintClass<'_> {
     match paint {
@@ -73,10 +69,11 @@ pub fn classify(paint: &Paint) -> PaintClass<'_> {
             },
             PaintClass::Drawn => PaintClass::Drawn,
         },
-        Paint::Linear(_) | Paint::Radial(_) | Paint::Sweep(_) | Paint::Image(_) => {
-            PaintClass::Drawn
-        }
-        Paint::Shader(_) => panic!("a shader paint needs an engine surface; a canvas records none"),
+        Paint::Linear(_)
+        | Paint::Radial(_)
+        | Paint::Sweep(_)
+        | Paint::Image(_)
+        | Paint::Shader(_) => PaintClass::Drawn,
     }
 }
 
@@ -209,6 +206,17 @@ pub fn describe(command: &Command) -> Option<Node> {
         Command::BeginGroup { group, .. } => Node::Group(*group),
         Command::End => return None,
     })
+}
+
+/// Reports a filter on `group`: a canvas group records none, so the
+/// filter is not applied.
+pub fn reject_group_filter(group: &Group) {
+    if group.filter.is_some() {
+        waterui::contract_violation!(
+            "a canvas group records no filter; got {:?}; the filter is not applied",
+            group.filter
+        );
+    }
 }
 
 /// How a group with some blend mode reaches the screen.
