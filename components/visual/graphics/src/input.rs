@@ -31,9 +31,12 @@
 
 pub use keyboard_types::{Code, Key, Location, Modifiers, NamedKey};
 
+/// The logical, surface-local geometry the events carry: a pointer's
+/// position and a surface's size.
+pub use crate::draw::kurbo::{Point, Size};
+
 use core::num::NonZeroU32;
 
-use crate::draw::kurbo::{Point, Size};
 use waterui_core::Str;
 
 /// A pointer button, in the W3C UI Events button vocabulary.

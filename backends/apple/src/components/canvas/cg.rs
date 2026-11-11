@@ -16,7 +16,7 @@ use cocoa_ui::objc2_core_graphics::{
 };
 use kurbo::{Affine, Circle, Join, PathEl, Point, Rect, RoundedRect, RoundedRectRadii, Shape as _};
 use kurbo::{Stroke, StrokeOpts};
-use waterui_graphics::draw::{
+use waterui_graphics::backend::draw::{
     ContinuousRect, FillRule, PATH_TOLERANCE, Paint, ShapeData, WorkingColor,
 };
 

@@ -12,7 +12,7 @@ use cocoa_ui::gradient::{
     GradientLayer, GradientPaint, GradientShape, GradientSpace, GradientStop,
 };
 use waterui::graphics::Gradient;
-use waterui::graphics::draw::{
+use waterui::graphics::backend::draw::{
     ColorSpace, ColorStop, Extend, Interpolation, LinearDisplayP3, LinearGradient, Paint,
     RadialGradient, Srgb, SweepGradient, WorkingColor,
 };
@@ -276,7 +276,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waterui::graphics::draw::kurbo::Point;
+    use kurbo::Point;
 
     const RED: WorkingColor = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
     const GREEN: WorkingColor = WorkingColor::new([0.0, 1.0, 0.0, 1.0]);

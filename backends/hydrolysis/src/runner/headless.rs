@@ -585,7 +585,7 @@ impl HeadlessRuntime {
         let inspector_probe = inspector
             .as_ref()
             .map(waterui::inspector::InspectorRuntime::runtime_probe);
-        let mut env = env.extending(waterui_graphics::scene_view::SceneViewMergeToParent);
+        let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
         waterui_core::install_application_resources(&mut env);
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
@@ -1487,14 +1487,14 @@ mod generation_tests {
     use super::*;
     use crate::platform::GpuSurfaceWindow;
     use crate::renderer::tests::{MinimalTestTheme, test_environment};
+    use cherenkov_record::{
+        Draw as _, FontId, Glyph, GlyphRun, GlyphStyle, ImageId, Recorder, Sampling, WorkingColor,
+    };
     use core::time::Duration;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::time::Instant;
-    use waterui_graphics::draw::{
-        Draw as _, FontId, Glyph, GlyphRun, GlyphStyle, ImageId, Recorder, Sampling, WorkingColor,
-    };
-    use waterui_graphics::{
+    use waterui_graphics::backend::{
         FontSource, ImageData, RecordingResources, Registered, Rgba8, SceneContent,
         SceneInvalidator, SceneView,
     };

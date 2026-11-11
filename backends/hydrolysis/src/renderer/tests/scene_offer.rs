@@ -15,18 +15,18 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use cherenkov_record::Recorder;
 use waterui::{AnyView, Color, View, ViewExt as _};
 use waterui_core::Environment;
 use waterui_core::id::SelfId;
 use waterui_core::layout::{LayoutError, Rect, ResolvedExtent, StretchAxis, ViewDimensions};
 use waterui_core::views::ForEach;
-use waterui_graphics::draw::Recorder;
+use waterui_graphics::backend::{
+    RecordingResources, SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent,
+};
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui_graphics::input::SurfaceInputEvent;
-use waterui_graphics::{
-    GpuContent, GpuContentView, RecordingResources, SceneContent, SceneInvalidator, SceneView,
-    SceneViewMergeToParent,
-};
+use waterui_graphics::{GpuContent, GpuContentView};
 use waterui_layout::LazyContainer;
 use waterui_layout::stack::hstack;
 use waterui_layout::{Divider, ProposalSize, Size, SubView};

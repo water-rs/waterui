@@ -10,8 +10,8 @@
 //! [`LINE_WORDS`] floats per line — advance, line height, baseline, ink
 //! left, ink right — where a span without ink carries `+inf, -inf`.
 
+use cherenkov_record::kurbo::Rect;
 use std::ops::Range;
-use waterui_graphics::draw::kurbo::Rect;
 
 use crate::hwui::HwuiError;
 

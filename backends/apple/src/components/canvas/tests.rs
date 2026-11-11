@@ -3,8 +3,8 @@
 //! bitmap), so no window is shown. Set `WATERUI_CANVAS_REVIEW_DIR` to keep
 //! each rendered case as a PNG there.
 
-use waterui_graphics::draw::kurbo::{Affine, Cap, Circle, Rect, RoundedRect, Stroke};
-use waterui_graphics::draw::{
+use kurbo::{Affine, Cap, Circle, Rect, RoundedRect, Stroke};
+use waterui_graphics::backend::draw::{
     BlendMode, ColorStop, Content, ContentChange, Draw as _, Group, LayoutSize, LinearGradient,
     Recorder, Shadow, WorkingColor,
 };
@@ -45,7 +45,7 @@ fn stops(colors: &[WorkingColor]) -> Vec<ColorStop> {
 }
 
 /// The first change of a recording, which carries the whole list.
-fn first_list(content: &mut Content) -> waterui_graphics::draw::DisplayList {
+fn first_list(content: &mut Content) -> waterui_graphics::backend::draw::DisplayList {
     match content.take_change() {
         Some(ContentChange::Replace(picture)) => picture.display_list().clone(),
         other => panic!("a fresh content sends its whole list first, got {other:?}"),
@@ -205,7 +205,7 @@ fn a_stroke_with_different_caps_is_a_shape_layer() {
     stroke.end_cap = Cap::Round;
     let outline = outline_of(|r| {
         r.stroke(
-            waterui_graphics::draw::kurbo::Line::new((0., 0.), (20., 0.)),
+            kurbo::Line::new((0., 0.), (20., 0.)),
             stroke,
             rgb(1., 0., 0.),
         );
@@ -218,8 +218,8 @@ mod render {
     use std::rc::Rc;
     use std::sync::Arc;
 
-    use waterui_graphics::draw::kurbo::Point;
-    use waterui_graphics::draw::{Extend, Interpolation, RadialGradient, SweepGradient};
+    use kurbo::Point;
+    use waterui_graphics::backend::draw::{Extend, Interpolation, RadialGradient, SweepGradient};
 
     use super::super::layers::{Ctx, Wake};
     use super::super::resources::Registry;
@@ -241,13 +241,12 @@ mod render {
     use cocoa_ui::objc2_core_text::CTFont;
     use cocoa_ui::objc2_foundation::NSDictionary;
     use cocoa_ui::objc2_quartz_core::{CALayer, CAShapeLayer};
-    use waterui_graphics::draw::kurbo;
-    use waterui_graphics::draw::kurbo::Shape as _;
-    use waterui_graphics::draw::{
+    use kurbo::Shape as _;
+    use waterui_graphics::backend::draw::{
         EvenOdd, Glyph, GlyphRun, GlyphStyle, ImageId, ImagePattern, MeshGradient, Sampling,
     };
-    use waterui_graphics::resources::{Handle, SceneBackend as _};
-    use waterui_graphics::source::{FontSource, ImageData, Rgba8};
+    use waterui_graphics::backend::{FontSource, ImageData, Rgba8};
+    use waterui_graphics::backend::{Handle, SceneBackend as _};
 
     use super::super::resources::Backend;
 
@@ -767,7 +766,7 @@ mod render {
         let old_fill = shape_fill(&before[1]);
 
         colour.set(rgb(0., 1., 0.));
-        let _ = content.sample(waterui_graphics::draw::Instant::now());
+        let _ = content.sample(waterui_graphics::backend::draw::Instant::now());
         let Some(ContentChange::Update(updates)) = content.take_change() else {
             panic!("a changed operand sends a slot update");
         };
@@ -998,25 +997,25 @@ mod render {
         show("caps", 200, 120, |r| {
             let guide = |r: &mut Recorder, y: f64| {
                 r.stroke(
-                    waterui_graphics::draw::kurbo::Line::new((30., y - 14.), (30., y + 14.)),
+                    kurbo::Line::new((30., y - 14.), (30., y + 14.)),
                     Stroke::new(0.5),
                     rgb(0.6, 0.6, 0.6),
                 );
                 r.stroke(
-                    waterui_graphics::draw::kurbo::Line::new((170., y - 14.), (170., y + 14.)),
+                    kurbo::Line::new((170., y - 14.), (170., y + 14.)),
                     Stroke::new(0.5),
                     rgb(0.6, 0.6, 0.6),
                 );
             };
             guide(r, 20.);
             r.stroke(
-                waterui_graphics::draw::kurbo::Line::new((30., 20.), (170., 20.)),
+                kurbo::Line::new((30., 20.), (170., 20.)),
                 stroke(14., Cap::Butt, Cap::Round),
                 rgb(0.85, 0.2, 0.2),
             );
             guide(r, 50.);
             r.stroke(
-                waterui_graphics::draw::kurbo::Line::new((30., 50.), (170., 50.)),
+                kurbo::Line::new((30., 50.), (170., 50.)),
                 stroke(14., Cap::Square, Cap::Butt),
                 rgb(0.2, 0.5, 0.85),
             );
@@ -1024,13 +1023,13 @@ mod render {
             let mut dashed = stroke(8., Cap::Round, Cap::Square);
             dashed.dash_pattern = [24., 14.].into_iter().collect();
             r.stroke(
-                waterui_graphics::draw::kurbo::Line::new((30., 80.), (170., 80.)),
+                kurbo::Line::new((30., 80.), (170., 80.)),
                 dashed,
                 rgb(0.2, 0.6, 0.3),
             );
             guide(r, 106.);
             r.stroke(
-                waterui_graphics::draw::kurbo::Line::new((30., 106.), (170., 106.)),
+                kurbo::Line::new((30., 106.), (170., 106.)),
                 stroke(12., Cap::Round, Cap::Butt),
                 LinearGradient {
                     stops: stops(&[rgb(0.9, 0.7, 0.1), rgb(0.6, 0.1, 0.7)]),
@@ -1289,8 +1288,8 @@ mod render {
     /// with a 1.5 blur under a white outline of its unspread shape.
     #[test]
     fn shadow_spread_offsets_any_shape() {
-        use waterui_graphics::draw::ContinuousRect;
-        use waterui_graphics::draw::kurbo::{Ellipse, Line};
+        use kurbo::{Ellipse, Line};
+        use waterui_graphics::backend::draw::ContinuousRect;
         show_at("spread_shadows", 300, 110, 1, |r| {
             r.fill(Rect::new(0., 0., 300., 110.), rgb(0.88, 0.9, 0.95));
             let red = rgba(0.85, 0.05, 0.05, 0.9);
@@ -1359,7 +1358,7 @@ mod render {
                 r.transform(Affine::translate((200., 75.)) * Affine::rotate(0.3), |r| {
                     r.fill(
                         RoundedRect::new(-60., -55., 60., 55., 18.),
-                        waterui_graphics::draw::TransformedPaint::new(
+                        waterui_graphics::backend::draw::TransformedPaint::new(
                             mesh.clone(),
                             Affine::translate((-60., -55.)) * Affine::scale(0.6),
                         ),
@@ -1472,7 +1471,7 @@ mod render {
             r.transform(Affine::translate((200., 75.)) * Affine::rotate(0.3), |r| {
                 r.fill(
                     RoundedRect::new(-60., -55., 60., 55., 18.),
-                    waterui_graphics::draw::TransformedPaint::new(
+                    waterui_graphics::backend::draw::TransformedPaint::new(
                         mesh.clone(),
                         Affine::translate((-60., -55.)) * Affine::scale(0.6),
                     ),
@@ -1494,7 +1493,7 @@ mod render {
             r.transform(Affine::translate((200., 75.)) * Affine::rotate(0.3), |r| {
                 r.fill(
                     RoundedRect::new(-60., -55., 60., 55., 18.),
-                    waterui_graphics::draw::TransformedPaint::new(
+                    waterui_graphics::backend::draw::TransformedPaint::new(
                         mesh.clone(),
                         Affine::translate((-60., -55.)) * Affine::scale(0.6),
                     ),
@@ -1584,7 +1583,7 @@ mod render {
                 let mut dashed = Stroke::new(3.);
                 dashed.dash_pattern = [6., 4.].into_iter().collect();
                 r.stroke(
-                    waterui_graphics::draw::kurbo::Line::new((120., 92.), (175., 120.)),
+                    kurbo::Line::new((120., 92.), (175., 120.)),
                     dashed,
                     rgb(0.1, 0.6, 0.3),
                 );
@@ -1628,7 +1627,7 @@ mod render {
         let old_contents = unsafe { before[0].contents() }.expect("a run shows its drawing");
 
         colour.set(rgb(0., 0.7, 0.));
-        let _ = content.sample(waterui_graphics::draw::Instant::now());
+        let _ = content.sample(waterui_graphics::backend::draw::Instant::now());
         let Some(ContentChange::Update(updates)) = content.take_change() else {
             panic!("a changed operand sends a slot update");
         };
@@ -1648,7 +1647,7 @@ mod render {
         save("run_update", &pixels(tree.root(), 60, 60, 1), 60, 60, 1);
 
         blend.set(Group::new().blend(BlendMode::Multiply));
-        let _ = content.sample(waterui_graphics::draw::Instant::now());
+        let _ = content.sample(waterui_graphics::backend::draw::Instant::now());
         let Some(ContentChange::Update(updates)) = content.take_change() else {
             panic!("a changed group sends a slot update");
         };
@@ -1727,8 +1726,8 @@ mod render {
         use waterui::View as _;
         use waterui::graphics::canvas::CanvasView;
         use waterui::reactive::binding;
-        use waterui_graphics::resources::SceneResources;
-        use waterui_graphics::{SceneFrame, SceneUpdate};
+        use waterui_graphics::backend::SceneResources;
+        use waterui_graphics::backend::{SceneFrame, SceneUpdate};
 
         use super::super::text::CoreText;
 
@@ -1768,7 +1767,7 @@ mod render {
         );
 
         label.set(String::from("Updated 更新 更新済み 업데이트"));
-        let now = waterui_graphics::draw::Instant::now();
+        let now = waterui_graphics::backend::draw::Instant::now();
         let update = view.update_scene(
             &resources,
             SceneFrame {
@@ -1805,7 +1804,7 @@ mod render {
         use waterui::graphics::color::Srgb;
         use waterui::text::StyledStr;
         use waterui_core::layout::Point as P;
-        use waterui_graphics::resources::SceneResources;
+        use waterui_graphics::backend::SceneResources;
 
         use super::super::text::CoreText;
 
@@ -1882,12 +1881,12 @@ mod render {
     fn transformed_canvas_paints_move_the_paint_and_not_the_shape() {
         use waterui_core::layout::{Affine2, Point as LPoint, Rect as LRect, Size as LSize};
         use waterui_core::{Environment, View as _};
+        use waterui_graphics::backend::SceneResources;
         use waterui_graphics::canvas::{
             Canvas, LinearGradient as CLinear, MeshGradient as CMesh, Paint,
             RadialGradient as CRadial, StrokeStyle,
         };
         use waterui_graphics::color::WorkingColor;
-        use waterui_graphics::resources::SceneResources;
 
         let color = |r: f32, g: f32, b: f32| WorkingColor::new([r, g, b, 1.0]);
         let rect = |x: f32, y: f32, w: f32, h: f32| LRect::new(LPoint::new(x, y), LSize::new(w, h));
@@ -1969,9 +1968,9 @@ mod render {
         use waterui::shape::{
             Capsule, Circle, Ellipse, MorphShape, Rectangle, RoundedRectangle, ShapeExt as _,
         };
+        use waterui_graphics::backend::SceneResources;
+        use waterui_graphics::backend::draw::LayoutSize;
         use waterui_graphics::color::Color;
-        use waterui_graphics::draw::LayoutSize;
-        use waterui_graphics::resources::SceneResources;
 
         type Morph = fn(Color) -> MorphShape;
         const GAP: f32 = 8.0;
@@ -2041,10 +2040,10 @@ mod render {
     #[test]
     fn the_animated_mesh_gradient_flows_with_the_canvas_clock() {
         use core::time::Duration;
-        use waterui_graphics::draw::{Instant, LayoutSize};
+        use waterui_graphics::backend::SceneResources;
+        use waterui_graphics::backend::draw::{Instant, LayoutSize};
+        use waterui_graphics::backend::{SceneFrame, SceneUpdate};
         use waterui_graphics::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig};
-        use waterui_graphics::resources::SceneResources;
-        use waterui_graphics::{SceneFrame, SceneUpdate};
 
         const WIDTH: usize = 360;
         const HEIGHT: usize = 240;

@@ -623,12 +623,12 @@ mod tests {
     };
     use crate::Url;
     use image::ImageEncoder as _;
-    use waterui::graphics::canvas::{Canvas, CanvasView};
-    use waterui::graphics::draw::{Content, FontId, ImageId, ImageLimits, LayoutSize};
-    use waterui::graphics::{
+    use waterui::graphics::backend::draw::{Content, FontId, ImageId, ImageLimits, LayoutSize};
+    use waterui::graphics::backend::{
         FontSource, Handle, ImageData, ResourceError, ResourceHandle, Rgba8, Rgba16F, SceneBackend,
         SceneContent, SceneResources,
     };
+    use waterui::graphics::canvas::{Canvas, CanvasView};
     use waterui_core::handler::BoxedEventAction;
     use waterui_core::{
         AnyView, Binding, ContentLedger, Environment, Signal, View, reactive::watcher::Context,

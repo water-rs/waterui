@@ -66,7 +66,7 @@ use crate::text::ParleyEngine;
 use crate::theme::WidgetTheme;
 use crate::time::Instant;
 #[cfg(hydrolysis_hwui)]
-use waterui_graphics::draw::SurfaceId;
+use cherenkov_record::SurfaceId;
 
 /// One coherent metrics snapshot the host pushes — size, density, font scale,
 /// display refresh and the system-bar insets arrive together, never piecemeal.
@@ -1102,7 +1102,7 @@ fn session_mounts(
         termination: _,
     } = app.into_parts();
     let mut env = env
-        .extending(waterui_graphics::SceneViewMergeToParent)
+        .extending(waterui_graphics::backend::SceneViewMergeToParent)
         .layered_on(&services.env);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     install_native_component_hooks(&mut env);

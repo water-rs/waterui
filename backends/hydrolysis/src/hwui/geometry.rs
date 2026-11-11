@@ -1,6 +1,6 @@
 //! Transforms and bounds for the HWUI target.
 
-use waterui_graphics::draw::kurbo::{Affine, Point, Rect};
+use cherenkov_record::kurbo::{Affine, Point, Rect};
 
 /// An Android `Matrix` in `getValues` order.
 pub type Matrix = [f32; 9];
@@ -494,9 +494,9 @@ mod tests {
         assert_eq!(unproject_point(collapsed, Point::new(50., 10.)), None);
     }
 
-    use waterui_graphics::draw::kurbo::{Affine, Point, Rect, Vec2};
+    use cherenkov_record::kurbo::{Affine, Point, Rect, Vec2};
 
-    use waterui_graphics::draw::Projective;
+    use cherenkov_record::Projective;
 
     use super::{
         Rows, Tilted, decompose, homogeneous, node_rows, project_rect, tilt, unproject_point,

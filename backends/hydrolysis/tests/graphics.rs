@@ -9,18 +9,19 @@
 
 mod support;
 
+use hydrolysis::draw::{Draw, Paint, WorkingColor};
 use kurbo::{Rect, Shape as _};
 use support::{mount_rendered, node_bounds_with_role, nodes};
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::component::text;
 use waterui::graphics::color::Srgb;
-use waterui::graphics::draw::{Draw, Paint, WorkingColor};
 use waterui::layout::Size;
 use waterui::reactive::constant;
 use waterui::shape::{Circle, ShapeExt as _};
 use waterui_core::Environment;
-use waterui_graphics::{FlowingGradient, Gradient, Picture, ShaderPaintView};
+use waterui_graphics::backend::Picture;
+use waterui_graphics::{FlowingGradient, Gradient, ShaderPaintView};
 
 fn linear_gradient_view() -> impl waterui::View {
     Gradient::linear(

@@ -118,6 +118,7 @@ use accesskit::{
     TreeId as AccessibilityTreeId, TreeInfo as AccessibilityTree,
     TreeUpdate as AccessibilityTreeUpdate,
 };
+use cherenkov_record::{Paint, WorkingColor};
 use executor_core::spawn_local;
 use nami::{Binding, Signal};
 use waterkit_clipboard::Clipboard;
@@ -181,14 +182,14 @@ use waterui_form::picker::PickerConfig;
 use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
+use waterui_graphics::Gradient;
+use waterui_graphics::backend::{FilteredView, SceneView};
 use waterui_graphics::canvas::CanvasView;
 use waterui_graphics::color::Color;
-use waterui_graphics::draw::{Paint, WorkingColor};
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::gpu::RedrawHandle;
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::{ExternalFrameView, GpuContentView};
-use waterui_graphics::{FilteredView, Gradient, SceneView};
 
 use waterui_icon::SystemIcon;
 use waterui_layout::container::{FixedContainer, LazyContainer};

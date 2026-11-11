@@ -21,6 +21,7 @@ use std::path::Path;
 use std::rc::Rc;
 use std::time::Instant;
 
+use cherenkov_record::Recorder;
 use nami::Signal as _;
 use serde::Deserialize;
 use waterui::ViewExt as _;
@@ -30,12 +31,12 @@ use waterui_controls::text_field::field;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Binding, Str};
 use waterui_form::secure::{Secure, secure};
-use waterui_graphics::draw::Recorder;
+use waterui_graphics::backend::{RecordingResources, SceneContent, SceneView};
 use waterui_graphics::gpu::{
     Context as GpuContext, ExternalFrameSource, ExternalFrameView, Frame as GpuFrame, FrameOutput,
 };
 use waterui_graphics::input::{Code, Key, NamedKey, SurfaceInputEvent};
-use waterui_graphics::{GpuContent, GpuContentView, RecordingResources, SceneContent, SceneView};
+use waterui_graphics::{GpuContent, GpuContentView};
 use waterui_layout::stack::vstack;
 
 use super::{MinimalTestTheme, test_environment};

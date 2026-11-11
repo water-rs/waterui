@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use cherenkov_record::{FilterId, Layer, MaterialRegistry, ResourceError, Transaction};
 use rustc_hash::FxHashMap;
-use waterui_graphics::filtrate::filters::OverscrollStretch;
+use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
+use waterui_graphics::backend::{Handle, Reactive, TextBackend, TextRegistration, TextRequest};
 use waterui_graphics::gpu::PresentedSize;
-use waterui_graphics::{Handle, Reactive, TextBackend, TextRegistration, TextRequest};
 
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::ProducerWake;

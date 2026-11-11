@@ -11,8 +11,8 @@ use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::sync::Arc;
 
+use cherenkov_record::kurbo::{Affine, Rect};
 use waterui_core::layout::HorizontalAlignment;
-use waterui_graphics::draw::kurbo::{Affine, Rect};
 
 use crate::hwui::HwuiError;
 use crate::hwui::text::{

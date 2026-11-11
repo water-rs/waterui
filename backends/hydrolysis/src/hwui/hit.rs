@@ -11,7 +11,7 @@ use kurbo::{Point, Shape as _};
 use super::{Encoder, HwuiError};
 use crate::hwui::geometry::unproject_point;
 use cherenkov_record::LayerId;
-use waterui_graphics::draw::ShapeData;
+use cherenkov_record::ShapeData;
 
 impl Encoder {
     /// The topmost platform view drawn at `point` (host physical pixels —
@@ -96,8 +96,8 @@ fn clip_contains(clip: &ShapeData, point: Point) -> bool {
         ShapeData::Path { elements, rule } => {
             let winding = (&elements[..]).winding(point);
             match rule {
-                waterui_graphics::draw::FillRule::NonZero => winding != 0,
-                waterui_graphics::draw::FillRule::EvenOdd => winding & 1 != 0,
+                cherenkov_record::FillRule::NonZero => winding != 0,
+                cherenkov_record::FillRule::EvenOdd => winding & 1 != 0,
             }
         }
     }

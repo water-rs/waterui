@@ -73,12 +73,12 @@ mod test_style {
         TextCaretMotion, TextContextMenuMetrics, ToggleSpec, WidgetInteractionState, WidgetTheme,
     };
     use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
+    use cherenkov_record::{Paint, Recorder};
     use kurbo::{Point, Rect};
     use waterui::animation::Animation;
     use waterui::{Color, EasingCurve, Environment};
     use waterui_form::picker::PickerStyle;
     use waterui_graphics::color::Srgb;
-    use waterui_graphics::draw::{Paint, Recorder};
     use waterui_text::font::Font;
 
     type TokenInstaller = std::sync::Arc<dyn Fn(&mut Environment) + Send + Sync>;

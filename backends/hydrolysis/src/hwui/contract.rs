@@ -11,11 +11,11 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use waterui_graphics::draw::color::WorkingColor;
-use waterui_graphics::draw::kurbo::{
+use cherenkov_record::color::WorkingColor;
+use cherenkov_record::kurbo::{
     Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke, Vec2,
 };
-use waterui_graphics::draw::{
+use cherenkov_record::{
     BlendMode, ChangeSet, ColorStop, ContentOp, Curve, Draw, Extend, FontId, Glyph, GlyphRun,
     GlyphStyle, Group, ImageId, ImagePattern, Instant, Interpolation, LayerId, LayerOp,
     LinearGradient, MeshColorInterpolation, MeshGradient, Op as TreeOp, Paint, Picture, Prop,
@@ -31,9 +31,9 @@ use super::protocol::{MESH_BAND_PATCHES, NONE, Op, effect_kind};
 
 use super::resources::{Kind, SharedRegistry};
 use super::{HwuiError, HwuiSurface, HwuiTarget};
+use cherenkov_record::TextLayoutId;
 use cherenkov_record::{Fixed, Live, Shared, SurfaceId};
 use std::cell::Cell;
-use waterui_graphics::draw::TextLayoutId;
 
 use super::text::{
     ShapeRequest, TextAlignment, TextLayoutIds, TextRun, Utf16Index, describe_paragraph,
@@ -530,15 +530,15 @@ fn write(dir: &Path, scene: &Scene) {
 #[test]
 fn a_filtered_layer_defines_binds_and_updates_without_remount() {
     use crate::renderer::mount::target::FilterRegistration;
-    use waterui_graphics::filter_view::AnyEffect;
-    use waterui_graphics::filtrate::filters;
+    use waterui_graphics::backend::AnyEffect;
+    use waterui_graphics::backend::filtrate::filters;
 
     let mut surface = HwuiSurface::new(SurfaceId::new(9), || {}).expect("an empty root encodes");
     let shared = surface.shared().clone();
     let root = Shared::root(&shared);
     let child = Shared::layer(&shared);
     let brightness = nami::binding(0.5f32);
-    let mut guards = waterui_graphics::filter_view::ParamGuards::default();
+    let mut guards = waterui_graphics::backend::ParamGuards::default();
     let wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let wake_counter = std::sync::Arc::clone(&wakes);
     let registration = surface
@@ -641,8 +641,8 @@ fn a_filtered_layer_defines_binds_and_updates_without_remount() {
 #[test]
 fn a_stretched_layer_defines_its_frame_in_the_nodes_space() {
     use crate::renderer::mount::target::FilterRegistration;
-    use waterui_graphics::filter_view::AnyEffect;
-    use waterui_graphics::filtrate::filters::OverscrollStretch;
+    use waterui_graphics::backend::AnyEffect;
+    use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
 
     let mut surface = HwuiSurface::new(SurfaceId::new(11), || {}).expect("an empty root encodes");
     let shared = surface.shared().clone();
@@ -695,8 +695,8 @@ fn a_stretched_layer_defines_its_frame_in_the_nodes_space() {
 #[test]
 fn a_filtered_recording_group_keeps_its_effect_node() {
     use crate::renderer::mount::target::FilterRegistration;
-    use waterui_graphics::filter_view::AnyEffect;
-    use waterui_graphics::filtrate::filters;
+    use waterui_graphics::backend::AnyEffect;
+    use waterui_graphics::backend::filtrate::filters;
 
     let mut surface = HwuiSurface::new(SurfaceId::new(10), || {}).unwrap();
     let shared = surface.shared().clone();
@@ -1039,7 +1039,7 @@ fn a_tilt_animation_updates_node_camera_properties_without_re_recording() {
     let root = encoder.tree().root();
     let card = LayerId::new(201);
     let perspective =
-        waterui_graphics::draw::Projective::perspective(800.0).expect("the distance is valid");
+        cherenkov_record::Projective::perspective(800.0).expect("the distance is valid");
     encoder
         .commit(changes(vec![
             layer(LayerOp::Create(card)),
@@ -1357,8 +1357,8 @@ fn fills(log: &[String]) -> Vec<&String> {
 /// animation, and the source records once.
 #[test]
 fn a_keyframed_operand_records_the_sampled_frames() {
+    use cherenkov_record::{KeyframeAnimation, Keyframes, Repeat};
     use nami::SignalExt as _;
-    use waterui_graphics::draw::{KeyframeAnimation, Keyframes, Repeat};
 
     let solid = |r, g, b| Paint::Solid(color(r, g, b, 1.0));
     let cycle = Duration::from_millis(400);
@@ -1445,8 +1445,8 @@ fn a_keyframed_operand_records_the_sampled_frames() {
 /// the sampled transform and alpha, matching a layer set to those values.
 #[test]
 fn keyframed_layer_properties_set_the_sampled_frames() {
+    use cherenkov_record::{KeyframeAnimation, Keyframes, Repeat, Spring};
     use nami::SignalExt as _;
-    use waterui_graphics::draw::{KeyframeAnimation, Keyframes, Repeat, Spring};
 
     let cycle = Duration::from_millis(600);
     let spin = Keyframes::new(cycle, 0.0_f64)

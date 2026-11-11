@@ -1,10 +1,10 @@
 //! The platform-backed text layout.
 
+use cherenkov_record::TextLayoutId;
 use std::fmt;
 use std::sync::Arc;
-use waterui_graphics::draw::TextLayoutId;
 
-use waterui_graphics::draw::kurbo::Rect;
+use cherenkov_record::kurbo::Rect;
 
 use crate::hwui::HwuiError;
 

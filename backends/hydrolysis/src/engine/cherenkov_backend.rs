@@ -264,7 +264,7 @@ impl SurfaceCore {
     }
 
     /// The colour the surface clears to before content.
-    pub fn clear_color(&self, color: waterui_graphics::draw::WorkingColor) {
+    pub fn clear_color(&self, color: cherenkov_record::WorkingColor) {
         self.surface.clear_color(color);
     }
 }

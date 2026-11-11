@@ -12,16 +12,16 @@
 //! blend, so the pin holds whatever working space the engine composites
 //! in.
 
+use cherenkov_record::{
+    BackdropShaderSource, CaptureClass, CaptureLevels, CaptureScale, Live, MaterialCapture,
+    MaterialEffect, MaterialGrouping, MaterialShader, Paint,
+};
 use waterui::ViewExt as _;
 use waterui::background::Material;
 use waterui::gesture::TapGesture;
 use waterui::graphics::Color;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment};
-use waterui_graphics::draw::{
-    BackdropShaderSource, CaptureClass, CaptureLevels, CaptureScale, Live, MaterialCapture,
-    MaterialEffect, MaterialGrouping, MaterialShader, Paint,
-};
 use waterui_layout::stack::zstack;
 
 use super::{ChromeDraw, ChromePlan, MinimalTestTheme, pumped_test_environment};

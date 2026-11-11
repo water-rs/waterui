@@ -15,6 +15,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
+use cherenkov_record::{
+    BackdropShaderSource, CaptureClass, CaptureLevels, CaptureScale, Draw as _, MaterialCapture,
+    MaterialGrouping, MaterialShader,
+};
 use cherenkov_record::{MaterialEffect, Paint, ShapeData, WorkingColor};
 use kurbo::{Rect, RoundedRect, Size};
 use nami::{Binding, Signal as _};
@@ -26,10 +30,6 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::LayoutDirection;
 use waterui_core::{AnyView, Environment};
-use waterui_graphics::draw::{
-    BackdropShaderSource, CaptureClass, CaptureLevels, CaptureScale, Draw as _, MaterialCapture,
-    MaterialGrouping, MaterialShader,
-};
 
 use super::chrome_primitives::tree_work;
 use super::{ChromePlan, MinimalTestTheme, pumped_test_environment};

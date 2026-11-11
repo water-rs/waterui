@@ -277,7 +277,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 );
                 let program = renderer.program().program_mut();
                 program.opacity = alpha;
-                program.clip = Some(waterui_graphics::draw::ShapeData::of(&ctx.bounds()));
+                program.clip = Some(cherenkov_record::ShapeData::of(&ctx.bounds()));
                 renderer.push_placement_scope(
                     crate::renderer::ScopeDelta::RECORD_SPACE,
                     Some(ctx.bounds()),
@@ -436,7 +436,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             "hydrolysis renderer: a material member under a `.material_group()` scope re-recorded with an empty scope stack — the partial descent did not establish the enclosing scopes"
                         );
                         let program = renderer.program().program_mut();
-                        program.clip = Some(waterui_graphics::draw::ShapeData::of(&ctx.bounds()));
+                        program.clip = Some(cherenkov_record::ShapeData::of(&ctx.bounds()));
                         program.material = Some(mount::MaterialRequest {
                             scope,
                             level: *level,

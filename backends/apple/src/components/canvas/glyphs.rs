@@ -28,7 +28,7 @@ use skrifa::raw::tables::avar::{Avar, SegmentMaps};
 use skrifa::raw::tables::fvar::Fvar;
 use skrifa::raw::types::{F2Dot14, Fixed, Tag};
 use skrifa::raw::{FontData, FontRead};
-use waterui_graphics::draw::GlyphRun;
+use waterui_graphics::backend::draw::GlyphRun;
 
 use super::resources::Registry;
 

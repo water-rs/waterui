@@ -6,8 +6,8 @@ use super::{
     HwuiTextLayout, PackedRequest, PlatformText, ShapeRequest, TextAlignment, TextLayoutIds,
     TextRun, Utf16Index, decode_reply, unpack_position, unpack_range,
 };
-use waterui_graphics::draw::TextLayoutId;
-use waterui_graphics::draw::kurbo::Rect;
+use cherenkov_record::TextLayoutId;
+use cherenkov_record::kurbo::Rect;
 
 use crate::hwui::HwuiError;
 use crate::hwui::buffer::CommandBuffer;

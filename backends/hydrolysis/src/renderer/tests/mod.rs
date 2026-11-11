@@ -143,12 +143,12 @@ use crate::theme::{
     WidgetInteractionState,
 };
 use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
-use waterui_core::EasingCurve;
-use waterui_core::handler::SharedAction;
-use waterui_graphics::draw::{
+use cherenkov_record::{
     BackdropShaderSource, CaptureClass, Draw, MaterialCapture, MaterialEffect, MaterialRegistry,
     MaterialShader, Paint, Recorder, Shadow, SharedLive, WorkingColor,
 };
+use waterui_core::EasingCurve;
+use waterui_core::handler::SharedAction;
 
 fn test_renderer() -> HydrolysisRenderer<crate::text::ParleyEngine> {
     test_renderer_with_theme(MinimalTestTheme::default())
@@ -1412,10 +1412,10 @@ fn container_label_without_role_names_the_container_only() {
 #[cfg(feature = "accessibility")]
 #[test]
 fn a_naming_scope_keeps_the_elements_own_bounds_when_the_parent_stretched_it() {
-    let env = test_environment().extending(waterui_graphics::SceneViewMergeToParent);
+    let env = test_environment().extending(waterui_graphics::backend::SceneViewMergeToParent);
     let mut renderer = test_renderer();
-    let recording = waterui_graphics::Picture::record(|_scene| {});
-    let picture = waterui_graphics::Picture::new(
+    let recording = waterui_graphics::backend::Picture::record(|_scene| {});
+    let picture = waterui_graphics::backend::Picture::new(
         waterui_core::layout::Size::new(24.0, 24.0),
         nami::constant(recording),
     );

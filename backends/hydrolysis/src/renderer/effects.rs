@@ -7,7 +7,7 @@
 //! built effect is not, so the adapter is a cell that holds the recipe while
 //! it crosses to the render thread, builds it inside `setup` (which the engine
 //! drives there), and delegates every later call to the built
-//! [`waterui_graphics::filter_view::ErasedEffect`].
+//! [`waterui_graphics::backend::ErasedEffect`].
 //!
 //! [`FilteredRuntime`] is what a mount keeps on the UI side: the unbuilt
 //! source until registration, the engine `Filter` handle once registered (its
@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use super::mount::target::FilterHandle;
-use waterui_graphics::{AnyEffect, ParamGuards};
+use waterui_graphics::backend::{AnyEffect, ParamGuards};
 
 /// Per-frame applied-filter telemetry shared between the UI side and the
 /// engine's render thread.

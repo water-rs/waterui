@@ -17,8 +17,8 @@
 
 use cherenkov_record::FilterId;
 use nami::Binding;
-use waterui_graphics::filtrate::filters::OverscrollStretch;
-use waterui_graphics::{ParamGuards, Reactive};
+use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
+use waterui_graphics::backend::{ParamGuards, Reactive};
 
 use super::target::{FilterHandle, LayerTarget};
 

@@ -17,11 +17,11 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use waterui_backend_core::Environment;
 #[cfg(feature = "gpu_surface")]
-use waterui_graphics::cherenkov::{Engine, FrameScope, FrameTime, RenderError, SurfaceId};
+use waterui_graphics::backend::cherenkov::{Engine, FrameScope, FrameTime, RenderError, SurfaceId};
 #[cfg(feature = "gpu_surface")]
-use waterui_graphics::cherenkov_gpu::Gpu;
+use waterui_graphics::backend::filtrate::PipelineCache;
 #[cfg(feature = "gpu_surface")]
-use waterui_graphics::filtrate::PipelineCache;
+use waterui_graphics::gpu::Gpu;
 use waterui_graphics::gpu::GpuRuntime;
 #[cfg(feature = "gpu_surface")]
 use waterui_graphics::gpu::{HostedLayerError, SharedGpuContext};
@@ -596,8 +596,8 @@ pub fn capture_pass(env: &Environment) -> cocoa_ui::capture::CapturePass {
 #[cfg(all(test, target_os = "macos", feature = "gpu_surface"))]
 mod tests {
     use super::*;
-    use waterui_graphics::cherenkov::Surface;
-    use waterui_graphics::cherenkov_gpu::interop::TextureTarget;
+    use waterui_graphics::backend::cherenkov::Surface;
+    use waterui_graphics::gpu::interop::TextureTarget;
 
     /// A mounted scene's contract reduced to observation: whether `prepare`
     /// ran and for which timestamp, whether it is owed a later frame, and
@@ -734,7 +734,7 @@ mod tests {
             .generation(&runtime, &context)
             .expect("the generation settles");
         let prepare_error: Arc<HostedLayerError> = Arc::new(HostedLayerError::Surface(
-            waterui_graphics::cherenkov::SurfaceError::Lost,
+            waterui_graphics::backend::cherenkov::SurfaceError::Lost,
         ));
         let failing = Probe::mount_failing(&generation, prepare_error.clone());
         let healthy = Probe::mount(&generation);

@@ -6,9 +6,8 @@ use hydrolysis::{
     FontFamilyResolution, HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow, Style,
     readback_texture_rgba8,
 };
-use waterui::graphics::SceneViewMergeToParent;
 use waterui::graphics::WorkingColor;
-use waterui::graphics::draw::kurbo;
+use waterui::graphics::backend::SceneViewMergeToParent;
 use waterui::text::FontCollection;
 use waterui_core::{AnyView, Environment, View};
 
