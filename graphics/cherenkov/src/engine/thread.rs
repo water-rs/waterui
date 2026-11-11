@@ -3,7 +3,6 @@
 //! frame time, renders, and answers with [`Next`] and the [`FrameStats`].
 
 use std::sync::Arc;
-#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 #[cfg(not(target_arch = "wasm32"))]

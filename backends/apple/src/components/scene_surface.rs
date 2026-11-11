@@ -1356,13 +1356,13 @@ mod tests {
             // channel closes only some time later; the test seam joins the
             // thread, after which the surface deterministically answers
             // the production `SurfaceError::Lost`.
-            Rc::into_inner(engine)
-                .expect("the engine has no owner left besides this trial")
-                .shutdown_and_join_for_testing();
+            cherenkov::Engine::shutdown_and_join_for_testing(
+                Rc::into_inner(engine).expect("the engine has no owner left besides this trial"),
+            );
             assert!(
                 matches!(
                     part.surface.display(display),
-                    Err(waterui_graphics::backend::cherenkov::SurfaceError::Lost)
+                    Err(cherenkov::SurfaceError::Lost)
                 ),
                 "the joined engine's surface channel is closed"
             );

@@ -37,11 +37,11 @@ mod image;
 mod local;
 pub mod lowering;
 mod message;
-#[cfg(not(target_arch = "wasm32"))]
-mod transport;
 mod resource;
 mod surface;
 mod text;
+#[cfg(not(target_arch = "wasm32"))]
+mod transport;
 #[cfg(feature = "workers")]
 pub mod workers;
 

@@ -637,7 +637,7 @@ impl SceneEngine {
         let context = context.clone();
         let creation = async move {
             runtime
-                .engine_on(&context)
+                .engine_on_async(&context)
                 .await
                 .map(|engine| {
                     Rc::new(EngineGeneration {

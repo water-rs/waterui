@@ -12,7 +12,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::task::{Context as TaskContext, Waker};
 
-use waterui_graphics::cherenkov::{Display, FrameTime, Next};
+use cherenkov::{Display, FrameTime, Next};
 use waterui_graphics::gpu::interop::GpuContentBox;
 use waterui_graphics::gpu::{
     Context, Frame, GpuContent, GpuContentRenderer, GpuContentView, GpuRuntime, HostedFrame,

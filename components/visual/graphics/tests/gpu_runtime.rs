@@ -22,7 +22,8 @@ fn runtime() -> GpuRuntime {
 #[test]
 fn shared_runtime_device_is_accepted_by_cherenkov_engine() {
     let runtime = runtime();
-    pollster::block_on(runtime.engine())
+    runtime
+        .engine()
         .expect("cherenkov engine must accept the shared runtime's device");
 }
 
@@ -116,13 +117,13 @@ impl GpuContent for BuildsSharedDevice {
 fn setup_context_builds_a_shared_device_of_the_runtime() {
     let runtime = runtime();
     let adapter_info = Arc::new(std::sync::Mutex::new(None));
-    pollster::block_on(runtime.render_content(
+    runtime.render_content(
         BuildsSharedDevice {
             adapter_info: adapter_info.clone(),
         },
         OffscreenSize::try_from_pixels(8, 8).unwrap(),
         1.0,
-    ));
+    );
     let seen = adapter_info.lock().unwrap().take().expect("setup ran");
     assert_eq!(seen, runtime.context().adapter().get_info());
 }

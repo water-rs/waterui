@@ -853,7 +853,31 @@ impl GpuRuntime {
     }
 
     /// Creates an engine sharing this runtime's current context's device,
+    /// waiting for the render thread's setup.
+    ///
+    /// The engine is bound to the context generation it was built under: a
+    /// rebuilt context after device loss needs a new engine, created from the
+    /// replacement context. [`engine_async`](Self::engine_async) is the form
+    /// that does not block the calling thread.
+    ///
+    /// # Errors
+    /// When the engine cannot initialize its rendering resources.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn engine(&self) -> Result<Engine<Gpu>, cherenkov::EngineError> {
+        self.engine_on(&self.context())
+    }
+
+    /// Creates an engine sharing this runtime's current context's device,
     /// without making the caller wait for the render thread's setup.
+    ///
+    /// # Errors
+    /// When the engine cannot initialize its rendering resources.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn engine_async(&self) -> Result<Engine<Gpu>, cherenkov::EngineError> {
+        self.engine_on_async(&self.context()).await
+    }
+
+    /// Creates an engine sharing this runtime's current context's device.
     ///
     /// The engine is bound to the context generation it was built under: a
     /// rebuilt context after device loss needs a new engine, created from the
@@ -861,15 +885,27 @@ impl GpuRuntime {
     ///
     /// # Errors
     /// When the engine cannot initialize its rendering resources.
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(
-            clippy::future_not_send,
-            reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
-        )
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
     )]
     pub async fn engine(&self) -> Result<Engine<Gpu>, cherenkov::EngineError> {
         self.engine_on(&self.context()).await
+    }
+
+    /// Creates an engine on `context` — the generation a caller that also
+    /// holds device-bound resources must pass so everything agrees — waiting
+    /// for the render thread's setup.
+    ///
+    /// # Errors
+    /// When the engine cannot initialize its rendering resources.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn engine_on(
+        &self,
+        context: &SharedGpuContext,
+    ) -> Result<Engine<Gpu>, cherenkov::EngineError> {
+        Engine::new(Self::engine_config(context))
     }
 
     /// Creates an engine on `context` — the generation a caller that also
@@ -878,37 +914,95 @@ impl GpuRuntime {
     ///
     /// # Errors
     /// When the engine cannot initialize its rendering resources.
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(
-            clippy::future_not_send,
-            reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
-        )
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn engine_on_async(
+        &self,
+        context: &SharedGpuContext,
+    ) -> Result<Engine<Gpu>, cherenkov::EngineError> {
+        Engine::new_async(Self::engine_config(context)).await
+    }
+
+    /// Creates an engine on `context` — the generation a caller that also
+    /// holds device-bound resources must pass so everything agrees.
+    ///
+    /// # Errors
+    /// When the engine cannot initialize its rendering resources.
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
     )]
     pub async fn engine_on(
         &self,
         context: &SharedGpuContext,
     ) -> Result<Engine<Gpu>, cherenkov::EngineError> {
-        let config = GpuConfig {
+        Engine::new(Self::engine_config(context)).await
+    }
+
+    fn engine_config(context: &SharedGpuContext) -> GpuConfig {
+        GpuConfig {
             device: Some(context.shared_device()),
             ..GpuConfig::default()
-        };
-        #[cfg(not(target_arch = "wasm32"))]
-        let engine = Engine::new_async(config).await;
-        #[cfg(target_arch = "wasm32")]
-        let engine = Engine::new(config).await;
-        engine
+        }
+    }
+
+    /// Renders owned GPU content through the engine's offscreen surface,
+    /// waiting for the frame.
+    ///
+    /// # Panics
+    /// When engine creation, rendering, or readback fails.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn render_content(
+        &self,
+        content: impl GpuContent,
+        size: OffscreenSize,
+        scale: f32,
+    ) -> OffscreenImage {
+        pollster::block_on(self.render_content_async(content, size, scale))
+    }
+
+    /// Renders owned GPU content through the engine's offscreen surface,
+    /// without blocking the calling thread.
+    ///
+    /// # Panics
+    /// When engine creation, rendering, or readback fails.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[expect(
+        clippy::future_not_send,
+        reason = "holds the !Send engine across its awaits; the future runs on the thread that owns the engine"
+    )]
+    pub async fn render_content_async(
+        &self,
+        content: impl GpuContent,
+        size: OffscreenSize,
+        scale: f32,
+    ) -> OffscreenImage {
+        self.render_content_inner(content, size, scale).await
     }
 
     /// Renders owned GPU content through the engine's offscreen surface.
     ///
     /// # Panics
     /// When engine creation, rendering, or readback fails.
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+    )]
+    pub async fn render_content(
+        &self,
+        content: impl GpuContent,
+        size: OffscreenSize,
+        scale: f32,
+    ) -> OffscreenImage {
+        self.render_content_inner(content, size, scale).await
+    }
+
     #[expect(
         clippy::future_not_send,
         reason = "holds the !Send engine across its awaits; the future runs on the thread that owns the engine"
     )]
-    pub async fn render_content(
+    async fn render_content_inner(
         &self,
         content: impl GpuContent,
         size: OffscreenSize,
@@ -1002,6 +1096,9 @@ impl LayerHost {
         size: OffscreenSize,
         redraw: RedrawHandle,
     ) -> Result<Self, HostedLayerError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let engine = runtime.engine_on_async(&context).await?;
+        #[cfg(target_arch = "wasm32")]
         let engine = runtime.engine_on(&context).await?;
         let (target, textures) = TextureTarget::new((size.width(), size.height()));
         let wake = move || redraw.request_redraw();

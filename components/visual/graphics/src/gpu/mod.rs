@@ -23,12 +23,12 @@ pub use external::{
     ExternalFrameSource, ExternalFrameStream, ExternalFrameView, FrameOutput, FrameReceiver,
     PresentedSize, RetiredOutput,
 };
-#[cfg(not(target_arch = "wasm32"))]
-pub use runtime::{HostedFrame, RebuildHold, RenderedFrame};
 pub use runtime::{
     DeviceLoss, ExternalFrameRenderer, GpuContentRenderer, GpuRuntime, GpuRuntimeError,
     HostedLayerError, SharedGpuContext, preferred_surface_format,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use runtime::{HostedFrame, RebuildHold, RenderedFrame};
 
 /// The rectangle an IME caret query ([`CaretQuery`]) answers with.
 pub use crate::draw::kurbo::Rect;

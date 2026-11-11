@@ -135,13 +135,7 @@ impl FramePipeline {
 
     /// Whether a live renderer holds no frame — none in flight, none
     /// produced and waiting for a target.
-    #[cfg_attr(
-        not(any(test, all(feature = "native-test", target_os = "macos"))),
-        expect(
-            dead_code,
-            reason = "only the native-test fixture and the pipeline's tests settle a surface"
-        )
-    )]
+    #[cfg(all(target_os = "macos", any(test, feature = "native-test")))]
     pub(super) fn idle(&self) -> bool {
         matches!(
             self.bound.as_ref().map(|bound| &bound.stage),
