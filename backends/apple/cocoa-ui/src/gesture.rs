@@ -1,5 +1,5 @@
-//! Shared vocabulary for the gesture recognizers in [`crate::appkit`] and
-//! [`crate::uikit`].
+//! Shared vocabulary for the gesture recognizers in `crate::appkit` and
+//! `crate::uikit`.
 //!
 //! The twins' recognizer constructors differ — each platform has its own
 //! recognizer classes — but they describe their configuration in the same
