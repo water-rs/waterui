@@ -68,17 +68,16 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         };
         let view = match view.downcast::<Native<TextConfig>>() {
             Ok(text) => {
-                let config = (*text).into_inner();
+                let (content, alignment, line_limit) = (*text).into_inner().into_parts();
                 let core = renderer.new_core();
                 let (layout_dirty, invalidate) = layout_invalidation(&core.cell);
                 let guards = [
-                    config.content().watch({
+                    content.watch({
                         let invalidate = Rc::clone(&invalidate);
                         move |_| invalidate()
                     }),
-                    config.paragraph_alignment().watch(move |_| invalidate()),
+                    alignment.watch(move |_| invalidate()),
                 ];
-                let (content, alignment, line_limit) = config.into_parts();
                 return Self::Text(Box::new(TextNode {
                     memo_gate: Cell::default(),
                     memo_slots: RefCell::default(),
@@ -168,44 +167,36 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let view = match view.downcast::<Metadata<Opacity>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
-                return Self::Opacity(Box::new(OpacityNode {
-                    core: renderer.new_core(),
-                    value,
-                    child: Self::build_view(content, env, renderer),
-                }));
+                return Self::Opacity(Box::new(OpacityNode::new(&value, renderer, |renderer| {
+                    Self::build_view(content, env, renderer)
+                })));
             }
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<Scale>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
-                return Self::Scale(Box::new(ScaleNode {
-                    core: renderer.new_core(),
-                    value,
-                    child: Self::build_view(content, env, renderer),
-                }));
+                return Self::Scale(Box::new(ScaleNode::new(&value, renderer, |renderer| {
+                    Self::build_view(content, env, renderer)
+                })));
             }
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<Rotation>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
-                return Self::Rotation(Box::new(RotationNode {
-                    core: renderer.new_core(),
-                    value,
-                    child: Self::build_view(content, env, renderer),
-                }));
+                return Self::Rotation(Box::new(RotationNode::new(&value, renderer, |renderer| {
+                    Self::build_view(content, env, renderer)
+                })));
             }
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<Offset>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
-                return Self::Offset(Box::new(OffsetNode {
-                    core: renderer.new_core(),
-                    value,
-                    child: Self::build_view(content, env, renderer),
-                }));
+                return Self::Offset(Box::new(OffsetNode::new(&value, renderer, |renderer| {
+                    Self::build_view(content, env, renderer)
+                })));
             }
             Err(view) => view,
         };

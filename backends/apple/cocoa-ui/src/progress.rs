@@ -1,7 +1,7 @@
 //! Shared types for the progress-indicator control twins.
 //!
-//! The platform indicators live in [`crate::appkit::Progress`] and
-//! [`crate::uikit::Progress`]; this module carries the value their
+//! The platform indicators live in `crate::appkit::Progress` and
+//! `crate::uikit::Progress`; this module carries the value their
 //! signatures share.
 
 /// Which shape the indicator draws.

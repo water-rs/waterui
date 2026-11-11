@@ -2537,11 +2537,11 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             );
         }
         if let Some(label) = view.downcast_ref::<SemanticLabel>() {
-            let styled = self.read_signal(label.semantic_text().resolve(&scoped_env).content());
+            let styled = self.read_signal(&label.semantic_text().resolve(&scoped_env).content());
             return Some(styled.to_semantic().to_string());
         }
         if let Some(text) = view.downcast_ref::<waterui_text::Text>() {
-            let styled = self.read_signal(text.resolve(&scoped_env).content());
+            let styled = self.read_signal(&text.resolve(&scoped_env).content());
             return Some(styled.to_semantic().to_string());
         }
         if let Some(label) = view.downcast_ref::<Str>() {
@@ -2572,7 +2572,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             );
         }
         if let Some(text) = view.downcast_ref::<Native<TextConfig>>() {
-            let styled = self.read_signal(text.as_inner().content());
+            let styled = self.read_signal(&text.as_inner().content());
             return Some(styled.to_semantic().to_string());
         }
         if let Some(icon) = view.downcast_ref::<Native<SystemIcon>>() {
@@ -2711,7 +2711,7 @@ fn accessibility_role_to_accesskit_role(role: AccessibilityRole) -> Accessibilit
         AccessibilityRole::Link => AccessibilityNodeRole::Link,
         AccessibilityRole::Image => AccessibilityNodeRole::Image,
         AccessibilityRole::Text => AccessibilityNodeRole::Label,
-        AccessibilityRole::Header => AccessibilityNodeRole::Header,
+        AccessibilityRole::Header => AccessibilityNodeRole::Heading,
         AccessibilityRole::Footer => AccessibilityNodeRole::Footer,
         AccessibilityRole::Navigation => AccessibilityNodeRole::Navigation,
         AccessibilityRole::Main => AccessibilityNodeRole::Main,

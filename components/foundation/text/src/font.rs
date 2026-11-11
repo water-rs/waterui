@@ -44,7 +44,7 @@
 
 use core::fmt::Debug;
 
-use alloc::string::String;
+use alloc::{rc::Rc, string::String, vec::Vec};
 
 use nami::{Computed, Signal, SignalExt, impl_constant, signal::IntoSignal};
 use waterui_core::{
@@ -54,24 +54,28 @@ use waterui_core::{
 
 /// Font configuration for text rendering.
 ///
-/// This struct defines all the visual properties that can be applied to text,
-/// including size, styling, and decorations.
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub struct Font(AnyResolvable<ResolvedFont>);
-
-/// The font of text nobody styled.
+/// A font is a slot — the face it starts from, such as a theme slot like
+/// [`Body`] — and the modifiers applied over it in order ([`Self::bold`],
+/// [`Self::size`], [`Self::weight`], …). Either part may be absent: a font
+/// that names no slot inherits the slot of the font it is set in, so `bold`
+/// on its own means "the surrounding font, bold". [`Self::inherit`] is that
+/// composition, which lets text-level fonts and per-run fonts merge instead
+/// of replacing one another.
 ///
-/// It resolves to the [`Body`] slot's face, size and metrics, marked
-/// [`ResolvedFont::unstyled`] so a backend can tell it from text set in the
-/// body style.
-impl Default for Font {
-    fn default() -> Self {
-        Self::new(Unstyled)
-    }
+/// [`Font::default`] names no slot and applies no modifier: it is exactly the
+/// font it is set in, and on its own it is the font of text nobody styled
+/// (see [`Self::resolve`]).
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct Font {
+    /// The face the font starts from, or `None` to inherit one.
+    slot: Option<AnyResolvable<ResolvedFont>>,
+    /// The modifiers applied over the slot, in order.
+    modifiers: Vec<Modifier>,
 }
 
-/// The resolvable behind [`Font::default`]: the body slot, marked unstyled.
+/// The resolvable a font that names no slot resolves from when nothing is
+/// inherited: the body slot, marked unstyled.
 #[derive(Debug, Clone, Copy)]
 struct Unstyled;
 
@@ -389,57 +393,88 @@ impl From<Option<Str>> for FontFamily {
     }
 }
 
-/// A font whose resolved value is rewritten by the current value of a signal.
+/// One modifier of a [`Font`]: rewrites the resolved font with the current
+/// value of a signal.
 ///
-/// Every [`Font`] modifier is one of these: the modifier's value signal is
-/// zipped with the inner font's resolved signal, so a change to either
-/// re-resolves the font in place and no view is rebuilt.
+/// The modifier's value signal is zipped with the resolved signal it applies
+/// to, so a change to either re-resolves the font in place and no view is
+/// rebuilt.
 #[derive(Clone)]
-struct Modified<T: 'static> {
-    font: Font,
+struct Modifier(Rc<dyn ApplyModifier>);
+
+impl Debug for Modifier {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Modifier").finish_non_exhaustive()
+    }
+}
+
+/// The object-safe body of a [`Modifier`].
+trait ApplyModifier {
+    fn apply(&self, font: Computed<ResolvedFont>) -> Computed<ResolvedFont>;
+}
+
+struct SignalModifier<T: 'static> {
     value: Computed<T>,
     apply: fn(&mut ResolvedFont, T),
 }
 
-impl<T: 'static> Debug for Modified<T> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Modified")
-            .field("font", &self.font)
-            .finish_non_exhaustive()
-    }
-}
-
-impl<T: Clone + 'static> Resolvable for Modified<T> {
-    type Resolved = ResolvedFont;
-
-    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
+impl<T: Clone + 'static> ApplyModifier for SignalModifier<T> {
+    fn apply(&self, font: Computed<ResolvedFont>) -> Computed<ResolvedFont> {
         let apply = self.apply;
-        self.font
-            .resolve(env)
-            .zip(&self.value)
+        font.zip(&self.value)
             .map(move |(mut font, value)| {
                 apply(&mut font, value);
                 font
             })
+            .computed()
     }
 }
 
 impl Font {
-    /// Creates a new font from a resolvable value.
+    /// Creates a font that starts from a resolvable face, such as a theme
+    /// slot.
     pub fn new(font: impl Resolvable<Resolved = ResolvedFont> + 'static) -> Self {
-        Self(AnyResolvable::new(font))
+        Self {
+            slot: Some(AnyResolvable::new(font)),
+            modifiers: Vec::new(),
+        }
+    }
+
+    /// This font set in text whose font is `base`.
+    ///
+    /// The result starts from this font's slot, or from `base`'s when this
+    /// font names none, and applies `base`'s modifiers and then this font's.
+    /// Bold, size, weight and the other modifiers therefore survive a slot
+    /// chosen on either side: `Font::default().bold().inherit(&Body.into())`
+    /// is the body slot, bold, as is `Font::from(Body).bold()`.
+    #[must_use]
+    pub fn inherit(self, base: &Self) -> Self {
+        if self.is_inherited() {
+            return base.clone();
+        }
+        let mut modifiers = base.modifiers.clone();
+        modifiers.extend(self.modifiers);
+        Self {
+            slot: self.slot.or_else(|| base.slot.clone()),
+            modifiers,
+        }
+    }
+
+    /// Whether this font names no slot and applies no modifier, so it is
+    /// exactly the font it inherits ([`Font::default`]).
+    #[must_use]
+    pub const fn is_inherited(&self) -> bool {
+        self.slot.is_none() && self.modifiers.is_empty()
     }
 
     fn modified<T: Clone + 'static>(
-        self,
+        mut self,
         value: Computed<T>,
         apply: fn(&mut ResolvedFont, T),
     ) -> Self {
-        Self::new(Modified {
-            font: self,
-            value,
-            apply,
-        })
+        self.modifiers
+            .push(Modifier(Rc::new(SignalModifier { value, apply })));
+        self
     }
 
     /// Sets the font weight.
@@ -561,9 +596,20 @@ impl Font {
     }
 
     /// Resolves the font in the given environment.
+    ///
+    /// A font that names no slot resolves from the face of text nobody
+    /// styled: the [`Body`] slot's face, size and metrics, marked
+    /// [`ResolvedFont::unstyled`] so a backend can tell it from text set in
+    /// the body style.
     #[must_use]
     pub fn resolve(&self, env: &Environment) -> Computed<ResolvedFont> {
-        self.0.resolve(env)
+        let slot = self.slot.as_ref().map_or_else(
+            || Unstyled.resolve(env).computed(),
+            |slot| slot.resolve(env).computed(),
+        );
+        self.modifiers
+            .iter()
+            .fold(slot, |font, modifier| modifier.0.apply(font))
     }
 }
 
@@ -613,17 +659,20 @@ macro_rules! impl_font {
         impl_constant!($name);
     };
 }
+// The default type scale ranks Title > Headline > Body >= Subheadline >
+// Footnote > Caption: the order `heading_style` maps Markdown heading levels
+// onto, and Apple's ordering of the same text styles.
 impl_font!(Body, "Body font style.", 16.0, FontWeight::Normal);
 impl_font!(Title, "Title font style.", 22.0, FontWeight::Normal);
-impl_font!(Headline, "Headline font style.", 24.0, FontWeight::Normal);
+impl_font!(Headline, "Headline font style.", 18.0, FontWeight::Normal);
 impl_font!(
     Subheadline,
     "Subheadline font style.",
     16.0,
     FontWeight::Medium
 );
-impl_font!(Caption, "Caption font style.", 12.0, FontWeight::Normal);
-impl_font!(Footnote, "Footnote font style.", 11.0, FontWeight::Medium);
+impl_font!(Caption, "Caption font style.", 11.0, FontWeight::Normal);
+impl_font!(Footnote, "Footnote font style.", 12.0, FontWeight::Medium);
 
 #[cfg(test)]
 mod tests {

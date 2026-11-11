@@ -5,7 +5,7 @@ use kurbo::{Affine, Rect, RoundedRect, Vec2};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use cherenkov::testing::LayerOp;
-use cherenkov::{BlendMode, FilterId, LayerId, Prop, ShapeData, SurfaceTree};
+use cherenkov::{Animatable, BlendMode, FilterId, LayerId, Prop, ShapeData, SurfaceTree};
 
 mod alloc_counter {
     use std::cell::Cell;
@@ -176,7 +176,7 @@ fn steady_pose_plan_allocates_nothing() {
     assert_eq!(output, plan::<Test>(&tree, &candidates, &ready));
 }
 
-const fn prop<T>(target: T) -> Prop<T> {
+const fn prop<T: Animatable>(target: T) -> Prop<T> {
     Prop {
         target,
         animation: None,

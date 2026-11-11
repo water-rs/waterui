@@ -202,15 +202,21 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.has_pending_semantic_update()
             || self.os_file_drop_pending()
             || self.animations_active()
+            || self.motions_active()
             || self.engine_tracks_active(perpetual)
             || self.next_gesture_deadline().is_some()
             || self.has_gliding_smooth_scrolls()
             || self.has_active_touch_fling()
     }
 
+    /// The view-dimension cache's (hits, misses) since the last presented
+    /// frame, rolling the counters: a frame that measured nothing reports
+    /// zero rather than the last measuring frame's counts.
     #[cfg(hydrolysis_cherenkov)]
-    pub(crate) const fn measurement_cache_stats(&self) -> (u32, u32) {
-        self.state.measurement.stats()
+    pub(crate) const fn take_measurement_cache_stats(&mut self) -> (u32, u32) {
+        let stats = self.state.measurement.stats();
+        self.state.measurement.reset_counters();
+        stats
     }
 }
 
@@ -343,7 +349,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // so the flat lists rebuild against the post-retire registries.
         self.core.leave_reader(None);
 
-        self.core.registries();
+        self.core.frame_registries();
         // Same frame-end record `flush_window_tree` runs: the first-frame
         // build ends here, not in the flush tail, and the placements it
         // registered publish only through this drain.

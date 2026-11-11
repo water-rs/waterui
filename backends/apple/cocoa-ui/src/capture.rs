@@ -163,7 +163,7 @@ impl CaptureGeometry {
 
     /// Where `point`, in the captured view's own layer space, lands in the
     /// destination's top-down pixel space — the mapping the native raster
-    /// draws through ([`raster_transform`] plus the bitmap context's
+    /// draws through (`raster_transform` plus the bitmap context's
     /// bottom-up rows).
     #[must_use]
     pub fn texel(&self, point: crate::geometry::Point) -> [f64; 2] {

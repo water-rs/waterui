@@ -19,6 +19,7 @@ use executor_core::async_task::{self, AsyncTask, Runnable};
 
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod anchored_overlay;
+#[cfg(hydrolysis_gpu_painter)]
 mod animation_slots;
 mod change_animation;
 mod chrome_primitives;
@@ -37,6 +38,8 @@ mod dynamic_remeasure;
 // Cherenkov painters realize.
 #[cfg(all(hydrolysis_cherenkov, not(target_arch = "wasm32")))]
 mod emoji_atlas;
+#[cfg(hydrolysis_gpu_painter)]
+mod engine_motion;
 mod gesture_buttons;
 mod gesture_capture;
 mod gesture_env;
@@ -557,19 +560,20 @@ fn subscribed_snapshot_preserves_registration_animation_metadata() {
     clippy::float_cmp,
     reason = "the snapshot is the signal's stored literal read back untouched; any drift means the read went through arithmetic it must not"
 )]
-fn animated_scalar_subscribes_before_reading_its_snapshot() {
+fn wrapper_motion_subscribes_before_reading_its_snapshot() {
     let signal = registration_signal(0.25, nami::watcher::Context::from(0.25));
-    let mut renderer = test_renderer();
-    let owner = Rc::new(());
+    let renderer = test_renderer();
 
-    let resolved = renderer.resolve_owned_scalar(
+    let motion = super::mount::motion::Motion::new(
         &signal,
-        &owner,
-        usize::MAX,
-        cherenkov_record::tree::RATE_FAST,
+        f64::from,
+        renderer.frame_signals(),
+        Rc::clone(renderer.placement_clock()),
+        Box::new(|| {}),
+        false,
     );
 
-    assert_eq!(resolved, 0.25);
+    assert_eq!(motion.target(), 0.25);
     assert!(signal.subscribed.get());
 }
 
