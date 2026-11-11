@@ -118,7 +118,7 @@ fn command_node(command: ResolvedCommand) -> PopupMenuNode {
 }
 
 /// Emits the image accessibility node shared by the static graphics leaves
-/// (gradient, shape, morph shape). Their a11y is *not* render-driven: the leaf
+/// (gradient, shape). Their a11y is *not* render-driven: the leaf
 /// emits a single `Image` node from the surrounding environment's label and
 /// value, or the leaf-provided defaults where no override is installed. Shared
 /// by the dispatch path and the retained `Widget`-node path so both produce the
@@ -163,7 +163,7 @@ pub fn graphics_image_accessibility<E: crate::text::TextEngine>(
     }
 }
 
-/// Graphics leaves (gradient/shape/morph/GPU surface/scene) fill the proposal:
+/// Graphics leaves (gradient/shape/GPU surface/scene) fill the proposal:
 /// they stretch to whatever bounds the layout proposes (`StretchAxis::Both`).
 pub fn graphics_dimensions_from_proposal(proposal: ProposalSize) -> ViewDimensions {
     ViewDimensions::new(LayoutSize::new(
@@ -288,68 +288,6 @@ pub fn render_shape_parts<E: crate::text::TextEngine>(
     let fill = waterui_graphics::draw::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
     let transform = ctx.local;
     ctx.renderer_mut()
-        .scene_mut()
-        .fill_paint(peniko::Fill::NonZero, transform, fill, &path);
-}
-
-/// Measures a retained morph-shape leaf: a morph shape fills the proposed bounds.
-pub fn measure_morph_shape_node<E: crate::text::TextEngine>(
-    _shape: &ResolvedMorphShape,
-    proposal: ProposalSize,
-    _state: &mut HydroState<E>,
-    _env: &Environment,
-    _theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> ViewDimensions {
-    graphics_dimensions_from_proposal(proposal)
-}
-
-/// Renders a retained morph-shape leaf every flush: emits a11y (unless hidden) then
-/// fills the morphed path at the current animation progress. The morph progress is
-/// resolved via the animation controller every frame (explicit `progress` signal
-/// watched through `resolve_owned_scalar`; time-based
-/// animation driven by `sample_morph_progress`), so the morph stays live.
-pub fn render_morph_shape_node<E: crate::text::TextEngine>(
-    ctx: &mut WidgetRenderContext<'_, E>,
-    shape: &Rc<RefCell<ResolvedMorphShape>>,
-    env: &Environment,
-) {
-    let hidden = env
-        .get::<AccessibilityHidden>()
-        .is_some_and(AccessibilityHidden::is_hidden);
-    if !hidden {
-        let render_ctx = ctx.render_context();
-        graphics_image_accessibility(ctx.renderer_mut(), Some(render_ctx), env, None, None);
-    }
-    render_morph_shape_parts(ctx, shape, env);
-}
-
-pub fn render_morph_shape_parts<E: crate::text::TextEngine>(
-    ctx: &mut WidgetRenderContext<'_, E>,
-    shape: &Rc<RefCell<ResolvedMorphShape>>,
-    _env: &Environment,
-) {
-    let bounds = ctx.bounds;
-    let transform = ctx.local;
-    let renderer = ctx.renderer_mut();
-    let (path, fill) = {
-        let resolved = shape.borrow();
-        let progress = if let Some(progress) = resolved.progress() {
-            renderer.resolve_owned_scalar(
-                progress,
-                shape,
-                MORPH_PROGRESS_ANIMATION_KEY,
-                cherenkov_record::tree::RATE_FAST,
-            )
-        } else {
-            renderer.sample_morph_progress(resolved.animation(), shape)
-        };
-        let fill = renderer.read_signal(resolved.fill());
-        (
-            resolved_morph_shape_to_path(&resolved, progress, bounds),
-            waterui_graphics::draw::Paint::Solid(fill),
-        )
-    };
-    renderer
         .scene_mut()
         .fill_paint(peniko::Fill::NonZero, transform, fill, &path);
 }

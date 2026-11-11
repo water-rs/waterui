@@ -306,7 +306,7 @@ struct ShapeTwin: View {
   }
 
   private var morphDemo: some View {
-    demo("Morph Animation", "SDF-based shape morphing for built-in shapes") {
+    demo("Morph Animation", "Shape morphing for built-in shapes") {
       HStack(spacing: 12) {
         Circle().fill(srgbHex(0x3B82F6)).frame(width: 90, height: 90)
         RoundedRectangle(cornerRadius: 0.08 * 70)

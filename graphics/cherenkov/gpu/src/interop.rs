@@ -287,7 +287,8 @@ pub const fn memory_hints(backend: wgpu::Backend) -> wgpu::MemoryHints {
 ///
 /// A buffer past it is a dedicated driver allocation, whose release the
 /// driver may keep charged to the process (water-rs/waterui#4108); the
-/// per-frame scratch is sized within it.
+/// per-frame upload staging chunks are sized within it
+/// (water-rs/waterui#4174).
 #[must_use]
 pub const fn suballocation_limit(backend: wgpu::Backend) -> Option<u64> {
     match memory_hints(backend) {

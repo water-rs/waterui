@@ -32,6 +32,9 @@ pub struct Shared {
     invalidator: RefCell<Option<SceneInvalidator>>,
     pub(crate) size: SignalCell<Size>,
     pub(crate) clock: SignalCell<Duration>,
+    /// The clocks [`Cx::time_until`] handed out, each with the time it holds
+    /// at.
+    bounded_clocks: RefCell<Vec<(Duration, SignalCell<Duration>)>>,
     /// The installed regions whose structure changed, to record again at
     /// the host's next update, in the order they changed.
     stale: RefCell<Vec<Stale>>,
@@ -54,6 +57,7 @@ impl Shared {
             invalidator: RefCell::new(None),
             size,
             clock: SignalCell::new(Duration::ZERO),
+            bounded_clocks: RefCell::new(Vec::new()),
             stale: RefCell::new(Vec::new()),
         })
     }
@@ -68,6 +72,42 @@ impl Shared {
         if let Some(invalidator) = invalidator {
             invalidator();
         }
+    }
+
+    /// A new clock that holds at `end`.
+    fn bounded_clock(&self, end: Duration) -> SignalCell<Duration> {
+        let clock = SignalCell::new(Duration::ZERO);
+        self.bounded_clocks.borrow_mut().push((end, clock.clone()));
+        clock
+    }
+
+    /// Advances every observed clock to `elapsed` since the canvas mounted,
+    /// a bounded one no further than its end. A bounded clock no recording
+    /// holds any more is forgotten.
+    pub(crate) fn advance_clocks(&self, elapsed: Duration) {
+        if self.clock.observed() && self.clock.snapshot() != elapsed {
+            self.clock.set(&Context::from(elapsed));
+        }
+        self.bounded_clocks
+            .borrow_mut()
+            .retain(|(_, clock)| clock.shared());
+        for (end, clock) in &*self.bounded_clocks.borrow() {
+            let now = elapsed.min(*end);
+            if clock.observed() && clock.snapshot() != now {
+                clock.set(&Context::from(now));
+            }
+        }
+    }
+
+    /// Whether a clock something observes still has frames to advance on:
+    /// the unbounded clock, or a bounded one short of its end.
+    pub(crate) fn clocks_running(&self) -> bool {
+        self.clock.observed()
+            || self
+                .bounded_clocks
+                .borrow()
+                .iter()
+                .any(|(end, clock)| clock.observed() && clock.snapshot() < *end)
     }
 
     /// Queues `stale` to record again in place at the host's next update.
@@ -265,6 +305,18 @@ impl Cx {
     #[must_use]
     pub fn time(&self) -> Computed<Duration> {
         Computed::new(self.shared.clock.clone())
+    }
+
+    /// The time since the canvas was mounted, held at `end` once it gets
+    /// there.
+    ///
+    /// It is a clock like [`time`](Self::time), advancing once per presented
+    /// frame while something observes it. Once it reaches `end` it no longer
+    /// counts as observing the clock, so a canvas whose only clock readers
+    /// have all reached their end presents no more frames.
+    #[must_use]
+    pub fn time_until(&self, end: Duration) -> Computed<Duration> {
+        Computed::new(self.shared.bounded_clock(end))
     }
 
     /// `color` resolved in the canvas's environment: a theme colour as a
