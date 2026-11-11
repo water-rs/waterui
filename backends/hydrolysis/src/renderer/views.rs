@@ -6,13 +6,16 @@
 use super::*;
 use crate::renderer::recording::transform_paint;
 use waterui::app::Quit;
+use waterui_core::handler::ReportExtraction as _;
 
 pub fn slider_value_epsilon(span: f64, track_width: f64) -> f64 {
     (span / track_width).abs().max(f64::EPSILON)
 }
 
+/// Runs `action` for its effect: a result is discarded, and an action whose
+/// parameters cannot be extracted does not run and is reported.
 pub fn call_action_discarding_result<T: 'static>(action: &SharedAction<T>, env: &Environment) {
-    let _ = action.call(env);
+    action.call(env).report_extraction();
 }
 
 /// Resolved menu items as popup-menu nodes. A declared `MenuItem::Quit`
@@ -285,7 +288,7 @@ pub fn render_shape_parts<E: crate::text::TextEngine>(
             resolved.fill().clone(),
         )
     };
-    let fill = waterui_graphics::draw::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
+    let fill = cherenkov_record::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
     let transform = ctx.local;
     ctx.renderer_mut()
         .scene_mut()
@@ -413,7 +416,7 @@ pub fn emit_graphics_leaf_accessibility<T, E: crate::text::TextEngine>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waterui_graphics::draw::WorkingColor;
+    use cherenkov_record::WorkingColor;
 
     #[test]
     fn radial_gradient_radii_use_the_shorter_side_of_a_200x100_box() {

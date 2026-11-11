@@ -225,6 +225,40 @@ pub struct Window {
     focus_request: FocusRequest,
 }
 
+/// Why pixels cannot make a [`WindowIcon`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum WindowIconError {
+    /// The icon has no pixels.
+    #[error("a window icon needs at least one pixel, got {width}x{height}")]
+    Empty {
+        /// Requested width in pixels.
+        width: u32,
+        /// Requested height in pixels.
+        height: u32,
+    },
+    /// The pixel count of the icon does not fit in memory.
+    #[error("a {width}x{height} icon does not fit in memory")]
+    TooLarge {
+        /// Requested width in pixels.
+        width: u32,
+        /// Requested height in pixels.
+        height: u32,
+    },
+    /// The buffer is not `width * height * 4` bytes long.
+    #[error("a {width}x{height} icon takes {expected} RGBA8 bytes, got {actual}")]
+    LengthMismatch {
+        /// Requested width in pixels.
+        width: u32,
+        /// Requested height in pixels.
+        height: u32,
+        /// The buffer length the size requires.
+        expected: usize,
+        /// The buffer length supplied.
+        actual: usize,
+    },
+}
+
 /// A window's own icon: straight-alpha sRGB RGBA8 pixels and their size.
 ///
 /// Cloning shares the pixels, so a [`Binding`] snapshot is cheap. Platforms
@@ -242,35 +276,38 @@ impl WindowIcon {
     /// top to bottom, four bytes each — red, green, blue and straight
     /// (non-premultiplied) alpha.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics when the icon has no pixels, or when `rgba` is not exactly
-    /// `width * height * 4` bytes long.
-    #[must_use]
-    pub fn new(width: u32, height: u32, rgba: impl Into<Arc<[u8]>>) -> Self {
+    /// Returns a [`WindowIconError`] when the icon has no pixels, does not
+    /// fit in memory, or `rgba` is not exactly `width * height * 4` bytes
+    /// long.
+    pub fn new(
+        width: u32,
+        height: u32,
+        rgba: impl Into<Arc<[u8]>>,
+    ) -> Result<Self, WindowIconError> {
         let rgba = rgba.into();
-        assert!(
-            width > 0 && height > 0,
-            "WindowIcon::new: a window icon needs at least one pixel, got {width}x{height}"
-        );
+        if width == 0 || height == 0 {
+            return Err(WindowIconError::Empty { width, height });
+        }
         let expected = usize::try_from(width)
             .ok()
             .and_then(|width| width.checked_mul(usize::try_from(height).ok()?))
             .and_then(|pixels| pixels.checked_mul(4))
-            .unwrap_or_else(|| {
-                panic!("WindowIcon::new: a {width}x{height} icon does not fit in memory")
+            .ok_or(WindowIconError::TooLarge { width, height })?;
+        if rgba.len() != expected {
+            return Err(WindowIconError::LengthMismatch {
+                width,
+                height,
+                expected,
+                actual: rgba.len(),
             });
-        assert_eq!(
-            rgba.len(),
-            expected,
-            "WindowIcon::new: a {width}x{height} icon takes {expected} RGBA8 bytes, got {}",
-            rgba.len()
-        );
-        Self {
+        }
+        Ok(Self {
             width,
             height,
             rgba,
-        }
+        })
     }
 
     /// Width in pixels.
@@ -1070,8 +1107,17 @@ impl Window {
         Fut: Future<Output = CloseReply> + 'static,
     {
         let mut action = boxed_action(handler);
+        // A handler whose parameters cannot be extracted does not run: the
+        // failure is reported and the request is answered as if the window
+        // had no handler, which closes it.
         self.close_request
-            .set_hook(Box::new(move |env| Box::pin(action(env)) as Question));
+            .set_hook(Box::new(move |env| match action(env) {
+                Ok(question) => Box::pin(question) as Question,
+                Err(error) => {
+                    error.report();
+                    Box::pin(core::future::ready(CloseReply::Close)) as Question
+                }
+            }));
         self
     }
 
@@ -1352,8 +1398,8 @@ mod tests {
     };
 
     use super::{
-        ResolvedWindowBackground, Window, WindowBackground, WindowIcon, WindowState,
-        resolve_background,
+        ResolvedWindowBackground, Window, WindowBackground, WindowIcon, WindowIconError,
+        WindowState, resolve_background,
     };
     use crate::background::Material;
     use crate::theme::{
@@ -1460,24 +1506,35 @@ mod tests {
 
     /// The icon validates its pixel buffer against its size.
     #[test]
-    #[should_panic(expected = "a 2x1 icon takes 8 RGBA8 bytes, got 4")]
     fn window_icon_rejects_a_short_buffer() {
-        let _ = WindowIcon::new(2, 1, vec![0_u8; 4]);
+        let error = WindowIcon::new(2, 1, vec![0_u8; 4]).expect_err("4 bytes cannot fill 2x1");
+        assert_eq!(error.to_string(), "a 2x1 icon takes 8 RGBA8 bytes, got 4");
     }
 
     /// An icon without pixels is rejected rather than handed to a platform.
     #[test]
-    #[should_panic(expected = "at least one pixel")]
     fn window_icon_rejects_an_empty_icon() {
-        let _ = WindowIcon::new(0, 4, Vec::<u8>::new());
+        assert_eq!(
+            WindowIcon::new(0, 4, Vec::<u8>::new()),
+            Err(WindowIconError::Empty {
+                width: 0,
+                height: 4
+            })
+        );
     }
 
     /// Icons compare by their pixels, whether or not they share them.
     #[test]
     fn window_icons_compare_by_pixels() {
-        let icon = WindowIcon::new(1, 1, vec![1_u8, 2, 3, 4]);
+        let icon = WindowIcon::new(1, 1, vec![1_u8, 2, 3, 4]).expect("one pixel");
         assert_eq!(icon, icon.clone());
-        assert_eq!(icon, WindowIcon::new(1, 1, vec![1_u8, 2, 3, 4]));
-        assert_ne!(icon, WindowIcon::new(1, 1, vec![1_u8, 2, 3, 5]));
+        assert_eq!(
+            icon,
+            WindowIcon::new(1, 1, vec![1_u8, 2, 3, 4]).expect("one pixel")
+        );
+        assert_ne!(
+            icon,
+            WindowIcon::new(1, 1, vec![1_u8, 2, 3, 5]).expect("one pixel")
+        );
     }
 }

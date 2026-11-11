@@ -3,11 +3,12 @@ use std::rc::Rc;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
 use waterui_core::{Environment, Native};
+use waterui_graphics::Gradient;
+use waterui_graphics::backend::{FilteredView, SceneView, resolve_scene_proposal};
 use waterui_graphics::canvas::CanvasView;
 use waterui_graphics::color::Color;
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::{ExternalFrameView, GpuContentView};
-use waterui_graphics::{FilteredView, Gradient, SceneView, resolve_scene_proposal};
 use waterui_shape::ResolvedShape;
 
 #[cfg(hydrolysis_gpu)]

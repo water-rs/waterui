@@ -6,9 +6,9 @@
 //! [`ExternalFrameView`](waterui_graphics::ExternalFrameView) whose view asks
 //! for input with
 //! [`wants_input_events`](waterui_graphics::GpuContentView::wants_input_events),
-//! or any [`SceneView`](waterui_graphics::SceneView) whose content asks the same
+//! or any [`SceneView`](waterui_graphics::backend::SceneView) whose content asks the same
 //! through
-//! [`SceneContent::wants_input_events`](waterui_graphics::SceneContent::wants_input_events).
+//! [`SceneContent::wants_input_events`](waterui_graphics::backend::SceneContent::wants_input_events).
 //!
 //! There is one target list, one hit-test arbitration and one focus/capture
 //! state machine for both, reached through [`EmbeddedInputSink`], and one
@@ -27,7 +27,7 @@ use core::future::Future;
 use core::num::NonZeroU32;
 use core::pin::Pin;
 use std::collections::VecDeque;
-use waterui_graphics::SceneContent;
+use waterui_graphics::backend::SceneContent;
 use waterui_graphics::input::{
     Code, Key, NamedKey, ScrollPhase, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
 };
@@ -171,7 +171,7 @@ pub struct BubbledKeySink {
 
 /// Something that consumes the neutral [`SurfaceInputEvent`] vocabulary: the
 /// runtime of an embedded [`GpuContentView`](waterui_graphics::GpuContentView),
-/// or the content of a self-drawn [`SceneView`](waterui_graphics::SceneView).
+/// or the content of a self-drawn [`SceneView`](waterui_graphics::backend::SceneView).
 pub trait SurfaceInputReceiver {
     fn input(&mut self, event: &SurfaceInputEvent);
     /// The receiver's text caret, in logical surface-local coordinates.
@@ -492,7 +492,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
     /// Registers a surface whose drawing asked for input: an embedded
     /// [`GpuContentView`](waterui_graphics::GpuContentView) runtime or a
-    /// [`SceneView`](waterui_graphics::SceneView)'s content.
+    /// [`SceneView`](waterui_graphics::backend::SceneView)'s content.
     ///
     /// `focus_node` is the surface's semantic node, when the semantic tree
     /// exists.

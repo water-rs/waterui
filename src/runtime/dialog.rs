@@ -363,7 +363,10 @@ impl Dialog {
     /// touching the handler directly so every realization answers identically.
     #[doc(hidden)]
     pub fn run_action(&self, action: &DialogAction, env: &Environment) {
-        let () = action.action.call(env);
+        // A handler whose parameters cannot be extracted does not run; the
+        // failure is reported and the dialog still dismisses, as the user
+        // answered it.
+        action.action.run(env);
         self.is_presented.set(false);
     }
 

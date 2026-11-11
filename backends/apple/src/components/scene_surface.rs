@@ -5,23 +5,21 @@ use std::rc::Rc;
 use std::sync::{Arc, mpsc};
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
-use waterui_graphics::cherenkov::{
+use waterui_graphics::backend::cherenkov::{
     DEFAULT_REFRESH, Display, FrameScope, FrameTime, Next, Surface, SurfaceId,
 };
-use waterui_graphics::cherenkov_gpu::{
-    Gpu,
-    interop::{OutputAlpha, OutputColor, Presenter, TextureOutput, TextureTarget, shader_delivery},
+use waterui_graphics::backend::draw::{Content, Draw};
+use waterui_graphics::backend::{
+    HeldResources, SceneFrame, SceneInvalidator, SceneResources, SceneUpdate, SceneView,
+    resolve_scene_proposal, scene_stretch_axis,
 };
-use waterui_graphics::draw::{Content, Draw, kurbo};
-use waterui_graphics::gpu::{GpuRuntime, HostedLayerError, RedrawHandle, SharedGpuContext};
+use waterui_graphics::gpu::{
+    Gpu, GpuRuntime, HostedLayerError, RedrawHandle, SharedGpuContext,
+    interop::{OutputAlpha, OutputColor, Presenter, TextureOutput, TextureTarget, shader_delivery},
+    wgpu,
+};
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::offscreen::OffscreenSize;
-use waterui_graphics::resources::{HeldResources, SceneResources};
-use waterui_graphics::scene_view::{
-    SceneInvalidator, SceneView, resolve_scene_proposal, scene_stretch_axis,
-};
-use waterui_graphics::wgpu;
-use waterui_graphics::{SceneFrame, SceneUpdate};
 
 use super::{HostedError, HostedRenderer, HostedView};
 use crate::gpu_runtime::{EngineGeneration, SceneEngine, SceneParticipant};
@@ -45,7 +43,7 @@ pub struct Scene {
     invalidator: Option<SceneInvalidator>,
     /// The intrinsic size the layout was last notified about: the baseline
     /// `measurement_dependency_invalidated` compares the live
-    /// [`SceneContent::intrinsic_size`](waterui_graphics::scene_view::SceneContent::intrinsic_size)
+    /// [`SceneContent::intrinsic_size`](waterui_graphics::backend::SceneContent::intrinsic_size)
     /// against. It is seeded before the content invalidator is installed, and
     /// it advances only when a measurement invalidation is emitted — ordinary
     /// `measure` calls and placement commits never write it.
@@ -200,7 +198,7 @@ pub struct ScenePart {
     dirty: Rc<Cell<bool>>,
     redraw: RedrawHandle,
     /// The refresh range this scene's texture target declared.
-    refresh: waterui_graphics::cherenkov::RefreshRange,
+    refresh: waterui_graphics::backend::cherenkov::RefreshRange,
     /// The geometry the installed recording was made for: the logical size
     /// handed to `build_scene` and the display scale its root transform
     /// carries. A pixel resize that keeps the logical box but changes the
@@ -529,13 +527,13 @@ mod tests {
 
     use waterui::{Binding, SignalExt, binding};
     use waterui_core::{AnyView, Environment, View};
-    use waterui_graphics::draw::{
+    use waterui_graphics::backend::draw::{
         Command, Draw, FontId, ImageId, ImageLimits, Paint, Recorder, WorkingColor,
     };
-    use waterui_graphics::resources::{Handle, RecordingResources, SceneBackend};
-    use waterui_graphics::scene_view::{SceneContent, SceneViewMergeToParent};
-    use waterui_graphics::source::{FontSource, ImageData, ResourceError, Rgba8, Rgba16F};
-    use waterui_graphics::{Picture, PictureRecording};
+    use waterui_graphics::backend::{
+        FontSource, Handle, ImageData, Picture, PictureRecording, RecordingResources,
+        ResourceError, Rgba8, Rgba16F, SceneBackend, SceneContent, SceneViewMergeToParent,
+    };
 
     /// Content that counts its recordings and fills a half-extent logical
     /// rect: `build_scene` receives the logical box, so the recorded shape
@@ -1267,7 +1265,7 @@ mod tests {
             assert!(
                 matches!(
                     part.surface.display(display),
-                    Err(waterui_graphics::cherenkov::SurfaceError::Lost)
+                    Err(waterui_graphics::backend::cherenkov::SurfaceError::Lost)
                 ),
                 "the dropped engine's surface channel is closed"
             );

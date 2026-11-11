@@ -2,9 +2,9 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::text::{TextLayout as _, TextPosition, TextSelection};
+use cherenkov_record::Draw as _;
 use unicode_segmentation::UnicodeSegmentation;
 use waterui_core::contract_violation;
-use waterui_graphics::draw::Draw as _;
 
 /// What became of a key press once the framework finished with it.
 ///
@@ -1116,7 +1116,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 scene.record_picture(transform, |draw| {
                     draw.clip(target.text_clip_bounds, |draw| {
                         draw.group(
-                            waterui_graphics::draw::Group::new().opacity(target.content_alpha),
+                            cherenkov_record::Group::new().opacity(target.content_alpha),
                             |draw| {
                                 target.layout.selection_rects(selection, |rect| {
                                     let highlight = kurbo::Rect::new(
@@ -1760,7 +1760,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let Some((action, env)) = submit else {
             return false;
         };
-        action.call(&env);
+        action.run(&env);
         true
     }
 

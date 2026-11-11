@@ -42,7 +42,7 @@ use cocoa_ui::objc2_quartz_core::{
     kCALineJoinBevel, kCALineJoinMiter, kCALineJoinRound,
 };
 use kurbo::{Affine, Cap, Join, Rect, Stroke};
-use waterui_graphics::draw::{
+use waterui_graphics::backend::draw::{
     BlendMode, Command, FillRule, MeshColorInterpolation, MeshGradient, Paint, Sampling, Shadow,
     ShapeData, WorkingColor,
 };

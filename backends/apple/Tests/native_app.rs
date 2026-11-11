@@ -2460,9 +2460,9 @@ mod capture_regions {
     use cocoa_ui::uikit::ImageView;
     use cocoa_ui::{Rect, view};
     use kurbo::Shape;
+    use waterui::graphics::backend::Picture;
+    use waterui::graphics::backend::draw::Draw;
     use waterui::graphics::color::WorkingColor;
-    use waterui::graphics::draw::Draw;
-    use waterui::graphics::picture::Picture;
     use waterui::layout::frame::Frame;
     use waterui::reactive::constant;
     use waterui_apple::native_test_support::{render, with_capture_rehost};

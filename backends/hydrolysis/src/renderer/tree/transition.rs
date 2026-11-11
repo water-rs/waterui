@@ -30,7 +30,7 @@ use waterui_core::transition::{
     AnyTransition, Ghost, GhostSlot, Transition, TransitionGeometry, TransitionPhase,
     TransitionProperties, TransitionSpec, TransitionState,
 };
-use waterui_graphics::{AnyEffect, ParamGuards};
+use waterui_graphics::backend::{AnyEffect, ParamGuards};
 
 use crate::renderer::effects::FilteredRuntime;
 
@@ -469,7 +469,8 @@ pub fn record_blurred<E: crate::text::TextEngine>(
         let blur = slot.get_or_insert_with(|| {
             let radius = nami::Binding::container(radius_sample);
             let mut guards = ParamGuards::default();
-            let filter = waterui_graphics::filtrate::filters::Blur(guards.bind(radius.clone()));
+            let filter =
+                waterui_graphics::backend::filtrate::filters::Blur(guards.bind(radius.clone()));
             let core = renderer.new_core();
             core.cell.set_parent(paint.owner);
             TransitionBlur {

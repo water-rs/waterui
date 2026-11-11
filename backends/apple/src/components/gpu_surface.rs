@@ -27,15 +27,14 @@ use waterui_core::NativeView;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
-use waterui_graphics::cherenkov::{Display, FrameTime, Next};
-use waterui_graphics::draw::kurbo;
+use waterui_graphics::backend::cherenkov::Next;
 use waterui_graphics::gpu::{
-    ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, GpuContentRenderer,
-    GpuContentView, GpuRuntime, HostedLayerError, RedrawHandle, SharedGpuContext,
+    Display, ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, FrameTime,
+    GpuContentRenderer, GpuContentView, GpuRuntime, HostedLayerError, RedrawHandle,
+    SharedGpuContext, wgpu,
 };
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::offscreen::OffscreenSize;
-use waterui_graphics::wgpu;
 
 use crate::contract::NativeLeaf;
 use crate::dispatch::Dispatcher;
@@ -247,8 +246,7 @@ impl HostedView for GpuContentView {
     ) -> Result<Box<dyn HostedRenderer>, HostedError> {
         // `engine_content` answers the same content object every time, so a
         // renderer rebuilt after device loss re-installs it with its state.
-        let producer =
-            waterui_graphics::cherenkov_gpu::interop::GpuContentBox::new(self.engine_content());
+        let producer = waterui_graphics::gpu::interop::GpuContentBox::new(self.engine_content());
         Ok(Box::new(GpuContentRenderer::new(
             runtime,
             context.clone(),
@@ -2496,7 +2494,7 @@ impl SubView for SurfaceSubView {
 pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_native::<GpuContentView>(build_surface);
     dispatcher.register_native::<ExternalFrameView>(build_surface);
-    dispatcher.register_native::<waterui_graphics::scene_view::SceneView>(|view, ctx| {
+    dispatcher.register_native::<waterui_graphics::backend::SceneView>(|view, ctx| {
         build_surface(
             scene::Scene::new(view, crate::gpu_runtime::scene_engine(ctx.env())),
             ctx,
@@ -2662,15 +2660,16 @@ pub mod native_test {
     use std::task::{Wake, Waker};
 
     use waterui_backend_core::Environment;
-    use waterui_graphics::cherenkov::{Display, Draw, Recorder, SurfaceError, WorkingColor};
+    use waterui_graphics::backend::cherenkov::{
+        Display, Draw, Recorder, SurfaceError, WorkingColor,
+    };
+    use waterui_graphics::backend::{RecordingResources, SceneContent, SceneView};
     use waterui_graphics::gpu::runtime::HostedLayerError;
-    use waterui_graphics::resources::RecordingResources;
-    use waterui_graphics::scene_view::{SceneContent, SceneView};
 
     use super::{
         Capturable, Dispatcher, DrawableFrame, FrameTime, GpuRuntime, HostedError,
         MainThreadMarker, NativeLeaf, PresentationTime, Rc, RefCell, Retained, SceneEngine,
-        SurfaceState, SurfaceView, build_surface_parts, defer_unwritten_external_frame, fmt, kurbo,
+        SurfaceState, SurfaceView, build_surface_parts, defer_unwritten_external_frame, fmt,
         park_for_publication, render_drawable, scene, settle_failed, wgpu,
     };
     use crate::contract::RenderContext;
@@ -3464,7 +3463,7 @@ pub mod native_test {
 
 #[cfg(test)]
 mod delivered_resize_tests {
-    use waterui_graphics::draw::kurbo::Size;
+    use kurbo::Size;
 
     use super::DeliveredResize;
 

@@ -14,8 +14,8 @@ use alloc::rc::Rc;
 use core::cell::RefCell;
 
 use cocoa_ui::objc2::AllocAnyThread;
-use waterui::graphics::picture::{Picture, PictureRecording};
-use waterui::graphics::raster::Rasterizer;
+use waterui::graphics::backend::raster::Rasterizer;
+use waterui::graphics::backend::{Picture, PictureRecording};
 use waterui::reactive::Signal;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,

@@ -11,8 +11,8 @@
 
 use std::fmt;
 
-use waterui_graphics::draw::{FontId, ImageId, ImageLimits, ShaderId};
-use waterui_graphics::{
+use cherenkov_record::{FontId, ImageId, ImageLimits, ShaderId};
+use waterui_graphics::backend::{
     FontSource, Handle, ImageColorSpace, ImageData, PlainId, ResourceError, ResourceHandle, Rgba8,
     Rgba16F, SceneBackend, ShaderBackend, ShaderLanguage, ShaderSource,
 };
@@ -143,7 +143,7 @@ impl HwuiResources {
     /// chain has a link the native stages cannot realize.
     pub(crate) fn register_filter(
         &self,
-        source: waterui_graphics::filter_view::AnyEffect,
+        source: waterui_graphics::backend::AnyEffect,
         wake: super::effects::EffectWake,
     ) -> Result<super::effects::EffectRegistration, HwuiError> {
         self.effects.register(source, wake)
@@ -426,8 +426,8 @@ pub(in crate::hwui) mod tests {
     use std::rc::Rc;
     use std::sync::Arc;
 
-    use waterui_graphics::draw::{ImageLimits, Instant};
-    use waterui_graphics::{
+    use cherenkov_record::{ImageLimits, Instant};
+    use waterui_graphics::backend::{
         FontSource, ImageColorSpace, ImageData, ResourceError, Rgba8, Rgba16F, SceneBackend,
         ShaderBackend, ShaderSource,
     };

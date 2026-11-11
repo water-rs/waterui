@@ -1183,7 +1183,7 @@ pub struct GestureObserverEffect {
 pub struct ColorNode<E: crate::text::TextEngine> {
     pub(crate) bounds: nami::Binding<kurbo::Rect>,
     pub(crate) core: NodeCore<E>,
-    pub(crate) color: Computed<waterui_graphics::draw::WorkingColor>,
+    pub(crate) color: Computed<cherenkov_record::WorkingColor>,
 }
 
 pub struct TextNode<E: crate::text::TextEngine> {
@@ -1364,11 +1364,11 @@ pub struct SceneViewNode<E: crate::text::TextEngine> {
     /// The owned scene content, re-drawn each flush (it reads its own reactive
     /// inputs in `build_scene`). `RefCell` because `build_scene` needs `&mut` but
     /// `flush` takes `&self`.
-    pub(super) content: Rc<RefCell<Box<dyn waterui_graphics::SceneContent>>>,
+    pub(super) content: Rc<RefCell<Box<dyn waterui_graphics::backend::SceneContent>>>,
     /// The semantic invalidator installed at build — the compositor re-installs
     /// it after a `rebuild_for_engine` clears the content's engine-bound hooks,
     /// so signal-driven frame requests keep working across a device swap.
-    pub(super) invalidator: waterui_graphics::SceneInvalidator,
+    pub(super) invalidator: waterui_graphics::backend::SceneInvalidator,
     /// The engine resource-table identity `content` last recorded against —
     /// `None` until its first mount, a `Weak` that expires with the pooled
     /// engine's table. Shared into the node's recorded run so every commit
@@ -1389,7 +1389,7 @@ impl<E: crate::text::TextEngine> SceneViewNode<E> {
     /// The leaf's natural-size answer under `proposal` — the
     /// `measure_body` arm's own computation.
     pub(super) fn intrinsic_dimensions(&self, proposal: ProposalSize) -> ViewDimensions {
-        let resolved = waterui_graphics::resolve_scene_proposal(
+        let resolved = waterui_graphics::backend::resolve_scene_proposal(
             self.content.borrow().intrinsic_size(),
             proposal,
         );
@@ -2009,6 +2009,7 @@ impl<E: crate::text::TextEngine> TextNode<E> {
                             move |runtime_env: &Environment| {
                                 let slot = slot.borrow();
                                 slot.span.activate(&slot.env.layered_on(runtime_env));
+                                Ok(())
                             }
                         });
                         let target = renderer.register_gesture_target(
@@ -2058,12 +2059,12 @@ impl<E: crate::text::TextEngine> TextNode<E> {
 /// Suppressed when the subtree is accessibility-hidden.
 ///
 /// `default_label` is what the drawing says about itself
-/// ([`SceneContent::accessibility_label`](waterui_graphics::SceneContent::accessibility_label)):
+/// ([`SceneContent::accessibility_label`](waterui_graphics::backend::SceneContent::accessibility_label)):
 /// a formula's `MathML`, say. It names the node only when the application named
 /// nothing, so `.a11y_label(…)` still wins.
 ///
 /// `default_value` is the drawing's spoken content beside its name
-/// ([`SceneContent::accessibility_value`](waterui_graphics::SceneContent::accessibility_value)),
+/// ([`SceneContent::accessibility_value`](waterui_graphics::backend::SceneContent::accessibility_value)),
 /// emitted under the same precedence: a scoped `.a11y_value(…)` wins it.
 #[cfg(feature = "accessibility")]
 pub(super) fn emit_graphics_image_accessibility<E: crate::text::TextEngine>(

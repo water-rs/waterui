@@ -35,7 +35,7 @@ pub struct HydrolysisRenderTarget<'a> {
     /// The render target's height in pixels.
     pub height: u32,
     /// The colour under the scene's content.
-    pub base_color: waterui_graphics::draw::WorkingColor,
+    pub base_color: cherenkov_record::WorkingColor,
 }
 
 /// The frame description both render paths work on — the texture frame a
@@ -56,7 +56,7 @@ pub struct FrameRenderTarget<'a> {
     pub display_scale: f64,
     pub width: u32,
     pub height: u32,
-    pub base_color: waterui_graphics::draw::WorkingColor,
+    pub base_color: cherenkov_record::WorkingColor,
 }
 
 impl<'a> HydrolysisRenderTarget<'a> {

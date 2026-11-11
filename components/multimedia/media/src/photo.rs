@@ -29,6 +29,7 @@ use waterkit_fs::WaterFs;
 use waterui_core::content_ledger::OwedContent;
 use waterui_core::contract_violation;
 use waterui_core::event::{LifeCycle, LifeCycleHook};
+use waterui_core::handler::ReportExtraction as _;
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::reactive::watcher::BoxWatcherGuard;
 use waterui_core::{AnyView, Computed, ContentLedger, Environment, Metadata, Retain, Signal, View};
@@ -371,7 +372,7 @@ fn start_load_task(
                         owed.fail(PhotoLoadError(e.clone()));
                     }
                     if fresh && let Some(on_event) = on_event.borrow_mut().as_mut() {
-                        on_event(Event::Error(e), &env);
+                        on_event(Event::Error(e), &env).report_extraction();
                     }
                 }
             }
@@ -504,7 +505,7 @@ fn settle_registration(
             if settlement.finished {
                 settlement.phase = Phase::Reported;
                 if let Some(on_event) = on_event.borrow_mut().as_mut() {
-                    on_event(Event::Loaded, env);
+                    on_event(Event::Loaded, env).report_extraction();
                 }
             }
         }
@@ -518,7 +519,7 @@ fn settle_registration(
                 owed.fail(error.clone());
             }
             if let Some(on_event) = on_event.borrow_mut().as_mut() {
-                on_event(Event::Error(error.to_string()), env);
+                on_event(Event::Error(error.to_string()), env).report_extraction();
             }
         }
         status => {
@@ -623,12 +624,12 @@ mod tests {
     };
     use crate::Url;
     use image::ImageEncoder as _;
-    use waterui::graphics::canvas::{Canvas, CanvasView};
-    use waterui::graphics::draw::{Content, FontId, ImageId, ImageLimits, LayoutSize};
-    use waterui::graphics::{
+    use waterui::graphics::backend::draw::{Content, FontId, ImageId, ImageLimits, LayoutSize};
+    use waterui::graphics::backend::{
         FontSource, Handle, ImageData, ResourceError, ResourceHandle, Rgba8, Rgba16F, SceneBackend,
         SceneContent, SceneResources,
     };
+    use waterui::graphics::canvas::{Canvas, CanvasView};
     use waterui_core::handler::BoxedEventAction;
     use waterui_core::{
         AnyView, Binding, ContentLedger, Environment, Signal, View, reactive::watcher::Context,
@@ -831,6 +832,7 @@ mod tests {
                     Event::Loaded => String::from("Loaded"),
                     Event::Error(message) => format!("Error({message})"),
                 });
+                Ok(())
             }
         })
             as BoxedEventAction<Event>)));

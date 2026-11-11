@@ -1372,7 +1372,7 @@ fn a_platform_view_in_a_stretching_scroll_view_carries_the_stretch() {
     }
     assert_eq!(
         carried.strength,
-        waterui_graphics::filtrate::filters::STRETCH_INTERPOLATION_STRENGTH
+        waterui_graphics::backend::filtrate::filters::STRETCH_INTERPOLATION_STRENGTH
     );
     // The view's frame and the stretching viewport, in window points.
     let window_viewport = world.transform_rect_bbox(viewport);

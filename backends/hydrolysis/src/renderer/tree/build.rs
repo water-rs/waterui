@@ -1190,12 +1190,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
     )]
     fn build_scene_view_node(
-        mut content: Box<dyn waterui_graphics::SceneContent>,
+        mut content: Box<dyn waterui_graphics::backend::SceneContent>,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
         let core = renderer.new_core();
         let cell = Rc::downgrade(&core.cell);
-        let invalidator: waterui_graphics::SceneInvalidator = Rc::new(move || {
+        let invalidator: waterui_graphics::backend::SceneInvalidator = Rc::new(move || {
             if let Some(cell) = cell.upgrade() {
                 cell.mark(Dirty::PAINT);
             }

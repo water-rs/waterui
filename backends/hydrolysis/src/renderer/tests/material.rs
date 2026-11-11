@@ -16,7 +16,7 @@ use waterui::background::Material;
 use waterui::graphics::Color;
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_graphics::filtrate::{
+use waterui_graphics::backend::filtrate::{
     ColorStage, Filter as _, OperatingSpace, Placed, SpatialStage, StageCollector,
 };
 use waterui_layout::stack::{vstack, zstack};

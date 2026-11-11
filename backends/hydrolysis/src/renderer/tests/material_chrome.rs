@@ -13,6 +13,11 @@ use std::rc::Rc;
 
 use waterui_core::Binding;
 
+use cherenkov_record::{
+    BackdropEffect, BackdropShaderSource, CaptureClass, CaptureLevels, CaptureScale, Live,
+    MaterialCapture, MaterialEffect, MaterialGrouping, MaterialRegistry, MaterialShader,
+    OuterExtent, ShapeData, UnionSmoothing,
+};
 use kurbo::{Affine, Rect, RoundedRect, Shape as _};
 use nami::SignalExt as _;
 use waterui::FilterViewExt as _;
@@ -22,11 +27,6 @@ use waterui::graphics::Color;
 use waterui::interaction::InteractionState;
 use waterui_core::Environment;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_graphics::draw::{
-    BackdropEffect, BackdropShaderSource, CaptureClass, CaptureLevels, CaptureScale, Live,
-    MaterialCapture, MaterialEffect, MaterialGrouping, MaterialRegistry, MaterialShader,
-    OuterExtent, ShapeData, UnionSmoothing,
-};
 
 use super::mirror::{mirror_engine, no_shader_mount};
 use super::{

@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
+use cherenkov_record::{Draw, Paint, WorkingColor};
 use kurbo::{Rect, RoundedRect};
 use nami::{Binding, Signal as _};
 use waterui::animation::Animation;
@@ -16,7 +17,6 @@ use waterui_controls::toggle::toggle;
 use waterui_core::animation::ChangeAnimation;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::LayoutDirection;
-use waterui_graphics::draw::{Draw, Paint, WorkingColor};
 use waterui_layout::stack::vstack;
 
 use super::chrome_primitives::{Frames, runtime_with};

@@ -11,6 +11,7 @@
 use accesskit::{
     Action, ActionData, ActionRequest, Node, NodeId, Role, Toggled, TreeId, TreeUpdate,
 };
+use cherenkov_record::Recorder;
 use nami::Binding;
 use nami::Signal as _;
 use waterui::ViewExt as _;
@@ -32,9 +33,9 @@ use waterui_form::picker::date::DatePicker;
 use waterui_form::picker::{PickerStyle, picker};
 use waterui_form::secure::secure;
 use waterui_graphics::Color;
-use waterui_graphics::draw::Recorder;
+use waterui_graphics::backend::{RecordingResources, SceneContent, SceneView};
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
-use waterui_graphics::{GpuContent, GpuContentView, RecordingResources, SceneContent, SceneView};
+use waterui_graphics::{GpuContent, GpuContentView};
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::{VStackLayout, hstack, vstack};
 use waterui_layout::{Divider, LazyContainer, scroll};

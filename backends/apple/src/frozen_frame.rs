@@ -18,7 +18,7 @@ use cocoa_ui::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_metal::{MTLDevice, MTLStorageMode, MTLTexture, MTLTextureDescriptor, MTLTextureUsage};
 use waterui_graphics::gpu::SharedGpuContext;
-use waterui_graphics::wgpu;
+use waterui_graphics::gpu::wgpu;
 
 /// An armed surface's frozen-frame bookkeeping: the copy of the last
 /// frame that reached the screen, plus recycled copy targets reused

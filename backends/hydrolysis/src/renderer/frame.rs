@@ -408,7 +408,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub(crate) fn draw_context(
         &mut self,
         ctx: RenderContext,
-        body: impl FnOnce(&mut waterui_graphics::draw::Recorder),
+        body: impl FnOnce(&mut cherenkov_record::Recorder),
     ) {
         let scope = self
             .material_group_scopes
@@ -730,21 +730,21 @@ pub enum ScopeClip {
 }
 
 impl ScopeClip {
-    pub(crate) fn in_space(&self, transform: kurbo::Affine) -> waterui_graphics::draw::ShapeData {
+    pub(crate) fn in_space(&self, transform: kurbo::Affine) -> cherenkov_record::ShapeData {
         if transform == kurbo::Affine::IDENTITY {
             return match self {
-                Self::Rect(rect) => waterui_graphics::draw::ShapeData::of(rect),
+                Self::Rect(rect) => cherenkov_record::ShapeData::of(rect),
                 Self::Path(path) | Self::RoundedRect { path, .. } => {
-                    waterui_graphics::draw::ShapeData::of(path)
+                    cherenkov_record::ShapeData::of(path)
                 }
             };
         }
         let mut path = match self {
-            Self::Rect(rect) => rect.to_path(waterui_graphics::draw::PATH_TOLERANCE),
+            Self::Rect(rect) => rect.to_path(cherenkov_record::PATH_TOLERANCE),
             Self::Path(path) | Self::RoundedRect { path, .. } => path.clone(),
         };
         path.apply_affine(transform);
-        waterui_graphics::draw::ShapeData::of(&path)
+        cherenkov_record::ShapeData::of(&path)
     }
 
     /// The hit clip in the placement scope's space: the clip's bounds as the

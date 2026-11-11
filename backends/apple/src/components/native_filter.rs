@@ -72,8 +72,8 @@ use waterui_backend_core::{AnyView, Environment};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView, ViewDimensions,
 };
-use waterui_graphics::filter_view::{AnyEffect, ParamGuards};
-use waterui_graphics::filtrate::{FilterLink, Interpolator, WatchGuard, WorkingSpace};
+use waterui_graphics::backend::filtrate::{FilterLink, Interpolator, WatchGuard, WorkingSpace};
+use waterui_graphics::backend::{AnyEffect, ParamGuards};
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
 
@@ -650,8 +650,8 @@ pub struct EffectPlan {
 /// `Convolution*`, halftone variants, distortions, every custom
 /// `Filter`) realize through capture.
 fn map_link(link: &FilterLink<'_>) -> Option<NativeStage> {
+    use waterui_graphics::backend::filtrate::filters;
     use waterui_graphics::filter_view as fv;
-    use waterui_graphics::filtrate::filters;
     let base = link.param_base;
     if link.downcast_ref::<fv::Brightness>().is_some()
         || link.downcast_ref::<filters::Brightness<f32>>().is_some()
@@ -1282,7 +1282,7 @@ fn apply_animated(
     owner: &NativeFilterOwner,
     effect: usize,
     flat: usize,
-    target: waterui_graphics::filtrate::AnimatedTarget,
+    target: waterui_graphics::backend::filtrate::AnimatedTarget,
 ) {
     let now = CACurrentMediaTime();
     let mut target = target;

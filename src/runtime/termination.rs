@@ -499,7 +499,7 @@ mod tests {
         );
         assert_eq!(command.shortcut, Some(Shortcut::new('q').command()));
 
-        command.action.call(&env);
+        command.action.run(&env);
         drain();
         // Only a cancellable request asks `on_quit_request`; a required one
         // would skip straight to terminating.

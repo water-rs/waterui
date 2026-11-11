@@ -441,7 +441,7 @@ impl AndroidSurface {
     fn render_targets(
         &mut self,
         display_scale: f64,
-        base_color: waterui_graphics::draw::WorkingColor,
+        base_color: cherenkov_record::WorkingColor,
     ) -> (
         crate::renderer::FrameRenderTarget<'_>,
         crate::platform::EngineAndroidTarget<'_>,

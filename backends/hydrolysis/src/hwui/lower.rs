@@ -11,17 +11,17 @@ use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::sync::Arc;
 
-use waterui_graphics::draw::color::WorkingColor;
-use waterui_graphics::draw::kurbo::{
+use cherenkov_record::color::WorkingColor;
+use cherenkov_record::kurbo::{
     Affine, BezPath, Cap, Join, PathEl, Point, Rect, Shape as _, Stroke, Vec2,
 };
-use waterui_graphics::draw::{
+use cherenkov_record::{
     BlendMode, Command, DisplayList, Extend, FillRule, GlyphRun, GlyphStyle, Group, ImageId,
     ImagePattern, MeshColorInterpolation, MeshGradient, PATH_TOLERANCE, Paint, Picture, Sampling,
     ShaderPaint, Shadow, ShapeData, SweepGradient, blends_within,
 };
 
-use waterui_graphics::draw::TextLayoutId;
+use cherenkov_record::TextLayoutId;
 
 use super::HwuiError;
 use super::buffer::{CommandBuffer, Field, Fields};
@@ -1520,8 +1520,8 @@ fn sweep_span(sweep: &SweepGradient) -> Option<f64> {
 /// A shape grown by `spread`, or `None` for a path, which has no exact
 /// offset.
 fn grow(shape: &ShapeData, spread: f64) -> Option<ShapeData> {
-    use waterui_graphics::draw::ContinuousRect;
-    use waterui_graphics::draw::kurbo::{Circle, Ellipse, RoundedRect, RoundedRectRadii};
+    use cherenkov_record::ContinuousRect;
+    use cherenkov_record::kurbo::{Circle, Ellipse, RoundedRect, RoundedRectRadii};
     if spread == 0.0 {
         return Some(shape.clone());
     }

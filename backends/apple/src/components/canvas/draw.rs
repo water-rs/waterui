@@ -21,7 +21,7 @@ use cocoa_ui::objc2_core_graphics::{
 };
 use cocoa_ui::patch;
 use kurbo::{Affine, Point, Rect};
-use waterui_graphics::draw::{
+use waterui_graphics::backend::draw::{
     ColorSpace, ColorStop, Extend, ImagePattern, Interpolation, LinearDisplayP3, LinearGradient,
     MeshColorInterpolation, MeshGradient, Paint, RadialGradient, Sampling, Srgb, SweepGradient,
 };

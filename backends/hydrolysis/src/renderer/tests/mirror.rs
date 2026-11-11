@@ -182,7 +182,9 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
 
     fn stretch_filter(
         host: &MirrorHost,
-        filter: waterui_graphics::filtrate::filters::OverscrollStretch<waterui_graphics::Reactive>,
+        filter: waterui_graphics::backend::filtrate::filters::OverscrollStretch<
+            waterui_graphics::backend::Reactive,
+        >,
     ) -> crate::renderer::mount::target::FilterHandle {
         crate::renderer::mount::target::FilterHandle::new(host.engine.filter(filter))
     }
@@ -574,7 +576,9 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for NoShaderTarget {
 
     fn stretch_filter(
         host: &NoShaderHost,
-        filter: waterui_graphics::filtrate::filters::OverscrollStretch<waterui_graphics::Reactive>,
+        filter: waterui_graphics::backend::filtrate::filters::OverscrollStretch<
+            waterui_graphics::backend::Reactive,
+        >,
     ) -> crate::renderer::mount::target::FilterHandle {
         crate::renderer::mount::target::FilterHandle::new(host.engine.filter(filter))
     }

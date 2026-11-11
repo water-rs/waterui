@@ -94,6 +94,12 @@ pub trait Style: theme::WidgetTheme + 'static {
 /// producing surface presented with.
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 pub use cherenkov_gpu::interop::OutputAlpha;
+/// The drawing vocabulary of the style contract: the `Recorder` a
+/// [`WidgetTheme`](theme::WidgetTheme) and its looks record into, `Paint`,
+/// the shapes, the colour, material and animation types, and the `kurbo`
+/// geometry the [`theme`] signatures name. A style package draws with these,
+/// so it records with the same recorder the renderer consumes.
+pub use cherenkov_record as draw;
 /// The W3C UI Events key vocabulary this backend speaks, re-exported so hosts
 /// that synthesize key events use the same version of it.
 pub use keyboard_types;

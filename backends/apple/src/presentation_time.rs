@@ -12,7 +12,7 @@
 use std::rc::Rc;
 use std::time::Duration;
 
-use waterui_graphics::cherenkov::{FrameTime, Instant};
+use waterui_graphics::backend::cherenkov::{FrameTime, Instant};
 
 /// The anchor all presenters under one GPU runtime share.
 #[derive(Debug)]

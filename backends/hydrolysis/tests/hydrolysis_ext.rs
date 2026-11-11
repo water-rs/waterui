@@ -20,12 +20,11 @@ use waterui::prelude::zstack;
 use waterui::shape::RoundedRectangle;
 use waterui::{FilterViewExt, ViewExt};
 use waterui_core::AnyView;
-use waterui_graphics::FilteredView;
+use waterui_graphics::backend::{FilteredView, SceneViewMergeToParent};
 use waterui_graphics::filtrate::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
     RetainedMemory,
 };
-use waterui_graphics::scene_view::SceneViewMergeToParent;
 
 #[derive(Clone)]
 struct CloneableRect;

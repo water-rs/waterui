@@ -24,6 +24,7 @@ use waterui_controls::ControlSize;
 use waterui_controls::button::{ButtonConfig, ButtonStyle};
 use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_controls::menu::ResolvedMenu;
+use waterui_core::handler::ReportExtraction as _;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
@@ -455,7 +456,7 @@ pub fn button_activation<E: crate::text::TextEngine>(
     let action_env = env.clone();
     Rc::new(RefCell::new(
         move |_renderer: &mut crate::renderer::SemanticCore<E>, _env: &Environment| {
-            (state.borrow_mut().config.action_mut())(&action_env);
+            (state.borrow_mut().config.action_mut())(&action_env).report_extraction();
             true
         },
     ))
@@ -1048,7 +1049,7 @@ pub fn render_button_parts<E: crate::text::TextEngine>(
             rendered.press_slot,
             keyboard_focusable,
             move |_renderer, _point, _env| {
-                (state.borrow_mut().config.action_mut())(&action_env);
+                (state.borrow_mut().config.action_mut())(&action_env).report_extraction();
                 true
             },
         );

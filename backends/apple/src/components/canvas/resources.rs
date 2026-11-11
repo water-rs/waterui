@@ -24,12 +24,12 @@ use cocoa_ui::objc2_core_graphics::{
     kCGColorSpaceLinearSRGB, kCGColorSpaceSRGB,
 };
 use cocoa_ui::objc2_core_text::{CTFontDescriptor, CTFontManagerCreateFontDescriptorsFromData};
-use waterui_graphics::draw::{
+use waterui_graphics::backend::draw::{
     FontId, ImageId, ImageLimits, ImageStorage, Paint, Picture, TextLayoutId,
 };
-use waterui_graphics::resources::{Handle, ResourceHandle, SceneBackend};
-use waterui_graphics::source::{
-    FontSource, Format, ImageColorSpace, ImageData, ResourceError, Rgba8, Rgba16F,
+use waterui_graphics::backend::{
+    FontSource, Format, Handle, ImageColorSpace, ImageData, ResourceError, ResourceHandle, Rgba8,
+    Rgba16F, SceneBackend,
 };
 
 /// The largest side of an image a layer composites: the texture limit of

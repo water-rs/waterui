@@ -496,7 +496,7 @@ pub fn run(app: App, style: impl crate::Style) {
             return;
         };
 
-        let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+        let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
         let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
         super::install_native_component_hooks(&mut env);
         // Every runner seeds the chord table so mounted menus resolve

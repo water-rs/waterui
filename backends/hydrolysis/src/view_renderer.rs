@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use waterui_core::view_renderer::{CustomViewRenderer, RenderError, RenderRequest, RenderResult};
 use waterui_core::{AnyView, ContentLedger, Environment};
-use waterui_graphics::scene_view::SceneViewMergeToParent;
+use waterui_graphics::backend::SceneViewMergeToParent;
 use waterui_text::FontCollection;
 
 use crate::platform::{DeviceLoss, OffscreenSurface, PresentationSurface as _, SurfaceFrame};
@@ -191,7 +191,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                 format,
                 width,
                 height,
-                base_color: waterui_graphics::draw::WorkingColor::TRANSPARENT,
+                base_color: cherenkov_record::WorkingColor::TRANSPARENT,
             }
         ))
         .map_err(gpu_failure)?;

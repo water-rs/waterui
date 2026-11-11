@@ -31,10 +31,10 @@ use waterui::background::Material;
 use waterui::theme::ColorScheme;
 use waterui_core::Environment;
 use waterui_core::contract_violation;
-use waterui_graphics::filtrate::Chain;
-use waterui_graphics::filtrate::filters::{GaussianBlur, LumaCurve};
+use waterui_graphics::backend::filtrate::Chain;
+use waterui_graphics::backend::filtrate::filters::{GaussianBlur, LumaCurve};
 #[cfg(hydrolysis_gpu_painter)]
-use waterui_graphics::filtrate::{FilterExt as _, OperatingSpace};
+use waterui_graphics::backend::filtrate::{FilterExt as _, OperatingSpace};
 
 /// The fraction of device resolution a material's backdrop is captured at.
 ///
@@ -345,7 +345,7 @@ impl MaterialRuntime {
     /// The colour stage's resolved parameters — a test-facing answer.
     #[cfg(test)]
     pub(crate) fn tone_params(&self) -> [f32; 7] {
-        use waterui_graphics::filtrate::Filter as _;
+        use waterui_graphics::backend::filtrate::Filter as _;
         self.tone.params()
     }
 
@@ -410,7 +410,7 @@ impl<E: crate::text::TextEngine> crate::renderer::HydrolysisRenderer<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waterui_graphics::filtrate::Filter as _;
+    use waterui_graphics::backend::filtrate::Filter as _;
 
     #[test]
     #[cfg_attr(debug_assertions, should_panic(expected = "water-rs/waterui#1853"))]

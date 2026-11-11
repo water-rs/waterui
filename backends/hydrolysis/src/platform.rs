@@ -2242,7 +2242,7 @@ pub trait GpuSurfaceWindow: PlatformWindow {
     /// The colour the presented frame shows along the window's top edge
     /// ([`HydrolysisRenderer::top_edge_color`](crate::renderer::HydrolysisRenderer::top_edge_color)),
     /// reported when [`Self::SAMPLES_TOP_EDGE`] is set.
-    fn set_top_edge_color(&mut self, color: waterui_graphics::draw::WorkingColor) {
+    fn set_top_edge_color(&mut self, color: cherenkov_record::WorkingColor) {
         let _ = color;
     }
 }
@@ -3305,7 +3305,7 @@ impl SurfaceProvider for OffscreenSurface {
 }
 
 /// An offscreen Cherenkov surface on the shared engine, for scene-level tests
-/// and exports that mount [`waterui_graphics::draw::Content`] directly instead of driving
+/// and exports that mount [`cherenkov_record::Content`] directly instead of driving
 /// the full view pipeline.
 ///
 /// One `OffscreenSceneSurface` owns a GPU context, the engine shared on that
@@ -3875,7 +3875,7 @@ mod winit_impl {
         pub(crate) fn render_targets(
             &mut self,
             display_scale: f64,
-            base_color: waterui_graphics::draw::WorkingColor,
+            base_color: cherenkov_record::WorkingColor,
         ) -> (
             crate::renderer::FrameRenderTarget<'_>,
             super::EngineWindowTarget<'_>,

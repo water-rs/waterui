@@ -261,7 +261,7 @@ impl SemanticRuntime {
             init_global_executor();
             None
         };
-        let mut env = env.extending(waterui_graphics::scene_view::SceneViewMergeToParent);
+        let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
         #[cfg(not(target_arch = "wasm32"))]
         waterui_core::install_application_resources(&mut env);
         #[cfg(not(target_arch = "wasm32"))]

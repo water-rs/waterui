@@ -12,10 +12,9 @@ use std::sync::Arc;
 use cherenkov_record::{
     FilterId, Layer, MaterialRegistry, ResourceError, TextLayoutId, Transaction,
 };
-use waterui_graphics::filter_view::AnyEffect;
-use waterui_graphics::filtrate::filters::OverscrollStretch;
-use waterui_graphics::{
-    Handle, Reactive, ResourceHandle, TextBackend, TextRegistration, TextRequest,
+use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
+use waterui_graphics::backend::{
+    AnyEffect, Handle, Reactive, ResourceHandle, TextBackend, TextRegistration, TextRequest,
 };
 
 #[cfg(hydrolysis_gpu)]
@@ -60,7 +59,7 @@ impl HwuiHost {
     ) -> Self {
         Self {
             resources: Rc::new(SceneResources::over(
-                waterui_graphics::SceneResources::with_shaders(
+                waterui_graphics::backend::SceneResources::with_shaders(
                     Rc::clone(&backend),
                     backend.clone(),
                 ),

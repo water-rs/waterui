@@ -219,7 +219,7 @@ impl BrowserSurface {
     pub(crate) fn render_targets(
         &mut self,
         display_scale: f64,
-        base_color: waterui_graphics::draw::WorkingColor,
+        base_color: cherenkov_record::WorkingColor,
     ) -> (
         crate::renderer::FrameRenderTarget<'_>,
         &HtmlElement,
@@ -283,7 +283,7 @@ pub struct BrowserWindow {
     /// counted with the family's data defaults.
     input_conventions: InputConventions,
     /// The page background last matched to the app's top edge.
-    top_edge_color: Option<waterui_graphics::draw::WorkingColor>,
+    top_edge_color: Option<cherenkov_record::WorkingColor>,
     /// Held for its lifetime: the observer keeps reporting only while
     /// both halves are alive.
     _intersection_observer: (
@@ -613,17 +613,15 @@ impl GpuSurfaceWindow for BrowserWindow {
     /// background to the app's top edge makes the band continue the app.
     const SAMPLES_TOP_EDGE: bool = true;
 
-    fn set_top_edge_color(&mut self, color: waterui_graphics::draw::WorkingColor) {
+    fn set_top_edge_color(&mut self, color: cherenkov_record::WorkingColor) {
         if self.top_edge_color == Some(color) {
             return;
         }
         self.top_edge_color = Some(color);
         let [r, g, b, a] =
-            peniko::color::AlphaColor::<waterui_graphics::draw::LinearDisplayP3>::new(
-                color.components,
-            )
-            .convert::<peniko::color::DisplayP3>()
-            .components;
+            peniko::color::AlphaColor::<cherenkov_record::LinearDisplayP3>::new(color.components)
+                .convert::<peniko::color::DisplayP3>()
+                .components;
         let css = format!("color(display-p3 {r} {g} {b} / {a})");
         let html = self
             .document

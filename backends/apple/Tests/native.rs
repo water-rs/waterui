@@ -1677,9 +1677,9 @@ mod picture {
     #[cfg(target_os = "ios")]
     use cocoa_ui::uikit::ImageView;
     use kurbo::Shape;
+    use waterui::graphics::backend::Picture;
+    use waterui::graphics::backend::draw::Draw;
     use waterui::graphics::color::WorkingColor;
-    use waterui::graphics::draw::Draw;
-    use waterui::graphics::picture::Picture;
     use waterui::reactive::constant;
     use waterui_core::layout::Size;
 
@@ -3713,7 +3713,7 @@ mod gpu_surface {
             SubmissionFailed, submit_with_completion,
         };
         use waterui_apple::native_test_support::view_renderer::GpuRuntime;
-        use waterui_graphics::wgpu;
+        use waterui_graphics::gpu::wgpu;
 
         const THREADS: u32 = 1024 * 64;
         const SECONDS: f64 = 120.0;
@@ -3995,7 +3995,7 @@ mod gpu_surface {
             matches!(
                 error.downcast_ref::<waterui_graphics::gpu::runtime::HostedLayerError>(),
                 Some(waterui_graphics::gpu::runtime::HostedLayerError::Surface(
-                    waterui_graphics::cherenkov::SurfaceError::TooLarge { .. }
+                    waterui_graphics::backend::cherenkov::SurfaceError::TooLarge { .. }
                 ))
             ),
             "the terminal outcome carries the settled typed failure: {error}"
@@ -4207,7 +4207,7 @@ mod gpu_surface {
         };
         use waterui_backend_core::AnyView;
         use waterui_core::view_renderer::{RenderError, RenderRequest, ViewRenderer};
-        use waterui_graphics::cherenkov::SurfaceError;
+        use waterui_graphics::backend::cherenkov::SurfaceError;
 
         let (runtime, mut env) = pollster::block_on(async {
             let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
@@ -5013,8 +5013,8 @@ mod capture_colour {
     /// `capture_view_rgba` — the `capture_rgba` path the issue's numbers
     /// came from — and must match under the oracle's same-pixels limits.
     pub fn a_capture_realized_identity_filter_preserves_colour() {
-        use waterui::graphics::filtrate::filters::Brightness;
-        use waterui::graphics::{AnyEffect, FilteredView, OutputSize, ParamGuards};
+        use waterui::graphics::backend::filtrate::filters::Brightness;
+        use waterui::graphics::backend::{AnyEffect, FilteredView, OutputSize, ParamGuards};
         use waterui::layout::{PinConstraints, PositionExt, absolute};
         use waterui_backend_core::AnyView;
 
@@ -5281,8 +5281,8 @@ mod capture_order {
     /// outer capture composites the filter's output. The reference column
     /// is the same native column unfiltered.
     pub fn a_nested_filter_keeps_its_gpu_child_in_order() {
-        use waterui::graphics::filtrate::filters::Brightness;
-        use waterui::graphics::{AnyEffect, FilteredView, OutputSize, ParamGuards};
+        use waterui::graphics::backend::filtrate::filters::Brightness;
+        use waterui::graphics::backend::{AnyEffect, FilteredView, OutputSize, ParamGuards};
         let content = |child| layered(child).background(orange()).opacity(0.8);
         // The reference column is unfiltered: the identity chain
         // reproduces it (#3528), so only the GPU column runs the nested
@@ -11492,8 +11492,8 @@ mod a11y_frame {
     fn a_gpu_surface_draws_in_its_response() {
         use cocoa_ui::appkit::surface_view::SurfaceView;
         use waterui_apple::native_test_support::{block_on_main, install_gpu, pump_main_until};
+        use waterui_graphics::gpu::wgpu;
         use waterui_graphics::gpu::{Context, Frame, GpuContent, GpuContentView, GpuRuntime};
-        use waterui_graphics::wgpu;
 
         /// A content of a fixed natural size that clears its frame.
         struct Clear;
@@ -16139,9 +16139,8 @@ mod transition {
             transition_context: waterui_core::transition::TransitionContext,
         ) -> impl waterui_backend_core::View {
             *self.frame.borrow_mut() = Some(transition_context.frame().clone());
-            let shader =
-                waterui::graphics::filtrate::ShaderEffect::new(include_str!("pixel_probe.wgsl"))
-                    .expect("the probe shader is valid WGSL");
+            let shader = waterui::graphics::ShaderEffect::new(include_str!("pixel_probe.wgsl"))
+                .expect("the probe shader is valid WGSL");
             waterui::graphics::WithEffect::new(content, shader)
         }
     }

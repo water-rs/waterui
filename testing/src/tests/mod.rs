@@ -20,11 +20,13 @@ use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityGeometry;
 use waterui::component::list::{List, ListItem};
 use waterui::component::{text, vstack};
+use waterui::graphics::WorkingColor;
+use waterui::graphics::backend::draw::{self, Draw as _, Recorder};
+use waterui::graphics::backend::{
+    RecordingResources, SceneContent, SceneView, SceneViewMergeToParent,
+};
 use waterui::graphics::canvas::Canvas;
 use waterui::graphics::color::Srgb;
-use waterui::graphics::draw::{self, Draw as _, Recorder, kurbo};
-use waterui::graphics::scene_view::SceneViewMergeToParent;
-use waterui::graphics::{RecordingResources, SceneContent, SceneView, WorkingColor};
 use waterui::layout::scroll::ScrollView;
 use waterui::text::Text;
 use waterui_core::layout::{Point, Rect, Size};
@@ -310,7 +312,7 @@ mod token_probe {
     use waterui::component::text;
     use waterui::env::use_env;
     use waterui::form::picker::PickerStyle;
-    use waterui::graphics::draw::{Paint, Recorder};
+    use waterui::graphics::backend::draw::{Paint, Recorder};
     use waterui::reactive::constant;
     use waterui::text::font::Font;
     use waterui::theme::{color as theme_color, install_color_signal, installed_color_signal};

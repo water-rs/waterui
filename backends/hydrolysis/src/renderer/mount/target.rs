@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use cherenkov_record::{FilterId, Layer, MaterialRegistry, Transaction};
 use rustc_hash::FxHashMap;
-use waterui_graphics::Reactive;
-use waterui_graphics::filtrate::filters::OverscrollStretch;
+use waterui_graphics::backend::Reactive;
+use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
 
 #[cfg(hydrolysis_gpu)]
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};

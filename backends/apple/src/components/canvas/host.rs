@@ -22,11 +22,14 @@ use kurbo::Size as KurboSize;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView, ViewDimensions,
 };
+use waterui_graphics::backend::draw::{
+    Content, ContentChange, Instant, LayoutSize, LiveOwner, SampleFlag,
+};
+use waterui_graphics::backend::{
+    HeldResources, SceneFrame, SceneInvalidator, SceneResources, SceneUpdate,
+    resolve_scene_proposal, scene_stretch_axis,
+};
 use waterui_graphics::canvas::CanvasView;
-use waterui_graphics::draw::{Content, ContentChange, Instant, LayoutSize, LiveOwner, SampleFlag};
-use waterui_graphics::resources::{HeldResources, SceneResources};
-use waterui_graphics::scene_view::{SceneInvalidator, resolve_scene_proposal, scene_stretch_axis};
-use waterui_graphics::{SceneFrame, SceneUpdate};
 
 use super::layers::{Ctx, Wake};
 use super::resources::{Backend, Registry};

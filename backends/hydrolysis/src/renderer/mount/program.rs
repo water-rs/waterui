@@ -12,9 +12,9 @@ use std::num::NonZeroU64;
 use std::rc::Rc;
 
 use cherenkov_record::Live;
+use cherenkov_record::ShapeData;
 use nami::Signal as _;
 use rustc_hash::FxHashSet;
-use waterui_graphics::draw::ShapeData;
 
 use super::cell::NodeCell;
 use super::placement::Placement;
@@ -278,8 +278,8 @@ pub enum ProducerContent {
 /// A `SceneView`'s content: it records at commit against the target's
 /// resources (§C).
 pub struct SceneContentSource {
-    pub content: Rc<RefCell<Box<dyn waterui_graphics::SceneContent>>>,
-    pub invalidator: waterui_graphics::SceneInvalidator,
+    pub content: Rc<RefCell<Box<dyn waterui_graphics::backend::SceneContent>>>,
+    pub invalidator: waterui_graphics::backend::SceneInvalidator,
     pub association: Rc<RefCell<Option<std::rc::Weak<crate::renderer::recording::SceneResources>>>>,
     /// The size and scale the content's input handler was last told about,
     /// shared with the node so it survives each flush's fresh source.

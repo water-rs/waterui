@@ -8,8 +8,8 @@
 //! included, without clamping. The window's own space then decides how much
 //! of it shows.
 
-use waterui_graphics::draw::color::{ColorSpace as _, LinearDisplayP3, WorkingColor};
-use waterui_graphics::draw::{ColorStop, Extend, Interpolation};
+use cherenkov_record::color::{ColorSpace as _, LinearDisplayP3, WorkingColor};
+use cherenkov_record::{ColorStop, Extend, Interpolation};
 
 /// `ColorSpace.Named.EXTENDED_SRGB`'s id.
 pub const EXTENDED_SRGB: u64 = 2;
@@ -381,10 +381,10 @@ fn subdivide(
 
 #[cfg(test)]
 mod tests {
-    use waterui_graphics::draw::color::WorkingColor;
-    use waterui_graphics::draw::{ColorStop, Interpolation};
+    use cherenkov_record::color::WorkingColor;
+    use cherenkov_record::{ColorStop, Interpolation};
 
-    use waterui_graphics::draw::Extend;
+    use cherenkov_record::Extend;
 
     use super::{MAX_SWEEP_STOPS, gradient_stops, half, pack, srgb_encode, sweep_turn};
 
