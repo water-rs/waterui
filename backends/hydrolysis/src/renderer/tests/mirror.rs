@@ -519,7 +519,8 @@ impl std::fmt::Debug for NoShaderHost {
 }
 
 /// A `Mount<NoShaderTarget>` under construction against `registry` — the
-/// CPU-engine attach rule's panic lives in `Mount::new`.
+/// attach rule for a target without backdrop shaders panics in
+/// `Mount::new`.
 pub fn no_shader_mount(
     registry: &MaterialRegistry,
 ) -> Mount<NoShaderTarget, crate::text::ParleyEngine> {

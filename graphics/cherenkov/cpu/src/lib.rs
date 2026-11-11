@@ -235,6 +235,43 @@ where
     }
 }
 
+// Backdrop effect shaders run on the lane executor, inside the member
+// composite (`render::shader`).
+#[cfg(feature = "shaders")]
+impl cherenkov::BackdropShaders for Raster {
+    fn validate_backdrop_shader(
+        source: &cherenkov::BackdropShaderSource,
+    ) -> Result<(), cherenkov::ResourceError> {
+        render::shader::BackdropProgram::compile(source).map(drop)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn add_backdrop_shader(
+        renderer: &mut Self::Renderer,
+        id: cherenkov::BackdropShaderId,
+        source: cherenkov::BackdropShaderSource,
+    ) -> Result<(), cherenkov::ResourceError> {
+        let program = render::shader::BackdropProgram::compile(&source)?;
+        renderer.filters.add_backdrop_shader(id, program);
+        Ok(())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn add_backdrop_shader(
+        renderer: &mut Self::Renderer,
+        id: cherenkov::BackdropShaderId,
+        source: cherenkov::BackdropShaderSource,
+    ) -> impl core::future::Future<Output = Result<(), cherenkov::ResourceError>> {
+        let result = render::shader::BackdropProgram::compile(&source)
+            .map(|program| renderer.filters.add_backdrop_shader(id, program));
+        core::future::ready(result)
+    }
+
+    fn remove_backdrop_shader(renderer: &mut Self::Renderer, id: cherenkov::BackdropShaderId) {
+        renderer.filters.remove_backdrop_shader(id);
+    }
+}
+
 impl cherenkov::Target for Raster {
     type Queue = cherenkov::EngineQueue<Self>;
     type Install = cherenkov::InstallOp<Self>;

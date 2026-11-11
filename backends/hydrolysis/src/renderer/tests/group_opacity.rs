@@ -122,10 +122,7 @@ fn a_translucent_material_and_label_fade_together() {
     );
 }
 
-/// The chrome-member case registers a backdrop shader, which only the GPU
-/// painter realizes until the CPU backend gains backdrop shaders
-/// (water-rs/waterui#4065); that issue lifts this gate.
-#[cfg(hydrolysis_gpu_painter)]
+/// The chrome-member case: a backdrop shader member fades with its group.
 mod chrome_member {
     use cherenkov_record::{
         BackdropShaderSource, CaptureClass, CaptureLevels, CaptureScale, Live, MaterialCapture,

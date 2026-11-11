@@ -160,10 +160,10 @@ impl ChromeGroupKey {
 
     /// The members' capture class.
     #[cfg_attr(
-        not(hydrolysis_gpu_painter),
+        not(hydrolysis_cherenkov),
         allow(
             dead_code,
-            reason = "read by the GPU target's backdrop-shader chrome; no other target registers backdrop shaders (water-rs/waterui#4065)"
+            reason = "read by the Cherenkov targets' backdrop-shader chrome; the HWUI target has no backdrop shaders"
         )
     )]
     pub(crate) const fn class(&self) -> CaptureClass {
@@ -173,13 +173,6 @@ impl ChromeGroupKey {
     /// The layer the group's capture anchors at — `None` under the
     /// first-member rule.
     #[cfg(hydrolysis_cherenkov)]
-    #[cfg_attr(
-        not(hydrolysis_gpu_painter),
-        allow(
-            dead_code,
-            reason = "read by the GPU target's backdrop-shader chrome; no other target registers backdrop shaders (water-rs/waterui#4065)"
-        )
-    )]
     pub(crate) const fn anchor(&self) -> Option<LayerId> {
         self.anchor
     }
@@ -459,20 +452,20 @@ pub type MaterialBackdropGroups<G, E> = BackdropGroups<BackdropGroupKey, Materia
 pub struct ChromeMemberPayload<S> {
     /// The shader's engine handle, resolved at attach.
     #[cfg_attr(
-        not(hydrolysis_gpu_painter),
+        not(hydrolysis_cherenkov),
         allow(
             dead_code,
-            reason = "read by the GPU target's backdrop-shader chrome; no other target registers backdrop shaders (water-rs/waterui#4065)"
+            reason = "read by the Cherenkov targets' backdrop-shader chrome; the HWUI target has no backdrop shaders"
         )
     )]
     pub shader: S,
     /// The member's live effect: the sample's uniforms re-read as it
     /// changes.
     #[cfg_attr(
-        not(hydrolysis_gpu_painter),
+        not(hydrolysis_cherenkov),
         allow(
             dead_code,
-            reason = "read by the GPU target's backdrop-shader chrome; no other target registers backdrop shaders (water-rs/waterui#4065)"
+            reason = "read by the Cherenkov targets' backdrop-shader chrome; the HWUI target has no backdrop shaders"
         )
     )]
     pub effect: SharedLive<MaterialEffect>,

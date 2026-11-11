@@ -116,10 +116,6 @@ mod teardown_order;
 mod text_ink;
 mod text_measure_direction;
 mod text_wrap_width;
-// The glass switch's theme registers a backdrop shader, which only the GPU
-// painter realizes until the CPU backend gains backdrop shaders
-// (water-rs/waterui#4065); that issue lifts this gate.
-#[cfg(hydrolysis_gpu_painter)]
 mod toggle_glass;
 mod toggle_looks;
 #[cfg(hydrolysis_gpu_painter)]
@@ -2904,13 +2900,6 @@ impl MinimalTestTheme {
 /// One `backdrop_material` a chrome test's plan replays each time its
 /// chrome records (water-rs/waterui#1788).
 #[derive(Clone)]
-#[cfg_attr(
-    not(hydrolysis_gpu_painter),
-    expect(
-        dead_code,
-        reason = "only the GPU painter records backdrop materials until water-rs/waterui#4065"
-    )
-)]
 pub struct ChromeDraw {
     /// The member's live clip shape — a signal for the signal-rebind test.
     pub shape: SharedLive<kurbo::RoundedRect>,
@@ -2926,13 +2915,6 @@ pub struct ChromeDraw {
 /// `register_backdrop_shaders` fills, and the materials its
 /// [`chrome`](Self::chrome) replays.
 #[derive(Clone, Default)]
-#[cfg_attr(
-    not(hydrolysis_gpu_painter),
-    expect(
-        dead_code,
-        reason = "only the GPU painter records backdrop materials until water-rs/waterui#4065"
-    )
-)]
 pub struct ChromePlan {
     /// `(key, source)` pairs the registry registers.
     pub shaders: Vec<(MaterialShader, BackdropShaderSource)>,
@@ -2952,13 +2934,6 @@ impl ChromePlan {
     /// materials, then its fills — installed as a plugin, every tappable
     /// view under it records them.
     #[must_use]
-    #[cfg_attr(
-        not(hydrolysis_gpu_painter),
-        expect(
-            dead_code,
-            reason = "only the GPU painter records backdrop materials until water-rs/waterui#4065"
-        )
-    )]
     pub fn chrome(&self) -> Chrome {
         let draws = self.draws.clone();
         let fills = self.fills.clone();

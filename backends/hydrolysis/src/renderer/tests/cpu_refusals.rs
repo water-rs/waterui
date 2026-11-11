@@ -4,11 +4,10 @@
 //! A view that needs a GPU device is unsupported on the CPU painter for
 //! good. A build with both painters refuses it when the CPU target mounts
 //! it; a build without the `gpu` feature compiles no realization for it and
-//! refuses it at measure and node build. Shader effects (filtered views) and
-//! a theme's backdrop shaders are refused until the CPU backend realizes
-//! them (water-rs/waterui#4065), which retires those two tests.
+//! refuses it at measure and node build. Filtered views are refused until the
+//! CPU target realizes applied filters (water-rs/waterui#4065), which
+//! retires that test.
 
-use cherenkov_record::{BackdropShaderSource, MaterialShader};
 use waterui::graphics::Color;
 use waterui::{FilterViewExt as _, ViewExt as _};
 use waterui_core::AnyView;
@@ -18,7 +17,7 @@ use waterui_graphics::{
     ExternalFrameSource, ExternalFrameView, FrameOutput, GpuContent, GpuContentView,
 };
 
-use super::{ChromePlan, MinimalTestTheme, pumped_test_environment};
+use super::{MinimalTestTheme, pumped_test_environment};
 use crate::{HeadlessRuntime, OffscreenPainter};
 
 /// Mounts `view` on the CPU painter, whichever painters the build has, and
@@ -110,29 +109,5 @@ fn a_filtered_view_is_refused_until_cpu_shader_effects() {
             )
         },
         MinimalTestTheme::default(),
-    );
-}
-
-#[test]
-#[should_panic(
-    expected = "the theme registered the backdrop shaders MaterialShader(0), but the Cherenkov \
-                CPU backend does not realize backdrop shaders yet (water-rs/waterui#4065)"
-)]
-fn a_theme_with_backdrop_shaders_is_refused_until_cpu_backdrop_shaders() {
-    let chrome = ChromePlan {
-        shaders: vec![(
-            MaterialShader::new(0),
-            BackdropShaderSource::wgsl(
-                "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> { return backdrop_sample(px.p); }\n",
-            ),
-        )],
-        ..ChromePlan::default()
-    };
-    render_on_cpu(
-        || AnyView::new(Color::srgb_hex("#36343B")),
-        MinimalTestTheme {
-            chrome,
-            ..MinimalTestTheme::default()
-        },
     );
 }

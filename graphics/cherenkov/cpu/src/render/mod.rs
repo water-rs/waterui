@@ -28,6 +28,8 @@ mod prepared;
 pub mod present;
 mod projective;
 mod raster;
+#[cfg(feature = "shaders")]
+pub mod shader;
 mod shadow;
 mod span;
 mod tiles;

@@ -239,7 +239,7 @@ mod cpu;
 pub use cpu::RasterHost;
 #[cfg(all(test, hydrolysis_gpu_painter))]
 pub use engine_target::install_engine_text;
+#[cfg(all(test, hydrolysis_gpu_painter))]
+pub use engine_target::{attach_material_shaders, chrome_sample, chrome_spec};
 #[cfg(hydrolysis_gpu_painter)]
 pub use gpu::CherenkovHost;
-#[cfg(all(test, hydrolysis_gpu_painter))]
-pub use gpu::{attach_material_shaders, chrome_sample, chrome_spec};

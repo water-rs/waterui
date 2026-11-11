@@ -653,13 +653,10 @@ pub struct RasterWindow<E: crate::text::TextEngine> {
 
 #[cfg(hydrolysis_cpu_painter)]
 impl<E: crate::text::TextEngine> RasterWindow<E> {
-    /// Wraps `surface` with its window mount. The CPU backend has no backdrop
-    /// shaders, so a theme `materials` registry that registers any panics at
-    /// the mount's attach, naming them (water-rs/waterui#4065).
-    #[expect(
-        clippy::zero_sized_map_values,
-        reason = "the CPU target's shader map is typed `Infallible`: it registers no backdrop shaders and stays empty (water-rs/waterui#4065)"
-    )]
+    /// Wraps `surface` with its window mount. `materials` is the theme's
+    /// material registry: attaching this window's engine registers every
+    /// shader it names, as on the GPU target (water-rs/waterui#1788). A
+    /// rejected source panics at attach, naming the key.
     fn new(
         surface: crate::engine::RasterCherenkovSurface,
         state: Rc<crate::engine::RasterEngineState>,
@@ -671,10 +668,7 @@ impl<E: crate::text::TextEngine> RasterWindow<E> {
             engine: Rc::clone(&state.engine),
             resources: Rc::clone(&state.resources),
             surface: core.engine_surface_weak(),
-            materials: mount::MaterialTerms {
-                registry: Rc::clone(materials),
-                shaders: rustc_hash::FxHashMap::default(),
-            },
+            materials: mount::MaterialTerms::resolve(&state.engine, Rc::clone(materials)),
         };
         Self {
             surface,

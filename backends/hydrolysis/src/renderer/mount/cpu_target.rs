@@ -2,12 +2,12 @@
 //! the GPU target drives, on `cherenkov-cpu`'s rasterizer.
 //!
 //! What a CPU cannot realize without a device is refused at mount, naming the
-//! view and the missing GPU: GPU content and external GPU frames. Shader
-//! effects and backdrop shaders are not realized on the CPU backend yet
-//! (water-rs/waterui#4065): a filtered view panics at mount, and the mount
-//! refuses a theme that registers backdrop shaders at attach.
+//! view and the missing GPU: GPU content and external GPU frames. A theme's
+//! backdrop shaders run on the CPU backend's lane executor, through the same
+//! material and chrome groups as on the GPU target. Applied filters are not
+//! realized on this target yet (water-rs/waterui#4065): a filtered view
+//! panics at mount.
 
-use std::convert::Infallible;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
@@ -27,7 +27,7 @@ use crate::renderer::mount::backdrop::{
 use crate::renderer::recording::SceneResources;
 use crate::text::TextService;
 
-use super::engine_target::{install_engine_text, mount_material_group};
+use super::engine_target::{install_engine_text, mount_chrome_group, mount_material_group};
 use super::{FilterHandle, LayerTarget, MaterialTerms};
 
 /// Why a view that needs a GPU device cannot mount on this target. A build
@@ -38,10 +38,6 @@ use super::{FilterHandle, LayerTarget, MaterialTerms};
 const NO_GPU: &str = "this runtime renders on the Cherenkov CPU backend: the host has no usable \
                       hardware GPU";
 
-/// Why a theme's backdrop shaders cannot attach to this target.
-const NO_BACKDROP_SHADERS: &str = "the Cherenkov CPU backend does not realize backdrop shaders \
-                                   yet (water-rs/waterui#4065)";
-
 /// The Cherenkov CPU target's host: one per window of an offscreen runtime
 /// that selected the CPU backend.
 pub struct RasterHost {
@@ -50,10 +46,9 @@ pub struct RasterHost {
     /// The engine surface backdrop groups allocate on. Held weakly so the
     /// host never extends the surface past its window.
     pub surface: Weak<cherenkov::Surface<cherenkov_cpu::Raster>>,
-    /// The theme's material terms: always the empty registry, which the
-    /// mount's attach assertion guarantees for a target without backdrop
-    /// shaders.
-    pub materials: MaterialTerms<Infallible>,
+    /// The theme's material terms resolved on this engine at attach
+    /// (water-rs/waterui#1788).
+    pub materials: MaterialTerms<cherenkov::BackdropShader>,
 }
 
 impl std::fmt::Debug for RasterHost {
@@ -65,10 +60,8 @@ impl std::fmt::Debug for RasterHost {
 impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_cpu::Raster {
     type Host = RasterHost;
     type Group = cherenkov::BackdropGroup;
-    /// No backdrop shader exists on this target, so no chrome member can be
-    /// bound: the payload a chrome join would build is uninhabited.
-    type Shader = Infallible;
-    const BACKDROP_SHADER_REFUSAL: Option<&'static str> = Some(NO_BACKDROP_SHADERS);
+    type Shader = cherenkov::BackdropShader;
+    const BACKDROP_SHADER_REFUSAL: Option<&'static str> = None;
 
     fn resources(host: &RasterHost) -> &Rc<SceneResources> {
         &host.resources
@@ -139,29 +132,37 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_cpu::Raster {
         tx[layer].clear_backdrop();
     }
 
-    fn material_terms(host: &RasterHost) -> &MaterialTerms<Infallible> {
+    fn material_terms(host: &RasterHost) -> &MaterialTerms<cherenkov::BackdropShader> {
         &host.materials
     }
 
-    #[expect(
-        unreachable_code,
-        reason = "the payload carries an `Infallible` shader, so building it already diverges; the empty match states that no shader value exists on this target"
-    )]
     fn mount_chrome(
-        _host: &RasterHost,
-        _tx: &mut Transaction<'_, Self>,
-        _groups: &mut ChromeBackdropGroups<cherenkov::BackdropGroup, Infallible, E>,
-        _layer: &Layer,
-        _key: ChromeGroupKey,
-        _params: cherenkov_record::MaterialCapture,
-        _display_scale: f64,
-        _membership: &MaterialMembership<E>,
-        payload: impl FnOnce() -> ChromeMemberPayload<Infallible>,
-        _bind: MemberBind,
+        host: &RasterHost,
+        tx: &mut Transaction<'_, Self>,
+        groups: &mut ChromeBackdropGroups<cherenkov::BackdropGroup, cherenkov::BackdropShader, E>,
+        layer: &Layer,
+        key: ChromeGroupKey,
+        params: cherenkov_record::MaterialCapture,
+        display_scale: f64,
+        membership: &MaterialMembership<E>,
+        payload: impl FnOnce() -> ChromeMemberPayload<cherenkov::BackdropShader>,
+        bind: MemberBind,
     ) {
-        // A chrome member exists only for a registered capture class, and
-        // the mount refused a non-empty registry at attach; the shader its
-        // payload names has no value on this target.
-        match payload().shader {}
+        mount_chrome_group(
+            &host.surface,
+            tx,
+            groups,
+            layer,
+            key,
+            params,
+            display_scale,
+            membership,
+            payload,
+            bind,
+        );
+    }
+
+    fn clear_chrome(tx: &mut Transaction<'_, Self>, layer: &Layer) {
+        tx[layer].clear_backdrop();
     }
 }

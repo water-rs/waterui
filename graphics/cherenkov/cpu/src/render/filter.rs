@@ -151,6 +151,9 @@ pub struct Registry {
     entries: FxHashMap<u64, Entry>,
     /// Backdrop groups by `(surface, group)`.
     backdrops: FxHashMap<(u64, u64), Group>,
+    /// Registered backdrop effect shaders by `BackdropShaderId::raw()`.
+    #[cfg(feature = "shaders")]
+    backdrop_shaders: FxHashMap<u64, Arc<super::shader::BackdropProgram>>,
     last_frame: Option<(FrameId, cherenkov::Instant)>,
     delta: Duration,
 }
@@ -252,6 +255,31 @@ impl Registry {
         {
             entry.wakes.clear();
         }
+    }
+
+    /// Registers a compiled backdrop effect shader.
+    #[cfg(feature = "shaders")]
+    pub fn add_backdrop_shader(
+        &mut self,
+        id: cherenkov::BackdropShaderId,
+        program: super::shader::BackdropProgram,
+    ) {
+        self.backdrop_shaders.insert(id.raw(), Arc::new(program));
+    }
+
+    /// Unregisters a backdrop effect shader.
+    #[cfg(feature = "shaders")]
+    pub fn remove_backdrop_shader(&mut self, id: cherenkov::BackdropShaderId) {
+        self.backdrop_shaders.remove(&id.raw());
+    }
+
+    /// The registered backdrop effect shader `id`.
+    #[cfg(feature = "shaders")]
+    pub fn backdrop_shader(
+        &self,
+        id: cherenkov::BackdropShaderId,
+    ) -> Option<&Arc<super::shader::BackdropProgram>> {
+        self.backdrop_shaders.get(&id.raw())
     }
 
     pub fn remove(&mut self, id: FilterId) {

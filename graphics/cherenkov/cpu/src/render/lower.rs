@@ -386,6 +386,32 @@ pub enum SampleEffect {
     Color([f32; 12]),
     /// An effect reading the member clip's signed distance.
     Sdf(SdfEffect),
+    /// A registered backdrop effect shader. Boxed: rare, and `Item` stays
+    /// within its size budget.
+    #[cfg(feature = "shaders")]
+    Shader(Box<ShaderEffect>),
+}
+
+/// A backdrop effect shader bound to one member: the program, its
+/// uniforms, and the member inputs its `BackdropPixel` reads.
+#[cfg(feature = "shaders")]
+#[derive(Clone, Debug)]
+pub struct ShaderEffect {
+    pub program: Arc<super::shader::BackdropProgram>,
+    /// The uniforms packed four per `vec4`, zero-filled.
+    pub params: Arc<[f32; super::shader::PARAM_SLOTS]>,
+    /// The member's own clip, whose distance is `px.own_sdf` (and `px.sdf`
+    /// outside a union).
+    pub clip: Arc<BoxClip>,
+    /// Device → member-local affine in kurbo coefficient order:
+    /// `px.local`.
+    pub local: [f32; 6],
+    /// The member's unclipped device bounds size: `px.size`.
+    pub size: [f32; 2],
+    /// The member's recording scale: `px.scale`.
+    pub scale: f32,
+    /// The registered source's reach in device pixels.
+    pub reach: f32,
 }
 
 /// An SDF-reading member effect and the clip boundary it reads.
@@ -801,17 +827,73 @@ impl AnchorScratch {
     }
 }
 
+/// Binds the registered program of a `Shader` backdrop effect to its
+/// member: `reach` is the effect's sampling reach, `clip` the member
+/// clip's box (a path clip has none, the `backdrop-effect-sdf-path`
+/// error), `transform` the member layer's local-to-device transform and
+/// `bounds` its clip's device bounds.
+#[cfg(feature = "shaders")]
+fn shader_effect(
+    sample: &cherenkov::BackdropSample,
+    shader: &cherenkov::BackdropShaderEffect,
+    reach: f32,
+    clip: Option<BoxClip>,
+    registry: &Registry,
+    transform: Affine,
+    bounds: Rect,
+) -> Result<ShaderEffect, RenderError> {
+    let program = registry.backdrop_shader(shader.shader).ok_or_else(|| {
+        RenderError::Render(format!(
+            "backdrop shader {:?} is not registered",
+            shader.shader
+        ))
+    })?;
+    let mut params = [0.0; super::shader::PARAM_SLOTS];
+    params
+        .get_mut(..shader.uniforms.len())
+        .ok_or_else(|| {
+            RenderError::Render(format!(
+                "a backdrop shader takes at most {} uniforms, got {}",
+                super::shader::PARAM_SLOTS,
+                shader.uniforms.len()
+            ))
+        })?
+        .copy_from_slice(&shader.uniforms);
+    let clip = clip.ok_or(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH))?;
+    if transform.determinant().abs() < 1e-12 || !transform.is_finite() {
+        return Err(RenderError::Render(
+            "a backdrop shader member's transform is not invertible".into(),
+        ));
+    }
+    #[expect(clippy::cast_possible_truncation, reason = "shader inputs are f32")]
+    let local = transform.inverse().as_coeffs().map(|v| v as f32);
+    #[expect(clippy::cast_possible_truncation, reason = "shader inputs are f32")]
+    let size = [bounds.width() as f32, bounds.height() as f32];
+    Ok(ShaderEffect {
+        program: Arc::clone(program),
+        params: Arc::new(params),
+        clip: Arc::new(clip),
+        local,
+        size,
+        scale: sample.recording_scale().get(),
+        reach,
+    })
+}
+
 /// Resolves a member's engine effect into a [`SampleEffect`], also
 /// returning its sampling reach (the member's bounds grow by it).
 /// `clip` is the member clip's box; a path clip has none and gives SDF
 /// effects no analytic boundary — the same `backdrop-effect-sdf-path`
-/// error as the GPU slice. A `Shader` effect is a GPU-only capability on
-/// this backend.
+/// error as the GPU slice. A `Shader` effect binds the registered program
+/// to the member through [`shader_effect`].
 fn member_effect(
-    effect: Option<&cherenkov::BackdropEffect>,
+    sample: &cherenkov::BackdropSample,
     clip: Option<BoxClip>,
+    registry: &Registry,
+    transform: Affine,
+    bounds: Rect,
 ) -> Result<(SampleEffect, f64), RenderError> {
-    let Some(effect) = effect else {
+    let Some(effect) = sample.effect() else {
         return Ok((SampleEffect::None, 0.0));
     };
     let kind = match effect {
@@ -860,7 +942,23 @@ fn member_effect(
             edge: r.edge(),
             interior: r.interior(),
         },
+        #[cfg(feature = "shaders")]
+        cherenkov::BackdropEffect::Shader(shader) => {
+            let effect = shader_effect(
+                sample,
+                shader,
+                effect.reach(),
+                clip,
+                registry,
+                transform,
+                bounds,
+            )?;
+            let reach = f64::from(effect.reach);
+            return Ok((SampleEffect::Shader(Box::new(effect)), reach));
+        }
+        #[cfg(not(feature = "shaders"))]
         cherenkov::BackdropEffect::Shader(_) => {
+            let _ = (registry, transform, bounds);
             return Err(RenderError::Unsupported(names::BACKDROP_SHADER));
         }
     };
@@ -1483,6 +1581,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 transform,
                 prepared,
                 scopes.last().copied(),
+                filters,
             )?;
             if prepared.spec.anchor_layer().is_some() {
                 self.anchor_scratch.members.push((g, canvas, order));
@@ -1521,6 +1620,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
     /// `outer` member needs its clip's box as its field and rejects it.
     /// A path clip has no box: only a member that reads no distance may
     /// use one.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the walk threads the member's layer state and the filter registry"
+    )]
     fn plan_member(
         &mut self,
         id: LayerId,
@@ -1529,6 +1632,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         transform: Affine,
         prepared: &super::filter::PreparedBackdrop,
         scope: Option<LayerId>,
+        registry: &Registry,
     ) -> Result<(), RenderError> {
         let g = sample.group().raw();
         let outer = sample.outer_extent().get();
@@ -1557,7 +1661,13 @@ impl<'a, 'b> Lowering<'a, 'b> {
                         clip_box.ok_or(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH))
                     })
                     .transpose()?;
-                let (effect, reach) = member_effect(sample.effect(), clip_box)?;
+                let (effect, reach) = member_effect(
+                    sample,
+                    clip_box,
+                    registry,
+                    transform,
+                    clip_device_bounds(transform, clip),
+                )?;
                 (field, Some(effect), reach)
             }
         };
