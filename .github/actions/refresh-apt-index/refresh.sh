@@ -47,8 +47,11 @@ sudo sed -i -E \
 
 # A stalled mirror connection otherwise holds the step until the job's own
 # timeout; each fetch gives up after 30 s and the whole refresh after 5 min.
+# apt retries a failed fetch on the same mirror before the mirror method
+# moves on, so one retry per mirror keeps the next mirror inside the
+# deadline: ten retries of an unreachable host spent all five minutes on it.
 if ! timeout 300 sudo apt-get update \
-  -o Acquire::Retries=10 \
+  -o Acquire::Retries=1 \
   -o Acquire::http::Timeout=30 \
   -o Acquire::https::Timeout=30 \
   -o Dir::Etc::SourceList="$list" \
