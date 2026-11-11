@@ -15,11 +15,11 @@
 use core::time::Duration;
 use waterui::animation::Animation;
 use waterui::app::App;
-use waterui::graphics::filtrate::{
+use waterui::graphics::filter_view::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
     RetainedMemory, TextureViews,
 };
-use waterui::graphics::wgpu;
+use waterui::graphics::gpu::wgpu;
 use waterui::prelude::slider::slider;
 use waterui::prelude::*;
 use waterui::preview;

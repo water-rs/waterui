@@ -710,12 +710,12 @@ pub fn media_filter_table_prose(png: &[u8]) -> Result<impl View, waterui::Error>
 // `ShaderEffect::new` validates the module. `?` puts the function's return
 // type on the hook: `ShaderEffectError` is the error `new` returns.
 // ---------------------------------------------------------------------------
-pub fn media_block_11() -> Result<impl View, waterui::graphics::ShaderEffectError> {
+pub fn media_block_11() -> Result<impl View, waterui::graphics::filter_view::ShaderEffectError> {
     let terminal = || text("terminal");
     let strength = Binding::f32(0.35);
     let focused = Binding::bool(true);
 
-    use waterui::graphics::ShaderEffect;
+    use waterui::graphics::filter_view::ShaderEffect;
 
     let crt = ShaderEffect::new(include_str!("crt.wgsl"))?; // invalid WGSL is an Err, never a blank view
     Ok(terminal()
