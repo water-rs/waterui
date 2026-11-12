@@ -659,14 +659,47 @@ impl Demand {
     }
 }
 
-/// Capture-owned rendering: `redraw` receives this surface's redraw
+/// Capture-owned rendering: `hook` receives this surface's redraw
 /// requests while a scope is open, and `depth` counts the open scopes —
 /// nesting is legal.
 struct External {
-    /// The enclosing capture's redraw target.
-    redraw: Rc<dyn Fn()>,
+    /// The enclosing capture's redraw target — fired only through
+    /// [`Self::redraw`], which pays the scope's owed redraw.
+    hook: Rc<dyn Fn()>,
     /// Outstanding external-rendering scopes.
     depth: NonZeroU32,
+    /// Whether a pass of this scope deferred on the frame pipeline's
+    /// in-flight step and has not been sent a redraw since.
+    ///
+    /// Every pass of the scope steps the one pipeline, so the pass that
+    /// takes a settled step need not be the pass that deferred on it — a
+    /// windowless drive's pump pass still queued when its terminal
+    /// capture begins, an effect's own frame still in flight when an
+    /// enclosing capture opens its scope. The completion wake then finds
+    /// the step already taken, so whoever observes the step settle pays
+    /// the debt: the wake, or the pass that composites it.
+    owes_redraw: Cell<bool>,
+}
+
+impl External {
+    /// A pass of this scope deferred on the pipeline's in-flight step: the
+    /// step's settle owes the scope a redraw, whichever pass observes it.
+    fn owe_redraw(&self) {
+        self.owes_redraw.set(true);
+    }
+
+    /// Whether a deferred pass is still owed a redraw — cleared, since the
+    /// caller sends it.
+    const fn take_owed_redraw(&self) -> bool {
+        self.owes_redraw.replace(false)
+    }
+
+    /// The hook a redraw request fires: any redraw the scope receives is
+    /// the retry every deferred pass waits on, so it pays the owed one.
+    fn redraw(&self) -> Rc<dyn Fn()> {
+        self.owes_redraw.set(false);
+        self.hook.clone()
+    }
 }
 
 impl Presentation {
@@ -1560,11 +1593,7 @@ fn publication_replay(
         if let Some(state) = weak.upgrade() {
             // A capture scope open over the hold is asked for the owed
             // frame through the enclosing capture's redraw contract.
-            let replay = state
-                .presentation
-                .borrow()
-                .external()
-                .map(|external| external.redraw.clone());
+            let replay = state.presentation.borrow().external().map(External::redraw);
             if let Some(redraw) = replay {
                 redraw();
             } else {
@@ -1643,7 +1672,7 @@ fn render_drawable(
             // delivered drawable is released unpresented and the redraw
             // goes to the enclosing capture — cloned out so the callback
             // cannot re-enter a live borrow.
-            Some(external.redraw.clone())
+            Some(external.redraw())
         } else {
             // A stale delivery — the link kept a queued update across a
             // detach, a failure settle or a device-loss park: release the
@@ -2056,11 +2085,7 @@ fn handle_redraw_request(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>)
     if take_measurement_invalidation(state) {
         crate::invalidation::invalidate_layout_hierarchy(view.as_platform_view());
     }
-    let external_redraw = state
-        .presentation
-        .borrow()
-        .external()
-        .map(|external| external.redraw.clone());
+    let external_redraw = state.presentation.borrow().external().map(External::redraw);
     if let Some(redraw) = external_redraw {
         redraw();
     } else {
@@ -2086,14 +2111,13 @@ fn handle_frame_completion(state: &Rc<SurfaceState>, view: &Retained<SurfaceView
     let mut cx = core::task::Context::from_waker(&state.frame_waker);
     let polled = state.pipeline.borrow_mut().poll(&mut cx);
     match polled {
+        // Nothing settled: still running, or another step took what did —
+        // and a capture pass that took it sent the redraw a deferred pass
+        // was owed (`External::owe_redraw`).
         core::task::Poll::Pending | core::task::Poll::Ready(Ok(false)) => {}
         core::task::Poll::Ready(Err(error)) => settle_failed(state, view, generation, error),
         core::task::Poll::Ready(Ok(true)) => {
-            let external_redraw = state
-                .presentation
-                .borrow()
-                .external()
-                .map(|external| external.redraw.clone());
+            let external_redraw = state.presentation.borrow().external().map(External::redraw);
             if let Some(redraw) = external_redraw {
                 redraw();
             } else {
@@ -2203,11 +2227,7 @@ fn install_input(
         state.view.borrow().input(&event);
         // The event's frame request rides the same coalescing as a redraw
         // request.
-        let external_redraw = state
-            .presentation
-            .borrow()
-            .external()
-            .map(|external| external.redraw.clone());
+        let external_redraw = state.presentation.borrow().external().map(External::redraw);
         if let Some(redraw) = external_redraw {
             redraw();
         } else {
@@ -2338,8 +2358,9 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
         // time; the capture's frames are begun at its own instant.
         self.state.pipeline.borrow_mut().discard_frame();
         slot.capture = Some(External {
-            redraw: on_redraw,
+            hook: on_redraw,
             depth: NonZeroU32::MIN,
+            owes_redraw: Cell::new(false),
         });
     }
 
@@ -2478,8 +2499,12 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
             }
             FrameRender::Awaiting => {
                 // The frame is in flight: the capture defers, and the
-                // frame's completion asks the enclosing capture for the
-                // redraw that composites it.
+                // step's settle owes the enclosing capture the redraw
+                // that composites it — paid by the completion wake, or by
+                // another pass of the scope that takes the step first.
+                if let Some(external) = self.state.presentation.borrow().external() {
+                    external.owe_redraw();
+                }
                 completion(Err(cocoa_ui::capture::CaptureError::Deferred));
                 return;
             }
@@ -2494,6 +2519,20 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
                 ..
             } => (scene_generation, imported),
         };
+        // This pass took a settled step another pass of the scope may have
+        // deferred on; the completion wake that follows finds nothing left
+        // to settle, so the owed redraw is sent here — through the
+        // surface's own redraw channel, never the hook directly: this runs
+        // inside the capture's submission.
+        if self
+            .state
+            .presentation
+            .borrow()
+            .external()
+            .is_some_and(External::take_owed_redraw)
+        {
+            self.state.redraw_handle.request_redraw();
+        }
         let weak = Sendable(Rc::downgrade(&self.state));
         let view = Sendable(self.view.clone());
         let scene_generation = Sendable(scene_generation);
@@ -2732,7 +2771,7 @@ impl Drop for MountGuard {
             .borrow()
             .capture
             .as_ref()
-            .map(|external| (external.depth.get(), external.redraw.clone()));
+            .map(|external| (external.depth.get(), external.redraw()));
         if let Some((orphaned, _)) = &open_scope {
             self.state
                 .orphaned_external_scopes
@@ -3586,42 +3625,37 @@ pub mod native_test {
             WakeProbe(count)
         }
 
-        /// Uses a real `AppKit` window — the attach door's only host
-        /// requirement — without installing the fixture presenter, for
-        /// trials that drive `initialize_gpu` themselves.
+        /// Places the surface in a real `AppKit` window — the attach door's
+        /// only host requirement — that is already presentable, so the
+        /// view's own move-to-window handler attaches it inside this call
+        /// and no run-loop turn follows in which the display link could
+        /// take the owed first frame before the trial samples it.
         ///
         /// # Panics
         ///
         /// When the trial is not running on the main thread, or the
-        /// fixture window never reports visible.
+        /// fixture window never becomes presentable.
         pub fn ensure_fixture_window(&self) {
-            use cocoa_ui::objc2_foundation::{NSDate, NSRunLoop};
             if self.fixture_window.borrow().is_some() {
                 return;
             }
             let mtm = MainThreadMarker::new().expect("the fixture runs on the main thread");
-            let window = cocoa_ui::appkit::Window::new(
+            let window = crate::native_test_support::presentable_fixture_window(
                 mtm,
-                cocoa_ui::Rect::new(0.0, 0.0, 64.0, 64.0),
-                cocoa_ui::appkit::WindowStyle::TITLED,
+                self.view.as_platform_view(),
             );
-            window.set_content_view(self.view.as_platform_view());
-            window.make_key_and_order_front();
             *self.fixture_window.borrow_mut() = Some(window);
-            // The occlusion state lands after the window server composites
-            // — drive the run loop until it reports, bounded by a deadline.
-            let deadline = NSDate::dateWithTimeIntervalSinceNow(5.0);
-            while !self.view.is_visible() && deadline.timeIntervalSinceNow() > 0.0 {
-                NSRunLoop::currentRunLoop()
-                    .runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.02));
-            }
-            assert!(self.view.is_visible(), "the fixture window reports visible");
+            assert!(
+                self.view.is_visible(),
+                "the windowed surface reports visible"
+            );
         }
 
-        /// Attaches through the production door: the fixture window makes
-        /// the surface presentable, then `initialize_gpu` builds the real
-        /// `MetalPresenter` — the same path a layout drives on a live
-        /// mount.
+        /// Attaches through the production door: the presentable fixture
+        /// window, then `initialize_gpu` building the real `MetalPresenter`
+        /// — the same path a layout drives on a live mount. No run-loop
+        /// turn runs after the attach, so the first frame is still owed
+        /// when this returns.
         ///
         /// # Panics
         ///

@@ -549,6 +549,42 @@ pub fn refresh_theme(theme: &crate::theme::ThemeSignals, scheme: cocoa_ui::Color
     crate::theme::refresh(theme, scheme);
 }
 
+/// A real fixture window, already presentable when `content` joins it.
+///
+/// The window orders in empty and the run loop turns until the window
+/// server reports it visible; only then is `content` installed. Its
+/// move-to-window handler meets a presentable window and attaches
+/// synchronously inside that call, so the caller samples the attached
+/// state before any run-loop turn can deliver a display-link update.
+/// Installing first and pumping afterwards lets the occlusion edge attach
+/// mid-pump, and the rest of that turn hands the link its first update.
+///
+/// # Panics
+///
+/// When the window does not become presentable within
+/// [`MAIN_QUEUE_DEADLINE`].
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn presentable_fixture_window(
+    mtm: MainThreadMarker,
+    content: &cocoa_ui::PlatformView,
+) -> cocoa_ui::appkit::Window {
+    let window = cocoa_ui::appkit::Window::new(
+        mtm,
+        cocoa_ui::Rect::new(0.0, 0.0, 64.0, 64.0),
+        cocoa_ui::appkit::WindowStyle::TITLED,
+    );
+    window.make_key_and_order_front();
+    assert!(
+        pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            cocoa_ui::visibility::window_presentable(window.native())
+        }),
+        "the fixture window becomes presentable"
+    );
+    window.set_content_view(content);
+    window
+}
+
 /// Binds a window background without a window.
 ///
 /// `container` stands for the window's content view and `content` for its

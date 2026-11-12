@@ -4478,10 +4478,7 @@ mod filtered {
     use super::mtm;
 
     fn an_owed_first_frame_pauses_when_hidden() -> Result<(), libtest_mimic::Failed> {
-        // The gated setup keeps the link paused while the window orders in,
-        // so the real display link cannot take the owed first frame before
-        // the trial samples it.
-        let (mounted, gate) = pollster::block_on(MountedFilteredSurface::mount_gated(mtm()))
+        let mounted = pollster::block_on(MountedFilteredSurface::mount(mtm()))
             .map_err(|error| format!("mount: {error}"))?;
         mounted.ensure_attached();
         let _ready = mounted.readiness_probe();
@@ -4489,7 +4486,6 @@ mod filtered {
             mounted.link_paused(),
             "the pending effect setup holds the link"
         );
-        gate.release();
         // The setup's main-queue landing opens the link; the link's first
         // update is a later run-loop source, so the pump samples the open
         // link before any delivery.
