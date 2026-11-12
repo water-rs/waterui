@@ -77,7 +77,21 @@ pub struct MenuLayout {
 #[derive(Clone)]
 pub struct MenuLook {
     layout: MenuLayout,
+    #[cfg_attr(
+        not(hydrolysis_runtime),
+        expect(
+            dead_code,
+            reason = "only the renderer records the menu's panel; a build without a painter compiles the theme contract alone"
+        )
+    )]
     panel: Rc<dyn CustomPart<()>>,
+    #[cfg_attr(
+        not(hydrolysis_runtime),
+        expect(
+            dead_code,
+            reason = "only the renderer records the menu's separators; a build without a painter compiles the theme contract alone"
+        )
+    )]
     separator: Rc<dyn CustomPart<()>>,
     selected_row: Option<Rc<dyn CustomPart<()>>>,
 }
