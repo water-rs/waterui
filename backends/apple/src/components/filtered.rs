@@ -3328,6 +3328,11 @@ pub mod native_test {
     impl ParentCapture {
         /// Starts a capture: its prepare snapshots the subtree now, and
         /// its submit follows from the main queue.
+        ///
+        /// # Panics
+        ///
+        /// Off the main thread.
+        #[must_use]
         pub fn start(&self) -> ParentOutcome {
             let outcome = ParentOutcome::default();
             let slot = outcome.0.clone();
@@ -3339,6 +3344,12 @@ pub mod native_test {
         }
 
         /// The target's pixels, RGBA8 row-major.
+        ///
+        /// # Panics
+        ///
+        /// Only if the texel buffer's pointer were null, which a `Vec`'s
+        /// never is.
+        #[must_use]
         pub fn pixels(&self) -> Vec<[u8; 4]> {
             let (width, height) = (self.target.width(), self.target.height());
             let mut bytes = vec![0u8; width * height * 4];
