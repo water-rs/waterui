@@ -15,7 +15,13 @@ use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
+use waterui_core::contract_violation;
+
 use crate::message::JsReply;
+
+/// What the page's promise rejects with when a [`Reply::Json`] holds bytes
+/// that are not JSON.
+const INVALID_JSON_REPLY: &str = "the handler's reply was not valid JSON";
 
 /// The bridge script, injected at document start by every backend.
 pub const SCRIPT: &str = include_str!("js/bridge.js");
@@ -187,13 +193,16 @@ impl Reply {
     /// # Panics
     ///
     /// Panics if the reply cannot be serialized, which would mean a bug in this
-    /// module rather than anything the page did. A [`Json`](Self::Json) reply
-    /// that is not valid JSON is such a bug: it can only come from a
-    /// `Serialize` implementation, never from the page.
+    /// module rather than anything the page did.
+    ///
+    /// A [`Json`](Self::Json) reply that is not valid JSON is a contract
+    /// violation of whoever built it, never the page's doing: a debug build
+    /// panics, a release build logs it and the page's call rejects.
     #[must_use]
     pub fn resolve_script(&self, id: u64) -> String {
         let (ok, payload) = self.serialized_payload();
-        let payload = serde_json::to_string(&payload).expect("WaterUI bridge reply must serialize");
+        let payload = serde_json::to_string(&payload)
+            .expect("a reply payload is a `RawValue`, a string or base64, which always serialize");
         format!("globalThis.__wateruiResolve({id},{ok},{payload});")
     }
 
@@ -231,15 +240,30 @@ impl Reply {
     fn envelope(&self, id: Option<u64>) -> String {
         let (ok, payload) = self.serialized_payload();
         serde_json::to_string(&ReplyEnvelope { id, ok, payload })
-            .expect("WaterUI bridge reply must serialize")
+            .expect("a reply envelope holds an id, a flag and a payload that always serialize")
     }
 
     fn serialized_payload(&self) -> (bool, ReplyPayload<'_>) {
         match self {
             Self::Json(bytes) => {
-                let text = str::from_utf8(bytes).expect("a JSON reply must be UTF-8");
-                let json = serde_json::from_str(text).expect("a JSON reply must be JSON");
-                (true, ReplyPayload::Json { json })
+                match str::from_utf8(bytes)
+                    .map_err(|error| error.to_string())
+                    .and_then(|text| serde_json::from_str(text).map_err(|error| error.to_string()))
+                {
+                    Ok(json) => (true, ReplyPayload::Json { json }),
+                    Err(error) => {
+                        contract_violation!(
+                            "a JSON reply must be UTF-8 JSON, got an invalid one: {error}; \
+                             the page's call is rejected instead"
+                        );
+                        (
+                            false,
+                            ReplyPayload::Failure {
+                                message: INVALID_JSON_REPLY,
+                            },
+                        )
+                    }
+                }
             }
             Self::Bytes(bytes) => (
                 true,
@@ -300,6 +324,24 @@ mod tests {
         assert_eq!(
             script,
             r#"globalThis.__wateruiResolve(3,true,{"json":{"text":"Hi Lexo"}});"#
+        );
+    }
+
+    /// Bytes that are not JSON never reach the page as source: the call rejects.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a JSON reply must be UTF-8 JSON")
+    )]
+    fn an_invalid_json_reply_rejects_the_call() {
+        let reply = Reply::Json(b"{not json".to_vec());
+        assert_eq!(
+            reply.resolve_script(6),
+            r#"globalThis.__wateruiResolve(6,false,{"message":"the handler's reply was not valid JSON"});"#
+        );
+        assert_eq!(
+            reply.message(6),
+            r#"{"id":6,"ok":false,"payload":{"message":"the handler's reply was not valid JSON"}}"#
         );
     }
 

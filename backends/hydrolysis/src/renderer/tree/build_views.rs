@@ -278,10 +278,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     ) -> Self {
         #[cfg(hydrolysis_system_webview)]
         {
-            Self::build_hosted(
-                crate::widgets::platform::webview::hosted(webview),
-                env,
-                renderer,
+            crate::widgets::platform::webview::hosted(webview).map_or_else(
+                || Self::build_empty(renderer, env),
+                |hosted| Self::build_hosted(hosted, env, renderer),
             )
         }
         #[cfg(hydrolysis_android_system_webview)]
@@ -290,6 +289,11 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             use crate::widgets::platform::webview::AndroidSystemWebViewHandle;
 
             let handle = webview.handle();
+            // The controller failed to open this view and `waterui-webview`
+            // already reported it: nothing to draw.
+            if handle.is_unavailable() {
+                return Self::build_empty(renderer, env);
+            }
             let Some(instance) = handle
                 .downcast_ref::<AndroidSystemWebViewHandle>()
                 .map(AndroidSystemWebViewHandle::instance)

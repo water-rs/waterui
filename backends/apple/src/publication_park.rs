@@ -124,6 +124,7 @@ impl PublicationPark {
         generation: u64,
         pause: impl FnOnce(),
         resume: impl FnOnce() + 'static,
+        unavailable: impl FnOnce() + 'static,
     ) {
         if self.hold.borrow().is_none() {
             // Entering the wait pauses the link — a stale delivery
@@ -137,7 +138,7 @@ impl PublicationPark {
             }) => failed.clone(),
             _ => HoldKind::Parked,
         };
-        self.arm(runtime, generation, kind, resume);
+        self.arm(runtime, generation, kind, resume, unavailable);
     }
 
     /// Settles `error` as the leaf's terminal failure on `generation`:
@@ -152,6 +153,7 @@ impl PublicationPark {
         error: Arc<dyn std::error::Error + Send + Sync>,
         pause: impl FnOnce(),
         resume: impl FnOnce() + 'static,
+        unavailable: impl FnOnce() + 'static,
     ) -> bool {
         if self.failed_generation() == Some(generation) {
             // One failure record per generation — a second settle for
@@ -168,6 +170,7 @@ impl PublicationPark {
             generation,
             HoldKind::Failed { generation, error },
             resume,
+            unavailable,
         );
         true
     }
@@ -176,23 +179,42 @@ impl PublicationPark {
     /// replacing an outstanding wait drops (cancels) its task. The wake
     /// takes the hold: a wake that finds none landed stale — superseded
     /// or cleared — and replays nothing; otherwise `resume` replays the
-    /// owed work.
+    /// owed work. A wait that resolves `Err` — the runtime's rebuild
+    /// budget is spent, so no context will ever publish — settles the
+    /// hold as a terminal `Failed` carrying the `Unrecoverable` cause
+    /// and runs `unavailable` once: the leaf's content is unavailable.
     fn arm(
         self: &Rc<Self>,
         runtime: &GpuRuntime,
         generation: u64,
         kind: HoldKind,
         resume: impl FnOnce() + 'static,
+        unavailable: impl FnOnce() + 'static,
     ) {
         let weak = Rc::downgrade(self);
         let runtime = runtime.clone();
         *self.hold.borrow_mut() = Some(Hold {
             kind,
             watch: executor_core::spawn_local(async move {
-                let _published = runtime.context_after(generation).await;
+                let published = runtime.context_after(generation).await;
                 let Some(park) = weak.upgrade() else {
                     return;
                 };
+                if let Err(unrecoverable) = published {
+                    {
+                        let mut hold = park.hold.borrow_mut();
+                        let Some(hold) = hold.as_mut() else {
+                            return;
+                        };
+                        hold.kind = HoldKind::Failed {
+                            generation,
+                            error: Arc::new(unrecoverable.clone()),
+                        };
+                    }
+                    tracing::error!("GPU content is unavailable: {unrecoverable}");
+                    unavailable();
+                    return;
+                }
                 if park.hold.borrow_mut().take().is_none() {
                     // The wait was replaced or the hold already cleared —
                     // this wake landed late and replays nothing.

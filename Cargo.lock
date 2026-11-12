@@ -12824,7 +12824,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-cef"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=dev#0e7ae6aeaa0d4c9caa5e79109952d79ef1b88624"
+source = "git+https://github.com/water-rs/browsers?branch=dev#b0f696e92cd9a5aeec15b053cc4ab01f4f3cda0d"
 dependencies = [
  "async-channel",
  "base64 0.23.1",
@@ -12864,7 +12864,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-wpe"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=dev#0e7ae6aeaa0d4c9caa5e79109952d79ef1b88624"
+source = "git+https://github.com/water-rs/browsers?branch=dev#b0f696e92cd9a5aeec15b053cc4ab01f4f3cda0d"
 dependencies = [
  "cookie",
  "executor-core",
@@ -13740,6 +13740,7 @@ dependencies = [
  "sha2",
  "suiteki",
  "tracing",
+ "waterui-contract",
  "zenwave 0.7.1",
 ]
 
@@ -13825,6 +13826,7 @@ dependencies = [
  "serde",
  "serde_json",
  "suiteki",
+ "waterui-contract",
  "waterui-meta",
  "waterui-text",
 ]

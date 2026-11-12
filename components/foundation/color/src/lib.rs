@@ -29,7 +29,7 @@ pub use srgb::{BLACK, Srgb, WHITE};
 use nami::{Computed, Signal, SignalExt, impl_constant, signal::IntoSignal};
 
 use waterui_core::{
-    Environment, IntoSignalF32, View, flatten_signal,
+    Environment, IntoSignalF32, View, contract_violation, flatten_signal,
     resolve::{self, AnyResolvable, Resolvable},
 };
 
@@ -346,10 +346,18 @@ impl Color {
 
     /// Creates an sRGB color from a hexadecimal color string.
     ///
-    /// Panics if the string does not contain exactly six hexadecimal digits.
+    /// A string that does not contain exactly six hexadecimal digits is a
+    /// contract violation: the color is opaque black. Use
+    /// [`try_srgb_hex`](Self::try_srgb_hex) for text that is not a literal.
     #[must_use]
     pub fn srgb_hex(hex: &str) -> Self {
-        Self::new(Srgb::from_hex(hex))
+        Srgb::try_from_hex(hex).map_or_else(
+            |error| {
+                contract_violation!("invalid hex color {hex:?}: {error}; opaque black is used");
+                Self::new(Srgb::new_u8(0, 0, 0))
+            },
+            Self::new,
+        )
     }
 
     /// Tries to create an sRGB color from a hexadecimal color string.
@@ -480,12 +488,18 @@ macro_rules! environment_color {
             type Resolved = WorkingColor;
 
             fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
+                // A token the host or theme did not install is a contract
+                // violation; the color is transparent, so nothing is drawn
+                // with it.
                 env.query::<Self, Computed<WorkingColor>>()
                     .cloned()
-                    .expect(concat!(
-                        stringify!($name),
-                        " is not installed in the environment"
-                    ))
+                    .unwrap_or_else(|| {
+                        contract_violation!(concat!(
+                            stringify!($name),
+                            " is not installed in the environment; transparent is used"
+                        ));
+                        Computed::constant(WorkingColor::TRANSPARENT)
+                    })
             }
         }
     };
@@ -580,9 +594,16 @@ impl Resolvable for CurrentColorScheme {
     type Resolved = ColorScheme;
 
     fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
+        // A scheme the host did not install is a contract violation; the
+        // light appearance, `ColorScheme`'s default, is used.
         env.query::<ColorScheme, Computed<ColorScheme>>()
             .cloned()
-            .expect("ColorScheme is not installed in the environment")
+            .unwrap_or_else(|| {
+                contract_violation!(
+                    "ColorScheme is not installed in the environment; the light scheme is used"
+                );
+                Computed::constant(ColorScheme::default())
+            })
     }
 }
 
@@ -906,6 +927,35 @@ mod tests {
             Srgb::try_from_hex("#123"),
             Err(HexColorError::InvalidLength)
         ));
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "invalid hex color"))]
+    fn an_invalid_hex_literal_is_opaque_black() {
+        let color = Color::srgb_hex("#123")
+            .resolve(&Environment::new())
+            .snapshot();
+        assert_eq!(color, Srgb::new_u8(0, 0, 0).resolve());
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "AccentColor is not installed in the environment")
+    )]
+    fn a_color_token_the_host_did_not_install_is_transparent() {
+        let color = AccentColor.resolve(&Environment::new()).snapshot();
+        assert_eq!(color, WorkingColor::TRANSPARENT);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "ColorScheme is not installed in the environment")
+    )]
+    fn a_missing_color_scheme_is_light() {
+        let scheme = CurrentColorScheme.resolve(&Environment::new()).snapshot();
+        assert_eq!(scheme, ColorScheme::Light);
     }
 
     #[test]

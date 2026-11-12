@@ -28,9 +28,9 @@ use waterui_controls::{ButtonStyle, IntoLabel, button};
 use waterui_core::handler::{AnyViewBuilder, BoxedAction, Handler, ReportExtraction, boxed_action};
 use waterui_core::{
     AnyView, Environment, Error, IgnorableMetadata, IntoSignal, Metadata, Native, NativeView,
-    Retain, SerialDispatch, Str, View, env::use_env, extract::ExtractionState, extract::Extractor,
-    extract::State, flatten_signal, handler::ViewBuilder, impl_extractor, layout::StretchAxis,
-    metadata::MetadataKey, raw_view,
+    Retain, SerialDispatch, Str, View, contract_violation, env::use_env, extract::ExtractionState,
+    extract::Extractor, extract::State, flatten_signal, handler::ViewBuilder, impl_extractor,
+    layout::StretchAxis, metadata::MetadataKey, raw_view,
 };
 use waterui_graphics::color::{Color, WorkingColor};
 use waterui_icon::SystemIcon;
@@ -422,15 +422,18 @@ impl NavigationController {
 
     /// Installs the mutation used to commit a native pop into an explicit path.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics if a path-pop handler is already installed on this controller.
+    /// A controller drives one explicit path. Installing a second handler is
+    /// reported: a debug build panics; a release build logs it and the later
+    /// handler replaces the earlier one.
     pub fn install_path_pop_handler(&self, handler: impl Fn(usize) + 'static) {
         let previous = self.state.path_pop_handler.replace(Some(Rc::new(handler)));
-        assert!(
-            previous.is_none(),
-            "a navigation controller cannot drive more than one explicit path"
-        );
+        if previous.is_some() {
+            contract_violation!(
+                "a navigation controller cannot drive more than one explicit path; the later path handler replaces the earlier one"
+            );
+        }
     }
 
     /// Splits `count` pops into the link-pushed entries the controller owns and
@@ -443,11 +446,15 @@ impl NavigationController {
     /// on [`NavigationPath::pop_n`] still hold for callers that mutate the path
     /// directly, where an over-long pop really is a programming error.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when `count` is zero.
+    /// A zero `count` is reported: a debug build panics; a release build logs
+    /// it and pops nothing.
     fn split_pop(&self, count: usize) -> (usize, usize) {
-        assert!(count != 0, "navigation pop count must be non-zero");
+        if count == 0 {
+            contract_violation!("navigation pop count must be non-zero; nothing is popped");
+            return (0, 0);
+        }
         let count = count.min(self.state.depth.get());
         let detached = self.detached_depth().min(count);
         (detached, count - detached)
@@ -469,9 +476,10 @@ impl NavigationController {
     /// path so route state stays authoritative. Asking to pop more than the
     /// projected stack holds pops what there is.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when `count` is zero.
+    /// A zero `count` is reported: a debug build panics; a release build logs
+    /// it and pops nothing.
     pub fn request_pop(&self, count: usize) {
         let (detached, from_path) = self.split_pop(count);
         if detached != 0 {
@@ -486,10 +494,12 @@ impl NavigationController {
 
     /// Commits a pop that the native container has already completed.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when `count` is zero, exceeds the projected stack depth, or when
-    /// the explicit path fails to absorb the pop in the same update.
+    /// A zero `count`, or an explicit path that fails to absorb the pop in the
+    /// same update, is reported: a debug build panics; a release build logs it
+    /// and drops the pop that was not applied. A `count` beyond the projected
+    /// stack depth pops what there is.
     pub fn complete_native_pop(&self, count: usize) {
         let (detached, from_path) = self.split_pop(count);
         if detached != 0 {
@@ -501,12 +511,13 @@ impl NavigationController {
             let handler = self.path_pop_handler();
             self.state.native_applied_pops.set(from_path);
             handler(from_path);
-            assert_eq!(
-                self.state.native_applied_pops.get(),
-                0,
-                "a native navigation pop must be absorbed by the explicit path in the same update, \
-                 but the path did not shrink by {from_path}"
-            );
+            let unabsorbed = self.state.native_applied_pops.replace(0);
+            if unabsorbed != 0 {
+                contract_violation!(
+                    "a native navigation pop must be absorbed by the explicit path in the same update, \
+                     but the path did not shrink by {from_path}; the unabsorbed pop is dropped"
+                );
+            }
         }
     }
 
@@ -1200,19 +1211,21 @@ impl HeterogeneousDestinations {
                 }),
             },
         );
-        assert!(
-            previous.is_none(),
-            "navigation destination for `{type_name}` was registered more than once"
-        );
+        if previous.is_some() {
+            contract_violation!(
+                "navigation destination for `{type_name}` was registered more than once; the later registration replaces the earlier one"
+            );
+        }
     }
 
     fn build(&self, route: &ErasedNavigationRoute) -> NavigationView {
-        let destination = self.entries.get(&route.type_id()).unwrap_or_else(|| {
-            panic!(
-                "heterogeneous navigation route `{}` has no registered destination",
+        let Some(destination) = self.entries.get(&route.type_id()) else {
+            contract_violation!(
+                "heterogeneous navigation route `{}` has no registered destination; an empty page is shown",
                 route.type_name()
-            )
-        });
+            );
+            return NavigationView::new("", ());
+        };
         (destination.build)(route)
     }
 }
@@ -1513,7 +1526,10 @@ where
                     .action(move || navigator.push(value.clone())),
             )
         } else {
-            panic!("NavigationLink::value used outside of a compatible path-backed stack")
+            contract_violation!(
+                "NavigationLink::value used outside of a compatible path-backed stack; the link does nothing when activated"
+            );
+            AnyView::new(button(self.label).style(ButtonStyle::Plain).action(|| {}))
         };
         IgnorableMetadata::new(link, NavigationLinkHint)
     }
@@ -1776,6 +1792,54 @@ mod tests {
                 .set(self.pushes.get() + transaction.inserted.len());
             self.pops.set(self.pops.get() + transaction.removed);
         }
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "navigation pop count must be non-zero")
+    )]
+    fn a_zero_pop_request_pops_nothing() {
+        let pushes = Rc::new(Cell::new(0));
+        let pops = Rc::new(Cell::new(0));
+        let controller = NavigationController::new(CountingNavigationController {
+            pushes: Rc::clone(&pushes),
+            pops: Rc::clone(&pops),
+        });
+        controller.push_builder(AnyViewBuilder::new(|| NavigationView::new("One", ())));
+
+        // Release outcome: the request is ignored.
+        controller.request_pop(0);
+
+        assert_eq!(pops.get(), 0);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(
+            expected = "a navigation controller cannot drive more than one explicit path"
+        )
+    )]
+    fn a_second_path_handler_replaces_the_first() {
+        let controller = NavigationController::new(CountingNavigationController {
+            pushes: Rc::new(Cell::new(0)),
+            pops: Rc::new(Cell::new(0)),
+        });
+        let first = Rc::new(Cell::new(0));
+        let second = Rc::new(Cell::new(0));
+        controller.install_path_pop_handler({
+            let first = Rc::clone(&first);
+            move |count| first.set(first.get() + count)
+        });
+        controller.install_path_pop_handler({
+            let second = Rc::clone(&second);
+            move |count| second.set(second.get() + count)
+        });
+
+        controller.path_pop_handler()(1);
+
+        assert_eq!((first.get(), second.get()), (0, 1));
     }
 
     #[test]

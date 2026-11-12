@@ -12,7 +12,7 @@ use core::time::Duration;
 use nami::{Computed, SignalExt as _, signal::IntoComputed};
 use waterui_core::easing::EasingCurve;
 use waterui_core::layout::{Point, Size, StretchAxis};
-use waterui_core::{Environment, View};
+use waterui_core::{Environment, View, contract_violation};
 use waterui_graphics::canvas::{Canvas, Path, PathBuilder};
 use waterui_graphics::color::Color;
 
@@ -42,9 +42,8 @@ impl Silhouette {
     /// `kind` resolved against a box of `size`, whose normalized radii are
     /// fractions of the shorter side and whose fixed radii are points.
     ///
-    /// # Panics
-    ///
-    /// On [`ShapeKind::CustomPath`], which has no parameters.
+    /// A [`ShapeKind::CustomPath`], which has no parameters, never reaches
+    /// here: [`MorphShape::new`] replaces it.
     fn of(kind: ShapeKind, size: Size) -> Self {
         let (width, height) = (size.width.max(0.0), size.height.max(0.0));
         let shorter_edge = width.min(height);
@@ -104,7 +103,7 @@ impl Silhouette {
                 fixed(bottom_left),
             ])),
             ShapeKind::CustomPath => {
-                panic!("a morph interpolates built-in shapes; a custom path has no parameters")
+                unreachable!("`MorphShape::new` replaces a custom path, which has no parameters")
             }
         }
     }
@@ -286,17 +285,23 @@ pub struct MorphShape {
 impl MorphShape {
     /// A morph from `from` to `to`.
     ///
-    /// # Panics
-    ///
-    /// When either shape is [`ShapeKind::CustomPath`]: a path has no
-    /// parameters to interpolate.
+    /// Either shape being [`ShapeKind::CustomPath`] is a contract violation:
+    /// a path has no parameters to interpolate, so the other shape stands in
+    /// for it (a rectangle when both are paths) and the morph holds still.
     pub(crate) fn new(from: ShapeKind, to: ShapeKind, fill: Color) -> Self {
-        for kind in [from, to] {
-            assert!(
-                kind != ShapeKind::CustomPath,
-                "a morph interpolates built-in shapes; a custom path has no parameters"
-            );
-        }
+        let (from, to) = match (from == ShapeKind::CustomPath, to == ShapeKind::CustomPath) {
+            (false, false) => (from, to),
+            (from_is_path, to_is_path) => {
+                contract_violation!(
+                    "a morph interpolates built-in shapes; a custom path has no parameters; the other shape stands in for it"
+                );
+                match (from_is_path, to_is_path) {
+                    (true, false) => (to, to),
+                    (false, true) => (from, from),
+                    _ => (ShapeKind::Rect, ShapeKind::Rect),
+                }
+            }
+        };
         Self {
             from,
             to,
@@ -409,6 +414,33 @@ mod tests {
             (actual - expected).abs() < 0.5,
             "expected {expected}, got {actual}"
         );
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a custom path has no parameters")
+    )]
+    fn a_custom_path_is_replaced_by_the_other_shape() {
+        let morph = MorphShape::new(ShapeKind::CustomPath, ShapeKind::Circle, Color::default());
+        assert_eq!(
+            (morph.from, morph.to),
+            (ShapeKind::Circle, ShapeKind::Circle)
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a custom path has no parameters")
+    )]
+    fn two_custom_paths_morph_between_rectangles() {
+        let morph = MorphShape::new(
+            ShapeKind::CustomPath,
+            ShapeKind::CustomPath,
+            Color::default(),
+        );
+        assert_eq!((morph.from, morph.to), (ShapeKind::Rect, ShapeKind::Rect));
     }
 
     #[test]

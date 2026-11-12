@@ -39,7 +39,7 @@ use parley::FontContext;
 use parley::fontique::Blob;
 #[cfg(any(feature = "engine", feature = "system-fonts"))]
 use parley::fontique::{Collection, FamilyId, Script, ScriptExt};
-use waterui_core::Environment;
+use waterui_core::{Environment, contract_violation};
 
 /// The message a component reports when the host installed no collection.
 ///
@@ -241,15 +241,29 @@ impl FontCollection {
 
     /// The collection installed in `env`.
     ///
-    /// # Panics
-    ///
-    /// Panics when the host installed none. There is deliberately no fallback:
-    /// building one here would be the per-component enumeration this type
-    /// exists to replace, and it would shape against the system's faces while
-    /// the rest of the window shapes against the host's registered ones.
+    /// The host installing none is a contract violation: the collection is
+    /// one without faces, so every family answers no faces. There is
+    /// deliberately no fallback to the system's fonts: building one here
+    /// would be the per-component enumeration this type exists to replace,
+    /// and it would shape against the system's faces while the rest of the
+    /// window shapes against the host's registered ones.
     #[must_use]
     pub fn from_env(env: &Environment) -> Self {
-        env.get::<Self>().cloned().expect(NOT_INSTALLED)
+        env.get::<Self>().cloned().unwrap_or_else(|| {
+            contract_violation!("{NOT_INSTALLED}; a collection without faces is used");
+            Self::without_faces()
+        })
+    }
+
+    /// A collection with no faces, not even the system's.
+    fn without_faces() -> Self {
+        Self(Rc::new(RefCell::new(FontContext {
+            collection: parley::fontique::Collection::new(parley::fontique::CollectionOptions {
+                system_fonts: false,
+                ..parley::fontique::CollectionOptions::default()
+            }),
+            source_cache: parley::fontique::SourceCache::default(),
+        })))
     }
 
     /// The faces registered under `family`, in the collection's order.
@@ -320,8 +334,7 @@ impl FontCollection {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{borrow::ToOwned, rc::Rc};
-    use core::cell::RefCell;
+    use alloc::borrow::ToOwned;
 
     use waterui_core::Environment;
 
@@ -332,13 +345,19 @@ mod tests {
     /// Built straight from the handle's field, so the tests that need no faces
     /// compile under `font-collection` alone, without either constructor.
     fn empty() -> FontCollection {
-        FontCollection(Rc::new(RefCell::new(parley::FontContext {
-            collection: parley::fontique::Collection::new(parley::fontique::CollectionOptions {
-                system_fonts: false,
-                ..parley::fontique::CollectionOptions::default()
-            }),
-            source_cache: parley::fontique::SourceCache::default(),
-        })))
+        FontCollection::without_faces()
+    }
+
+    /// A host that installed no collection leaves the component a collection
+    /// without faces, after reporting it.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "no font collection is installed")
+    )]
+    fn a_missing_collection_has_no_faces() {
+        let collection = FontCollection::from_env(&Environment::new());
+        assert!(collection.faces("Helvetica").is_empty());
     }
 
     /// Two components reading the environment get the same collection, not two

@@ -59,6 +59,8 @@ use std::{cell::Cell, fmt, rc::Rc};
 mod handle_layers;
 mod handler;
 pub use handler::*;
+mod unavailable;
+pub use unavailable::WebViewOpenError;
 #[cfg(all(feature = "conformance", not(target_arch = "wasm32")))]
 pub mod conformance;
 mod proxy;
@@ -492,10 +494,11 @@ impl WebView {
     /// percent-encoded, traversal refused before the server is consulted. See
     /// [`assets`] for the contract every engine routes through.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
     /// At render time, when the installed [`WebViewController`]'s engine has no
-    /// interception facility to stand an asset origin on.
+    /// interception facility to stand an asset origin on: a debug build
+    /// panics, a release build logs it and the view is not opened.
     pub fn open_assets(
         server: impl Fn(&AssetRequest) -> AssetResponse + Send + Sync + 'static,
         entry: impl Into<Str>,
@@ -750,11 +753,12 @@ impl WebView {
     /// so a script whose content depends on current state can be kept current
     /// without stacking a new copy on every update.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when `key` names a script the view was opened with
+    /// When `key` names a script the view was opened with
     /// ([`WebViewOpen::inject`]): those are fixed for its life, on every
-    /// backend alike.
+    /// backend alike. A debug build panics, a release build logs it and
+    /// ignores the call.
     pub fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
         self.handle.inject_script(key, script, time);
     }
@@ -942,9 +946,10 @@ impl WebViewOpen {
     #[cfg(not(target_arch = "wasm32"))]
     /// Registers a handler the page can call as `waterui.invoke(name, payload)`.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when rendered without a [`WebViewController`] in the environment.
+    /// When rendered without a [`WebViewController`] in the environment: a
+    /// debug build panics, a release build logs it and renders nothing.
     ///
     /// The closure is written the way `Button::action` is: take the extractors you
     /// need — [`Json<T>`], [`Bytes`], [`HandlerName`], `State<T>`,
@@ -1104,12 +1109,19 @@ impl WebViewOpen {
         use waterui_core::env::with;
         waterui_core::env::UseEnv::new(move |env: &Environment| {
             let controller = web_view_controller(env)?;
-            let webview = self.create(&controller, env);
+            let webview = self.create(&controller, env)?;
             let scoped = with(content(), WebViewProxy::new(webview.handle().clone()));
             Some(vstack((scoped, webview)))
         })
     }
 
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::unnecessary_wraps,
+            reason = "only a native asset view can fail to resolve its entry URL; the web build has no asset views"
+        )
+    )]
     fn create(
         self,
         controller: &WebViewController,
@@ -1121,7 +1133,7 @@ impl WebViewOpen {
             )
         )]
         environment: &Environment,
-    ) -> WebView {
+    ) -> Option<WebView> {
         let Self {
             target,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1150,21 +1162,7 @@ impl WebViewOpen {
             WebViewTarget::Assets { server, entry } => {
                 // The origin is the engine's answer, not a constant the shared
                 // layer guesses: it differs across engines by design.
-                let origin = controller.asset_origin().expect(
-                    "WebView::open_assets requires an engine that exposes an \
-                     interceptable local asset origin; this WebViewController \
-                     has none",
-                );
-                let entry: Url = format!(
-                    "{}/{}",
-                    origin.as_str().trim_end_matches('/'),
-                    entry.trim_start_matches('/')
-                )
-                .parse()
-                .unwrap_or_else(|_| {
-                    panic!("the asset entry `{entry}` did not form a URL under {origin}")
-                });
-                (entry, None, Some(server))
+                (asset_entry_url(controller, &entry)?, None, Some(server))
             }
         };
         #[cfg(target_arch = "wasm32")]
@@ -1230,8 +1228,39 @@ impl WebViewOpen {
         } else {
             webview
         };
-        webview
+        Some(webview)
     }
+}
+
+/// The URL an asset-origin view opens at: `entry` under the origin the engine
+/// serves bundled assets from, or `None` after reporting that the engine has
+/// none.
+#[cfg(not(target_arch = "wasm32"))]
+fn asset_entry_url(controller: &WebViewController, entry: &str) -> Option<Url> {
+    // The origin is the engine's answer, not a constant the shared layer
+    // guesses: it differs across engines by design.
+    let Some(origin) = controller.asset_origin() else {
+        waterui_core::contract_violation!(
+            "WebView::open_assets requires an engine that exposes an \
+             interceptable local asset origin; this WebViewController \
+             has none; the view is not opened"
+        );
+        return None;
+    };
+    let url = format!(
+        "{}/{}",
+        origin.as_str().trim_end_matches('/'),
+        entry.trim_start_matches('/')
+    )
+    .parse()
+    .unwrap_or_else(|_| {
+        waterui_core::contract_violation!(
+            "the asset entry `{entry}` did not form a URL under {origin}; \
+             the view opens at the origin's root"
+        );
+        origin.clone()
+    });
+    Some(url)
 }
 
 /// The host's [`WebViewController`], or `None` after reporting that the
@@ -1247,7 +1276,7 @@ fn web_view_controller(env: &Environment) -> Option<WebViewController> {
 impl View for WebViewOpen {
     fn body(self, _env: &Environment) -> impl View {
         waterui_core::env::UseEnv::new(move |env: &Environment| {
-            web_view_controller(env).map(|controller| self.create(&controller, env))
+            web_view_controller(env).and_then(|controller| self.create(&controller, env))
         })
     }
 

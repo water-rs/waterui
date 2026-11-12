@@ -134,8 +134,8 @@ impl ScrollPosition {
 
 /// Explicit programmatic control for a scrollable view.
 ///
-/// A controller owns the latest [`ScrollRequest`] and a monotonically
-/// increasing request generation. The generation makes repeated requests to
+/// A controller owns the latest [`ScrollRequest`] and a request generation
+/// that advances with every request, wrapping on overflow. The generation makes repeated requests to
 /// the same target observable after the user has scrolled elsewhere.
 ///
 /// ```rust
@@ -174,10 +174,6 @@ impl<T: Clone + 'static> ScrollController<T> {
     }
 
     /// Requests an immediate jump to `target`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the request generation exceeds [`i32::MAX`].
     pub fn scroll_to(&self, target: T) {
         self.submit(target, None);
     }
@@ -185,21 +181,16 @@ impl<T: Clone + 'static> ScrollController<T> {
     /// Requests an animated scroll to `target`, moving as
     /// [`ScrollRequest::animation`] describes. A later request, or the user
     /// scrolling, takes over from an animation still in flight.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the request generation exceeds [`i32::MAX`].
     pub fn animate_to(&self, target: T, animation: Animation) {
         self.submit(target, Some(animation));
     }
 
     fn submit(&self, target: T, animation: Option<Animation>) {
         self.request.set(ScrollRequest { target, animation });
-        self.generation.with_mut(|generation| {
-            *generation = generation
-                .checked_add(1)
-                .expect("scroll request generation overflow");
-        });
+        // The generation is only compared for change, so wrapping is
+        // harmless.
+        self.generation
+            .with_mut(|generation| *generation = generation.wrapping_add(1));
     }
 
     /// Returns the latest request as a read-only signal.

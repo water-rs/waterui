@@ -50,7 +50,7 @@ use waterui_webview::{
     ASSET_ORIGIN, ASSET_SCHEME, AnsweredNavigations, AssetResponse, AssetServer, BackendEvent,
     Cookie, CustomWebViewController, DocumentScripts, NavigationPolicy, NavigationRequest,
     OriginPolicy, ScriptInjectionTime, Url, UserScript, WatcherGuard, WatcherSet, WebViewConfig,
-    WebViewController, WebViewError, WebViewEvent, WebViewHandle,
+    WebViewController, WebViewError, WebViewEvent, WebViewHandle, WebViewOpenError,
     assets::{asset_target, dispatch},
     bridge,
 };
@@ -976,9 +976,8 @@ impl crate::HostedContent for MacSystemWebViewHandle {
 }
 
 impl MacSystemWebViewHandle {
-    fn new(config: WebViewConfig) -> Self {
-        let mtm = MainThreadMarker::new()
-            .expect("Hydrolysis WKWebView must be created on the macOS main thread");
+    fn new(config: WebViewConfig) -> Result<Self, WebViewOpenError> {
+        let mtm = MainThreadMarker::new().ok_or(WebViewOpenError::MainThreadRequired)?;
         let scripts = DocumentScripts::new(&config);
         let (asset_server, bridge_origins, navigation_policy, ..) = config.into_parts();
         let shared = Rc::new(SharedState::new(bridge_origins, scripts, navigation_policy));
@@ -1024,7 +1023,7 @@ impl MacSystemWebViewHandle {
             }),
         };
         handle.rebuild_user_scripts();
-        handle
+        Ok(handle)
     }
 
     fn user_content_controller(&self) -> Retained<WKUserContentController> {
@@ -1413,7 +1412,7 @@ impl MacSystemWebViewHandle {
 pub struct MacSystemWebViewController;
 
 impl CustomWebViewController for MacSystemWebViewController {
-    fn open(&self, config: WebViewConfig) -> impl WebViewHandle {
+    fn open(&self, config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
         MacSystemWebViewHandle::new(config)
     }
 

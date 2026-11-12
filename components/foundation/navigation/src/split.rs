@@ -6,7 +6,7 @@ use nami::{Binding, Computed, SignalExt as _};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::{Id, Mapping};
 use waterui_core::layout::StretchAxis;
-use waterui_core::{AnyView, IntoSignal, View, raw_view};
+use waterui_core::{AnyView, IntoSignal, View, contract_violation, raw_view};
 
 use crate::NavigationView;
 
@@ -23,19 +23,25 @@ pub struct ColumnWidth {
 impl ColumnWidth {
     /// Creates native column width constraints.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics unless every width is finite, positive, and `min <= ideal <= max`.
+    /// Every width must be finite, positive, and `min <= ideal <= max`.
+    /// Otherwise a debug build panics; a release build logs it and returns
+    /// [`ColumnWidth::default`].
     #[must_use]
     pub fn new(min: f32, ideal: f32, max: f32) -> Self {
-        assert!(
-            min.is_finite() && ideal.is_finite() && max.is_finite(),
-            "navigation split column widths must be finite"
-        );
-        assert!(
-            min > 0.0 && min <= ideal && ideal <= max,
-            "navigation split column widths must satisfy 0 < min <= ideal <= max"
-        );
+        if !(min.is_finite() && ideal.is_finite() && max.is_finite()) {
+            contract_violation!(
+                "navigation split column widths must be finite; the default column width is used"
+            );
+            return Self::default();
+        }
+        if !(min > 0.0 && min <= ideal && ideal <= max) {
+            contract_violation!(
+                "navigation split column widths must satisfy 0 < min <= ideal <= max; the default column width is used"
+            );
+            return Self::default();
+        }
         Self { min, ideal, max }
     }
 
@@ -428,5 +434,37 @@ impl View for NavigationSplitView {
     /// Resolves to `NavigationSplit`, a configurable that declares `Both`.
     fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
         waterui_core::layout::StretchAxis::Both
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ColumnWidth;
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(
+            expected = "navigation split column widths must satisfy 0 < min <= ideal <= max"
+        )
+    )]
+    fn unordered_column_widths_fall_back_to_the_default() {
+        // Release outcome: the default column width is used.
+        assert_eq!(
+            ColumnWidth::new(300.0, 200.0, 400.0),
+            ColumnWidth::default()
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "navigation split column widths must be finite")
+    )]
+    fn non_finite_column_widths_fall_back_to_the_default() {
+        assert_eq!(
+            ColumnWidth::new(f32::NAN, 200.0, 400.0),
+            ColumnWidth::default()
+        );
     }
 }
