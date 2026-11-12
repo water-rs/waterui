@@ -252,14 +252,13 @@ fn a_value_change_moves_a_lens_knob() {
     );
 }
 
-/// A slider whose painted knob and lens knob follow one value under a
-/// one-second linear value motion: mid-transition the lens must sit where
-/// the painted knob does.
-#[test]
+/// A theme whose slider look has a red painted knob and a lens knob four
+/// points larger, both following the value under a one-second linear value
+/// motion.
 #[cfg(hydrolysis_gpu_painter)]
-fn a_lens_knob_moves_with_the_painted_knob() {
+fn lens_over_painted_knob() -> MinimalTestTheme {
     let motion = Motion::uniform(Animation::linear(Duration::from_secs(1)));
-    let theme = glass(move |_spec: &SliderSpec, _env: &Environment| {
+    glass(move |_spec: &SliderSpec, _env: &Environment| {
         look_moving(DragMapping::Absolute, motion.clone())
             .part(Custom::new(
                 (Driven::<ShapeData, f64>::new(|inputs| {
@@ -282,8 +281,18 @@ fn a_lens_knob_moves_with_the_painted_knob() {
                     recorder.backdrop_material(lens, GLASS_SHADER, GLASS, effect);
                 },
             ))
-    });
-    let mut rig = Rig::new(theme, LayoutDirection::LeftToRight, 0.2);
+    })
+}
+
+/// A slider whose painted knob and lens knob follow one value under a
+/// one-second linear value motion: mid-transition the lens sits where the
+/// painted knob does. The GPU painter captures the frames; the mirror
+/// mount, committing the same view, holds the sampled tree the assertion
+/// reads — the lens member's clip and the painted knob's fill operand.
+#[test]
+#[cfg(hydrolysis_gpu_painter)]
+fn a_lens_knob_moves_with_the_painted_knob() {
+    let mut rig = Rig::new(lens_over_painted_knob(), LayoutDirection::LeftToRight, 0.2);
     let before = rig.snapshot();
     rig.value.set(0.8);
     for _ in 0..6 {
@@ -298,6 +307,97 @@ fn a_lens_knob_moves_with_the_painted_knob() {
     save("slider_lens_follows_painted", "before", &before);
     save("slider_lens_follows_painted", "mid", &mid);
     save("slider_lens_follows_painted", "after", &after);
+
+    let value = Binding::container(0.2);
+    let mut renderer = super::test_renderer_with_theme(lens_over_painted_knob());
+    renderer.reset_scene();
+    renderer.begin_rebuild_frame();
+    renderer.capture_window_tree(
+        AnyView::new(slider("Volume", &value).hide_label().range(0.0..=1.0)),
+        &pumped_test_environment(),
+        Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT)),
+        kurbo::Affine::IDENTITY,
+        kurbo::Affine::IDENTITY,
+    );
+    renderer.finish_rebuild_frame();
+    renderer.commit_mirror();
+    let start = Instant::now();
+    let mirror = renderer.mirror();
+    mirror.present(start);
+    let (rest, _) = knobs(mirror);
+    value.set(0.8);
+    mirror.present(start + Duration::from_millis(16));
+    mirror.present(start + Duration::from_millis(116));
+    let (painted, lens) = knobs(mirror);
+    mirror.present(start + Duration::from_secs(2));
+    let (end, _) = knobs(mirror);
+
+    assert!(
+        painted.center().x > rest.center().x + 1.0 && painted.center().x < end.center().x - 1.0,
+        "the frame is mid-transition: the painted knob is at {painted:?} between {rest:?} \
+         and {end:?}"
+    );
+    let expected = painted.inflate(4.0, 4.0);
+    for (edge, (got, want)) in [
+        (lens.x0, expected.x0),
+        (lens.y0, expected.y0),
+        (lens.x1, expected.x1),
+        (lens.y1, expected.y1),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(
+            (got - want).abs() < 1e-3,
+            "edge {edge}: the lens {lens:?} sits on the painted knob inflated by 4, {expected:?}"
+        );
+    }
+}
+
+/// The painted knob's and the lens's rects in window points, as the
+/// mirror's tree samples them: the painted knob's red fill operand and the
+/// lens member's clip.
+#[cfg(hydrolysis_gpu_painter)]
+fn knobs(mirror: &super::mirror::MirrorWindow) -> (Rect, Rect) {
+    use cherenkov_record::Command;
+
+    let red = Paint::from(WorkingColor::new([1.0, 0.0, 0.0, 1.0]));
+    let painted: Vec<Rect> = mirror
+        .content_layers()
+        .into_iter()
+        .flat_map(|layer| {
+            let world = mirror.world(layer);
+            let picture = mirror.picture(layer).expect("a content layer");
+            picture
+                .display_list()
+                .commands()
+                .iter()
+                .filter_map(|command| match command {
+                    Command::Fill { shape, paint } if *paint == red => {
+                        Some(world.transform_rect_bbox(shape.bounds()))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let [painted] = painted.as_slice() else {
+        panic!("one red knob fill, got {painted:?}");
+    };
+    let [member] = mirror.backdrop_layers()[..] else {
+        panic!("one lens member layer");
+    };
+    let clip = mirror
+        .layer(member)
+        .clip
+        .as_ref()
+        .expect("the lens member clips to its shape")
+        .bounds();
+    let parent_world = mirror
+        .parent(member)
+        .map_or(kurbo::Affine::IDENTITY, |parent| mirror.world(parent));
+    let lens = (parent_world * mirror.layer(member).transform).transform_rect_bbox(clip);
+    (*painted, lens)
 }
 
 /// A right-to-left slider mirrors an ordinary part about its row: at 0.2
