@@ -711,16 +711,15 @@ impl OffscreenApp {
 
     /// Captures the latest RGBA snapshot from the offscreen renderer.
     ///
+    /// A frame the GPU device was lost under is rendered again at the same
+    /// frame instant once the runtime has recovered the device.
+    ///
     /// # Panics
     ///
-    /// Panics if the offscreen driver does not produce a snapshot.
+    /// Panics if a capture frame carries no snapshot and no device loss
+    /// skipped it, or the device is lost past the runtime's recovery budget.
     pub fn snapshot(&mut self) -> Snapshot {
-        let _ = crate::executor::drain_parked_local_work();
-        let at = self.app.tick(VIRTUAL_FRAME);
-        let outcome = RuntimeDriver::pump_at(&mut self.app.runtime, at, true);
-        self.app
-            .apply_pump_result(outcome)
-            .unwrap_or_else(|| panic!("waterui-testing driver did not produce a snapshot"))
+        self.app.capture_frame()
     }
 
     /// Captures a snapshot and stores it in `WaterUI`'s canonical artifact layout.
@@ -1584,6 +1583,35 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         let rebuilt = outcome.rebuilt;
         let _ = self.apply_pump_result(outcome);
         rebuilt
+    }
+
+    /// Advances the virtual clock one frame and captures it.
+    ///
+    /// A frame whose GPU device was lost under it carries no snapshot; the
+    /// runtime recovers the device on its next pump, so the capture renders
+    /// again at the same instant — a mid-animation capture lands on the
+    /// phase it asked for — until one carries a snapshot. A device that keeps
+    /// dying runs out the runtime's recovery budget, and the pump reporting
+    /// that terminal failure panics in the driver, so the loop ends there.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a capture frame carries no snapshot and no device loss
+    /// skipped it.
+    pub(crate) fn capture_frame(&mut self) -> Snapshot {
+        let _ = crate::executor::drain_parked_local_work();
+        let at = self.tick(VIRTUAL_FRAME);
+        loop {
+            let outcome = self.runtime.pump_at(at, true);
+            let device_lost = outcome.device_lost;
+            if let Some(snapshot) = self.apply_pump_result(outcome) {
+                return snapshot;
+            }
+            assert!(
+                device_lost,
+                "waterui-testing driver did not produce a snapshot: the capture frame carried none, and no device loss skipped it"
+            );
+        }
     }
 
     fn apply_pump_result(&mut self, outcome: DriverPumpResult) -> Option<Snapshot> {
