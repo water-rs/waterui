@@ -2104,9 +2104,9 @@ fn region_transform(
 }
 
 /// The probe layers of one capture's rasters, one per snapshot whose
-/// presentation layer is visible and attached: a plain layer with the
-/// presentation layer's geometry and opacity, inserted directly above it
-/// in its superlayer. Model-only mutations inside the capture's disabled
+/// presentation layer is attached — a snapshot's layer is always drawn
+/// ([`drawn_in`]): a plain layer with the presentation layer's geometry and
+/// opacity, inserted directly above it in its superlayer. Model-only mutations inside the capture's disabled
 /// transaction; `Drop` removes every probe, so the render server never
 /// sees one.
 struct ProbeLayers {
@@ -2116,13 +2116,10 @@ struct ProbeLayers {
 }
 
 impl ProbeLayers {
-    /// Inserts a hidden probe beside each snapshot whose `visible` entry
-    /// is set — the presentation layer's visibility before suppression
-    /// hid it; a hidden surface shows nothing on screen, so it gets no
-    /// probe and resolves to the native tree alone. The probe colours are
-    /// made in `space`, the rasters' own colour space, so they reach the
-    /// raster unconverted.
-    fn insert(snapshots: &[CapturedSnapshot], visible: &[bool], space: &CGColorSpace) -> Self {
+    /// Inserts a hidden probe beside each snapshot's presentation layer.
+    /// The probe colours are made in `space`, the rasters' own colour
+    /// space, so they reach the raster unconverted.
+    fn insert(snapshots: &[CapturedSnapshot], space: &CGColorSpace) -> Self {
         let color = |value: f64| {
             let components = [value, value, value, 1.0];
             // SAFETY: `components` holds the space's three channels plus
@@ -2132,23 +2129,20 @@ impl ProbeLayers {
         };
         let layers = snapshots
             .iter()
-            .zip(visible)
-            .map(|(snapshot, &visible)| {
+            .map(|snapshot| {
                 let presentation = &snapshot.layer;
                 let superlayer = presentation.superlayer()?;
-                visible.then(|| {
-                    let probe = CALayer::new();
-                    probe.setBounds(presentation.bounds());
-                    probe.setPosition(presentation.position());
-                    probe.setAnchorPoint(presentation.anchorPoint());
-                    probe.setAnchorPointZ(presentation.anchorPointZ());
-                    probe.setTransform(presentation.transform());
-                    probe.setZPosition(presentation.zPosition());
-                    probe.setOpacity(presentation.opacity());
-                    probe.setHidden(true);
-                    superlayer.insertSublayer_above(&probe, Some(presentation));
-                    probe
-                })
+                let probe = CALayer::new();
+                probe.setBounds(presentation.bounds());
+                probe.setPosition(presentation.position());
+                probe.setAnchorPoint(presentation.anchorPoint());
+                probe.setAnchorPointZ(presentation.anchorPointZ());
+                probe.setTransform(presentation.transform());
+                probe.setZPosition(presentation.zPosition());
+                probe.setOpacity(presentation.opacity());
+                probe.setHidden(true);
+                superlayer.insertSublayer_above(&probe, Some(presentation));
+                Some(probe)
             })
             .collect();
         Self {
@@ -2763,6 +2757,26 @@ fn metal_in_layer_tree(layer: &CALayer, pruned: &[Retained<CALayer>]) -> bool {
     })
 }
 
+/// Whether `renderInContext` of `root` draws `layer`: `root` is its
+/// ancestor, and neither it nor an ancestor below `root` is hidden or fully
+/// transparent — the rule [`metal_in_layer_tree`] applies. `root` itself is
+/// not judged: a capture reveals a normally-hidden root before it collects.
+fn drawn_in(layer: &CALayer, root: &CALayer) -> bool {
+    let mut current = layer.retain();
+    loop {
+        if std::ptr::eq(&raw const *current, root) {
+            return true;
+        }
+        if current.isHidden() || current.opacity() <= 0.0 {
+            return false;
+        }
+        match current.superlayer() {
+            Some(parent) => current = parent,
+            None => return false,
+        }
+    }
+}
+
 /// Captures `content`'s subtree into Metal textures. Main-thread only;
 /// created once per effect view and shut down before the view drops.
 pub struct ViewCapture {
@@ -3032,8 +3046,6 @@ impl ViewCapture {
                 (raster, clusters)
             };
             let (probe_space, _) = raster_color(target.pixelFormat());
-            // Read before suppression hides every presentation layer.
-            let visible: Vec<bool> = snapshots.iter().map(|s| !s.layer.isHidden()).collect();
             let height = pixel_extent(target.height());
             {
                 // Declared in drop order: the probes leave the tree
@@ -3041,7 +3053,7 @@ impl ViewCapture {
                 let mut suppression = SuppressionGuard::new(&snapshots);
                 suppression.begin();
                 raster.draw(&layer, raster_transform(geometry, height));
-                let probes = ProbeLayers::insert(&snapshots, &visible, &probe_space);
+                let probes = ProbeLayers::insert(&snapshots, &probe_space);
                 for cluster in &clusters {
                     cluster.draw(
                         &layer,
@@ -3080,12 +3092,22 @@ impl ViewCapture {
     }
 
     /// The surface collection for one capture: the rendered snapshots
-    /// plus the surfaces the capture must still join for redraw routing —
-    /// resolved capturables whose bounds produced no spec this pass and
-    /// that cannot present on their own. A windowless capture's zero-size
-    /// image surface is the case: its redraws would otherwise die on a
-    /// presentation path that never runs, so it joins the scope like a
-    /// spec'd surface and wakes the capture's drive.
+    /// plus the surfaces the capture must still join for redraw routing.
+    ///
+    /// Only a surface this capture's raster draws renders: one whose
+    /// presentation is hidden or fully transparent below `root` shows
+    /// nothing in the frame and gets no spec. A live effect's content and
+    /// its output are siblings and exactly one of them is shown, so the
+    /// content's surfaces render either here or through the effect's own
+    /// capture, never both — a surface's frame composites into one target,
+    /// so two renders in one pass would each take it from the other and
+    /// the pass could never land.
+    ///
+    /// A hidden surface still joins, as does a resolved capturable whose
+    /// bounds produced no spec and that cannot present on its own — a
+    /// windowless capture's zero-size image surface: its redraws, and an
+    /// enclosed producer's, must wake this capture rather than a
+    /// presentation path the open scope keeps paused.
     ///
     /// Snapshots are in paint order — the walk visits subviews back to
     /// front — and each carries the presentation layer its spec was
@@ -3101,7 +3123,8 @@ impl ViewCapture {
         let (target_width, target_height) = (target.width(), target.height());
         for_each_capturable(&self.content, &mut |view, surface| {
             let layer = surface.presentation_layer();
-            let spec = layer.as_ref().and_then(|layer| {
+            let hidden = layer.as_ref().is_some_and(|layer| !drawn_in(layer, root));
+            let spec = layer.as_ref().filter(|_| !hidden).and_then(|layer| {
                 surface_spec(
                     view_key(view),
                     surface_quad(layer, root, geometry),
@@ -3116,7 +3139,7 @@ impl ViewCapture {
                     surface: surface.clone(),
                     layer,
                 });
-            } else if !surface.can_present() {
+            } else if hidden || !surface.can_present() {
                 unpresentable.push(CapturedSurface {
                     surface_id: view_key(view),
                     surface: surface.clone(),
