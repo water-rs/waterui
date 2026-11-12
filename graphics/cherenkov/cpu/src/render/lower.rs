@@ -2775,7 +2775,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             } => {
                 self.transform *= *local;
                 #[cfg(feature = "shaders")]
-                let shaded = self.shaded(paint, shape.bounds())?;
+                let shaded = self.shaded(paint, || shape.bounds())?;
                 #[cfg(feature = "shaders")]
                 let paint = &*shaded;
                 self.fill(shape, paint, carried);
@@ -2793,7 +2793,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 #[cfg(feature = "shaders")]
                 let shaded = {
                     let half = stroke.width / 2.0;
-                    self.shaded(paint, shape.bounds().inflate(half, half))?
+                    self.shaded(paint, || shape.bounds().inflate(half, half))?
                 };
                 #[cfg(feature = "shaders")]
                 let paint = &*shaded;
@@ -2828,16 +2828,19 @@ impl<'a, 'b> Lowering<'a, 'b> {
 
     /// `paint` with its shader leaf rendered for a draw over shape-local
     /// `bounds` under the current transform, through the registered
-    /// shader paints ([`PaintData::render_shaders`]).
+    /// shader paints ([`PaintData::render_shaders`]). `bounds` runs only
+    /// for a paint with a shader: a path's bounding box costs a pass over
+    /// its segments, which a plain paint never needs.
     #[cfg(feature = "shaders")]
     fn shaded<'p>(
         &mut self,
         paint: &'p PaintData,
-        bounds: Rect,
+        bounds: impl FnOnce() -> Rect,
     ) -> Result<std::borrow::Cow<'p, PaintData>, RenderError> {
         if !paint.has_shader() {
             return Ok(std::borrow::Cow::Borrowed(paint));
         }
+        let bounds = bounds();
         let paints = self
             .shader_paints
             .as_deref_mut()
@@ -2870,7 +2873,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             .ok_or_else(|| RenderError::Font(format!("unregistered font {:?}", run.font)))?;
         // A run without ink draws nothing: any bounds do.
         let bounds = super::glyph::ink_bounds(&font.data, run, self.transform)?.unwrap_or_default();
-        self.shaded(paint, bounds)
+        self.shaded(paint, || bounds)
     }
 
     /// `Fill`: a flattened polygon of edges in the shape's frame, placed in
