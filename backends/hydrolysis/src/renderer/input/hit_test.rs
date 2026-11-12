@@ -1108,7 +1108,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             gesture_regions.push(crate::renderer::GestureRegion {
                 bounds: staged.window,
                 order,
-                owners: staged.payload.owners.clone(),
+                owners: staged.payload.owners,
             });
         }
 
@@ -2304,16 +2304,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         if button != PointerButton::Primary {
             if button == PointerButton::Secondary && !in_context_menu_presentation {
                 let menu_target = self.topmost_context_menu_target_at_point(point);
-                let mut items = menu_target
-                    .as_ref()
-                    .map(|target| {
-                        popup_menu_nodes(
-                            &target.items.snapshot(),
-                            &target.env,
-                            self.window_closable,
-                        )
-                    })
-                    .unwrap_or_default();
+                let mut items = menu_target.as_ref().map_or_default(|target| {
+                    popup_menu_nodes(&target.items.snapshot(), &target.env, self.window_closable)
+                });
                 if !items.is_empty() {
                     // The debug inspect entry extends a menu, it does not
                     // create one — an empty `.context_menu` must behave the
@@ -4033,12 +4026,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         } else {
             self.topmost_context_menu_target_at_point(point)
         };
-        let mut items = menu_target
-            .as_ref()
-            .map(|target| {
-                popup_menu_nodes(&target.items.snapshot(), &target.env, self.window_closable)
-            })
-            .unwrap_or_default();
+        let mut items = menu_target.as_ref().map_or_default(|target| {
+            popup_menu_nodes(&target.items.snapshot(), &target.env, self.window_closable)
+        });
         self.append_inspect_element_item(&mut items, point);
         if items.is_empty() {
             return false;

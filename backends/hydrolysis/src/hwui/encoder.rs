@@ -581,10 +581,6 @@ impl Encoder {
                 }
                 Realize::Remove(id) => self.remove_layer(id)?,
                 Realize::Content(id, content) => self.set_content(id, content, &mut recycled)?,
-                #[expect(
-                    unreachable_code,
-                    reason = "`Install` is `Infallible` on this target: the arm is uninhabited"
-                )]
                 Realize::Install(_, install) => match install.into_inner() {},
             }
         }
@@ -1126,8 +1122,8 @@ impl Encoder {
             }
             self.composite(raw)?;
         }
-        for index in 0..pending.recomposite.len() {
-            self.composite(pending.recomposite[index])?;
+        for &raw in &pending.recomposite {
+            self.composite(raw)?;
         }
         self.settle(pending)
     }

@@ -692,8 +692,7 @@ fn optimize_image(bytes: &[u8], source: &Path) -> eyre::Result<Vec<u8>> {
     let ext = source
         .extension()
         .and_then(OsStr::to_str)
-        .map(str::to_ascii_lowercase)
-        .unwrap_or_default();
+        .map_or_default(str::to_ascii_lowercase);
     match ext.as_str() {
         "png" => {
             let image = image::load_from_memory(bytes)

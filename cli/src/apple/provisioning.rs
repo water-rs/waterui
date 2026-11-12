@@ -563,12 +563,11 @@ fn evaluate_candidate(
         let devices = data
             .get("ProvisionedDevices")
             .and_then(plist::Value::as_array)
-            .map(|list| {
+            .map_or_default(|list| {
                 list.iter()
                     .filter_map(plist::Value::as_string)
                     .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+            });
         match request.device_udid {
             // A device-bound run must provision the exact destination device.
             Some(udid) => {

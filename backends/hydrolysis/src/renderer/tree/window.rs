@@ -19,8 +19,7 @@ pub(super) fn window_container_insets<E: crate::text::TextEngine>(
     env: &Environment,
 ) -> EdgeInsets {
     env.get::<WindowSafeArea>()
-        .map(|area| renderer.read_signal(&area.0))
-        .unwrap_or_default()
+        .map_or_default(|area| renderer.read_signal(&area.0))
 }
 
 /// The window's keyboard-region insets in logical units — §7.1's keyboard
@@ -32,8 +31,7 @@ pub(super) fn window_keyboard_insets<E: crate::text::TextEngine>(
     env: &Environment,
 ) -> EdgeInsets {
     env.get::<WindowKeyboardArea>()
-        .map(|area| renderer.read_signal(&area.0))
-        .unwrap_or_default()
+        .map_or_default(|area| renderer.read_signal(&area.0))
 }
 
 /// `bounds` shrunk by the deeper of the two regions on each edge — §7.1's
