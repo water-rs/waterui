@@ -1520,6 +1520,25 @@ async fn gpu_readiness_trip(
     }
 }
 
+/// The readiness gate's window: scene-attached when the host connects a
+/// scene — `drawViewHierarchy` only captures composited content under a
+/// real `UIWindowScene`; the scene-less spawn answers `false` forever.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+fn readiness_window(mtm: MainThreadMarker) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow> {
+    cocoa_ui::bitmap::any_window_scene().map_or_else(
+        || spawned_window(mtm),
+        |scene| {
+            use cocoa_ui::objc2::MainThreadOnly as _;
+            let window = cocoa_ui::objc2_ui_kit::UIWindow::initWithWindowScene(
+                cocoa_ui::objc2_ui_kit::UIWindow::alloc(mtm),
+                &scene,
+            );
+            window.setFrame(window.screen().bounds());
+            window
+        },
+    )
+}
+
 /// Presents one real frame end to end: a `CAMetalLayer` in a visible
 /// window, one clear encoded into the `CAMetalDisplayLink`-delivered
 /// drawable's texture, `presentDrawable` on that same command buffer,
@@ -1543,21 +1562,7 @@ async fn present_readiness_frame(
     let present_tx = std::cell::RefCell::new(Some(present_tx));
     let armed = std::rc::Rc::new(std::cell::Cell::new(false));
     let mtm = MainThreadMarker::new().expect("the readiness gate polls on the main thread");
-    // A scene-attached window when the host connects one —
-    // `drawViewHierarchy` only captures composited content under a real
-    // `UIWindowScene`; the scene-less spawn answers `false` forever.
-    let present_window = cocoa_ui::bitmap::any_window_scene().map_or_else(
-        || spawned_window(mtm),
-        |scene| {
-            use cocoa_ui::objc2::MainThreadOnly as _;
-            let window = cocoa_ui::objc2_ui_kit::UIWindow::initWithWindowScene(
-                cocoa_ui::objc2_ui_kit::UIWindow::alloc(mtm),
-                &scene,
-            );
-            window.setFrame(window.screen().bounds());
-            window
-        },
-    );
+    let present_window = readiness_window(mtm);
     let controller = cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
     let host = controller.host_view().retain();
     present_window.setRootViewController(Some(&controller));
