@@ -3635,6 +3635,31 @@ pub mod native_test {
             );
         }
 
+        /// [`Self::ensure_attached`] with the attach door held shut while
+        /// the fixture window orders in: an open capture scope refuses
+        /// both the attach and the link demand, so no presenter, and no
+        /// display link, exists while the window's run-loop pump spins.
+        /// Closing the scope with `resume` attaches synchronously through
+        /// the scope's own reschedule, so the trial samples the attached
+        /// epoch with its first frame owed before any link update can run.
+        ///
+        /// # Panics
+        ///
+        /// When the scope's close does not install the presentation epoch.
+        pub fn ensure_attached_gated(&self) {
+            self.begin_capture(Rc::new(|| {}));
+            self.ensure_fixture_window();
+            assert!(
+                self.state.presentation.borrow().attached().is_none(),
+                "the open capture scope keeps the attach door shut"
+            );
+            self.end_capture(true);
+            assert!(
+                self.state.presentation.borrow().attached().is_some(),
+                "closing the scope attaches the presentable surface"
+            );
+        }
+
         /// Sets the view's frame and runs the layout pass that follows it,
         /// which commits the response `initialize_gpu` computes the
         /// drawable extent from.

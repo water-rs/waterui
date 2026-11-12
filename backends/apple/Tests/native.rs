@@ -3487,7 +3487,10 @@ mod gpu_surface {
     fn an_owed_first_frame_pauses_when_hidden() -> Result<(), libtest_mimic::Failed> {
         let mounted = pollster::block_on(MountedSceneSurface::mount(mtm()))
             .map_err(|error| format!("mount: {error}"))?;
-        mounted.ensure_attached();
+        // The gated attach keeps the attach door shut while the window
+        // orders in, so the real display link cannot take the owed first
+        // frame before the trial samples it.
+        mounted.ensure_attached_gated();
         let _ready = mounted.readiness_probe();
         assert!(!mounted.frame_presented(), "the first frame is still owed");
         assert!(
