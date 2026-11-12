@@ -25,6 +25,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use kurbo::{Rect, Vec2};
+use nami::Computed;
 use waterui_controls::ControlSize;
 use waterui_core::layout::LayoutDirection;
 use waterui_graphics::color::Color;
@@ -261,6 +262,10 @@ const fn segments(count: usize) -> f64 {
     count as f64
 }
 
+/// What gives a segment its chrome, from the segment and its live selected
+/// flag.
+type SegmentChrome = dyn Fn(Segment, Computed<bool>) -> Chrome;
+
 /// How a segmented picker looks and responds: the measures it is laid out
 /// by, its label styling, its parts, its drag and its group opacity.
 ///
@@ -280,7 +285,7 @@ pub struct SegmentedLook {
     chrome: Chrome,
     drag: Option<SegmentedDrag>,
     below: Vec<Rc<dyn CustomPart<SegmentedValue>>>,
-    segment_chrome: Option<Rc<dyn Fn(Segment) -> Chrome>>,
+    segment_chrome: Option<Rc<SegmentChrome>>,
     segment: Vec<Rc<dyn CustomPart<Segment>>>,
     above: Vec<Rc<dyn CustomPart<SegmentedValue>>>,
     group_opacity: Driven<f32>,
@@ -365,7 +370,10 @@ impl SegmentedLook {
     /// Each segment's chrome — surface, state layer, press feedback, focus
     /// indicator — realized by Hydrolysis on that segment's frame the way a
     /// button's chrome is (one ripple wave per press, from the press point).
-    /// Evaluated once per segment while the spec holds.
+    /// Evaluated once per segment while the spec holds, with the segment
+    /// and its live selected flag: `true` while it is the selected segment.
+    /// A colour built from the flag — a state layer that differs on the
+    /// selected segment — updates the realized chrome in place.
     ///
     /// The chrome follows the segment's own hover, press, focus and press
     /// point, `SELECTED` while it is the selected segment and `DISABLED`,
@@ -375,7 +383,10 @@ impl SegmentedLook {
     /// region does not apply: each segment takes touches as [`Self::hit`]
     /// sets.
     #[must_use]
-    pub fn segment_chrome(mut self, chrome: impl Fn(Segment) -> Chrome + 'static) -> Self {
+    pub fn segment_chrome(
+        mut self,
+        chrome: impl Fn(Segment, Computed<bool>) -> Chrome + 'static,
+    ) -> Self {
         self.segment_chrome = Some(Rc::new(chrome));
         self
     }
@@ -469,15 +480,18 @@ impl SegmentedLook {
         &self.below
     }
 
-    /// Each of `count` segments' chrome, leading first; empty without a
-    /// segment chrome.
+    /// Each segment's chrome, leading first, given each one's live selected
+    /// flag of `selected`; empty without a segment chrome.
     #[cfg(hydrolysis_runtime)]
-    pub(crate) fn segment_chromes(&self, count: usize) -> Vec<Chrome> {
+    pub(crate) fn segment_chromes(&self, selected: &[Computed<bool>]) -> Vec<Chrome> {
+        let count = selected.len();
         self.segment_chrome
             .as_ref()
             .map_or_else(Vec::new, |chrome| {
-                (0..count)
-                    .map(|index| chrome(Segment { index, count }))
+                selected
+                    .iter()
+                    .enumerate()
+                    .map(|(index, flag)| chrome(Segment { index, count }, flag.clone()))
                     .collect()
             })
     }

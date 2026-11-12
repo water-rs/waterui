@@ -70,7 +70,18 @@ pub struct PickerRenderState<E: crate::text::TextEngine> {
 struct HeldSegmentedLook {
     spec: SegmentedSpec,
     look: SegmentedLook,
+    /// Each segment's live selected flag, leading first: the one signal its
+    /// label's font and its chrome both follow.
+    selected: Rc<[Computed<bool>]>,
     /// Each segment's chrome, leading first: evaluated once for the spec.
+    chromes: Rc<[Chrome]>,
+}
+
+/// The look a segmented picker is drawn with, as [`HeldSegmentedLook`]
+/// holds it.
+struct SegmentedLookParts {
+    look: SegmentedLook,
+    selected: Rc<[Computed<bool>]>,
     chromes: Rc<[Chrome]>,
 }
 
@@ -111,29 +122,39 @@ impl<E: crate::text::TextEngine> PickerRenderState<E> {
         }
     }
 
-    /// The segmented look for `spec` in `env` and each segment's chrome:
-    /// the ones already held when the spec is unchanged, otherwise
-    /// requested again, which drops the parts and the labels built from
-    /// the previous one.
+    /// The segmented look for `spec` in `env`, each segment's live selected
+    /// flag and each segment's chrome: the ones already held when the spec
+    /// is unchanged, otherwise requested again, which drops the parts and
+    /// the labels built from the previous one.
     fn segmented_look(
         &mut self,
         theme: &Rc<dyn WidgetTheme>,
         spec: SegmentedSpec,
         env: &Environment,
-    ) -> (SegmentedLook, Rc<[Chrome]>) {
+    ) -> SegmentedLookParts {
         if let Some(held) = self.held(&spec) {
-            return (held.look.clone(), Rc::clone(&held.chromes));
+            return SegmentedLookParts {
+                look: held.look.clone(),
+                selected: Rc::clone(&held.selected),
+                chromes: Rc::clone(&held.chromes),
+            };
         }
         let look = theme.segmented_picker(&spec, env);
-        let chromes: Rc<[Chrome]> = look.segment_chromes(spec.segment_count()).into();
+        let selected = segment_selected_flags(&self.config, spec.segment_count());
+        let chromes: Rc<[Chrome]> = look.segment_chromes(&selected).into();
         self.segmented.look = Some(HeldSegmentedLook {
             spec,
             look: look.clone(),
+            selected: Rc::clone(&selected),
             chromes: Rc::clone(&chromes),
         });
         self.segmented.parts = None;
         self.segmented.labels.clear();
-        (look, chromes)
+        SegmentedLookParts {
+            look,
+            selected,
+            chromes,
+        }
     }
 
     fn held(&self, spec: &SegmentedSpec) -> Option<&HeldSegmentedLook> {
@@ -1380,7 +1401,11 @@ pub fn render_segmented_picker<E: crate::text::TextEngine>(
     let mut state = owner.borrow_mut();
     let spec = segmented_spec(&state.config, items.len(), env);
     let direction = spec.direction();
-    let (look, chromes) = state.segmented_look(&theme, spec, env);
+    let SegmentedLookParts {
+        look,
+        selected: flags,
+        chromes,
+    } = state.segmented_look(&theme, spec, env);
     if state.segmented.watches.is_empty() {
         let frames = ctx.renderer_mut().frame_signals();
         let watches = segmented_watches(&state.config, &state.segmented, frames);
@@ -1391,10 +1416,16 @@ pub fn render_segmented_picker<E: crate::text::TextEngine>(
         state.segmented.labels = items
             .iter()
             .enumerate()
-            .map(|(index, item)| {
+            .zip(flags.iter())
+            .map(|((index, item), is_selected)| {
                 let segment = Segment { index, count };
-                let mut label =
-                    RetainedSubview::new(segment_label_view(&look, segment, item, &selection, env));
+                let mut label = RetainedSubview::new(segment_label_view(
+                    &look,
+                    segment,
+                    item,
+                    is_selected,
+                    env,
+                ));
                 label.ensure_built(ctx.renderer_mut(), env);
                 label
             })
@@ -1570,23 +1601,41 @@ fn segmented_watches<E: crate::text::TextEngine>(
     vec![Box::new(items), Box::new(selection)]
 }
 
+/// Each of `count` segments' live selected flag, leading first: `true`
+/// while `config`'s selection names the item at the segment's index. Each
+/// notifies only when its value changes, so a selection change reaches the
+/// two segments it changes and no other.
+fn segment_selected_flags(config: &PickerConfig, count: usize) -> Rc<[Computed<bool>]> {
+    let selection = config.selection();
+    let items = config.items();
+    (0..count)
+        .map(|index| {
+            selection
+                .zip(items)
+                .map(move |(current, items): (Id, Vec<PickerItem<Id>>)| {
+                    items.get(index).is_some_and(|item| item.tag == current)
+                })
+                .distinct()
+                .computed()
+        })
+        .collect()
+}
+
 /// The label view of `segment`, showing `item`: the item's text in the
-/// look's font for the segment's selected state. Its content changes only
-/// when that state does, so a selection change lays out again the two
-/// labels it changes and no other.
+/// look's font for the segment's selected state, `is_selected`. Its content
+/// changes only when that state does, so a selection change lays out again
+/// the two labels it changes and no other.
 fn segment_label_view(
     look: &SegmentedLook,
     segment: Segment,
     item: &PickerItem<Id>,
-    selection: &Binding<Id>,
+    is_selected: &Computed<bool>,
     env: &Environment,
 ) -> AnyView {
-    let tag = item.tag;
     let unselected = segment_font(look, segment, false);
     let selected = segment_font(look, segment, true);
-    let is_selected = selection.map(move |current: Id| current == tag).distinct();
     let content = item.content.resolve(env).content();
-    let styled: Computed<StyledStr> = Computed::new(content.zip(&is_selected).map(
+    let styled: Computed<StyledStr> = Computed::new(content.zip(is_selected).map(
         move |(styled, is_selected): (StyledStr, bool)| {
             styled.font(if is_selected {
                 selected.clone()

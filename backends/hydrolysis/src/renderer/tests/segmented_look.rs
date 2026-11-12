@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use cherenkov_record::{Draw as _, ShapeData, WorkingColor};
 use kurbo::Rect;
-use nami::{Binding, Signal as _};
+use nami::{Binding, Signal as _, SignalExt as _};
 use waterui::ViewExt as _;
 use waterui::animation::Animation;
 use waterui_core::handler::AnyViewBuilder;
@@ -549,7 +549,7 @@ fn rippled_look() -> SegmentedLook {
     use crate::theme::{
         Chrome, CornerShape, Corners, FocusIndicator, PressFeedback, Ripple, StateLayer, Surface,
     };
-    crate::testing::plain_segmented_look().segment_chrome(|segment| {
+    crate::testing::plain_segmented_look().segment_chrome(|segment, _| {
         let leading = if segment.is_first() { 14.0 } else { 0.0 };
         Chrome::new(
             Surface::new(
@@ -673,6 +673,84 @@ fn a_right_to_left_segment_chrome_ripples_where_it_is_pressed() {
     }
     rig.up(press, y);
     rig.settle();
+}
+
+/// A look whose segments wear a clear chrome with a state layer shown in
+/// full while hovered: blue on the selected segment, green on the others,
+/// built from each segment's live selected flag.
+fn selection_tinted_look() -> SegmentedLook {
+    use crate::theme::{Chrome, CornerShape, FocusIndicator, PressFeedback, StateLayer, Surface};
+    use waterui::Color;
+    crate::testing::plain_segmented_look().segment_chrome(|_, selected| {
+        let color = selected.map(|selected| {
+            if selected {
+                Color::srgb_f32(0.0, 0.0, 1.0)
+            } else {
+                Color::srgb_f32(0.0, 1.0, 0.0)
+            }
+        });
+        Chrome::new(
+            Surface::clear(CornerShape::radius(0.0)),
+            StateLayer::new(waterui_graphics::color::signal_color(color))
+                .opacities(1.0, 0.0, 0.0, 0.0),
+            PressFeedback::new(),
+            FocusIndicator::Tint,
+            linear(15),
+        )
+    })
+}
+
+const fn is_blue([r, g, b, _]: [u8; 4]) -> bool {
+    r < 60 && g < 60 && b > 200
+}
+
+const fn is_green([r, g, b, _]: [u8; 4]) -> bool {
+    r < 60 && g > 200 && b < 60
+}
+
+/// A segment chrome's state layer whose colour follows the segment's
+/// selected flag shows the selected colour on the hovered selected segment,
+/// and the other colour once the selection moves away, without recording
+/// the parts again.
+#[test]
+fn a_segment_chrome_colour_follows_the_segment_selected_flag() {
+    let mut rig = Rig::new(
+        |_, _| selection_tinted_look(),
+        LayoutDirection::LeftToRight,
+        false,
+    );
+    let targets = rig.targets();
+    let (x, y) = (targets[0].x0 + 10.0, targets[0].center().y);
+    rig.move_to(x, y);
+    rig.settle();
+    let recordings = rig.picker().recordings();
+    let selected = rig.sample(0);
+    save("segmented_segment_selected_flag", "selected", &selected);
+    let ink = pixel(&selected, x, y);
+    assert!(
+        is_blue(ink),
+        "the hovered selected segment shows the selected colour: {ink:?}"
+    );
+    let other = pixel(&selected, targets[1].x0 + 10.0, y);
+    assert!(
+        !is_blue(other) && !is_green(other),
+        "an unhovered segment shows no state layer: {other:?}"
+    );
+
+    rig.selection.set(1);
+    rig.settle();
+    let unselected = rig.sample(0);
+    save("segmented_segment_selected_flag", "unselected", &unselected);
+    let ink = pixel(&unselected, x, y);
+    assert!(
+        is_green(ink),
+        "the hovered segment shows the other colour once it is not selected: {ink:?}"
+    );
+    assert_eq!(
+        rig.picker().recordings(),
+        recordings,
+        "the colour changes in place, recording nothing"
+    );
 }
 
 /// The accessibility tree places each segment where its parts draw — the
