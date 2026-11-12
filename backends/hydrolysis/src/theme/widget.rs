@@ -771,7 +771,7 @@ pub trait WidgetTheme {
     /// first time it draws it, in the environment the content resolves in,
     /// and realizes it: the outline is `glass`'s shape — the rectangle
     /// family, a capsule, a circle, an ellipse or a custom path — on the
-    /// content's frame, following the frame as it changes, and the [`GlassLook`] states what
+    /// content's frame, following the frame as it changes, and the [`GlassLook`](super::GlassLook) states what
     /// fills it. The look's [`Backdrop`](super::Backdrop) is recorded behind
     /// the content as a backdrop material, with the border and the
     /// elevation as a [`Surface`](super::Surface) records them, in the

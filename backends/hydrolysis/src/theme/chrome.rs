@@ -25,7 +25,7 @@ use cherenkov_record::{
     CaptureClass, ContinuousRect, MaterialEffect, MaterialShader, Paint, Shadow, ShapeData,
     WorkingColor,
 };
-use kurbo::{Circle, Ellipse, Point, Rect, RoundedRect, RoundedRectRadii, Size, Vec2};
+use kurbo::{Circle, Point, Rect, RoundedRect, RoundedRectRadii, Size, Vec2};
 use waterui_core::animation::Animation;
 use waterui_core::interaction::{InteractionState, StateValue};
 use waterui_core::plugin::Plugin;
@@ -119,8 +119,10 @@ enum Outline {
     #[cfg(hydrolysis_runtime)]
     Path(std::rc::Rc<[waterui_shape::PathCommand]>),
     /// The circle inscribed in the rect, centred in it.
+    #[cfg(hydrolysis_runtime)]
     Circle,
     /// The ellipse filling the rect.
+    #[cfg(hydrolysis_runtime)]
     Ellipse,
 }
 
@@ -245,16 +247,18 @@ impl CornerShape {
                     rule: cherenkov_record::FillRule::NonZero,
                 };
             }
+            #[cfg(hydrolysis_runtime)]
             Outline::Circle => {
                 let radius = (rect.width().min(rect.height()) / 2.0 + distance).max(0.0);
                 return ShapeData::Circle(Circle::new(rect.center(), radius));
             }
+            #[cfg(hydrolysis_runtime)]
             Outline::Ellipse => {
                 let radii = (
                     (rect.width() / 2.0 + distance).max(0.0),
                     (rect.height() / 2.0 + distance).max(0.0),
                 );
-                return ShapeData::Ellipse(Ellipse::new(rect.center(), radii, 0.0));
+                return ShapeData::Ellipse(kurbo::Ellipse::new(rect.center(), radii, 0.0));
             }
         }
         let radii = corners.radii_on(rect);
