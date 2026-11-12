@@ -34,6 +34,7 @@ use crate::ActionTarget;
 use crate::action::ControlEvents;
 use crate::geometry::Size;
 use crate::picker::PickerStyle;
+use crate::slider::ControlSize;
 
 /// The menu button's trailing chevron and its padding — the symbol the
 /// platform's own menu controls draw.
@@ -469,6 +470,12 @@ impl Picker {
             }
         }
     }
+
+    /// How large the control is drawn.
+    ///
+    /// `UIKit` has no size classes for its selection controls: the value is
+    /// ignored.
+    pub const fn set_control_size(&self, _size: ControlSize) {}
 
     /// Whether the control responds to input.
     pub fn set_enabled(&self, enabled: bool) {

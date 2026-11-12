@@ -11,7 +11,7 @@ use nami::SignalExt;
 use nami::signal::IntoComputed;
 use nami::{Binding, Computed};
 use waterui_controls::label::Label;
-use waterui_controls::{IntoLabel, impl_label_style_methods};
+use waterui_controls::{ControlSize, IntoLabel, impl_label_style_methods};
 use waterui_core::{Environment, configurable, layout::StretchAxis};
 
 use waterui_core::id::{Id, Mapping, TaggedView};
@@ -64,6 +64,8 @@ pub struct PickerConfig {
     selection: Binding<Id>,
     /// The visual style of the picker.
     style: PickerStyle,
+    /// How large the picker is drawn.
+    size: ControlSize,
 }
 
 impl PickerConfig {
@@ -104,6 +106,12 @@ impl PickerConfig {
     #[must_use]
     pub const fn style(&self) -> PickerStyle {
         self.style
+    }
+
+    /// How large the picker is drawn.
+    #[must_use]
+    pub const fn size(&self) -> ControlSize {
+        self.size
     }
 }
 
@@ -210,6 +218,7 @@ impl Picker {
             items,
             selection: mapping.binding(selection),
             style: PickerStyle::default(),
+            size: ControlSize::Small,
         })
     }
 
@@ -225,6 +234,16 @@ impl Picker {
     #[must_use]
     pub const fn style(mut self, style: PickerStyle) -> Self {
         self.0.style = style;
+        self
+    }
+
+    /// Sets how large the picker is drawn. A picker is
+    /// [`ControlSize::Small`], like a
+    /// [`Button`](waterui_controls::button::Button), when none is chosen; a
+    /// theme decides what each size changes.
+    #[must_use]
+    pub const fn size(mut self, size: ControlSize) -> Self {
+        self.0.size = size;
         self
     }
 

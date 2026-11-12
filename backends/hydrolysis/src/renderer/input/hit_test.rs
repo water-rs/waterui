@@ -5027,6 +5027,29 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.bind_live_target(key, target, env, disabled, motion, control.get_hit())
     }
 
+    /// Binds the interaction target of one segment of a segmented picker
+    /// whose parts are engine-realized
+    /// ([`LiveSegmented`](crate::renderer::live_segmented::LiveSegmented))
+    /// from `look`, on the segment's touch `target`, the segment wearing
+    /// `chrome`: the same live binding [`Self::bind_live_chrome_target`]
+    /// makes.
+    pub(crate) fn bind_live_segment_target(
+        &mut self,
+        key: InteractionKey,
+        target: kurbo::Rect,
+        env: &Environment,
+        disabled: bool,
+        look: &crate::theme::SegmentedLook,
+        chrome: Option<&crate::theme::Chrome>,
+    ) -> (
+        WidgetInteractionState,
+        PressSlot,
+        Rc<InteractionLayerHandles>,
+    ) {
+        let motion = crate::renderer::live_segmented::LiveSegmented::handle_motion(look, chrome);
+        self.bind_live_target(key, target, env, disabled, motion, look.chrome().get_hit())
+    }
+
     fn bind_live_target(
         &mut self,
         key: InteractionKey,

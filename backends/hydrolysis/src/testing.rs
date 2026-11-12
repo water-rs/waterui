@@ -85,6 +85,34 @@ pub fn plain_stepper_look() -> crate::theme::StepperLook {
         .label_spacing(8.0)
 }
 
+/// A segmented look drawing nothing: what a test style's segmented pickers
+/// measure, place and hit-test as.
+///
+/// Its row is at least 28 points tall, its labels are padded 8 by 6 points
+/// in segments at least 58 points wide, 8 points below the heading, in the
+/// default font and foreground.
+#[must_use]
+pub fn plain_segmented_look() -> crate::theme::SegmentedLook {
+    use crate::theme::{Motion, SegmentLabel, SegmentedLayout, SegmentedLook};
+    SegmentedLook::new(
+        SegmentedLayout {
+            row_height: 28.0,
+            label_padding: kurbo::Vec2::new(8.0, 6.0),
+            minimum_segment_width: 58.0,
+            minimum_width: 72.0,
+            label_spacing: 8.0,
+            reach: 0.0,
+        },
+        SegmentLabel::new(
+            waterui_text::font::Font::default(),
+            waterui::graphics::Color::new(waterui::theme::color::Foreground),
+        ),
+        Motion::uniform(waterui::animation::Animation::linear(
+            std::time::Duration::from_millis(15),
+        )),
+    )
+}
+
 mod test_style {
     use std::time::Duration;
 
@@ -236,6 +264,14 @@ mod test_style {
             super::plain_stepper_look()
         }
 
+        fn segmented_picker(
+            &self,
+            _spec: &crate::theme::SegmentedSpec,
+            _env: &Environment,
+        ) -> crate::theme::SegmentedLook {
+            super::plain_segmented_look()
+        }
+
         fn input_field_metrics(&self) -> InputFieldMetrics {
             InputFieldMetrics {
                 label_height: 14.0,
@@ -297,7 +333,6 @@ mod test_style {
                 popup_top_spacing: 4.0,
                 popup_row_height: 48.0,
                 popup_corner_radius: 6.0,
-                segment_min_width: 58.0,
             }
         }
 

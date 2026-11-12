@@ -464,6 +464,10 @@ pub struct AccessibilityBuilder<E: crate::text::TextEngine> {
     /// without their widget re-rendering, by the widget's interaction
     /// identity. Kept across flushes.
     live_numeric: BTreeMap<InteractionKey, LiveNumeric>,
+    /// The option selections that follow their binding in the published
+    /// tree without their widget re-rendering, by the widget's interaction
+    /// identity. Kept across flushes.
+    live_selection: BTreeMap<InteractionKey, LiveSelection>,
 }
 
 /// A widget's numeric accessibility value that follows its binding between
@@ -474,6 +478,19 @@ struct LiveNumeric {
     changed: Rc<core::cell::Cell<bool>>,
     value: nami::Binding<f64>,
     range: core::ops::RangeInclusive<f64>,
+}
+
+/// A widget's option nodes whose selected state follows its selection
+/// binding between renders: the widget's watcher raises `changed`, and the
+/// next publish marks the option the binding names selected and every other
+/// one not, in the nodes the options emitted.
+#[cfg(feature = "accessibility")]
+struct LiveSelection {
+    changed: Rc<core::cell::Cell<bool>>,
+    selection: nami::Binding<waterui_core::id::Id>,
+    /// Each option's interaction identity, which links to the node it
+    /// emitted, and the tag it selects.
+    options: Vec<(InteractionKey, waterui_core::id::Id)>,
 }
 
 #[cfg(feature = "accessibility")]
@@ -510,6 +527,7 @@ impl<E: crate::text::TextEngine> Default for AccessibilityBuilder<E> {
             content_types: BTreeMap::new(),
             pending_tree_update: None,
             live_numeric: BTreeMap::new(),
+            live_selection: BTreeMap::new(),
         }
     }
 }
@@ -1088,16 +1106,37 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         }
     }
 
-    /// Writes the current value of every live numeric whose binding changed
-    /// since it was last described into the node the widget emitted, and
-    /// queues those nodes as an incremental tree update: no widget
-    /// re-renders for it.
-    pub(crate) fn apply_live_numeric(&mut self) {
+    /// Writes the current value of every live numeric and live selection
+    /// whose binding changed since it was last described into the nodes the
+    /// widget emitted, and queues those nodes as an incremental tree
+    /// update: no widget re-renders for it.
+    pub(crate) fn apply_live_values(&mut self) {
         // A widget that left the tree dropped its watcher, which held the
         // other reference to `changed`.
         self.live_numeric
             .retain(|_, live| Rc::strong_count(&live.changed) > 1);
+        self.live_selection
+            .retain(|_, live| Rc::strong_count(&live.changed) > 1);
         let mut changed = Vec::new();
+        for live in self.live_selection.values() {
+            if !live.changed.replace(false) {
+                continue;
+            }
+            let selected = nami::Signal::snapshot(&live.selection);
+            for (key, tag) in &live.options {
+                let Some(id) = self.interaction_nodes.get(key).copied() else {
+                    continue;
+                };
+                let Some(index) = self.node_index.get(&id).copied() else {
+                    continue;
+                };
+                let node = &mut self.nodes[index].1;
+                let is_selected = *tag == selected;
+                node.set_selected(is_selected);
+                node.set_toggled(accesskit::Toggled::from(is_selected));
+                changed.push((id, node.clone()));
+            }
+        }
         for (key, live) in &self.live_numeric {
             if !live.changed.replace(false) {
                 continue;
@@ -1369,12 +1408,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
         const ROOT: AccessibilityNodeId = AccessibilityNodeId(0);
 
-        self.accessibility.apply_live_numeric();
+        self.accessibility.apply_live_values();
         let main_pending = pending(self);
         let popups: Vec<(&mut Self, Option<AccessibilityTreeUpdate>)> = popups
             .into_iter()
             .map(|popup| {
-                popup.accessibility.apply_live_numeric();
+                popup.accessibility.apply_live_values();
                 let update = pending(popup);
                 (popup, update)
             })
@@ -1664,6 +1703,28 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 changed,
                 value,
                 range,
+            },
+        );
+    }
+
+    /// Has the published tree follow `selection` between `key`'s renders:
+    /// when `changed` is raised, each of `options` — an option's
+    /// interaction identity and the tag it selects — is marked selected in
+    /// the node it emitted exactly when the binding names its tag, in an
+    /// incremental update.
+    pub(crate) fn register_live_selection(
+        &mut self,
+        key: crate::renderer::InteractionKey,
+        changed: Rc<core::cell::Cell<bool>>,
+        selection: nami::Binding<waterui_core::id::Id>,
+        options: Vec<(crate::renderer::InteractionKey, waterui_core::id::Id)>,
+    ) {
+        self.accessibility.live_selection.insert(
+            key,
+            LiveSelection {
+                changed,
+                selection,
+                options,
             },
         );
     }

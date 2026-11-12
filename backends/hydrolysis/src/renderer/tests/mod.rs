@@ -112,6 +112,7 @@ mod scene_offer;
 #[cfg(feature = "accessibility")]
 mod scroll_frames;
 mod scroll_hit_clip;
+mod segmented_look;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod semantic_runtime;
 mod shadow;
@@ -2773,6 +2774,10 @@ type SliderLookFor = Rc<dyn Fn(&SliderSpec, &Environment) -> SliderLook>;
 /// The stepper look a test theme hands out for a stepper spec.
 type StepperLookFor = Rc<dyn Fn(&StepperSpec, &Environment) -> StepperLook>;
 
+/// The segmented look a test theme hands out for a segmented picker spec.
+type SegmentedLookFor =
+    Rc<dyn Fn(&crate::theme::SegmentedSpec, &Environment) -> crate::theme::SegmentedLook>;
+
 /// The glass look a test theme hands out for a glass background.
 type GlassLookFor =
     Rc<dyn Fn(&waterui::background::Glass, &Environment) -> Option<crate::theme::GlassLook>>;
@@ -2849,6 +2854,9 @@ pub struct MinimalTestTheme {
     /// The stepper look the theme hands out for a spec and environment;
     /// `None` answers [`crate::testing::plain_stepper_look`].
     stepper_look: Option<StepperLookFor>,
+    /// The segmented look the theme hands out for a spec and environment;
+    /// `None` answers [`crate::testing::plain_segmented_look`].
+    segmented_look: Option<SegmentedLookFor>,
     /// The glass look the theme hands out for a glass background; `None`
     /// answers the trait's default, no glass.
     glass_look: Option<GlassLookFor>,
@@ -2934,6 +2942,17 @@ impl MinimalTestTheme {
         look: impl Fn(&ToggleSpec, &Environment) -> SwitchLook + 'static,
     ) -> Self {
         self.switch_look = Some(Rc::new(look));
+        self
+    }
+
+    /// Hands out the look `look` makes for each segmented picker's spec.
+    #[must_use]
+    pub fn with_segmented(
+        mut self,
+        look: impl Fn(&crate::theme::SegmentedSpec, &Environment) -> crate::theme::SegmentedLook
+        + 'static,
+    ) -> Self {
+        self.segmented_look = Some(Rc::new(look));
         self
     }
 
@@ -3144,6 +3163,16 @@ impl WidgetTheme for MinimalTestTheme {
             .map_or_else(crate::testing::plain_stepper_look, |look| look(spec, env))
     }
 
+    fn segmented_picker(
+        &self,
+        spec: &crate::theme::SegmentedSpec,
+        env: &Environment,
+    ) -> crate::theme::SegmentedLook {
+        self.segmented_look
+            .as_ref()
+            .map_or_else(crate::testing::plain_segmented_look, |look| look(spec, env))
+    }
+
     fn glass_background(
         &self,
         glass: &waterui::background::Glass,
@@ -3242,7 +3271,6 @@ impl WidgetTheme for MinimalTestTheme {
             popup_top_spacing: 4.0,
             popup_row_height: 48.0,
             popup_corner_radius: 6.0,
-            segment_min_width: 58.0,
         }
     }
 

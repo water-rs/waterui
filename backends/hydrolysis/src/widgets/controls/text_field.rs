@@ -1045,6 +1045,7 @@ fn flush_material_prompt_label<E: crate::text::TextEngine>(
         HorizontalAlignment::Leading,
         env,
         TailMark::Clip(1),
+        None,
     );
 }
 
