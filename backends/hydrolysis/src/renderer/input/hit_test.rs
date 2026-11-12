@@ -226,6 +226,36 @@ pub struct HoverTarget<E: crate::text::TextEngine> {
     pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell<E>>,
 }
 
+/// A region that watches the primary pointer's press without taking part in
+/// dispatch: it is told of every press that lands inside its bounds, of the
+/// moves of that press and of its end, whichever target claimed the press or
+/// whether any did. It is never a candidate for a press, never occludes
+/// anything and never captures a drag, so nothing it does changes which
+/// target receives an event. The press state lands on `handles`, the
+/// widget's interaction handles its look's values follow.
+pub struct PointerObserver<E: crate::text::TextEngine> {
+    pub(crate) bounds: kurbo::Rect,
+    /// Maps a window hit-test point into the registration's local space,
+    /// rewritten at materialization like `bounds`.
+    pub(crate) to_local: kurbo::Affine,
+    pub(crate) slot: PressSlot,
+    pub(crate) handles: Rc<InteractionLayerHandles>,
+    /// The node cell that registered the observer.
+    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell<E>>,
+}
+
+impl<E: crate::text::TextEngine> Clone for PointerObserver<E> {
+    fn clone(&self) -> Self {
+        Self {
+            bounds: self.bounds,
+            to_local: self.to_local,
+            slot: self.slot.clone(),
+            handles: Rc::clone(&self.handles),
+            owner: self.owner.clone(),
+        }
+    }
+}
+
 pub struct ScrollTarget<E: crate::text::TextEngine> {
     pub(crate) bounds: kurbo::Rect,
     pub action: ScrollAction,
@@ -432,6 +462,8 @@ pub struct HitTestState<E: crate::text::TextEngine> {
     pub(crate) active_scrollbar_drag: Option<ScrollbarDrag<E>>,
     pub(crate) cursor_targets: Vec<CursorTarget<E>>,
     pub(crate) hover_targets: Vec<HoverTarget<E>>,
+    /// The press observers, outside dispatch ([`PointerObserver`]).
+    pub(crate) pointer_observers: Vec<PointerObserver<E>>,
     pub(crate) drop_targets: Vec<DropTarget<E>>,
     pub(crate) active_drag: Option<ActiveDrag>,
     /// The in-flight OS file drag, if any — see [`OsFileDrag`].
@@ -724,6 +756,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let mut staged_occluders: Vec<(mount::PaintOrder, kurbo::Rect)> = Vec::new();
         let mut staged_cursor: Vec<Staged<CursorTarget<E>>> = Vec::new();
         let mut staged_hover: Vec<Staged<HoverTarget<E>>> = Vec::new();
+        let mut staged_observers: Vec<PointerObserver<E>> = Vec::new();
         let mut staged_drop: Vec<Staged<DropTarget<E>>> = Vec::new();
         let mut staged_menus: Vec<Staged<ContextMenuTarget<E>>> = Vec::new();
         let mut staged_scroll: Vec<Staged<ScrollTarget<E>>> = Vec::new();
@@ -839,6 +872,21 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                         payload,
                         window: resolved.rect,
                     });
+                }
+            }
+
+            // An observer outside the structural input chain is gone; one
+            // inside it resolves like a hover target, with no paint rank —
+            // it takes no part in ordering.
+            for entry in &regs.pointer_observers {
+                if entry.region.placement.removes(HitClasses::INPUT) {
+                    continue;
+                }
+                if let Some(resolved) = entry.region.placement.resolve_hit(entry.region.local) {
+                    let mut payload = entry.payload.clone();
+                    payload.bounds = resolved.rect;
+                    payload.to_local = entry.region.placement.resolved_transform(true).inverse();
+                    staged_observers.push(payload);
                 }
             }
 
@@ -1077,6 +1125,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let hover_targets = &mut self.hit_test.hover_targets;
         hover_targets.clear();
         hover_targets.extend(staged_hover.into_iter().map(|staged| staged.payload));
+
+        self.hit_test.pointer_observers = staged_observers;
 
         let drop_targets = &mut self.hit_test.drop_targets;
         drop_targets.clear();
@@ -1974,6 +2024,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         visual_changed |= press_clear.visual_changed;
         refresh_requested |= press_clear.chrome_changed;
         self.hit_test.interaction.mark_press_clear(&press_clear);
+        // Observers hear the press before any target can claim it, and
+        // whether one does or none.
+        if button == PointerButton::Primary {
+            refresh_requested |= self.observe_press(point, at);
+        }
         self.text_editing.active_text_selection_drag = None;
         let overlay_hit = matches!(
             self.text_editing.active_text_context_menu,
@@ -2466,6 +2521,42 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         refresh_requested || visual_changed
     }
 
+    /// Tells every observer whose bounds contain `point` that a press
+    /// landed, at its local point; returns whether a press marked an owner
+    /// for a re-render. The press ends with every press, through
+    /// [`InteractionEngine::clear_all_presses`]. Observers are outside
+    /// dispatch: nothing here decides which target receives the press.
+    fn observe_press(&mut self, point: kurbo::Point, at: Instant) -> bool {
+        let mut refresh = false;
+        let hit_test = &mut self.hit_test;
+        for observer in &hit_test.pointer_observers {
+            if !observer.bounds.contains(point) {
+                continue;
+            }
+            hit_test.interaction.begin_press(
+                &observer.slot,
+                point,
+                Some(observer.to_local * point),
+                at,
+            );
+            if let Some(bits) = observer.handles.repaint() {
+                SemanticCore::mark_owner(&observer.owner, bits);
+                refresh |= bits == Dirty::LAYOUT;
+            }
+        }
+        refresh
+    }
+
+    /// Moves the press point of every observer a press is on to `point`'s
+    /// local position, wherever the pointer has moved.
+    fn observe_press_move(&self, point: kurbo::Point) {
+        for observer in &self.hit_test.pointer_observers {
+            if observer.handles.pressing() {
+                observer.handles.move_press(observer.to_local * point);
+            }
+        }
+    }
+
     /// `region` claims `press` when the press's owning view is a strict
     /// ancestor of the region's owner — a gesture or tap registered by a
     /// descendant of the view the press belongs to takes the sequence
@@ -2707,6 +2798,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         {
             (track.borrow_mut())(Track::Move(target.to_local * point));
         }
+        self.observe_press_move(point);
         if let Some(action) = self.hit_test.active_pointer_drag_target.clone() {
             let pointer_drag_changed = (action.borrow_mut())(self, point, env);
             if pointer_drag_changed {
@@ -5390,6 +5482,28 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         );
     }
 
+    /// Registers a press observer over `bounds` ([`PointerObserver`]): the
+    /// press state of the primary pointer lands on `handles`, and no press
+    /// or event is ever taken from the targets around it.
+    pub(crate) fn register_pointer_observer(
+        &mut self,
+        bounds: kurbo::Rect,
+        slot: PressSlot,
+        handles: Rc<InteractionLayerHandles>,
+    ) {
+        self.register_retained(
+            PointerObserver {
+                bounds,
+                to_local: kurbo::Affine::IDENTITY,
+                slot,
+                handles,
+                owner: Weak::new(),
+            },
+            bounds,
+            |regs| &mut regs.pointer_observers,
+        );
+    }
+
     pub(crate) fn register_hover_enter_target<F>(
         &mut self,
         key: InteractionKey,
@@ -5609,6 +5723,7 @@ impl<E: crate::text::TextEngine> Default for HitTestState<E> {
             active_scrollbar_drag: Option::default(),
             cursor_targets: Vec::default(),
             hover_targets: Vec::default(),
+            pointer_observers: Vec::default(),
             drop_targets: Vec::default(),
             active_drag: Option::default(),
             os_file_drag: Option::default(),

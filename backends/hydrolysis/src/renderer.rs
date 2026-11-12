@@ -28,6 +28,7 @@ pub mod chrome;
 mod effects;
 mod frame;
 mod frame_work;
+mod glass;
 #[cfg(feature = "frame-profile")]
 mod gpu_profile;
 mod identity;
@@ -129,7 +130,7 @@ use waterui::accessibility::{
     AccessibilityValue,
 };
 use waterui::animation::Animation;
-use waterui::background::{Background, MaterialBackground, MaterialGroup};
+use waterui::background::{Background, GlassBackground, MaterialBackground, MaterialGroup};
 use waterui::border::Border;
 use waterui::component::badge::BadgeConfig;
 use waterui::component::focus::Focused;
