@@ -46,7 +46,7 @@ pub use registry::{
 pub use scopes::RetainedScopes;
 #[cfg(hydrolysis_gpu_painter)]
 pub use target::CherenkovHost;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub use target::MaterialTerms;
 
 /// Identity of a producer owner: a counter the renderer hands out through

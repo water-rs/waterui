@@ -22,6 +22,13 @@ use waterui_core::contract_violation;
 /// binding its sample reads its effect from — the group's resolution sets
 /// it. Held in the member's payload, so a re-recording replaces it whole.
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    not(hydrolysis_gpu_painter),
+    allow(
+        dead_code,
+        reason = "read by container groups, which only the GPU target's backdrop-shader chrome joins (water-rs/waterui#4065)"
+    )
+)]
 pub struct ContainerMember {
     /// The member's live shape, in its recording's logical coordinates.
     pub shape: SharedLive<ShapeData>,
@@ -42,6 +49,13 @@ struct Watched {
 }
 
 /// The state the watchers of one resolution share.
+#[cfg_attr(
+    not(hydrolysis_gpu_painter),
+    allow(
+        dead_code,
+        reason = "read by container groups, which only the GPU target's backdrop-shader chrome joins (water-rs/waterui#4065)"
+    )
+)]
 struct State {
     registry: Rc<MaterialRegistry>,
     shader: MaterialShader,
@@ -107,6 +121,13 @@ pub fn solo_effect(
 
 impl State {
     /// Re-runs the recipe over the current members and sets every binding.
+    #[cfg_attr(
+        not(hydrolysis_gpu_painter),
+        allow(
+            dead_code,
+            reason = "called by container groups, which only the GPU target's backdrop-shader chrome joins (water-rs/waterui#4065)"
+        )
+    )]
     fn resolve(&self) {
         let Some(recipe) = self.registry.container_recipe(self.shader) else {
             return;
@@ -123,11 +144,25 @@ impl State {
 
 /// One container group's live resolution: the watches that re-run the
 /// recipe when a member's shape or effect changes. Dropping it ends them.
+#[cfg_attr(
+    not(hydrolysis_gpu_painter),
+    allow(
+        dead_code,
+        reason = "read by container groups, which only the GPU target's backdrop-shader chrome joins (water-rs/waterui#4065)"
+    )
+)]
 pub struct Resolution {
     state: Rc<State>,
     _guards: Vec<cherenkov_record::Binding>,
 }
 
+#[cfg_attr(
+    not(hydrolysis_gpu_painter),
+    allow(
+        dead_code,
+        reason = "called by container groups, which only the GPU target's backdrop-shader chrome joins (water-rs/waterui#4065)"
+    )
+)]
 impl Resolution {
     /// Starts watching `members` under the recipe registered for
     /// `shader`, from the values their shapes and effects hold now. No

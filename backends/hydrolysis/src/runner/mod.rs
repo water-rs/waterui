@@ -7,16 +7,16 @@
 //! - [`fonts`]: resource font registration and CJK fallbacks
 //! - [`diagnostics`]: opt-in frame timing reports
 
-#[cfg(all(feature = "accessibility", hydrolysis_gpu_painter))]
+#[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
 use accesskit::{
     ActionRequest as AccessibilityActionRequest, TreeUpdate as AccessibilityTreeUpdate,
 };
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use executor_core::try_init_local_executor;
 use nami::Signal as _;
 #[cfg(not(target_arch = "wasm32"))]
 use std::cell::Cell;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use std::collections::VecDeque;
 use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
@@ -31,16 +31,16 @@ use waterui::app::AppParts;
 use waterui::component::table::TableConfig;
 use waterui::window::Window;
 use waterui::window::WindowManager;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
 use waterui_core::Retain;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::key::KeyPress;
 use waterui_core::view::Hook;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use waterui_text::FontCollection;
 
 // The JNI host exists only where a painter does: a painter-less Android
@@ -83,16 +83,16 @@ mod diagnostics;
 /// JNI bridge and on host for its tests; dead elsewhere.
 #[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
 pub mod editing;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 mod executor;
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
 mod headless;
 pub mod ime;
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 pub mod menu_bar;
 #[cfg(hydrolysis_winit)]
 pub mod placement;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 mod semantic;
 /// The windowed runner's SIGINT/SIGTERM/SIGHUP contract on Unix — compiled
 /// where the winit runner needs it, and in test builds for its child-process
@@ -108,7 +108,7 @@ mod web_runner;
 // Bare wasm compiles the module for its profile types (the semantic runtime
 // uses them everywhere) but has no window pump to call the rest.
 // `pub` within the private `runner` module: the platform surfaces name
-// `GpuSurfaceFrame` from outside `runner`.
+// `PaintedFrame` from outside `runner`.
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 pub mod window;
 #[cfg(hydrolysis_winit)]
@@ -117,23 +117,23 @@ mod winit_runner;
 mod x11_state_watch;
 
 use diagnostics::{RenderDiagnostics, RenderDiagnosticsConfig};
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use diagnostics::{RenderPhaseSample, elapsed_or_zero};
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
 use executor::{DrainExecutorOnDrop, HeadlessMainThreadExecutor};
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
 pub use headless::{HeadlessPumpResult, HeadlessRuntime};
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub use semantic::{SemanticPumpResult, SemanticRuntime};
 // Bare wasm has no window model until `web` compiles the browser runner.
 #[cfg(all(
     any(not(target_arch = "wasm32"), feature = "web"),
-    hydrolysis_gpu_painter
+    hydrolysis_cherenkov
 ))]
 use window::RuntimeWindow;
 #[cfg(all(
     any(not(target_arch = "wasm32"), feature = "web"),
-    hydrolysis_gpu_painter
+    hydrolysis_cherenkov
 ))]
 use window::{advance_runtime, handle_input_events};
 // One frame's entry is shared by the winit pump, the headless `run`, the
@@ -147,7 +147,7 @@ use window::{advance_runtime, handle_input_events};
 ))]
 use window::{WindowFrame, render_window};
 // Only the native headless/capture paths read frames back; the browser surface presents directly.
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
 use window::{FrameReader, render_window_with_capture};
 // `runtime_window_origin` is reached by the winit runner and by headless's
 // accessibility-action path.
@@ -156,7 +156,7 @@ use window::{FrameReader, render_window_with_capture};
     all(
         not(target_arch = "wasm32"),
         feature = "accessibility",
-        hydrolysis_gpu_painter
+        hydrolysis_cherenkov
     )
 ))]
 use window::runtime_window_origin;
@@ -169,17 +169,22 @@ use window::pump_window_semantics;
 // unconditional import so non-test builds report no unused names.
 #[cfg(all(test, any(not(target_arch = "wasm32"), feature = "web")))]
 use window::{
-    FrameMode, acquire_surface_frame, axes_whose_limits_changed, clamp_window_size,
-    reports_ui_idle, schedule_animation_update, schedule_redraw_or_refresh,
-    surface_error_requires_reconfigure,
+    FrameMode, axes_whose_limits_changed, clamp_window_size, reports_ui_idle,
+    schedule_animation_update, schedule_redraw_or_refresh,
 };
+#[cfg(all(
+    test,
+    hydrolysis_gpu_painter,
+    any(not(target_arch = "wasm32"), feature = "web")
+))]
+use window::{acquire_surface_frame, surface_error_requires_reconfigure};
 // Frame and tree profiles are published to the inspector endpoint, which exists
 // only where `waterui::inspector` does.
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 mod inspector;
 
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
 pub use window::HeadlessSnapshot;
 #[cfg(hydrolysis_winit)]
 pub use window::window_requires_transparency;
@@ -194,19 +199,19 @@ use waterui_core::contract_violation;
 
 use crate::env::{parse_bool_env, parse_optional_positive_u64_env, parse_positive_u64_env};
 use crate::platform::{InputEvent, KeyState, PlatformWindow};
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
-use crate::platform::{OffscreenGpuContext, OffscreenWindow};
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
+use crate::platform::{OffscreenPainter, OffscreenWindow};
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use crate::readback::readback_surface_texture_rgba8;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use crate::renderer::FontFamilyResolution;
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use crate::renderer::HydrolysisTextContextMenuMode;
 use crate::renderer::{
     HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery, KeyPressOutcome, SemanticCore,
 };
 use crate::renderer::{MenuShortcutRegistry, PopupWindowManager};
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use crate::text::ParleyEngine;
 use crate::time::Instant;
 
@@ -372,8 +377,9 @@ fn install_headless_window_managers<E: crate::text::TextEngine>(
 const GPU_UNAVAILABLE_EXIT_CODE: i32 = 1;
 
 /// Ends a native app whose host has no GPU Hydrolysis can render on — no
-/// usable device or engine, or a first window whose surface failed for good
-/// before it ever presented: the app cannot show anything, so the error is
+/// usable device or engine (or, for an offscreen host on the CPU painter, a
+/// CPU engine that cannot start), or a first window whose surface failed for
+/// good before it ever presented: the app cannot show anything, so the error is
 /// logged and the process exits with a failure status instead of running
 /// without a window.
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
@@ -474,8 +480,10 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
     // assembled environment — the theme tokens, hooks and font collection a
     // window's subtree resolves — so it must be installed last
     // (water-rs/waterui#2703).
+    let painter = OffscreenPainter::select().unwrap_or_else(|error| exit_without_gpu(error));
     env.insert(waterui_core::ViewRenderer::new(
-        crate::view_renderer::HydrolysisViewRenderer::new(
+        crate::view_renderer::HydrolysisViewRenderer::on_painter(
+            &painter,
             Rc::clone(&theme),
             env.clone(),
             FontFamilyResolution::Lenient,
@@ -490,9 +498,10 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
         let frame = crate::platform::validated_window_frame(window.frame.snapshot());
         let width = crate::num_cast::f32_as_u32(frame.width().max(1.0));
         let height = crate::num_cast::f32_as_u32(frame.height().max(1.0));
-        let mut platform = OffscreenWindow::new(width, height, wgpu::TextureFormat::Rgba8Unorm)
-            .unwrap_or_else(|error| exit_without_gpu(error))
-            .with_scale_factor(offscreen_scale_factor());
+        let mut platform = OffscreenWindow::new(headless::HeadlessSurface::on_painter(
+            &painter, width, height,
+        ))
+        .with_scale_factor(offscreen_scale_factor());
         platform.apply_properties(&window);
         let mut renderer = HydrolysisRenderer::with_engine(
             Rc::clone(&theme),
@@ -501,7 +510,7 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
         renderer.set_window_id(shortcuts.mint_window_id());
         renderer.set_window_closable(window.closable);
         let mut runtime =
-            RuntimeWindow::new_gpu(window, platform, renderer, render_diagnostics_config, &env);
+            RuntimeWindow::new_painted(window, platform, renderer, render_diagnostics_config, &env);
         // The one offscreen frame is the window's only one: a surface that
         // failed for good has shown nothing and never can.
         if let WindowFrame::Failed(error) =

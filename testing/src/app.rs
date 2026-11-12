@@ -7,8 +7,8 @@ use accesskit::{
     ActionRequest as AccessibilityActionRequest, TreeId as AccessibilityTreeId,
 };
 use hydrolysis::{
-    AccessibilityActivationPointError, FontFamilyResolution, GpuUnavailable, HeadlessRuntime,
-    KeyCode, Modifiers, PointerKind, SemanticRuntime, Style,
+    AccessibilityActivationPointError, FontFamilyResolution, HeadlessRuntime, KeyCode, Modifiers,
+    PainterUnavailable, PointerKind, SemanticRuntime, Style,
 };
 use waterui::app::{App, AppParts};
 use waterui::window::Window;
@@ -473,7 +473,7 @@ impl<S: Style> UiBuilder<Styled<S>> {
             style.style,
             FontFamilyResolution::Strict,
         )
-        .unwrap_or_else(|error| no_gpu(error));
+        .unwrap_or_else(|error| no_painter(error));
         Self::wrap_rendered(runtime, width, height, scale_factor, ledger)
     }
 
@@ -502,7 +502,7 @@ impl<S: Style> UiBuilder<Styled<S>> {
             style.style,
             FontFamilyResolution::Strict,
         )
-        .unwrap_or_else(|error| no_gpu(error));
+        .unwrap_or_else(|error| no_painter(error));
         Self::wrap_rendered(runtime, width, height, scale_factor, ledger)
     }
 
@@ -2061,9 +2061,10 @@ const fn wait_bound_outcome(all_non_inverted: bool) -> WaitResult {
     }
 }
 
-/// Fails a rendered mount whose host has no GPU Hydrolysis can render on: a
-/// rendered test cannot run without one.
-fn no_gpu(error: GpuUnavailable) -> ! {
+/// Fails a rendered mount whose host has no painter Hydrolysis can render
+/// with — no usable GPU, or a CPU engine that cannot start: a rendered test
+/// cannot run without one.
+fn no_painter(error: PainterUnavailable) -> ! {
     panic!(
         "waterui-testing rendered mount: {:#}",
         waterui_core::Error::from(error)

@@ -57,7 +57,6 @@ use crate::{
     interaction::Hittable,
     metadata::secure::Secure,
     theme,
-    view_ext::OnChange,
 };
 use crate::{
     component::{badge::Badge, focus::Focused},
@@ -69,7 +68,7 @@ use crate::{
 #[cfg(feature = "std")]
 use waterkit_haptic::{Haptic, Intensity};
 use waterui_core::Metadata;
-use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
+use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent};
 use waterui_core::id::TaggedView;
 use waterui_core::interaction::{Disabled, InteractionReport, InteractionState, Selected};
 use waterui_core::key::{KeyHandling, OnKeyPress};
@@ -218,8 +217,9 @@ pub trait ViewExt: View + Sized {
     ///
     /// The handler is an [`EventHandler`]: the new value comes first, then any
     /// extractor arguments — `State<T>`, `Environment`, … — resolved from the
-    /// environment this view is rendered in. A `Binding` the handler writes
-    /// is injected with [`ViewExt::state`] and read back as a
+    /// environment this view resolves in, so a [`ViewExt::state`] install
+    /// reaches it on either side of `.on_change(..)`. A `Binding` the handler
+    /// writes is injected with [`ViewExt::state`] and read back as a
     /// `State<Binding<T>>` parameter rather than captured, so the handler can
     /// be a named function and the data flow stays visible at the call site.
     ///
@@ -238,13 +238,13 @@ pub trait ViewExt: View + Sized {
     ///     })
     ///     .state(&last_seen);
     /// ```
-    fn on_change<C, H, A>(self, source: &C, handler: H) -> OnChange<Self, C>
+    fn on_change<C, H, A>(self, source: &C, handler: H) -> Metadata<OnChange>
     where
         C: Signal,
         C::Output: PartialEq + Clone,
         H: EventHandler<C::Output, A>,
     {
-        OnChange::new(self, source, handler)
+        Metadata::new(self, OnChange::new(source, handler))
     }
 
     /// Spawns an asynchronous task tied to the lifecycle of this view.

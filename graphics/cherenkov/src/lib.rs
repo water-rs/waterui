@@ -85,7 +85,7 @@ pub use crate::engine::{CompletionWaker, FrameScope, SurfaceWakes};
 pub use crate::error::{EngineError, RenderError, ResourceError, SurfaceError, SurfaceRejection};
 pub use crate::frame::{
     DEFAULT_REFRESH, FrameId, FrameStats, FrameTime, FrameTiming, Next, Offscreen, OffscreenFormat,
-    PassTiming, Phases, Readback,
+    OutputAlpha, PassTiming, Phases, Readback,
 };
 pub use crate::glyph::{FontId, Glyph, GlyphRun, GlyphStyle};
 pub use crate::image::{

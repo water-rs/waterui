@@ -4,17 +4,19 @@ use cfg_aliases::cfg_aliases;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    // An Android build with neither painter feature links nothing that can
-    // draw: warn rather than error so the bare `cargo check --no-default-features`
-    // lint leg still exercises the crate. The generated launcher always
-    // passes the resolved painter's feature, so reaching this warns a
-    // hand-rolled consumer.
-    if std::env::var_os("CARGO_CFG_TARGET_OS").as_deref() == Some(std::ffi::OsStr::new("android"))
-        && std::env::var_os("CARGO_FEATURE_GPU").is_none()
-        && std::env::var_os("CARGO_FEATURE_HWUI").is_none()
+    // A build with no painter feature links nothing that can draw: warn
+    // rather than error so the bare `cargo check --no-default-features` lint
+    // leg still exercises the crate. The generated launcher always passes
+    // the resolved painter features, so reaching this warns a hand-rolled
+    // consumer. `hwui` paints only on Android.
+    let android =
+        std::env::var_os("CARGO_CFG_TARGET_OS").as_deref() == Some(std::ffi::OsStr::new("android"));
+    if std::env::var_os("CARGO_FEATURE_GPU").is_none()
+        && std::env::var_os("CARGO_FEATURE_CPU").is_none()
+        && !(android && std::env::var_os("CARGO_FEATURE_HWUI").is_some())
     {
         println!(
-            "cargo:warning=hydrolysis: Android build has no painter — enable the `gpu` or `hwui` feature; this build ships no painter"
+            "cargo:warning=hydrolysis: this build has no painter — enable the `gpu` or `cpu` feature (or `hwui` on Android); this build ships no painter"
         );
     }
 
@@ -35,19 +37,25 @@ fn main() {
         // can only build once an application selects a backend — nothing in
         // this library may. Every winit-scoped item gates on this alias, so
         // `--features winit` compiles on Android and simply means nothing.
-        hydrolysis_winit: { all(feature = "winit", not(android_platform)) },
+        // It presents through the GPU painter; `lib.rs` names the missing
+        // `gpu` feature when `winit` is asked for without it.
+        hydrolysis_winit: { all(feature = "winit", not(android_platform), feature = "gpu") },
         // Where `hydrolysis::run` exists: every target but Android, whose
         // entry point is the Kotlin host, and bare wasm32, which reaches no
         // windowing model until the browser runner is compiled in. The
         // examples that need the runner gate on it too, so they and the
-        // export never disagree.
+        // export never disagree. A Cherenkov painter draws every runner's
+        // frames.
         hydrolysis_run: {
-            any(
-                all(not(target_arch = "wasm32"), not(android_platform)),
-                all(target_arch = "wasm32", feature = "web")
+            all(
+                hydrolysis_cherenkov,
+                any(
+                    all(not(target_arch = "wasm32"), not(android_platform)),
+                    all(target_arch = "wasm32", feature = "web")
+                )
             )
         },
-        hydrolysis_wayland_platform: { all(feature = "winit", free_unix, not(target_os = "redox")) },
+        hydrolysis_wayland_platform: { all(hydrolysis_winit, free_unix, not(target_os = "redox")) },
         // The winit desktops, whose windows the application closes itself
         // (Close Window, ⌘W/Ctrl+W). On iOS and the web the system or the
         // page owns the window, so the runner offers no close primitive.
@@ -67,7 +75,7 @@ fn main() {
         // enough, which is why this alias exists and the module turns an
         // unsatisfiable request into a `compile_error!` that says what to enable.
         hydrolysis_macos_system_webview: {
-            all(feature = "winit", target_os = "macos", feature = "webview-system")
+            all(hydrolysis_winit, target_os = "macos", feature = "webview-system")
         },
         // The Android `WebView` bridge needs no window of its own: the view is
         // a child of the Kotlin host's platform-view overlay, so the feature
@@ -94,24 +102,31 @@ fn main() {
         // into `RenderNode` display lists, on Android only.
         hydrolysis_hwui: { all(feature = "hwui", android_platform) },
         // Runtime implementation exists only when a painter is selected.
-        hydrolysis_runtime: { any(hydrolysis_gpu_painter, hydrolysis_hwui) },
-        // The Cherenkov GPU engine, its wgpu device stack and the parley
-        // text engine are linkable: always off-Android (one painter, the
-        // deps unconditional), on Android only under the `gpu` feature so a
-        // pure-HWUI build links none of it. The GPU *painter* machinery is
+        hydrolysis_runtime: { any(hydrolysis_cherenkov, hydrolysis_hwui) },
+        // The Cherenkov GPU engine and its wgpu device stack are linkable:
+        // the `gpu` feature on every target. The GPU *painter* machinery is
         // the narrower `hydrolysis_gpu_painter` gate this alias is not: under
         // `hwui` + `gpu` the deps and the GPU-content surface exist while
         // the painter stays HWUI.
-        hydrolysis_gpu: { any(not(android_platform), feature = "gpu") },
+        hydrolysis_gpu: { feature = "gpu" },
         // The GPU painter machinery — wgpu surface negotiation, the
-        // compositor, the Parley engine, the GPU window traits: present
-        // where the Cherenkov GPU attachment is the painter, i.e. every
-        // non-Android target and Android's `gpu`-without-`hwui` shape. An
-        // Android build with neither feature compiles no painter at all —
-        // the bare `cargo check` shape CI lints — so this is a real gate,
-        // not `not(hydrolysis_hwui)` restated.
-        hydrolysis_gpu_painter: {
-            any(not(android_platform), all(feature = "gpu", not(feature = "hwui")))
+        // compositor, the GPU window traits: present where the Cherenkov GPU
+        // attachment is a painter, i.e. `gpu` everywhere but Android's
+        // `hwui` shape. A build with no painter feature compiles no painter
+        // at all — the bare `cargo check` shape CI lints — so this is a real
+        // gate, not `not(hydrolysis_hwui)` restated.
+        hydrolysis_gpu_painter: { all(feature = "gpu", not(hydrolysis_hwui)) },
+        // The Cherenkov CPU painter: `cherenkov-cpu`'s rasterizer under the
+        // offscreen runtime. Native targets only — the browser renders
+        // through WebGPU — and never beside HWUI.
+        hydrolysis_cpu_painter: {
+            all(feature = "cpu", not(hydrolysis_hwui), not(target_arch = "wasm32"))
         },
+        // Either Cherenkov painter: the engine-generic mount targets, the
+        // window frame commit and the parley text engine.
+        hydrolysis_cherenkov: { any(hydrolysis_gpu_painter, hydrolysis_cpu_painter) },
+        // Both Cherenkov painters: the offscreen runtime selects one at
+        // construction from the host's adapters.
+        hydrolysis_both_painters: { all(hydrolysis_gpu_painter, hydrolysis_cpu_painter) },
     }
 }

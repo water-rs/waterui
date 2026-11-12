@@ -149,7 +149,8 @@ impl Capture {
     ) -> Self {
         let executor = HeadlessMainThreadExecutor::thread_shared();
         let _ = executor_core::try_init_local_executor(executor.clone());
-        let renderer = HydrolysisViewRenderer::new(
+        let renderer = HydrolysisViewRenderer::on_painter(
+            &crate::platform::OffscreenPainter::for_tests(),
             Rc::new(MinimalTestTheme::default()),
             env,
             family_resolution,

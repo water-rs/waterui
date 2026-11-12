@@ -22,6 +22,13 @@ serde_json.workspace = true
 dirs.workspace = true
 tempfile = "3.27"
 
+[build-dependencies]
+waterui-git-head.workspace = true
+
+# `waterui-git-head` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
+[package.metadata.cargo-machete]
+ignored = ["waterui-git-head"]
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

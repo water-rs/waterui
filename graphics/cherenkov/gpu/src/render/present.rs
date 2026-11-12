@@ -1512,18 +1512,9 @@ pub enum OutputColor {
     Bt2100Hlg,
 }
 
-/// Alpha convention of a host-owned presentation texture.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OutputAlpha {
-    /// The destination is opaque.
-    Opaque,
-    /// Channels are multiplied by alpha in the destination encoding. For
-    /// sRGB this multiplication follows transfer encoding, including when the
-    /// texture format applies the transfer in hardware.
-    Premultiplied,
-    /// Channels are independent of alpha.
-    Straight,
-}
+/// Alpha convention of a host-owned presentation texture: the front end's,
+/// shared with the CPU backend's presentation pass.
+pub use cherenkov::OutputAlpha;
 
 /// The [`OutputAlpha`] a surface's composite alpha mode reads.
 ///

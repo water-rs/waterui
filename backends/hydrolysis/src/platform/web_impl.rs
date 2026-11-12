@@ -17,8 +17,8 @@ use web_sys::{
 use waterui_core::contract_violation;
 
 use super::{
-    CursorStyle, GpuSurfaceWindow, GpuUnavailable, InputConventions, InputEvent, KeyCode, KeyState,
-    Modifiers, PlatformWindow, PointerButton, PointerKind, PresentationSurface as _,
+    CursorStyle, GpuUnavailable, InputConventions, InputEvent, KeyCode, KeyState, Modifiers,
+    PaintedWindow, PlatformWindow, PointerButton, PointerKind, PresentationSurface as _,
     ScrollPlatform, TextInputPurpose, TextInputState, TouchScrollConfig, WindowState, WuiWindow,
 };
 
@@ -677,7 +677,7 @@ impl PlatformWindow for BrowserWindow {
     }
 }
 
-impl GpuSurfaceWindow for BrowserWindow {
+impl PaintedWindow for BrowserWindow {
     type Presentation = BrowserSurface;
     fn surface(&mut self) -> &mut BrowserSurface {
         &mut self.surface
