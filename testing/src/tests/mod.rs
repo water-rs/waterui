@@ -312,7 +312,7 @@ mod token_probe {
     use waterui::color::Srgb;
     use waterui::component::text;
     use waterui::env::use_env;
-    use waterui::graphics::backend::draw::{Paint, Recorder};
+    use waterui::graphics::backend::draw::Recorder;
     use waterui::reactive::constant;
     use waterui::text::font::Font;
     use waterui::theme::{color as theme_color, install_color_signal, installed_color_signal};
