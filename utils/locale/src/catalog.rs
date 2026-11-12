@@ -5,6 +5,7 @@ use std::string::String;
 
 use icu_locale::LanguageIdentifier;
 use suiteki::Str;
+use waterui_core::contract_violation;
 use waterui_core::plugin::Plugin;
 
 use crate::locale::{Locale, find_in_fallback_chain, locales};
@@ -55,10 +56,16 @@ impl TranslationCatalog {
     }
 
     fn insert_locale(&mut self, locale: &str, file: TranslationFile) {
-        let locale = locale.parse::<Locale>().unwrap_or_else(|error| {
-            panic!("TranslationCatalog locale '{locale}' is invalid: {error}")
-        });
-        self.locales.insert(locale.id().clone(), file);
+        let parsed = match locale.parse::<Locale>() {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                contract_violation!(
+                    "TranslationCatalog locale '{locale}' is invalid: {error}; the translations for it are not added"
+                );
+                return;
+            }
+        };
+        self.locales.insert(parsed.id().clone(), file);
     }
 
     fn lookup_exact(&self, locale_key: &LanguageIdentifier, key: &str) -> Option<Str> {
@@ -67,17 +74,67 @@ impl TranslationCatalog {
         match value {
             TranslationValue::Simple(text) => Some(Str::from(text.clone())),
             TranslationValue::Plural(_forms) => {
-                panic!(
-                    "TranslationCatalog::lookup_text cannot resolve pluralized key '{key}' for locale '{locale_key}'; use text! for pluralized strings"
+                contract_violation!(
+                    "TranslationCatalog::lookup_text cannot resolve pluralized key '{key}' for locale '{locale_key}'; use text! for pluralized strings; the lookup finds no text"
                 );
+                None
             }
             TranslationValue::DualPlural(_) => {
-                panic!(
-                    "TranslationCatalog::lookup_text cannot resolve dual-plural key '{key}' for locale '{locale_key}'; use text! for pluralized strings"
+                contract_violation!(
+                    "TranslationCatalog::lookup_text cannot resolve dual-plural key '{key}' for locale '{locale_key}'; use text! for pluralized strings; the lookup finds no text"
                 );
+                None
             }
         }
     }
 }
 
 impl Plugin for TranslationCatalog {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GREETING: &str = r#"hello = "Hello""#;
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "TranslationCatalog locale 'not a locale!' is invalid")
+    )]
+    fn an_invalid_locale_is_not_added() {
+        let catalog = TranslationCatalog::new()
+            .add_toml("not a locale!", GREETING)
+            .expect("the table is valid TOML");
+
+        assert!(catalog.locales.is_empty());
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "cannot resolve pluralized key 'apples'")
+    )]
+    fn looking_up_a_pluralized_key_finds_no_text() {
+        let catalog = TranslationCatalog::new()
+            .add_toml(
+                "en",
+                r#"apples = { one = "an apple", other = "many apples" }"#,
+            )
+            .expect("the table is valid TOML");
+
+        assert_eq!(catalog.lookup_text(&locales::EN, "apples"), None);
+    }
+
+    #[test]
+    fn looking_up_a_simple_key_finds_its_text() {
+        let catalog = TranslationCatalog::new()
+            .add_toml("en", GREETING)
+            .expect("the table is valid TOML");
+
+        assert_eq!(
+            catalog.lookup_text(&locales::EN, "hello").as_deref(),
+            Some("Hello")
+        );
+    }
+}

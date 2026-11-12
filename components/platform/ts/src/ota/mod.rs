@@ -394,7 +394,8 @@ async fn fetch_bounded(url: &Url, size: u64) -> Result<Vec<u8>, FetchError> {
     let mut received: u64 = 0;
     while let Some(chunk) = body.next().await {
         let chunk = chunk.map_err(|error| network(error.into()))?;
-        received += u64::try_from(chunk.len()).expect("a chunk's length fits in u64");
+        received += u64::try_from(chunk.len())
+            .expect("`usize` is at most 64 bits on every supported target, so a length fits a u64");
         if received > size {
             return Err(exceeded(received));
         }

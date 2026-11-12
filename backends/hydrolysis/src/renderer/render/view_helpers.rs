@@ -377,6 +377,7 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
     );
     passthrough_ignorable_metadata_content!(
         MaterialBackground,
+        GlassBackground,
         // `.material_group()` marks a scope for backdrop capture only:
         // every measure/identity/label lookup sees the content it wraps.
         MaterialGroup,
@@ -580,6 +581,7 @@ fn normalize_layout_view_with_budget(
     // then relabel every descendant leaf).
     normalize_passthrough_ignorable_metadata!(
         MaterialBackground,
+        GlassBackground,
         // `.material_group()` is a scope marker with no environment effect:
         // its wrapper must reach the tree build so the flush can push the
         // scope its member materials join (water-rs/waterui#1999).
@@ -769,7 +771,7 @@ pub fn shape_kind_path(kind: ShapeKind, bounds: kurbo::Rect) -> Option<kurbo::Be
 /// order. A normalized kind resolves its fraction of the shorter side; a fixed
 /// kind carries its own length. Both clamp to half the shorter side, the
 /// ceiling a normalized `0.5` lands on, so radii stay absolute under `lerp`.
-fn shape_kind_radii(kind: ShapeKind, min_side: f32) -> [f32; 4] {
+pub fn shape_kind_radii(kind: ShapeKind, min_side: f32) -> [f32; 4] {
     let limit = min_side / 2.0;
     let normalized = |radius: f32| radius.clamp(0.0, 0.5) * min_side;
     let fixed = |radius: f32| radius.max(0.0).min(limit);

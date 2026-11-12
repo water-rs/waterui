@@ -3297,18 +3297,27 @@ impl ViewCapture {
         };
         let mut active = self.active.borrow_mut();
         // One pass over the collection: the next registration set is built
-        // keyed by surface id — surviving surfaces keep their `Rc` lease,
-        // parted ones drop out (their registration ends when the last
-        // owner, map or outstanding capture, drops on this thread), and
-        // each new surface is begun exactly once. No per-surface scan of
-        // the collection, so nested-GPU-child scenes stay linear.
+        // keyed by surface id — a surviving surface, the same surface under
+        // the same id, keeps its `Rc` lease; parted ones drop out (their
+        // registration ends when the last owner, map or outstanding capture,
+        // drops on this thread), and each new surface is begun exactly once.
+        // An id whose slot now resolves a different surface — a transition's
+        // frozen stand-in in the view of the torn-down live one — is a new
+        // surface: rendering the old registration would drive a surface whose
+        // redraw scope teardown already detached, which defers with no wake.
+        // No per-surface scan of the collection, so nested-GPU-child scenes
+        // stay linear.
         let join = |id, surface: &Rc<dyn CapturableSurface>| {
-            active.get(&id).cloned().unwrap_or_else(|| {
-                surface.begin_external_rendering(on_redraw.clone());
-                Rc::new(SurfaceRegistration {
-                    surface: surface.clone(),
+            active
+                .get(&id)
+                .filter(|registration| Rc::ptr_eq(&registration.surface, surface))
+                .cloned()
+                .unwrap_or_else(|| {
+                    surface.begin_external_rendering(on_redraw.clone());
+                    Rc::new(SurfaceRegistration {
+                        surface: surface.clone(),
+                    })
                 })
-            })
         };
         let next: HashMap<usize, Rc<SurfaceRegistration>> = snapshots
             .iter()

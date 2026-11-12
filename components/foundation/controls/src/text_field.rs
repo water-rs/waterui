@@ -6,9 +6,9 @@ use core::num::NonZeroUsize;
 use alloc::vec::Vec;
 use nami::{Binding, Computed};
 use waterui_core::Str;
-use waterui_core::configurable;
 use waterui_core::handler::{Handler, SharedAction};
 use waterui_core::{AnyView, Environment, View, layout::StretchAxis};
+use waterui_core::{configurable, contract_violation};
 use waterui_text::{IntoText, Text, TextConfig, styled::StyledStr};
 
 use crate::label::{IntoLabel, Label, impl_label_style_methods};
@@ -428,10 +428,11 @@ pub fn field(label: impl IntoLabel, value: &Binding<Str>) -> TextField {
 
 fn map_plain_binding(value: &Binding<Str>) -> Binding<StyledStr> {
     Binding::mapping(value, StyledStr::plain, |plain_binding, styled| {
-        assert!(
-            styled.is_plain(),
-            "TextField::new(label, &Binding<Str>) cannot accept styled text updates; use TextField::styled(label, &Binding<StyledStr>)"
-        );
+        if !styled.is_plain() {
+            contract_violation!(
+                "TextField::new(label, &Binding<Str>) cannot accept styled text updates; use TextField::styled(label, &Binding<StyledStr>); the styling is dropped and the plain text is stored"
+            );
+        }
         plain_binding.set(styled.to_plain());
     })
 }
@@ -467,11 +468,17 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "cannot accept styled text updates")]
-    fn plain_mapping_panics_on_styled_write_back() {
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "cannot accept styled text updates")
+    )]
+    fn plain_mapping_reports_styled_write_back() {
         let plain = Binding::container(Str::from("a"));
         let mapped = super::map_plain_binding(&plain);
         mapped.set(StyledStr::plain("b").italic(true));
+
+        // Release outcome: the styling is dropped and the plain text stored.
+        assert_eq!(plain.snapshot(), "b");
     }
 
     #[test]

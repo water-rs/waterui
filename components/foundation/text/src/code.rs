@@ -22,7 +22,7 @@ use waterui_core::accessibility::AccessibilityRole;
 use waterui_core::gesture::{GestureObserver, TapGesture};
 use waterui_core::resolve::Resolvable;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
-use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, View};
+use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, View, contract_violation};
 use waterui_layout::{
     background::background,
     padding::{EdgeInsets, Padding},
@@ -108,13 +108,16 @@ pub struct Code {
 impl Code {
     /// Creates a new `Code` view for the provided language and content.
     ///
-    /// # Panics
-    ///
-    /// Panics if the language cannot be converted into a supported [`Language`].
+    /// A language that cannot be converted into a supported [`Language`] is a
+    /// contract violation: the code is shown as [`Language::Plaintext`].
     pub fn new(language: impl TryInto<Language, Error: Error>, content: impl Into<Str>) -> Self {
+        let language = language.try_into().unwrap_or_else(|error| {
+            contract_violation!("Invalid language: {error}; the code is shown as plain text");
+            Language::Plaintext
+        });
         Self {
             info: None,
-            language: language.try_into().expect("Invalid language"),
+            language,
             content: content.into(),
             on_copied: None,
         }
@@ -303,4 +306,21 @@ fn copy_button(content: String, on_copied: Option<OnCopied>) -> impl View {
 /// Convenience constructor for creating a [`Code`] view inline.
 pub fn code(language: impl TryInto<Language, Error: Error>, content: impl Into<Str>) -> Code {
     Code::new(language, content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "Invalid language"))]
+    fn an_unknown_language_shows_the_code_as_plain_text() {
+        let code = Code::new("no-such-language", "fn main() {}");
+        assert_eq!(code.language, Language::Plaintext);
+    }
+
+    #[test]
+    fn a_known_language_is_kept() {
+        assert_eq!(Code::new("rust", "").language, Language::Rust);
+    }
 }

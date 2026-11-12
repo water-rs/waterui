@@ -274,6 +274,48 @@ mod tests {
         }
     }
 
+    /// An instant before the Unix epoch is a negative offset, never a panic.
+    #[test]
+    fn a_date_before_the_epoch_is_negative() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let before = UNIX_EPOCH - Duration::from_secs(90);
+        assert!((Date::from(before).unix_seconds() + 90.0).abs() < f64::EPSILON);
+        let after = UNIX_EPOCH + Duration::from_secs(90);
+        assert!((Date::from(after).unix_seconds() - 90.0).abs() < f64::EPSILON);
+    }
+
+    /// An action whose `Serialize` fails is a contract violation; the region
+    /// then carries an empty payload.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "the WidgetIntent action `unserializable` must serialize")
+    )]
+    fn an_unserializable_intent_action_carries_an_empty_payload() {
+        struct Unserializable;
+        impl serde::Serialize for Unserializable {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("no JSON form"))
+            }
+        }
+        impl<'de> serde::Deserialize<'de> for Unserializable {
+            fn deserialize<D: serde::Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
+                Ok(Self)
+            }
+        }
+        impl WidgetIntent for Unserializable {
+            fn perform(self) {}
+        }
+        impl DeclaredWidgetIntent for Unserializable {
+            const KIND: &'static str = "unserializable";
+        }
+
+        let region = Intent::new(&Unserializable, Shape::circle().fill(Color::ACCENT));
+        assert_eq!(region.kind(), "unserializable");
+        assert_eq!(region.payload(), "");
+    }
+
     #[test]
     fn widget_declaration_decodes_a_record_payload() {
         let declaration: WidgetDeclaration = serde_json::from_str(

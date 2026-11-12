@@ -16,7 +16,7 @@
 //!   contract (water-rs/waterui#1434), such as [`ButtonLook`] for a
 //!   [`ButtonSpec`], [`SwitchLook`] for a [`ToggleSpec`], [`StepperLook`]
 //!   for a [`StepperSpec`] and [`LinearProgressLook`] for a
-//!   [`ProgressSpec`], built from the look vocabulary: [`Driven`] values over
+//!   [`ProgressSpec`], and [`GlassLook`] for a `.background(Glass…)`, built from the look vocabulary: [`Driven`] values over
 //!   the widget's [`Inputs`] with their [`Motion`], [`Custom`] parts,
 //!   [`Label`] styling and [`HitRegion`]s;
 //! - the engine-provided chrome primitives a theme describes interactive
@@ -50,6 +50,7 @@
 //! overwrites both.
 
 mod chrome;
+mod glass;
 #[cfg(hydrolysis_runtime)]
 pub(crate) mod live;
 mod look;
@@ -62,6 +63,7 @@ pub use chrome::{
     Backdrop, Border, Chrome, CornerShape, Corners, Elevation, Fill, FocusIndicator, PressFeedback,
     Ripple, StateLayer, Surface, Wash,
 };
+pub use glass::GlassLook;
 pub use look::{
     ButtonLook, ButtonSpec, Custom, DragMapping, Driven, DrivenSet, HitRegion, Inputs, Knob, Label,
     Motion, SliderLayout, SliderLook, SliderSpec, SpecTint, Transition, ValueIndicator,

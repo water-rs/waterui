@@ -450,6 +450,21 @@ fn publication_replay(state: &Rc<FilteredState>) -> impl FnOnce() + 'static {
     }
 }
 
+/// The publication wait's `Err` outcome — the runtime's rebuild budget is
+/// spent, so no context will ever publish and the view stays unavailable:
+/// readiness resolves as failure so waiters never hang, and the link
+/// demand gate keeps the link paused on the settled `Failed` hold.
+fn publication_unavailable(state: &Rc<FilteredState>) -> impl FnOnce() + 'static {
+    let weak = Rc::downgrade(state);
+    move || {
+        if let Some(state) = weak.upgrade() {
+            state.first_paint_owed.set(false);
+            complete_ready(&state);
+            update_link_demand(&state);
+        }
+    }
+}
+
 /// Pauses the leaf's link, if a presenter is attached — the park's entry
 /// into its publication wait.
 fn pause_presenter(state: &FilteredState) {
@@ -469,6 +484,7 @@ fn park_for_publication(state: &Rc<FilteredState>, generation: u64) {
         generation,
         || pause_presenter(state),
         publication_replay(state),
+        publication_unavailable(state),
     );
 }
 
@@ -1046,6 +1062,7 @@ fn note_render_failure(
         error.clone(),
         || pause_presenter(state),
         publication_replay(state),
+        publication_unavailable(state),
     );
     if !settled {
         // One failure record and one log per generation — a second Failed

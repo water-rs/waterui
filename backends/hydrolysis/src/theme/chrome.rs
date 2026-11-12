@@ -105,6 +105,25 @@ pub struct CornerShape {
     /// `Some` for continuous corners, carrying the curvature transition's
     /// extent as a fraction of each radius ([`ContinuousRect::smoothing`]).
     smoothing: Option<f64>,
+    /// What the silhouette is drawn as: rounded corners on the rect, or the
+    /// ellipse the rect inscribes.
+    outline: Outline,
+}
+
+/// What a [`CornerShape`]'s silhouette is drawn as.
+#[derive(Debug, Clone)]
+enum Outline {
+    /// A rectangle with the shape's corners.
+    Rect,
+    /// A custom path, its unit-space commands resolved against the rect.
+    #[cfg(hydrolysis_runtime)]
+    Path(std::rc::Rc<[waterui_shape::PathCommand]>),
+    /// The circle inscribed in the rect, centred in it.
+    #[cfg(hydrolysis_runtime)]
+    Circle,
+    /// The ellipse filling the rect.
+    #[cfg(hydrolysis_runtime)]
+    Ellipse,
 }
 
 impl CornerShape {
@@ -114,6 +133,38 @@ impl CornerShape {
         Self {
             corners: corners.into(),
             smoothing: None,
+            outline: Outline::Rect,
+        }
+    }
+
+    /// The circle inscribed in the surface and centred in it, whatever its
+    /// aspect.
+    #[cfg(hydrolysis_runtime)]
+    #[must_use]
+    pub(crate) fn circle() -> Self {
+        Self {
+            outline: Outline::Circle,
+            ..Self::full()
+        }
+    }
+
+    /// A custom path, resolved against the surface.
+    #[cfg(hydrolysis_runtime)]
+    #[must_use]
+    pub(crate) fn path(commands: &[waterui_shape::PathCommand]) -> Self {
+        Self {
+            outline: Outline::Path(commands.into()),
+            ..Self::full()
+        }
+    }
+
+    /// The ellipse filling the surface.
+    #[cfg(hydrolysis_runtime)]
+    #[must_use]
+    pub(crate) fn ellipse() -> Self {
+        Self {
+            outline: Outline::Ellipse,
+            ..Self::full()
         }
     }
 
@@ -181,6 +232,35 @@ impl CornerShape {
     /// border inside it, follows.
     #[must_use]
     pub fn outset(&self, rect: Rect, corners: Corners, distance: f64) -> ShapeData {
+        match &self.outline {
+            Outline::Rect => {}
+            // A path has no offset curve: a grown or shrunk silhouette is
+            // the path resolved against the grown or shrunk rect.
+            #[cfg(hydrolysis_runtime)]
+            Outline::Path(commands) => {
+                let path = crate::renderer::path_commands_to_path(
+                    commands,
+                    rect.inflate(distance, distance),
+                );
+                return ShapeData::Path {
+                    elements: path.elements().into(),
+                    rule: cherenkov_record::FillRule::NonZero,
+                };
+            }
+            #[cfg(hydrolysis_runtime)]
+            Outline::Circle => {
+                let radius = (rect.width().min(rect.height()) / 2.0 + distance).max(0.0);
+                return ShapeData::Circle(Circle::new(rect.center(), radius));
+            }
+            #[cfg(hydrolysis_runtime)]
+            Outline::Ellipse => {
+                let radii = (
+                    (rect.width() / 2.0 + distance).max(0.0),
+                    (rect.height() / 2.0 + distance).max(0.0),
+                );
+                return ShapeData::Ellipse(kurbo::Ellipse::new(rect.center(), radii, 0.0));
+            }
+        }
         let radii = corners.radii_on(rect);
         let grow = |radius: f64| (radius + distance).max(0.0);
         let radii = RoundedRectRadii::new(

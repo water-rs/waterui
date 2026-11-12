@@ -270,7 +270,9 @@ pub fn menu_tree(
             ResolvedMenuItem::Divider => Some(cocoa_ui::menu::MenuTreeNode::Divider),
             ResolvedMenuItem::Command(command) => {
                 #[cfg(target_os = "macos")]
-                command.assert_allowed_in_macos_menu_bar();
+                if !command.allowed_in_macos_menu_bar() {
+                    return None;
+                }
                 let action = command.action.clone();
                 let env = env.clone();
                 Some(cocoa_ui::menu::MenuTreeNode::Command(

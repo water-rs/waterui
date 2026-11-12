@@ -4,6 +4,7 @@ use std::{num::NonZeroUsize, time::Duration};
 
 use nami::impl_constant;
 use uuid::Uuid;
+use waterui_core::contract_violation;
 
 use crate::Url;
 
@@ -128,16 +129,19 @@ pub struct OfflineDrmKeySet(Vec<u8>);
 impl OfflineDrmKeySet {
     /// Creates an opaque persistent-license identity.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when `bytes` is empty because an empty identity cannot restore keys.
+    /// `bytes` must not be empty because an empty identity cannot restore
+    /// keys. Otherwise a debug build panics; a release build logs it and
+    /// creates the empty identity, which restores no keys.
     #[must_use]
     pub fn new(bytes: impl Into<Vec<u8>>) -> Self {
         let bytes = bytes.into();
-        assert!(
-            !bytes.is_empty(),
-            "offline DRM key-set identity must not be empty"
-        );
+        if bytes.is_empty() {
+            contract_violation!(
+                "offline DRM key-set identity must not be empty; the identity is created empty and restores no keys"
+            );
+        }
         Self(bytes)
     }
 
@@ -316,9 +320,16 @@ mod drm_tests {
     }
 
     #[test]
-    #[should_panic(expected = "offline DRM key-set identity must not be empty")]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "offline DRM key-set identity must not be empty")
+    )]
     fn offline_key_set_rejects_empty_identity() {
-        let _ = OfflineDrmKeySet::new(Vec::new());
+        // Release outcome: the identity is created empty and restores no keys.
+        assert_eq!(
+            OfflineDrmKeySet::new(Vec::new()).as_bytes(),
+            Vec::<u8>::new()
+        );
     }
 }
 

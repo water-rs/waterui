@@ -1574,6 +1574,25 @@ fn publication_replay(
     }
 }
 
+/// The publication wait's `Err` outcome — the runtime's rebuild budget is
+/// spent, so no context will ever publish and the surface stays
+/// unavailable: native readiness resolves as failure so `ready` waiters
+/// never hang, and the demand gate keeps the link paused on the `Failed`
+/// hold the park settled.
+fn publication_unavailable(
+    state: &Rc<SurfaceState>,
+    view: &Retained<SurfaceView>,
+) -> impl FnOnce() + 'static {
+    let weak = Rc::downgrade(state);
+    let view = view.clone();
+    move || {
+        if let Some(state) = weak.upgrade() {
+            complete_ready(&state);
+            update_presentation_demand(&state, &view);
+        }
+    }
+}
+
 /// Parks the surface on the `generation` publication wait — the
 /// device-lost paths' `PendingRebuild`/`DeviceLost` settle, distinct
 /// from a typed failure: readiness keeps waiting for a real frame. A
@@ -1591,6 +1610,7 @@ fn park_for_publication(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, 
             }
         },
         publication_replay(state, view),
+        publication_unavailable(state, view),
     );
 }
 
@@ -2000,6 +2020,7 @@ fn settle_failed(
             }
         },
         publication_replay(state, view),
+        publication_unavailable(state, view),
     );
     if !settled {
         // The owner already settled this failure — the requesting

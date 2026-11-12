@@ -5,9 +5,11 @@
 //! paint operand is, and stays bound to the environment it resolves in.
 
 use alloc::sync::Arc;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use nami::impl_constant;
+use waterui_core::contract_violation;
 use waterui_core::layout::{Affine2, Point, Vec2};
 
 use crate::canvas::names::Names;
@@ -288,28 +290,47 @@ impl MeshGradient {
     /// A mesh of `columns × rows` patches. `points` and `colors` list the
     /// grid's vertices row by row.
     ///
-    /// # Panics
-    ///
-    /// When the grid is empty, or either list does not hold exactly one
-    /// entry per vertex.
+    /// An empty grid, or a list that does not hold exactly one entry per
+    /// vertex, is a contract violation: the mesh is one transparent patch
+    /// over the unit square.
     #[must_use]
     pub fn new(columns: u32, rows: u32, points: Vec<Point>, colors: Vec<WorkingColor>) -> Self {
-        assert!(
-            columns > 0 && rows > 0,
-            "a mesh gradient has at least one patch, got {columns}x{rows}"
-        );
         let vertices = (columns as usize + 1) * (rows as usize + 1);
-        assert!(
-            points.len() == vertices && colors.len() == vertices,
-            "a {columns}x{rows} mesh needs {vertices} points and colours, got {} and {}",
-            points.len(),
-            colors.len()
-        );
+        if columns == 0 || rows == 0 {
+            contract_violation!(
+                "a mesh gradient has at least one patch, got {columns}x{rows}; the mesh is one transparent patch"
+            );
+            return Self::transparent_patch();
+        }
+        if points.len() != vertices || colors.len() != vertices {
+            contract_violation!(
+                "a {columns}x{rows} mesh needs {vertices} points and colours, got {} and {}; the mesh is one transparent patch",
+                points.len(),
+                colors.len()
+            );
+            return Self::transparent_patch();
+        }
         Self {
             columns,
             rows,
             points,
             colors,
+        }
+    }
+
+    /// The mesh an invalid grid draws: one transparent patch over the unit
+    /// square.
+    fn transparent_patch() -> Self {
+        Self {
+            columns: 1,
+            rows: 1,
+            points: vec![
+                Point::new(0.0, 0.0),
+                Point::new(1.0, 0.0),
+                Point::new(0.0, 1.0),
+                Point::new(1.0, 1.0),
+            ],
+            colors: vec![WorkingColor::TRANSPARENT; 4],
         }
     }
 
@@ -918,3 +939,31 @@ impl_constant!(
     BlendSpace,
     Sampling
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "needs 9 points and colours")
+    )]
+    fn a_mesh_with_missing_vertices_is_one_transparent_patch() {
+        let mesh = MeshGradient::new(2, 2, vec![Point::new(0.0, 0.0)], Vec::new());
+        assert_eq!((mesh.columns(), mesh.rows()), (1, 1));
+        assert_eq!(mesh.points().len(), 4);
+        assert!(
+            mesh.colors()
+                .iter()
+                .all(|color| *color == WorkingColor::TRANSPARENT)
+        );
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "at least one patch"))]
+    fn an_empty_mesh_is_one_transparent_patch() {
+        let mesh = MeshGradient::new(0, 3, Vec::new(), Vec::new());
+        assert_eq!((mesh.columns(), mesh.rows()), (1, 1));
+    }
+}

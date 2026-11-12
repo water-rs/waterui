@@ -8,7 +8,7 @@ use core::fmt;
 use nami::{Computed, SignalExt};
 use waterui_core::layout::{Point, Rect, Size, StretchAxis};
 use waterui_core::reactive::signal::IntoComputed;
-use waterui_core::{Environment, View};
+use waterui_core::{Environment, View, contract_violation};
 
 use crate::canvas::{Canvas, MeshGradient};
 use crate::color::WorkingColor;
@@ -72,25 +72,21 @@ nami::impl_constant!(AnimatedMeshGradientConfig);
 impl AnimatedMeshGradientConfig {
     /// Sets the animation speed (must be >= 0.0).
     ///
-    /// # Panics
-    ///
-    /// Panics when `speed` is negative or not finite.
+    /// A negative or non-finite `speed` is a contract violation: the speed is
+    /// `0.0`.
     #[must_use]
     pub fn speed(mut self, speed: f32) -> Self {
-        assert_speed(speed);
-        self.speed = speed;
+        self.speed = checked_speed(speed);
         self
     }
 
     /// Sets the warp strength (recommended 0.0..0.5).
     ///
-    /// # Panics
-    ///
-    /// Panics when `warp` is negative or not finite.
+    /// A negative or non-finite `warp` is a contract violation: the warp is
+    /// `0.0`.
     #[must_use]
     pub fn warp(mut self, warp: f32) -> Self {
-        assert_warp(warp);
-        self.warp = warp;
+        self.warp = checked_warp(warp);
         self
     }
 
@@ -363,18 +359,26 @@ fn preset(
     }
 }
 
-fn assert_speed(speed: f32) {
-    assert!(
-        speed.is_finite() && speed >= 0.0,
-        "AnimatedMeshGradient speed must be finite and >= 0.0, got {speed}"
+/// `speed` when valid; otherwise `0.0`, which holds the gradient still.
+fn checked_speed(speed: f32) -> f32 {
+    if speed.is_finite() && speed >= 0.0 {
+        return speed;
+    }
+    contract_violation!(
+        "AnimatedMeshGradient speed must be finite and >= 0.0, got {speed}; 0.0 is used"
     );
+    0.0
 }
 
-fn assert_warp(warp: f32) {
-    assert!(
-        warp.is_finite() && warp >= 0.0,
-        "AnimatedMeshGradient warp must be finite and >= 0.0, got {warp}"
+/// `warp` when valid; otherwise `0.0`, which leaves the vertices on the grid.
+fn checked_warp(warp: f32) -> f32 {
+    if warp.is_finite() && warp >= 0.0 {
+        return warp;
+    }
+    contract_violation!(
+        "AnimatedMeshGradient warp must be finite and >= 0.0, got {warp}; 0.0 is used"
     );
+    0.0
 }
 
 /// A 4×4 mesh gradient whose vertices and colours flow with the canvas
@@ -499,9 +503,23 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "speed must be finite and >= 0.0")]
-    fn a_negative_speed_is_rejected() {
-        let _ = AnimatedMeshGradientConfig::default().speed(-1.0);
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "speed must be finite and >= 0.0")
+    )]
+    fn a_negative_speed_holds_the_gradient_still() {
+        let config = AnimatedMeshGradientConfig::default().speed(-1.0);
+        assert_eq!(config.speed.to_bits(), 0.0_f32.to_bits());
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "warp must be finite and >= 0.0")
+    )]
+    fn a_non_finite_warp_is_no_warp() {
+        let config = AnimatedMeshGradientConfig::default().warp(f32::NAN);
+        assert_eq!(config.warp.to_bits(), 0.0_f32.to_bits());
     }
 
     #[test]

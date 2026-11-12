@@ -131,7 +131,7 @@ fn scene_view_rejects_malformed_image_at_image_upload() {
                         .expect("hydrolysis scene ingest must name malformed Rgba8 data"),
                 )
                 .expect("hydrolysis scene ingest: image registration failed");
-            let image = resources.name(&image);
+            let image = resources.name(&image).expect("registered on this target");
             recorder.image(image, Rect::new(0.0, 0.0, 10.0, 10.0), Sampling::Linear);
         },
         image: None,
@@ -155,7 +155,7 @@ fn scene_view_rejects_malformed_image_inside_a_fill_paint() {
             recorder.fill(
                 Rect::new(0.0, 0.0, 10.0, 10.0),
                 Paint::Image(ImagePattern {
-                    image: resources.name(&image),
+                    image: resources.name(&image).expect("registered on this target"),
                     transform: kurbo::Affine::IDENTITY,
                     extend_x: cherenkov_record::Extend::Pad,
                     extend_y: cherenkov_record::Extend::Pad,
@@ -188,7 +188,9 @@ fn scene_view_accepts_a_well_formed_image() {
                         .expect("hydrolysis scene ingest: image registration failed"),
                 );
             }
-            let id = resources.name(image.as_ref().expect("the pane registered its image"));
+            let id = resources
+                .name(image.as_ref().expect("the pane registered its image"))
+                .expect("registered on this target");
             recorder.image(id, Rect::new(0.0, 0.0, 10.0, 10.0), Sampling::Linear);
         },
         image: None,

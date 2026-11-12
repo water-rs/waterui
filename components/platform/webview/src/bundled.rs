@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use percent_encoding::percent_decode_str;
+use waterui_core::contract_violation;
 
 use crate::Url;
 use crate::assets::{AssetRequest, AssetResponse, AssetServer};
@@ -51,23 +52,31 @@ pub struct DirectoryServer {
 impl DirectoryServer {
     /// A server over `root`.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
     /// When `root` is not a directory — the CLI stages the bundle or the build
-    /// is wrong; both are build errors, not runtime states.
+    /// is wrong. A debug build panics; a release build logs it and the server
+    /// answers every request with `404`.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
-        let root = root.canonicalize().unwrap_or_else(|error| {
-            panic!(
-                "asset root '{}' is not a staged directory: {error}",
-                root.display()
-            )
-        });
-        assert!(
-            root.is_dir(),
-            "asset root '{}' is not a staged directory",
-            root.display()
-        );
+        let root = match root.canonicalize() {
+            Ok(canonical) if canonical.is_dir() => canonical,
+            Ok(canonical) => {
+                contract_violation!(
+                    "asset root '{}' is not a staged directory; every request answers 404",
+                    canonical.display()
+                );
+                canonical
+            }
+            Err(error) => {
+                contract_violation!(
+                    "asset root '{}' is not a staged directory: {error}; \
+                     every request answers 404",
+                    root.display()
+                );
+                root
+            }
+        };
         Self {
             root,
             spa: false,
@@ -204,10 +213,8 @@ fn content_type_for(extension: &str) -> &'static str {
 /// environment variables, so the launch channel there is a process argument.
 /// The function itself is not gated; callers gate on `debug_assertions`.
 ///
-/// # Panics
-///
-/// When a present value is not a URL — a malformed handoff is a CLI bug, not
-/// a state the app can serve.
+/// A present value that is not a URL is a malformed handoff: it is logged and
+/// ignored, as if the source were absent.
 #[must_use]
 pub fn dev_url() -> Option<Url> {
     dev_url_from(
@@ -220,18 +227,24 @@ pub fn dev_url() -> Option<Url> {
 /// `--waterui-dev-url=` process argument.
 fn dev_url_from(env: Option<&str>, mut args: impl Iterator<Item = String>) -> Option<Url> {
     if let Some(value) = env {
-        return Some(
-            value
-                .parse()
-                .expect("WATERUI_DEV_URL is set but is not a URL"),
-        );
+        match value.parse() {
+            Ok(url) => return Some(url),
+            Err(error) => {
+                tracing::error!("WATERUI_DEV_URL is set but is not a URL: {error}; it is ignored");
+            }
+        }
     }
     args.find_map(|arg| {
-        arg.strip_prefix("--waterui-dev-url=").map(|value| {
-            value
-                .parse()
-                .expect("--waterui-dev-url is present but is not a URL")
-        })
+        let value = arg.strip_prefix("--waterui-dev-url=")?;
+        match value.parse() {
+            Ok(url) => Some(url),
+            Err(error) => {
+                tracing::error!(
+                    "--waterui-dev-url is present but is not a URL: {error}; it is ignored"
+                );
+                None
+            }
+        }
     })
 }
 
@@ -371,6 +384,33 @@ mod tests {
             Some("http://localhost:9999")
         );
         assert_eq!(dev_url_from(None, ["app".to_string()].into_iter()), None);
+    }
+
+    /// A malformed handoff is logged and skipped, never fatal.
+    #[test]
+    fn a_malformed_dev_url_is_ignored() {
+        assert_eq!(
+            dev_url_from(
+                Some(""),
+                ["--waterui-dev-url=http://localhost:9999".to_string()].into_iter(),
+            )
+            .as_ref()
+            .map(Url::as_str),
+            Some("http://localhost:9999")
+        );
+        assert_eq!(
+            dev_url_from(None, ["--waterui-dev-url=".to_string()].into_iter()),
+            None
+        );
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "is not a staged directory"))]
+    fn a_missing_asset_root_answers_404() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let server = DirectoryServer::new(dir.path().join("missing")).into_server();
+        assert_eq!(get(&server, "/").status(), 404);
+        assert_eq!(get(&server, "/index.html").status(), 404);
     }
 
     fn header<'a>(response: &'a AssetResponse, name: &str) -> &'a str {

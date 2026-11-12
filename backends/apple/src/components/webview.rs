@@ -27,6 +27,10 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::{Cell, OnceCell, RefCell};
 
+#[cfg(target_os = "macos")]
+use cocoa_ui::appkit::HostView;
+#[cfg(target_os = "ios")]
+use cocoa_ui::uikit::HostView;
 use cocoa_ui::{MainThreadMarker, web_kit};
 use waterui::Str;
 use waterui::reactive::watcher::BoxWatcherGuard;
@@ -39,8 +43,8 @@ use waterui_webview::{
     ASSET_HOST, ASSET_ORIGIN, ASSET_SCHEME, AnsweredNavigations, BackendEvent, Cookie,
     CustomWebViewController, DOCUMENT_START_SCRIPT, DocumentScripts, NavigationPolicy,
     NavigationRequest, OriginPolicy, ScriptInjectionTime, ScriptMessageHandler, Url, UserScript,
-    WatcherGuard, WatcherSet, WebViewConfig, WebViewError, WebViewEvent, WebViewHandle, assets,
-    bridge,
+    WatcherGuard, WatcherSet, WebViewConfig, WebViewError, WebViewEvent, WebViewHandle,
+    WebViewOpenError, assets, bridge,
 };
 
 use crate::contract::NativeLeaf;
@@ -778,14 +782,20 @@ impl core::fmt::Debug for AppleWebViewController {
 }
 
 impl CustomWebViewController for AppleWebViewController {
-    fn open(&self, config: WebViewConfig) -> impl WebViewHandle {
-        let mtm = MainThreadMarker::new().expect("a WebView opens on the main thread");
+    fn open(&self, config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
+        let mtm = MainThreadMarker::new().ok_or(WebViewOpenError::MainThreadRequired)?;
         // Interception can only be registered while the configuration is
         // being assembled, so the asset server arrives at creation.
         let scripts = DocumentScripts::new(&config);
         let (asset_server, bridge_origins, navigation_policy, ..) = config.into_parts();
         let scheme = asset_server.as_ref().map(asset_scheme);
-        WkWebViewHandle::new(mtm, scheme, bridge_origins, scripts, navigation_policy)
+        Ok(WkWebViewHandle::new(
+            mtm,
+            scheme,
+            bridge_origins,
+            scripts,
+            navigation_policy,
+        ))
     }
 
     fn asset_origin(&self) -> Option<Url> {
@@ -852,7 +862,15 @@ impl SubView for WebViewSubView {
 /// handle owns, keeping the `WebView` — and with it the event, navigation
 /// and signal subscriptions — alive for the leaf's life.
 pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<waterui_webview::WebView>(|webview, _ctx| {
+    dispatcher.register_native::<waterui_webview::WebView>(|webview, ctx| {
+        // The controller failed to open this view and `waterui-webview`
+        // already reported it: mount an empty host where the page would be.
+        if webview.handle().is_unavailable() {
+            let host = HostView::new(ctx.mtm(), cocoa_ui::Rect::ZERO);
+            let mut leaf = NativeLeaf::new(&*host, WebViewSubView);
+            leaf.keep(webview);
+            return leaf;
+        }
         let handle = webview.handle().downcast_ref::<WkWebViewHandle>().expect(
             "a WebView leaf was handed a handle from another engine; the \
                  WebViewController in this environment is not the Apple backend's",

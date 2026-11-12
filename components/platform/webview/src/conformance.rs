@@ -668,7 +668,8 @@ async fn state_view(
             async {}
         })
         .handler("hold", hold_handler)
-        .create(controller, &waterui_core::Environment::new());
+        .create(controller, &waterui_core::Environment::new())
+        .expect("a conformance engine exposes the asset origin its page opens under");
     // The installs above are commands nobody awaits; an evaluation answered
     // after them orders them before the first navigation.
     let _ = raw_eval(view.handle(), "0").await;

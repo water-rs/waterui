@@ -70,6 +70,7 @@ fn render_error(failure: crate::capture_image::CaptureFailure) -> RenderError {
     match failure {
         CaptureFailure::GpuSurfaceFailed(_)
         | CaptureFailure::GpuRuntimeUnavailable
+        | CaptureFailure::GpuUnrecoverable(_)
         | CaptureFailure::CompositionFailed { .. }
         | CaptureFailure::TargetAllocation { .. } => RenderError::Gpu(Box::new(failure)),
         #[cfg(target_os = "ios")]

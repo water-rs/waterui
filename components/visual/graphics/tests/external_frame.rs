@@ -645,7 +645,8 @@ fn the_renderer_reports_the_generation_of_the_context_it_was_given() {
     lost_runtime
         .context()
         .mark_device_lost_for_testing("test device loss");
-    let fresh = pollster::block_on(lost_runtime.context_after(0));
+    let fresh = pollster::block_on(lost_runtime.context_after(0))
+        .expect("a lost context within the rebuild budget recovers");
     assert!(
         fresh.generation() > live_runtime.context().generation(),
         "the rebuild advanced the lost runtime past the live one"
@@ -678,7 +679,8 @@ fn an_idle_device_loss_recovers_through_context_publication() {
     runtime
         .context()
         .mark_device_lost_for_testing("test device loss");
-    let fresh = pollster::block_on(runtime.context_after(stale_generation));
+    let fresh = pollster::block_on(runtime.context_after(stale_generation))
+        .expect("a lost context within the rebuild budget recovers");
     assert!(fresh.generation() > stale_generation);
     drop(stale_renderer);
 
