@@ -280,6 +280,31 @@ fn place_date_picker_label<E: crate::text::TextEngine>(
     label_height
 }
 
+/// Where the formatted value draws inside the field: inset by the input
+/// metrics and short of the dropdown indicator. The look draws the field left
+/// to right, with the indicator at its right end; a right-to-left layout
+/// reflects the field's content.
+fn date_picker_value_bounds(
+    field_bounds: kurbo::Rect,
+    horizontal_inset: f64,
+    vertical_inset: f64,
+    indicator_space: f64,
+    env: &Environment,
+) -> kurbo::Rect {
+    let inset = inset_rect(field_bounds, horizontal_inset, vertical_inset);
+    let text_bounds = kurbo::Rect::new(
+        inset.x0,
+        inset.y0,
+        (inset.x1 - indicator_space).max(inset.x0),
+        inset.y1,
+    );
+    if layout_direction(env).snapshot().is_right_to_left() {
+        mirrored_in(text_bounds, field_bounds)
+    } else {
+        text_bounds
+    }
+}
+
 pub fn render_date_picker_parts<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<DatePickerRenderState<E>>>,
@@ -361,24 +386,13 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
     handles.attach_live(Rc::clone(parts.chrome()));
     let render_ctx = ctx.render_context();
     parts.push_below(ctx.renderer_mut(), render_ctx);
-    // The look draws the field left to right, with the dropdown indicator at
-    // its right end; a right-to-left layout reflects the field's content.
-    let text_bounds = inset_rect(
+    let text_bounds = date_picker_value_bounds(
         field_bounds,
         input_metrics.horizontal_inset,
         input_metrics.vertical_inset,
+        metrics.indicator_space,
+        env,
     );
-    let text_bounds = kurbo::Rect::new(
-        text_bounds.x0,
-        text_bounds.y0,
-        (text_bounds.x1 - metrics.indicator_space).max(text_bounds.x0),
-        text_bounds.y1,
-    );
-    let text_bounds = if layout_direction(env).snapshot().is_right_to_left() {
-        mirrored_in(text_bounds, field_bounds)
-    } else {
-        text_bounds
-    };
     ctx.render_styled_text(
         label_styled(look.get_value(), StyledStr::plain(value)),
         HorizontalAlignment::Leading,
