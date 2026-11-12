@@ -581,6 +581,15 @@ pub trait CapturableSurface {
     /// superlayer while the capture measures how the tree composites it.
     /// The layer's own mask is not part of that geometry, so a
     /// presentation layer carries none.
+    ///
+    /// A capture renders the surface only while the native tree draws
+    /// this layer: neither it nor an ancestor below the capture's root is
+    /// hidden or fully transparent. A surface therefore hides the layer,
+    /// or an ancestor of it inside the surface's own view, only while
+    /// something else shows in its place. Hiding it because the surface
+    /// has not presented a frame yet would drop it from every enclosing
+    /// capture, which renders the surface itself and never waits on its
+    /// presentation.
     fn presentation_layer(&self) -> Option<Retained<CALayer>>;
     /// Suspends the surface's own presentation while its content is captured
     /// elsewhere — hides [`presentation_layer`](Self::presentation_layer).
@@ -3096,12 +3105,16 @@ impl ViewCapture {
     ///
     /// Only a surface this capture's raster draws renders: one whose
     /// presentation is hidden or fully transparent below `root` shows
-    /// nothing in the frame and gets no spec. A live effect's content and
-    /// its output are siblings and exactly one of them is shown, so the
-    /// content's surfaces render either here or through the effect's own
-    /// capture, never both — a surface's frame composites into one target,
-    /// so two renders in one pass would each take it from the other and
-    /// the pass could never land.
+    /// nothing in the frame and gets no spec — the probes would measure
+    /// it at zero coverage anyway. A live effect's content and its output
+    /// are siblings and exactly one of them is shown, so the content's
+    /// surfaces render either here or through the effect's own capture,
+    /// never both — a surface's frame composites into one target, so two
+    /// renders in one pass would each take it from the other and the pass
+    /// could never land. A surface hides its presentation only while
+    /// something else stands in for it
+    /// ([`CapturableSurface::presentation_layer`]), so a drawn surface
+    /// whose setup is still pending renders here and defers the capture.
     ///
     /// A hidden surface still joins, as does a resolved capturable whose
     /// bounds produced no spec and that cannot present on its own — a
