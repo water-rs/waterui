@@ -8235,8 +8235,7 @@ mod owner_lifetimes {
         scroll
             .downcast_ref::<cocoa_ui::appkit::ScrollView>()
             .and_then(cocoa_ui::appkit::ScrollView::document_view)
-            .map(|document| cocoa_ui::view::subviews(&document))
-            .unwrap_or_default()
+            .map_or_default(|document| cocoa_ui::view::subviews(&document))
     }
 
     /// The `UIKit` scroll surface mounts the child on the scroll view
