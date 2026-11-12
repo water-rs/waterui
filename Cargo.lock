@@ -13691,6 +13691,7 @@ dependencies = [
  "sha2",
  "suiteki",
  "tracing",
+ "waterui-contract",
  "zenwave 0.7.1",
 ]
 
