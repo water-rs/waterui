@@ -7091,6 +7091,18 @@ fn clip_region(clip: Option<DeviceClip>, width: u32, height: u32) -> [u32; 4] {
 mod tests {
     use super::*;
 
+    /// Clips `layer` to `shape` at once.
+    const fn clip(layer: LayerId, shape: ShapeData) -> LayerOp {
+        LayerOp::Clip(
+            layer,
+            Some(cherenkov::Retarget {
+                target: shape,
+                animation: None,
+                start: None,
+            }),
+        )
+    }
+
     #[test]
     #[cfg_attr(
         debug_assertions,
@@ -8418,8 +8430,8 @@ mod tests {
                 parent: tree.root(),
                 child: above,
             });
-            tree.apply(LayerOp::Clip(holder, Some(outer)));
-            tree.apply(LayerOp::Clip(video, Some(inner)));
+            tree.apply(clip(holder, outer));
+            tree.apply(clip(video, inner));
             let mut caches: FxHashMap<LayerId, ContentData> = std::iter::once((
                 above,
                 ContentData::new(Picture::record(|c| {
@@ -8577,8 +8589,8 @@ mod tests {
                     (None, above),
                 ],
             );
-            tree.apply(LayerOp::Clip(gp, Some(outer)));
-            tree.apply(LayerOp::Clip(holder, Some(inner)));
+            tree.apply(clip(gp, outer));
+            tree.apply(clip(holder, inner));
             let Some(frame) = lower_promoted(
                 &tree,
                 [
@@ -8644,16 +8656,10 @@ mod tests {
         );
         // `holder` isolates against `gp`; `mid` merges into `holder`'s
         // rect in place; `inner` isolates against the merged rect.
-        tree.apply(LayerOp::Clip(gp, Some(rounded(0.0))));
-        tree.apply(LayerOp::Clip(
-            holder,
-            Some(ShapeData::Rect(Rect::new(0.0, 0.0, 32.0, 32.0))),
-        ));
-        tree.apply(LayerOp::Clip(
-            mid,
-            Some(ShapeData::Rect(Rect::new(2.0, 2.0, 30.0, 30.0))),
-        ));
-        tree.apply(LayerOp::Clip(inner, Some(rounded(4.0))));
+        tree.apply(clip(gp, rounded(0.0)));
+        tree.apply(clip(holder, ShapeData::Rect(Rect::new(0.0, 0.0, 32.0, 32.0))));
+        tree.apply(clip(mid, ShapeData::Rect(Rect::new(2.0, 2.0, 30.0, 30.0))));
+        tree.apply(clip(inner, rounded(4.0)));
         let Some(frame) = lower_promoted(
             &tree,
             [
@@ -8728,9 +8734,9 @@ mod tests {
             parent: tree.root(),
             child: above,
         });
-        tree.apply(LayerOp::Clip(
+        tree.apply(clip(
             holder,
-            Some(ShapeData::Circle(kurbo::Circle::new((16.0, 16.0), 0.0))),
+            ShapeData::Circle(kurbo::Circle::new((16.0, 16.0), 0.0)),
         ));
         let candidates: FxHashMap<LayerId, Candidate> = std::iter::once((
             video,

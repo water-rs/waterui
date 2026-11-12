@@ -19,7 +19,7 @@ use cherenkov_record::{
     BlendMode, ChangeSet, ColorStop, ContentOp, Curve, Draw, Extend, FontId, Glyph, GlyphRun,
     GlyphStyle, Group, ImageId, ImagePattern, Instant, Interpolation, LayerId, LayerOp,
     LinearGradient, MeshColorInterpolation, MeshGradient, Op as TreeOp, Paint, Picture, Prop,
-    RadialGradient, Sampling, ShaderId, ShaderPaint, Shadow, ShapeData, StaticRecorder,
+    RadialGradient, Retarget, Sampling, ShaderId, ShaderPaint, Shadow, ShapeData, StaticRecorder,
     SweepGradient,
 };
 
@@ -59,6 +59,18 @@ const fn prop<T: Animatable>(target: T) -> Prop<T> {
         animation: None,
         start: None,
     }
+}
+
+/// Clips `id` to `target` at once.
+const fn clip(id: LayerId, target: ShapeData) -> LayerOp {
+    LayerOp::Clip(
+        id,
+        Some(Retarget {
+            target,
+            animation: None,
+            start: None,
+        }),
+    )
 }
 
 fn stops() -> Vec<ColorStop> {
@@ -368,11 +380,9 @@ fn tree_scene() -> Result<Scene, HwuiError> {
         )),
         layer(LayerOp::Translation(card, prop(Vec2::new(10.5, 20.0)))),
         layer(LayerOp::Opacity(card, prop(0.5))),
-        layer(LayerOp::Clip(
+        layer(clip(
             card,
-            Some(ShapeData::RoundedRect(RoundedRect::new(
-                0.0, 0.0, 40.0, 30.0, 6.0,
-            ))),
+            ShapeData::RoundedRect(RoundedRect::new(0.0, 0.0, 40.0, 30.0, 6.0)),
         )),
         layer(LayerOp::Blend(card, BlendMode::Multiply)),
         layer(LayerOp::Create(scroller)),
@@ -2047,10 +2057,7 @@ fn tree_native_hit_follows_order_clip_scroll_and_transform() {
     encoder
         .commit(changes(vec![
             layer(LayerOp::Translation(root, prop(Vec2::new(40., 50.)))),
-            layer(LayerOp::Clip(
-                root,
-                Some(ShapeData::Rect(Rect::new(0., 0., 30., 30.))),
-            )),
+            layer(clip(root, ShapeData::Rect(Rect::new(0., 0., 30., 30.)))),
             layer(LayerOp::ScrollOffset(root, prop(Vec2::new(2., 3.)))),
             layer(LayerOp::Create(native)),
             layer(LayerOp::Push {
@@ -2258,9 +2265,9 @@ fn platform_view_node_keeps_parent_composition() {
                 child: parent,
             }),
             layer(LayerOp::Opacity(parent, prop(0.5))),
-            layer(LayerOp::Clip(
+            layer(clip(
                 parent,
-                Some(ShapeData::Rect(Rect::new(0.0, 0.0, 80.0, 80.0))),
+                ShapeData::Rect(Rect::new(0.0, 0.0, 80.0, 80.0)),
             )),
             layer(LayerOp::Create(leaf)),
             layer(LayerOp::Push {

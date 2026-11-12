@@ -25,7 +25,7 @@ use crate::Instant;
 use crate::animation::{Animation, KeyframeAnimation};
 use crate::ops::{
     Axis, BackdropId, ChangeSet, ContentOp, Install, KeyframeProp, LayerId, LayerKeyframes,
-    LayerOp, Op, Prop, SurfaceId, TrackStart,
+    LayerOp, Op, Prop, Retarget, SurfaceId, TrackStart,
 };
 use crate::projective::Projective;
 use crate::record::{Binding, Content, ContentSpare, Live, LiveOwner, SampleFlag};
@@ -1470,18 +1470,29 @@ impl<T: BackdropSampling> LayerEdit<T> {
     /// effect evaluated in the member's composite.
     ///
     /// The sample is a constant or a signal. A bound signal keeps updating
-    /// the membership with no further transactions: each change replaces
-    /// the sample whole. The property is not animatable: a change's
-    /// `Animation` metadata is ignored.
+    /// the membership with no further transactions. A change carrying an
+    /// `Animation` in its metadata moves the effect's parameters there
+    /// lane by lane, like a recorded operand; a change of group, recording
+    /// scale or effect kind snaps, and a keyframe track is a contract
+    /// violation that snaps.
     pub fn backdrop(&mut self, sample: impl Into<Live<BackdropSample>>) -> &mut Self {
         let target = Shared::bind(
             &self.shared,
             self.layer,
             PropKind::Backdrop,
             sample.into(),
-            |layer, sample, _, _| LayerOp::Backdrop(layer, Some(sample)),
+            |layer, sample, animation, metadata| {
+                LayerOp::Backdrop(layer, Some(Retarget::of(sample, animation, metadata)))
+            },
         );
-        self.queue(Op::Layer(LayerOp::Backdrop(self.layer, Some(target))));
+        self.queue(Op::Layer(LayerOp::Backdrop(
+            self.layer,
+            Some(Retarget {
+                target,
+                animation: self.default_animation,
+                start: self.default_start,
+            }),
+        )));
         self
     }
 
@@ -1841,17 +1852,31 @@ impl<T: Target> LayerEdit<T> {
     }
 
     /// Sets the clip shape, applied in the layer's own space.
+    ///
+    /// A bound signal's change carrying an `Animation` in its metadata
+    /// moves the shape there lane by lane, like a recorded operand; a
+    /// shape of another kind or path layout snaps, and a keyframe track is
+    /// a contract violation that snaps.
     pub fn clip<S: Shape + 'static>(&mut self, shape: impl Into<Live<S>>) -> &mut Self {
         let target = Shared::bind(
             &self.shared,
             self.layer,
             PropKind::Clip,
             shape.into(),
-            |layer, shape: S, _, _| LayerOp::Clip(layer, Some(ShapeData::of(&shape))),
+            |layer, shape: S, animation, metadata| {
+                LayerOp::Clip(
+                    layer,
+                    Some(Retarget::of(ShapeData::of(&shape), animation, metadata)),
+                )
+            },
         );
         self.queue(Op::Layer(LayerOp::Clip(
             self.layer,
-            Some(target.into_data()),
+            Some(Retarget {
+                target: target.into_data(),
+                animation: self.default_animation,
+                start: self.default_start,
+            }),
         )));
         self
     }
@@ -2008,7 +2033,8 @@ impl<T: Target> LayerEdit<T> {
     ///
     /// # Contract
     /// The last op this handle recorded must be a transform component,
-    /// `tilt`, `depth`, `transform`, `opacity` or `scroll_offset`, and
+    /// `tilt`, `depth`, `transform`, `opacity`, `scroll_offset`, `clip` or
+    /// `backdrop`, and
     /// `animation` must not be a [`Decay`](crate::Decay) on anything but
     /// `scroll_offset`. Otherwise it is a contract violation, and the call
     /// changes nothing: the op keeps the animation it had.
@@ -2405,7 +2431,7 @@ mod tests {
             matches!(
                 ops.as_slice(),
                 [LayerOp::Create(_), LayerOp::Backdrop(id, Some(s))]
-                    if *id == layer.id() && *s == BackdropSample::with_effect(group, rim(1.0))
+                    if *id == layer.id() && s.target == BackdropSample::with_effect(group, rim(1.0))
             ),
             "the bound sample starts whole: {ops:?}"
         );
@@ -2422,7 +2448,7 @@ mod tests {
             assert!(
                 matches!(
                     ops.as_slice(),
-                    [LayerOp::Backdrop(id, Some(s))] if *id == layer.id() && *s == next
+                    [LayerOp::Backdrop(id, Some(s))] if *id == layer.id() && s.target == next
                 ),
                 "a bound change replaces the sample: {ops:?}"
             );
@@ -2465,9 +2491,9 @@ mod tests {
                     LayerOp::Opacity(_, Prop { target: one, .. }),
                     LayerOp::Backdrop(_, Some(b)),
                     LayerOp::Opacity(_, Prop { target: quarter, .. }),
-                ] if *a == first
+                ] if a.target == first
                     && one.to_bits() == 1.0_f32.to_bits()
-                    && *b == newest
+                    && b.target == newest
                     && quarter.to_bits() == 0.25_f32.to_bits()
             ),
             "the transaction's edits queue ahead of its signals' changes: {ops:?}"
@@ -2561,9 +2587,9 @@ mod tests {
                         LayerOp::Opacity(_, Prop { target: one, .. }),
                         LayerOp::Backdrop(_, Some(b)),
                         LayerOp::Opacity(_, Prop { target: quarter, .. }),
-                    ] if *a == first
+                    ] if a.target == first
                         && one.to_bits() == 1.0_f32.to_bits()
-                        && *b == newest
+                        && b.target == newest
                         && quarter.to_bits() == 0.25_f32.to_bits()
                 )
             ),
@@ -2592,8 +2618,10 @@ mod tests {
         assert!(
             matches!(
                 ops.as_slice(),
-                [LayerOp::Create(_), LayerOp::Clip(_, Some(ShapeData::Rect(rect)))]
-                    if *rect == Rect::new(0.0, 0.0, 10.0, 10.0)
+                [
+                    LayerOp::Create(_),
+                    LayerOp::Clip(_, Some(Retarget { target: ShapeData::Rect(rect), .. })),
+                ] if *rect == Rect::new(0.0, 0.0, 10.0, 10.0)
             ),
             "the bound clip starts from its shape: {ops:?}"
         );
@@ -3905,6 +3933,46 @@ mod tests {
         assert_eq!(named.at, start);
         let carried = named.origin.as_ref().expect("the change names its origin");
         assert_eq!((carried.from, carried.velocity), ([0.25], [-2.0]));
+    }
+
+    /// A bound clip's and a bound backdrop sample's changes carry the
+    /// animation and start their metadata names into their ops.
+    #[test]
+    fn a_bound_clip_and_backdrop_carry_their_change_animation() {
+        use crate::BackdropSample;
+
+        let shared = shared();
+        let layer = layer(&shared);
+        let start = crate::Instant::now();
+        let linear = Animation::from(Curve::linear(Duration::from_millis(400)));
+        let clip = binding(Rect::new(0.0, 0.0, 10.0, 10.0));
+        let sample = binding(BackdropSample::with_effect(BackdropId::new(1), rim(1.0)));
+        Shared::run_transaction(&shared, None, None, |tx| {
+            tx[&layer]
+                .clip(clip.clone().with(linear).with(AnimationStart(start)))
+                .backdrop(sample.clone().with(linear));
+        });
+        let _ = shared.borrow_mut().take_changes(crate::Instant::now());
+        clip.set(Rect::new(5.0, 0.0, 15.0, 10.0));
+        sample.set(BackdropSample::with_effect(BackdropId::new(1), rim(2.0)));
+        let Some(changes) = shared.borrow_mut().take_changes(crate::Instant::now()) else {
+            panic!("the bound changes queued ops");
+        };
+        let [
+            Op::Layer(LayerOp::Clip(_, Some(clip))),
+            Op::Layer(LayerOp::Backdrop(_, Some(backdrop))),
+        ] = changes.ops.as_slice()
+        else {
+            panic!("a clip op and a backdrop op: {:?}", changes.ops);
+        };
+        assert_eq!(
+            clip.target,
+            ShapeData::Rect(Rect::new(5.0, 0.0, 15.0, 10.0))
+        );
+        assert!(matches!(clip.animation, Some(Animation::Curve(_))));
+        assert_eq!(clip.start, Some(start));
+        assert!(matches!(backdrop.animation, Some(Animation::Curve(_))));
+        assert_eq!(backdrop.start, None);
     }
 
     #[test]

@@ -672,7 +672,7 @@ pub fn diff(prev: Option<&Properties>, next: &Properties, ops: &mut Vec<Op>) {
 mod tests {
     use cherenkov::kurbo::{RoundedRect, Vec2};
     use cherenkov::testing::LayerOp;
-    use cherenkov::{Animatable, LayerId, Prop, SurfaceTree};
+    use cherenkov::{Animatable, LayerId, Prop, Retarget, SurfaceTree};
 
     use super::*;
     use crate::interop::{ChromaSiting, ContentLight, MasteringDisplay};
@@ -1022,7 +1022,11 @@ mod tests {
         ));
         tree.apply(LayerOp::Clip(
             PARENT,
-            Some(ShapeData::Rect(Rect::new(0.0, 0.0, 200.0, 100.0))),
+            Some(Retarget {
+                target: ShapeData::Rect(Rect::new(0.0, 0.0, 200.0, 100.0)),
+                animation: None,
+                start: None,
+            }),
         ));
         tree.apply(LayerOp::ScrollOffset(PARENT, prop(Vec2::new(0.0, 20.0))));
         tree.apply(LayerOp::Transform(VIDEO, prop(Affine::scale(0.5))));
@@ -1087,9 +1091,11 @@ mod tests {
         let mut tree = player();
         tree.apply(LayerOp::Clip(
             VIDEO,
-            Some(ShapeData::RoundedRect(RoundedRect::new(
-                0.0, 0.0, 10.0, 10.0, 2.0,
-            ))),
+            Some(Retarget {
+                target: ShapeData::RoundedRect(RoundedRect::new(0.0, 0.0, 10.0, 10.0, 2.0)),
+                animation: None,
+                start: None,
+            }),
         ));
         assert_eq!(
             decide(&tree, (16, 16)).rejected,

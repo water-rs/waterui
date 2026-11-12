@@ -16,13 +16,15 @@ use waterui_contract::contract_violation;
 use kurbo::{Affine, Vec2};
 
 use crate::animation::{
-    AnimLanes, Animatable, Animation, AnimationTrack, Lanes, Motion, clamp_to_rect, eval_lanes,
-    rubber_band_spring,
+    AnimLanes, Animatable, Animation, AnimationTrack, LaneTrack, Lanes, Motion, clamp_to_rect,
+    eval_lanes, rubber_band_spring,
 };
 use crate::backdrop::BackdropSample;
 use crate::display_list::{Operand, SlotUpdate, blends_within, translucent_within};
 use crate::frame::RefreshRange;
-use crate::ops::{ContentOp, Install, KeyframeProp, LayerId, LayerKeyframes, LayerOp, Op, Prop};
+use crate::ops::{
+    ContentOp, Install, KeyframeProp, LayerId, LayerKeyframes, LayerOp, Op, Prop, Retarget,
+};
 use crate::projective::{Projective, ProjectiveError};
 use crate::shape::ShapeData;
 use crate::style::{BlendMode, FilterId};
@@ -205,6 +207,10 @@ pub struct LayerNode {
     components: Option<Box<components::Components>>,
     opacity_track: Option<Track<f32>>,
     scroll_track: Option<Track<Vec2>>,
+    /// The clip shape's running track, lane by lane.
+    clip_track: Option<LaneTrack<ShapeData>>,
+    /// The backdrop sample's running track: its effect parameters.
+    backdrop_track: Option<LaneTrack<BackdropSample>>,
     projective: bool,
     animation_rate: Option<RefreshRange>,
     /// The stamp of the last change to what this layer draws in its own
@@ -270,12 +276,17 @@ impl LayerNode {
     }
 
     /// Describes all running tracks together. Returns `None` for scroll,
-    /// projective or nonlinear component motion, or a track whose start is
-    /// still unknown — one that carries no host-given start and has never
-    /// been sampled. An empty description means that no property is moving.
+    /// clip, backdrop, projective or nonlinear component motion, or a track
+    /// whose start is still unknown — one that carries no host-given start
+    /// and has never been sampled. An empty description means that no
+    /// property is moving.
     #[must_use]
     pub fn animations(&self) -> Option<LayerAnimations> {
-        if self.projective || self.scroll_track.is_some() {
+        if self.projective
+            || self.scroll_track.is_some()
+            || self.clip_track.is_some()
+            || self.backdrop_track.is_some()
+        {
             return None;
         }
         let transform = self.transform_animation();
@@ -324,6 +335,8 @@ impl LayerNode {
             components: None,
             opacity_track: None,
             scroll_track: None,
+            clip_track: None,
+            backdrop_track: None,
             projective: false,
             animation_rate: None,
             inner_stamp: 0,
@@ -393,9 +406,10 @@ impl LayerNode {
     /// The refresh class the layer's running tracks need: fast while
     /// anything moves geometry, slow for a decay past its fast phase and for
     /// an opacity curve or spring, which moves no geometry — a fade reads
-    /// smooth at 30–60 Hz. A keyframed opacity keeps the fast class.
+    /// smooth at 30–60 Hz. A keyframed opacity keeps the fast class, and a
+    /// clip or backdrop track, which moves what the layer shows, runs fast.
     fn classify_rate(&self, scale: f64, components_running: bool) -> Option<RefreshRange> {
-        if components_running {
+        if components_running || self.clip_track.is_some() || self.backdrop_track.is_some() {
             return Some(RATE_FAST);
         }
         let mut rate = None;
@@ -656,6 +670,12 @@ impl SurfaceTree {
             running.note_track(node.transform_track.as_ref());
             running.note_track(node.opacity_track.as_ref());
             running.note_track(node.scroll_track.as_ref());
+            if let Some(track) = &node.clip_track {
+                running.note(track.repeats_forever());
+            }
+            if let Some(track) = &node.backdrop_track {
+                running.note(track.repeats_forever());
+            }
             if let Some(components) = &node.components {
                 components.note_running(&mut running);
             }
@@ -1053,10 +1073,16 @@ impl SurfaceTree {
                 set_prop(&mut node.scroll_track, &mut node.scroll_offset, &prop);
             }
             LayerOp::Keyframes(id, keyframes) => self.node_mut(id).set_keyframes(&keyframes),
-            LayerOp::Clip(id, clip) => self.node_mut(id).clip = clip,
+            LayerOp::Clip(id, clip) => {
+                let node = self.node_mut(id);
+                retarget(&mut node.clip_track, &mut node.clip, clip);
+            }
             LayerOp::Blend(id, blend) => self.set_blend(id, blend),
             LayerOp::Filter(id, filter) => self.node_mut(id).filter = filter,
-            LayerOp::Backdrop(id, backdrop) => self.node_mut(id).backdrop = backdrop,
+            LayerOp::Backdrop(id, backdrop) => {
+                let node = self.node_mut(id);
+                retarget(&mut node.backdrop_track, &mut node.backdrop, backdrop);
+            }
             LayerOp::HostWindow(id, window) => {
                 let node = self.node_mut(id);
                 node.host_window = window;
@@ -1196,9 +1222,14 @@ impl SurfaceTree {
                 continue;
             }
             let mut node_fast = false;
-            // Opacity is outer and scroll inner: any running track steps.
+            // Opacity is outer; scroll, clip and backdrop inner: any running
+            // track steps.
             let mut outer_changed = node.opacity_track.is_some();
-            let inner_changed = node.scroll_track.is_some();
+            let inner_changed = node.scroll_track.is_some()
+                || node.clip_track.is_some()
+                || node.backdrop_track.is_some();
+            stepped |= sample_lanes(&mut node.clip_track, &mut node.clip, time);
+            stepped |= sample_lanes(&mut node.backdrop_track, &mut node.backdrop, time);
             let mut transform_changed = false;
             if let Some(track) = &mut node.transform_track {
                 stepped = true;
@@ -1365,6 +1396,71 @@ fn set_prop<T: Animatable>(track: &mut Option<Track<T>>, value: &mut T, prop: &P
             *track = Some(next);
         }
     }
+}
+
+/// Applies a change to a lane-decomposed layer value — the clip, the
+/// backdrop sample — and its track. An animated change starts from what
+/// the layer shows: it retargets a running track, keeping its sampled
+/// position and velocity, or starts a new one at rest. A change without an
+/// animation, one from no value, and one whose endpoints share no lane
+/// layout snap and drop the track; clearing the value drops it too. A
+/// change to the value the layer already rests at runs no track: a rebind
+/// of an unchanged shape under an animated transaction wakes no frame.
+///
+/// # Contract
+/// A `Decay` is a contract violation: the change snaps.
+fn retarget<V: AnimLanes + Clone + PartialEq>(
+    track: &mut Option<LaneTrack<V>>,
+    value: &mut Option<V>,
+    change: Option<Retarget<V>>,
+) {
+    let Some(Retarget {
+        target,
+        animation,
+        start,
+    }) = change
+    else {
+        *value = None;
+        *track = None;
+        return;
+    };
+    let animation = animation.and_then(Animation::except_decay);
+    let resting = track.is_none() && value.as_ref() == Some(&target);
+    let from = animation
+        .filter(|_| !resting)
+        .and(value.as_ref())
+        .and_then(|current| current.anim_lanes(&target));
+    let (Some(animation), Some(from)) = (animation, from) else {
+        *value = Some(target);
+        *track = None;
+        return;
+    };
+    if track
+        .as_mut()
+        .is_some_and(|running| running.retarget(target.clone(), animation, start))
+    {
+        return;
+    }
+    *track = Some(LaneTrack::new(from, target, animation, start));
+}
+
+/// Samples a lane-decomposed layer value's running track at `time` into
+/// `value`, dropping the track once it settles on its target. Whether a
+/// track ran.
+fn sample_lanes<V: AnimLanes + Clone>(
+    track: &mut Option<LaneTrack<V>>,
+    value: &mut Option<V>,
+    time: Instant,
+) -> bool {
+    let Some(running) = track else {
+        return false;
+    };
+    let (sampled, still) = running.sample(time);
+    *value = Some(sampled);
+    if !still {
+        *track = None;
+    }
+    true
 }
 
 /// Snaps an offset to the device-pixel grid: `round(offset · scale) /
@@ -2181,8 +2277,233 @@ mod hierarchy_tests {
         assert_eq!(stamp, tree.composition_stamp(|id| id == layer));
         tree.apply(LayerOp::Clip(
             layer,
-            Some(ShapeData::Rect(Rect::new(0., 0., 20., 20.))),
+            Some(Retarget {
+                target: ShapeData::Rect(Rect::new(0., 0., 20., 20.)),
+                animation: None,
+                start: None,
+            }),
         ));
         assert_ne!(stamp, tree.composition_stamp(|id| id == layer));
+    }
+
+    /// One attached layer with nothing set.
+    fn attached() -> (SurfaceTree, LayerId) {
+        let mut tree = SurfaceTree::new();
+        let layer = LayerId::new(1);
+        tree.apply(LayerOp::Create(layer));
+        tree.apply(LayerOp::Push {
+            parent: tree.root(),
+            child: layer,
+        });
+        (tree, layer)
+    }
+
+    fn rect_at(x: f64) -> ShapeData {
+        ShapeData::Rect(Rect::new(x, 0.0, x + 10.0, 10.0))
+    }
+
+    const fn change<T>(target: T, animation: Option<Animation>) -> Retarget<T> {
+        Retarget {
+            target,
+            animation,
+            start: None,
+        }
+    }
+
+    fn clip(layer: LayerId, target: ShapeData, animation: Option<Animation>) -> LayerOp {
+        LayerOp::Clip(layer, Some(change(target, animation)))
+    }
+
+    fn backdrop(layer: LayerId, target: BackdropSample, animation: Option<Animation>) -> LayerOp {
+        LayerOp::Backdrop(layer, Some(change(target, animation)))
+    }
+
+    fn clip_x(tree: &SurfaceTree, layer: LayerId) -> f64 {
+        tree.layer(layer)
+            .clip
+            .as_ref()
+            .expect("the layer clips")
+            .bounds()
+            .x0
+    }
+
+    /// An animated clip change moves the shape lane by lane from what the
+    /// layer shows, at the fast rate, and settles on its target exactly.
+    #[test]
+    fn an_animated_clip_moves_lane_by_lane() {
+        let (mut tree, layer) = attached();
+        tree.apply(clip(layer, rect_at(0.0), None));
+        let linear = Animation::from(Curve::linear(Duration::from_secs(1)));
+        tree.apply(clip(layer, rect_at(100.0), Some(linear)));
+        assert!(
+            clip_x(&tree, layer).abs() < 1e-9,
+            "the layer shows its old clip until sampled"
+        );
+        assert!(
+            tree.layer(layer).animations().is_none(),
+            "a clip track never hands off to a compositor"
+        );
+        assert_eq!(
+            tree.running_tracks(|_| false),
+            RunningTracks {
+                finite: true,
+                perpetual: false
+            }
+        );
+
+        let start = Instant::now();
+        let first = tree.sample(start, 1.0);
+        assert!(first.stepped);
+        assert_eq!(first.rate, Some(RATE_FAST));
+        let stamp = tree.layer(layer).inner_stamp();
+        tree.sample(start + Duration::from_millis(250), 1.0);
+        assert!(
+            (clip_x(&tree, layer) - 25.0).abs() < 1e-6,
+            "a quarter of the way: {}",
+            clip_x(&tree, layer)
+        );
+        assert!(
+            tree.layer(layer).inner_stamp() > stamp,
+            "a clip step changes what the layer draws"
+        );
+        let last = tree.sample(start + Duration::from_secs(2), 1.0);
+        assert_eq!(tree.layer(layer).clip, Some(rect_at(100.0)));
+        assert_eq!(last.rate, None, "the settled track asks for no frame");
+        assert_eq!(tree.running_tracks(|_| false), RunningTracks::default());
+
+        tree.apply(clip(layer, rect_at(100.0), Some(linear)));
+        assert_eq!(
+            tree.running_tracks(|_| false),
+            RunningTracks::default(),
+            "an animated change to the shape at rest runs no track"
+        );
+    }
+
+    /// A clip retargeted mid-flight continues from its sampled shape; a
+    /// shape of another kind snaps, as does a change without animation.
+    #[test]
+    fn a_clip_retargets_from_its_sample_and_snaps_across_kinds() {
+        let (mut tree, layer) = attached();
+        let linear = Animation::from(Curve::linear(Duration::from_secs(1)));
+        tree.apply(clip(layer, rect_at(0.0), None));
+        tree.apply(clip(layer, rect_at(100.0), Some(linear)));
+        let start = Instant::now();
+        tree.sample(start, 1.0);
+        tree.sample(start + Duration::from_millis(500), 1.0);
+        tree.apply(clip(layer, rect_at(0.0), Some(linear)));
+        tree.sample(start + Duration::from_millis(500), 1.0);
+        assert!(
+            (clip_x(&tree, layer) - 50.0).abs() < 1e-6,
+            "the retarget starts where the track was: {}",
+            clip_x(&tree, layer)
+        );
+        tree.sample(start + Duration::from_millis(1000), 1.0);
+        assert!(
+            (clip_x(&tree, layer) - 25.0).abs() < 1e-6,
+            "and runs its own second from there: {}",
+            clip_x(&tree, layer)
+        );
+
+        let circle = ShapeData::Circle(kurbo::Circle::new((5.0, 5.0), 5.0));
+        tree.apply(clip(layer, circle.clone(), Some(linear)));
+        assert_eq!(tree.layer(layer).clip, Some(circle), "another kind snaps");
+        assert_eq!(tree.running_tracks(|_| false), RunningTracks::default());
+
+        tree.apply(clip(layer, rect_at(7.0), Some(linear)));
+        assert_eq!(
+            tree.layer(layer).clip,
+            Some(rect_at(7.0)),
+            "a rect from a circle snaps back"
+        );
+        tree.apply(LayerOp::Clip(layer, None));
+        assert_eq!(tree.layer(layer).clip, None);
+    }
+
+    /// A backdrop sample's effect parameters interpolate; a change of group
+    /// or of effect kind snaps.
+    #[test]
+    fn a_backdrop_effect_interpolates_and_snaps_across_groups_and_kinds() {
+        use crate::backdrop::{BackdropEffect, Refraction, Rim};
+        use crate::ops::BackdropId;
+
+        let refraction = |strength| {
+            BackdropEffect::Refraction(Refraction {
+                depth: 8.0,
+                strength,
+            })
+        };
+        let strength = |tree: &SurfaceTree| match tree
+            .layer(LayerId::new(1))
+            .backdrop
+            .as_ref()
+            .and_then(BackdropSample::effect)
+        {
+            Some(BackdropEffect::Refraction(refraction)) => refraction.strength,
+            other => panic!("a refraction sample, got {other:?}"),
+        };
+        let (mut tree, layer) = attached();
+        let group = BackdropId::new(1);
+        let linear = Animation::from(Curve::linear(Duration::from_secs(1)));
+        tree.apply(backdrop(
+            layer,
+            BackdropSample::with_effect(group, refraction(0.0)),
+            None,
+        ));
+        tree.apply(backdrop(
+            layer,
+            BackdropSample::with_effect(group, refraction(40.0)),
+            Some(linear),
+        ));
+        let start = Instant::now();
+        tree.sample(start, 1.0);
+        let sampled = tree.sample(start + Duration::from_millis(250), 1.0);
+        assert_eq!(sampled.rate, Some(RATE_FAST));
+        assert!(
+            (strength(&tree) - 10.0).abs() < 1e-4,
+            "a quarter of the way: {}",
+            strength(&tree)
+        );
+        assert!(tree.layer(layer).animations().is_none());
+
+        let other = BackdropSample::with_effect(BackdropId::new(2), refraction(0.0));
+        tree.apply(backdrop(layer, other.clone(), Some(linear)));
+        assert_eq!(tree.layer(layer).backdrop, Some(other), "a new group snaps");
+
+        let rim = BackdropSample::with_effect(
+            BackdropId::new(2),
+            Rim {
+                width: 2.0,
+                color: [1.0; 4],
+                gain: 1.0,
+            },
+        );
+        tree.apply(backdrop(layer, rim.clone(), Some(linear)));
+        assert_eq!(tree.layer(layer).backdrop, Some(rim), "a new kind snaps");
+        assert_eq!(tree.running_tracks(|_| false), RunningTracks::default());
+    }
+
+    /// A spring overshooting a parameter's domain projects back onto it:
+    /// a strength never turns negative.
+    #[test]
+    fn a_rebuilt_backdrop_sample_keeps_its_parameters_in_their_domains() {
+        use crate::backdrop::{BackdropEffect, Refraction};
+        use crate::ops::BackdropId;
+
+        let sample = BackdropSample::with_effect(
+            BackdropId::new(1),
+            Refraction {
+                depth: 8.0,
+                strength: 2.0,
+            },
+        );
+        let lanes = sample.anim_lanes(&sample).expect("a sample has lanes");
+        assert_eq!(&*lanes, &[0.0, 8.0, 2.0]);
+        let rebuilt = sample.with_lanes(&[-1.0, -3.0, -0.5]);
+        assert_eq!(rebuilt.outer_extent().get(), 0.0);
+        let Some(BackdropEffect::Refraction(refraction)) = rebuilt.effect() else {
+            panic!("the rebuilt sample keeps its kind")
+        };
+        assert!(refraction.depth > 0.0);
+        assert!(refraction.strength.abs() < f32::EPSILON);
     }
 }

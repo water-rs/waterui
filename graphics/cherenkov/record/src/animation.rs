@@ -1037,25 +1037,28 @@ impl AnimLanes for Stroke {
     }
 }
 
-/// One running animation on a recorded operand.
+/// One running animation on a value that decomposes into a variable
+/// number of lanes ([`AnimLanes`]): a recorded operand, a layer's clip
+/// shape or its backdrop sample.
 ///
-/// The operand counterpart of a layer property's render-side track. The
-/// endpoints are kept as lanes; the displayed operand rebuilds from the
-/// target's layout each frame.
-pub struct OperandTrack {
+/// The counterpart of a fixed-lane layer property's track. The endpoints
+/// are kept as lanes; the displayed value rebuilds from the target's
+/// layout each frame.
+pub(crate) struct LaneTrack<V = Operand> {
     /// The lanes the track started from (its retarget snapshot).
     from: Box<[f64]>,
     /// The lane velocities the track started with.
     velocity: Box<[f64]>,
     /// `target`'s lanes.
     target_lanes: Box<[f64]>,
-    /// The operand the track moves toward; its layout rebuilds each sample
+    /// The value the track moves toward; its layout rebuilds each sample
     /// of an animation. A keyframe track holds it once it ends.
-    target: Operand,
+    target: V,
     /// What drives the track.
-    motion: Motion,
-    /// The time the track started; `None` until the first sample, so a
-    /// track committed between frames starts at its presentation time.
+    motion: Motion<V>,
+    /// The time the track started: the host's start when the change named
+    /// one, otherwise `None` until the first sample, so a track committed
+    /// between frames starts at its presentation time.
     start: Option<Instant>,
     /// The last sampled state, for retarget continuity.
     last: Option<Sampled>,
@@ -1090,9 +1093,9 @@ impl<V> Motion<V> {
     }
 }
 
-impl std::fmt::Debug for OperandTrack {
+impl<V: std::fmt::Debug> std::fmt::Debug for LaneTrack<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OperandTrack")
+        f.debug_struct("LaneTrack")
             .field("target", &self.target)
             .field("motion", &self.motion)
             .field("start", &self.start)
@@ -1104,21 +1107,28 @@ impl std::fmt::Debug for OperandTrack {
 /// retarget continues from.
 type Sampled = (Instant, Box<[f64]>, Box<[f64]>);
 
-impl OperandTrack {
+impl<V: AnimLanes + Clone> LaneTrack<V> {
     /// Whether the track is a keyframe track that repeats until replaced.
     pub(crate) const fn repeats_forever(&self) -> bool {
         self.motion.repeats_forever()
     }
 
-    /// A track from `from`'s lanes to `target` with zero velocity.
+    /// A track from `from`'s lanes to `target` with zero velocity, starting
+    /// at `start` on the host's clock or, when `None`, at the first frame
+    /// that samples it.
     ///
     /// # Panics
     /// Panics on a `Decay` animation: like a layer property other than
-    /// `scroll_offset`, an operand never takes one.
-    pub(crate) fn new(from: Box<[f64]>, target: Operand, animation: Animation) -> Self {
+    /// `scroll_offset`, a lane-decomposed value never takes one.
+    pub(crate) fn new(
+        from: Box<[f64]>,
+        target: V,
+        animation: Animation,
+        start: Option<Instant>,
+    ) -> Self {
         assert!(
             !matches!(animation, Animation::Decay(_)),
-            "a recorded operand never takes a Decay"
+            "a lane-decomposed value never takes a Decay"
         );
         let target_lanes = target
             .anim_lanes(&target)
@@ -1130,7 +1140,7 @@ impl OperandTrack {
             target_lanes,
             target,
             motion: Motion::Animation(animation),
-            start: None,
+            start,
             last: None,
         }
     }
@@ -1140,10 +1150,10 @@ impl OperandTrack {
     /// # Panics
     /// Panics when `target` has no lane decomposition: a glyph run never
     /// animates.
-    pub(crate) fn keyframes(target: Operand, keyframes: Box<KeyframeLanes<Operand>>) -> Self {
+    pub(crate) fn keyframes(target: V, keyframes: Box<KeyframeLanes<V>>) -> Self {
         let target_lanes = target
             .anim_lanes(&target)
-            .expect("a keyframed operand has lanes, like its keyframes");
+            .expect("a keyframed value has lanes, like its keyframes");
         let from: Box<[f64]> = keyframes.value(0).into();
         Self {
             velocity: vec![0.0; from.len()].into_boxed_slice(),
@@ -1158,24 +1168,34 @@ impl OperandTrack {
 
     /// Retargets the track to `target` under `animation`, keeping the last
     /// sampled position and velocity like a layer track does; a keyframe
-    /// track hands over its sampled value and velocity the same way.
-    /// `false` when the new target's lane layout differs from the running
-    /// track's.
+    /// track hands over its sampled value and velocity the same way. A
+    /// host-given `start` anchors the new track there and continues from
+    /// this track evaluated at `start` instead: the sampler may not have
+    /// drawn a frame since the host's clock issued the change. `false`
+    /// when the new target's lane layout differs from the running track's.
     ///
     /// # Panics
-    /// Panics on a `Decay` animation, like [`OperandTrack::new`].
-    pub(crate) fn retarget(&mut self, target: Operand, animation: Animation) -> bool {
+    /// Panics on a `Decay` animation, like [`LaneTrack::new`].
+    pub(crate) fn retarget(
+        &mut self,
+        target: V,
+        animation: Animation,
+        start: Option<Instant>,
+    ) -> bool {
         assert!(
             !matches!(animation, Animation::Decay(_)),
-            "a recorded operand never takes a Decay"
+            "a lane-decomposed value never takes a Decay"
         );
         let Some(target_lanes) = target.anim_lanes(&target) else {
             return false;
         };
-        let (from, velocity) = self.last.take().map_or_else(
-            || (self.from.clone(), self.velocity.clone()),
-            |(_, pos, vel)| (pos, vel),
-        );
+        let (from, velocity) = match start {
+            Some(at) => self.state_at(at),
+            None => self.last.take().map_or_else(
+                || (self.from.clone(), self.velocity.clone()),
+                |(_, pos, vel)| (pos, vel),
+            ),
+        };
         if from.len() != target_lanes.len() {
             return false;
         }
@@ -1184,50 +1204,70 @@ impl OperandTrack {
         self.target_lanes = target_lanes;
         self.target = target;
         self.motion = Motion::Animation(animation);
-        self.start = None;
+        self.start = start;
         self.last = None;
         true
     }
 
-    /// Evaluates the track at `time`: the sampled operand and whether the
-    /// track still runs.
-    pub(crate) fn sample(&mut self, time: Instant) -> (Operand, bool) {
-        let start = *self.start.get_or_insert(time);
-        let dt = time.duration_since(start).as_secs_f64();
+    /// The position and velocity lanes `dt` seconds into the track, and
+    /// whether it still runs. A done animation reports its target exactly;
+    /// an ended keyframe track holds its change's value, at rest.
+    fn eval(&self, dt: f64) -> (Box<[f64]>, Box<[f64]>, bool) {
         let n = self.from.len();
         let mut pos = vec![0.0; n].into_boxed_slice();
         let mut vel = vec![0.0; n].into_boxed_slice();
-        let animation = match &self.motion {
-            Motion::Animation(animation) => animation,
+        match &self.motion {
             Motion::Keyframes(keyframes) => {
                 if keyframes.eval(dt, |lane, p, v| {
                     pos[lane] = p;
                     vel[lane] = v;
                 }) {
-                    let operand = keyframes.layout.with_lanes(&pos);
-                    self.last = Some((time, pos, vel));
-                    return (operand, true);
+                    (pos, vel, true)
+                } else {
+                    (self.target_lanes.clone(), vel, false)
                 }
-                // The last cycle ended: the operand holds its change's value.
-                self.last = Some((time, self.target_lanes.clone(), vel));
-                return (self.target.clone(), false);
             }
+            Motion::Animation(animation) => {
+                let timing = animation
+                    .timing()
+                    .expect("a lane-decomposed value never takes a Decay");
+                let running = !timing.sample_lanes(
+                    &self.from,
+                    &self.velocity,
+                    &self.target_lanes,
+                    dt,
+                    &mut pos,
+                    &mut vel,
+                );
+                (pos, vel, running)
+            }
+        }
+    }
+
+    /// The `(position, velocity)` the track reports at `time` without
+    /// sampling it; an unstarted track is evaluated as though `time` were
+    /// its first frame.
+    fn state_at(&self, time: Instant) -> (Box<[f64]>, Box<[f64]>) {
+        let dt = self
+            .start
+            .map_or(0.0, |start| time.duration_since(start).as_secs_f64());
+        let (pos, vel, _) = self.eval(dt);
+        (pos, vel)
+    }
+
+    /// Evaluates the track at `time`: the sampled value and whether the
+    /// track still runs.
+    pub(crate) fn sample(&mut self, time: Instant) -> (V, bool) {
+        let start = *self.start.get_or_insert(time);
+        let (pos, vel, running) = self.eval(time.duration_since(start).as_secs_f64());
+        let value = match &self.motion {
+            Motion::Keyframes(keyframes) if running => keyframes.layout.with_lanes(&pos),
+            // The last cycle ended: the value holds its change's value.
+            Motion::Keyframes(_) => self.target.clone(),
+            Motion::Animation(_) => self.target.with_lanes(&pos),
         };
-        let timing = animation
-            .timing()
-            .expect("a recorded operand never takes a Decay");
-        // A done track reports its target exactly.
-        let running = !timing.sample_lanes(
-            &self.from,
-            &self.velocity,
-            &self.target_lanes,
-            dt,
-            &mut pos,
-            &mut vel,
-        );
-        let operand = self.target.with_lanes(&pos);
         self.last = Some((time, pos, vel));
-        (operand, running)
+        (value, running)
     }
 }
 

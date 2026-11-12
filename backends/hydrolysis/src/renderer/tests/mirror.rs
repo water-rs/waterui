@@ -9,8 +9,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use cherenkov::{
-    BackdropId, FilterId, Layer, LayerContent, LayerId, LayerNode, Realize, Shared, SurfaceId,
-    SurfaceTree, Transaction,
+    BackdropId, ContentOp, FilterId, Layer, LayerContent, LayerId, LayerNode, Picture, Realize,
+    Shared, SurfaceId, SurfaceTree, Transaction,
 };
 use cherenkov_record::{ChangeSet, MaterialRegistry};
 use rustc_hash::FxHashMap;
@@ -50,6 +50,9 @@ impl cherenkov::BackdropSampling for MirrorTarget {}
 pub struct Mirrored {
     tree: SurfaceTree,
     installs: FxHashMap<LayerId, (u32, u32)>,
+    /// Each layer's recorded content, with every slot update and edit the
+    /// change sets carried applied: what a target would draw.
+    pictures: FxHashMap<LayerId, Picture>,
 }
 
 /// Applies each drained change set to the mirrored tree.
@@ -70,11 +73,33 @@ impl MirrorQueue {
             match mirrored.tree.apply_op(op) {
                 Realize::Remove(layer) => {
                     mirrored.installs.remove(&layer);
+                    mirrored.pictures.remove(&layer);
                 }
                 Realize::Install(layer, install) => {
                     mirrored.installs.insert(layer, install.into_inner());
+                    mirrored.pictures.remove(&layer);
                 }
-                Realize::Content(..) | Realize::Applied => {}
+                Realize::Content(layer, content) => match content {
+                    Some(ContentOp::Replace(picture) | ContentOp::Picture(picture)) => {
+                        mirrored.pictures.insert(layer, picture);
+                    }
+                    Some(ContentOp::Update(updates)) => {
+                        let _ = mirrored
+                            .pictures
+                            .get_mut(&layer)
+                            .expect("an update follows its content's first commit")
+                            .apply(updates);
+                    }
+                    Some(ContentOp::Edit(edit)) => mirrored
+                        .pictures
+                        .get_mut(&layer)
+                        .expect("an edit follows its content's first commit")
+                        .edit(*edit),
+                    None => {
+                        mirrored.pictures.remove(&layer);
+                    }
+                },
+                Realize::Applied => {}
             }
         }
     }
@@ -358,6 +383,8 @@ pub struct MirrorWindow {
     mount: Mount<MirrorTarget, crate::text::ParleyEngine>,
     host: MirrorHost,
     mirrored: Rc<RefCell<Mirrored>>,
+    /// The mount's surface, which [`present`](Self::present) drains.
+    shared: Rc<RefCell<Shared<MirrorTarget>>>,
 }
 
 impl std::fmt::Debug for MirrorWindow {
@@ -371,6 +398,7 @@ impl MirrorWindow {
         let mirrored = Rc::new(RefCell::new(Mirrored {
             tree: SurfaceTree::new(),
             installs: FxHashMap::default(),
+            pictures: FxHashMap::default(),
         }));
         let shared = Rc::new(RefCell::new(Shared::new(
             SurfaceId::new(1),
@@ -390,9 +418,10 @@ impl MirrorWindow {
             spec_log: RefCell::new(Vec::new()),
         };
         Self {
-            mount: Mount::new(shared, registry),
+            mount: Mount::new(Rc::clone(&shared), registry),
             host,
             mirrored,
+            shared,
         }
     }
 
@@ -400,6 +429,44 @@ impl MirrorWindow {
     /// `at`, as the engine does before it draws one.
     pub fn sample(&self, at: crate::time::Instant) -> cherenkov_record::tree::Sampling {
         self.mirrored.borrow_mut().tree.sample(at, 1.0)
+    }
+
+    /// One frame presented at `at`, as an engine runs it: the surface's
+    /// recorded operands sample their running tracks into the change set
+    /// it drains, which the mirror applies before it samples the tree's.
+    pub fn present(&self, at: crate::time::Instant) {
+        let changes = self.shared.borrow_mut().take_changes(at);
+        if let Some(changes) = changes {
+            let queue = MirrorQueue {
+                mirrored: Rc::clone(&self.mirrored),
+            };
+            queue.apply_changes(changes);
+        }
+        self.sample(at);
+    }
+
+    /// The content layer `id` draws, with every update applied; `None`
+    /// for a layer with no recorded content.
+    pub fn picture(&self, id: LayerId) -> Option<Ref<'_, Picture>> {
+        Ref::filter_map(self.mirrored.borrow(), |mirrored| {
+            mirrored.pictures.get(&id)
+        })
+        .ok()
+    }
+
+    /// Every layer with recorded content.
+    pub fn content_layers(&self) -> Vec<LayerId> {
+        self.mirrored.borrow().pictures.keys().copied().collect()
+    }
+
+    /// Every layer that samples a backdrop.
+    pub fn backdrop_layers(&self) -> Vec<LayerId> {
+        self.mirrored
+            .borrow()
+            .tree
+            .layers()
+            .filter_map(|(id, node)| node.backdrop.is_some().then_some(id))
+            .collect()
     }
 
     /// The mirrored layer `id`'s node.
@@ -587,6 +654,7 @@ pub fn no_shader_mount(
             mirrored: Rc::new(RefCell::new(Mirrored {
                 tree: SurfaceTree::new(),
                 installs: FxHashMap::default(),
+                pictures: FxHashMap::default(),
             })),
         },
     )));
