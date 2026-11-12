@@ -2678,13 +2678,12 @@ mod tests {
                 .and_then(|deps| deps.get("hydrolysis"))
                 .and_then(|dep| dep.get("features"))
                 .and_then(toml::Value::as_array)
-                .map(|features| {
+                .map_or_default(|features| {
                     features
                         .iter()
                         .filter_map(|feature| feature.as_str().map(str::to_string))
                         .collect()
                 })
-                .unwrap_or_default()
         };
         // Shared native table: `winit` only — the engine pieces moved out.
         assert_eq!(
@@ -4802,13 +4801,12 @@ mod tests {
             manifest["target"]["cfg(not(target_arch = \"wasm32\"))"]["dependencies"]["waterui"]
                 .get("features")
                 .and_then(toml::Value::as_array)
-                .map(|features| {
+                .map_or_default(|features| {
                     features
                         .iter()
                         .map(|feature| feature.as_str().expect("feature name"))
                         .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+                });
         assert_eq!(native_features, Vec::<&str>::new());
         assert_eq!(
             manifest["dependencies"]["waterui"]["default-features"].as_bool(),

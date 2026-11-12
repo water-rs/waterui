@@ -20,7 +20,7 @@ use waterui_testing::{OffscreenApp, Role, TestStyle, ui};
 
 /// Logical points between the viewport edge and a row: the issue's
 /// `padding_with((12, 16))` inside a 340-wide window.
-const PROPOSED: f32 = 340.0 - 2.0 * 16.0;
+const PROPOSED: f32 = 2.0f32.mul_add(-16.0, 340.0);
 
 /// The label the probe row pins to its trailing edge.
 const PROBE_LABEL: &str = "probe-trailing";

@@ -1177,10 +1177,7 @@ impl WebViewOpen {
             OriginPolicy::new(bridge_origins, &initial),
             navigation_policy,
             scripts,
-            mirror
-                .as_ref()
-                .map(state::Mirror::declarations)
-                .unwrap_or_default(),
+            mirror.as_ref().map_or_default(state::Mirror::declarations),
         );
         #[cfg(target_arch = "wasm32")]
         let config = WebViewConfig::default();
