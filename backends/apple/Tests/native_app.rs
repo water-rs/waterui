@@ -1598,7 +1598,8 @@ mod navigation {
             view::subviews(view).into_iter().find_map(|sub| {
                 let drawn = sub.downcast_ref::<cocoa_ui::uikit::HostView>().is_some()
                     && view::layer(&sub)
-                        .and_then(|layer| layer.sublayers())
+                        // SAFETY: `layer` is a live layer read on the main thread.
+                        .and_then(|layer| unsafe { layer.sublayers() })
                         .is_some_and(|sublayers| !sublayers.is_empty());
                 if drawn { Some(sub) } else { drawn_canvas(&sub) }
             })
