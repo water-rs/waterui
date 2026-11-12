@@ -12,6 +12,8 @@ categories = ["graphics", "rendering"]
 [features]
 # The reference interpreter in `eval`.
 eval = ["dep:half"]
+# The SIMD lane executor in `lanes`, which CPU backends run shaders on.
+lanes = ["dep:half"]
 
 [dependencies]
 # naga's `Literal::F16` payload; the evaluator reads it.
@@ -22,7 +24,7 @@ thiserror = "2"
 
 [dev-dependencies]
 # The composition tests check composed functions with the evaluator.
-cherenkov-shader = { path = ".", features = ["eval"] }
+cherenkov-shader = { path = ".", features = ["eval", "lanes"] }
 
 [lints]
 workspace = true

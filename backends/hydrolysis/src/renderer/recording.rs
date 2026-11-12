@@ -419,8 +419,8 @@ impl fmt::Debug for SceneResources {
 
 impl SceneResources {
     /// Creates caches served by `engine`, with the registries its backend
-    /// offers (`SceneCaps`): the GPU backend registers shader paints, the
-    /// CPU backend reports them unsupported at registration.
+    /// offers (`SceneCaps`): both Cherenkov backends register shader
+    /// paints.
     #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn new<B>(engine: &Rc<cherenkov::Engine<B>>) -> Self
     where

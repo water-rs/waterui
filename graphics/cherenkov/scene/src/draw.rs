@@ -577,6 +577,31 @@ pub enum Paint {
     Mesh(MeshGradient),
     /// An image pattern.
     Image(ImagePaint),
+    /// A user WGSL shader.
+    Shader(ShaderPaint),
+}
+
+/// A shader paint: a WGSL fragment `main` composed after the engine's paint
+/// prelude (`cherenkov::wgsl::paint_module`), returning premultiplied linear
+/// Display P3.
+///
+/// It is only a fill's own paint. The shader covers the filled shape's
+/// bounding box in its user space: its `uv` input runs over `[0, 1]²`
+/// across it, its `uniforms.time` is `0` and its `params` hold
+/// [`ShaderPaint::params`] packed four per `vec4`, zero-filled. A shader
+/// whose output depends on `position` or `uniforms.resolution` depends on
+/// the texture an engine renders it into, which the scene does not fix.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ShaderPaint {
+    /// The fragment source, without the prelude.
+    pub source: String,
+    /// The `params` values, at most [`ShaderPaint::MAX_PARAMS`].
+    pub params: Vec<f64>,
+}
+
+impl ShaderPaint {
+    /// The number of floats the prelude's `params` array holds.
+    pub const MAX_PARAMS: usize = 64;
 }
 
 impl From<Color> for Paint {

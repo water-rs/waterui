@@ -15,7 +15,6 @@ use futures_util::future::{try_join, try_join_all};
 
 use super::{
     entry::{self, ENTRY_POINT, binding},
-    plan::{PassAux, PassPlan, Plan},
     shape::{FieldTargets, ShapeField},
     uniforms::UniformBuffers,
 };
@@ -26,6 +25,7 @@ use crate::{
         RetainedMemory, TextureViews,
     },
     pipeline_cache::{self, PassCompile, PassKey, PassPipeline},
+    plan::{PassAux, PassPlan, Plan},
 };
 
 /// The format every intermediate is materialized in: f16, so every

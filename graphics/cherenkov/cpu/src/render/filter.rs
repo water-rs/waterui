@@ -13,8 +13,8 @@ use cherenkov::{
     BackdropId, CompletionWaker, FilterId, FrameId, FrameTime, RenderError, SurfaceId, SurfaceWakes,
 };
 use filtrate_core::{
-    AnimatedTarget, AnimationTrack, CpuFilter, CpuFilterError, CpuImage, Footprint, ParamArray,
-    SignalVisitor, WatchGuard, WorkingSpace,
+    AnimatedTarget, AnimationTrack, CpuFilter, CpuFilterError, CpuImage, Filter, Footprint,
+    ParamArray, SignalVisitor, WatchGuard, WorkingSpace, visit_lengths,
 };
 
 pub(super) trait Erased: Send + Sync {
@@ -80,8 +80,122 @@ where
     }
 }
 
+/// A filter run from its stage description: its composed stages on the
+/// lane executor, bounded by its kind's footprint.
+#[cfg(feature = "shaders")]
+struct Described {
+    program: filtrate::LaneProgram,
+    reach: fn(&[f32]) -> Footprint,
+}
+
+#[cfg(feature = "shaders")]
+impl Erased for Described {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "surface dimensions are bounded to 16384 pixels"
+    )]
+    fn footprint(&self, params: &[f32], size: (usize, usize)) -> f32 {
+        (self.reach)(params).resolve((size.0 as f32, size.1 as f32))
+    }
+
+    fn footprint_bound(&self, params: &[f32]) -> Footprint {
+        (self.reach)(params)
+    }
+
+    fn apply(
+        &self,
+        params: &[f32],
+        space: &WorkingSpace,
+        image: &mut CpuImage<'_>,
+    ) -> Result<(), CpuFilterError> {
+        self.program.apply(params, space, image);
+        Ok(())
+    }
+}
+
+/// `F`'s footprint for flattened parameters.
+#[cfg(feature = "shaders")]
+fn reach<F: filtrate::Reach>(params: &[f32]) -> Footprint {
+    F::reach_of(&F::Params::read_from(params))
+}
+
+/// A filter the raster runs from its stage description — any filtrate
+/// filter, whether or not it has a CPU kernel — registered with
+/// [`Engine::effect`](cherenkov::Engine::effect).
+///
+/// Its stages run as the GPU executor composes them, on
+/// `cherenkov-shader`'s lane executor; the raster bounds each band's apron
+/// by the filter's [`Reach`](filtrate::Reach) over its parameters'
+/// animation magnitudes, like a filter with a CPU kernel.
+#[cfg(feature = "shaders")]
+pub struct CpuEffect(Box<dyn EffectSource>);
+
+#[cfg(feature = "shaders")]
+impl std::fmt::Debug for CpuEffect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CpuEffect").finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "shaders")]
+impl CpuEffect {
+    /// Plans and compiles `filter`'s stages for the lane executor, on the
+    /// caller's thread, so a filter the raster cannot run is refused before
+    /// anything is registered.
+    ///
+    /// # Errors
+    /// [`filtrate::LaneFilterError`] when the stages do not plan, use what
+    /// the lane executor does not run, or bind an auxiliary image without
+    /// CPU texels.
+    pub fn new<F>(filter: F) -> Result<Self, filtrate::LaneFilterError>
+    where
+        F: filtrate::Reach + cherenkov::RenderTransfer,
+    {
+        let program = filtrate::LaneProgram::new(&filter)?;
+        Ok(Self(Box::new(DescribedSource { filter, program })))
+    }
+}
+
+/// What a [`CpuEffect`] carries to the render thread.
+#[cfg(feature = "shaders")]
+trait EffectSource: cherenkov::RenderTransfer {
+    fn entry(self: Box<Self>) -> Entry;
+}
+
+#[cfg(feature = "shaders")]
+struct DescribedSource<F> {
+    filter: F,
+    program: filtrate::LaneProgram,
+}
+
+#[cfg(feature = "shaders")]
+impl<F: filtrate::Reach + cherenkov::RenderTransfer> EffectSource for DescribedSource<F> {
+    fn entry(self: Box<Self>) -> Entry {
+        let Self { filter, program } = *self;
+        let mut entry = Registry::entry(
+            &filter,
+            Arc::new(Described {
+                program,
+                reach: reach::<F>,
+            }),
+        );
+        // The parameters' subscriptions report through the filter's own
+        // signals: it lives as long as the entry.
+        entry.source = Some(Box::new(filter));
+        entry
+    }
+}
+
 struct Entry {
     filter: Arc<dyn Erased + Send + Sync>,
+    /// The flattened parameters the filter's stages declare as lengths,
+    /// in points: [`Entry::pixels`] scales them into device pixels.
+    lengths: Vec<usize>,
+    /// The described filter the entry's kernel was compiled from, owned
+    /// for the entry's life as the GPU executor owns its filter: the
+    /// parameters it holds feed the entry's subscriptions.
+    #[cfg(feature = "shaders")]
+    source: Option<Box<dyn cherenkov::RenderTransfer>>,
     tracks: Vec<AnimationTrack>,
     events: Receiver<(usize, AnimatedTarget)>,
     pending_events: VecDeque<(usize, AnimatedTarget)>,
@@ -94,6 +208,37 @@ struct Entry {
 }
 
 impl Entry {
+    /// `values`, with the length parameters scaled from points into device
+    /// pixels at `scale` — what every footprint and kernel reads, as the
+    /// GPU executor's `pixel_params`.
+    fn pixels(&self, values: &[f32], scale: f32) -> Vec<f32> {
+        let mut values = values.to_vec();
+        for &index in &self.lengths {
+            values[index] *= scale;
+        }
+        values
+    }
+
+    /// The parameters' largest magnitudes over their running animations,
+    /// in device pixels at `scale`.
+    fn bounds(&self, scale: f32) -> Vec<f32> {
+        let magnitudes: Vec<f32> = self
+            .tracks
+            .iter()
+            .map(AnimationTrack::magnitude_bound)
+            .collect();
+        self.pixels(&magnitudes, scale)
+    }
+
+    /// The frame's parameters in device pixels at `scale`.
+    fn pixel_params(&self, scale: f32) -> Arc<[f32]> {
+        if self.lengths.is_empty() {
+            Arc::clone(&self.params)
+        } else {
+            self.pixels(&self.params, scale).into()
+        }
+    }
+
     fn wants_redraw(&self) -> bool {
         self.dirty.load(Ordering::Acquire) || self.tracks.iter().any(AnimationTrack::is_active)
     }
@@ -146,23 +291,45 @@ impl SignalVisitor for WatcherInstaller<'_> {
     }
 }
 
-#[derive(Default)]
 pub struct Registry {
     entries: FxHashMap<u64, Entry>,
+    /// The display scale of the surface being lowered: device pixels per
+    /// point, applied to every filter's lengths.
+    length_scale: f32,
     /// Backdrop groups by `(surface, group)`.
     backdrops: FxHashMap<(u64, u64), Group>,
+    /// Registered backdrop effect shaders by `BackdropShaderId::raw()`.
+    #[cfg(feature = "shaders")]
+    backdrop_shaders: FxHashMap<u64, Arc<super::shader::BackdropProgram>>,
     last_frame: Option<(FrameId, cherenkov::Instant)>,
     delta: Duration,
 }
 
+impl Default for Registry {
+    fn default() -> Self {
+        Self {
+            entries: FxHashMap::default(),
+            length_scale: 1.0,
+            backdrops: FxHashMap::default(),
+            #[cfg(feature = "shaders")]
+            backdrop_shaders: FxHashMap::default(),
+            last_frame: None,
+            delta: Duration::ZERO,
+        }
+    }
+}
+
 impl Registry {
-    /// Builds the [`Entry`] for `filter`: its initial parameters,
-    /// animation tracks and redraw watchers. A parameter change wakes the
-    /// host of each surface whose last frame ran the entry.
-    fn entry<F>(filter: F) -> Entry
-    where
-        F: CpuFilter + cherenkov::RenderTransfer + Send + Sync,
-    {
+    /// Builds the [`Entry`] running `filter` through `kernel`: its initial
+    /// parameters, length indices, animation tracks and redraw watchers. A
+    /// parameter change wakes the host of each surface whose last frame
+    /// ran the entry.
+    fn entry<F: Filter>(filter: &F, kernel: Arc<dyn Erased + Send + Sync>) -> Entry {
+        let mut lengths = Vec::new();
+        visit_lengths(filter, |index| lengths.push(index));
+        // Stages sharing one length scale it once.
+        lengths.sort_unstable();
+        lengths.dedup();
         let mut initial = vec![0.0; F::Params::LEN];
         filter.params().write_to(&mut initial);
         let initial: Arc<[f32]> = initial.into();
@@ -177,7 +344,10 @@ impl Registry {
             guards: &mut guards,
         });
         Entry {
-            filter: Arc::new(filter),
+            filter: kernel,
+            lengths,
+            #[cfg(feature = "shaders")]
+            source: None,
             tracks: initial.iter().copied().map(AnimationTrack::new).collect(),
             events,
             pending_events: VecDeque::new(),
@@ -189,22 +359,40 @@ impl Registry {
         }
     }
 
-    /// One entry's footprint bound over its animation magnitudes.
-    fn footprint_bound(entry: &Entry) -> Footprint {
-        let bounds: Vec<f32> = entry
-            .tracks
-            .iter()
-            .map(AnimationTrack::magnitude_bound)
-            .collect();
-        entry.filter.footprint_bound(&bounds)
+    /// The entry running `filter`'s own CPU kernel.
+    fn kernel_entry<F>(filter: F) -> Entry
+    where
+        F: CpuFilter + cherenkov::RenderTransfer + Send + Sync,
+    {
+        let filter = Arc::new(filter);
+        Self::entry(&*filter, filter.clone())
+    }
+
+    /// Sets the display scale — device pixels per point — the next
+    /// lowering's filters run at.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a display scale is a small factor"
+    )]
+    pub(super) const fn set_display_scale(&mut self, scale: f64) {
+        self.length_scale = scale as f32;
     }
 
     pub fn add<F>(&mut self, id: FilterId, filter: F)
     where
         F: CpuFilter + cherenkov::RenderTransfer + Send + Sync,
     {
-        let entry = Self::entry(filter);
+        let entry = Self::kernel_entry(filter);
         self.entries.insert(id.raw(), entry);
+    }
+
+    /// Registers a filter run from its stage description.
+    #[cfg(feature = "shaders")]
+    pub fn add_effect(&mut self, id: FilterId, effect: CpuEffect) {
+        let entry = effect.0.entry();
+        if let Some(old) = self.entries.insert(id.raw(), entry) {
+            old.wakes.clear();
+        }
     }
 
     /// Registers an unfiltered backdrop group capturing per `spec`.
@@ -228,7 +416,7 @@ impl Registry {
     ) where
         F: CpuFilter + cherenkov::RenderTransfer + Send + Sync,
     {
-        let chain = Some(Self::entry(filter));
+        let chain = Some(Self::kernel_entry(filter));
         self.insert_group(surface, id, Group { spec, chain });
     }
 
@@ -252,6 +440,31 @@ impl Registry {
         {
             entry.wakes.clear();
         }
+    }
+
+    /// Registers a compiled backdrop effect shader.
+    #[cfg(feature = "shaders")]
+    pub fn add_backdrop_shader(
+        &mut self,
+        id: cherenkov::BackdropShaderId,
+        program: super::shader::BackdropProgram,
+    ) {
+        self.backdrop_shaders.insert(id.raw(), Arc::new(program));
+    }
+
+    /// Unregisters a backdrop effect shader.
+    #[cfg(feature = "shaders")]
+    pub fn remove_backdrop_shader(&mut self, id: cherenkov::BackdropShaderId) {
+        self.backdrop_shaders.remove(&id.raw());
+    }
+
+    /// The registered backdrop effect shader `id`.
+    #[cfg(feature = "shaders")]
+    pub fn backdrop_shader(
+        &self,
+        id: cherenkov::BackdropShaderId,
+    ) -> Option<&Arc<super::shader::BackdropProgram>> {
+        self.backdrop_shaders.get(&id.raw())
     }
 
     pub fn remove(&mut self, id: FilterId) {
@@ -290,15 +503,12 @@ impl Registry {
             .get_mut(&id.raw())
             .ok_or_else(|| RenderError::Render(format!("unregistered filter {}", id.raw())))?;
         entry.prepare(sequence, self.delta);
-        let bounds: Vec<f32> = entry
-            .tracks
-            .iter()
-            .map(AnimationTrack::magnitude_bound)
-            .collect();
-        let footprint = entry.filter.footprint(&bounds, size);
+        let footprint = entry
+            .filter
+            .footprint(&entry.bounds(self.length_scale), size);
         Ok((
             Arc::clone(&entry.filter),
-            Arc::clone(&entry.params),
+            entry.pixel_params(self.length_scale),
             footprint,
         ))
     }
@@ -340,9 +550,10 @@ impl Registry {
             });
         };
         entry.prepare(sequence, self.delta);
+        let scale = self.length_scale;
         Ok(PreparedBackdrop {
-            filter: Some((Arc::clone(&entry.filter), Arc::clone(&entry.params))),
-            footprint: Self::footprint_bound(entry),
+            filter: Some((Arc::clone(&entry.filter), entry.pixel_params(scale))),
+            footprint: entry.filter.footprint_bound(&entry.bounds(scale)),
             spec,
         })
     }

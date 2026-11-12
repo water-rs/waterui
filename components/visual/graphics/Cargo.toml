@@ -45,8 +45,9 @@ gpu = [
     "dep:wgpu-external-frame",
 ]
 # Offscreen rendering through `Engine<Raster>`: pictures rasterised for hosts
-# whose image views take bitmaps.
-cpu = ["cherenkov", "dep:cherenkov-cpu", "dep:image"]
+# whose image views take bitmaps, shader paints included. With `effects`,
+# filtered views run on the raster too (`AnyEffect::into_cpu`).
+cpu = ["cherenkov", "dep:cherenkov-cpu", "cherenkov-cpu/shaders", "filtrate?/lanes", "dep:image"]
 
 [dependencies]
 arc-swap = { workspace = true, optional = true }

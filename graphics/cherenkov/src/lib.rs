@@ -42,6 +42,7 @@ mod surface;
 mod text;
 #[cfg(not(target_arch = "wasm32"))]
 mod transport;
+pub use cherenkov_record::wgsl;
 #[cfg(feature = "workers")]
 pub mod workers;
 

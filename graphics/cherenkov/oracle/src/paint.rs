@@ -244,6 +244,9 @@ pub fn eval_paint(
             .map_or([0.0; 4], |t| eval_stops(&g.stops, t, g.interpolation)),
         Paint::Mesh(mesh) => crate::mesh::eval(mesh, p),
         Paint::Image(ip) => eval_image_paint(ip, p, resources)?,
+        // A fill evaluates its own shader paint over its bounds
+        // (`crate::shader`); anywhere else has no bounds to span.
+        Paint::Shader(_) => return Err(cherenkov_scene::SceneError::ShaderPaintPlacement),
     })
 }
 

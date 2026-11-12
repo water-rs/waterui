@@ -9,7 +9,7 @@ mod blend;
 mod colr;
 pub mod coverage;
 mod damage;
-mod filter;
+pub mod filter;
 mod font;
 mod geometry;
 mod glyph;
@@ -28,6 +28,8 @@ mod prepared;
 pub mod present;
 mod projective;
 mod raster;
+#[cfg(feature = "shaders")]
+pub mod shader;
 mod shadow;
 mod span;
 mod tiles;
@@ -92,6 +94,9 @@ struct SurfaceState {
     filters: Vec<u64>,
     /// Backdrop groups referenced by the last frame, by group id.
     groups: Vec<u64>,
+    /// Whether the last frame drew an animated shader paint: the surface
+    /// then renders, in full, every frame.
+    animated_shaders: bool,
     anchor_scratch: lower::AnchorScratch,
     /// The largest live pixel-buffer bytes in any band that ran a
     /// backdrop capture last frame (window, isolation stack and capture
@@ -112,6 +117,15 @@ struct SurfaceState {
 }
 
 impl SurfaceState {
+    /// Records what the frame's rasters used: the filters and backdrop
+    /// groups whose animation wakes this surface, and whether an animated
+    /// shader paint drew.
+    fn record_uses(&mut self, used: projective::Used) {
+        self.filters = used.filters.into_iter().collect();
+        self.groups = used.groups.into_iter().collect();
+        self.animated_shaders = used.animated;
+    }
+
     fn rendered_bands(&self) -> u32 {
         let count = match &self.output {
             Output::Stream { .. } => (self.size.1 as usize).div_ceil(raster::BAND_H),
@@ -152,6 +166,9 @@ pub struct RasterRenderer {
     level: fearless_simd::Level,
     surfaces: FxHashMap<SurfaceId, SurfaceState>,
     pub(super) filters: filter::Registry,
+    /// The registered shader paints and their rendered uses.
+    #[cfg(feature = "shaders")]
+    pub(super) shader_paints: shader::ShaderPaints,
     fonts: FxHashMap<u64, font::Font>,
     text_layouts: cherenkov::TextLayouts,
     bitmap_fonts: FxHashMap<u64, Arc<bitmap::BitmapFont>>,
@@ -216,6 +233,8 @@ pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), Engin
                     level,
                     surfaces: FxHashMap::default(),
                     filters: filter::Registry::default(),
+                    #[cfg(feature = "shaders")]
+                    shader_paints: shader::ShaderPaints::new(MAX_SURFACE, config.budget.cpu.0),
                     fonts: FxHashMap::default(),
                     text_layouts: cherenkov::TextLayouts::default(),
                     bitmap_fonts: FxHashMap::default(),
@@ -405,6 +424,7 @@ impl Renderer for RasterRenderer {
                 layers: FxHashMap::default(),
                 filters: Vec::new(),
                 groups: Vec::new(),
+                animated_shaders: false,
                 anchor_scratch: lower::AnchorScratch::default(),
                 backdrop_capture_peak: 0,
                 clip_scratch_peak: 0,
@@ -716,6 +736,11 @@ impl Renderer for RasterRenderer {
             + self.edge_scratch.heap_bytes();
         categories.glyphs = self.glyph_cache.bytes();
         categories.images = self.images.values().map(|image| image.bytes()).sum();
+        // A rendered shader paint is an image the frame's draws sample.
+        #[cfg(feature = "shaders")]
+        {
+            categories.images += self.shader_paints.bytes();
+        }
         categories.colr = self.fonts.values().map(font::Font::colr_bytes).sum();
         categories.bitmaps = self.bitmap_cache.bytes();
         categories.geometry = self.geometry.bytes();
@@ -790,13 +815,18 @@ impl RasterRenderer {
         stats: &mut FrameStats,
     ) -> Result<FrameRedraw, RenderError> {
         self.filters.begin_frame(frame.id, frame.time);
+        #[cfg(feature = "shaders")]
+        self.shader_paints.begin_frame(frame.time);
         self.frame_count += 1;
         for sf in frame.surfaces {
+            // An animated shader paint changes with the frame's time, like
+            // an animating filter.
             let filter_changed = self.surfaces.get(&sf.id).is_some_and(|surface| {
-                surface
-                    .filters
-                    .iter()
-                    .any(|id| self.filters.wants_redraw(*id))
+                surface.animated_shaders
+                    || surface
+                        .filters
+                        .iter()
+                        .any(|id| self.filters.wants_redraw(*id))
                     || surface
                         .groups
                         .iter()
@@ -818,6 +848,8 @@ impl RasterRenderer {
         self.geometry.finish_frame();
         self.edge_scratch.clear();
         self.filters.finish_frame(&used, &used_groups);
+        #[cfg(feature = "shaders")]
+        self.shader_paints.finish_frame();
         self.update_filter_wakes();
         // Every visible surface whose filter or backdrop group still
         // runs asks for the next frame on its own entry — the animated
@@ -827,10 +859,11 @@ impl RasterRenderer {
             if surface.visibility != Visibility::Visible {
                 continue;
             }
-            if surface
-                .filters
-                .iter()
-                .any(|fid| self.filters.wants_redraw(*fid))
+            if surface.animated_shaders
+                || surface
+                    .filters
+                    .iter()
+                    .any(|fid| self.filters.wants_redraw(*fid))
                 || surface
                     .groups
                     .iter()
@@ -913,6 +946,9 @@ impl RasterRenderer {
         let Some(size) = self.surfaces.get(&id).map(|surf| surf.size) else {
             return Ok(());
         };
+        // Filter lengths are points: this surface's filters run at its
+        // display's scale, as the GPU executor's `length_scale`.
+        self.filters.set_display_scale(sf.display.scale);
         // The frame's transient band-index metrics, shared by the
         // projective realizations and the surface render: each records
         // the frame-local peak.
@@ -932,8 +968,7 @@ impl RasterRenderer {
         let Some(surf) = self.surfaces.get_mut(&id) else {
             return Ok(());
         };
-        surf.filters = used.filters.into_iter().collect();
-        surf.groups = used.groups.into_iter().collect();
+        surf.record_uses(used);
         let (w, h) = (surf.size.0 as usize, surf.size.1 as usize);
         let [r, g, b, a] = sf.clear.components;
         let clear = [r * a, g * a, b * a, a];
@@ -1062,6 +1097,10 @@ impl RasterRenderer {
                 self.level,
                 &self.pool,
             );
+            #[cfg(feature = "shaders")]
+            {
+                lowering.shader_paints = Some(&mut self.shader_paints);
+            }
             lowering.project(local, projected);
             if local.is_none() {
                 lowering.damage_layers = std::mem::take(&mut surf.damage.layers);
@@ -1084,7 +1123,14 @@ impl RasterRenderer {
             stats.commands_lowered += lowering.commands_lowered;
             stats.layers_composed += lowering.layers_composed;
             glyph_reqs = std::mem::take(&mut lowering.glyphs);
-            used.absorb(lowering.take_used_filters(), lowering.take_used_groups());
+            #[cfg(feature = "shaders")]
+            {
+                used.animated |= lowering.animated_shaders;
+            }
+            let filters = lowering.take_used_filters();
+            stats.filters_applied +=
+                u32::try_from(filters.len()).expect("a surface runs fewer than 2^32 filters");
+            used.absorb(filters, lowering.take_used_groups());
             surf.layers = caches;
             result
         };
@@ -1141,6 +1187,7 @@ impl RasterRenderer {
                 surf.projective.get_mut(&plan.layer).and_then(|entries| {
                     entries.iter_mut().find(|entry| {
                         entry.key == key
+                            && !entry.animated
                             && !entry.filters.iter().any(|f| filters.wants_redraw(*f))
                             && !entry
                                 .groups
@@ -1196,8 +1243,10 @@ impl RasterRenderer {
                     image: Arc::clone(&image),
                     filters: local_used.filters.iter().copied().collect(),
                     groups: local_used.groups.iter().copied().collect(),
+                    animated: local_used.animated,
                     last_used: self.frame_count,
                 };
+                used.animated |= local_used.animated;
                 used.absorb(local_used.filters, local_used.groups);
                 if let Some(surf) = self.surfaces.get_mut(&sf.id) {
                     let entries = surf.projective.entry(plan.layer).or_default();

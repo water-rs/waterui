@@ -109,6 +109,10 @@ fn paint_data_bytes(paint: &PaintData) -> u64 {
             size_of::<TransformedPaint>() as u64 + paint_data_bytes(&link.paint)
         }
         PaintData::Solid(_) => 0,
+        #[cfg(feature = "shaders")]
+        PaintData::Shader(leaf) => {
+            (size_of::<super::paint::ShaderLeaf>() + size_of_val(&*leaf.uniforms)) as u64
+        }
     }
 }
 

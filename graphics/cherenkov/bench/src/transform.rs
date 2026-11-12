@@ -232,7 +232,9 @@ fn translate_paint(paint: &Paint, d: Vec2) -> Paint {
             extend_y: ip.extend_y,
             sampling: ip.sampling,
         }),
-        Paint::Solid(_) => paint.clone(),
+        // A fill's shader paint spans the shape's bounds, which move with
+        // it.
+        Paint::Solid(_) | Paint::Shader(_) => paint.clone(),
     }
 }
 

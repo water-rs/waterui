@@ -15,8 +15,15 @@ categories = ["graphics", "rendering", "embedded"]
 testing = []
 # Firmware rasterization trades geometry rescans for band-bounded bin scratch.
 bounded-bins = []
+# Shader paints, backdrop effect shaders and filters without a CPU kernel
+# (`CpuEffect`), run on `cherenkov-shader`'s lane executor. It brings naga's
+# WGSL front end and filtrate's stage planner, so firmware builds that draw
+# no user shaders leave it out.
+shaders = ["dep:cherenkov-shader", "dep:filtrate"]
 
 [dependencies]
+cherenkov-shader = { version = "0.0.0", path = "../shader", features = ["lanes"], optional = true }
+filtrate = { version = "0.2.1", path = "../../filtrate", default-features = false, features = ["lanes"], optional = true }
 arrayvec = "0.7"
 cherenkov = { version = "0.0.0", path = "..", features = ["workers"] }
 cherenkov-stroke = { version = "0.0.0", path = "../stroke" }

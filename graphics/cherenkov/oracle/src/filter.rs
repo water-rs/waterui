@@ -48,6 +48,7 @@ pub fn apply(
         }
         LayerFilter::GaussianBlur { sigma } => gaussian_blur_rgba(*sigma, pixels, width, height),
         LayerFilter::BoxBlur { radius } => box_blur(*radius, pixels, width, height),
+        LayerFilter::Convolution3x3 { kernel } => convolution3x3(kernel, pixels, width, height),
         LayerFilter::OverscrollStretch {
             frame,
             size,
@@ -120,6 +121,37 @@ fn box_blur(radius: f64, pixels: &mut [[f64; 4]], width: usize, height: usize) {
     let horizontal = pass(pixels, 1, 0);
     let vertical = pass(&horizontal, 0, 1);
     pixels.copy_from_slice(&vertical);
+}
+
+/// A 3×3 convolution of all four premultiplied channels with `kernel`
+/// (row-major from the top-left, unnormalised), edge-clamped.
+#[expect(
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "surface dimensions are far below i64::MAX; clamped indices are in range"
+)]
+fn convolution3x3(kernel: &[f64; 9], pixels: &mut [[f64; 4]], width: usize, height: usize) {
+    if pixels.is_empty() {
+        return;
+    }
+    let src = pixels.to_vec();
+    let (w, h) = (width as i64, height as i64);
+    for y in 0..h {
+        for x in 0..w {
+            let mut sum = [0.0; 4];
+            for (tap, weight) in kernel.iter().enumerate() {
+                let (dx, dy) = (tap as i64 % 3 - 1, tap as i64 / 3 - 1);
+                let xx = (x + dx).clamp(0, w - 1) as usize;
+                let yy = (y + dy).clamp(0, h - 1) as usize;
+                let s = src[yy * width + xx];
+                for c in 0..4 {
+                    sum[c] = weight.mul_add(s[c], sum[c]);
+                }
+            }
+            pixels[y as usize * width + x as usize] = sum;
+        }
+    }
 }
 
 /// HWUI's `computeOverscroll` (`libs/hwui/effects/StretchEffect.cpp`,

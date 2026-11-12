@@ -107,7 +107,7 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
-#[cfg(hydrolysis_cherenkov)]
+#[cfg(hydrolysis_gpu_painter)]
 use std::sync::Arc;
 
 #[cfg(feature = "accessibility")]
@@ -754,8 +754,10 @@ pub struct HydrolysisRenderer<E: crate::text::TextEngine> {
     live_caret: Option<Rc<chrome::LiveCaret>>,
     /// Per-frame applied-filter telemetry the render thread's `EngineEffect`
     /// calls accumulate into; reset before each `Engine::render` and read back
-    /// into the `frame_applied_filter_*` fields after it.
-    #[cfg(hydrolysis_cherenkov)]
+    /// into the `frame_applied_filter_*` fields after it. The CPU raster
+    /// applies filters inside its bands and reports them through the
+    /// engine's frame stats instead.
+    #[cfg(hydrolysis_gpu_painter)]
     applied_filter_metrics: Arc<crate::renderer::effects::AppliedFilterMetrics>,
     #[cfg(hydrolysis_cherenkov)]
     frame_applied_filter_count: u32,
@@ -2109,7 +2111,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             #[cfg(hydrolysis_cherenkov)]
             engine_next: None,
             live_caret: None,
-            #[cfg(hydrolysis_cherenkov)]
+            #[cfg(hydrolysis_gpu_painter)]
             applied_filter_metrics: Arc::default(),
             #[cfg(hydrolysis_cherenkov)]
             frame_applied_filter_count: 0,

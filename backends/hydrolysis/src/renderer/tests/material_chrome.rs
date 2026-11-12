@@ -1223,12 +1223,12 @@ fn an_unregistered_class_is_reported_at_install() {
     assert_eq!(chrome_mount(&runtime).chrome_group_count(), 0);
 }
 
-/// A CPU engine — a layer target with no backdrop shaders — reports on
-/// attach when the theme's registry is not empty, and the mount holds no
-/// chrome.
+/// A layer target with no backdrop shaders — the HWUI target's case —
+/// reports on attach when the theme's registry is not empty, and the mount
+/// holds no chrome.
 #[test]
 #[cfg_attr(debug_assertions, should_panic(expected = "no backdrop shaders"))]
-fn a_cpu_engine_reports_on_attach_with_a_nonempty_registry() {
+fn a_target_without_backdrop_shaders_reports_on_attach_with_a_nonempty_registry() {
     let mut registry = MaterialRegistry::new();
     for (key, source) in glass_plan(vec![]).shaders {
         registry.register_shader(key, source);
@@ -1240,7 +1240,7 @@ fn a_cpu_engine_reports_on_attach_with_a_nonempty_registry() {
 /// …but an empty registry mounts on it fine — a theme with no materials
 /// draws none.
 #[test]
-fn a_cpu_engine_accepts_an_empty_registry() {
+fn a_target_without_backdrop_shaders_accepts_an_empty_registry() {
     let _mount = no_shader_mount(&MaterialRegistry::new());
 }
 

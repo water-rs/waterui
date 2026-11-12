@@ -157,7 +157,7 @@ impl LayerBuilder<'_> {
 
     /// Set the layer's per-member [`crate::BackdropEffectSpec`] on its
     /// backdrop composite.
-    pub const fn backdrop_effect(&mut self, effect: crate::BackdropEffectSpec) -> &mut Self {
+    pub fn backdrop_effect(&mut self, effect: crate::BackdropEffectSpec) -> &mut Self {
         self.layer.backdrop_effect = Some(effect);
         self
     }

@@ -552,6 +552,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
     }
 
     /// Records the applied-filter work the frame's render reported.
+    #[cfg(hydrolysis_gpu_painter)]
     fn take_applied_filter_metrics(&mut self) {
         (
             self.frame_applied_filter_count,
@@ -616,10 +617,12 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             frame,
             headroom,
         );
-        self.applied_filter_metrics.reset();
         let rendered = window.surface.render(self.frame_time());
         drop(scope);
-        self.take_applied_filter_metrics();
+        // The raster applies each filter inside its bands: the frame reports
+        // the filters it ran, with no encode leg of its own to time.
+        self.frame_applied_filter_count = state.engine.stats().filters_applied;
+        self.frame_applied_filter_effect = std::time::Duration::ZERO;
         self.engine_tracks = crate::engine::EngineSurface::running_tracks(&window.surface);
         let pixels = match rendered {
             Ok(next) => {
@@ -650,14 +653,11 @@ pub struct RasterWindow<E: crate::text::TextEngine> {
 
 #[cfg(hydrolysis_cpu_painter)]
 impl<E: crate::text::TextEngine> RasterWindow<E> {
-    /// Wraps `surface` with its window mount. The CPU backend has no backdrop
-    /// shaders, so a theme `materials` registry that registers any is
-    /// reported at the mount's attach, naming them, and its material chrome
-    /// is not drawn (water-rs/waterui#4065).
-    #[expect(
-        clippy::zero_sized_map_values,
-        reason = "the CPU target's shader map is typed `Infallible`: it registers no backdrop shaders and stays empty (water-rs/waterui#4065)"
-    )]
+    /// Wraps `surface` with its window mount. `materials` is the theme's
+    /// material registry: attaching this window's engine registers every
+    /// shader it names, as on the GPU target (water-rs/waterui#1788). A
+    /// rejected source is reported at attach, naming the key, and the chrome
+    /// that names it is not drawn.
     fn new(
         surface: crate::engine::RasterCherenkovSurface,
         state: Rc<crate::engine::RasterEngineState>,
@@ -669,10 +669,7 @@ impl<E: crate::text::TextEngine> RasterWindow<E> {
             engine: Rc::clone(&state.engine),
             resources: Rc::clone(&state.resources),
             surface: core.engine_surface_weak(),
-            materials: mount::MaterialTerms {
-                registry: Rc::clone(materials),
-                shaders: rustc_hash::FxHashMap::default(),
-            },
+            materials: mount::MaterialTerms::resolve(&state.engine, Rc::clone(materials)),
         };
         Self {
             surface,

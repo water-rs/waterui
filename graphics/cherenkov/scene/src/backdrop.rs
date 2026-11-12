@@ -245,4 +245,19 @@ pub enum BackdropEffectSpec {
         /// The pyramid level deep inside the clip (`t = 0`).
         interior_level: f64,
     },
+    /// A user WGSL `backdrop_effect` under the engine's backdrop shader
+    /// contract (`cherenkov::BackdropShaderSource`): it receives the
+    /// member pixel's `BackdropPixel` and reads the capture through
+    /// `backdrop_sample`, `backdrop_sample_level` and `backdrop_field`.
+    /// SDF-required like `Refraction`.
+    Shader {
+        /// The source defining `backdrop_effect`, without the prelude.
+        source: String,
+        /// The `params` values packed four per `vec4`, zero-filled; at
+        /// most [`crate::ShaderPaint::MAX_PARAMS`].
+        params: Vec<f64>,
+        /// How far, in device pixels, the shader's sample points can land
+        /// from the member pixel.
+        reach: f64,
+    },
 }

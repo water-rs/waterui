@@ -16,7 +16,6 @@ extern crate alloc;
 pub mod animation;
 mod entry;
 mod gpu;
-mod plan;
 mod shape;
 pub mod uniforms;
 
@@ -26,10 +25,7 @@ mod tests;
 use alloc::vec::Vec;
 use core::fmt;
 
-use filtrate_core::{
-    Chain, ColorStage, Filter, ParamArray, ParamSource, Placed, SpatialFilter, SpatialStage,
-    StageCollector, WatchGuard,
-};
+use filtrate_core::{Chain, Filter, ParamArray, SpatialFilter, WatchGuard};
 use waterui_contract::contract_violation;
 
 use crate::effect::{
@@ -58,7 +54,7 @@ pub struct Executor<F: Filter, S = fn(u32, u32) -> (u32, u32)> {
     watcher_guards: Vec<WatchGuard>,
     animator: ParamAnimator,
     /// The flattened-parameter indices the filter's stages declare as
-    /// point-space lengths ([`ParamSource::Length`]): they are multiplied
+    /// point-space lengths ([`ParamSource::Length`](filtrate_core::ParamSource::Length)): they are multiplied
     /// by the frame's `EffectInput::length_scale` before the GPU sees them.
     length_indices: Vec<usize>,
     /// The display scale of the most recent frame, applied to
@@ -69,29 +65,6 @@ pub struct Executor<F: Filter, S = fn(u32, u32) -> (u32, u32)> {
     gpu: Option<Gpu>,
     /// Sticky setup error: once set, rendering fails fast.
     setup_error: Option<EffectSetupError>,
-}
-
-/// Collects the flattened-parameter indices a stage list declares as
-/// point-space lengths.
-struct LengthIndices(Vec<usize>);
-
-impl LengthIndices {
-    fn collect(params: &[ParamSource], param_base: usize, into: &mut Vec<usize>) {
-        for source in params {
-            if let ParamSource::Length(offset) = source {
-                into.push(param_base + offset);
-            }
-        }
-    }
-}
-
-impl StageCollector for LengthIndices {
-    fn color(&mut self, stage: Placed<ColorStage>) {
-        Self::collect(stage.stage.params, stage.param_base, &mut self.0);
-    }
-    fn spatial(&mut self, stage: Placed<SpatialStage>) {
-        Self::collect(stage.stage.params, stage.param_base, &mut self.0);
-    }
 }
 
 impl<F: Filter, S> fmt::Debug for Executor<F, S> {
@@ -112,20 +85,20 @@ impl<F: Filter> Executor<F> {
         filter.params().write_to(&mut targets);
         let (animator, watcher_guards) =
             ParamAnimator::new(targets, |installer| filter.visit_signals(installer));
-        let mut length_indices = LengthIndices(Vec::new());
-        filter.collect_stages(&mut length_indices);
+        let mut length_indices = Vec::new();
+        filtrate_core::visit_lengths(&filter, |index| length_indices.push(index));
         // Several stages may index the same length parameter — a two-pass
         // blur's horizontal and vertical halves share one radius — and each
         // is scaled exactly once.
-        length_indices.0.sort_unstable();
-        length_indices.0.dedup();
+        length_indices.sort_unstable();
+        length_indices.dedup();
         Self {
             filter,
             output_size: |width, height| (width, height),
             resizes_output: false,
             watcher_guards,
             animator,
-            length_indices: length_indices.0,
+            length_indices,
             length_scale: 1.0,
             gpu: None,
             setup_error: None,

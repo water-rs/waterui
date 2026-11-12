@@ -530,13 +530,6 @@ impl<E: crate::text::TextEngine> NodeLayers<E> {
     /// The member layer `id` names — a `ChromeMaterial` member anywhere
     /// in this node's lists — the layer a rebuilt chrome group re-points.
     #[cfg(hydrolysis_cherenkov)]
-    #[cfg_attr(
-        not(hydrolysis_gpu_painter),
-        allow(
-            dead_code,
-            reason = "read by the GPU target's backdrop-shader chrome; no other target registers backdrop shaders (water-rs/waterui#4065)"
-        )
-    )]
     pub(crate) fn member_layer(&self, id: LayerId) -> Option<&Layer> {
         self.members
             .iter()
@@ -547,9 +540,8 @@ impl<E: crate::text::TextEngine> NodeLayers<E> {
     }
 
     /// The `ChromeMaterial` member layers the node mounted, across its
-    /// own, inner and scope lists — a test-facing answer. Only the GPU
-    /// painter mounts chrome members until water-rs/waterui#4065.
-    #[cfg(all(test, hydrolysis_gpu_painter))]
+    /// own, inner and scope lists — a test-facing answer.
+    #[cfg(all(test, hydrolysis_cherenkov))]
     pub(crate) fn chrome_members(&self) -> Vec<(u32, LayerId)> {
         self.members
             .iter()

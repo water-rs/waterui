@@ -26,10 +26,10 @@ use crate::theme::live::Operand;
 /// it. Held in the member's payload, so a re-recording replaces it whole.
 #[derive(Clone, Debug)]
 #[cfg_attr(
-    not(hydrolysis_gpu_painter),
+    not(hydrolysis_cherenkov),
     allow(
         dead_code,
-        reason = "read by container groups, which only the GPU target's backdrop-shader chrome joins (water-rs/waterui#4065)"
+        reason = "read by container groups, which only the Cherenkov targets' backdrop-shader chrome joins"
     )
 )]
 pub struct ContainerMember {
@@ -54,10 +54,10 @@ struct Watched {
 
 /// The state the watchers of one resolution share.
 #[cfg_attr(
-    not(hydrolysis_gpu_painter),
+    not(hydrolysis_cherenkov),
     allow(
         dead_code,
-        reason = "read by container groups, which only the GPU target's backdrop-shader chrome joins (water-rs/waterui#4065)"
+        reason = "read by container groups, which only the Cherenkov targets' backdrop-shader chrome joins"
     )
 )]
 struct State {
@@ -128,10 +128,10 @@ impl State {
     /// under the motion of `metadata`, the member change that asked for
     /// the resolution: every effect the change moves moves with it.
     #[cfg_attr(
-        not(hydrolysis_gpu_painter),
+        not(hydrolysis_cherenkov),
         allow(
             dead_code,
-            reason = "called by container groups, which only the GPU target's backdrop-shader chrome joins (water-rs/waterui#4065)"
+            reason = "called by container groups, which only the Cherenkov targets' backdrop-shader chrome joins"
         )
     )]
     fn resolve(&self, metadata: &Metadata) {
@@ -151,10 +151,10 @@ impl State {
 /// One container group's live resolution: the watches that re-run the
 /// recipe when a member's shape or effect changes. Dropping it ends them.
 #[cfg_attr(
-    not(hydrolysis_gpu_painter),
+    not(hydrolysis_cherenkov),
     allow(
         dead_code,
-        reason = "read by container groups, which only the GPU target's backdrop-shader chrome joins (water-rs/waterui#4065)"
+        reason = "read by container groups, which only the Cherenkov targets' backdrop-shader chrome joins"
     )
 )]
 pub struct Resolution {
@@ -163,10 +163,10 @@ pub struct Resolution {
 }
 
 #[cfg_attr(
-    not(hydrolysis_gpu_painter),
+    not(hydrolysis_cherenkov),
     allow(
         dead_code,
-        reason = "called by container groups, which only the GPU target's backdrop-shader chrome joins (water-rs/waterui#4065)"
+        reason = "called by container groups, which only the Cherenkov targets' backdrop-shader chrome joins"
     )
 )]
 impl Resolution {

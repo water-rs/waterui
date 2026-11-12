@@ -29,6 +29,10 @@ workspace = true
 
 [dependencies]
 cherenkov-scene = { path = "../scene" }
+# The WGSL preludes shader paints and backdrop shaders are written against,
+# and the reference interpreter that evaluates them.
+cherenkov-record = { version = "0.0.0", path = "../record" }
+cherenkov-shader = { version = "0.0.0", path = "../shader", features = ["eval"] }
 cherenkov-stroke = { version = "0.0.0", path = "../stroke" }
 half = "2"
 kurbo = "0.13"
