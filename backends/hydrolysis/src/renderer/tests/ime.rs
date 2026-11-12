@@ -1130,8 +1130,7 @@ fn keys_after_a_composition_commit_in_one_batch_are_ordinary_input() {
     for multiline in [false, true] {
         let value = Binding::container(Str::default());
         let view = {
-            let value_for_view = value.clone();
-            let field_view = field("Name", &value_for_view);
+            let field_view = field("Name", &value);
             let field_view = if multiline {
                 field_view.disable_line_limit()
             } else {
@@ -1209,8 +1208,7 @@ fn a_key_between_direct_commits_stays_ordinary_input() {
     for multiline in [false, true] {
         let value = Binding::container(Str::default());
         let view = {
-            let value_for_view = value.clone();
-            let field_view = field("Name", &value_for_view);
+            let field_view = field("Name", &value);
             let field_view = if multiline {
                 field_view.disable_line_limit()
             } else {

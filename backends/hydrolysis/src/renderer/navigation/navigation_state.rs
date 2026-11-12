@@ -993,8 +993,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 .navigation
                 .slots
                 .get(&key)
-                .map(|slot| slot.target.borrow().clone())
-                .unwrap_or_default();
+                .map_or_default(|slot| slot.target.borrow().clone());
             Self::mark_owner(&owner, crate::renderer::mount::Dirty::LAYOUT);
         }
         changed

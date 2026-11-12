@@ -363,12 +363,10 @@ fn assert_dist_satisfies_needed(executable: &Path, dist: &Path) {
             dist.join(file_name).is_file(),
             "dist is missing {file_name} which {} records as needed\nstaged: {:?}",
             executable.display(),
-            std::fs::read_dir(dist)
-                .map(|entries| entries
-                    .flatten()
-                    .map(|entry| entry.file_name())
-                    .collect::<Vec<_>>())
-                .unwrap_or_default(),
+            std::fs::read_dir(dist).map_or_default(|entries| entries
+                .flatten()
+                .map(|entry| entry.file_name())
+                .collect::<Vec<_>>()),
         );
     }
 }

@@ -37,6 +37,10 @@ const fn xyz([x, y]: Xy) -> [f64; 3] {
 }
 
 /// `m · v`.
+#[allow(
+    clippy::suboptimal_flops,
+    reason = "`f64::mul_add` needs `std`, and the crate builds without it"
+)]
 const fn apply(m: &Mat3, v: [f64; 3]) -> [f64; 3] {
     [
         m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
@@ -46,6 +50,10 @@ const fn apply(m: &Mat3, v: [f64; 3]) -> [f64; 3] {
 }
 
 /// `a · b`.
+#[allow(
+    clippy::suboptimal_flops,
+    reason = "`f64::mul_add` needs `std`, and the crate builds without it"
+)]
 const fn product(a: &Mat3, b: &Mat3) -> Mat3 {
     let mut out = [[0.0; 3]; 3];
     let mut row = 0;
@@ -62,12 +70,20 @@ const fn product(a: &Mat3, b: &Mat3) -> Mat3 {
 }
 
 /// The 2×2 minor of `m` on rows `r0`, `r1` and columns `c0`, `c1`.
+#[allow(
+    clippy::suboptimal_flops,
+    reason = "`f64::mul_add` needs `std`, and the crate builds without it"
+)]
 const fn minor(m: &Mat3, r0: usize, r1: usize, c0: usize, c1: usize) -> f64 {
     m[r0][c0] * m[r1][c1] - m[r0][c1] * m[r1][c0]
 }
 
 /// The inverse of `m`, by its adjugate. The matrices inverted here are
 /// colour-space bases, never singular.
+#[allow(
+    clippy::suboptimal_flops,
+    reason = "`f64::mul_add` needs `std`, and the crate builds without it"
+)]
 const fn inverse(m: &Mat3) -> Mat3 {
     let adjugate = [
         [

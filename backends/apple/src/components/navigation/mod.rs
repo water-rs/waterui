@@ -272,7 +272,6 @@ fn button_content(view: &PlatformView) -> ButtonContent {
 fn label_plain(label: &cocoa_ui::uikit::Label) -> String {
     let raw = label
         .source_text()
-        .map(|text| text.string().to_string())
-        .unwrap_or_default();
+        .map_or_default(|text| text.string().to_string());
     cocoa_ui::text::strip_bidi_controls(&raw)
 }

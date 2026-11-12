@@ -908,8 +908,7 @@ pub(crate) async fn apply_development_signature(
     let app_name = layout
         .app_path
         .file_stem()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .map_or_default(|name| name.to_string_lossy().into_owned());
     let merged = layout.app_path.with_file_name(format!("{app_name}.xcent"));
     write_entitlements(&merged, entitlements).await?;
 
