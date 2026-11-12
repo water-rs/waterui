@@ -43,6 +43,14 @@ fn knob_rect(inputs: &Inputs<'_, f64>) -> Rect {
 }
 
 fn look(drag: DragMapping) -> SliderLook {
+    look_moving(
+        drag,
+        Motion::uniform(Animation::linear(Duration::from_millis(15))),
+    )
+}
+
+/// A look whose value and interaction changes run with `motion`.
+fn look_moving(drag: DragMapping, motion: Motion) -> SliderLook {
     SliderLook::new(
         SliderLayout {
             row_height: 44.0,
@@ -57,7 +65,7 @@ fn look(drag: DragMapping) -> SliderLook {
             hit: HitRegion::NONE,
         },
         drag,
-        Motion::uniform(Animation::linear(Duration::from_millis(15))),
+        motion,
     )
 }
 
@@ -242,6 +250,54 @@ fn a_value_change_moves_a_lens_knob() {
         after.rgba8(),
         "the lens moves from 0.2 to 0.8"
     );
+}
+
+/// A slider whose painted knob and lens knob follow one value under a
+/// one-second linear value motion: mid-transition the lens must sit where
+/// the painted knob does.
+#[test]
+#[cfg(hydrolysis_gpu_painter)]
+fn a_lens_knob_moves_with_the_painted_knob() {
+    let motion = Motion::uniform(Animation::linear(Duration::from_secs(1)));
+    let theme = glass(move |_spec: &SliderSpec, _env: &Environment| {
+        look_moving(DragMapping::Absolute, motion.clone())
+            .part(Custom::new(
+                (Driven::<ShapeData, f64>::new(|inputs| {
+                    ShapeData::of(&knob_rect(inputs))
+                }),),
+                |recorder, _frame, (knob,)| {
+                    recorder.fill(knob, WorkingColor::new([1.0, 0.0, 0.0, 1.0]));
+                },
+            ))
+            .part(Custom::new(
+                (
+                    Driven::<ShapeData, f64>::new(|inputs| {
+                        ShapeData::of(&knob_rect(inputs).inflate(4.0, 4.0))
+                    }),
+                    Driven::<MaterialEffect, f64>::constant(MaterialEffect::new(vec![
+                        -0.8, -0.8, 0.0, 0.0,
+                    ])),
+                ),
+                |recorder, _frame, (lens, effect)| {
+                    recorder.backdrop_material(lens, GLASS_SHADER, GLASS, effect);
+                },
+            ))
+    });
+    let mut rig = Rig::new(theme, LayoutDirection::LeftToRight, 0.2);
+    let before = rig.snapshot();
+    rig.value.set(0.8);
+    for _ in 0..6 {
+        let _ = rig.snapshot();
+    }
+    let mid = rig.snapshot();
+    rig.settle();
+    for _ in 0..64 {
+        let _ = rig.snapshot();
+    }
+    let after = rig.snapshot();
+    save("slider_lens_follows_painted", "before", &before);
+    save("slider_lens_follows_painted", "mid", &mid);
+    save("slider_lens_follows_painted", "after", &after);
 }
 
 /// A right-to-left slider mirrors an ordinary part about its row: at 0.2
