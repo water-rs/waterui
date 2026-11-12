@@ -78,6 +78,8 @@ use waterui_core::{Environment, Str, View};
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub(crate) use scene::lower_drawing;
 
+pub(crate) use geometry::positive_extent;
+
 pub use cx::Cx;
 pub use drawing::{Drawing, DrawingCx};
 pub use geometry::{Circle, Ellipse, FillRule, Line, Path, PathBuilder, RoundedRect, Shape};

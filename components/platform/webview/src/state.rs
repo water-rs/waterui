@@ -51,7 +51,7 @@ use futures::channel::oneshot;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use suiteki::Str;
-use waterui_core::{Binding, Computed, Signal};
+use waterui_core::{Binding, Computed, Signal, contract_violation};
 
 use waterui_core::reactive::watcher::BoxWatcherGuard;
 
@@ -264,12 +264,18 @@ impl StateRegistry {
         };
 
         let reader = read.clone();
+        let read_name = name.clone();
         let entry = Field {
             // Every value leaves through a reply that reads through this
             // closure, so tagging here covers all of them.
             read: Box::new(move || {
-                let mut value =
-                    serde_json::to_value(reader.snapshot()).expect("exposed state must serialize");
+                let mut value = serde_json::to_value(reader.snapshot()).unwrap_or_else(|error| {
+                    contract_violation!(
+                        "state exposed to the page as `{read_name}` must serialize: {error}; \
+                         the page reads null"
+                    );
+                    serde_json::Value::Null
+                });
                 crate::big_integers::tag_unrepresentable(&mut value);
                 value
             }),
@@ -337,7 +343,7 @@ impl StateRegistry {
                 .map(|(name, field)| (name.as_str(), field.update()))
                 .collect(),
         };
-        serde_json::to_vec(&reply).expect("a state reply must serialize")
+        serde_json::to_vec(&reply).expect("a state reply holds a cursor, strings and `serde_json::Value`s, which always serialize")
     }
 
     /// Advances the cursor past every key changed since the last flush and
@@ -481,7 +487,8 @@ impl StateDeclarations {
             rules: rules.iter().map(crate::OriginRule::as_token).collect(),
             fields: &self.fields,
         };
-        let seed = serde_json::to_string(&seed).expect("a state seed must serialize");
+        let seed = serde_json::to_string(&seed)
+            .expect("a state seed holds strings and flags, which always serialize");
         format!("{SEED_SCRIPT}({seed});")
     }
 }
@@ -734,6 +741,43 @@ mod tests {
         count.set(8);
         registry.flush();
         assert_eq!(registry.declarations().seed_script(&policy), before);
+    }
+
+    /// A value that cannot serialize is the app's contract violation; the page
+    /// reads `null` for it and the other keys are unaffected.
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "state exposed to the page as `bad` must serialize")
+    )]
+    fn an_unserializable_value_reads_as_null() {
+        #[derive(Clone)]
+        struct Unserializable;
+        impl serde::Serialize for Unserializable {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("no JSON form"))
+            }
+        }
+        impl<'de> serde::Deserialize<'de> for Unserializable {
+            fn deserialize<D: serde::Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
+                Ok(Self)
+            }
+        }
+
+        let registry = registry();
+        registry.insert("bad", Binding::container(Unserializable), || {});
+        registry.insert("count", Binding::container(7_u32), || {});
+
+        assert_eq!(
+            ready(registry.pull(None).expect("answers")),
+            serde_json::json!({
+                "cursor": 0,
+                "changes": {
+                    "bad": {"v": null, "e": 0, "w": true},
+                    "count": {"v": 7, "e": 0, "w": true},
+                },
+            })
+        );
     }
 
     #[test]

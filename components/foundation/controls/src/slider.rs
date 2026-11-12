@@ -13,7 +13,7 @@ use crate::label::{IntoLabel, Label, impl_label_style_methods};
 use crate::size::ControlSize;
 use nami::Binding;
 use waterui_core::Str;
-use waterui_core::{AnyView, Environment, configurable, layout::StretchAxis};
+use waterui_core::{AnyView, Environment, configurable, contract_violation, layout::StretchAxis};
 
 /// Configuration for the [`Slider`] widget.
 #[derive(Debug)]
@@ -294,16 +294,19 @@ impl Slider {
     /// Moves the value in increments of `step`, anchored at the start of
     /// the range: a drag rounds to the nearest multiple.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when `step` is not positive and finite.
+    /// A `step` that is not positive and finite is reported: a debug build
+    /// panics, a release build logs it and the slider keeps its current step.
     #[must_use]
     pub fn step(mut self, step: f64) -> Self {
-        assert!(
-            step.is_finite() && step > 0.0,
-            "a slider step must be positive and finite"
-        );
-        self.0.step = Some(step);
+        if step.is_finite() && step > 0.0 {
+            self.0.step = Some(step);
+        } else {
+            contract_violation!(
+                "a slider step must be positive and finite; the step is ignored and the slider keeps its current step"
+            );
+        }
         self
     }
 
@@ -356,7 +359,22 @@ pub fn slider(label: impl IntoLabel, value: &Binding<f64>) -> Slider {
 
 #[cfg(test)]
 mod tests {
-    use super::snap;
+    use nami::Binding;
+
+    use super::{slider, snap};
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a slider step must be positive and finite")
+    )]
+    fn invalid_step_is_ignored() {
+        let value = Binding::container(0.0);
+        let stepped = slider("Volume", &value).step(2.0).step(0.0);
+
+        // Release outcome: the slider keeps the step it had.
+        assert_eq!(stepped.0.step, Some(2.0));
+    }
 
     #[test]
     fn snap_rounds_from_the_range_start_and_stays_in_range() {

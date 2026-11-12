@@ -16,6 +16,8 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use std::path::Path;
 
+use waterui_core::contract_violation;
+
 /// The source of a font to register.
 ///
 /// A font is either its file's bytes — with the face's index in the
@@ -86,13 +88,18 @@ impl FontSource {
 
     /// Selects a face index inside the file's collection.
     ///
-    /// # Panics
-    /// When the source is a `System` reference, which has no collection.
+    /// A `System` reference has no collection: selecting an index on one is
+    /// a contract violation, and the call is ignored.
     #[must_use]
     pub fn with_index(self, index: u32) -> Self {
         match self {
             Self::Bytes { data, .. } => Self::Bytes { data, index },
-            Self::System { .. } => panic!("a system-font reference has no collection index"),
+            Self::System { .. } => {
+                contract_violation!(
+                    "a system-font reference has no collection index; the index {index} is ignored"
+                );
+                self
+            }
         }
     }
 }
@@ -218,3 +225,18 @@ impl ShaderSource {
 pub use cherenkov_record::{
     Format, ImageColorSpace, ImageData, ImageFormat, ResourceError, Rgba8, Rgba16F,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::FontSource;
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a system-font reference has no collection index")
+    )]
+    fn an_index_on_a_system_font_is_ignored() {
+        let font = FontSource::system("Helvetica").with_index(3);
+        assert!(matches!(font, FontSource::System { family } if family == "Helvetica"));
+    }
+}

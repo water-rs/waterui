@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use waterui_core::handler::ViewBuilder;
-use waterui_core::{AnyView, Metadata, Retain};
+use waterui_core::{AnyView, Metadata, Retain, contract_violation};
 use waterui_ts_engine::{JsError, JsFunction, JsValue, Opaque};
 
 use crate::bridge::{Bridge, WeakBridge};
@@ -152,14 +152,18 @@ impl JsViewBuilder {
 impl ViewBuilder for JsViewBuilder {
     type Output = AnyView;
 
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when the function throws or hands back something that is not a
-    /// view. `ViewBuilder::build` has no error channel, and a container that
-    /// silently showed nothing where a destination belongs would hide the
-    /// throw at the point where it is still diagnosable.
+    /// When the function throws or hands back something that is not a view.
+    /// `ViewBuilder::build` has no error channel: a debug build panics, where
+    /// the throw is still diagnosable, and a release build logs it and builds
+    /// an empty view.
     fn build(&self) -> Self::Output {
-        self.try_build()
-            .unwrap_or_else(|error| panic!("a TypeScript view builder failed: {error}"))
+        self.try_build().unwrap_or_else(|error| {
+            contract_violation!(
+                "a TypeScript view builder failed: {error}; an empty view is built"
+            );
+            AnyView::new(())
+        })
     }
 }

@@ -7,8 +7,10 @@ use crate::draw::kurbo::Affine;
 use crate::draw::{Draw, Fixed, Recorder, StaticRecorder};
 use nami::watcher::BoxWatcherGuard;
 use nami::{Computed, Signal};
-use waterui_core::Str;
 use waterui_core::layout::Size;
+use waterui_core::{Str, contract_violation};
+
+use crate::canvas::positive_extent;
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
@@ -141,20 +143,11 @@ impl Picture {
     /// A picture of `size` points showing `recording`, whose commands are
     /// authored in the same point space.
     ///
-    /// # Panics
-    ///
-    /// When `size` is not finite and positive: a picture with no area is an
-    /// authoring error, not something to lay out.
+    /// A `size` that is not finite and positive is a contract violation: a
+    /// picture with no area is an authoring error, not something to lay out.
+    /// Each side that is not finite and positive is one point.
     pub fn new(size: Size, recording: impl IntoComputed<PictureRecording>) -> Self {
-        assert!(
-            size.width.is_finite()
-                && size.height.is_finite()
-                && size.width > 0.0
-                && size.height > 0.0,
-            "a Picture needs a finite, positive size, got {}x{}",
-            size.width,
-            size.height
-        );
+        let size = positive_extent(size, "a Picture");
         Self {
             recording: recording.into_computed(),
             size,
@@ -256,22 +249,27 @@ impl Picture {
     /// The pixel size of this picture at `scale` pixels per point, each side
     /// rounded and at least one pixel.
     ///
-    /// # Panics
-    ///
-    /// When `scale` is not finite and positive, or a side would exceed the
-    /// 65535 pixels a rasteriser addresses.
+    /// A `scale` that is not finite and positive is a contract violation:
+    /// the scale is `1`. A side that would exceed the 65535 pixels a
+    /// rasteriser addresses is one too: the side is 65535 pixels.
     #[must_use]
     pub fn pixel_size(&self, scale: f32) -> (u32, u32) {
-        assert!(
-            scale.is_finite() && scale > 0.0,
-            "a picture is rasterised at a finite, positive scale, got {scale}"
-        );
-        let pixels = |points: f32| {
-            let rounded = (points * scale).round().max(1.0);
-            assert!(
-                rounded <= f32::from(u16::MAX),
-                "a picture is at most 65535 pixels a side, got {rounded}"
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            contract_violation!(
+                "a picture is rasterised at a finite, positive scale, got {scale}; 1 is used"
             );
+            1.0
+        };
+        let pixels = |points: f32| {
+            let mut rounded = (points * scale).round().max(1.0);
+            if rounded > f32::from(u16::MAX) {
+                contract_violation!(
+                    "a picture is at most 65535 pixels a side, got {rounded}; 65535 is used"
+                );
+                rounded = f32::from(u16::MAX);
+            }
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -342,7 +340,7 @@ impl SceneContent for RecordedScene {
         let recording = self
             .current
             .as_ref()
-            .expect("a picture recording is selected before drawing");
+            .expect("`current` is set just above whenever it is unset");
         resources.hold(recording.held());
         recorder.picture(
             recording.picture(),
@@ -706,5 +704,36 @@ mod tests {
             content.build_scene(recorder, &mut resources.recording(), 20.0, 20.0);
         });
         assert_eq!(second.len(), 1);
+    }
+
+    fn empty_picture(size: Size) -> Picture {
+        Picture::new(size, constant(Picture::record(|_| {})))
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a Picture needs a finite, positive size")
+    )]
+    fn a_degenerate_picture_size_is_one_point_per_bad_side() {
+        let picture = empty_picture(Size::new(f32::NAN, 20.0));
+        assert_eq!(picture.pixel_size(1.0), (1, 20));
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "finite, positive scale"))]
+    fn an_invalid_scale_is_one() {
+        let picture = empty_picture(Size::new(10.0, 20.0));
+        assert_eq!(picture.pixel_size(-2.0), (10, 20));
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "at most 65535 pixels a side")
+    )]
+    fn an_oversized_side_is_cut_to_the_addressable_pixels() {
+        let picture = empty_picture(Size::new(100.0, 20.0));
+        assert_eq!(picture.pixel_size(1000.0), (65535, 20_000));
     }
 }

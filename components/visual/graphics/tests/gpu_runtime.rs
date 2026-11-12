@@ -117,13 +117,15 @@ impl GpuContent for BuildsSharedDevice {
 fn setup_context_builds_a_shared_device_of_the_runtime() {
     let runtime = runtime();
     let adapter_info = Arc::new(std::sync::Mutex::new(None));
-    runtime.render_content(
-        BuildsSharedDevice {
-            adapter_info: adapter_info.clone(),
-        },
-        OffscreenSize::try_from_pixels(8, 8).unwrap(),
-        1.0,
-    );
+    runtime
+        .render_content(
+            BuildsSharedDevice {
+                adapter_info: adapter_info.clone(),
+            },
+            OffscreenSize::try_from_pixels(8, 8).unwrap(),
+            1.0,
+        )
+        .expect("the offscreen frame renders");
     let seen = adapter_info.lock().unwrap().take().expect("setup ran");
     assert_eq!(seen, runtime.context().adapter().get_info());
 }

@@ -13,8 +13,8 @@ use std::collections::HashMap;
 
 use nami::watcher::{BoxWatcherGuard, Context};
 use nami::{Computed, Signal, SignalExt as _};
-use waterui_core::Environment;
 use waterui_core::layout::{Affine2, Rect, Size};
+use waterui_core::{Environment, contract_violation};
 use waterui_text::styled::StyledStr;
 
 use crate::canvas::cell::SignalCell;
@@ -532,9 +532,8 @@ impl Cx {
     /// update in place, animated when the collection changed under an
     /// animation.
     ///
-    /// # Panics
-    ///
-    /// When two items share a key.
+    /// Two items sharing a key is a contract violation: the later item is
+    /// not recorded.
     pub fn each<T, K>(
         &mut self,
         items: impl Into<Operand<Vec<T>>>,
@@ -644,7 +643,7 @@ impl<T: Clone + PartialEq + 'static, K: Eq + Hash + Clone + fmt::Debug + 'static
                         .installed
                         .iter()
                         .position(|key| *key == entry.key)
-                        .expect("an installed item keeps its key");
+                        .expect("`installed` lists the key of every entry that has a region");
                     region.move_to(index);
                     let key = self.installed.remove(from);
                     self.installed.insert(index, key);
@@ -677,10 +676,12 @@ impl<T: Clone + PartialEq + 'static, K: Eq + Hash + Clone + fmt::Debug + 'static
         let mut updates = Vec::new();
         for item in items {
             let key = key(item);
-            assert!(
-                !entries.iter().any(|entry: &Entry<T, K>| entry.key == key),
-                "Cx::each: two items share the key {key:?}"
-            );
+            if entries.iter().any(|entry: &Entry<T, K>| entry.key == key) {
+                contract_violation!(
+                    "Cx::each: two items share the key {key:?}; the later item is not recorded"
+                );
+                continue;
+            }
             if let Some(entry) = old.remove(&key) {
                 if entry.item.snapshot() != *item {
                     updates.push((entry.item.clone(), item.clone()));

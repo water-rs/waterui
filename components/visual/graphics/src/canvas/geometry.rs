@@ -11,7 +11,8 @@ use alloc::vec::Vec;
 use core::f32::consts::TAU;
 
 use nami::impl_constant;
-use waterui_core::layout::{Point, Rect};
+use waterui_core::contract_violation;
+use waterui_core::layout::{Point, Rect, Size};
 
 use crate::draw::kurbo::{self, PathEl, Shape as _};
 use crate::draw::{FillRule as RecordFillRule, ShapeData};
@@ -33,6 +34,28 @@ pub mod sealed {
         /// The recorded form of this shape.
         fn lower(self) -> ShapeData;
     }
+}
+
+/// `size` when both sides are finite and positive. Otherwise a contract
+/// violation of `what` (a drawing, a picture): each side that is not finite
+/// and positive is one point.
+pub fn positive_extent(size: Size, what: &str) -> Size {
+    let positive = |side: f32| {
+        if side.is_finite() && side > 0.0 {
+            side
+        } else {
+            1.0
+        }
+    };
+    if size.width.is_finite() && size.height.is_finite() && size.width > 0.0 && size.height > 0.0 {
+        return size;
+    }
+    contract_violation!(
+        "{what} needs a finite, positive size, got {}x{}; each side that is not finite and positive is 1 point",
+        size.width,
+        size.height
+    );
+    Size::new(positive(size.width), positive(size.height))
 }
 
 fn point(p: Point) -> kurbo::Point {
@@ -284,15 +307,21 @@ impl PathBuilder {
     /// space. The arc joins the current point with a straight segment, or
     /// starts a subpath when there is none.
     ///
-    /// # Panics
-    ///
-    /// When `sweep` is more than one full turn either way.
+    /// A `sweep` of more than one full turn either way is a contract
+    /// violation: the arc sweeps one full turn in that direction (none when
+    /// `sweep` is `NaN`).
     #[must_use]
     pub fn arc(mut self, center: Point, radii: (f32, f32), start: f32, sweep: f32) -> Self {
-        assert!(
-            sweep.abs() <= TAU,
-            "an arc sweeps at most one full turn, got {sweep} radians"
-        );
+        let sweep = if sweep.abs() <= TAU {
+            sweep
+        } else {
+            contract_violation!("an arc sweeps at most one full turn, got {sweep} radians");
+            if sweep.is_nan() {
+                0.0
+            } else {
+                sweep.clamp(-TAU, TAU)
+            }
+        };
         let arc = kurbo::Arc::new(
             point(center),
             (f64::from(radii.0), f64::from(radii.1)),

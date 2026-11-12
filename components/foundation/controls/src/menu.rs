@@ -17,7 +17,7 @@ use nami::{
 use waterui_core::Str;
 pub use waterui_core::key::NamedKey;
 use waterui_core::{
-    AnyView, Environment, View,
+    AnyView, Environment, View, contract_violation,
     extract::State,
     handler::{Handler, SharedAction, shared_action},
     interaction::Disabled,
@@ -232,34 +232,40 @@ const fn named_key_for_control(character: char) -> Option<NamedKey> {
 }
 
 impl From<char> for ShortcutKey {
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics on a control character: a press reports the key it stands for
-    /// as a named key (`'\t'` is `NamedKey::Tab`), never as that character.
+    /// A control character is reported: a press reports the key it stands
+    /// for as a named key (`'\t'` is `NamedKey::Tab`), never as that
+    /// character. A debug build panics; a release build logs it and the
+    /// shortcut is created but never fires.
     fn from(character: char) -> Self {
-        assert!(
-            !character.is_control(),
-            "{character:?} is a control character, not a shortcut key: {}",
-            named_key_for_control(character).map_or_else(
-                || String::from("no key press reports it, so the shortcut could never fire"),
-                |named| format!("the key press reports it as `NamedKey::{named}`, so use that"),
-            )
-        );
+        if character.is_control() {
+            contract_violation!(
+                "{character:?} is a control character, not a shortcut key: {}; the shortcut is created but never fires",
+                named_key_for_control(character).map_or_else(
+                    || String::from("no key press reports it, so the shortcut could never fire"),
+                    |named| format!("the key press reports it as `NamedKey::{named}`, so use that"),
+                )
+            );
+        }
         Self::Character(character)
     }
 }
 
 impl From<NamedKey> for ShortcutKey {
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics on `NamedKey::Unidentified`, `NamedKey::Dead` and the modifier
-    /// and lock keys: a shortcut on them could never fire.
+    /// `NamedKey::Unidentified`, `NamedKey::Dead` and the modifier and lock
+    /// keys are reported: a shortcut on them could never fire. A debug build
+    /// panics; a release build logs it and the shortcut is created but never
+    /// fires.
     fn from(key: NamedKey) -> Self {
-        assert!(
-            named_key_fires(key),
-            "`NamedKey::{key}` is not a valid shortcut key: it is unidentified, dead, a modifier \
-             or a lock key, so the shortcut could never fire"
-        );
+        if !named_key_fires(key) {
+            contract_violation!(
+                "`NamedKey::{key}` is not a valid shortcut key: it is unidentified, dead, a modifier \
+                 or a lock key, so the shortcut could never fire; the shortcut is created but never fires"
+            );
+        }
         Self::Named(key)
     }
 }
@@ -1151,7 +1157,8 @@ impl ResolvedCommand {
         Rc::as_ptr(&self.identity) as usize
     }
 
-    /// Rejects a command the macOS menu bar may not carry.
+    /// Whether the macOS menu bar may carry this command, reporting a
+    /// contract violation when it may not.
     ///
     /// ⌘Q, ⌘H and ⌥⌘H belong to the standard application-menu items — Quit,
     /// Hide, Hide Others. A plain command redeclaring one would shadow the
@@ -1160,15 +1167,17 @@ impl ResolvedCommand {
     /// this for each declared command, so the rule holds whichever backend
     /// renders the bar.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
     /// When the command's shortcut is one of the reserved chords; the
     /// message names `MenuItem::Quit` and `App::on_terminate` as the APIs to
-    /// use instead.
+    /// use instead. A debug build panics; a release build logs it, returns
+    /// `false`, and the backend leaves the command out of the bar.
     #[doc(hidden)]
-    pub fn assert_allowed_in_macos_menu_bar(&self) {
+    #[must_use]
+    pub fn allowed_in_macos_menu_bar(&self) -> bool {
         let Some(shortcut) = &self.shortcut else {
-            return;
+            return true;
         };
         let reserved = [
             (Shortcut::new('q').command(), "⌘Q", "Quit"),
@@ -1176,15 +1185,17 @@ impl ResolvedCommand {
             (Shortcut::new('h').command().option(), "⌥⌘H", "Hide Others"),
         ];
         for (chord, chord_text, item) in reserved {
-            assert!(
-                !(chord.modifiers == shortcut.modifiers
-                    && shortcut.key.matches(&chord.key.to_key())),
-                "a menu command in the macOS menu bar may not use the {chord_text} chord — it \
-                 belongs to the standard {item} item; declare `MenuItem::Quit` for Quit \
-                 behavior and `App::on_terminate` for shutdown work instead of redeclaring the \
-                 chord"
-            );
+            if chord.modifiers == shortcut.modifiers && shortcut.key.matches(&chord.key.to_key()) {
+                contract_violation!(
+                    "a menu command in the macOS menu bar may not use the {chord_text} chord — it \
+                     belongs to the standard {item} item; declare `MenuItem::Quit` for Quit \
+                     behavior and `App::on_terminate` for shutdown work instead of redeclaring the \
+                     chord; the command is left out of the menu bar"
+                );
+                return false;
+            }
         }
+        true
     }
 }
 
@@ -1259,7 +1270,7 @@ impl ResolvedMenuItem {
     /// Close Tab); and no chord at all when the application binds both, so
     /// Close Window never shadows a command's own binding.
     ///
-    /// The comparison is [`ResolvedCommand::assert_allowed_in_macos_menu_bar`]'s:
+    /// The comparison is [`ResolvedCommand::allowed_in_macos_menu_bar`]'s:
     /// equal modifier sets, and the key matched case-insensitively.
     #[doc(hidden)]
     #[must_use]
@@ -1275,7 +1286,7 @@ impl ResolvedMenuItem {
 }
 
 /// Whether a declared command in `items` — at any depth — binds `chord`,
-/// compared the way [`ResolvedCommand::assert_allowed_in_macos_menu_bar`]
+/// compared the way [`ResolvedCommand::allowed_in_macos_menu_bar`]
 /// does: equal modifiers, key matched case-insensitively.
 fn binds_chord(items: &[ResolvedMenuItem], chord: &Shortcut) -> bool {
     items.iter().any(|item| match item {
@@ -1419,21 +1430,61 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "is not a valid shortcut key")]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "is not a valid shortcut key")
+    )]
     fn shortcut_key_refuses_a_named_key_no_press_resolves_to() {
-        let _ = ShortcutKey::from(NamedKey::Unidentified);
+        // Release outcome: the shortcut is created and never fires.
+        let key = ShortcutKey::from(NamedKey::Unidentified);
+        assert_eq!(key, ShortcutKey::Named(NamedKey::Unidentified));
+        assert!(!key.matches(&Key::Named(NamedKey::Delete)));
     }
 
     #[test]
-    #[should_panic(expected = "is not a valid shortcut key")]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "is not a valid shortcut key")
+    )]
     fn shortcut_key_refuses_a_modifier_key() {
-        let _ = ShortcutKey::from(NamedKey::Shift);
+        let key = ShortcutKey::from(NamedKey::Shift);
+        assert_eq!(key, ShortcutKey::Named(NamedKey::Shift));
     }
 
     #[test]
-    #[should_panic(expected = "`NamedKey::Tab`")]
+    #[cfg_attr(debug_assertions, should_panic(expected = "`NamedKey::Tab`"))]
     fn shortcut_key_refuses_a_control_character_naming_its_key() {
-        let _ = ShortcutKey::from('\t');
+        let key = ShortcutKey::from('\t');
+        assert_eq!(key, ShortcutKey::Character('\t'));
+        assert!(!key.matches(&Key::Named(NamedKey::Tab)));
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "may not use the ⌘Q chord"))]
+    fn macos_menu_bar_refuses_the_reserved_quit_chord() {
+        crate::init_test_executor();
+        let env = Environment::default();
+        let items = vec![
+            Command::builder("Quit")
+                .action(|| {})
+                .shortcut(Shortcut::new('q').command())
+                .into(),
+            Command::builder("Open")
+                .action(|| {})
+                .shortcut(Shortcut::new('o').command())
+                .into(),
+        ];
+        let resolved = resolve_menu_items_now(items, &env);
+        let ResolvedMenuItem::Command(quit) = &resolved[0] else {
+            panic!("first resolved item should be a command");
+        };
+        let ResolvedMenuItem::Command(open) = &resolved[1] else {
+            panic!("second resolved item should be a command");
+        };
+        assert!(open.allowed_in_macos_menu_bar());
+        // Release outcome: the command is reported not allowed, so the
+        // backend leaves it out of the bar.
+        assert!(!quit.allowed_in_macos_menu_bar());
     }
 
     /// `Display` is the platform's menu hint: `⇧⌘P` on Apple targets,

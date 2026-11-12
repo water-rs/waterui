@@ -48,7 +48,7 @@ use alloc::string::String;
 
 use nami::{Computed, Signal, SignalExt, impl_constant, signal::IntoSignal};
 use waterui_core::{
-    Environment, IntoSignalF32, Str,
+    Environment, IntoSignalF32, Str, contract_violation,
     resolve::{AnyResolvable, Resolvable},
 };
 
@@ -595,12 +595,19 @@ macro_rules! impl_font {
         impl Resolvable for $name {
             type Resolved = ResolvedFont;
             fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
+                // A token the host did not install is a contract violation;
+                // the slot's framework default stands in for it.
                 env.query::<Self, Computed<Self::Resolved>>()
                     .cloned()
-                    .expect(concat!(
-                        stringify!($name),
-                        " font token is not installed in the environment"
-                    ))
+                    .unwrap_or_else(|| {
+                        contract_violation!(
+                            concat!(
+                                stringify!($name),
+                                " font token is not installed in the environment; the default font is used"
+                            )
+                        );
+                        Computed::constant(<Self as FontSlot>::DEFAULT)
+                    })
             }
         }
 
@@ -639,6 +646,18 @@ mod tests {
 
     fn env_with_body(font: ResolvedFont) -> Environment {
         Environment::new().store::<Body, Computed<ResolvedFont>>(Computed::constant(font))
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "Body font token is not installed in the environment")
+    )]
+    fn a_font_token_the_host_did_not_install_is_the_default() {
+        let resolved = Body.resolve(&Environment::new()).snapshot();
+        let default = <Body as FontSlot>::DEFAULT;
+        assert!((resolved.size() - default.size()).abs() < f32::EPSILON);
+        assert_eq!(resolved.weight(), default.weight());
     }
 
     #[test]

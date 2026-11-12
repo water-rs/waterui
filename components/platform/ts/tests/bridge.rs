@@ -11,12 +11,13 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use nami::{Binding, Computed, Signal};
+use waterui_core::handler::ViewBuilder as _;
 use waterui_core::{AnyView, Environment, Error};
 use waterui_graphics::WorkingColor;
 use waterui_graphics::color::{AccentColor, ColorScheme};
 use waterui_ts::engine::{JsError, JsFunction, JsRuntime, JsValue};
 use waterui_ts::schema::{TsProps, TsType, TypeSchema};
-use waterui_ts::{Bridge, FromJs, HostTable, IntoJs, TsRuntime};
+use waterui_ts::{Bridge, FromJs, HostTable, IntoJs, JsViewBuilder, TsRuntime};
 
 /// The runtime global a real bundle publishes, faked for a Rust test.
 const FIXTURE: &str = include_str!("fixtures/runtime.js");
@@ -1673,4 +1674,15 @@ fn an_environment_without_a_colour_scheme_says_so() {
         error.message().contains("ColorScheme"),
         "the error names what a backend must install: {error}"
     );
+}
+
+/// `ViewBuilder::build` has no error channel: a render function that throws is
+/// a contract violation, and a release build builds an empty view instead.
+#[test]
+#[cfg_attr(debug_assertions, should_panic(expected = "an empty view is built"))]
+fn a_render_function_that_throws_builds_an_empty_view() {
+    let runtime = runtime();
+    let render = function(&runtime, "(() => { throw new Error('boom'); })");
+    let builder = JsViewBuilder::new(render, runtime.bridge());
+    let _view = builder.build();
 }

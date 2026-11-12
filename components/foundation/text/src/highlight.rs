@@ -231,7 +231,7 @@ impl DefaultHighlighter {
             .settings
             .foreground
             .map(|color| Srgb::new_u8(color.r, color.g, color.b))
-            .expect("syntect theme declares no default foreground");
+            .expect("syntect's bundled base16-ocean themes declare a default foreground");
         Self {
             syntax_set,
             theme,

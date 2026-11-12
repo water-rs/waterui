@@ -11,7 +11,7 @@ use nami::map::map;
 use nami::{Computed, Signal, SignalExt};
 use waterui_core::layout::StretchAxis;
 use waterui_core::reactive::signal::IntoComputed;
-use waterui_core::{Environment, View};
+use waterui_core::{Environment, View, contract_violation};
 
 use super::paint::{Gradient, mesh_paint};
 use crate::scene::resources::RecordingResources;
@@ -61,19 +61,22 @@ impl MeshGradient {
     /// Colours are eased across each patch; see
     /// [`smooths_colors`](Self::smooths_colors).
     ///
-    /// # Panics
-    ///
-    /// When the grid has fewer than two vertices on a side.
+    /// A grid with fewer than two vertices on a side is a contract
+    /// violation: the grid has two vertices on that side.
     #[must_use]
     pub fn new<C>(columns: u32, rows: u32, colors: C) -> Self
     where
         C: Signal + 'static,
         C::Output: IntoIterator<Item = WorkingColor>,
     {
-        assert!(
-            columns >= 2 && rows >= 2,
-            "mesh gradients need at least a 2x2 grid of vertices"
-        );
+        let (columns, rows) = if columns >= 2 && rows >= 2 {
+            (columns, rows)
+        } else {
+            contract_violation!(
+                "mesh gradients need at least a 2x2 grid of vertices, got {columns}x{rows}; a side with fewer than two vertices has two"
+            );
+            (columns.max(2), rows.max(2))
+        };
         Self {
             columns,
             rows,
@@ -248,9 +251,25 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "exactly columns*rows colours")]
-    fn a_short_colour_list_is_rejected() {
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "exactly columns*rows colours")
+    )]
+    fn a_short_colour_list_is_a_transparent_patch() {
         let paint = MeshGradient::new(2, 2, vec![WorkingColor::BLACK; 3]).into_paint();
-        let _ = paint.snapshot();
+        let mesh = mesh(&paint);
+        assert_eq!((mesh.columns(), mesh.rows()), (1, 1));
+        assert!(
+            mesh.colors()
+                .iter()
+                .all(|color| *color == WorkingColor::TRANSPARENT)
+        );
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "at least a 2x2 grid"))]
+    fn a_one_column_grid_has_two_columns() {
+        let paint = MeshGradient::new(1, 2, vec![WorkingColor::BLACK; 4]).into_paint();
+        assert_eq!(mesh(&paint).points().len(), 4);
     }
 }

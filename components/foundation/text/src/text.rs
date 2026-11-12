@@ -13,7 +13,7 @@ use suiteki::Str;
 use waterui_color::Color;
 use waterui_core::configurable;
 use waterui_core::layout::HorizontalAlignment;
-use waterui_core::{Environment, View, flatten_signal};
+use waterui_core::{Environment, View, contract_violation, flatten_signal};
 use waterui_locale::{Locale, TranslationCatalog, locale_binding};
 
 use crate::font::FontWeight;
@@ -390,17 +390,19 @@ impl Text {
 
     /// Converts text into an FFI-ready raw config without an environment.
     ///
-    /// # Panics
-    ///
-    /// Panics when called on localized text because localization must be resolved
-    /// from a concrete environment in the component `body(env)` path.
+    /// Localized text must be resolved from a concrete environment in the
+    /// component `body(env)` path; converting it here is a contract
+    /// violation, and it is resolved in an empty environment instead.
     #[must_use]
     pub fn into_config_without_env(self) -> TextConfig {
         match self.0 {
             TextKind::Raw(config) => config,
-            TextKind::Signal { .. } => panic!(
-                "Environment-dependent Text cannot cross FFI directly; resolve it in the component body with Text::resolve(env) before converting to native config"
-            ),
+            TextKind::Signal { .. } => {
+                contract_violation!(
+                    "Environment-dependent Text cannot cross FFI directly; resolve it in the component body with Text::resolve(env) before converting to native config; it is resolved in an empty environment"
+                );
+                self.resolve(&Environment::new())
+            }
         }
     }
 
@@ -421,34 +423,36 @@ impl Text {
 
     /// Returns the computed content for raw text.
     ///
-    /// # Panics
-    ///
-    /// Panics for localized text because the resolved content depends on the environment.
+    /// The resolved content of localized text depends on the environment;
+    /// asking for it here is a contract violation, and it is resolved in an
+    /// empty environment instead.
     #[must_use]
     pub fn content(&self) -> Computed<StyledStr> {
         match &self.0 {
             TextKind::Raw(config) => config.content.clone(),
             TextKind::Signal { .. } => {
-                panic!(
-                    "Text::content() is only available for raw text; environment-dependent text must be resolved with Text::resolve(env)"
-                )
+                contract_violation!(
+                    "Text::content() is only available for raw text; environment-dependent text must be resolved with Text::resolve(env); it is resolved in an empty environment"
+                );
+                self.resolve(&Environment::new()).content
             }
         }
     }
 
     /// Returns the paragraph alignment for raw text.
     ///
-    /// # Panics
-    ///
-    /// Panics for localized text because the resolved configuration depends on the environment.
+    /// The resolved configuration of localized text depends on the
+    /// environment; asking for it here is a contract violation, and it is
+    /// resolved in an empty environment instead.
     #[must_use]
     pub fn paragraph_alignment(&self) -> Computed<HorizontalAlignment> {
         match &self.0 {
             TextKind::Raw(config) => config.paragraph_alignment.clone(),
             TextKind::Signal { .. } => {
-                panic!(
-                    "Text::paragraph_alignment() is only available for raw text; environment-dependent text must be resolved with Text::resolve(env)"
-                )
+                contract_violation!(
+                    "Text::paragraph_alignment() is only available for raw text; environment-dependent text must be resolved with Text::resolve(env); it is resolved in an empty environment"
+                );
+                self.resolve(&Environment::new()).paragraph_alignment
             }
         }
     }
@@ -685,6 +689,42 @@ mod tests {
         assert_eq!(
             text.paragraph_alignment().snapshot(),
             HorizontalAlignment::Trailing
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "Text::content() is only available for raw text")
+    )]
+    fn the_content_of_localized_text_resolves_in_an_empty_environment() {
+        let text: Text = Computed::constant("greeting").into();
+        assert_eq!(text.content().snapshot().to_plain(), "greeting");
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "Text::paragraph_alignment() is only available for raw text")
+    )]
+    fn the_alignment_of_localized_text_resolves_in_an_empty_environment() {
+        let text: Text = Computed::constant("greeting").into();
+        assert_eq!(
+            text.paragraph_alignment().snapshot(),
+            HorizontalAlignment::Leading
+        );
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "cannot cross FFI directly"))]
+    fn localized_text_converted_without_an_environment_resolves_in_an_empty_one() {
+        let text: Text = Computed::constant("greeting").into();
+        assert_eq!(
+            text.into_config_without_env()
+                .content()
+                .snapshot()
+                .to_plain(),
+            "greeting"
         );
     }
 

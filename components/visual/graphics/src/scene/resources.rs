@@ -60,8 +60,8 @@ use core::ptr;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 
-use waterui_core::Environment;
 use waterui_core::layout::Size;
+use waterui_core::{Environment, contract_violation};
 use waterui_text::styled::StyledStr;
 
 use crate::canvas::TextPlacement;
@@ -840,17 +840,19 @@ impl RecordingResources<'_> {
     /// recording that draws another one, such as a picture recorded with
     /// [`Picture::record_with`](crate::backend::Picture::record_with).
     ///
-    /// # Panics
-    ///
-    /// When `held` belongs to another target's [`SceneResources`].
+    /// A `held` that belongs to another target's [`SceneResources`] is a
+    /// contract violation: its ids mean nothing on this target, so the call
+    /// is ignored and this recording holds none of its registrations.
     pub fn hold(&mut self, held: &HeldResources) {
         if held.entries.is_empty() {
             return;
         }
-        assert!(
-            ptr::eq(held.table.as_ptr(), Rc::as_ptr(&self.resources.table)),
-            "a recording naming another target's resources was drawn in this recording"
-        );
+        if !ptr::eq(held.table.as_ptr(), Rc::as_ptr(&self.resources.table)) {
+            contract_violation!(
+                "a recording naming another target's resources was drawn in this recording; its registrations are not held"
+            );
+            return;
+        }
         for entry in held.entries.iter() {
             self.held
                 .entry(entry_address(entry))
@@ -1829,6 +1831,23 @@ pub mod tests {
             },
             id,
         );
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "another target's resources")
+    )]
+    fn a_recording_from_another_target_is_not_held() {
+        let (theirs, _events) = null_resources();
+        let (ours, _events) = null_resources();
+        let image = theirs.image(one_pixel()).expect("image registration");
+        let mut recording = theirs.recording();
+        let _ = recording.name(&image);
+        let foreign = recording.finish();
+        let mut mine = ours.recording();
+        mine.hold(&foreign);
+        assert!(mine.finish().entries.is_empty());
     }
 
     #[test]

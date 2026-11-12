@@ -13776,6 +13776,7 @@ dependencies = [
  "serde",
  "serde_json",
  "suiteki",
+ "waterui-contract",
  "waterui-meta",
  "waterui-text",
 ]

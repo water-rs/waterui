@@ -15,6 +15,7 @@
 //! ```
 
 use suiteki::Str;
+use waterui_core::contract_violation;
 use waterui_url::Url;
 
 /// Which origins may reach the bridge.
@@ -51,14 +52,16 @@ impl OriginPolicy {
     /// [`Url::origin`], so the entry names an origin the way an engine
     /// reports it — `https://A.dev:443` becomes `https://a.dev`.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// When an `Allowed` entry is not a URL with a tuple origin.
+    /// When an `Allowed` entry is not a URL with a tuple origin: a debug build
+    /// panics, a release build logs it and drops the entry, so it admits no
+    /// document.
     #[must_use]
     pub fn new(origins: BridgeOrigins, initial: &Url) -> Self {
         let origins = match origins {
             BridgeOrigins::Allowed(entries) => {
-                BridgeOrigins::Allowed(entries.iter().map(allowed_origin).collect())
+                BridgeOrigins::Allowed(entries.iter().filter_map(allowed_origin).collect())
             }
             origins => origins,
         };
@@ -269,19 +272,20 @@ fn serialized_origin(url: &Url) -> Option<Str> {
 /// entry names, canonicalized through [`Url::origin`] so it matches the
 /// form engines report.
 ///
-/// # Panics
+/// # Contract violation
 ///
 /// When `entry` is not a URL with a tuple origin — an allow list names
-/// origins, and a value that names none can never match.
-fn allowed_origin(entry: &Str) -> Str {
-    entry
-        .parse::<Url>()
-        .ok()
-        .and_then(|url| url.origin())
-        .map_or_else(
-            || panic!("a BridgeOrigins::Allowed entry must be a URL with an origin, got {entry:?}"),
-            |origin| Str::from(origin.to_string()),
-        )
+/// origins, and a value that names none can never match. A debug build
+/// panics; a release build logs it and the entry is dropped.
+fn allowed_origin(entry: &Str) -> Option<Str> {
+    let origin = entry.parse::<Url>().ok().and_then(|url| url.origin());
+    if origin.is_none() {
+        contract_violation!(
+            "a BridgeOrigins::Allowed entry must be a URL with an origin, got {entry:?}; \
+             the entry is dropped and admits no document"
+        );
+    }
+    origin.map(|origin| Str::from(origin.to_string()))
 }
 
 /// Accepted by [`WebViewOpen::bridge_origins`](crate::WebViewOpen::bridge_origins).
@@ -416,6 +420,22 @@ mod tests {
             let url: Url = url.parse().expect("parses");
             assert!(!policy.allows(&url), "{url} must not reach the bridge");
         }
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a BridgeOrigins::Allowed entry must be a URL with an origin")
+    )]
+    fn an_allow_list_entry_without_an_origin_admits_nothing() {
+        let policy = policy(
+            BridgeOrigins::Allowed(vec!["not a url".into(), "https://docs.waterui.dev".into()]),
+            "https://app.waterui.dev",
+        );
+
+        assert!(policy.allows(&"https://docs.waterui.dev/".parse::<Url>().expect("parses")));
+        assert!(!policy.allows(&"https://app.waterui.dev/".parse::<Url>().expect("parses")));
+        assert_eq!(policy.rules().len(), 1);
     }
 
     #[test]

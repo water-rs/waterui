@@ -28,9 +28,9 @@ use waterui_core::accessibility::{AccessibilityRole, default_role};
 use waterui_core::{AnyView, Metadata, Retain, Signal, binding};
 use waterui_testing::{Role, UiBuilder};
 use waterui_webview::{
-    BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime, ScriptMessageHandler, Url,
-    UserScript, WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController, WebViewHandle,
-    WebViewProxy,
+    AssetResponse, BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime,
+    ScriptMessageHandler, Url, UserScript, WatcherGuard, WatcherSet, WebView, WebViewConfig,
+    WebViewController, WebViewHandle, WebViewProxy,
 };
 
 const DOCS_URL: &str = "https://waterui.dev/docs";
@@ -302,20 +302,30 @@ fn inject_script_rejects_a_creation_time_key_before_the_backend() {
     );
     let proxy = WebViewProxy::new(webview.handle().clone());
 
+    // A debug build panics with the contract violation; a release build logs
+    // it and ignores the call, so only the message is lost there.
     let rejection = |inject: &dyn Fn()| {
+        if !cfg!(debug_assertions) {
+            inject();
+            return None;
+        }
         let payload = catch_unwind(AssertUnwindSafe(inject))
             .expect_err("a creation-time key must be rejected");
-        *payload
-            .downcast::<String>()
-            .expect("the rejection carries a formatted message")
+        Some(
+            *payload
+                .downcast::<String>()
+                .expect("the rejection carries a formatted message"),
+        )
     };
     let from_view = rejection(&|| {
         webview.inject_script("theme", "void 0;", ScriptInjectionTime::DocumentStart);
     });
-    assert!(
-        from_view.contains("`theme`") && from_view.contains("opened with"),
-        "the message names the key and why it is fixed: {from_view}"
-    );
+    if let Some(from_view) = from_view {
+        assert!(
+            from_view.contains("`theme`") && from_view.contains("opened with"),
+            "the message names the key and why it is fixed: {from_view}"
+        );
+    }
     let from_proxy = rejection(&|| {
         proxy.inject_script(
             "waterui:state-seed",
@@ -323,10 +333,12 @@ fn inject_script_rejects_a_creation_time_key_before_the_backend() {
             ScriptInjectionTime::DocumentStart,
         );
     });
-    assert!(
-        from_proxy.contains("`waterui:state-seed`"),
-        "the mirrored-state seed is a creation-time script too: {from_proxy}"
-    );
+    if let Some(from_proxy) = from_proxy {
+        assert!(
+            from_proxy.contains("`waterui:state-seed`"),
+            "the mirrored-state seed is a creation-time script too: {from_proxy}"
+        );
+    }
     assert!(
         controller.injections.borrow().is_empty(),
         "a rejected injection never reaches the backend"
@@ -338,5 +350,32 @@ fn inject_script_rejects_a_creation_time_key_before_the_backend() {
         controller.injections.borrow().as_slice(),
         ["later", "later"],
         "a post-creation key reaches the backend every time it is injected"
+    );
+}
+
+/// An engine with no interception facility has no asset origin to stand a
+/// bundled site on. That is a contract violation of the engine; a release
+/// build logs it and the view is not opened.
+#[waterui::test(viewport = (420, 420))]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "interceptable local asset origin")
+)]
+fn open_assets_without_an_asset_origin_opens_no_view(ui: UiBuilder) {
+    let controller = TestController::new();
+    let mut env = Environment::new();
+    env.insert(WebViewController::new(controller.clone()));
+    env.insert_hook::<WebView, AnyView>(realization);
+
+    let _app = ui.environment(env).mount(|| {
+        WebView::open_assets(|_request| AssetResponse::not_found(), "/index.html")
+            .a11y_label("Bundled site")
+            .size(WEBVIEW_WIDTH, WEBVIEW_HEIGHT)
+    });
+
+    assert_eq!(
+        controller.opens.get(),
+        0,
+        "an engine without an asset origin never opens the view"
     );
 }
