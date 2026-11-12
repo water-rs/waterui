@@ -16,22 +16,25 @@ use std::rc::Rc;
 use objc2::rc::{Retained, Weak};
 use objc2::{MainThreadMarker, MainThreadOnly, msg_send};
 use objc2_app_kit::{
-    NSButton, NSButtonType, NSControl, NSControlStateValueOff, NSControlStateValueOn, NSFont,
-    NSLayoutAttribute, NSPopUpButton, NSSegmentDistribution, NSSegmentedControl, NSStackView,
-    NSUserInterfaceLayoutOrientation, NSView,
+    NSButton, NSButtonType, NSControl, NSControlSize, NSControlStateValueOff,
+    NSControlStateValueOn, NSFont, NSLayoutAttribute, NSPopUpButton, NSSegmentDistribution,
+    NSSegmentedControl, NSStackView, NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSArray, NSString};
 
 use crate::geometry::Size;
 use crate::picker::PickerStyle;
+use crate::slider::ControlSize;
 use crate::{ActionTarget, view};
 
 /// Shared with every control the picker swaps between: the selection
-/// closure and the font radio buttons created later must adopt.
+/// closure, and the font and control size radio buttons created later must
+/// adopt.
 struct Shared {
     handler: Option<Rc<dyn Fn(usize)>>,
     font: Option<Retained<NSFont>>,
+    size: NSControlSize,
 }
 
 /// A selection menu over one of `AppKit`'s three selection controls.
@@ -141,6 +144,7 @@ impl Picker {
             shared: Rc::new(RefCell::new(Shared {
                 handler: None,
                 font: None,
+                size: NSControlSize::Regular,
             })),
         }
     }
@@ -189,6 +193,7 @@ impl Picker {
                         )
                     };
                     button.setButtonType(NSButtonType::Radio);
+                    button.setControlSize(self.shared.borrow().size);
                     if let Some(font) = &self.shared.borrow().font {
                         button.setFont(Some(font));
                     }
@@ -302,6 +307,33 @@ impl Picker {
                     if let Ok(button) = arranged.downcast::<NSButton>() {
                         button.setFont(Some(font));
                     }
+                }
+            }
+        }
+    }
+
+    /// How large the control is drawn: `NSControl.controlSize` on the menu
+    /// or the segmented control, and on every radio button, those created
+    /// later included.
+    pub fn set_control_size(&self, size: ControlSize) {
+        let size = match size {
+            ControlSize::Mini => NSControlSize::Mini,
+            ControlSize::Small => NSControlSize::Small,
+            ControlSize::Regular => NSControlSize::Regular,
+            ControlSize::Large => NSControlSize::Large,
+        };
+        self.shared.borrow_mut().size = size;
+        match &self.control {
+            Control::Radio(stack) => {
+                for arranged in &stack.arrangedSubviews() {
+                    if let Ok(button) = arranged.downcast::<NSButton>() {
+                        button.setControlSize(size);
+                    }
+                }
+            }
+            _ => {
+                if let Some(control) = self.control.control() {
+                    control.setControlSize(size);
                 }
             }
         }
