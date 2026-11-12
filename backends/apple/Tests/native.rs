@@ -13142,8 +13142,8 @@ mod transition {
     use waterui::reactive::collection::List as ReactiveList;
     use waterui::views::ForEach;
     use waterui_apple::contract::Mounted;
-    use waterui_apple::native_test_support::pump_main_until;
     use waterui_apple::native_test_support::transition::ManualTransitionClock;
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
     use waterui_backend_core::AnyView;
     use waterui_core::Metadata;
     use waterui_core::metadata::Retain;
@@ -15816,6 +15816,12 @@ mod transition {
             })),
             "the surface inside the filter presents before removal"
         );
+        let before_removal: Vec<_> = autoreleasepool(|_| {
+            capturables_deep(leaf.view())
+                .iter()
+                .map(|(_, surface)| Rc::downgrade(surface))
+                .collect()
+        });
         autoreleasepool(|_| handler.set(label("gone")));
         autoreleasepool(|_| {
             let entries = capturables_deep(leaf.view());
@@ -15853,6 +15859,22 @@ mod transition {
             leaf.view(),
             "/tmp/1472-stage7",
             "ghost_inside_a_live_filter_still_resolves",
+        );
+        // The capture renders the ghost's frozen stand-in, not a registration
+        // left over from the torn-down live surface in the same view, so
+        // nothing keeps that surface alive once the export settles.
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || autoreleasepool(|_| {
+                let current = capturables_deep(leaf.view());
+                before_removal.iter().all(|surface| {
+                    surface.upgrade().is_none_or(|surface| {
+                        current
+                            .iter()
+                            .any(|(_, resolved)| Rc::ptr_eq(resolved, &surface))
+                    })
+                })
+            })),
+            "the torn-down live surface is released after the capture"
         );
         assert!(
             pump_main_until(5.0, || autoreleasepool(|_| {
