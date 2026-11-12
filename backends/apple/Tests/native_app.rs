@@ -1590,21 +1590,28 @@ mod navigation {
         item: &cocoa_ui::objc2_ui_kit::UINavigationItem,
         page: &UIViewController,
     ) {
+        // The SVG icon is a canvas: a host view whose layer carries the
+        // drawn layer tree.
+        fn drawn_canvas(view: &PlatformView) -> Option<Retained<PlatformView>> {
+            view::subviews(view).into_iter().find_map(|sub| {
+                let drawn = sub.downcast_ref::<cocoa_ui::uikit::HostView>().is_some()
+                    && view::layer(&sub)
+                        // SAFETY: `layer` is a live layer read on the main thread.
+                        .and_then(|layer| unsafe { layer.sublayers() })
+                        .is_some_and(|sublayers| !sublayers.is_empty());
+                if drawn { Some(sub) } else { drawn_canvas(&sub) }
+            })
+        }
         let hosted = item
             .rightBarButtonItems()
             .expect("the page retains its actions")
             .iter()
             .find_map(|item| item.customView())
             .expect("arbitrary button content remains hosted");
-        let icon = super::find::<cocoa_ui::uikit::ImageView>(&hosted)
-            .expect("the hosted button retains its label icon");
-        assert!(
-            icon.downcast_ref::<cocoa_ui::uikit::ImageView>()
-                .expect("picture image view")
-                .image()
-                .is_some(),
-            "the hosted SVG produces a UIKit image"
-        );
+        let icon = pump_main_until(MAIN_QUEUE_DEADLINE, || drawn_canvas(&hosted).is_some())
+            .then(|| drawn_canvas(&hosted))
+            .flatten()
+            .expect("the hosted button retains its drawn SVG icon");
         let icon_shown = pump_main_until(MAIN_QUEUE_DEADLINE, || {
             window.layoutIfNeeded();
             let bounds = view::bounds(&icon);
