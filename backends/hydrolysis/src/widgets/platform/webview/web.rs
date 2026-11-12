@@ -19,7 +19,7 @@ use wasm_bindgen::{JsCast, closure::Closure};
 use waterui_core::Environment;
 use waterui_webview::{
     BackendEvent, CustomWebViewController, Url, WatcherGuard, WatcherSet, WebViewConfig,
-    WebViewController, WebViewEvent, WebViewHandle,
+    WebViewController, WebViewEvent, WebViewHandle, WebViewOpenError,
 };
 use web_sys::{HtmlElement, HtmlIFrameElement};
 
@@ -31,7 +31,7 @@ use crate::{HostedContent, HostedObject, HostedOcclusion};
 pub struct WebSystemWebViewController;
 
 impl CustomWebViewController for WebSystemWebViewController {
-    fn open(&self, _config: WebViewConfig) -> impl WebViewHandle {
+    fn open(&self, _config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
         WebIframeHandle::new()
     }
 }
@@ -76,12 +76,15 @@ impl std::fmt::Debug for WebIframeHandle {
 }
 
 impl WebIframeHandle {
-    fn new() -> Self {
-        let iframe: HtmlIFrameElement = web_sys::window()
+    fn new() -> Result<Self, WebViewOpenError> {
+        let document = web_sys::window()
             .and_then(|window| window.document())
-            .expect("hydrolysis web view: the page has no document")
+            .ok_or_else(|| WebViewOpenError::Engine("the page has no document".to_owned()))?;
+        let iframe: HtmlIFrameElement = document
             .create_element("iframe")
-            .expect("hydrolysis web view: failed to create an <iframe> element")
+            .map_err(|error| {
+                WebViewOpenError::Engine(format!("creating an <iframe> element failed: {error:?}"))
+            })?
             .unchecked_into();
         if let Err(error) = iframe.style().set_property("border", "none") {
             tracing::error!(?error, "hydrolysis web view: styling the <iframe> failed");
@@ -96,7 +99,7 @@ impl WebIframeHandle {
             }),
         };
         handle.listen();
-        handle
+        Ok(handle)
     }
 
     /// The frame's load event, and focus moving into and out of the frame.

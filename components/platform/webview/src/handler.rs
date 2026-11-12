@@ -7,14 +7,13 @@ use cookie::Cookie;
 #[cfg(not(target_arch = "wasm32"))]
 use suiteki::Str;
 #[cfg(not(target_arch = "wasm32"))]
-use waterui_core::contract_violation;
-use waterui_core::impl_debug;
-#[cfg(not(target_arch = "wasm32"))]
 use waterui_core::reactive::signal::IntoComputed;
 #[cfg(not(target_arch = "wasm32"))]
 use waterui_core::{Computed, Signal};
+use waterui_core::{contract_violation, impl_debug};
 
-use crate::{BackendEvent, WatcherGuard, WebViewConfig};
+use crate::unavailable::UnavailableWebViewHandle;
+use crate::{BackendEvent, WatcherGuard, WebViewConfig, WebViewOpenError};
 use waterui_url::Url;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -455,18 +454,47 @@ webview_handle! {
         ///
         /// The only way to obtain a handle, so every handle knows which keys
         /// [`inject_script`](Self::inject_script) must refuse.
+        ///
+        /// # Contract violation
+        ///
+        /// When the engine fails to open the view: a debug build panics, a
+        /// release build logs the failure and returns an unavailable handle
+        /// ([`is_unavailable`](Self::is_unavailable)) that ignores every call.
         pub(crate) fn open<H: WebViewHandle>(
             config: WebViewConfig,
-            open: impl FnOnce(WebViewConfig) -> H,
+            open: impl FnOnce(WebViewConfig) -> Result<H, WebViewOpenError>,
         ) -> Self {
             #[cfg(not(target_arch = "wasm32"))]
             let creation_keys = config.script_keys().collect();
-            let inner: Rc<Opened<dyn WebViewHandleImpl>> = Rc::new(Opened {
-                #[cfg(not(target_arch = "wasm32"))]
-                creation_keys,
-                handle: open(config),
-            });
-            Self { inner }
+            let handle: Rc<Opened<dyn WebViewHandleImpl>> = match open(config) {
+                Ok(handle) => Rc::new(Opened {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    creation_keys,
+                    handle,
+                }),
+                Err(error) => {
+                    contract_violation!(
+                        "the web engine could not open a web view: {error}; the view is \
+                         drawn as an unavailable placeholder and ignores every call"
+                    );
+                    Rc::new(Opened {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        creation_keys,
+                        handle: UnavailableWebViewHandle::default(),
+                    })
+                }
+            };
+            Self { inner: handle }
+        }
+
+        /// Whether the engine failed to open this view, so no page exists
+        /// behind it.
+        ///
+        /// A backend that mounts the component checks this before downcasting
+        /// to its own handle type, and draws a placeholder instead of a page.
+        #[must_use]
+        pub fn is_unavailable(&self) -> bool {
+            (&self.inner.handle as &dyn Any).is::<UnavailableWebViewHandle>()
         }
     }
 }

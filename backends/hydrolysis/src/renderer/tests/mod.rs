@@ -1780,6 +1780,7 @@ fn a_webview_with_no_engine_to_draw_it_is_reported_and_not_drawn() {
     use waterui_webview::{
         BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime, ScriptMessageHandler,
         WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController, WebViewHandle,
+        WebViewOpenError,
     };
 
     /// The smallest controller that can still create a `WebView`: the handle
@@ -1789,10 +1790,10 @@ fn a_webview_with_no_engine_to_draw_it_is_reported_and_not_drawn() {
     struct TestWebViewController;
 
     impl CustomWebViewController for TestWebViewController {
-        fn open(&self, _config: WebViewConfig) -> impl WebViewHandle {
-            TestWebViewHandle {
+        fn open(&self, _config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
+            Ok(TestWebViewHandle {
                 watchers: WatcherSet::new(),
-            }
+            })
         }
 
         // No interception facility: the double has no engine to route an asset

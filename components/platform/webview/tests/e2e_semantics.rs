@@ -30,7 +30,7 @@ use waterui_testing::{Role, UiBuilder};
 use waterui_webview::{
     AssetResponse, BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime,
     ScriptMessageHandler, Url, UserScript, WatcherGuard, WatcherSet, WebView, WebViewConfig,
-    WebViewController, WebViewHandle, WebViewProxy,
+    WebViewController, WebViewHandle, WebViewOpenError, WebViewProxy,
 };
 
 const DOCS_URL: &str = "https://waterui.dev/docs";
@@ -65,13 +65,13 @@ impl TestController {
 }
 
 impl CustomWebViewController for TestController {
-    fn open(&self, _config: WebViewConfig) -> impl WebViewHandle {
+    fn open(&self, _config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
         self.opens.set(self.opens.get() + 1);
-        TestHandle {
+        Ok(TestHandle {
             navigations: Rc::clone(&self.navigations),
             injections: Rc::clone(&self.injections),
             watchers: WatcherSet::new(),
-        }
+        })
     }
 
     /// No engine means no interception facility an asset origin could stand on.
@@ -377,5 +377,41 @@ fn open_assets_without_an_asset_origin_opens_no_view(ui: UiBuilder) {
         controller.opens.get(),
         0,
         "an engine without an asset origin never opens the view"
+    );
+}
+
+/// An engine that cannot create a view.
+struct RefusingController;
+
+impl CustomWebViewController for RefusingController {
+    fn open(&self, _config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
+        Err::<TestHandle, _>(WebViewOpenError::MainThreadRequired)
+    }
+
+    fn asset_origin(&self) -> Option<Url> {
+        None
+    }
+}
+
+/// An engine failing to open a view is a contract violation of the engine; a
+/// release build logs it and the application gets an unavailable view, not a
+/// crash. Every operation on it does nothing and evaluation answers an error.
+#[test]
+#[cfg_attr(debug_assertions, should_panic(expected = "could not open a web view"))]
+fn a_view_the_engine_cannot_open_is_unavailable_and_inert() {
+    let webview = WebViewController::new(RefusingController).open();
+
+    assert!(webview.handle().is_unavailable());
+    webview.handle().go_to(&Url::new(DOCS_URL));
+    webview.handle().go_back();
+    webview.handle().refresh();
+    webview
+        .handle()
+        .inject_script("later", "void 0;", ScriptInjectionTime::DocumentStart);
+    assert!(!webview.handle().can_go_back());
+    assert!(!webview.handle().can_go_forward());
+    assert!(
+        futures::executor::block_on(webview.handle().run_javascript("1")).is_err(),
+        "an unavailable view has no page to evaluate in"
     );
 }

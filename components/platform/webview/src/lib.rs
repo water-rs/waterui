@@ -59,6 +59,8 @@ use std::{cell::Cell, fmt, rc::Rc};
 mod handle_layers;
 mod handler;
 pub use handler::*;
+mod unavailable;
+pub use unavailable::WebViewOpenError;
 #[cfg(all(feature = "conformance", not(target_arch = "wasm32")))]
 pub mod conformance;
 mod proxy;
