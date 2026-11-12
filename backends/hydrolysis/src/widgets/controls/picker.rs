@@ -1,16 +1,23 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
-use crate::renderer::chrome::LabelPaint;
+use crate::renderer::chrome::{ChromeContent, LabelPaint, LiveChromeParts};
 use crate::renderer::live_segmented::{LiveSegmented, LiveSegmentedParts, SegmentedFrames};
+use crate::renderer::live_toggle::LiveToggleParts;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, PickerMenuEntry, PickerMenuRequest,
     RenderContext, RetainedSubview, WidgetRenderContext, measure_picker_intrinsic,
     measure_picker_intrinsic_with_label_size,
 };
-use crate::renderer::{InteractionKey, Track, TrackAction, measure_segmented_intrinsic};
+use crate::renderer::{InteractionKey, Track, TrackAction, measure_segmented_intrinsic, menu_look};
+#[cfg(feature = "accessibility")]
+use crate::renderer::{picker_menu_panel_height, picker_menu_row_rect};
+use crate::theme::Label as LookLabel;
 use crate::theme::{
-    Chrome, Inputs, Segment, SegmentedLayout, SegmentedLook, SegmentedSpec, SpecTint, WidgetTheme,
+    Chrome, Inputs, MenuLayout, MenuPickerLayout, MenuPickerLook, PickerSpec, RadioGroupLook,
+    RadioLayout, Segment, SegmentedLayout, SegmentedLook, SegmentedSpec, SpecTint, WidgetTheme,
 };
+use crate::widgets::controls::button::styled_with_default_foreground;
+use crate::widgets::util::mirrored_in;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -20,6 +27,7 @@ use kurbo::{Point, Rect, Vec2};
 use nami::{Binding, Computed, Signal, SignalExt as _};
 use std::any::Any;
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use waterui::ViewExt as _;
 use waterui_controls::label::Label;
@@ -30,8 +38,8 @@ use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{
-    HorizontalAlignment, ProposalSize, Size as LayoutSize, StretchAxis, ViewDimensions,
-    layout_direction,
+    HorizontalAlignment, LayoutDirection, ProposalSize, Size as LayoutSize, StretchAxis,
+    ViewDimensions, layout_direction,
 };
 use waterui_form::picker::PickerItem;
 use waterui_form::picker::{PickerConfig, PickerStyle};
@@ -39,8 +47,6 @@ use waterui_text::IntoText as _;
 use waterui_text::font::Font;
 use waterui_text::styled::StyledStr;
 
-use crate::renderer::local_interaction_state;
-use crate::theme::PickerMetrics;
 use crate::widgets::util::{label_beside_control_bounds, widget_disabled};
 
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<PickerConfig> {
@@ -62,6 +68,16 @@ pub struct PickerRenderState<E: crate::text::TextEngine> {
     pub(crate) config: PickerConfig,
     label_view: RetainedSubview<E>,
     menu_open: Rc<Cell<bool>>,
+    /// The menu picker's field look, held while its spec is.
+    menu: Option<(PickerSpec, MenuPickerLook)>,
+    /// The menu picker field's live chrome.
+    menu_parts: Option<LiveChromeParts>,
+    /// The state the field last reported, which feeds the chrome.
+    menu_report: Binding<InteractionState>,
+    /// The radio group's look, held while its spec is.
+    radio: Option<(PickerSpec, RadioGroupLook)>,
+    /// Each radio item's live indicator, keyed by the item.
+    radio_parts: BTreeMap<Id, Option<LiveToggleParts>>,
     segmented: SegmentedState<E>,
 }
 
@@ -118,8 +134,48 @@ impl<E: crate::text::TextEngine> PickerRenderState<E> {
             label_view: RetainedSubview::new(menu_picker_label_view(config.label())),
             config,
             menu_open: Rc::new(Cell::new(false)),
+            menu: None,
+            menu_parts: None,
+            menu_report: Binding::container(InteractionState::empty()),
+            radio: None,
+            radio_parts: BTreeMap::new(),
             segmented: SegmentedState::default(),
         }
+    }
+
+    /// The menu picker's look for its spec in `env`: the one already held
+    /// when the spec is unchanged, otherwise requested again.
+    fn menu_picker_look(
+        &mut self,
+        theme: &Rc<dyn WidgetTheme>,
+        env: &Environment,
+    ) -> MenuPickerLook {
+        let spec = picker_spec(&self.config, env);
+        if self.menu.as_ref().is_none_or(|(held, _)| *held != spec) {
+            let look = theme.menu_picker(&spec, env);
+            self.menu = Some((spec, look));
+            self.menu_parts = None;
+        }
+        let (_, look) = self.menu.as_ref().expect("the look was just ensured");
+        look.clone()
+    }
+
+    /// The radio group's look for its spec in `env`: the one already held
+    /// when the spec is unchanged, otherwise requested again, which drops
+    /// every item's indicator built from the previous one.
+    fn radio_group_look(
+        &mut self,
+        theme: &Rc<dyn WidgetTheme>,
+        env: &Environment,
+    ) -> RadioGroupLook {
+        let spec = picker_spec(&self.config, env);
+        if self.radio.as_ref().is_none_or(|(held, _)| *held != spec) {
+            let look = theme.radio_group(&spec, env);
+            self.radio = Some((spec, look));
+            self.radio_parts.clear();
+        }
+        let (_, look) = self.radio.as_ref().expect("the look was just ensured");
+        look.clone()
     }
 
     /// The segmented look for `spec` in `env`, each segment's live selected
@@ -291,13 +347,14 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                 }
                 // Option row bounds exist only in the rendered runtime, where
                 // the popup rect is computable from the trigger's bounds and
-                // the theme's picker metrics.
+                // the theme's field and menu looks: the same functions the
+                // popup window is opened and drawn with.
                 let option_geometry = ctx.as_ref().zip(theme).map(|(ctx, theme)| {
-                    let metrics = theme.picker_metrics(PickerStyle::Menu);
-                    let row_height = menu_picker_row_height(max_item_text_height, metrics);
+                    let (field, menu) = menu_picker_layouts(theme, picker, env);
+                    let row_height = menu_picker_row_height(max_item_text_height, field, menu);
                     let popup_rect =
-                        menu_picker_popup_rect(ctx.bounds(), row_height, items.len(), metrics);
-                    (ctx, row_height, popup_rect)
+                        menu_picker_popup_rect(ctx.bounds(), row_height, items.len(), field, menu);
+                    (ctx, row_height, popup_rect, menu)
                 });
                 for (index, item) in items.iter().enumerate() {
                     let mut option = AccessibilityNode::new(
@@ -322,9 +379,9 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                             target: item.tag,
                         });
                     let option_id = match option_geometry {
-                        Some((_ctx, row_height, popup_rect)) => {
+                        Some((_ctx, row_height, popup_rect, menu)) => {
                             let option_bounds =
-                                menu_picker_option_rect(popup_rect, row_height, index);
+                                menu_picker_option_rect(popup_rect, row_height, index, menu);
                             renderer.register_accessibility_child_node_with_key(
                                 i64::from(i32::from(item.tag)),
                                 option,
@@ -361,13 +418,13 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                     let selection = picker.selection().clone();
                     let open = Rc::clone(&menu_open);
                     let request = ctx.as_ref().zip(theme).map(|(ctx, theme)| {
-                        let metrics = theme.picker_metrics(PickerStyle::Menu);
+                        let (field, menu) = menu_picker_layouts(theme, picker, env);
                         let bounds = renderer.resolve_window_rect(ctx.bounds());
                         (
-                            crate::widgets::util::popup_anchor(bounds),
+                            menu_picker_popup_origin(bounds, field),
                             bounds.width(),
-                            menu_picker_row_height(max_item_text_height, metrics),
-                            metrics,
+                            menu_picker_row_height(max_item_text_height, field, menu),
+                            menu_look(theme, env),
                         )
                     });
                     // The popup opens in the picker's environment layered over
@@ -384,19 +441,19 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                                     renderer.dismiss_active_popup_menu();
                                 } else {
                                     let env = picker_env.layered_on(env);
-                                    match request {
-                                        Some((origin, width, row_height, metrics)) => {
+                                    match &request {
+                                        Some((origin, width, row_height, menu)) => {
                                             renderer.show_picker_menu(
                                                 PickerMenuRequest {
                                                     entries: menu_entries.clone(),
                                                     selection: selection.clone(),
                                                     open: Rc::clone(&open),
-                                                    origin,
-                                                    width,
-                                                    row_height,
+                                                    origin: *origin,
+                                                    width: *width,
+                                                    row_height: *row_height,
                                                     selected,
+                                                    menu: menu.clone(),
                                                 },
-                                                metrics,
                                                 &env,
                                             );
                                         }
@@ -514,7 +571,7 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                 let geometry = ctx
                     .as_ref()
                     .zip(theme)
-                    .map(|(ctx, theme)| (ctx, theme.picker_metrics(picker.style())));
+                    .map(|(ctx, theme)| (ctx, theme.radio_group(&picker_spec(picker, env), env)));
                 // The group heading offsets the option rows exactly as the
                 // render path lays them out, so emitted row bounds overlay the
                 // drawn rows — the same presence rule: measured height > 0.
@@ -527,11 +584,11 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                     )
                 });
                 let selected = renderer.read_signal(picker.selection());
-                let mut row_y = geometry.map(|(ctx, metrics)| {
+                let mut row_y = geometry.as_ref().map(|(ctx, look)| {
                     ctx.bounds().y0
-                        + metrics.vertical_inset
+                        + look.layout().vertical_inset
                         + if group_label_height > 0.0 {
-                            group_label_height + metrics.label_spacing
+                            group_label_height + look.layout().label_spacing
                         } else {
                             0.0
                         }
@@ -542,26 +599,24 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                     .iter()
                     .map(|item| {
                         let styled = renderer.read_resolved_text_styled(&item.content, env);
+                        let measured = match &geometry {
+                            Some((_, look)) => label_styled(look.get_label(), styled.clone()),
+                            None => styled.clone(),
+                        };
                         let size = HydrolysisRenderer::measure_text_intrinsic_size(
                             renderer.state_mut(),
-                            styled.clone(),
+                            measured,
                             env,
                         );
                         (styled.to_plain().to_string(), size)
                     })
                     .collect();
                 for (item, (label, label_size)) in items.iter().zip(labels) {
-                    let row_rect = geometry.map(|(ctx, metrics)| {
+                    let row_rect = geometry.as_ref().map(|(ctx, look)| {
                         let y = row_y.unwrap_or_else(|| ctx.bounds().y0);
-                        let row_height =
-                            f64::from(label_size.height).max(metrics.radio_indicator_size);
-                        let rect = kurbo::Rect::new(
-                            ctx.bounds().x0,
-                            y,
-                            ctx.bounds().x1,
-                            (y + row_height).min(ctx.bounds().y1),
-                        );
-                        row_y = Some(rect.y1 + metrics.radio_row_spacing);
+                        let rect =
+                            radio_row_rect(look, ctx.bounds(), y, f64::from(label_size.height));
+                        row_y = Some(rect.y1 + look.layout().row_spacing);
                         rect
                     });
                     if let Some(rect) = row_rect
@@ -818,37 +873,104 @@ fn selected_option_text<T: Clone + Default>(texts: &[T], selected: Option<usize>
         .unwrap_or_default()
 }
 
-pub const fn menu_picker_row_height(max_item_text_height: f64, metrics: PickerMetrics) -> f64 {
-    metrics
-        .popup_row_height
-        .max(metrics.vertical_inset.mul_add(2.0, max_item_text_height))
+/// The picker request `config` makes of the theme: its control size, the
+/// layout direction of `env` and its tint.
+pub fn picker_spec(config: &PickerConfig, env: &Environment) -> PickerSpec {
+    PickerSpec::new(
+        config.size(),
+        layout_direction(env).snapshot(),
+        SpecTint::resolve(env),
+    )
 }
 
+/// The measures of the menu picker `config` is laid out by and of the menu
+/// its popup draws, requested from `theme` for `env`.
+fn menu_picker_layouts(
+    theme: &Rc<dyn WidgetTheme>,
+    config: &PickerConfig,
+    env: &Environment,
+) -> (MenuPickerLayout, MenuLayout) {
+    (
+        theme.menu_picker(&picker_spec(config, env), env).layout(),
+        menu_look(theme, env).layout(),
+    )
+}
+
+/// `styled` in the font and colour `label` gives its text at rest: the
+/// styling of a menu picker's selected value and of a radio row's label,
+/// which has no state of its own.
+pub fn label_styled(label: &LookLabel, styled: StyledStr) -> StyledStr {
+    let inputs = Inputs::at_rest(Rect::ZERO, InteractionState::empty(), &());
+    let styled = match label.get_font() {
+        Some(font) => styled.font(font.target(&inputs)),
+        None => styled,
+    };
+    match label.get_color() {
+        Some(color) => styled_with_default_foreground(styled, color.target(&inputs)),
+        None => styled,
+    }
+}
+
+/// The height of one row of a menu picker's popup: the menu's row height,
+/// grown to fit the tallest option text inside the field's vertical inset.
+pub const fn menu_picker_row_height(
+    max_item_text_height: f64,
+    field: MenuPickerLayout,
+    menu: MenuLayout,
+) -> f64 {
+    menu.row_height
+        .max(field.vertical_inset.mul_add(2.0, max_item_text_height))
+}
+
+/// Where a menu picker's popup opens for a field at `field_bounds`: its
+/// leading edge at the field's, `popup_gap` below the field's bottom edge.
+pub fn menu_picker_popup_origin(
+    field_bounds: kurbo::Rect,
+    field: MenuPickerLayout,
+) -> waterui_core::layout::Point {
+    let anchor = crate::widgets::util::popup_anchor(field_bounds);
+    waterui_core::layout::Point::new(
+        anchor.x,
+        anchor.y + crate::num_cast::f64_as_f32(field.popup_gap),
+    )
+}
+
+/// The panel of a menu picker's popup for a field at `field_bounds`: the
+/// rect the popup window is opened at and the accessibility option
+/// rectangles are laid inside.
 #[cfg(feature = "accessibility")]
 pub fn menu_picker_popup_rect(
     field_bounds: kurbo::Rect,
     row_height: f64,
     item_count: usize,
-    metrics: PickerMetrics,
+    field: MenuPickerLayout,
+    menu: MenuLayout,
 ) -> kurbo::Rect {
-    let y0 = field_bounds.y1 + metrics.popup_top_spacing;
-    let y1 = row_height.mul_add(crate::num_cast::usize_as_f64(item_count), y0);
+    let y0 = field_bounds.y1 + field.popup_gap;
+    let y1 = y0 + picker_menu_panel_height(menu, row_height, item_count);
     kurbo::Rect::new(field_bounds.x0, y0, field_bounds.x1, y1)
 }
 
+/// Option `index`'s rect inside `popup_rect`: the row the popup window lays
+/// the option's button in.
 #[cfg(feature = "accessibility")]
 pub fn menu_picker_option_rect(
     popup_rect: kurbo::Rect,
     row_height: f64,
     index: usize,
+    menu: MenuLayout,
 ) -> kurbo::Rect {
-    let y0 = row_height.mul_add(crate::num_cast::usize_as_f64(index), popup_rect.y0);
-    kurbo::Rect::new(popup_rect.x0, y0, popup_rect.x1, y0 + row_height)
+    let row = picker_menu_row_rect(menu, row_height, popup_rect.width(), index);
+    row.with_origin((popup_rect.x0 + row.x0, popup_rect.y0 + row.y0))
 }
 
 #[expect(
     clippy::needless_pass_by_value,
     reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one continuous render pass over the picker's parts; splitting it would only mirror the steps artificially"
 )]
 pub fn render_menu_picker<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
@@ -859,7 +981,9 @@ pub fn render_menu_picker<E: crate::text::TextEngine>(
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(owner, 0);
     let theme = ctx.theme();
-    let metrics = theme.picker_metrics(PickerStyle::Menu);
+    let look = owner.borrow_mut().menu_picker_look(&theme, env);
+    let metrics = look.layout();
+    let menu = menu_look(&theme, env).layout();
     let selected = ctx.renderer_mut().read_signal(&selection);
     // Register this node-owned open handle so an outside click can dismiss it; the
     // registry is Rc-pruned, so re-registering the same handle each frame is a no-op.
@@ -882,7 +1006,7 @@ pub fn render_menu_picker<E: crate::text::TextEngine>(
         option_texts.push(plain);
     }
     let selected_text = selected_option_text(&option_texts, selected_index);
-    let row_height = menu_picker_row_height(max_item_text_height, metrics);
+    let row_height = menu_picker_row_height(max_item_text_height, metrics, menu);
     let entries = items
         .iter()
         .zip(option_texts.iter())
@@ -892,28 +1016,51 @@ pub fn render_menu_picker<E: crate::text::TextEngine>(
         })
         .collect::<Vec<_>>();
 
-    {
-        let bounds = ctx.bounds;
-        let hit_bounds = bounds;
-        let (interaction, press_slot, _) =
-            ctx.renderer_mut()
-                .bind_interaction_target(interaction_key, hit_bounds, env);
-        {
-            let interaction =
-                local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
-            ctx.draw_context(|draw| {
-                theme.draw_input_field(&mut *draw, bounds, interaction);
-                theme.draw_picker_indicator(&mut *draw, bounds);
-                theme.draw_picker_state_layer(&mut *draw, bounds, interaction);
-            });
+    let bounds = ctx.bounds;
+    let chrome = look.chrome().clone();
+    let (parts, press_slot, hit_bounds) = {
+        let target = chrome.target(bounds);
+        let (_, press_slot, handles) = ctx.renderer_mut().bind_live_chrome_target(
+            interaction_key.clone(),
+            target,
+            env,
+            false,
+            &chrome,
+        );
+        let flags = ctx
+            .renderer_mut()
+            .reported_interaction_state(&interaction_key);
+        let mut state = owner.borrow_mut();
+        if state.menu_report.snapshot() != flags {
+            state.menu_report.set(flags);
         }
+        let report = state.menu_report.clone();
+        let parts = LiveChromeParts::ensure(
+            &mut state.menu_parts,
+            &chrome,
+            &ChromeContent::default(),
+            bounds,
+            flags,
+            env,
+            &report,
+        )
+        .clone();
+        handles.attach_live(Rc::clone(parts.chrome()));
+        (parts, press_slot, target)
+    };
+    let render_ctx = ctx.render_context();
+    parts.push_below(ctx.renderer_mut(), render_ctx);
+    {
         let field_open_state = Rc::clone(&menu_open);
         let picker_selection = selection;
         let menu_entries = entries;
-        // The popup anchors in window space at the field's bottom edge.
-        let window_bounds = ctx.renderer_mut().resolve_window_rect(hit_bounds);
-        let menu_origin = crate::widgets::util::popup_anchor(window_bounds);
+        // The popup opens in window space `popup_gap` below the field's
+        // bottom edge: the one panel the accessibility option rectangles lie
+        // in too.
+        let window_bounds = ctx.renderer_mut().resolve_window_rect(bounds);
+        let menu_origin = menu_picker_popup_origin(window_bounds, metrics);
         let menu_width = window_bounds.width();
+        let popup_menu = menu_look(&theme, env);
         // The popup opens in the picker's environment layered over the
         // dispatch's (water-rs/hydrolysis#140).
         let picker_env = env.clone();
@@ -935,8 +1082,8 @@ pub fn render_menu_picker<E: crate::text::TextEngine>(
                             width: menu_width,
                             row_height,
                             selected,
+                            menu: popup_menu.clone(),
                         },
-                        metrics,
                         &env,
                     )
                 }
@@ -956,12 +1103,10 @@ pub fn render_menu_picker<E: crate::text::TextEngine>(
     if let Some(label_bounds) = label_bounds {
         flush_picker_label(ctx, &mut owner.borrow_mut().label_view, env, label_bounds);
     }
-    ctx.render_styled_text(
-        StyledStr::plain(selected_text),
-        HorizontalAlignment::Leading,
-        env,
-        text_bounds,
-    );
+    let styled = label_styled(look.get_value(), StyledStr::plain(selected_text));
+    ctx.render_styled_text(styled, HorizontalAlignment::Leading, env, text_bounds);
+    let render_ctx = ctx.render_context();
+    parts.push_above(ctx.renderer_mut(), render_ctx);
 }
 
 /// The menu picker's in-field content layout: the field label drawn above the
@@ -972,9 +1117,14 @@ pub fn render_menu_picker<E: crate::text::TextEngine>(
 /// placed at its measured width, flush with the content's leading edge — the
 /// left in left-to-right layout, the right in right-to-left — so it lines up
 /// with the value, never centred over the field.
+///
+/// The look draws the field left to right, with the dropdown indicator at
+/// its right end; in a right-to-left layout the content is that layout
+/// reflected about the field, so the indicator's space lies at the left end
+/// and the content is flush with the right.
 pub fn menu_picker_content_rects(
     bounds: kurbo::Rect,
-    metrics: PickerMetrics,
+    metrics: MenuPickerLayout,
     label_size: LayoutSize,
     right_to_left: bool,
 ) -> (Option<kurbo::Rect>, kurbo::Rect) {
@@ -983,12 +1133,8 @@ pub fn menu_picker_content_rects(
     let text_x0 = bounds.x0 + metrics.horizontal_inset;
     let text_x1 = (bounds.x1 - metrics.horizontal_inset - metrics.indicator_space).max(text_x0);
     let text_bottom = bounds.y1 - metrics.vertical_inset;
-    if label_height > 0.0 {
-        let (label_x0, label_x1) = if right_to_left {
-            ((text_x1 - label_width).max(text_x0), text_x1)
-        } else {
-            (text_x0, (text_x0 + label_width).min(text_x1))
-        };
+    let (label_x0, label_x1) = (text_x0, (text_x0 + label_width).min(text_x1));
+    let (label, value) = if label_height > 0.0 {
         let label_rect = kurbo::Rect::new(
             label_x0,
             bounds.y0 + metrics.vertical_inset,
@@ -1012,6 +1158,14 @@ pub fn menu_picker_content_rects(
                 text_bottom,
             ),
         )
+    };
+    if right_to_left {
+        (
+            label.map(|rect| mirrored_in(rect, bounds)),
+            mirrored_in(value, bounds),
+        )
+    } else {
+        (label, value)
     }
 }
 
@@ -1023,7 +1177,7 @@ pub fn menu_picker_content_rects(
 /// nothing and takes no space: the rows begin at `content_y_without_label`.
 pub fn radio_group_label_area(
     bounds: kurbo::Rect,
-    metrics: PickerMetrics,
+    metrics: RadioLayout,
     label_height: f64,
     content_y_without_label: f64,
 ) -> (Option<kurbo::Rect>, f64) {
@@ -1265,12 +1419,20 @@ pub fn render_radio_picker<E: crate::text::TextEngine>(
     env: &Environment,
 ) {
     let theme = ctx.theme();
-    let metrics = theme.picker_metrics(PickerStyle::Radio);
-    let radio_motion = theme.radio_selection_motion();
-    let selected = ctx.renderer_mut().read_signal(&selection);
+    let look = owner.borrow_mut().radio_group_look(&theme, env);
+    let layout = look.layout();
+    let indicator = look.indicator().clone();
+    let direction = layout_direction(env).snapshot();
     let bounds = ctx.bounds;
+    // Reading the disabled signal watches it, so a change schedules a frame
+    // and this persistent node re-renders (and re-registers input) with the
+    // new state.
+    let disabled = {
+        let signal = widget_disabled(env);
+        ctx.renderer_mut().read_signal(&signal)
+    };
     // The group heading sits in the top inset band; the option rows begin
-    // below it with the metrics' label spacing, at the same y the
+    // below it with the layout's label spacing, at the same y the
     // accessibility rows and the measured height agree on.
     let label_size = owner
         .borrow_mut()
@@ -1278,85 +1440,79 @@ pub fn render_radio_picker<E: crate::text::TextEngine>(
         .measure_intrinsic(ctx.renderer_mut(), env);
     let (heading, mut row_y) = radio_group_label_area(
         bounds,
-        metrics,
+        layout,
         f64::from(label_size.height),
-        bounds.y0 + metrics.vertical_inset,
+        bounds.y0 + layout.vertical_inset,
     );
     if let Some(heading) = heading {
         flush_picker_label(ctx, &mut owner.borrow_mut().label_view, env, heading);
     }
-    for (row_index, item) in items.into_iter().enumerate() {
-        let label = ctx
-            .renderer_mut()
-            .read_resolved_text_styled(&item.content, env);
+    // An indicator is kept per item, so an item that leaves the picker takes
+    // its indicator with it and the others keep theirs.
+    let tags: Vec<Id> = items.iter().map(|item| item.tag).collect();
+    owner
+        .borrow_mut()
+        .radio_parts
+        .retain(|tag, _| tags.contains(tag));
+    for item in items {
+        let label = label_styled(
+            look.get_label(),
+            ctx.renderer_mut()
+                .read_resolved_text_styled(&item.content, env),
+        );
         let label_size =
             HydrolysisRenderer::measure_text_intrinsic_size(ctx.state_mut(), label.clone(), env);
-        let row_height = f64::from(label_size.height).max(metrics.radio_indicator_size);
-        let row_rect = kurbo::Rect::new(
-            bounds.x0,
-            row_y,
-            bounds.x1,
-            (row_y + row_height).min(bounds.y1),
-        );
+        let row_rect = radio_row_rect(&look, bounds, row_y, f64::from(label_size.height));
         if row_rect.height() <= 0.0 {
             break;
         }
-        row_y = row_rect.y1 + metrics.radio_row_spacing;
+        row_y = row_rect.y1 + layout.row_spacing;
 
-        let indicator_center = kurbo::Point::new(
-            row_rect.x0 + metrics.horizontal_inset + metrics.radio_indicator_size / 2.0,
-            row_rect.y0 + row_rect.height() / 2.0,
+        let tag = item.tag;
+        let indicator_frame = radio_indicator_frame(&look, row_rect, direction);
+        let hit_rect = indicator.target(indicator_frame).union(row_rect);
+        let discriminator = crate::num_cast::i32_as_u32(i32::from(tag)) as usize;
+        let key = InteractionKey::for_rc(owner, discriminator);
+        let (_, press_slot, handles) = ctx.renderer_mut().bind_live_toggle_target(
+            key.clone(),
+            hit_rect,
+            env,
+            disabled,
+            &indicator,
         );
-        let indicator_radius = metrics.radio_indicator_size / 2.0;
-        let is_selected = item.tag == selected;
-        let radio_indicator_state = ctx.renderer_mut().sample_radio_indicator_state(
-            owner,
-            row_index,
-            is_selected,
-            &radio_motion,
-        );
-        let hit_rect = row_rect;
-        let discriminator = crate::num_cast::i32_as_u32(i32::from(item.tag)) as usize;
-        let interaction_key = crate::renderer::InteractionKey::for_rc(owner, discriminator);
-        let (interaction, press_slot, _) =
-            ctx.renderer_mut()
-                .bind_interaction_target(interaction_key, hit_rect, env);
-        let interaction =
-            local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
-        {
-            ctx.draw_context(|draw| {
-                theme.draw_radio_indicator(
-                    &mut *draw,
-                    indicator_center,
-                    indicator_radius,
-                    radio_indicator_state,
-                );
-                theme.draw_radio_state_layer(
-                    &mut *draw,
-                    indicator_center,
-                    indicator_radius,
-                    is_selected,
-                    interaction,
-                );
-            });
-        }
+        let flags = ctx.renderer_mut().reported_interaction_state(&key);
+        // The indicator reads whether its item is the selected one through the
+        // selection: choosing an item moves the operands of the two
+        // indicators it touches and records nothing.
+        let is_selected = Computed::new(selection.map(move |selected: Id| selected == tag));
+        let parts = {
+            let mut state = owner.borrow_mut();
+            LiveToggleParts::ensure(
+                state.radio_parts.entry(tag).or_default(),
+                &indicator,
+                indicator_frame,
+                flags,
+                &is_selected,
+            )
+            .clone()
+        };
+        handles.attach_live_toggle(Rc::clone(parts.toggle()));
+        let render_ctx = ctx.render_context();
+        parts.push(ctx.renderer_mut(), render_ctx);
 
-        let indicator_rect = kurbo::Rect::new(
-            indicator_center.x - indicator_radius,
-            indicator_center.y - indicator_radius,
-            indicator_center.x + indicator_radius,
-            indicator_center.y + indicator_radius,
-        );
-        let label_rect = label_beside_control_bounds(
-            indicator_center.x + indicator_radius + metrics.radio_label_spacing,
-            row_rect.x1 - metrics.horizontal_inset,
+        let label_rect = radio_label_rect(
+            &look,
             row_rect,
-            indicator_rect,
+            indicator_frame,
             f64::from(label_size.height),
+            direction,
         );
         ctx.render_styled_text(label, HorizontalAlignment::Leading, env, label_rect);
 
-        let tag = item.tag;
+        // A disabled radio group registers no tap target.
+        if disabled {
+            continue;
+        }
         ctx.renderer_mut()
             .register_interactive_pointer_target(hit_rect, press_slot, {
                 let selection = selection.clone();
@@ -1369,6 +1525,53 @@ pub fn render_radio_picker<E: crate::text::TextEngine>(
                 }
             });
     }
+}
+
+/// The rect of a radio row whose label is `label_height` tall, laid by
+/// `look` across `bounds` at `y`: as tall as the taller of its label and
+/// its indicator, no lower than the bounds' bottom edge. The drawn rows and
+/// the accessibility rows are this one rect.
+pub fn radio_row_rect(look: &RadioGroupLook, bounds: Rect, y: f64, label_height: f64) -> Rect {
+    let row_height = label_height.max(look.indicator().size().height);
+    Rect::new(bounds.x0, y, bounds.x1, (y + row_height).min(bounds.y1))
+}
+
+/// Where a radio row's indicator lies in `row`: centred on the row's height,
+/// inset from the row's leading edge. The look draws left to right; a
+/// right-to-left layout reflects the indicator about the row.
+fn radio_indicator_frame(look: &RadioGroupLook, row: Rect, direction: LayoutDirection) -> Rect {
+    let size = look.indicator().size();
+    let drawn = Rect::from_origin_size(
+        Point::new(
+            row.x0 + look.layout().horizontal_inset,
+            row.y0 + (row.height() - size.height) / 2.0,
+        ),
+        size,
+    );
+    if direction.is_right_to_left() {
+        mirrored_in(drawn, row)
+    } else {
+        drawn
+    }
+}
+
+/// Where a radio row's label lies: beside the indicator, away from the row's
+/// leading edge, to the row's inset trailing edge.
+fn radio_label_rect(
+    look: &RadioGroupLook,
+    row: Rect,
+    indicator_frame: Rect,
+    label_height: f64,
+    direction: LayoutDirection,
+) -> Rect {
+    let inset = look.layout().horizontal_inset;
+    let spacing = look.indicator().get_label_spacing();
+    let (x0, x1) = if direction.is_right_to_left() {
+        (row.x0 + inset, indicator_frame.x0 - spacing)
+    } else {
+        (indicator_frame.x1 + spacing, row.x1 - inset)
+    };
+    label_beside_control_bounds(x0, x1, row, indicator_frame, label_height)
 }
 
 /// Binds a segmented picker's segments, lays its look out and lists it: the
@@ -1730,26 +1933,32 @@ mod tests {
         has_items, menu_picker_content_rects, radio_group_label_area, segmented_label_area,
         selected_item_index, selected_option_text,
     };
-    use crate::theme::PickerMetrics;
+    use crate::theme::{MenuPickerLayout, RadioLayout};
     use kurbo::Rect;
     use waterui_core::id::Id;
     use waterui_core::layout::Size;
     use waterui_form::picker::PickerItem;
 
-    fn metrics() -> PickerMetrics {
-        PickerMetrics {
+    fn metrics() -> MenuPickerLayout {
+        MenuPickerLayout {
             min_width: 280.0,
             min_height: 56.0,
             horizontal_inset: 16.0,
             vertical_inset: 8.0,
             label_spacing: 8.0,
             indicator_space: 18.0,
-            radio_indicator_size: 20.0,
-            radio_label_spacing: 8.0,
-            radio_row_spacing: 8.0,
-            popup_top_spacing: 4.0,
-            popup_row_height: 48.0,
-            popup_corner_radius: 4.0,
+            popup_gap: 4.0,
+        }
+    }
+
+    fn radio_metrics() -> RadioLayout {
+        RadioLayout {
+            min_width: 280.0,
+            min_height: 56.0,
+            horizontal_inset: 16.0,
+            vertical_inset: 8.0,
+            label_spacing: 8.0,
+            row_spacing: 8.0,
         }
     }
 
@@ -1780,11 +1989,25 @@ mod tests {
         };
         let (label, value) = rects(40.0, false);
         assert_eq!(label.expect("drawn").x0, value.x0);
-        let (label, value) = rects(40.0, true);
-        let label = label.expect("drawn");
-        assert_eq!((label.x0, label.x1), (246.0, value.x1));
         assert_eq!(rects(900.0, false).0.expect("drawn").x1, value.x1);
-        assert_eq!(rects(900.0, true).0.expect("drawn").x0, value.x0);
+        let (label, mirrored) = rects(40.0, true);
+        let label = label.expect("drawn");
+        assert_eq!((label.x0, label.x1), (264.0, mirrored.x1));
+        assert_eq!(rects(900.0, true).0.expect("drawn").x0, mirrored.x0);
+    }
+
+    /// A right-to-left field is the left-to-right one reflected about it: the
+    /// dropdown indicator's space lies at the left end and the content is flush
+    /// with the right.
+    #[test]
+    fn a_right_to_left_field_reserves_the_indicator_space_on_the_left() {
+        let bounds = Rect::new(0.0, 0.0, 320.0, 56.0);
+        let (_, value) = menu_picker_content_rects(bounds, metrics(), Size::new(40.0, 0.0), false);
+        let (_, mirrored) =
+            menu_picker_content_rects(bounds, metrics(), Size::new(40.0, 0.0), true);
+
+        assert_eq!(value, Rect::new(16.0, 8.0, 286.0, 48.0));
+        assert_eq!(mirrored, Rect::new(34.0, 8.0, 304.0, 48.0));
     }
 
     /// A hidden label measures empty: it draws nothing, takes no space, and the
@@ -1806,11 +2029,11 @@ mod tests {
     fn radio_label_heading_sits_above_the_rows_with_label_spacing() {
         let bounds = Rect::new(0.0, 0.0, 320.0, 96.0);
         let default_row_y = bounds.y0 + metrics().vertical_inset;
-        let (heading, row_y) = radio_group_label_area(bounds, metrics(), 12.0, default_row_y);
+        let (heading, row_y) = radio_group_label_area(bounds, radio_metrics(), 12.0, default_row_y);
         let heading = heading.expect("a drawn group label must be placed");
 
         assert_eq!(heading, Rect::new(16.0, 8.0, 304.0, 20.0));
-        approx::assert_relative_eq!(row_y, heading.y1 + metrics().label_spacing);
+        approx::assert_relative_eq!(row_y, heading.y1 + radio_metrics().label_spacing);
         assert!(bounds.contains_rect(heading));
     }
 
@@ -1835,7 +2058,7 @@ mod tests {
         let bounds = Rect::new(0.0, 0.0, 320.0, 96.0);
 
         assert_eq!(
-            radio_group_label_area(bounds, metrics(), 0.0, 14.0),
+            radio_group_label_area(bounds, radio_metrics(), 0.0, 14.0),
             (None, 14.0)
         );
         assert_eq!(segmented_label_area(bounds, 0.0, 96.0), (None, bounds));
