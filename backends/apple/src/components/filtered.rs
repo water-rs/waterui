@@ -3519,33 +3519,6 @@ pub mod native_test {
             Self::mount_on(mtm, runtime, Vec::new())
         }
 
-        /// [`Self::mount`] with one [`FillEffect`] whose setup waits on the
-        /// returned gate: until the trial releases it, `effects_ready`
-        /// keeps the display link paused through attach and the window's
-        /// ordering, so no link-issued frame can consume demand the trial
-        /// set up first.
-        ///
-        /// # Errors
-        ///
-        /// When the runner has no GPU adapter.
-        #[expect(
-            clippy::future_not_send,
-            reason = "the mount is a main-thread fixture: Rc<FilteredState>, the MainThreadMarker and the Objective-C views stay on the trial's main thread"
-        )]
-        pub async fn mount_gated(mtm: MainThreadMarker) -> Result<(Self, SetupGate), String> {
-            let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
-            let (release, gate) = oneshot::channel();
-            let mounted = Self::mount_on(
-                mtm,
-                runtime,
-                vec![Box::new(FillEffect {
-                    gate: Some(gate),
-                    encodes: Arc::new(AtomicU32::new(0)),
-                })],
-            )?;
-            Ok((mounted, SetupGate(RefCell::new(Some(release)))))
-        }
-
         /// [`Self::mount`] with one [`FillEffect`] whose setup lands at
         /// once, so every frame fills the output with [`FILL`].
         ///
@@ -3660,63 +3633,42 @@ pub mod native_test {
             }
         }
 
-        /// Uses a real `AppKit`/`UIKit` window — the attach door's only
-        /// host requirement — then pumps the main queue until the window
-        /// reports visible. The leaf's visibility watch attaches it on the
-        /// window's occlusion edge inside that pump.
+        /// Places the leaf in a real `AppKit` window — the attach door's
+        /// only host requirement — that is already presentable, so the
+        /// host's own window handler attaches it inside this call and no
+        /// run-loop turn follows in which the effect setup could land and
+        /// the display link take the owed first frame before the trial
+        /// samples it.
         ///
         /// # Panics
         ///
         /// When the trial is not running on the main thread, or the
-        /// fixture window never reports visible.
+        /// fixture window never becomes presentable.
         pub fn ensure_fixture_window(&self) {
-            use cocoa_ui::objc2_foundation::{NSDate, NSRunLoop};
             if self.fixture_window.borrow().is_some() {
                 return;
             }
             let mtm = MainThreadMarker::new().expect("the fixture runs on the main thread");
-            let window = cocoa_ui::appkit::Window::new(
-                mtm,
-                cocoa_ui::Rect::new(0.0, 0.0, 64.0, 64.0),
-                cocoa_ui::appkit::WindowStyle::TITLED,
-            );
             let content = PlatformView::new(mtm);
             cocoa_ui::view::add_subview(&content, &self.container);
-            window.set_content_view(&content);
-            window.make_key_and_order_front();
+            let window = crate::native_test_support::presentable_fixture_window(mtm, &content);
             *self.fixture_window.borrow_mut() = Some(window);
-            let platform = cocoa_ui::view::retain_base(&self.view);
-            let deadline = NSDate::dateWithTimeIntervalSinceNow(5.0);
-            while !cocoa_ui::view::window(&platform)
-                .is_some_and(|window| cocoa_ui::appkit::is_visible(&window))
-                && deadline.timeIntervalSinceNow() > 0.0
-            {
-                NSRunLoop::currentRunLoop()
-                    .runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.02));
-            }
-            assert!(
-                cocoa_ui::view::window(&platform)
-                    .is_some_and(|window| cocoa_ui::appkit::is_visible(&window)),
-                "the fixture window reports visible"
-            );
         }
 
-        /// Attaches through the production door: the fixture window makes
-        /// the leaf presentable, `initialize_gpu` builds the real
-        /// `MetalPresenter`, and the main-queue pump runs until the
-        /// Attached epoch is installed. An ungated effect setup may already
-        /// have landed — and the link delivered frames — while the window
-        /// was ordering in; a trial that must sample the link before its
-        /// first delivery mounts with [`Self::mount_gated`].
+        /// Attaches through the production door: the presentable fixture
+        /// window, then `initialize_gpu` building the real `MetalPresenter`
+        /// — synchronous on a fresh leaf. No run-loop turn runs after the
+        /// attach: the effect setup it starts is still pending, so the link
+        /// stays paused and the first frame owed when this returns.
         ///
         /// # Panics
         ///
-        /// When the attach door does not install the epoch in time.
+        /// When the attach door does not install the epoch.
         pub fn ensure_attached(&self) {
             self.ensure_fixture_window();
             super::initialize_gpu(&self.state);
             assert!(
-                crate::native_test_support::pump_main_until(5.0, || self.state.attached.get()),
+                self.state.attached.get(),
                 "the attach door installs the Attached epoch"
             );
         }

@@ -3586,42 +3586,37 @@ pub mod native_test {
             WakeProbe(count)
         }
 
-        /// Uses a real `AppKit` window — the attach door's only host
-        /// requirement — without installing the fixture presenter, for
-        /// trials that drive `initialize_gpu` themselves.
+        /// Places the surface in a real `AppKit` window — the attach door's
+        /// only host requirement — that is already presentable, so the
+        /// view's own move-to-window handler attaches it inside this call
+        /// and no run-loop turn follows in which the display link could
+        /// take the owed first frame before the trial samples it.
         ///
         /// # Panics
         ///
         /// When the trial is not running on the main thread, or the
-        /// fixture window never reports visible.
+        /// fixture window never becomes presentable.
         pub fn ensure_fixture_window(&self) {
-            use cocoa_ui::objc2_foundation::{NSDate, NSRunLoop};
             if self.fixture_window.borrow().is_some() {
                 return;
             }
             let mtm = MainThreadMarker::new().expect("the fixture runs on the main thread");
-            let window = cocoa_ui::appkit::Window::new(
+            let window = crate::native_test_support::presentable_fixture_window(
                 mtm,
-                cocoa_ui::Rect::new(0.0, 0.0, 64.0, 64.0),
-                cocoa_ui::appkit::WindowStyle::TITLED,
+                self.view.as_platform_view(),
             );
-            window.set_content_view(self.view.as_platform_view());
-            window.make_key_and_order_front();
             *self.fixture_window.borrow_mut() = Some(window);
-            // The occlusion state lands after the window server composites
-            // — drive the run loop until it reports, bounded by a deadline.
-            let deadline = NSDate::dateWithTimeIntervalSinceNow(5.0);
-            while !self.view.is_visible() && deadline.timeIntervalSinceNow() > 0.0 {
-                NSRunLoop::currentRunLoop()
-                    .runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.02));
-            }
-            assert!(self.view.is_visible(), "the fixture window reports visible");
+            assert!(
+                self.view.is_visible(),
+                "the windowed surface reports visible"
+            );
         }
 
-        /// Attaches through the production door: the fixture window makes
-        /// the surface presentable, then `initialize_gpu` builds the real
-        /// `MetalPresenter` — the same path a layout drives on a live
-        /// mount.
+        /// Attaches through the production door: the presentable fixture
+        /// window, then `initialize_gpu` building the real `MetalPresenter`
+        /// — the same path a layout drives on a live mount. No run-loop
+        /// turn runs after the attach, so the first frame is still owed
+        /// when this returns.
         ///
         /// # Panics
         ///
@@ -3632,31 +3627,6 @@ pub mod native_test {
             assert!(
                 self.state.presentation.borrow().attached().is_some(),
                 "the attach door installs the Attached epoch"
-            );
-        }
-
-        /// [`Self::ensure_attached`] with the attach door held shut while
-        /// the fixture window orders in: an open capture scope refuses
-        /// both the attach and the link demand, so no presenter, and no
-        /// display link, exists while the window's run-loop pump spins.
-        /// Closing the scope with `resume` attaches synchronously through
-        /// the scope's own reschedule, so the trial samples the attached
-        /// epoch with its first frame owed before any link update can run.
-        ///
-        /// # Panics
-        ///
-        /// When the scope's close does not install the presentation epoch.
-        pub fn ensure_attached_gated(&self) {
-            self.begin_capture(Rc::new(|| {}));
-            self.ensure_fixture_window();
-            assert!(
-                self.state.presentation.borrow().attached().is_none(),
-                "the open capture scope keeps the attach door shut"
-            );
-            self.end_capture(true);
-            assert!(
-                self.state.presentation.borrow().attached().is_some(),
-                "closing the scope attaches the presentable surface"
             );
         }
 
