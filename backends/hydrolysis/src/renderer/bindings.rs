@@ -279,13 +279,16 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.gesture_engine.handle_tick(at, env)
     }
 
+    /// The next instant at which input handling changes semantic state on
+    /// its own: a recognizer's timeout, an armed context-menu hold, or the
+    /// end of a released press's minimum duration.
+    ///
+    /// The caret blink is not one of them — it repaints pixels and recurs
+    /// for as long as a field holds focus — so the settle queries, which
+    /// count this deadline as finite work, never see it; the runner wakes
+    /// for it through [`Self::next_wake_deadline`].
     pub fn next_gesture_deadline(&self) -> Option<Instant> {
         let gesture_deadline = self.gesture_engine.next_deadline();
-        let caret_deadline = self
-            .text_editing
-            .has_focus()
-            .then_some(self.text_editing.text_caret_next_frame_at)
-            .flatten();
         // An armed context-menu hold wakes the runner at the same instant
         // its tick fires it — it shares the gesture deadline channel.
         let hold_deadline = self
@@ -295,15 +298,25 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // A released press on an engine-realized chrome wakes the runner
         // when its minimum press duration ends, not every frame until then.
         let release_deadline = self.next_live_release_deadline();
-        [
-            gesture_deadline,
-            caret_deadline,
-            hold_deadline,
-            release_deadline,
-        ]
-        .into_iter()
-        .flatten()
-        .min()
+        [gesture_deadline, hold_deadline, release_deadline]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
+    /// The next instant the runner must wake without an event: the earlier
+    /// of [`Self::next_gesture_deadline`] and the focused caret's next blink
+    /// frame.
+    pub fn next_wake_deadline(&self) -> Option<Instant> {
+        let caret_deadline = self
+            .text_editing
+            .has_focus()
+            .then_some(self.text_editing.text_caret_next_frame_at)
+            .flatten();
+        self.next_gesture_deadline()
+            .into_iter()
+            .chain(caret_deadline)
+            .min()
     }
 
     pub fn sync_active_interactions_after_layout(&mut self, pointer: Option<(f32, f32)>) {
