@@ -200,13 +200,6 @@ impl ChromeGroupKey {
     /// The layer the group's capture anchors at — `None` under the
     /// first-member rule.
     #[cfg(hydrolysis_cherenkov)]
-    #[cfg_attr(
-        not(hydrolysis_gpu_painter),
-        allow(
-            dead_code,
-            reason = "read by the GPU target's backdrop-shader chrome; no other target registers backdrop shaders (water-rs/waterui#4065)"
-        )
-    )]
     pub(crate) const fn anchor(&self) -> Option<LayerId> {
         self.anchor
     }
@@ -219,10 +212,10 @@ impl ChromeGroupKey {
 pub struct ChromeParams {
     /// The class the group was built from.
     #[cfg_attr(
-        not(hydrolysis_gpu_painter),
+        not(hydrolysis_cherenkov),
         allow(
             dead_code,
-            reason = "read by the GPU target's backdrop-shader chrome; no other target registers backdrop shaders (water-rs/waterui#4065)"
+            reason = "read by the Cherenkov targets' backdrop-shader chrome; the HWUI target has no backdrop shaders"
         )
     )]
     pub class: CaptureClass,
@@ -525,30 +518,30 @@ pub type MaterialBackdropGroups<G, E> = BackdropGroups<BackdropGroupKey, Materia
 pub struct ChromeMemberPayload<S> {
     /// The shader's engine handle, resolved at attach.
     #[cfg_attr(
-        not(hydrolysis_gpu_painter),
+        not(hydrolysis_cherenkov),
         allow(
             dead_code,
-            reason = "read by the GPU target's backdrop-shader chrome; no other target registers backdrop shaders (water-rs/waterui#4065)"
+            reason = "read by the Cherenkov targets' backdrop-shader chrome; the HWUI target has no backdrop shaders"
         )
     )]
     pub shader: S,
     /// The member's live effect: the sample's uniforms re-read as it
     /// changes.
     #[cfg_attr(
-        not(hydrolysis_gpu_painter),
+        not(hydrolysis_cherenkov),
         allow(
             dead_code,
-            reason = "read by the GPU target's backdrop-shader chrome; no other target registers backdrop shaders (water-rs/waterui#4065)"
+            reason = "read by the Cherenkov targets' backdrop-shader chrome; the HWUI target has no backdrop shaders"
         )
     )]
     pub effect: SharedLive<MaterialEffect>,
     /// The member's own terms when its group is a container group: its
     /// `effect` is then a live view of the container's binding.
     #[cfg_attr(
-        not(hydrolysis_gpu_painter),
+        not(hydrolysis_cherenkov),
         allow(
             dead_code,
-            reason = "read by the GPU target's backdrop-shader chrome; no other target registers backdrop shaders (water-rs/waterui#4065)"
+            reason = "read by the Cherenkov targets' backdrop-shader chrome; the HWUI target has no backdrop shaders"
         )
     )]
     pub container: Option<ContainerMember>,
@@ -917,10 +910,10 @@ impl<G, S, E: crate::text::TextEngine>
     /// The hooks are [`join`](Self::join)'s, `create` handed the group's
     /// key as well.
     #[cfg_attr(
-        not(hydrolysis_gpu_painter),
+        not(hydrolysis_cherenkov),
         allow(
             dead_code,
-            reason = "called by the GPU target's `settle_chrome`; no other target joins a chrome group (water-rs/waterui#4065)"
+            reason = "called by the Cherenkov targets' `settle_chrome`; the HWUI target joins no chrome group"
         )
     )]
     pub(crate) fn settle<T: cherenkov_record::BackdropSampling>(
@@ -1037,10 +1030,10 @@ impl<G, S, E: crate::text::TextEngine>
 
     /// Whether `member`'s node still holds its membership.
     #[cfg_attr(
-        not(hydrolysis_gpu_painter),
+        not(hydrolysis_cherenkov),
         allow(
             dead_code,
-            reason = "read by `settle`, which only the GPU target calls (water-rs/waterui#4065)"
+            reason = "read by `settle`, which only the Cherenkov targets call"
         )
     )]
     fn alive(&self, member: LayerId) -> bool {

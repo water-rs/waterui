@@ -22,8 +22,8 @@ use cherenkov_shader::{
     validate,
 };
 
-use super::plan::PassPlan;
 use crate::effect::EffectSetupError;
+use crate::plan::PassPlan;
 
 /// The bind group layout every pass follows; a pass binds only the entries
 /// its segment takes.

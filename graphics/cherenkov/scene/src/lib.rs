@@ -36,8 +36,8 @@ pub use color::{Color, ColorSpace};
 pub use draw::{
     BlendMode, BlendSpace, Draw, Extend, FillRule, Glyph, GlyphRun, GradientStop, ImageColorSpace,
     ImageCompression, ImageEncoding, ImagePaint, LinearGradient, MeshColorInterpolation,
-    MeshGradient, MeshGradientError, NormalizedCoord, Paint, RadialGradient, Sampling, StrokeStyle,
-    SweepGradient,
+    MeshGradient, MeshGradientError, NormalizedCoord, Paint, RadialGradient, Sampling, ShaderPaint,
+    StrokeStyle, SweepGradient,
 };
 pub use error::SceneError;
 pub use layer::{

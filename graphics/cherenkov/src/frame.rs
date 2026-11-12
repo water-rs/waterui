@@ -204,6 +204,9 @@ pub struct FrameStats {
     pub projective_realized: u32,
     /// Projective layers composed this frame, cached or fresh.
     pub projective_composed: u32,
+    /// Layer filters applied this frame: one per filter each rendered
+    /// surface ran over its filtered subtree.
+    pub filters_applied: u32,
 }
 
 /// Decoded pixels of a surface readback: premultiplied linear Display P3,

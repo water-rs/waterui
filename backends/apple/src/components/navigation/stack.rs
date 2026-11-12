@@ -361,7 +361,10 @@ mod platform {
 
         /// The column's `UINavigationController`, once `build` ran.
         pub(super) fn nav(&self) -> Retained<cocoa_ui::uikit::NavigationController> {
-            self.nav.get().expect("built").clone()
+            self.nav
+                .get()
+                .expect("the stack is built before any callback that reads it")
+                .clone()
         }
 
         /// Captures the environment the children resolve against and the
@@ -370,7 +373,7 @@ mod platform {
             let _ = self.renderer.set(ctx.with_env(&env).renderer());
             let _ = self.model.set(
                 env.get::<NavigationController>()
-                    .expect("installed")
+                    .expect("the NavigationStack installs its NavigationController in the environment before rendering")
                     .clone(),
             );
             let _ = self.env.set(env);
@@ -378,7 +381,9 @@ mod platform {
 
         /// The environment children render under.
         fn env(&self) -> &Environment {
-            self.env.get().expect("prepared")
+            self.env
+                .get()
+                .expect("`prepare` runs before any callback that reads the stack")
         }
 
         /// Renders the root page, installs the native controller's handlers
@@ -416,9 +421,9 @@ mod platform {
             let nav_view = self
                 .nav
                 .get()
-                .expect("installed")
+                .expect("the navigation controller is built before the host mounts it")
                 .view()
-                .expect("navigation view");
+                .expect("a navigation controller always has a view");
             view::add_subview(&host, &nav_view);
             host.set_primary_content_handler({
                 let nav_view = nav_view.clone();
@@ -442,7 +447,10 @@ mod platform {
         /// `.transition(...)` is claimed by the stack (§5.5); `Bar`
         /// chrome applies on `navigationItem` as before.
         fn make_entry(&self, mut view: NavigationView, mount: Mount) -> Entry {
-            let renderer = self.renderer.get().expect("prepared");
+            let renderer = self
+                .renderer
+                .get()
+                .expect("`prepare` runs before any callback that reads the stack");
             let ctx = renderer.context();
             let leaf = ctx.render(core::mem::take(&mut view.content));
             let bar = BarState::new(&mut view.bar, &ctx);
@@ -581,7 +589,11 @@ mod platform {
             if !root {
                 let state = Rc::clone(state);
                 let env = self.env().clone();
-                let model = self.model.get().expect("prepared").clone();
+                let model = self
+                    .model
+                    .get()
+                    .expect("`prepare` runs before any callback that reads the stack")
+                    .clone();
                 page.on_back = Some(Rc::new(move || {
                     if state.borrow_mut().attempt_pop(&env) {
                         model.request_pop(1);
@@ -661,7 +673,10 @@ mod platform {
             let Some(pending) = self.pending.borrow_mut().take() else {
                 return;
             };
-            let model = self.model.get().expect("prepared");
+            let model = self
+                .model
+                .get()
+                .expect("`prepare` runs before any callback that reads the stack");
             if depth == pending.expected {
                 let _ = model.transition_completed(pending.id);
             } else {
@@ -684,7 +699,13 @@ mod platform {
                 .pages
                 .borrow()
                 .len()
-                .saturating_sub(self.nav.get().expect("built").viewControllers().count())
+                .saturating_sub(
+                    self.nav
+                        .get()
+                        .expect("the stack is built before any callback that reads it")
+                        .viewControllers()
+                        .count(),
+                )
                 .min(count);
             if count == 0 {
                 return;
@@ -703,7 +724,7 @@ mod platform {
             }
             self.model
                 .get()
-                .expect("prepared")
+                .expect("`prepare` runs before any callback that reads the stack")
                 .complete_native_pop(count);
             let mut pages = self.pages.borrow_mut();
             let keep = pages.len().saturating_sub(count);
@@ -728,7 +749,7 @@ mod platform {
                 let _ = self
                     .model
                     .get()
-                    .expect("prepared")
+                    .expect("`prepare` runs before any callback that reads the stack")
                     .transition_cancelled(pending.id);
                 let env = self.env().clone();
                 for state in pending.removed {
@@ -769,8 +790,13 @@ mod platform {
                     .borrow_mut()
                     .take()
                     .expect("a live page entry holds its child");
-                let nav = self.nav.get().expect("built");
-                let nav_view = nav.view().expect("nav view");
+                let nav = self
+                    .nav
+                    .get()
+                    .expect("the stack is built before any callback that reads it");
+                let nav_view = nav
+                    .view()
+                    .expect("a navigation controller always has a view");
                 let frame =
                     view::convert_rect(leaf.view(), view::bounds(leaf.view()), Some(&nav_view));
                 nav.insert_beneath_bars(leaf.view());
@@ -787,7 +813,7 @@ mod platform {
                 pages.iter().map(|entry| entry.controller.clone()).collect();
             self.nav
                 .get()
-                .expect("built")
+                .expect("the stack is built before any callback that reads it")
                 .set_pages(&controllers, animated);
             *self.pending.borrow_mut() = Some(Pending {
                 id: transaction.id,
@@ -943,7 +969,7 @@ mod platform {
     impl Stack {
         /// A driver holding the declared transition and its host view.
         pub(super) fn new(transition: AnyNavigationTransition) -> Self {
-            let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
+            let mtm = cocoa_ui::MainThreadMarker::new().expect("views render on the main thread");
             Self {
                 env: OnceCell::new(),
                 renderer: OnceCell::new(),
@@ -966,7 +992,7 @@ mod platform {
             let _ = self.renderer.set(ctx.with_env(&env).renderer());
             let _ = self.model.set(
                 env.get::<NavigationController>()
-                    .expect("installed")
+                    .expect("the NavigationStack installs its NavigationController in the environment before rendering")
                     .clone(),
             );
             let _ = self.env.set(env);
@@ -974,7 +1000,9 @@ mod platform {
 
         /// The environment children render under.
         fn env(&self) -> &Environment {
-            self.env.get().expect("prepared")
+            self.env
+                .get()
+                .expect("`prepare` runs before any callback that reads the stack")
         }
 
         /// Builds the leaf: root entry pushed, layout/window/hidden
@@ -1010,7 +1038,10 @@ mod platform {
         /// is claimed by the stack (§5.5); bar state and the hidden
         /// watcher republish chrome — `refreshChromeIfTop`.
         fn make_entry(&self, mut view: NavigationView, mount: Mount) -> Entry {
-            let renderer = self.renderer.get().expect("prepared");
+            let renderer = self
+                .renderer
+                .get()
+                .expect("`prepare` runs before any callback that reads the stack");
             let ctx = renderer.context();
             let leaf = ctx.render(core::mem::take(&mut view.content));
             let bar = BarState::new(&mut view.bar, &ctx);
@@ -1038,7 +1069,11 @@ mod platform {
             let transition = page_transition(view.transition.as_ref(), &self.transition);
             let mut keep = KeepAlive::default();
             {
-                let driver = self.self_weak.get().expect("built").clone();
+                let driver = self
+                    .self_weak
+                    .get()
+                    .expect("the stack is built before any callback that reads it")
+                    .clone();
                 keep.watch(&bar.hidden, move |_| {
                     if let Some(driver) = driver.upgrade() {
                         driver.publish();
@@ -1198,7 +1233,11 @@ mod platform {
             if content.shows_back {
                 let state = Rc::clone(&top.state);
                 let env = self.env().clone();
-                let model = self.model.get().expect("prepared").clone();
+                let model = self
+                    .model
+                    .get()
+                    .expect("`prepare` runs before any callback that reads the stack")
+                    .clone();
                 content.on_back = Some(Rc::new(move || {
                     if state.borrow_mut().attempt_pop(&env) {
                         model.request_pop(1);
@@ -1392,7 +1431,7 @@ mod platform {
             let _ = self
                 .model
                 .get()
-                .expect("prepared")
+                .expect("`prepare` runs before any callback that reads the stack")
                 .transition_completed(transaction.id);
         }
     }

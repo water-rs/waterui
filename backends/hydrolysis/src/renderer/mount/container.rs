@@ -3,11 +3,11 @@
 //! `.material_group()` scope whose shader registered one.
 //!
 //! Each member keeps its own recorded shape and effect live and binds the
-//! group's effect for it through a [`Binding`] the group's resolution sets.
-//! The resolution watches every member's shape and effect and re-runs
+//! group's effect for it through an [`Operand`] the group's resolution
+//! sets. The resolution watches every member's shape and effect and re-runs
 //! [`ContainerRecipe::effects`] over the current members when any of them
 //! changes, so a change reaches the bound samples with no re-recording and
-//! no structural recompute.
+//! no structural recompute, under the motion the change carried.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -16,17 +16,20 @@ use cherenkov_record::{
     CaptureClass, ContainerRecipe, GroupMember, MaterialEffect, MaterialRegistry, MaterialShader,
     ShapeData, SharedLive,
 };
+use nami::watcher::Metadata;
 use waterui_core::contract_violation;
+
+use crate::theme::live::Operand;
 
 /// A container member's own terms: what its recording declared, and the
 /// binding its sample reads its effect from — the group's resolution sets
 /// it. Held in the member's payload, so a re-recording replaces it whole.
 #[derive(Clone, Debug)]
 #[cfg_attr(
-    not(hydrolysis_gpu_painter),
+    not(hydrolysis_cherenkov),
     allow(
         dead_code,
-        reason = "read by container groups, which only the GPU target's backdrop-shader chrome joins (water-rs/waterui#4065)"
+        reason = "read by container groups, which only the Cherenkov targets' backdrop-shader chrome joins"
     )
 )]
 pub struct ContainerMember {
@@ -36,8 +39,9 @@ pub struct ContainerMember {
     pub effect: SharedLive<MaterialEffect>,
     /// The capture class the member recorded.
     pub capture: CaptureClass,
-    /// The effect the member's sample runs: set by the resolution.
-    pub binding: nami::Binding<MaterialEffect>,
+    /// The effect the member's sample runs: set by the resolution, under
+    /// the motion of the member change that moved it.
+    pub binding: Operand<MaterialEffect>,
 }
 
 /// One member as the resolution watches it: the current values the
@@ -50,10 +54,10 @@ struct Watched {
 
 /// The state the watchers of one resolution share.
 #[cfg_attr(
-    not(hydrolysis_gpu_painter),
+    not(hydrolysis_cherenkov),
     allow(
         dead_code,
-        reason = "read by container groups, which only the GPU target's backdrop-shader chrome joins (water-rs/waterui#4065)"
+        reason = "read by container groups, which only the Cherenkov targets' backdrop-shader chrome joins"
     )
 )]
 struct State {
@@ -62,7 +66,7 @@ struct State {
     /// Each member's binding, in the order of `members`: set with no
     /// borrow of `members` held, since a set runs the watchers of the
     /// sample the binding feeds.
-    bindings: Vec<nami::Binding<MaterialEffect>>,
+    bindings: Vec<Operand<MaterialEffect>>,
     members: RefCell<Vec<Watched>>,
 }
 
@@ -120,15 +124,17 @@ pub fn solo_effect(
 }
 
 impl State {
-    /// Re-runs the recipe over the current members and sets every binding.
+    /// Re-runs the recipe over the current members and sets every binding
+    /// under the motion of `metadata`, the member change that asked for
+    /// the resolution: every effect the change moves moves with it.
     #[cfg_attr(
-        not(hydrolysis_gpu_painter),
+        not(hydrolysis_cherenkov),
         allow(
             dead_code,
-            reason = "called by container groups, which only the GPU target's backdrop-shader chrome joins (water-rs/waterui#4065)"
+            reason = "called by container groups, which only the Cherenkov targets' backdrop-shader chrome joins"
         )
     )]
-    fn resolve(&self) {
+    fn resolve(&self, metadata: &Metadata) {
         let Some(recipe) = self.registry.container_recipe(self.shader) else {
             return;
         };
@@ -137,7 +143,7 @@ impl State {
             return;
         };
         for (binding, effect) in self.bindings.iter().zip(effects) {
-            binding.set(effect);
+            binding.follow(effect, metadata);
         }
     }
 }
@@ -145,10 +151,10 @@ impl State {
 /// One container group's live resolution: the watches that re-run the
 /// recipe when a member's shape or effect changes. Dropping it ends them.
 #[cfg_attr(
-    not(hydrolysis_gpu_painter),
+    not(hydrolysis_cherenkov),
     allow(
         dead_code,
-        reason = "read by container groups, which only the GPU target's backdrop-shader chrome joins (water-rs/waterui#4065)"
+        reason = "read by container groups, which only the Cherenkov targets' backdrop-shader chrome joins"
     )
 )]
 pub struct Resolution {
@@ -157,10 +163,10 @@ pub struct Resolution {
 }
 
 #[cfg_attr(
-    not(hydrolysis_gpu_painter),
+    not(hydrolysis_cherenkov),
     allow(
         dead_code,
-        reason = "called by container groups, which only the GPU target's backdrop-shader chrome joins (water-rs/waterui#4065)"
+        reason = "called by container groups, which only the Cherenkov targets' backdrop-shader chrome joins"
     )
 )]
 impl Resolution {
@@ -195,16 +201,18 @@ impl Resolution {
             let (_, guard) = member.shape.clone().watch({
                 let state = Rc::clone(&state);
                 move |context| {
-                    state.members.borrow_mut()[index].shape = context.into_value();
-                    state.resolve();
+                    let (shape, metadata) = context.into_parts();
+                    state.members.borrow_mut()[index].shape = shape;
+                    state.resolve(&metadata);
                 }
             });
             guards.extend(guard);
             let (_, guard) = member.effect.clone().watch({
                 let state = Rc::clone(&state);
                 move |context| {
-                    state.members.borrow_mut()[index].effect = context.into_value();
-                    state.resolve();
+                    let (effect, metadata) = context.into_parts();
+                    state.members.borrow_mut()[index].effect = effect;
+                    state.resolve(&metadata);
                 }
             });
             guards.extend(guard);
@@ -220,8 +228,9 @@ impl Resolution {
         recipe.capture(&seen(&self.state.members.borrow()))
     }
 
-    /// Re-runs the recipe over the current members and sets every binding.
+    /// Re-runs the recipe over the current members and sets every binding,
+    /// snapping: what a group's membership change asks for.
     pub fn resolve(&self) {
-        self.state.resolve();
+        self.state.resolve(&Metadata::new());
     }
 }

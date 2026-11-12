@@ -10,7 +10,8 @@ use crate::{
     Animation, Command, ContentOp, Curve, Display, DisplayList, Draw, Edit, FontData, FontId,
     Frame, FrameId, FrameStats, FrameTime, Glyph, GlyphRun, GlyphStyle, Group, LayerId,
     LinearGradient, Offscreen, OffscreenFormat, Operand, Paint, Picture, Pressure, Prop, Renderer,
-    Shadow, ShapeData, SlotUpdate, Splice, SurfaceFrame, SurfaceId, SurfaceTree, WorkingColor,
+    Retarget, Shadow, ShapeData, SlotUpdate, Splice, SurfaceFrame, SurfaceId, SurfaceTree,
+    WorkingColor,
 };
 use cherenkov_oracle::image::F32Image;
 use cherenkov_oracle::metrics::assert_images_match;
@@ -591,7 +592,11 @@ fn update_properties(tree: &mut SurfaceTree, layer: LayerId, step: u32) {
     if step % 19 == 7 {
         tree.apply(LayerOp::Clip(
             layer,
-            Some(ShapeData::Rect(Rect::new(3.25, 2.5, 88., 90.))),
+            Some(Retarget {
+                target: ShapeData::Rect(Rect::new(3.25, 2.5, 88., 90.)),
+                animation: None,
+                start: None,
+            }),
         ));
         tree.apply(LayerOp::ScrollOffset(
             layer,

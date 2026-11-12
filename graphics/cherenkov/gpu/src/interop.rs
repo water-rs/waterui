@@ -378,13 +378,7 @@ impl TextureTarget {
 pub fn shader_module(device: &wgpu::Device, label: &str, source: &str) -> wgpu::ShaderModule {
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
-        source: wgpu::ShaderSource::Wgsl(
-            format!(
-                "{}\n{source}",
-                include_str!(concat!(env!("OUT_DIR"), "/color.wgsl"))
-            )
-            .into(),
-        ),
+        source: wgpu::ShaderSource::Wgsl(cherenkov::wgsl::producer_module(source).into()),
     })
 }
 

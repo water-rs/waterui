@@ -806,12 +806,19 @@ impl SurfaceState {
 
     /// Every target — drawable or external capture — is allocated in the
     /// surface's declared presentation format.
-    fn assert_declared_format(&self, pixel_format: MTLPixelFormat) {
-        assert_eq!(
-            pixel_format,
-            state_format(self),
-            "GpuSurface target must be in the surface's declared presentation format"
-        );
+    ///
+    /// A target in another format is a contract violation of the capture
+    /// pipeline that allocated it; the target is not drawn into.
+    fn declares_format(&self, pixel_format: MTLPixelFormat) -> bool {
+        let declared = state_format(self);
+        if pixel_format != declared {
+            waterui::contract_violation!(
+                "GpuSurface target must be in the surface's declared presentation format \
+                 ({declared:?}), got {pixel_format:?}; the target is not drawn"
+            );
+            return false;
+        }
+        true
     }
 
     /// One frame step through the retained engine for a target the host
@@ -923,15 +930,23 @@ impl SurfaceState {
 }
 
 /// The wgpu texture format an `MTLTexture` imports at — the ffi
-/// `metal_texture_format`.
+/// `metal_texture_format`. A format the surface never negotiates is a
+/// contract violation of whoever allocated the texture; the answer is
+/// `None` and the frame is not drawn.
 fn metal_texture_format(
     texture: &objc2::runtime::ProtocolObject<dyn MTLTexture>,
-) -> wgpu::TextureFormat {
+) -> Option<wgpu::TextureFormat> {
     match texture.pixelFormat() {
-        MTLPixelFormat::BGRA8Unorm => wgpu::TextureFormat::Bgra8Unorm,
-        MTLPixelFormat::BGRA8Unorm_sRGB => wgpu::TextureFormat::Bgra8UnormSrgb,
-        MTLPixelFormat::RGBA16Float => wgpu::TextureFormat::Rgba16Float,
-        other => panic!("GpuSurface external Metal texture has unsupported format {other:?}"),
+        MTLPixelFormat::BGRA8Unorm => Some(wgpu::TextureFormat::Bgra8Unorm),
+        MTLPixelFormat::BGRA8Unorm_sRGB => Some(wgpu::TextureFormat::Bgra8UnormSrgb),
+        MTLPixelFormat::RGBA16Float => Some(wgpu::TextureFormat::Rgba16Float),
+        other => {
+            waterui::contract_violation!(
+                "GpuSurface external Metal texture has unsupported format {other:?}; \
+                 the frame is not drawn"
+            );
+            None
+        }
     }
 }
 
@@ -1068,7 +1083,9 @@ fn render_to_metal_texture(
     target_time: FrameTime,
     pipelining: Pipelining,
 ) -> Result<FrameRender, HostedError> {
-    state.assert_declared_format(metal_texture.pixelFormat());
+    if !state.declares_format(metal_texture.pixelFormat()) {
+        return Ok(FrameRender::Unwritten);
+    }
     // The surface's own geometry, never one read back from this frame's
     // pixels: a drawable issued before a resize or a capture's texture must
     // not tell the content it shrank back.
@@ -1077,7 +1094,9 @@ fn render_to_metal_texture(
         state.current_logical.get(),
         state.current_scale.get(),
     );
-    let format = metal_texture_format(&metal_texture);
+    let Some(format) = metal_texture_format(&metal_texture) else {
+        return Ok(FrameRender::Unwritten);
+    };
     if context.device_lost_reason().is_some() {
         return Ok(FrameRender::PendingRebuild);
     }
@@ -1431,7 +1450,12 @@ fn attach(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
             let _ = render_drawable(&state, &frame_view, frame);
         }
     });
-    let presenter = MetalPresenter::new(layer, on_frame, state.armed.is_some());
+    let presenter = MetalPresenter::new(
+        objc2::MainThreadOnly::mtm(&**view),
+        layer,
+        on_frame,
+        state.armed.is_some(),
+    );
     let context = state.runtime.context();
     let device = crate::gpu_runtime::raw_metal_device(&context);
     presenter.set_device(&device);
@@ -1738,7 +1762,7 @@ fn submit_drawable_frame(
     // slot inside this same submission — GPU→GPU, ordered after the
     // render on the shared queue. The copy rides the work item and the
     // settle promotes it only on a real `PresentedFrame` receipt.
-    let frozen = state.armed.as_ref().map(|armed| {
+    let frozen = state.armed.as_ref().and_then(|armed| {
         armed.encode_copy(
             context,
             imported.expect("an armed surface imports its target"),
@@ -2159,11 +2183,11 @@ fn refresh_visibility_watch(state: &Rc<SurfaceState>, view: &Retained<SurfaceVie
 fn install_input(
     view: &Retained<SurfaceView>,
     state: &Rc<SurfaceState>,
+    mtm: cocoa_ui::MainThreadMarker,
 ) -> Option<Retained<cocoa_ui::PlatformView>> {
     if !state.wants_input_events {
         return None;
     }
-    let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
     let input = platform_input_view(mtm);
     let weak = Rc::downgrade(state);
     // The input responder is a subview of `view`: the view retains it, its
@@ -2280,10 +2304,12 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
 
     fn end_capture_suppression(&self) {
         let count = self.state.capture_suppression.get();
-        assert!(
-            count > 0,
-            "GpuSurface capture suppression scopes are unbalanced"
-        );
+        if count == 0 {
+            waterui::contract_violation!(
+                "GpuSurface capture suppression scopes are unbalanced; the end is ignored"
+            );
+            return;
+        }
         self.state.capture_suppression.set(count - 1);
         if count == 1 {
             set_presentation_hidden(&self.view, false);
@@ -2333,10 +2359,12 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
                 // Nothing resumes on a dead surface, and an end beyond the
                 // recorded count is the unbalance the assert names.
                 let orphaned = self.state.orphaned_external_scopes.get();
-                assert!(
-                    orphaned > 0,
-                    "GpuSurface external rendering scopes are unbalanced"
-                );
+                if orphaned == 0 {
+                    waterui::contract_violation!(
+                        "GpuSurface external rendering scopes are unbalanced; the end is ignored"
+                    );
+                    return;
+                }
                 self.state.orphaned_external_scopes.set(orphaned - 1);
                 return;
             }
@@ -2350,8 +2378,7 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
         &self,
         texture: &objc2::runtime::ProtocolObject<dyn MTLTexture>,
     ) -> bool {
-        self.state.assert_declared_format(texture.pixelFormat());
-        true
+        self.state.declares_format(texture.pixelFormat())
     }
 
     fn has_presented_frame(&self) -> bool {
@@ -2414,7 +2441,7 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
                 std::ptr::from_ref(texture).cast_mut(),
             )
         }
-        .expect("GpuSurface external render received a null texture");
+        .expect("`retain` of a pointer made from a reference is non-null");
         let context = self.state.runtime.context();
         // An explicit capture renders at the shared anchor's capture time —
         // its own exact instant, never a borrowed or approximated frame
@@ -2479,7 +2506,7 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
         // An armed surface copies the external target it just wrote —
         // an externally rendered surface's screen pixels are what its
         // capture composed — inside this same submission.
-        let frozen = self.state.armed.as_ref().map(|armed| {
+        let frozen = self.state.armed.as_ref().and_then(|armed| {
             armed.encode_copy(
                 &context,
                 imported
@@ -2613,11 +2640,17 @@ fn submit_external_marker(
     );
 }
 
-const fn state_format(state: &SurfaceState) -> MTLPixelFormat {
-    state
-        .presentation_format
-        .get()
-        .expect("GpuSurface must have a configured dynamic range before external capture")
+/// The presentation format the surface negotiated. A capture before the
+/// dynamic range is configured is a contract violation of the capture
+/// pipeline; the standard-range format is used.
+fn state_format(state: &SurfaceState) -> MTLPixelFormat {
+    state.presentation_format.get().unwrap_or_else(|| {
+        waterui::contract_violation!(
+            "GpuSurface must have a configured dynamic range before external capture; \
+             the standard-range format is used"
+        );
+        MTLPixelFormat::BGRA8Unorm_sRGB
+    })
 }
 
 /// Shows or hides the presentation layer — `setPresentationHidden`.
@@ -2810,34 +2843,42 @@ impl SubView for SurfaceSubView {
 /// Installs the `gpu_surface` handlers — `Native<GpuContentView>` and
 /// `Native<ExternalFrameView>` and `Native<SceneView>` share presentation.
 pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<GpuContentView>(build_surface);
-    dispatcher.register_native::<ExternalFrameView>(build_surface);
+    dispatcher
+        .register_native::<GpuContentView>(|view, ctx| build_surface(view, "GPU content", ctx));
+    dispatcher.register_native::<ExternalFrameView>(|view, ctx| {
+        build_surface(view, "external frame", ctx)
+    });
     dispatcher.register_native::<waterui_graphics::backend::SceneView>(|view, ctx| {
-        build_surface(
-            scene::Scene::new(view, crate::gpu_runtime::scene_engine(ctx.env())),
-            ctx,
-        )
+        let Some(engines) = crate::gpu_runtime::scene_engine(ctx.env()) else {
+            return crate::gpu_runtime::unavailable_leaf(ctx.mtm(), "scene");
+        };
+        build_surface(scene::Scene::new(view, engines), "scene", ctx)
     });
 }
 
 /// The leaf construction the dispatcher's GPU-surface claims share —
-/// `GpuContentView`, `ExternalFrameView`, and `SceneView`.
+/// `GpuContentView`, `ExternalFrameView`, and `SceneView`. Without a GPU
+/// runtime the view (named `kind` in the report) mounts empty instead.
 fn build_surface<V: HostedView + 'static>(
     view: V,
+    kind: &str,
     ctx: &crate::contract::RenderContext<'_>,
 ) -> NativeLeaf {
-    build_surface_parts(view, ctx).0
+    let Some(runtime) = crate::gpu_runtime::runtime(ctx.env()) else {
+        return crate::gpu_runtime::unavailable_leaf(ctx.mtm(), kind);
+    };
+    build_surface_parts(view, runtime, ctx).0
 }
 
 /// The single production mount path and its typed capture owner.
 fn build_surface_parts<V: HostedView + 'static>(
     view: V,
+    runtime: GpuRuntime,
     ctx: &crate::contract::RenderContext<'_>,
 ) -> (NativeLeaf, Rc<Capturable>) {
     {
         let mtm = ctx.mtm();
         let platform_view = SurfaceView::new(mtm);
-        let runtime = crate::gpu_runtime::runtime(ctx.env());
         let state = Rc::new_cyclic(|weak| {
             SurfaceState::new(
                 weak,
@@ -2860,7 +2901,7 @@ fn build_surface_parts<V: HostedView + 'static>(
         platform_view.capturable_slot().install(&registered);
 
         wire_view_handlers(&platform_view, &state);
-        let input_view = install_input(&platform_view, &state);
+        let input_view = install_input(&platform_view, &state, mtm);
 
         let mount_guard = MountGuard {
             view: platform_view.clone(),
@@ -3201,7 +3242,7 @@ pub mod native_test {
                 SceneView::new(InputRecordingContent {
                     events: Rc::clone(&events),
                 }),
-            );
+            )?;
             Ok((mounted, events))
         }
 
@@ -3218,11 +3259,11 @@ pub mod native_test {
         )]
         pub async fn mount_animating(mtm: MainThreadMarker) -> Result<Self, String> {
             let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
-            Ok(Self::mount_in_view(
+            Self::mount_in_view(
                 mtm,
                 &fixture_env(runtime),
                 SceneView::new(AnimatingFixtureContent),
-            ))
+            )
         }
 
         /// Mounts the surface under an environment the caller prepared —
@@ -3235,33 +3276,36 @@ pub mod native_test {
         ///
         /// When `env` carries no `GpuRuntime` or `SceneEngine`.
         pub fn mount_in(mtm: MainThreadMarker, env: &Environment) -> Result<Self, String> {
-            Ok(Self::mount_in_view(
-                mtm,
-                env,
-                SceneView::new(FixtureContent),
-            ))
+            Self::mount_in_view(mtm, env, SceneView::new(FixtureContent))
         }
 
         /// Mounts a surface around the caller's `SceneView` under `env` —
         /// the body [`Self::mount_in`] shares with mounts whose content
         /// differs (self-animating fixture content).
         ///
-        /// # Panics
+        /// # Errors
         ///
         /// When `env` carries no `GpuRuntime` or `SceneEngine`.
-        fn mount_in_view(mtm: MainThreadMarker, env: &Environment, view: SceneView) -> Self {
-            let runtime = crate::gpu_runtime::runtime(env);
-            let engines = crate::gpu_runtime::scene_engine(env);
+        fn mount_in_view(
+            mtm: MainThreadMarker,
+            env: &Environment,
+            view: SceneView,
+        ) -> Result<Self, String> {
+            let runtime =
+                crate::gpu_runtime::runtime(env).ok_or("the environment carries no GpuRuntime")?;
+            let engines = crate::gpu_runtime::scene_engine(env)
+                .ok_or("the environment carries no SceneEngine")?;
             let ctx = RenderContext::new(env, Rc::new(Dispatcher::new()), mtm);
-            let (leaf, capturable) = build_surface_parts(scene::Scene::new(view, engines), &ctx);
-            Self {
+            let (leaf, capturable) =
+                build_surface_parts(scene::Scene::new(view, engines), runtime.clone(), &ctx);
+            Ok(Self {
                 state: capturable.state.clone(),
                 view: capturable.view.clone(),
                 capturable,
                 leaf,
                 runtime,
                 fixture_window: RefCell::new(None),
-            }
+            })
         }
 
         /// Installs the hosted scene renderer through the real
@@ -3542,42 +3586,37 @@ pub mod native_test {
             WakeProbe(count)
         }
 
-        /// Uses a real `AppKit` window — the attach door's only host
-        /// requirement — without installing the fixture presenter, for
-        /// trials that drive `initialize_gpu` themselves.
+        /// Places the surface in a real `AppKit` window — the attach door's
+        /// only host requirement — that is already presentable, so the
+        /// view's own move-to-window handler attaches it inside this call
+        /// and no run-loop turn follows in which the display link could
+        /// take the owed first frame before the trial samples it.
         ///
         /// # Panics
         ///
         /// When the trial is not running on the main thread, or the
-        /// fixture window never reports visible.
+        /// fixture window never becomes presentable.
         pub fn ensure_fixture_window(&self) {
-            use cocoa_ui::objc2_foundation::{NSDate, NSRunLoop};
             if self.fixture_window.borrow().is_some() {
                 return;
             }
             let mtm = MainThreadMarker::new().expect("the fixture runs on the main thread");
-            let window = cocoa_ui::appkit::Window::new(
+            let window = crate::native_test_support::presentable_fixture_window(
                 mtm,
-                cocoa_ui::Rect::new(0.0, 0.0, 64.0, 64.0),
-                cocoa_ui::appkit::WindowStyle::TITLED,
+                self.view.as_platform_view(),
             );
-            window.set_content_view(self.view.as_platform_view());
-            window.make_key_and_order_front();
             *self.fixture_window.borrow_mut() = Some(window);
-            // The occlusion state lands after the window server composites
-            // — drive the run loop until it reports, bounded by a deadline.
-            let deadline = NSDate::dateWithTimeIntervalSinceNow(5.0);
-            while !self.view.is_visible() && deadline.timeIntervalSinceNow() > 0.0 {
-                NSRunLoop::currentRunLoop()
-                    .runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.02));
-            }
-            assert!(self.view.is_visible(), "the fixture window reports visible");
+            assert!(
+                self.view.is_visible(),
+                "the windowed surface reports visible"
+            );
         }
 
-        /// Attaches through the production door: the fixture window makes
-        /// the surface presentable, then `initialize_gpu` builds the real
-        /// `MetalPresenter` — the same path a layout drives on a live
-        /// mount.
+        /// Attaches through the production door: the presentable fixture
+        /// window, then `initialize_gpu` building the real `MetalPresenter`
+        /// — the same path a layout drives on a live mount. No run-loop
+        /// turn runs after the attach, so the first frame is still owed
+        /// when this returns.
         ///
         /// # Panics
         ///

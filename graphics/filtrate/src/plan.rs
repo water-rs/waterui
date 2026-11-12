@@ -1,11 +1,11 @@
-//! From a filter's stages to the reference program: one composition and the
-//! passes that run it.
+//! From a filter's stages to a program: one composition and the passes that
+//! run it, for the GPU reference executor and the CPU lane executor alike.
 //!
 //! The composer returns a normalized form whose piece boundaries are the
-//! possible materialization points. The reference executor takes the plain
-//! alternative everywhere: every piece is one pass, every spatial stage is
-//! materialized, and no colour prefix is folded into a spatial stage's
-//! samples.
+//! possible materialization points. Both executors take the plain
+//! alternative everywhere unless asked to fold: every piece is one pass,
+//! every spatial stage is materialized, and no colour prefix is folded
+//! into a spatial stage's samples.
 
 extern crate alloc;
 
@@ -27,7 +27,46 @@ use filtrate_core::{
     kind::{FilterKind, Kind},
 };
 
-use crate::effect::EffectSetupError;
+/// Why a filter's stages do not plan: the setup errors that need no
+/// device, shared by the GPU executor and the CPU lane executor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanError {
+    /// The filter reported no stages.
+    EmptyGraph,
+    /// A stage's declaration disagrees with its snippet or with the filter.
+    StageMismatch {
+        /// The stage's snippet name.
+        stage: &'static str,
+        /// What disagrees.
+        reason: String,
+    },
+    /// A stage's snippet breaks the composer's snippet contract.
+    Snippet(String),
+    /// The composer could not compose the chain.
+    Compose(String),
+}
+
+impl core::fmt::Display for PlanError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::EmptyGraph => f.write_str("the filter reported no stages"),
+            Self::StageMismatch { stage, reason } => write!(f, "stage `{stage}`: {reason}"),
+            Self::Snippet(message) | Self::Compose(message) => f.write_str(message),
+        }
+    }
+}
+
+#[cfg(feature = "gpu")]
+impl From<PlanError> for crate::effect::EffectSetupError {
+    fn from(error: PlanError) -> Self {
+        match error {
+            PlanError::EmptyGraph => Self::EmptyGraph,
+            PlanError::StageMismatch { stage, reason } => Self::StageMismatch { stage, reason },
+            PlanError::Snippet(message) => Self::Snippet(message),
+            PlanError::Compose(message) => Self::Compose(message),
+        }
+    }
+}
 
 /// Converts premultiplied linear Display P3 to premultiplied sRGB, before a
 /// stage that operates in sRGB.
@@ -50,12 +89,12 @@ const FROM_SRGB: ColorStage = ColorStage {
 /// a source of plain functions, not a stage; the composer imports each
 /// referenced function once into the composed module.
 const LIBRARIES: &[LibrarySource<'static>] = &[
-    LibrarySource::new("hsl", include_str!("../shaders/lib/hsl.wgsl"))
-        .f16(include_str!("../shaders/lib/hsl.wgsl")),
-    LibrarySource::new("sampling", include_str!("../shaders/lib/sampling.wgsl"))
-        .f16(include_str!("../shaders/lib/sampling.wgsl")),
-    LibrarySource::new("rotate", include_str!("../shaders/lib/rotate.wgsl"))
-        .f16(include_str!("../shaders/lib/rotate.wgsl")),
+    LibrarySource::new("hsl", include_str!("shaders/lib/hsl.wgsl"))
+        .f16(include_str!("shaders/lib/hsl.wgsl")),
+    LibrarySource::new("sampling", include_str!("shaders/lib/sampling.wgsl"))
+        .f16(include_str!("shaders/lib/sampling.wgsl")),
+    LibrarySource::new("rotate", include_str!("shaders/lib/rotate.wgsl"))
+        .f16(include_str!("shaders/lib/rotate.wgsl")),
 ];
 
 /// A stage as the filter reported it.
@@ -127,7 +166,7 @@ impl Expanded {
 
 /// What a pass's auxiliary image argument binds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PassAux {
+pub enum PassAux {
     /// Image `n` of the chain's flattened images.
     Image(usize),
     /// Image `n` of the chain's flattened images, which must be a
@@ -139,7 +178,7 @@ pub(super) enum PassAux {
 
 /// Where one dynamic member of a pass's uniform block takes its value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct UniformSlot {
+pub struct UniformSlot {
     /// Byte offset in the block.
     pub offset: u32,
     /// The first of the flattened filter parameters it reads.
@@ -150,7 +189,7 @@ pub(super) struct UniformSlot {
 
 /// One pass: a segment of the composition.
 #[derive(Debug, Clone)]
-pub(super) struct PassPlan {
+pub struct PassPlan {
     /// The segment the pass's entry point calls.
     pub segment: Segment,
     /// The stage the segment applies, for diagnostics.
@@ -167,7 +206,7 @@ pub(super) struct PassPlan {
 
 /// The composed program for a filter.
 #[derive(Debug)]
-pub(super) struct Plan {
+pub struct Plan {
     /// The composed module; each pass adds its entry point to a copy.
     pub module: Module,
     /// The validator capabilities the module needs.
@@ -188,18 +227,18 @@ impl Plan {
     /// format does; a filtered sample of an unfilterable input runs the
     /// manual bilinear instead. `fold` takes the folded alternative wherever
     /// the composer offers one — tests compare it against the plain program.
-    pub(super) fn new<F: Filter>(
+    pub fn new<F: Filter>(
         filter: &F,
         input_filterable: bool,
         intermediate_filterable: bool,
         fold: bool,
         precision: Precision,
-    ) -> Result<Self, EffectSetupError> {
+    ) -> Result<Self, PlanError> {
         let mut collector = Collector(Vec::new());
         filter.collect_stages(&mut collector);
         let declared = collector.0;
         if declared.is_empty() {
-            return Err(EffectSetupError::EmptyGraph);
+            return Err(PlanError::EmptyGraph);
         }
         if F::Kind::VALUE == FilterKind::Color
             && let Some(Declared::Spatial(placed)) = declared
@@ -223,8 +262,7 @@ impl Plan {
                 for library in LIBRARIES {
                     source = source.library(library.clone());
                 }
-                Snippet::parse(&source)
-                    .map_err(|error| EffectSetupError::Snippet(error.to_string()))
+                Snippet::parse(&source).map_err(|error| PlanError::Snippet(error.to_string()))
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -250,7 +288,7 @@ impl Plan {
             Precision::F32
         };
         let composition = compose(&stages, ComposeOptions::new(precision, false))
-            .map_err(|error| EffectSetupError::Compose(error.to_string()))?;
+            .map_err(|error| PlanError::Compose(error.to_string()))?;
         let (module, capabilities, pieces) = composition.into_parts();
         Ok(Self {
             module,
@@ -275,7 +313,7 @@ fn bind_params<'s>(
     snippet: &'s Snippet,
     param_count: usize,
     dynamic: &mut DynamicParams,
-) -> Result<Stage<'s>, EffectSetupError> {
+) -> Result<Stage<'s>, PlanError> {
     check_inputs(stage, snippet)?;
     let mut composed = Stage::new(snippet);
     for (param, source) in snippet.params().iter().zip(stage.params) {
@@ -433,7 +471,7 @@ fn passes(
 
 /// Inserts the operating-space conversions and resolves auxiliary sources
 /// against the whole chain.
-fn expand<F: Filter>(declared: &[Declared]) -> Result<Vec<Expanded>, EffectSetupError> {
+fn expand<F: Filter>(declared: &[Declared]) -> Result<Vec<Expanded>, PlanError> {
     let mut expanded = Vec::with_capacity(declared.len());
     let mut position = Vec::with_capacity(declared.len());
     let mut space = OperatingSpace::Working;
@@ -481,7 +519,7 @@ fn resolve_aux<F: Filter>(
     index: usize,
     placed: &Placed<SpatialStage>,
     source: AuxSource,
-) -> Result<StageAux, EffectSetupError> {
+) -> Result<StageAux, PlanError> {
     match source {
         AuxSource::Image(image) | AuxSource::Texture(image) => {
             let image = placed.image_base + image;
@@ -511,7 +549,7 @@ fn resolve_aux<F: Filter>(
 }
 
 /// Checks the declaration against the snippet's ABI.
-fn check_inputs(stage: &Expanded, snippet: &Snippet) -> Result<(), EffectSetupError> {
+fn check_inputs(stage: &Expanded, snippet: &Snippet) -> Result<(), PlanError> {
     if stage.params.len() != snippet.params().len() {
         return Err(mismatch(
             stage.name,
@@ -569,6 +607,6 @@ const fn param_value(ty: ParamType, values: &[f32]) -> Option<ParamValue> {
     })
 }
 
-const fn mismatch(stage: &'static str, reason: String) -> EffectSetupError {
-    EffectSetupError::StageMismatch { stage, reason }
+const fn mismatch(stage: &'static str, reason: String) -> PlanError {
+    PlanError::StageMismatch { stage, reason }
 }

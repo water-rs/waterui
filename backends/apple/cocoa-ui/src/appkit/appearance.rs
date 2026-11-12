@@ -52,7 +52,7 @@ impl Application {
         &self,
         handler: impl Fn(ColorScheme) + 'static,
     ) -> ColorSchemeObservation {
-        observe_target(self.native(), handler)
+        observe_target(self.native().mtm(), self.native(), handler)
     }
 }
 
@@ -76,20 +76,18 @@ pub fn observe_effective_appearance(
     view: &NSView,
     handler: impl Fn(ColorScheme) + 'static,
 ) -> ColorSchemeObservation {
-    observe_target(view, handler)
+    observe_target(view.mtm(), view, handler)
 }
 
 /// `effectiveAppearance` KVO on any `NSObject` answering it — the
 /// application, or a view through [`observe_effective_appearance`].
 fn observe_target(
+    mtm: MainThreadMarker,
     target: &NSObject,
     handler: impl Fn(ColorScheme) + 'static,
 ) -> ColorSchemeObservation {
     let retained = target.retain();
-    let observer = Observer::new(
-        MainThreadMarker::new().expect("appearance observation runs on the main thread"),
-        Box::new(handler),
-    );
+    let observer = Observer::new(mtm, Box::new(handler));
     // SAFETY: see the module safety note.
     unsafe {
         retained.addObserver_forKeyPath_options_context(
@@ -177,7 +175,7 @@ define_class!(
         ) {
             guarded("effectiveAppearance observer", || {
                 let target = _object
-                    .expect("appearance KVO must name the observed object");
+                    .expect("KVO names the observed object: the observer registers on exactly one");
                 // SAFETY: the only registered key path is
                 // `effectiveAppearance`, answered by `NSApplication` and
                 // `NSView` — the two callers — with an `NSAppearance`.

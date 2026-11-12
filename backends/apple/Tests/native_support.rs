@@ -269,7 +269,7 @@ pub fn mount_uikit_window(
     let mut keepalive = crate::contract::KeepAlive::default();
     let mut env = env.clone();
     crate::theme::install_controller(&mut env, &controller, &mut keepalive);
-    let content = crate::embedding::mount_content(&host, view, &env, &mut keepalive);
+    let content = crate::embedding::mount_content(&host, view, &env, &mut keepalive, mtm);
     window.makeKeyAndVisible();
     window.layoutIfNeeded();
     // A scene window opens an appearance transition only the run loop
@@ -475,6 +475,7 @@ pub fn mount_uikit_embedded(
             view.take().expect("the view mounts once"),
             env,
             keepalive,
+            mtm,
         )
     };
     let content = content_first.then(|| mount(&host, env, &mut keepalive));
@@ -546,6 +547,42 @@ pub fn window_environment(mtm: MainThreadMarker) -> (Environment, crate::theme::
 #[cfg(target_os = "macos")]
 pub fn refresh_theme(theme: &crate::theme::ThemeSignals, scheme: cocoa_ui::ColorScheme) {
     crate::theme::refresh(theme, scheme);
+}
+
+/// A real fixture window, already presentable when `content` joins it.
+///
+/// The window orders in empty and the run loop turns until the window
+/// server reports it visible; only then is `content` installed. Its
+/// move-to-window handler meets a presentable window and attaches
+/// synchronously inside that call, so the caller samples the attached
+/// state before any run-loop turn can deliver a display-link update.
+/// Installing first and pumping afterwards lets the occlusion edge attach
+/// mid-pump, and the rest of that turn hands the link its first update.
+///
+/// # Panics
+///
+/// When the window does not become presentable within
+/// [`MAIN_QUEUE_DEADLINE`].
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn presentable_fixture_window(
+    mtm: MainThreadMarker,
+    content: &cocoa_ui::PlatformView,
+) -> cocoa_ui::appkit::Window {
+    let window = cocoa_ui::appkit::Window::new(
+        mtm,
+        cocoa_ui::Rect::new(0.0, 0.0, 64.0, 64.0),
+        cocoa_ui::appkit::WindowStyle::TITLED,
+    );
+    window.make_key_and_order_front();
+    assert!(
+        pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            cocoa_ui::visibility::window_presentable(window.native())
+        }),
+        "the fixture window becomes presentable"
+    );
+    window.set_content_view(content);
+    window
 }
 
 /// Binds a window background without a window.
@@ -1519,6 +1556,25 @@ async fn gpu_readiness_trip(
     }
 }
 
+/// The readiness gate's window: scene-attached when the host connects a
+/// scene — `drawViewHierarchy` only captures composited content under a
+/// real `UIWindowScene`; the scene-less spawn answers `false` forever.
+#[cfg(all(target_os = "ios", not(catalyst), feature = "gpu_surface"))]
+fn readiness_window(mtm: MainThreadMarker) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow> {
+    cocoa_ui::bitmap::any_window_scene().map_or_else(
+        || spawned_window(mtm),
+        |scene| {
+            use cocoa_ui::objc2::MainThreadOnly as _;
+            let window = cocoa_ui::objc2_ui_kit::UIWindow::initWithWindowScene(
+                cocoa_ui::objc2_ui_kit::UIWindow::alloc(mtm),
+                &scene,
+            );
+            window.setFrame(window.screen().bounds());
+            window
+        },
+    )
+}
+
 /// Presents one real frame end to end: a `CAMetalLayer` in a visible
 /// window, one clear encoded into the `CAMetalDisplayLink`-delivered
 /// drawable's texture, `presentDrawable` on that same command buffer,
@@ -1542,21 +1598,7 @@ async fn present_readiness_frame(
     let present_tx = std::cell::RefCell::new(Some(present_tx));
     let armed = std::rc::Rc::new(std::cell::Cell::new(false));
     let mtm = MainThreadMarker::new().expect("the readiness gate polls on the main thread");
-    // A scene-attached window when the host connects one —
-    // `drawViewHierarchy` only captures composited content under a real
-    // `UIWindowScene`; the scene-less spawn answers `false` forever.
-    let present_window = cocoa_ui::bitmap::any_window_scene().map_or_else(
-        || spawned_window(mtm),
-        |scene| {
-            use cocoa_ui::objc2::MainThreadOnly as _;
-            let window = cocoa_ui::objc2_ui_kit::UIWindow::initWithWindowScene(
-                cocoa_ui::objc2_ui_kit::UIWindow::alloc(mtm),
-                &scene,
-            );
-            window.setFrame(window.screen().bounds());
-            window
-        },
-    );
+    let present_window = readiness_window(mtm);
     let controller = cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
     let host = controller.host_view().retain();
     present_window.setRootViewController(Some(&controller));
@@ -1578,6 +1620,7 @@ async fn present_readiness_frame(
     let armed_slot = armed.clone();
     let pool_queue = render_queue.clone();
     let presenter = cocoa_ui::metal_presenter::MetalPresenter::new(
+        mtm,
         layer,
         std::rc::Rc::new(move |frame| {
             // The probe fires exactly once: the first frame encodes,
@@ -2044,6 +2087,7 @@ pub fn render(view: impl waterui_backend_core::View) -> crate::contract::NativeL
     crate::dispatch::render(
         waterui_backend_core::AnyView::new(view),
         &render_environment(),
+        MainThreadMarker::new().expect("rendering runs on the main thread"),
     )
 }
 

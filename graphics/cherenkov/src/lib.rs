@@ -42,6 +42,7 @@ mod surface;
 mod text;
 #[cfg(not(target_arch = "wasm32"))]
 mod transport;
+pub use cherenkov_record::wgsl;
 #[cfg(feature = "workers")]
 pub mod workers;
 
@@ -124,8 +125,8 @@ pub use cherenkov_record::{
     GpuInstalls, ImageLimits, ImageStorage, Install, KeyframeProp, Layer, LayerAnimations,
     LayerContent, LayerEdit, LayerId, LayerKeyframes, LayerNode, LayerOwner, LevelRamp,
     LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize,
-    RecordingScale, RecordingScaleError, Refraction, RefreshRange, ResourceId, Rim, Shared,
-    SurfaceId, SurfaceTree, Target, TextLayoutId, TrackOrigin, TrackStart, Transaction,
+    RecordingScale, RecordingScaleError, Refraction, RefreshRange, ResourceId, Retarget, Rim,
+    Shared, SurfaceId, SurfaceTree, Target, TextLayoutId, TrackOrigin, TrackStart, Transaction,
     TransformComponents, snap_animating,
 };
 pub use kurbo::Stroke;

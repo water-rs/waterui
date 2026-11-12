@@ -39,9 +39,10 @@ impl<T> core::fmt::Debug for SceneRegistry<T> {
 impl<T> SceneRegistry<T> {
     pub fn register(&self, state: T) -> Registration<T> {
         let id = self.0.next.get();
-        self.0
-            .next
-            .set(id.checked_add(1).expect("scene identity exhausted"));
+        self.0.next.set(
+            id.checked_add(1)
+                .expect("a `u64` scene counter advanced once per mount does not exhaust"),
+        );
         let state = Rc::new(state);
         self.0.mounts.borrow_mut().insert(id, Rc::downgrade(&state));
         Registration {

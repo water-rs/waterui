@@ -140,10 +140,13 @@ fn perform_layout(state: &Rc<RefCell<FixedState>>) {
             f64::from(placed_frame.width()),
             f64::from(placed_frame.height()),
         );
-        assert!(
-            frame.is_valid_for_layout(),
-            "fixed container received an invalid layout rect for child {index}: {frame:?}"
-        );
+        if !frame.is_valid_for_layout() {
+            waterui::contract_violation!(
+                "fixed container received an invalid layout rect for child {index}: {frame:?}; \
+                 the child is not placed"
+            );
+            continue;
+        }
         let written = context.extend_child(
             child.view(),
             frame,

@@ -52,6 +52,7 @@ pub mod target;
 pub mod text;
 pub mod tree;
 mod union_cap;
+pub mod wgsl;
 
 pub use kurbo;
 /// Monotonic presentation clock: std on native, browser performance clock on wasm.
@@ -89,7 +90,7 @@ pub use crate::material::{
 };
 pub use crate::ops::{
     AnimationOrigin, AnimationStart, Axis, BackdropId, ChangeSet, ContentOp, Install, KeyframeProp,
-    LayerId, LayerKeyframes, LayerOp, Op, Prop, SurfaceId, TrackOrigin, TrackStart,
+    LayerId, LayerKeyframes, LayerOp, Op, Prop, Retarget, SurfaceId, TrackOrigin, TrackStart,
 };
 pub use crate::paint::{
     ColorStop, Extend, ImageId, ImagePattern, Interpolation, LinearGradient,

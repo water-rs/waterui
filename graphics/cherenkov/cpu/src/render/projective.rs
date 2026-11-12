@@ -241,6 +241,9 @@ pub struct Entry {
     pub filters: Vec<u64>,
     /// Backdrop groups its rendering captured.
     pub groups: Vec<u64>,
+    /// Whether its rendering drew an animated shader paint, which forces
+    /// a new realization every frame.
+    pub animated: bool,
     /// The renderer frame count that last composed it.
     pub last_used: u64,
 }
@@ -252,6 +255,8 @@ pub struct Used {
     pub filters: rustc_hash::FxHashSet<u64>,
     /// Backdrop group ids.
     pub groups: rustc_hash::FxHashSet<u64>,
+    /// Whether a raster drew an animated shader paint.
+    pub animated: bool,
 }
 
 impl Used {

@@ -1426,6 +1426,8 @@ mod colors {
     use waterui::reactive::binding;
     use waterui_backend_core::AnyView;
 
+    use crate::mtm;
+
     #[cfg(target_os = "macos")]
     pub fn native_well_round_trip() {
         use cocoa_ui::objc2_app_kit::NSColorWell;
@@ -1438,6 +1440,7 @@ mod colors {
         let leaf = waterui_apple::dispatch::render(
             AnyView::new(ColorPicker::new("Color", &source).with_alpha().with_hdr()),
             &env,
+            mtm(),
         );
         let well = cocoa_ui::view::subviews(leaf.view())
             .into_iter()
@@ -1490,8 +1493,11 @@ mod colors {
         let env = crate::resolve::env();
         let initial = [1.4, -0.2, 0.3, 0.4];
         let source = binding(Color::new(Working(WorkingColor::new(initial))));
-        let leaf =
-            waterui_apple::dispatch::render(AnyView::new(signal_color(source.clone())), &env);
+        let leaf = waterui_apple::dispatch::render(
+            AnyView::new(signal_color(source.clone())),
+            &env,
+            mtm(),
+        );
         assert_fill(leaf.view(), initial);
         for components in [[1.4, 0.25, 0.125, 0.5], [0.9, 0.4, 0.1, 1.0]] {
             source.set(Color::new(Working(WorkingColor::new(components))));

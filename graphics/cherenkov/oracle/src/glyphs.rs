@@ -555,6 +555,7 @@ fn transform_paint(paint: &mut Paint, t: Affine) {
         Paint::Image(i) => i.transform = t * i.transform,
         Paint::Transformed { transform, .. } => *transform = t * *transform,
         Paint::Solid(_) => {}
+        Paint::Shader(_) => unreachable!("scene validation keeps shader paints off glyph runs"),
     }
 }
 
@@ -594,6 +595,7 @@ fn paint_opacity(paint: &mut Paint, alpha: f32) {
             None
         }
         Paint::Image(_) => None,
+        Paint::Shader(_) => unreachable!("scene validation keeps shader paints off glyph runs"),
     };
     if let Some(stops) = stops {
         for s in stops {

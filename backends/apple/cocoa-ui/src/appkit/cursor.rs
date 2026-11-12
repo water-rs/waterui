@@ -76,15 +76,24 @@ impl Cursor {
             Self::ResizeLeftRight => NSCursor::resizeLeftRightCursor(),
             Self::ResizeUpDown => NSCursor::resizeUpDownCursor(),
             Self::Wait => {
-                let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                NSImage::imageWithSystemSymbolName_accessibilityDescription(
                     &NSString::from_str("hourglass"),
                     None,
                 )
-                .expect("the system hourglass cursor image is unavailable");
-                let size = image.size();
-                let hotspot = NSPoint::new(size.width / 2.0, size.height / 2.0);
-                // `image` is a valid cursor image.
-                NSCursor::initWithImage_hotSpot(NSCursor::alloc(), &image, hotspot)
+                .map_or_else(
+                    || {
+                        tracing::error!(
+                            "the system hourglass cursor image is unavailable; the arrow cursor is used"
+                        );
+                        NSCursor::arrowCursor()
+                    },
+                    |image| {
+                        let size = image.size();
+                        let hotspot = NSPoint::new(size.width / 2.0, size.height / 2.0);
+                        // `image` is a valid cursor image.
+                        NSCursor::initWithImage_hotSpot(NSCursor::alloc(), &image, hotspot)
+                    },
+                )
             }
             Self::Copy => NSCursor::dragCopyCursor(),
         }

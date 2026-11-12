@@ -58,10 +58,9 @@ fn as_view(view: &ImageView) -> &cocoa_ui::PlatformView {
 /// raster target for a view laid out at `points`. `None` while the bounds
 /// are empty, which is how a view that has never been laid out answers.
 ///
-/// # Panics
-///
-/// When a side would exceed the 65535 pixels a rasteriser addresses — the
-/// same bound `Picture::pixel_size` asserts.
+/// A side that would exceed the 65535 pixels a rasteriser addresses — the
+/// same bound `Picture::pixel_size` holds — is a contract violation of the
+/// view that sized the picture; the picture is not rasterized (`None`).
 fn raster_pixels(points: cocoa_ui::Size, scale: f64) -> Option<(u32, u32)> {
     if !(points.width.is_finite()
         && points.height.is_finite()
@@ -72,10 +71,13 @@ fn raster_pixels(points: cocoa_ui::Size, scale: f64) -> Option<(u32, u32)> {
     }
     let width = (points.width * scale).round().max(1.0);
     let height = (points.height * scale).round().max(1.0);
-    assert!(
-        width <= f64::from(u16::MAX) && height <= f64::from(u16::MAX),
-        "a picture is at most 65535 pixels a side, got {width}x{height}"
-    );
+    if width > f64::from(u16::MAX) || height > f64::from(u16::MAX) {
+        waterui::contract_violation!(
+            "a picture is at most 65535 pixels a side, got {width}x{height}; \
+             the picture is not rasterized"
+        );
+        return None;
+    }
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -103,11 +105,8 @@ fn fit_transform(picture: &Picture, width: u32, height: u32) -> kurbo::Affine {
 /// `bounds` is the view's laid-out size in points; `pixels` is the
 /// raster target it maps to at `scale`.
 ///
-/// # Panics
-///
-/// When the CPU surface or the render fails — a dropped frame silently
-/// leaves stale pixels, so a rasterisation failure is an error, not a
-/// skipped paint.
+/// A CPU surface or render that fails is logged as an error and the view
+/// keeps its previous image.
 #[expect(
     unused_variables,
     reason = "each platform's image type needs one of the two: UIImage takes the scale, NSImage the point size"
@@ -121,11 +120,22 @@ fn rasterize(
     view: &ImageView,
 ) {
     let (width, height) = pixels;
-    let mut rasterizer =
-        Rasterizer::new(width, height).expect("CPU rasteriser surface creation failed");
-    let bitmap = rasterizer
-        .rasterize(recording, fit_transform(picture, width, height))
-        .expect("CPU rasterisation failed");
+    let mut rasterizer = match Rasterizer::new(width, height) {
+        Ok(rasterizer) => rasterizer,
+        Err(error) => {
+            tracing::error!(
+                "CPU rasteriser surface creation failed: {error}; the picture keeps its image"
+            );
+            return;
+        }
+    };
+    let bitmap = match rasterizer.rasterize(recording, fit_transform(picture, width, height)) {
+        Ok(bitmap) => bitmap,
+        Err(error) => {
+            tracing::error!("CPU rasterisation failed: {error}; the picture keeps its image");
+            return;
+        }
+    };
     let Some(image) = cocoa_ui::bitmap::image_from_rgba(
         bitmap.data(),
         bitmap.width() as usize,

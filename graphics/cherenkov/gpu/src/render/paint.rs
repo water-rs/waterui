@@ -72,17 +72,11 @@ impl Entry {
 }
 
 /// The fragment entry point a user shader paint defines.
-const FRAGMENT_ENTRY: &str = "main";
+const FRAGMENT_ENTRY: &str = cherenkov::wgsl::PAINT_ENTRY;
 
-/// The module a user shader paint compiles to: the colour and paint
-/// preludes, then the user's fragment source.
+/// The module a user shader paint compiles to.
 fn module_text(source: &ShaderSource) -> String {
-    format!(
-        "{}\n{}\n{}",
-        include_str!(concat!(env!("OUT_DIR"), "/color.wgsl")),
-        include_str!("paint.wgsl"),
-        source.source
-    )
+    cherenkov::wgsl::paint_module(&source.source)
 }
 
 /// Validates a user shader paint on the caller thread: the composed module

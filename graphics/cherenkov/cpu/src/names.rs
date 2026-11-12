@@ -29,7 +29,8 @@ pub const BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS: &str = "backdrop-member-outside
 /// A per-member backdrop effect that reads the clip's signed distance
 /// on a clip without an analytic boundary (`Path`/`Line`).
 pub const BACKDROP_EFFECT_SDF_PATH: &str = "backdrop-effect-sdf-path";
-/// A backdrop effect shader — a GPU-only capability.
+/// A backdrop effect shader in a build without the `shaders` feature.
+#[cfg(not(feature = "shaders"))]
 pub const BACKDROP_SHADER: &str = "backdrop-shader";
 /// A backdrop union group with more members than the per-pixel fold can
 /// evaluate in registers.

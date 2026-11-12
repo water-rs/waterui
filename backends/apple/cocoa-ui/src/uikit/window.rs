@@ -51,12 +51,17 @@ pub fn window_of(view: &UIView) -> Option<Retained<UIWindow>> {
 /// The main screen's scale — the display scale an off-window view
 /// rasterizes at.
 #[must_use]
-/// # Panics
-///
-/// On a failure to confirm the main thread.
+/// Off the main thread this breaks the contract: it is reported and `1.0` is
+/// answered.
 #[allow(deprecated)]
 pub fn main_screen_scale() -> f64 {
-    objc2_ui_kit::UIScreen::mainScreen(objc2::MainThreadMarker::new().expect("main thread")).scale()
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        waterui_contract::contract_violation!(
+            "main_screen_scale runs on the main thread; 1.0 is answered"
+        );
+        return 1.0;
+    };
+    objc2_ui_kit::UIScreen::mainScreen(mtm).scale()
 }
 
 /// Whether the application is in the active state —
@@ -65,11 +70,15 @@ pub fn main_screen_scale() -> f64 {
 /// A process that never ran `UIApplicationMain` — a Mac Catalyst preview —
 /// has no `UIApplication`, so nothing in it is active.
 #[must_use]
-/// # Panics
-///
-/// Off the main thread.
+/// Off the main thread this breaks the contract: it is reported and `false`
+/// is answered.
 pub fn application_is_active() -> bool {
-    let mtm = objc2::MainThreadMarker::new().expect("main thread");
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        waterui_contract::contract_violation!(
+            "application_is_active runs on the main thread; false is answered"
+        );
+        return false;
+    };
     shared_application(mtm).is_some_and(|application| {
         application.applicationState() == objc2_ui_kit::UIApplicationState::Active
     })

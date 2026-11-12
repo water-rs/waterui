@@ -101,13 +101,13 @@ pub fn convert_point(view: &PlatformView, point: Point, to: &PlatformView) -> Po
 ///
 /// # Panics
 ///
-/// `view` retains to a non-null object; unreachable for a live view.
+/// Never: retaining a live view answers non-null.
 #[must_use]
 pub fn retain_base<V: AsRef<PlatformView> + ?Sized>(view: &V) -> Retained<PlatformView> {
     // SAFETY: `view.as_ref()` is a live `PlatformView` for the call; the
     // returned `Retained` owns the new +1.
     unsafe { Retained::retain(std::ptr::from_ref(view.as_ref()).cast_mut()) }
-        .expect("a live view cannot retain to null")
+        .expect("retaining a live view answers non-null")
 }
 
 /// The frame in the superview's coordinate space.
@@ -1019,20 +1019,14 @@ pub fn set_accessibility_content(view: &PlatformView, label: Option<&str>, value
 /// controls whether the view is an accessibility element; a value only ever
 /// marks it.
 ///
-/// # Panics
-///
-/// If not called on the main thread.
 #[cfg(target_os = "ios")]
 pub fn set_accessibility_content(view: &PlatformView, label: Option<&str>, value: Option<&str>) {
     use objc2_foundation::NSString;
     use objc2_ui_kit::NSObjectUIAccessibility;
-    let mtm = objc2::MainThreadMarker::new().expect("main thread");
+    let mtm = objc2::MainThreadOnly::mtm(view);
     view.setAccessibilityLabel(label.map(NSString::from_str).as_deref(), mtm);
     let value = value.map(NSString::from_str);
-    view.setAccessibilityValue(
-        value.as_deref(),
-        objc2::MainThreadMarker::new().expect("main thread"),
-    );
+    view.setAccessibilityValue(value.as_deref(), mtm);
     if label.is_some() || value.is_some() {
         view.setIsAccessibilityElement(true, mtm);
     }

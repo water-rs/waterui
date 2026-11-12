@@ -5,7 +5,26 @@ use kurbo::{Affine, Rect, RoundedRect, Vec2};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use cherenkov::testing::LayerOp;
-use cherenkov::{Animatable, BlendMode, FilterId, LayerId, Prop, ShapeData, SurfaceTree};
+use cherenkov::{Animatable, BlendMode, FilterId, LayerId, Prop, Retarget, ShapeData, SurfaceTree};
+
+/// A clip or backdrop change that lands at once.
+const fn snapped<T>(target: T) -> Retarget<T> {
+    Retarget {
+        target,
+        animation: None,
+        start: None,
+    }
+}
+
+/// Clips `layer` to `shape` at once.
+const fn clip(layer: LayerId, shape: ShapeData) -> LayerOp {
+    LayerOp::Clip(layer, Some(snapped(shape)))
+}
+
+/// Makes `layer` sample `sample` at once.
+const fn backdrop(layer: LayerId, sample: cherenkov::BackdropSample) -> LayerOp {
+    LayerOp::Backdrop(layer, Some(snapped(sample)))
+}
 
 mod alloc_counter {
     use std::cell::Cell;
@@ -349,19 +368,17 @@ fn a_translucent_layer_beyond_the_clip_does_not_block_promotion() {
         PARENT,
         prop(Affine::translate((12.0, 8.0))),
     ));
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(
         PARENT,
-        Some(ShapeData::RoundedRect(RoundedRect::new(
-            0.0, 0.0, 72.0, 48.0, 6.0,
-        ))),
+        ShapeData::RoundedRect(RoundedRect::new(0.0, 0.0, 72.0, 48.0, 6.0)),
     ));
     // Scaled 2×, the 48×32 video's content covers (12, 8)–(108, 72); the
     // holder's clip leaves only (12, 8)–(84, 56) on the plane.
     tree.apply(LayerOp::Transform(VIDEO, prop(Affine::scale(2.0))));
     tree.apply(LayerOp::Opacity(ABOVE, prop(0.5)));
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(
         ABOVE,
-        Some(ShapeData::Rect(Rect::new(8.0, 58.0, 88.0, 64.0))),
+        ShapeData::Rect(Rect::new(8.0, 58.0, 88.0, 64.0)),
     ));
     let candidates: FxHashMap<_, _> = std::iter::once((VIDEO, (48, 32).into())).collect();
     let plan = plan::<Test>(&tree, &candidates, &all_ready(&candidates));
@@ -392,15 +409,15 @@ fn an_inexpressible_transform_is_not_promoted() {
 #[test]
 fn an_inexpressible_clip_is_not_promoted() {
     let mut tree = scene();
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(
         PARENT,
-        Some(ShapeData::Circle(kurbo::Circle::new((10.0, 10.0), 5.0))),
+        ShapeData::Circle(kurbo::Circle::new((10.0, 10.0), 5.0)),
     ));
     assert_eq!(verdict(&tree), Err(Ineligible::Clip(PARENT)));
     let mut tree = scene();
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(
         VIDEO,
-        Some(ShapeData::Rect(Rect::new(0.0, 0.0, 100.0, 50.0))),
+        ShapeData::Rect(Rect::new(0.0, 0.0, 100.0, 50.0)),
     ));
     assert!(verdict(&tree).is_ok());
 }
@@ -413,32 +430,32 @@ fn an_inexpressible_clip_is_not_promoted() {
 fn nested_shaped_clips_are_not_promoted() {
     let rounded = || ShapeData::RoundedRect(RoundedRect::new(0.0, 0.0, 100.0, 50.0, 8.0));
     let mut tree = scene();
-    tree.apply(LayerOp::Clip(ROOT, Some(rounded())));
-    tree.apply(LayerOp::Clip(PARENT, Some(rounded())));
+    tree.apply(clip(ROOT, rounded()));
+    tree.apply(clip(PARENT, rounded()));
     assert_eq!(verdict(&tree), Err(Ineligible::NestedClip(PARENT)));
     // A device-aligned rect under a shaped clip isolates too: only a
     // pair of aligned rects merges in place.
     let mut tree = scene();
-    tree.apply(LayerOp::Clip(ROOT, Some(rounded())));
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(ROOT, rounded()));
+    tree.apply(clip(
         PARENT,
-        Some(ShapeData::Rect(Rect::new(0.0, 0.0, 100.0, 50.0))),
+        ShapeData::Rect(Rect::new(0.0, 0.0, 100.0, 50.0)),
     ));
     assert_eq!(verdict(&tree), Err(Ineligible::NestedClip(PARENT)));
     let mut tree = scene();
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(
         ROOT,
-        Some(ShapeData::Rect(Rect::new(0.0, 0.0, 200.0, 100.0))),
+        ShapeData::Rect(Rect::new(0.0, 0.0, 200.0, 100.0)),
     ));
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(
         PARENT,
-        Some(ShapeData::Rect(Rect::new(0.0, 0.0, 100.0, 50.0))),
+        ShapeData::Rect(Rect::new(0.0, 0.0, 100.0, 50.0)),
     ));
     assert!(verdict(&tree).is_ok());
     // Under a single shaped ancestor the candidate's own clip is excluded.
     let mut tree = scene();
-    tree.apply(LayerOp::Clip(PARENT, Some(rounded())));
-    tree.apply(LayerOp::Clip(VIDEO, Some(rounded())));
+    tree.apply(clip(PARENT, rounded()));
+    tree.apply(clip(VIDEO, rounded()));
     assert!(verdict(&tree).is_ok());
 }
 
@@ -689,13 +706,13 @@ fn a_backdrop_on_or_above_the_layer_keeps_it_in_the_engine() {
         .expect("offscreen surface");
     let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let mut tree = scene();
-    tree.apply(LayerOp::Backdrop(VIDEO, Some(group.sample())));
+    tree.apply(backdrop(VIDEO, group.sample()));
     assert_eq!(verdict(&tree), Err(Ineligible::Backdrop));
     let mut tree = scene();
-    tree.apply(LayerOp::Backdrop(ABOVE, Some(group.sample())));
+    tree.apply(backdrop(ABOVE, group.sample()));
     assert_eq!(verdict(&tree), Err(Ineligible::BackdropAbove(ABOVE)));
     let mut tree = scene();
-    tree.apply(LayerOp::Backdrop(BELOW, Some(group.sample())));
+    tree.apply(backdrop(BELOW, group.sample()));
     assert!(verdict(&tree).is_ok());
 }
 
@@ -900,17 +917,15 @@ fn a_hosted_layer_under_an_inexpressible_transform_is_unplaced() {
 #[test]
 fn a_hosted_layer_under_an_inexpressible_clip_is_unplaced() {
     let mut tree = scene();
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(
         PARENT,
-        Some(ShapeData::Circle(kurbo::Circle::new((10.0, 10.0), 5.0))),
+        ShapeData::Circle(kurbo::Circle::new((10.0, 10.0), 5.0)),
     ));
     assert_eq!(hosted_verdict::<Test>(&tree), Err(Ineligible::Clip(PARENT)));
     let mut tree = scene();
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(
         PARENT,
-        Some(ShapeData::RoundedRect(RoundedRect::new(
-            0.0, 0.0, 100.0, 50.0, 8.0,
-        ))),
+        ShapeData::RoundedRect(RoundedRect::new(0.0, 0.0, 100.0, 50.0, 8.0)),
     ));
     assert!(hosted_verdict::<Test>(&tree).is_ok());
     assert_eq!(
@@ -930,8 +945,8 @@ fn translucency_above_and_nested_clips_do_not_unplace_a_hosted_layer() {
     assert!(hosted_verdict::<Test>(&tree).is_ok());
     let rounded = ShapeData::RoundedRect(RoundedRect::new(0.0, 0.0, 100.0, 50.0, 8.0));
     let mut tree = scene();
-    tree.apply(LayerOp::Clip(PARENT, Some(rounded.clone())));
-    tree.apply(LayerOp::Clip(VIDEO, Some(rounded)));
+    tree.apply(clip(PARENT, rounded.clone()));
+    tree.apply(clip(VIDEO, rounded));
     assert!(hosted_verdict::<Test>(&tree).is_ok());
 }
 
@@ -985,9 +1000,9 @@ fn moving_a_hosted_layer_keeps_its_plane() {
         prop(Affine::translate((40.0, 30.0))),
     ));
     tree.apply(LayerOp::ScrollOffset(PARENT, prop(Vec2::new(0.0, 10.0))));
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(
         VIDEO,
-        Some(ShapeData::Rect(Rect::new(0.0, 0.0, 100.0, 50.0))),
+        ShapeData::Rect(Rect::new(0.0, 0.0, 100.0, 50.0)),
     ));
     let moved = hosted_verdict::<Test>(&tree).expect("eligible");
     assert_ne!(moved, committed);
@@ -1061,16 +1076,16 @@ fn a_backdrop_on_or_above_a_hosted_layer_unplaces_it() {
         .expect("offscreen surface");
     let group = surface.backdrop_group_unfiltered(cherenkov::CaptureScale::FULL);
     let mut tree = scene();
-    tree.apply(LayerOp::Backdrop(VIDEO, Some(group.sample())));
+    tree.apply(backdrop(VIDEO, group.sample()));
     assert_eq!(hosted_verdict::<Test>(&tree), Err(Ineligible::Backdrop));
     let mut tree = scene();
-    tree.apply(LayerOp::Backdrop(ABOVE, Some(group.sample())));
+    tree.apply(backdrop(ABOVE, group.sample()));
     assert_eq!(
         hosted_verdict::<Test>(&tree),
         Err(Ineligible::BackdropAbove(ABOVE))
     );
     let mut tree = scene();
-    tree.apply(LayerOp::Backdrop(BELOW, Some(group.sample())));
+    tree.apply(backdrop(BELOW, group.sample()));
     assert!(hosted_verdict::<Test>(&tree).is_ok());
 }
 
@@ -1180,9 +1195,9 @@ fn a_band_region_is_named_by_its_marks_window() {
     let mut tree = scene();
     tree.apply(LayerOp::HostWindow(VIDEO, Some(HIDDEN)));
     tree.apply(LayerOp::HostWindow(BELOW, Some(SHOWN)));
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(
         PARENT,
-        Some(ShapeData::Circle(kurbo::Circle::new((10.0, 10.0), 0.0))),
+        ShapeData::Circle(kurbo::Circle::new((10.0, 10.0), 0.0)),
     ));
     let marks: FxHashMap<LayerId, Candidate> = [(VIDEO, host_window()), (BELOW, host_window())]
         .into_iter()
@@ -1278,9 +1293,9 @@ fn stretched_scroll(filter: FilterId) -> (SurfaceTree, FxHashMap<LayerId, Candid
     ] {
         tree.apply(LayerOp::Push { parent, child });
     }
-    tree.apply(LayerOp::Clip(
+    tree.apply(clip(
         INNER,
-        Some(ShapeData::Rect(Rect::new(0.0, 0.0, 200.0, 300.0))),
+        ShapeData::Rect(Rect::new(0.0, 0.0, 200.0, 300.0)),
     ));
     tree.apply(LayerOp::ScrollOffset(INNER, prop(Vec2::new(0.0, 40.0))));
     tree.apply(LayerOp::Filter(INNER, Some(filter)));

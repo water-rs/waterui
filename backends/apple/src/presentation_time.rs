@@ -47,17 +47,27 @@ impl PresentationTime {
     /// Maps a `CACurrentMediaTime` timestamp onto the shared `Instant` axis.
     fn instant_at(&self, media_time: f64) -> Instant {
         let delta = media_time - self.anchor_media;
-        let duration = Duration::from_secs_f64(delta.abs());
         // A timestamp behind the anchor is legal (a queued update's target
         // can predate install). One the monotonic `Instant` axis cannot
-        // represent is a broken invariant — fail fast rather than mint an
-        // invented frame time.
-        if delta >= 0.0 {
-            self.anchor_instant.checked_add(duration)
-        } else {
-            self.anchor_instant.checked_sub(duration)
-        }
-        .expect("presentation timestamp outside the representable Instant range")
+        // represent — non-finite, or beyond its range — is a platform
+        // failure: it is logged and the frame is timed at the current
+        // instant, the nearest true time.
+        Duration::try_from_secs_f64(delta.abs())
+            .ok()
+            .and_then(|duration| {
+                if delta >= 0.0 {
+                    self.anchor_instant.checked_add(duration)
+                } else {
+                    self.anchor_instant.checked_sub(duration)
+                }
+            })
+            .unwrap_or_else(|| {
+                tracing::error!(
+                    "presentation timestamp {media_time} is outside the representable `Instant` \
+                     range; the frame is timed at the current instant"
+                );
+                Instant::now()
+            })
     }
 
     /// The frame time an offscreen capture renders at — the explicit
@@ -77,7 +87,7 @@ impl PresentationTime {
     pub fn install(env: &mut waterui_backend_core::Environment) {
         assert!(
             env.get::<Rc<Self>>().is_none(),
-            "a presentation anchor is already installed in the WaterUI environment"
+            "`gpu_runtime::prepare` installs the presentation anchor once per environment"
         );
         env.insert(Rc::new(Self::new()));
     }
@@ -91,7 +101,7 @@ impl PresentationTime {
     #[must_use]
     pub fn get(env: &waterui_backend_core::Environment) -> Rc<Self> {
         env.get::<Rc<Self>>()
-            .expect("presentation-time anchor is not installed in the WaterUI environment")
+            .expect("`install` runs inside `gpu_runtime::prepare` before any mount exists")
             .clone()
     }
 }
@@ -99,5 +109,29 @@ impl PresentationTime {
 impl Default for PresentationTime {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unrepresentable_timestamp_is_timed_at_the_current_instant() {
+        let anchor = PresentationTime::new();
+        let before = Instant::now();
+        for media_time in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, f64::MAX] {
+            let mapped = anchor.instant_at(media_time);
+            assert!(
+                mapped >= before,
+                "{media_time} maps to the current instant, not the anchor"
+            );
+        }
+    }
+
+    #[test]
+    fn a_timestamp_behind_the_anchor_maps_behind_it() {
+        let anchor = PresentationTime::new();
+        assert!(anchor.instant_at(anchor.anchor_media - 1.0) < anchor.anchor_instant);
     }
 }

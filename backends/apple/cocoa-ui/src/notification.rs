@@ -158,7 +158,7 @@ fn observe_impl(
     let block = RcBlock::new(move |notification: NonNull<NSNotification>| {
         guarded("notification observer", || {
             let mtm = MainThreadMarker::new()
-                .expect("the main operation queue must deliver notifications on the main thread");
+                .expect("`NSOperationQueue.mainQueue` runs its blocks on the main thread");
             // SAFETY: the center delivers a live notification object for the
             // duration of the block call.
             (handler.get(mtm))(unsafe { notification.as_ref() });

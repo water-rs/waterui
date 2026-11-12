@@ -281,17 +281,31 @@ impl TabsController {
     /// which `UIViewController` rejects while the view is still another
     /// controller's `view`.
     ///
+    /// An `index` out of range breaks the contract: it is reported and
+    /// `None` is answered.
+    ///
     /// # Panics
-    /// Panics when `index` is out of range.
+    ///
+    /// Never: the tabs are installed when the controller is constructed.
     #[must_use]
-    pub fn tab_item(&self, index: usize) -> Retained<UITabBarItem> {
-        let controllers = self.viewControllers().expect("tabs are installed");
-        controllers
-            .objectAtIndex(index)
-            .downcast::<TabContentController>()
-            .expect("tab controllers are CocoaUiTabContentController")
-            .tabBarItem()
-            .expect("a tab content controller always has a tab bar item")
+    pub fn tab_item(&self, index: usize) -> Option<Retained<UITabBarItem>> {
+        let controllers = self
+            .viewControllers()
+            .expect("tabs are installed at construction");
+        let Some(controller) = controllers.iter().nth(index) else {
+            waterui_contract::contract_violation!(
+                "tab index {index} is out of range for {} tabs; no item is answered",
+                controllers.len()
+            );
+            return None;
+        };
+        Some(
+            controller
+                .downcast::<TabContentController>()
+                .expect("tab controllers are CocoaUiTabContentController")
+                .tabBarItem()
+                .expect("a tab content controller always has a tab bar item"),
+        )
     }
 
     /// The selected tab's index; `None` when nothing is selected.

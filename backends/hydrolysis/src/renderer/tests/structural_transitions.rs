@@ -423,8 +423,7 @@ fn a_conditional_at_a_collection_row_root_owns_its_ghost() {
 /// at — its edge softens toward the background — beneath the sibling that
 /// moved up into the released slot. The mid-flight frame lands under
 /// `<artifacts>/hydrolysis/structural_transition_blur/mid-removal.png`.
-/// GPU painter only until water-rs/waterui#4065: the blur is a shader effect.
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 #[test]
 fn a_blur_removal_draws_the_ghost_blurred_mid_flight() {
     let show = Binding::container(true);

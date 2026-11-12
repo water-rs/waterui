@@ -92,6 +92,8 @@
 //! - `eval`: the `eval` module, a reference interpreter that runs snippets and
 //!   composed segments on the CPU, for tests and for cross-checking CPU
 //!   implementations against their shaders.
+//! - `lanes`: the `lanes` module, a SIMD executor that runs a WGSL
+//!   function over many invocations at once, for CPU backends.
 
 mod abi;
 mod builder;
@@ -101,6 +103,8 @@ mod errors;
 #[cfg(feature = "eval")]
 pub mod eval;
 mod import;
+#[cfg(feature = "lanes")]
+pub mod lanes;
 mod parse;
 mod rewrite;
 mod spv_flags;

@@ -501,7 +501,7 @@ mod render {
             MTLDevice as _, MTLOrigin, MTLRegion, MTLSize, MTLTexture as _, MTLTextureDescriptor,
             MTLTextureUsage,
         };
-        let pass = MeshPass::new();
+        let pass = MeshPass::new().expect("the test machine has a Metal device");
         // A 2x2-patch grid whose centre vertex is pulled off-grid and whose
         // second patch row is skewed.
         let points = [
@@ -549,7 +549,8 @@ mod render {
                 inverse: Affine::IDENTITY.as_coeffs(),
             },
             &texture,
-        );
+        )
+        .expect("the mesh paints into the texture");
         let mut texels = vec![0_u16; width * SCALE * height * SCALE * 4];
         // SAFETY: `texels` holds the texture's 8 bytes per texel.
         unsafe {
@@ -724,7 +725,7 @@ mod render {
     /// What a tree is lowered with, outside a host.
     struct Fixture {
         registry: Rc<Registry>,
-        mesh: core::cell::OnceCell<Rc<cocoa_ui::mesh::MeshPass>>,
+        mesh: core::cell::OnceCell<Option<Rc<cocoa_ui::mesh::MeshPass>>>,
         /// A test shows mesh paints through [`Tree::settle`] instead.
         wake: Wake,
     }
@@ -1396,7 +1397,7 @@ mod render {
         let (points, colors) = plan::grid(&mesh);
         let (width, height) = (220_usize, 150_usize);
         let transform = Affine::translate((6., 4.)) * Affine::rotate(0.2);
-        let pass = MeshPass::new();
+        let pass = MeshPass::new().expect("the test machine has a Metal device");
         let uploaded = pass.mesh(2, 2, &points, &colors, false);
         // SAFETY: a 2D texture descriptor is always valid to construct.
         let descriptor = unsafe {
@@ -1419,7 +1420,8 @@ mod render {
                 inverse: transform.inverse().as_coeffs(),
             },
             &texture,
-        );
+        )
+        .expect("the mesh paints into the texture");
         let mut texels = vec![0_u16; width * height * 4];
         // SAFETY: `texels` holds the texture's 8 bytes per texel.
         unsafe {

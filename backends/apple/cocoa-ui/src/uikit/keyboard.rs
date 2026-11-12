@@ -82,46 +82,39 @@ fn user_info(note: &NSNotification, key: &'static NSString) -> Option<Retained<A
 /// already converted into `window`'s coordinates — the one place the
 /// conversion and the `curve << 16` packing live.
 ///
-/// # Panics
-///
-/// When `notification` is not a `UIKeyboardWillChangeFrameNotification` —
-/// the region registers it on that one name, so a missing frame end,
-/// duration or curve is a caller bug, not an event to skip.
+/// `None` when `notification` lacks the frame end, duration or curve, or
+/// carries them in other types: the region registers on
+/// `UIKeyboardWillChangeFrameNotification` alone, so that is `UIKit` breaking
+/// its documented contract, and the change is reported and skipped.
 #[must_use]
-pub fn change(notification: &NSNotification, window: &UIWindow) -> KeyboardChange {
+pub fn change(notification: &NSNotification, window: &UIWindow) -> Option<KeyboardChange> {
     // SAFETY: the frame-end value is an `NSValue` wrapping a `CGRect`, the
     // duration and curve values `NSNumber`s — the types `UIKit` documents
     // for each key.
     let frame: CGRect = unsafe {
-        user_info(notification, UIKeyboardFrameEndUserInfoKey)
-            .expect("a keyboard notification carries a frame-end value")
-            .downcast_ref::<NSValue>()
-            .expect("the keyboard frame-end value is an NSValue")
+        user_info(notification, UIKeyboardFrameEndUserInfoKey)?
+            .downcast_ref::<NSValue>()?
             .get()
     };
     // SAFETY: `UIKit` exports the duration and curve keys as `NSString`
     // constants.
     let duration = user_info(notification, unsafe {
         UIKeyboardAnimationDurationUserInfoKey
-    })
-    .expect("a keyboard notification carries its animation duration")
-    .downcast_ref::<NSNumber>()
-    .expect("the keyboard animation-duration value is an NSNumber")
+    })?
+    .downcast_ref::<NSNumber>()?
     .doubleValue();
     // SAFETY: same constants, exported by `UIKit`.
-    let curve = user_info(notification, unsafe { UIKeyboardAnimationCurveUserInfoKey })
-        .expect("a keyboard notification carries its animation curve")
-        .downcast_ref::<NSNumber>()
-        .expect("the keyboard animation-curve value is an NSNumber")
+    let curve = user_info(notification, unsafe { UIKeyboardAnimationCurveUserInfoKey })?
+        .downcast_ref::<NSNumber>()?
         .as_usize();
     let space = window.screen().coordinateSpace();
-    KeyboardChange {
+    Some(KeyboardChange {
         frame: window.convertRect_fromCoordinateSpace(frame, &space),
         duration,
         options: UIViewAnimationOptions(
             (curve << 16) | UIViewAnimationOptions::BeginFromCurrentState.0,
         ),
-    }
+    })
 }
 
 /// The state one window's keyboard region holds.
@@ -263,7 +256,12 @@ impl KeyboardRegion {
             .get()
             .and_then(Weak::load)
             .expect("the window retains its region — a live region means a live window");
-        let change = change(note, &window);
+        let Some(change) = change(note, &window) else {
+            waterui_contract::contract_violation!(
+                "a keyboard notification lacks its frame end, duration or curve; the change is skipped"
+            );
+            return;
+        };
         let block = RcBlock::new({
             let region: Retained<Self> = Retained::from(self);
             let window: Retained<UIWindow> = window;

@@ -132,6 +132,10 @@ struct Capture {
     /// deeper level's `CaptureLevel::y0` counts from this origin's
     /// level-k row `ry0 / 2^k`.
     ry0: usize,
+    /// The capture region's height in texels: with `w`, the
+    /// `backdrop_size` a backdrop shader reads.
+    #[cfg(feature = "shaders")]
+    rh: usize,
     /// The pyramid's deeper levels: `levels[k − 1]` holds level `k`'s
     /// kept texel rows, `k` in `1..n`; empty on a one-level capture.
     levels: Vec<CaptureLevel>,
@@ -410,7 +414,19 @@ fn sample_rows(
                             }
                         }
                     } else {
-                        rows = (rows.0.min(first), rows.1.max(last));
+                        // A shader's reads land anywhere within its reach,
+                        // plus the bilinear tap's next row.
+                        #[cfg(feature = "shaders")]
+                        let reach = match effect {
+                            SampleEffect::Shader(shader) => shader.reach.ceil() as usize + 1,
+                            _ => 0,
+                        };
+                        #[cfg(not(feature = "shaders"))]
+                        let reach = 0;
+                        rows = (
+                            rows.0.min(first.saturating_sub(reach)),
+                            rows.1.max((last + reach).min(h)),
+                        );
                     }
                 }
             }
@@ -1002,6 +1018,116 @@ fn refracted(
     )
 }
 
+/// One member pixel `c` at coverage `cc` blended source-over onto `d` in
+/// the group's member space — the canvas converts into it and the result
+/// back. `spaces` is `(capture, member, canvas)`.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+fn member_over<S: Simd>(
+    simd: S,
+    d: &mut [f32; 4],
+    c: [f32; 4],
+    cc: f32,
+    (from, member_space, space): (
+        cherenkov::BlendSpace,
+        cherenkov::BlendSpace,
+        cherenkov::BlendSpace,
+    ),
+) {
+    let src = move_space(simd, c.map(|v| v * cc), from, member_space);
+    *d = if member_space == space {
+        src_over(*d, src)
+    } else {
+        move_space(
+            simd,
+            src_over(move_space(simd, *d, space, member_space), src),
+            member_space,
+            space,
+        )
+    };
+}
+
+/// A backdrop shader member's field at device point `(x, y)`: the
+/// distance and unit normal `px.sdf`/`px.normal` read — the union field
+/// under a union, the member's own clip otherwise — the composite
+/// coverage the field contributes, and the member's own distance
+/// `px.own_sdf`.
+#[cfg(feature = "shaders")]
+fn shader_field(
+    own: &BoxClip,
+    union: Option<&UnionSample>,
+    x: f32,
+    y: f32,
+) -> ((f32, f32, f32), f32, f32) {
+    let mine = box_sdf_at(own, x, y);
+    union.map_or((mine, 1.0, mine.0), |u| {
+        let (d, nx, ny, w_own, width) = union_field_at(u, x, y);
+        let coverage = w_own * (0.5 - (d - u.outer) / width).clamp(0.0, 1.0);
+        ((d, nx, ny), coverage, mine.0)
+    })
+}
+
+/// The capture reads a backdrop shader calls (`render::shader`'s host
+/// functions), against one member's capture and field.
+#[cfg(feature = "shaders")]
+struct BackdropHost<'a> {
+    capture: &'a Capture,
+    own: &'a BoxClip,
+    union: Option<&'a UnionSample>,
+}
+
+#[cfg(feature = "shaders")]
+impl cherenkov_shader::lanes::Host for BackdropHost<'_> {
+    fn call(
+        &mut self,
+        function: usize,
+        args: &[cherenkov_shader::lanes::Lanes],
+        out: &mut [cherenkov_shader::lanes::Lanes],
+        active: &cherenkov_shader::lanes::Mask,
+    ) {
+        use crate::render::shader::{FIELD, SAMPLE, SAMPLE_LEVEL};
+        for (l, &live) in active.iter().enumerate() {
+            if !live {
+                continue;
+            }
+            let values = match function {
+                SAMPLE => capture_sample(self.capture, args[0][l], args[1][l]),
+                SAMPLE_LEVEL => {
+                    capture_sample_level(self.capture, args[0][l], args[1][l], args[2][l])
+                }
+                FIELD => {
+                    let (x, y) = (args[0][l], args[1][l]);
+                    if let Some(u) = self.union {
+                        let (d, nx, ny, w_own, _) = union_field_at(u, x, y);
+                        [d, nx, ny, w_own]
+                    } else {
+                        let (d, nx, ny) = box_sdf_at(self.own, x, y);
+                        [d, nx, ny, 1.0]
+                    }
+                }
+                other => unreachable!("the backdrop prelude declares no host function {other}"),
+            };
+            for (slot, value) in out.iter_mut().zip(values) {
+                slot[l] = value;
+            }
+        }
+    }
+
+    fn image(
+        &mut self,
+        op: cherenkov_shader::lanes::ImageOp<'_>,
+        _: &mut [cherenkov_shader::lanes::Lanes; 4],
+        _: &cherenkov_shader::lanes::Mask,
+    ) {
+        unreachable!(
+            "a backdrop effect's entry takes a pixel and its parameters, no texture: {op:?}"
+        );
+    }
+}
+
 /// The distance, normal and union coverage of pixel `(px, py)`, shared
 /// by capture planning and member compositing: the union field when the
 /// member is in a union, the SDF effect's own clip distance otherwise.
@@ -1023,6 +1149,10 @@ fn sample_field(
             SampleEffect::Sdf(sdf) => (box_sdf_at(&sdf.clip, x, y), 1.0),
             SampleEffect::None | SampleEffect::Color(_) => {
                 unreachable!("only union members and SDF effects evaluate a field")
+            }
+            #[cfg(feature = "shaders")]
+            SampleEffect::Shader(_) => {
+                unreachable!("a shader member's field is evaluated by `shader_field`")
             }
         },
         |u| {
@@ -3199,6 +3329,8 @@ fn capture_band<S: Simd>(
             x0: rx0,
             w: rw,
             ry0,
+            #[cfg(feature = "shaders")]
+            rh: ry1 - ry0,
             levels,
             device_rows: rows.device,
             device_cols: (c0, c1),
@@ -3785,6 +3917,20 @@ impl Band<'_> {
         if y_lo >= y_hi || x_lo >= x_hi {
             return;
         }
+        #[cfg(feature = "shaders")]
+        if let SampleEffect::Shader(shader) = effect {
+            self.sample_shader(
+                simd,
+                capture,
+                (x_lo, x_hi, y_lo, y_hi),
+                clip,
+                shader,
+                union,
+                member_space,
+                stack,
+            );
+            return;
+        }
         let needs_field = union.is_some() || matches!(effect, SampleEffect::Sdf(_));
         let (dst, space) = top(&mut *self.fb, self.space, stack);
         for py in y_lo..y_hi {
@@ -3816,22 +3962,127 @@ impl Band<'_> {
                     SampleEffect::None => pixel_sample(capture, px, py, crow),
                     SampleEffect::Color(m) => color_matrix(m, pixel_sample(capture, px, py, crow)),
                     SampleEffect::Sdf(sdf) => sdf_sample(capture, sdf, field, px, py, crow),
+                    #[cfg(feature = "shaders")]
+                    SampleEffect::Shader(_) => unreachable!("shader members run `sample_shader`"),
                 };
-                // The sample at its coverage blends source-over in the
-                // group's member space: the canvas converts into it and
-                // the result back.
-                let src = move_space(simd, c.map(|v| v * cc), capture.space, member_space);
-                let d = &mut dst[row + px];
-                *d = if member_space == space {
-                    src_over(*d, src)
-                } else {
-                    move_space(
+                member_over(
+                    simd,
+                    &mut dst[row + px],
+                    c,
+                    cc,
+                    (capture.space, member_space, space),
+                );
+            }
+        }
+    }
+
+    /// [`Band::sample`] for a backdrop shader member: the band's pixels
+    /// inside `x_lo..x_hi` × `y_lo..y_hi` run through the member's program
+    /// [`LANES`](cherenkov_shader::lanes::LANES) at a time, laid out as
+    /// 2×2 quads aligned to even device coordinates — a quad's pixels
+    /// outside the member still run, as GPU helper invocations do, so
+    /// derivatives see their neighbours — and the results composite as
+    /// every other member effect's do.
+    #[cfg(feature = "shaders")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one sample item's fields plus the band's plane stack"
+    )]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "pixel coordinates and capture extents are small"
+    )]
+    fn sample_shader<S: Simd>(
+        &mut self,
+        simd: S,
+        capture: &Capture,
+        (x_lo, x_hi, y_lo, y_hi): (usize, usize, usize, usize),
+        clip: Option<ClipCoverage<'_>>,
+        shader: &crate::render::lower::ShaderEffect,
+        union: Option<&UnionSample>,
+        member_space: cherenkov::BlendSpace,
+        stack: &mut [Plane],
+    ) {
+        use cherenkov_shader::lanes::LANES;
+        let compiled = &*shader.program;
+        let program = &compiled.program;
+        let mut regs = program.registers();
+        for (&reg, &value) in compiled.params.iter().zip(shader.params.iter()) {
+            regs.splat(reg, value);
+        }
+        let mut host = BackdropHost {
+            capture,
+            own: &shader.clip,
+            union,
+        };
+        let inputs = [
+            (compiled.origin[0], capture.x0 as f32),
+            (compiled.origin[1], capture.ry0 as f32),
+            (compiled.size[0], capture.w as f32),
+            (compiled.size[1], capture.rh as f32),
+            (compiled.scale, capture.scale.get()),
+            (compiled.levels, (capture.levels.len() + 1) as f32),
+        ];
+        let m = shader.local;
+        let (dst, space) = top(&mut *self.fb, self.space, stack);
+        let mut cover = [0.0f32; LANES];
+        let mut at = [0usize; LANES];
+        for qy in (y_lo & !1..y_hi).step_by(2) {
+            for x0 in (x_lo & !1..x_hi).step_by(LANES / 2) {
+                let mut active = [false; LANES];
+                for l in 0..LANES {
+                    let px = x0 + (l >> 2) * 2 + (l & 1);
+                    let py = qy + ((l >> 1) & 1);
+                    let (x, y) = (px as f32 + 0.5, py as f32 + 0.5);
+                    let ((d, nx, ny), coverage, own) = shader_field(&shader.clip, union, x, y);
+                    let inside = (x_lo..x_hi).contains(&px) && (y_lo..y_hi).contains(&py);
+                    let cc = if inside {
+                        clip_cov(clip, self.w, px, py) * coverage
+                    } else {
+                        0.0
+                    };
+                    active[l] = cc > 0.0;
+                    cover[l] = cc;
+                    at[l] = (py - self.y0) * self.w + px;
+                    let values = [
+                        x,
+                        y,
+                        d,
+                        nx,
+                        ny,
+                        own,
+                        shader.size[0],
+                        shader.size[1],
+                        shader.scale,
+                        m[0].mul_add(x, m[2].mul_add(y, m[4])),
+                        m[1].mul_add(x, m[3].mul_add(y, m[5])),
+                    ];
+                    for (&reg, value) in compiled.pixel.iter().zip(values) {
+                        regs.get_mut(reg)[l] = value;
+                    }
+                }
+                if !active.contains(&true) {
+                    continue;
+                }
+                // Reset every run: the shader may write its private inputs.
+                for (reg, value) in inputs {
+                    regs.splat(reg, value);
+                }
+                let done = program.run(&mut regs, active, &mut host);
+                let result = program.result();
+                for l in 0..LANES {
+                    if !done[l] {
+                        continue;
+                    }
+                    let c = std::array::from_fn(|k| regs.get(result[k])[l]);
+                    member_over(
                         simd,
-                        src_over(move_space(simd, *d, space, member_space), src),
-                        member_space,
-                        space,
-                    )
-                };
+                        &mut dst[at[l]],
+                        c,
+                        cover[l],
+                        (capture.space, member_space, space),
+                    );
+                }
             }
         }
     }

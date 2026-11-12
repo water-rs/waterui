@@ -69,8 +69,10 @@ pub use filtrate::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
     RetainedMemory, SHADER_EFFECT_MAX_PARAMS, ShaderEffect, ShaderEffectError, TextureViews,
 };
-/// The trait `.filter(F)` requires of a filter.
-pub use filtrate::{Filter, FilterImage, LutImage};
+/// The traits `.filter(F)` requires of a filter: a [`Filter`] whose kind
+/// reports its footprint ([`Reach`]), as every colour and spatial filter's
+/// does.
+pub use filtrate::{Filter, FilterImage, LutImage, Reach};
 #[cfg(feature = "gpu")]
 use nami::SignalExt;
 use nami::{Signal, signal::IntoComputed};
@@ -465,9 +467,12 @@ trait FilterSource: RenderTransfer {
     /// Lowers the filter into `filtrate`'s executor on the render thread.
     #[cfg(feature = "gpu")]
     fn build(self: Box<Self>, output_size: OutputSizeState) -> Box<dyn ErasedEffect>;
+    /// Plans and compiles the filter for `cherenkov-cpu`'s lane executor.
+    #[cfg(feature = "cpu")]
+    fn cpu(self: Box<Self>) -> Result<cherenkov_cpu::CpuEffect, filtrate::LaneFilterError>;
 }
 
-impl<F: Filter + RenderTransfer> FilterSource for F {
+impl<F: Reach + RenderTransfer> FilterSource for F {
     fn dyn_params(&self) -> Vec<f32> {
         let mut values = alloc::vec![0.0; <F::Params as ParamArray>::LEN];
         self.params().write_to(&mut values);
@@ -493,6 +498,11 @@ impl<F: Filter + RenderTransfer> FilterSource for F {
     #[cfg(feature = "gpu")]
     fn build(self: Box<Self>, output_size: OutputSizeState) -> Box<dyn ErasedEffect> {
         gpu::lower_filter(*self, output_size)
+    }
+
+    #[cfg(feature = "cpu")]
+    fn cpu(self: Box<Self>) -> Result<cherenkov_cpu::CpuEffect, filtrate::LaneFilterError> {
+        cherenkov_cpu::CpuEffect::new(*self)
     }
 }
 
@@ -751,8 +761,30 @@ impl AnyEffect {
     }
 
     /// Erases a filter, keeping its portable description.
-    pub fn filter(filter: impl Filter + RenderTransfer) -> Self {
+    pub fn filter(filter: impl Reach + RenderTransfer) -> Self {
         Self::from_source(EffectSource::Filter(Box::new(filter)))
+    }
+
+    /// The effect as `cherenkov-cpu`'s raster runs it: the filter's
+    /// composed stages on the raster's lane executor, registered with
+    /// `Engine::effect`.
+    ///
+    /// # Errors
+    /// [`CpuEffectError::Gpu`] for an arbitrary GPU effect, which has no
+    /// stages to run; [`CpuEffectError::OutputSize`] when the view declares
+    /// an output size, which the raster's in-place bands do not resize to;
+    /// [`CpuEffectError::Stages`] when the stages do not run on the lane
+    /// executor.
+    #[cfg(feature = "cpu")]
+    pub fn into_cpu(self) -> Result<cherenkov_cpu::CpuEffect, CpuEffectError> {
+        if self.output_size().is_some() {
+            return Err(CpuEffectError::OutputSize);
+        }
+        match self.source {
+            EffectSource::Filter(filter) => filter.cpu().map_err(CpuEffectError::Stages),
+            #[cfg(feature = "gpu")]
+            EffectSource::Gpu(_) => Err(CpuEffectError::Gpu),
+        }
     }
 
     /// The portable description of the filter this effect applies, or `None`
@@ -791,6 +823,22 @@ impl AnyEffect {
     }
 }
 
+/// Why [`AnyEffect::into_cpu`] cannot hand an effect to the CPU raster.
+#[cfg(feature = "cpu")]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum CpuEffectError {
+    /// The effect is an arbitrary GPU effect, with no stages to run.
+    #[error("the effect is an arbitrary GPU effect, which only a GPU can run")]
+    Gpu,
+    /// The view declares an output size for its filter.
+    #[error("the view declares an output size, which the CPU raster does not resize to")]
+    OutputSize,
+    /// The filter's stages do not run on the lane executor.
+    #[error("{0}")]
+    Stages(filtrate::LaneFilterError),
+}
+
 /// A view with a filter applied to its rendered subtree.
 #[derive(Debug)]
 pub struct Filtered<V, F> {
@@ -799,7 +847,7 @@ pub struct Filtered<V, F> {
     guards: ParamGuards,
 }
 
-impl<V: View, F: Filter + RenderTransfer> Filtered<V, F> {
+impl<V: View, F: Reach + RenderTransfer> Filtered<V, F> {
     /// Applies `filter` to `view`.
     pub fn new(view: V, filter: F) -> Self {
         Self::bound(view, filter, ParamGuards::default())
@@ -815,11 +863,11 @@ impl<V: View, F: Filter + RenderTransfer> Filtered<V, F> {
     }
 
     /// Appends `next` to the filter chain.
-    pub fn then<G: Filter + RenderTransfer>(self, next: G) -> Filtered<V, Chain<F, G>> {
+    pub fn then<G: Reach + RenderTransfer>(self, next: G) -> Filtered<V, Chain<F, G>> {
         self.then_bound(next, ParamGuards::default())
     }
 
-    fn then_bound<G: Filter + RenderTransfer>(
+    fn then_bound<G: Reach + RenderTransfer>(
         mut self,
         next: G,
         guards: ParamGuards,
@@ -842,7 +890,7 @@ impl<V: View, F: Filter + RenderTransfer> Filtered<V, F> {
     }
 }
 
-impl<V: View, F: Filter + RenderTransfer> View for Filtered<V, F> {
+impl<V: View, F: Reach + RenderTransfer> View for Filtered<V, F> {
     fn body(self, _env: &Environment) -> impl View {
         self.erase()
     }
@@ -1013,7 +1061,7 @@ macro_rules! inherent_single_param_filter {
     };
 }
 
-impl<V: View, F: Filter + RenderTransfer> Filtered<V, F> {
+impl<V: View, F: Reach + RenderTransfer> Filtered<V, F> {
     inherent_single_param_filter!(blur, Blur);
     inherent_single_param_filter!(brightness, Brightness);
     inherent_single_param_filter!(contrast, Contrast);
@@ -1177,7 +1225,7 @@ pub type ToneCurve = filtrate::filters::ToneCurve<Reactive>;
 /// Filters on any view: `.filter(F)`, `.effect(E)` and the named shortcuts.
 pub trait FilterViewExt: View + Sized {
     /// Apply a `filtrate` filter to this view.
-    fn filter<F: Filter + RenderTransfer>(self, filter: F) -> Filtered<Self, F> {
+    fn filter<F: Reach + RenderTransfer>(self, filter: F) -> Filtered<Self, F> {
         Filtered::new(self, filter)
     }
 

@@ -57,6 +57,9 @@ gpu = [
     "dep:web-time",
     "dep:wgpu",
 ]
+# `LaneProgram`: a filter's composed stages run on the CPU by
+# `cherenkov-shader`'s lane executor, with no wgpu stack.
+lanes = ["dep:cherenkov-shader", "cherenkov-shader/lanes"]
 # WebGL2 backend support for wasm targets: turns on wgpu's `webgl` backend.
 # Every executor pass is a fragment pass, so WebGL2's lack of compute shaders
 # and storage textures does not matter. Enabling this feature for a non-wasm

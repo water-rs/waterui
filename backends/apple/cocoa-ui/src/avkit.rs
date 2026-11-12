@@ -563,8 +563,9 @@ impl Player {
             let seconds = cm_time_seconds(time);
             let handler = &handler;
             guarded("periodic time observer", || {
-                let mtm =
-                    MainThreadMarker::new().expect("the periodic observer runs on the main queue");
+                let mtm = MainThreadMarker::new().expect(
+                    "AVPlayer calls the periodic observer on the main queue it was registered with",
+                );
                 handler.get(mtm)(seconds);
             });
         });
@@ -1679,10 +1680,8 @@ mod platform {
         /// Installs the controller as a child of the nearest view controller
         /// up the responder chain.
         ///
-        /// # Panics
-        ///
-        /// When the surface is mounted outside a `UIViewController`
-        /// hierarchy — the same contract the previous implementation had.
+        /// A surface mounted outside a `UIViewController` hierarchy breaks the
+        /// contract: it is reported and the controller is not attached.
         pub fn attach_to_parent_controller(&self) {
             // SAFETY: `parent`/`addChildViewController:` are the standard
             // containment messages on `UIViewController`.
@@ -1699,7 +1698,10 @@ mod platform {
             };
             let parent = loop {
                 let Some(current) = responder else {
-                    panic!("video player was attached outside a UIViewController hierarchy");
+                    waterui_contract::contract_violation!(
+                        "video player was attached outside a UIViewController hierarchy; the controller is not attached"
+                    );
+                    return;
                 };
                 // A view controller's own view answers its controller as the
                 // next responder, so the walk reaches `controller` itself

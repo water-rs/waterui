@@ -938,18 +938,19 @@ pub fn first_button(view: &objc2_ui_kit::UIView) -> Option<Retained<UIButton>> {
 /// item weakly — the item's action already retains the button, so a
 /// strong hold back would cycle.
 ///
-/// # Panics
-///
-/// When `button` is not a [`CocoaUiButton`]: every `UIButton` this crate
-/// constructs is the subclass, so a plain `UIButton` found in rendered
-/// content means an invariant was broken somewhere else.
+/// A `button` that is not a [`CocoaUiButton`] breaks the contract: every
+/// `UIButton` this crate constructs is the subclass. It is reported and the
+/// item is not kept in step with later changes of the button's enabled state.
 ///
 /// [`CocoaUiButton`]: crate::uikit::button::CocoaUiButton
 pub fn mirror_enabled(button: &UIButton, item: &UIBarButtonItem) {
     item.setEnabled(button.isEnabled());
-    let button = button
-        .downcast_ref::<crate::uikit::button::CocoaUiButton>()
-        .expect("every `UIButton` cocoa-ui constructs is a `CocoaUiButton`");
+    let Some(button) = button.downcast_ref::<crate::uikit::button::CocoaUiButton>() else {
+        waterui_contract::contract_violation!(
+            "{button:?} is not a `CocoaUiButton`; the item does not follow later enabled changes"
+        );
+        return;
+    };
     let weak = Weak::new(item);
     button.set_enabled_handler(move |enabled| {
         let Some(item) = weak.load() else {
@@ -1209,11 +1210,11 @@ impl NavigationController {
     ///
     /// # Panics
     ///
-    /// When the controller's view is not loaded.
+    /// Never: `UIViewController.view` loads the view on access.
     pub fn insert_beneath_bars(&self, child: &objc2_ui_kit::UIView) {
         let view = self
             .view()
-            .expect("a navigation controller's view is loaded");
+            .expect("`UIViewController.view` loads the view on access, so it answers one");
         view.insertSubview_belowSubview(child, &self.navigationBar());
     }
 

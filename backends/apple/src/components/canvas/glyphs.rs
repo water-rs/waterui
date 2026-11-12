@@ -62,69 +62,121 @@ fn unmap(map: &SegmentMaps<'_>, normalized: f64) -> f64 {
 
 /// The user-space value of each axis `coords` sets, keyed by axis tag.
 ///
-/// # Panics
-///
-/// When the font has no `fvar` but the run carries coordinates, has fewer
-/// axes than coordinates, or maps its coordinates with an `avar` version 2
-/// item variation store, which depends on every axis at once and has no
-/// per-axis inverse to reach Core Text's user space.
-fn user_values(font: &CTFont, coords: &[i16]) -> Vec<(Tag, f64)> {
-    let fvar_bytes =
-        table(font, *b"fvar").expect("a run with variation coordinates names a variable font");
-    let fvar = Fvar::read(FontData::new(&fvar_bytes)).expect("the font's fvar parses");
-    let axes = fvar.axes().expect("the font's fvar lists its axes");
-    assert!(
-        coords.len() <= axes.len(),
-        "a glyph run has {} variation coordinates for a font with {} axes",
-        coords.len(),
-        axes.len()
-    );
-    let avar_bytes = table(font, *b"avar");
-    let avar = avar_bytes
-        .as_deref()
-        .map(|bytes| Avar::read(FontData::new(bytes)).expect("the font's avar parses"));
-    if let Some(avar) = &avar {
-        assert!(
-            avar.var_store().is_none(),
-            "the font maps variation coordinates with an avar version 2 variation store, which has no per-axis inverse for Core Text's user-space values"
+/// `None` when the font cannot take the run's coordinates back to user
+/// space — it has no `fvar`, a table does not parse, it has fewer axes than
+/// coordinates, or it maps its coordinates with an `avar` version 2 item
+/// variation store, which depends on every axis at once and has no per-axis
+/// inverse to reach Core Text's user space. The run then draws at the
+/// font's default variation.
+fn user_values(font: &CTFont, coords: &[i16]) -> Option<Vec<(Tag, f64)>> {
+    let Some(fvar_bytes) = table(font, *b"fvar") else {
+        waterui::contract_violation!(
+            "a run with variation coordinates names a variable font; \
+             the run draws at the font's default variation"
         );
-    }
-    let maps: Vec<SegmentMaps<'_>> = avar.as_ref().map_or_else(Vec::new, |avar| {
-        avar.axis_segment_maps()
-            .iter()
-            .map(|map| map.expect("the font's avar segment maps parse"))
-            .collect()
-    });
-    coords
-        .iter()
-        .zip(axes)
-        .enumerate()
-        .map(|(index, (&coord, axis))| {
-            let normalized = F2Dot14::from_bits(coord).to_f64();
-            let unmapped = maps
-                .get(index)
-                .map_or(normalized, |map| unmap(map, normalized));
-            let (min, default, max) = (
-                axis.min_value().to_f64(),
-                axis.default_value().to_f64(),
-                axis.max_value().to_f64(),
+        return None;
+    };
+    let fvar = match Fvar::read(FontData::new(&fvar_bytes)) {
+        Ok(fvar) => fvar,
+        Err(error) => {
+            tracing::error!(
+                "the font's fvar does not parse: {error}; the run draws at the font's default variation"
             );
-            let user = if unmapped < 0.0 {
-                unmapped.mul_add(default - min, default)
-            } else {
-                unmapped.mul_add(max - default, default)
-            };
-            (axis.axis_tag(), user)
-        })
-        .collect()
+            return None;
+        }
+    };
+    let axes = match fvar.axes() {
+        Ok(axes) => axes,
+        Err(error) => {
+            tracing::error!(
+                "the font's fvar does not list its axes: {error}; \
+                 the run draws at the font's default variation"
+            );
+            return None;
+        }
+    };
+    if coords.len() > axes.len() {
+        waterui::contract_violation!(
+            "a glyph run has {} variation coordinates for a font with {} axes; \
+             the run draws at the font's default variation",
+            coords.len(),
+            axes.len()
+        );
+        return None;
+    }
+    let avar_bytes = table(font, *b"avar");
+    let avar = match avar_bytes
+        .as_deref()
+        .map(|bytes| Avar::read(FontData::new(bytes)))
+        .transpose()
+    {
+        Ok(avar) => avar,
+        Err(error) => {
+            tracing::error!(
+                "the font's avar does not parse: {error}; the run draws at the font's default variation"
+            );
+            return None;
+        }
+    };
+    if let Some(avar) = &avar
+        && avar.var_store().is_some()
+    {
+        tracing::error!(
+            "the font maps variation coordinates with an avar version 2 variation store, which has no per-axis inverse for Core Text's user-space values; \
+             the run draws at the font's default variation"
+        );
+        return None;
+    }
+    let maps: Vec<SegmentMaps<'_>> = match avar.as_ref().map_or_else(
+        || Ok(Vec::new()),
+        |avar| {
+            avar.axis_segment_maps()
+                .iter()
+                .collect::<Result<Vec<_>, _>>()
+        },
+    ) {
+        Ok(maps) => maps,
+        Err(error) => {
+            tracing::error!(
+                "the font's avar segment maps do not parse: {error}; \
+                 the run draws at the font's default variation"
+            );
+            return None;
+        }
+    };
+    Some(
+        coords
+            .iter()
+            .zip(axes)
+            .enumerate()
+            .map(|(index, (&coord, axis))| {
+                let normalized = F2Dot14::from_bits(coord).to_f64();
+                let unmapped = maps
+                    .get(index)
+                    .map_or(normalized, |map| unmap(map, normalized));
+                let (min, default, max) = (
+                    axis.min_value().to_f64(),
+                    axis.default_value().to_f64(),
+                    axis.max_value().to_f64(),
+                );
+                let user = if unmapped < 0.0 {
+                    unmapped.mul_add(default - min, default)
+                } else {
+                    unmapped.mul_add(max - default, default)
+                };
+                (axis.axis_tag(), user)
+            })
+            .collect(),
+    )
 }
 
 /// The run's font: its registered face at its size and variation.
 ///
 /// # Panics
 ///
-/// When the run names a font that is not registered, or carries
-/// coordinates [`user_values`] cannot take back to user space.
+/// When the run names a font that is not registered. Coordinates
+/// [`user_values`] cannot take back to user space draw at the font's
+/// default variation.
 #[must_use]
 pub fn font(registry: &Registry, run: &GlyphRun) -> CFRetained<CTFont> {
     let descriptor = registry.font(run.font);
@@ -134,7 +186,9 @@ pub fn font(registry: &Registry, run: &GlyphRun) -> CFRetained<CTFont> {
     if run.coords.is_empty() {
         return face;
     }
-    let values = user_values(&face, &run.coords);
+    let Some(values) = user_values(&face, &run.coords) else {
+        return face;
+    };
     let keys: Vec<CFRetained<CFNumber>> = values
         .iter()
         .map(|(tag, _)| CFNumber::new_i64(i64::from(u32::from_be_bytes(tag.to_be_bytes()))))
@@ -179,7 +233,9 @@ fn append(out: &mut BezPath, path: &CGPath, placement: Affine) {
                 collected.curve_to(point(0), point(1), point(2));
             }
             CGPathElementType::CloseSubpath => collected.close_path(),
-            other => unreachable!("Core Graphics has no path element {other:?}"),
+            other => {
+                unreachable!("`CGPathElementType` has no case {other:?} beyond the five handled")
+            }
         }
     });
     // SAFETY: the path is live and the block lives across the call.

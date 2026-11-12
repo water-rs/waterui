@@ -1,13 +1,10 @@
 //! The signed distance field of the input's shape, for stages that read
-//! [`ShapeInput::Sdf`](filtrate_core::ShapeInput::Sdf).
+//! [`ShapeInput::Sdf`](filtrate_core::ShapeInput::Sdf), as GPU passes.
 //!
-//! The field is built by jump flooding: a seed pass records, at every pixel
-//! next to the alpha = 0.5 contour, the offset to the contour; each step
-//! pass propagates the nearest offset across a halving jump distance, with
-//! one extra unit step that repairs the flood's rare misses; a resolve pass
-//! turns the offsets into signed distances. Two `Rgba16Float` targets per
-//! input size ping-pong between the passes, and the resolve pass writes the
-//! field into the one the last step read.
+//! The field is built by jump flooding on [`crate::shape_field`]'s
+//! schedule: a seed pass, one step pass per jump, and a resolve pass. Two
+//! `Rgba16Float` targets per input size ping-pong between the passes, and
+//! the resolve pass writes the field into the one the last step read.
 
 extern crate alloc;
 
@@ -17,6 +14,7 @@ use super::gpu::{INTERMEDIATE_FORMAT, build_pipeline, draw, intermediate_texture
 use crate::{
     effect::{EffectContext, EffectSetupError},
     pipeline_cache::{PassKey, PassPipeline},
+    shape_field::jumps,
 };
 
 const SEED: &str = include_str!("../shaders/shape/seed.wgsl");
@@ -181,20 +179,6 @@ impl FieldTargets {
     }
 }
 
-/// The jump distances of a flood over `size`: the powers of two from half
-/// the longest side's next power of two down to one, then one more unit
-/// step.
-fn jumps((width, height): (u32, u32)) -> Vec<i32> {
-    let mut jumps = Vec::new();
-    let mut jump = width.max(height).next_power_of_two() / 2;
-    while jump > 0 {
-        jumps.push(i32::try_from(jump).expect("a texture side fits in i32"));
-        jump /= 2;
-    }
-    jumps.push(1);
-    jumps
-}
-
 #[expect(
     clippy::future_not_send,
     reason = "setup borrows the device-bound context on the GPU host thread"
@@ -221,16 +205,4 @@ async fn pipeline(
             tracing::error!("[filtrate] shape field {pass} pipeline validation failed: {message}");
             EffectSetupError::ShapeFieldValidation { pass, message }
         })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::jumps;
-
-    #[test]
-    fn jumps_halve_from_the_longest_side_and_end_with_a_unit_step() {
-        assert_eq!(jumps((1, 1)), [1]);
-        assert_eq!(jumps((5, 3)), [4, 2, 1, 1]);
-        assert_eq!(jumps((8, 64)), [32, 16, 8, 4, 2, 1, 1]);
-    }
 }

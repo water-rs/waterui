@@ -29,15 +29,17 @@ use cocoa_ui::uikit::HostView;
 /// `applyOpacity`: the alpha lands on the wrapper, then any captured
 /// rendering is invalidated.
 ///
-/// # Panics
-///
-/// Panics when `alpha` is outside `0.0…=1.0` — the same `precondition`
-/// `WuiOpacity` declared.
+/// An `alpha` outside `0.0…=1.0` — the `precondition` `WuiOpacity` declared —
+/// is a contract violation of the caller; the nearest valid alpha applies.
 fn apply_opacity(alpha: f32, host: &PlatformView) {
-    assert!(
-        (0.0..=1.0).contains(&alpha),
-        "Metadata<Opacity> value out of range: {alpha}"
-    );
+    let alpha = if (0.0..=1.0).contains(&alpha) {
+        alpha
+    } else {
+        waterui::contract_violation!(
+            "Metadata<Opacity> value out of range: {alpha}; the nearest value in 0.0..=1.0 applies"
+        );
+        alpha.clamp(0.0, 1.0)
+    };
     view::set_alpha(host, f64::from(alpha));
     view::invalidate_captured_rendering(host);
 }

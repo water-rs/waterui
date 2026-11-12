@@ -1824,7 +1824,9 @@ dependencies = [
 name = "cherenkov-oracle"
 version = "0.0.0"
 dependencies = [
+ "cherenkov-record",
  "cherenkov-scene",
+ "cherenkov-shader",
  "cherenkov-stroke",
  "clap",
  "half",
@@ -2156,7 +2158,9 @@ dependencies = [
  "objc2-ui-kit 0.3.2",
  "objc2-web-kit",
  "oslog",
+ "thiserror 2.0.21",
  "tracing",
+ "waterui-contract",
  "waterui-easing",
  "wgpu",
  "wgpu-hal",

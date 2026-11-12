@@ -72,11 +72,15 @@ fn layer_stops(
         .collect()
 }
 
+/// Another extend mode is a contract violation of whoever built the
+/// gradient; the gradient is drawn pad-extended.
 fn check_pad(extend: Extend) {
-    assert!(
-        extend == Extend::Pad,
-        "the Apple backend draws only pad-extended gradients (Gradient's constructors build no other), got {extend:?}"
-    );
+    if extend != Extend::Pad {
+        waterui::contract_violation!(
+            "the Apple backend draws only pad-extended gradients (Gradient's constructors build no other), got {extend:?}; \
+             the gradient is drawn pad-extended"
+        );
+    }
 }
 
 /// Maps a `WaterUI` paint to its native gradient space, stops, and geometry.
@@ -85,8 +89,9 @@ fn layer_paint(paint: &Paint) -> GradientPaint {
         Paint::Linear(gradient) => linear_paint(gradient),
         Paint::Radial(gradient) => radial_paint(gradient),
         Paint::Sweep(gradient) => sweep_paint(gradient),
-        Paint::Mesh(_) => panic!("a mesh gradient is rendered by the scene engine"),
-        _ => panic!("a native gradient must carry a gradient paint"),
+        _ => unreachable!(
+            "the handler passes only linear, radial and sweep paints; a mesh gradient is rendered by the scene engine"
+        ),
     }
 }
 
@@ -177,11 +182,17 @@ fn sweep_paint(gradient: &SweepGradient) -> GradientPaint {
     let span = gradient.end_angle - gradient.start_angle;
     // `Gradient::angular` admits a sweep up to f32 TAU; widened to f64, that
     // bound exceeds f64 TAU, so a full turn can land a hair over one turn.
-    assert!(
-        span > 0.0 && span <= f64::from(core::f32::consts::TAU),
-        "Apple angular gradient sweep must satisfy 0 < span <= TAU, got {span}"
-    );
-    let turn = (span / TAU).min(1.0);
+    // A sweep outside that is a contract violation of whoever built the
+    // gradient; it is drawn as one full turn.
+    let turn = if span > 0.0 && span <= f64::from(core::f32::consts::TAU) {
+        (span / TAU).min(1.0)
+    } else {
+        waterui::contract_violation!(
+            "Apple angular gradient sweep must satisfy 0 < span <= TAU, got {span}; \
+             the sweep is drawn as one full turn"
+        );
+        1.0
+    };
     GradientPaint {
         space: gradient_space(gradient.interpolation),
         // Padding after the last stop matches Cherenkov's pad sweep, whose
@@ -249,6 +260,16 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // extends it into the touched edge's regions when a background
         // slot holds it.
         view.set_is_fill(true);
+        if !matches!(
+            gradient.paint(),
+            Paint::Linear(_) | Paint::Radial(_) | Paint::Sweep(_)
+        ) {
+            waterui::contract_violation!(
+                "a native gradient must carry a linear, radial or sweep paint; \
+                 a mesh gradient is rendered by the scene engine; the gradient is not drawn"
+            );
+            return NativeLeaf::new(&*view, GradientSubView);
+        }
         let layer = Rc::new(GradientLayer::new(mtm, layer_paint(gradient.paint())));
         cocoa_ui::view::layer(&view)
             .expect("host view is layer-backed")
@@ -490,15 +511,18 @@ mod tests {
         assert_eq!(paint.stops.last().map(|stop| stop.location), Some(1.0));
     }
 
+    /// A non-pad extend is a contract violation; in a release build the
+    /// gradient is drawn pad-extended.
     #[test]
-    #[should_panic(expected = "pad-extended")]
-    fn repeating_gradient_is_rejected() {
+    #[cfg_attr(debug_assertions, should_panic(expected = "pad-extended"))]
+    fn repeating_gradient_is_drawn_pad_extended() {
         let paint = Paint::Linear(
             LinearGradient::new(Point::new(0.0, 0.0), Point::new(1.0, 0.0))
                 .stop(0.0, RED)
                 .stop(1.0, BLUE)
                 .extend(Extend::Repeat),
         );
-        let _ = layer_paint(&paint);
+        let paint = layer_paint(&paint);
+        assert_eq!(paint.stops.len(), 2);
     }
 }

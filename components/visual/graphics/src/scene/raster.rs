@@ -19,7 +19,7 @@ use cherenkov::{
 use cherenkov_cpu::{Level, Raster, RasterConfig, present_srgb8};
 
 use crate::scene::picture::PictureRecording;
-use crate::scene::resources::{HeldResources, SceneResources};
+use crate::scene::resources::{HeldResources, SceneCaps as _, SceneResources};
 use crate::scene::scene_view::SceneContent;
 
 /// A premultiplied sRGB8 raster, rows top to bottom with no padding.
@@ -151,7 +151,7 @@ impl Rasterizer {
             || {},
         )?;
         Ok(Self {
-            resources: SceneResources::new(engine.clone()),
+            resources: Raster::resources(engine.clone()),
             engine,
             surface,
             installed: HeldResources::empty(),
@@ -183,7 +183,7 @@ impl Rasterizer {
             )
             .await?;
         Ok(Self {
-            resources: SceneResources::new(engine.clone()),
+            resources: Raster::resources(engine.clone()),
             engine,
             surface,
             installed: HeldResources::empty(),

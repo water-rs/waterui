@@ -101,7 +101,12 @@ fn label_foreground(style: ButtonStyle, env: &Environment) -> Computed<WorkingCo
         | ButtonStyle::Link
         | ButtonStyle::Borderless
         | ButtonStyle::Bordered => tint_signal(env),
-        _ => panic!("unsupported WaterUI button style: {style:?}"),
+        _ => {
+            waterui::contract_violation!(
+                "unsupported WaterUI button style: {style:?}; the automatic style's label color is used"
+            );
+            label_foreground(ButtonStyle::Automatic, env)
+        }
     }
 }
 
@@ -123,7 +128,12 @@ fn label_foreground(style: ButtonStyle, env: &Environment) -> Computed<WorkingCo
             MutedForeground.resolve(env).computed()
         }
         ButtonStyle::Link | ButtonStyle::Borderless => tint_signal(env),
-        _ => panic!("unsupported WaterUI button style: {style:?}"),
+        _ => {
+            waterui::contract_violation!(
+                "unsupported WaterUI button style: {style:?}; the automatic style's label color is used"
+            );
+            label_foreground(ButtonStyle::Automatic, env)
+        }
     }
 }
 
@@ -203,7 +213,12 @@ pub(super) fn bezel_of(style: ButtonStyle) -> Option<platform::NSBezelStyle> {
         }
         ButtonStyle::Glass | ButtonStyle::GlassProminent => Some(platform::NSBezelStyle::Glass),
         ButtonStyle::Plain | ButtonStyle::Link | ButtonStyle::Borderless => None,
-        _ => panic!("unsupported WaterUI button style: {style:?}"),
+        _ => {
+            waterui::contract_violation!(
+                "unsupported WaterUI button style: {style:?}; the automatic style's bezel is used"
+            );
+            bezel_of(ButtonStyle::Automatic)
+        }
     }
 }
 

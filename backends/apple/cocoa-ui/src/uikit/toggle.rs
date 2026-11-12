@@ -258,7 +258,9 @@ impl Toggle {
                 let unchecked = UIImage::systemImageNamed(ns_string!("square"));
                 let checked = UIImage::systemImageNamed(ns_string!("checkmark.square.fill"));
                 let (Some(unchecked), Some(checked)) = (unchecked, checked) else {
-                    panic!("cocoa-ui checkbox requires the system square symbols");
+                    panic!(
+                        "SF Symbols ships `square` and `checkmark.square.fill` on every supported iOS"
+                    );
                 };
                 let button =
                     crate::uikit::button::CocoaUiButton::with_type(mtm, UIButtonType::System)

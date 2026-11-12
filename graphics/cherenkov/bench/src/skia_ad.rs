@@ -552,6 +552,7 @@ fn mk_paint(engine: &'static str, paint: &SPaint, blobs: &Blobs) -> Result<Paint
                 api: Some("bilinear mesh paint"),
             });
         }
+        SPaint::Shader(_) => return Err(convert::shader_paint_unsupported(engine)),
         SPaint::Image(ip) => {
             let (w, h, rgba) = convert::decode_png(blob(blobs, ip.image)?)?;
             let img = sk_image(w, h, &rgba);

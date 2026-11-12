@@ -243,11 +243,7 @@ fn draw_item(target: Target<'_>, commands: &[Command], index: usize) {
             CGContext::restore_g_state(context);
         }
         Command::BeginGroup { group, end } => {
-            assert!(
-                group.filter.is_none(),
-                "a canvas group records no filter; got {:?}",
-                group.filter
-            );
+            plan::reject_group_filter(group);
             let Some(mode) = blend_mode(group.blend) else {
                 // `Dst`: the destination stays as it is.
                 return;

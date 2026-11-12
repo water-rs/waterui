@@ -11086,6 +11086,7 @@ impl GpuRenderer {
                     timing,
                     &mut encoder,
                 )?;
+                stats.filters_applied += u32::from(matches!(filter, filter::FilterKey::Layer(_)));
             }
             // A levelled group's pyramid: each level reduces the filtered
             // level above by the group's kernel (`CapturePyramid`), the

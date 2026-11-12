@@ -34,6 +34,8 @@ use objc2_ui_kit::{
 };
 
 use crate::callback::guarded;
+use waterui_contract::contract_violation;
+
 use crate::geometry::Rect;
 use crate::input::{
     GesturePhase, PointerButton, ScrollPhase, ScrollUnit, SurfaceEvent, click_count,
@@ -801,10 +803,8 @@ fn pasteboard_text() -> Option<String> {
 ///
 /// A failed recognizer abandoned the gesture, which is a cancellation.
 ///
-/// # Panics
-///
-/// When a recognizer calls its action in the `Possible` state, which `UIKit`
-/// never does.
+/// A recognizer calling its action in the `Possible` state, which `UIKit`
+/// never does, breaks the contract: it is reported and read as a cancellation.
 fn contact_phase(state: UIGestureRecognizerState) -> GesturePhase {
     match state {
         UIGestureRecognizerState::Began => GesturePhase::Began,
@@ -813,7 +813,12 @@ fn contact_phase(state: UIGestureRecognizerState) -> GesturePhase {
         UIGestureRecognizerState::Cancelled | UIGestureRecognizerState::Failed => {
             GesturePhase::Cancelled
         }
-        other => panic!("UIKit called a scroll recognizer's action in state {other:?}"),
+        other => {
+            contract_violation!(
+                "UIKit called a scroll recognizer's action in state {other:?}; the gesture is cancelled"
+            );
+            GesturePhase::Cancelled
+        }
     }
 }
 

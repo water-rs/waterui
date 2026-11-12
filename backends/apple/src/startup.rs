@@ -50,8 +50,15 @@ fn initialize_inner(stderr: bool) -> Option<InspectorRuntime> {
     );
 
     executor_core::init_global_executor(native_executor::NativeExecutor::new());
-    let main_executor = native_executor::NativeMainExecutor::new()
-        .expect("waterui_apple_main runs on the platform main thread");
+    // Without the main executor nothing the app declares can run, so the
+    // app cannot launch: the failure is logged and ends the process.
+    let Some(main_executor) = native_executor::NativeMainExecutor::new() else {
+        tracing::error!(
+            "the main-thread executor is unavailable off the platform main thread; \
+             the app cannot launch"
+        );
+        std::process::exit(1);
+    };
     executor_core::init_local_executor(waterui::task::monitored_local_executor_with_probes(
         main_executor,
         display_refresh_rate(),
@@ -77,7 +84,7 @@ fn ignore_sigpipe() {
         assert_ne!(
             previous,
             libc::SIG_ERR,
-            "libc::signal(SIGPIPE, SIG_IGN) failed"
+            "`signal(SIGPIPE, SIG_IGN)` cannot fail: SIGPIPE is a valid, catchable signal"
         );
     }
 }
@@ -112,7 +119,9 @@ fn max_frames_per_second() -> Option<core::num::NonZeroU32> {
     use cocoa_ui::MainThreadMarker;
     use cocoa_ui::objc2_app_kit::NSScreen;
 
-    let mtm = MainThreadMarker::new().expect("startup runs on the main thread");
+    let mtm = MainThreadMarker::new().expect(
+        "`initialize` runs after the main-thread executor was installed, on the main thread",
+    );
     NSScreen::screens(mtm)
         .iter()
         .map(|screen| screen.maximumFramesPerSecond())
@@ -134,7 +143,9 @@ fn max_frames_per_second() -> Option<core::num::NonZeroU32> {
     use cocoa_ui::MainThreadMarker;
     use cocoa_ui::objc2_ui_kit::UIScreen;
 
-    let mtm = MainThreadMarker::new().expect("startup runs on the main thread");
+    let mtm = MainThreadMarker::new().expect(
+        "`initialize` runs after the main-thread executor was installed, on the main thread",
+    );
     // `screens` is deprecated in favour of scene-session discovery, but at
     // startup no scene session exists yet — this is the only API that can
     // answer inside this window.

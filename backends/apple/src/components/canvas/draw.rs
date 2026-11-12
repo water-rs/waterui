@@ -60,13 +60,18 @@ impl Periods {
         self.last - self.first
     }
 
-    /// `self`, after checking it is a count the lowering expands.
+    /// `self`, after checking it is a count the lowering expands. A larger
+    /// count is a contract violation of the paint's author; the expansion
+    /// stops at the most periods the lowering takes.
     fn limited(self) -> Self {
-        assert!(
-            self.count() <= MAX_PERIODS,
-            "a repeating gradient needs {} periods across its extent; the lowering expands at most {MAX_PERIODS}",
-            self.count()
-        );
+        if self.count() > MAX_PERIODS {
+            waterui::contract_violation!(
+                "a repeating gradient needs {} periods across its extent; the lowering expands at most {MAX_PERIODS}, \
+                 and the rest is not drawn",
+                self.count()
+            );
+            return Self::new(self.first, self.first + MAX_PERIODS);
+        }
         self
     }
 
@@ -97,7 +102,12 @@ fn components(stop: &ColorStop, interpolation: Interpolation) -> [f64; 4] {
 }
 
 fn stops(stops: &[ColorStop], interpolation: Interpolation) -> Vec<Stop> {
-    assert!(!stops.is_empty(), "a gradient has at least one stop");
+    if stops.is_empty() {
+        waterui::contract_violation!(
+            "a gradient has at least one stop; a gradient with none paints transparent"
+        );
+        return vec![(0.0, [0.0; 4])];
+    }
     stops
         .iter()
         .map(|stop| (f64::from(stop.offset), components(stop, interpolation)))
@@ -244,12 +254,15 @@ fn radial(context: &CGContext, paint: &RadialGradient, extent: Rect) {
         }
         repeat @ (Extend::Repeat | Extend::Reflect) => {
             let delta = paint.end_radius - paint.start_radius;
-            assert!(
-                delta > 0.0,
-                "a repeating radial gradient grows outward; got radii {} to {}",
-                paint.start_radius,
-                paint.end_radius
-            );
+            if delta <= 0.0 {
+                waterui::contract_violation!(
+                    "a repeating radial gradient grows outward; got radii {} to {}; \
+                     the gradient is not drawn",
+                    paint.start_radius,
+                    paint.end_radius
+                );
+                return;
+            }
             let shift = paint.end_center - paint.start_center;
             let circle = |t: f64| {
                 (
@@ -264,7 +277,10 @@ fn radial(context: &CGContext, paint: &RadialGradient, extent: Rect) {
                 (corner - center).hypot() <= radius
             }) {
                 periods.last += 1.0;
-                periods.limited();
+                if periods.count() > MAX_PERIODS {
+                    periods = periods.limited();
+                    break;
+                }
             }
             let expanded = expand(&base, periods, repeat == Extend::Reflect);
             let (start_center, start_radius) = circle(periods.first);
@@ -297,10 +313,12 @@ fn color_at(stops: &[Stop], offset: f64) -> [f64; 4] {
 
 fn sweep(context: &CGContext, paint: &SweepGradient) {
     let span = paint.end_angle - paint.start_angle;
-    assert!(
-        span > 0.0 && span <= f64::from(core::f32::consts::TAU),
-        "an angular gradient sweeps 0 < span <= TAU, got {span}"
-    );
+    if !(span > 0.0 && span <= f64::from(core::f32::consts::TAU)) {
+        waterui::contract_violation!(
+            "an angular gradient sweeps 0 < span <= TAU, got {span}; the gradient is not drawn"
+        );
+        return;
+    }
     let turn = (span / TAU).min(1.0);
     let base = stops(&paint.stops, paint.interpolation);
     let scaled: Vec<Stop> = match paint.extend {
@@ -459,10 +477,13 @@ fn pattern(context: &CGContext, pattern: &ImagePattern, extent: Rect, registry: 
         reason = "tile counts are bounded by MAX_PERIODS squared"
     )]
     let tiles = (columns.len() * rows.len()) as f64;
-    assert!(
-        tiles <= MAX_TILES,
-        "an image pattern tiles at most {MAX_TILES} times across its extent"
-    );
+    if tiles > MAX_TILES {
+        waterui::contract_violation!(
+            "an image pattern tiles at most {MAX_TILES} times across its extent, got {tiles}; \
+             the pattern is not drawn"
+        );
+        return;
+    }
     CGContext::save_g_state(Some(context));
     CGContext::concat_ctm(Some(context), cg::transform(pattern.transform));
     for row in &rows {
@@ -569,8 +590,8 @@ pub fn mesh(context: &CGContext, mesh: &MeshGradient, transform: Affine) {
         .flat_map(|component| component.to_le_bytes())
         .collect();
     let data = CFData::from_bytes(&bytes);
-    let provider =
-        CGDataProvider::with_cf_data(Some(&data)).expect("Core Graphics takes a mesh's pixel data");
+    let provider = CGDataProvider::with_cf_data(Some(&data))
+        .expect("Core Graphics takes the `CFData` made a line above");
     let space = cg::working_space();
     // SAFETY: a null decode array is the identity; every other argument
     // describes the 128-bit premultiplied float pixels `raster` made.
@@ -592,16 +613,25 @@ pub fn mesh(context: &CGContext, mesh: &MeshGradient, transform: Affine) {
             false,
             CGColorRenderingIntent::RenderingIntentDefault,
         )
-    }
-    .expect("Core Graphics makes a float image of a mesh");
+    };
+    let Some(image) = image else {
+        tracing::error!(
+            "Core Graphics could not make a {width}x{height} float image of a mesh; \
+             the mesh is not drawn"
+        );
+        return;
+    };
     draw_image_upright(context, &image, Rect::new(x0, y0, x1, y1), Sampling::Linear);
 }
 
 /// Draws `paint` across `extent` in canvas coordinates.
 ///
+/// A shader paint, which only an engine surface draws, is reported and
+/// draws nothing. A mesh is drawn by [`mesh`], never here.
+///
 /// # Panics
 ///
-/// On a paint a layer cannot draw: a mesh (see [`mesh`]) or a shader.
+/// On a mesh paint, which `plan::classify` routes to its own layer.
 pub fn paint(context: &CGContext, paint: &Paint, extent: Rect, registry: &Registry) {
     match paint {
         Paint::Solid(color) => {
@@ -634,7 +664,36 @@ pub fn paint(context: &CGContext, paint: &Paint, extent: Rect, registry: &Regist
             self::paint(context, &transformed.paint, inner, registry);
             CGContext::restore_g_state(Some(context));
         }
-        Paint::Mesh(_) => panic!("a mesh gradient is drawn by its own layer"),
-        Paint::Shader(_) => panic!("a shader paint needs an engine surface"),
+        Paint::Mesh(_) => unreachable!("`plan::classify` routes a mesh gradient to its own layer"),
+        Paint::Shader(_) => {
+            waterui::contract_violation!(
+                "a shader paint needs an engine surface, which a canvas has none of; \
+                 the paint is not drawn"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a repeating gradient needs 2000 periods")
+    )]
+    fn periods_beyond_the_limit_are_clamped() {
+        let limited = Periods::new(0.0, 2000.0).limited();
+        assert_eq!(limited.count(), MAX_PERIODS);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a gradient has at least one stop")
+    )]
+    fn a_gradient_without_stops_paints_transparent() {
+        assert_eq!(stops(&[], Interpolation::Working), vec![(0.0, [0.0; 4])]);
     }
 }

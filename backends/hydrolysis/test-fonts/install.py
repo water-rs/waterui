@@ -87,6 +87,16 @@ def github_request(url: str, token: str, accept: str) -> urllib.request.Request:
     return request
 
 
+class RefuseRedirect(urllib.request.HTTPRedirectHandler):
+    """Fails an API lookup that redirects. GitHub redirects the API path of a
+    renamed or moved repository, and the unredirected token is not resent, so
+    following the redirect would fetch the pin anonymously and run into the
+    unauthenticated rate limit. The pin names the repository's current path."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise SystemExit(f"{req.full_url} redirects to {newurl}; pin the repository's current path")
+
+
 def download_request(url: str) -> str | urllib.request.Request:
     """What downloads `url`. With `GITHUB_TOKEN` set — every CI job exports
     its job token — GitHub-hosted files are fetched as authenticated traffic:
@@ -104,7 +114,8 @@ def download_request(url: str) -> str | urllib.request.Request:
             token,
             "application/vnd.github+json",
         )
-        assets = json.load(urllib.request.urlopen(lookup, timeout=120))["assets"]
+        opener = urllib.request.build_opener(RefuseRedirect)
+        assets = json.load(opener.open(lookup, timeout=120))["assets"]
         matching = [asset for asset in assets if asset["name"] == name]
         if len(matching) != 1:
             raise SystemExit(f"release {owner}/{repo}@{tag} has no single asset named {name}")
@@ -557,7 +568,7 @@ def generate() -> None:
 
         # Roboto — the faces the `water` CLI ships to applications.
         roboto_zip = fetch(
-            "https://github.com/googlefonts/roboto/releases/download/v2.138/roboto-android.zip",
+            "https://github.com/googlefonts/roboto-2/releases/download/v2.138/roboto-android.zip",
             "c825453253f590cfe62557733e7173f9a421fff103b00f57d33c4ad28ae53baf",
         )
         for name in (

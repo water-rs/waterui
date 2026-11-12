@@ -88,8 +88,8 @@ impl Registry {
             .borrow()
             .get(&id.raw())
             .unwrap_or_else(|| {
-                panic!(
-                    "text layout {} is named by a recording but not registered",
+                unreachable!(
+                    "text layout {} is named by a recording, which holds its registration",
                     id.raw()
                 )
             })
@@ -108,8 +108,8 @@ impl Registry {
             .borrow()
             .get(&id.raw())
             .unwrap_or_else(|| {
-                panic!(
-                    "image {} is named by a recording but not registered",
+                unreachable!(
+                    "image {} is named by a recording, which holds its registration",
                     id.raw()
                 )
             })
@@ -127,8 +127,8 @@ impl Registry {
             .borrow()
             .get(&id.raw())
             .unwrap_or_else(|| {
-                panic!(
-                    "font {} is named by a recording but not registered",
+                unreachable!(
+                    "font {} is named by a recording, which holds its registration",
                     id.raw()
                 )
             })

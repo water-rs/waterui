@@ -17,6 +17,8 @@
 //! - [`blend`] implements the 16 W3C Compositing and Blending Level 1
 //!   modes in premultiplied linear Display P3.
 //! - [`filter`] applies layer filters to a layer's isolated content.
+//! - [`shader`] evaluates shader paints and backdrop shaders with
+//!   `cherenkov-shader`'s reference interpreter, at pixel centres.
 //! - [`shadow`] convolves exact coverage with a true Gaussian in `f64`.
 //! - [`metrics`] implements FLIP (and HDR-FLIP for values > `1.0`), ported
 //!   from `FLIP.h` (NVlabs/flip, BSD-3-Clause — Andersson et al., HPG 2020
@@ -46,6 +48,7 @@ pub mod projective;
 pub mod render;
 pub mod resources;
 pub mod sdf;
+pub mod shader;
 pub mod shadow;
 pub mod tone;
 pub mod yuv;

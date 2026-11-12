@@ -23,6 +23,8 @@
 //! the patch boundary crosses is covered in proportion. The pattern is eight
 //! rooks, so every row and column of an 8x8 grid holds one sample.
 
+use waterui_contract::contract_violation;
+
 /// One patch as the shader reads it: `repr(C)`, byte for byte `MeshPatch`
 /// in `mesh_gradient.metal`.
 #[repr(C)]
@@ -53,9 +55,9 @@ pub const SAMPLE_OFFSETS: [[f32; 2]; 8] = [
 /// `(columns + 1) x (rows + 1)` vertex grid, row-major, with `points` in the
 /// mesh's space and `colors` as straight linear Display P3 RGBA.
 ///
-/// # Panics
-///
-/// When the grids do not match the dimensions, or the mesh has no patches.
+/// Grids that do not match the dimensions, or a mesh with no patches, break
+/// the contract: it is reported and no patches are returned, so nothing is
+/// painted.
 #[must_use]
 pub fn patches(
     columns: usize,
@@ -65,9 +67,19 @@ pub fn patches(
 ) -> Vec<Patch> {
     let stride = columns + 1;
     let vertices = stride * (rows + 1);
-    assert!(columns > 0 && rows > 0, "a mesh has at least one patch");
-    assert_eq!(points.len(), vertices, "a mesh has a point per vertex");
-    assert_eq!(colors.len(), vertices, "a mesh has a colour per vertex");
+    if columns == 0 || rows == 0 {
+        contract_violation!("a mesh has at least one patch; no patches are made");
+        return Vec::new();
+    }
+    if points.len() != vertices || colors.len() != vertices {
+        contract_violation!(
+            "a mesh has a point and a colour per vertex: {vertices} vertices, {} points and {} \
+             colours; no patches are made",
+            points.len(),
+            colors.len()
+        );
+        return Vec::new();
+    }
     let premultiplied = |index: usize| {
         let [red, green, blue, alpha] = colors[index];
         [red * alpha, green * alpha, blue * alpha, alpha]
@@ -240,4 +252,33 @@ pub fn raster(
         }
     }
     pixels
+}
+
+#[cfg(test)]
+mod tests {
+    use super::patches;
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "at least one patch"))]
+    fn a_mesh_without_patches_makes_none() {
+        assert_eq!(patches(0, 1, &[], &[]).len(), 0);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a point and a colour per vertex")
+    )]
+    fn a_mesh_with_mismatched_grids_makes_no_patches() {
+        let points = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        let colors = [[1.0, 1.0, 1.0, 1.0]; 4];
+        assert_eq!(patches(1, 1, &points, &colors).len(), 0);
+    }
+
+    #[test]
+    fn a_matching_grid_makes_one_patch_per_cell() {
+        let points = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]];
+        let colors = [[1.0, 1.0, 1.0, 1.0]; 4];
+        assert_eq!(patches(1, 1, &points, &colors).len(), 1);
+    }
 }

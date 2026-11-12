@@ -167,6 +167,8 @@ pub enum BandPixels<'a> {
 }
 
 pub use cherenkov_simd::{Level, detect};
+#[cfg(feature = "shaders")]
+pub use render::filter::CpuEffect;
 pub use render::present::{present_linear_p3, present_srgb8};
 
 /// The CPU raster backend: renders the shared front end's layer trees
@@ -191,6 +193,17 @@ where
 {
     fn add_filter(renderer: &mut Self::Renderer, id: cherenkov::FilterId, filter: F) {
         renderer.filters.add(id, filter);
+    }
+}
+
+// A filter without a CPU kernel runs its composed stages on the lane
+// executor, banded like any CPU filter (`render::filter::CpuEffect`).
+#[cfg(feature = "shaders")]
+impl cherenkov::Effects for Raster {
+    type Effect = CpuEffect;
+
+    fn add_effect(renderer: &mut Self::Renderer, id: cherenkov::FilterId, effect: CpuEffect) {
+        renderer.filters.add_effect(id, effect);
     }
 }
 
@@ -232,6 +245,78 @@ where
         renderer
             .filters
             .add_filtered_backdrop_group(surface, id, filter, spec);
+    }
+}
+
+// Backdrop effect shaders run on the lane executor, inside the member
+// composite (`render::shader`).
+#[cfg(feature = "shaders")]
+impl cherenkov::BackdropShaders for Raster {
+    fn validate_backdrop_shader(
+        source: &cherenkov::BackdropShaderSource,
+    ) -> Result<(), cherenkov::ResourceError> {
+        render::shader::BackdropProgram::compile(source).map(drop)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn add_backdrop_shader(
+        renderer: &mut Self::Renderer,
+        id: cherenkov::BackdropShaderId,
+        source: cherenkov::BackdropShaderSource,
+    ) -> Result<(), cherenkov::ResourceError> {
+        let program = render::shader::BackdropProgram::compile(&source)?;
+        renderer.filters.add_backdrop_shader(id, program);
+        Ok(())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn add_backdrop_shader(
+        renderer: &mut Self::Renderer,
+        id: cherenkov::BackdropShaderId,
+        source: cherenkov::BackdropShaderSource,
+    ) -> impl core::future::Future<Output = Result<(), cherenkov::ResourceError>> {
+        let result = render::shader::BackdropProgram::compile(&source)
+            .map(|program| renderer.filters.add_backdrop_shader(id, program));
+        core::future::ready(result)
+    }
+
+    fn remove_backdrop_shader(renderer: &mut Self::Renderer, id: cherenkov::BackdropShaderId) {
+        renderer.filters.remove_backdrop_shader(id);
+    }
+}
+
+// Shader paints render on the lane executor into an image per use, which
+// the draw then samples (`render::shader`).
+#[cfg(feature = "shaders")]
+impl cherenkov::ShaderPaintCapability for Raster {
+    fn validate_shader(source: &cherenkov::ShaderSource) -> Result<(), cherenkov::ResourceError> {
+        render::shader::PaintProgram::compile(source).map(drop)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn add_shader(
+        renderer: &mut Self::Renderer,
+        id: cherenkov::ShaderId,
+        source: cherenkov::ShaderSource,
+    ) -> Result<(), cherenkov::ResourceError> {
+        let program = render::shader::PaintProgram::compile(&source)?;
+        renderer.shader_paints.add(id.raw(), program);
+        Ok(())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn add_shader(
+        renderer: &mut Self::Renderer,
+        id: cherenkov::ShaderId,
+        source: cherenkov::ShaderSource,
+    ) -> impl core::future::Future<Output = Result<(), cherenkov::ResourceError>> {
+        let result = render::shader::PaintProgram::compile(&source)
+            .map(|program| renderer.shader_paints.add(id.raw(), program));
+        core::future::ready(result)
+    }
+
+    fn remove_shader(renderer: &mut Self::Renderer, id: cherenkov::ShaderId) {
+        renderer.shader_paints.remove(id.raw());
     }
 }
 
