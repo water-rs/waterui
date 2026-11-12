@@ -599,9 +599,12 @@ fn a_touch_hold_past_the_threshold_mounts_the_menu_at_the_press_point() {
     }
 
     // At the threshold the hold fires: the menu mounts through the drawn
-    // presentation — the host fills the window and the menu is taller than
-    // it, so it clamps to the window's top edge — and its items merge into
-    // the tree.
+    // presentation and its items merge into the tree. The host fills the
+    // window and the lift (the source itself, no preview) cannot move, so the
+    // menu packs below it and clamps inside the window: flush with the bottom
+    // edge while it fits, pinned to the top edge once it is taller. Its height
+    // is build-dependent — a debug build appends the "Inspect element" entry
+    // (`append_inspect_element_item`) — so the expected edge derives from it.
     let update = runtime
         .pump_at(false, start + HOLD)
         .into_tree_update()
@@ -613,8 +616,9 @@ fn a_touch_hold_past_the_threshold_mounts_the_menu_at_the_press_point() {
     let (menu, _) = runtime
         .context_menu_presentation_frames()
         .expect("the drawn menu mounts");
+    let clamped_y0 = (f64::from(WINDOW_SIZE) - menu.height()).max(0.0);
     assert!(
-        menu.x0.abs() < 1.0 && menu.y0.abs() < 1.0,
+        menu.x0.abs() < 1.0 && (menu.y0 - clamped_y0).abs() < 1.0,
         "the menu sits beside the lifted source, clamped inside the window, got {menu:?}"
     );
 
@@ -833,8 +837,13 @@ fn an_accessibility_activated_popup_anchors_under_the_control() {
     let [frame] = frames.as_slice() else {
         panic!("the picker activation must mount one popup window, got {frames:?}")
     };
-    approx::assert_relative_eq!(f64::from(frame.x()), field.x0, epsilon = 0.5);
-    approx::assert_relative_eq!(f64::from(frame.y()), field.y1, epsilon = 0.5);
+    // The popup window inflates by the panel margin on every side, so its
+    // frame origin sits one margin up-and-left of the panel, which opens the
+    // look's gap below the field.
+    let margin = crate::renderer::POPUP_MENU_PANEL_MARGIN;
+    let gap = crate::testing::plain_menu_picker_look().layout().popup_gap;
+    approx::assert_relative_eq!(f64::from(frame.x()), field.x0 - margin, epsilon = 0.5);
+    approx::assert_relative_eq!(f64::from(frame.y()), field.y1 + gap - margin, epsilon = 0.5);
 }
 
 /// The pointer activation of the same picker anchors identically: a click on
@@ -901,6 +910,8 @@ fn a_pointer_activated_picker_menu_anchors_under_the_field() {
     let [frame] = frames.as_slice() else {
         panic!("the field click must mount one popup window, got {frames:?}")
     };
-    approx::assert_relative_eq!(f64::from(frame.x()), field.x0, epsilon = 0.5);
-    approx::assert_relative_eq!(f64::from(frame.y()), field.y1, epsilon = 0.5);
+    let margin = crate::renderer::POPUP_MENU_PANEL_MARGIN;
+    let gap = crate::testing::plain_menu_picker_look().layout().popup_gap;
+    approx::assert_relative_eq!(f64::from(frame.x()), field.x0 - margin, epsilon = 0.5);
+    approx::assert_relative_eq!(f64::from(frame.y()), field.y1 + gap - margin, epsilon = 0.5);
 }

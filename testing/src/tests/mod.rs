@@ -299,13 +299,12 @@ mod token_probe {
 
     use hydrolysis::theme::{
         BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, DividerMetrics, DragMapping,
-        FocusIndicator, HitRegion, IndicatorLook, InteractionMotion, Knob, Label,
-        LinearProgressLook, ListMetrics, Motion, NavigationMetrics, NavigationMotion,
-        PickerMetrics, PressFeedback, ProgressControl, ProgressSpec, RadioIndicatorState,
-        RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook,
-        StepperSpec, Surface, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics,
-        TextContextMenuMetrics, TextFieldLook, TextFieldSpec, ToggleSpec, WidgetInteractionState,
-        WidgetTheme,
+        FocusIndicator, HitRegion, IndicatorLook, InteractionMotion, Knob,
+        Label, LinearProgressLook, ListMetrics, MenuLook, MenuPickerLook, MenuSpec, Motion,
+        NavigationMetrics, NavigationMotion, PickerSpec, PressFeedback, ProgressControl,
+        ProgressSpec, RadioGroupLook, SliderLayout, SliderLook, SliderSpec, StateLayer,
+        StepperLook, StepperSpec, Surface, TabItemGeometry, TabItemLayout, TableMetrics,
+        TabsMetrics, TextFieldLook, TextFieldSpec, ToggleSpec, WidgetTheme,
     };
     use hydrolysis::theme::{CheckboxLook, SwitchDrag, SwitchLook};
     use kurbo::{Point, Rect};
@@ -313,7 +312,6 @@ mod token_probe {
     use waterui::color::Srgb;
     use waterui::component::text;
     use waterui::env::use_env;
-    use waterui::form::picker::PickerStyle;
     use waterui::graphics::backend::draw::{Paint, Recorder};
     use waterui::reactive::constant;
     use waterui::text::font::Font;
@@ -414,80 +412,33 @@ mod token_probe {
 
         fn stepper(&self, _spec: &StepperSpec, _env: &Environment) -> StepperLook {
             hydrolysis::testing::plain_stepper_look()
-        }
-
         fn text_field(&self, _spec: &TextFieldSpec, _env: &Environment) -> TextFieldLook {
             hydrolysis::testing::plain_text_field_look(
-                hydrolysis::testing::plain_field_container(),
+                hydrolysis::testing::plain_chrome(),
                 hydrolysis::testing::plain_input_metrics(),
             )
         }
 
-        fn text_context_menu_metrics(&self) -> TextContextMenuMetrics {
-            TextContextMenuMetrics {
-                row_height: 56.0,
-                horizontal_padding: 16.0,
-                vertical_padding: 12.0,
-                min_width: 112.0,
-                max_width: 320.0,
-                width_per_char: 8.5,
-                corner_radius: 4.0,
-                separator_horizontal_inset: 16.0,
-                separator_thickness: 1.0,
-            }
         }
 
-        fn draw_text_context_menu_panel(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn draw_text_context_menu_separator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn picker_metrics(&self, _style: PickerStyle) -> PickerMetrics {
-            PickerMetrics {
-                min_width: 72.0,
-                min_height: 28.0,
-                horizontal_inset: 8.0,
-                vertical_inset: 6.0,
-                label_spacing: 8.0,
-                indicator_space: 18.0,
-                radio_indicator_size: 16.0,
-                radio_label_spacing: 8.0,
-                radio_row_spacing: 8.0,
-                popup_top_spacing: 4.0,
-                popup_row_height: 48.0,
-                popup_corner_radius: 6.0,
-                segment_min_width: 58.0,
-            }
+        fn menu(&self, _spec: &MenuSpec, _env: &Environment) -> MenuLook {
+            hydrolysis::testing::plain_menu_look()
         }
 
-        fn radio_selection_motion(&self) -> RadioSelectionMotion {
-            RadioSelectionMotion {
-                inner_grow: Animation::linear(Duration::from_millis(1)),
-                inner_opacity: Animation::linear(Duration::from_millis(1)),
-                outer_color: Animation::linear(Duration::from_millis(1)),
-            }
+        fn menu_picker(&self, _spec: &PickerSpec, _env: &Environment) -> MenuPickerLook {
+            hydrolysis::testing::plain_menu_picker_look()
         }
 
-        fn draw_picker_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
+        fn radio_group(&self, _spec: &PickerSpec, _env: &Environment) -> RadioGroupLook {
+            hydrolysis::testing::plain_radio_group_look()
+        }
 
-        fn draw_picker_popup(&self, _recorder: &mut Recorder, _popup_rect: Rect) {}
-
-        fn draw_picker_popup_row_background(
+        fn segmented_picker(
             &self,
-            _recorder: &mut Recorder,
-            _row_rect: Rect,
-            _selected: bool,
-        ) {
-        }
-
-        fn draw_picker_separator(&self, _recorder: &mut Recorder, _separator: Rect) {}
-
-        fn draw_radio_indicator(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _state: RadioIndicatorState,
-        ) {
+            _spec: &hydrolysis::theme::SegmentedSpec,
+            _env: &Environment,
+        ) -> hydrolysis::theme::SegmentedLook {
+            hydrolysis::testing::plain_segmented_look()
         }
 
         fn slider(&self, _spec: &SliderSpec, _env: &Environment) -> SliderLook {

@@ -22,8 +22,8 @@ use waterui_core::{AnyView, Environment};
 use waterui_layout::stack::zstack;
 
 use super::material_chrome::{
-    GLASS, GLASS_SHADER, HEIGHT, WIDTH, chrome_layers, chrome_mount, glass_plan, member_group,
-    mirror_chrome_layers, mirrored_node,
+    GLASS, GLASS_SHADER, HEIGHT, WIDTH, along_press, chrome_layers, chrome_mount, glass_plan,
+    member_group, mirror_chrome_layers, mirrored_node,
 };
 use super::{MinimalTestTheme, pumped_test_environment, test_renderer_with_theme};
 use crate::HeadlessRuntime;
@@ -410,8 +410,8 @@ fn tapped(glass: Glass, taps: &Rc<Cell<u32>>) -> AnyView {
 }
 
 /// A press on plain content inside an interactive glass drives the glass's
-/// effect through its live operand — no source is recorded — and the release
-/// restores it.
+/// effect through its live operand under the look's press motion — no
+/// source is recorded — and the release restores it the same way.
 #[test]
 fn a_press_on_content_drives_an_interactive_glass_live() {
     let env = pumped_test_environment();
@@ -427,6 +427,7 @@ fn a_press_on_content_drives_an_interactive_glass_live() {
     assert_eq!(member_uniforms(&renderer), [0.0], "at rest");
 
     press(&mut renderer, &env, (20.0, 20.0));
+    along_press(&renderer, member_uniforms, |uniforms| uniforms[0]);
     assert_eq!(member_uniforms(&renderer), [1.0], "the press drives it");
     let held = renderer.commit_mirror();
     assert_eq!(held.live_records, 0, "the press recorded nothing");
@@ -434,10 +435,13 @@ fn a_press_on_content_drives_an_interactive_glass_live() {
     assert_eq!(mirror_chrome_layers(&renderer), [member]);
 
     release(&mut renderer, &env, (20.0, 20.0));
+    along_press(&renderer, member_uniforms, |uniforms| uniforms[0]);
     assert_eq!(member_uniforms(&renderer), [0.0], "the release restores it");
 }
 
-/// The press point follows the pointer while the press is held.
+/// The press point moves to where the press landed under the look's press
+/// motion, then follows the pointer with no animation while the press is
+/// held.
 #[test]
 fn an_interactive_glass_follows_the_press_point() {
     let env = pumped_test_environment();
@@ -456,17 +460,19 @@ fn an_interactive_glass_follows_the_press_point() {
         window(),
     );
     press(&mut renderer, &env, (20.0, 30.0));
+    along_press(&renderer, member_uniforms, |uniforms| uniforms[0] / 20.0);
     assert_eq!(member_uniforms(&renderer), [20.0, 30.0], "where it landed");
     renderer.handle_pointer_move_with_source(POINTER, PointerKind::Mouse, 50.0, 60.0, &env);
     assert_eq!(
         member_uniforms(&renderer),
         [50.0, 60.0],
-        "where the pointer is now"
+        "where the pointer is now, with no animation"
     );
 }
 
 /// A press on a button inside an interactive glass reaches the button, which
-/// fires on release, and drives the glass while held.
+/// fires on release, and drives the glass along the look's press motion
+/// while held.
 #[test]
 fn a_press_on_a_button_inside_an_interactive_glass_reaches_both() {
     let taps = Rc::new(Cell::new(0_u32));
@@ -480,10 +486,12 @@ fn a_press_on_a_button_inside_an_interactive_glass_reaches_both() {
     );
     let target = first_target(&renderer);
     press(&mut renderer, &env, target);
+    along_press(&renderer, member_uniforms, |uniforms| uniforms[0]);
     assert_eq!(member_uniforms(&renderer), [1.0], "the glass is held");
     assert_eq!(taps.get(), 0, "the button commits on release");
     release(&mut renderer, &env, target);
     assert_eq!(taps.get(), 1, "the button received the tap");
+    along_press(&renderer, member_uniforms, |uniforms| uniforms[0]);
     assert_eq!(member_uniforms(&renderer), [0.0], "the glass is released");
 }
 

@@ -19,6 +19,7 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 
 use cocoa_ui::{PlatformView, Rect, view};
+use waterui::component::ControlSize;
 #[cfg(target_os = "macos")]
 use waterui::component::LabelDisplayMode;
 use waterui::component::form::picker::{PickerConfig, PickerItem, PickerStyle as WuiPickerStyle};
@@ -34,6 +35,7 @@ use waterui_core::layout::{
 };
 
 use super::font::platform_font;
+use crate::components::control_size::platform_control_size;
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
 use crate::proposal;
@@ -294,6 +296,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let host = HostView::new(mtm, Rect::ZERO);
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let picker = Picker::new(mtm, platform_style(config.style()));
+        // `Picker`'s documented default size is `Small`; the mapping is
+        // relative to it, so a bare picker draws at the platform's regular
+        // size like a bare `NSSegmentedControl` does. `UIKit` has no size
+        // classes for its selection controls and ignores the value.
+        picker.set_control_size(platform_control_size(config.size(), ControlSize::Small));
         let host_view: &PlatformView = &host;
         cocoa_ui::view::add_subview(host_view, picker.view());
 

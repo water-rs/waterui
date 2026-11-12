@@ -125,7 +125,14 @@ impl LiveSource for LiveCaret {
 }
 
 /// A look's recording of its parts, which may declare backdrop materials.
-type PartsBody = Rc<dyn Fn(&mut Recorder)>;
+pub type PartsBody = Rc<dyn Fn(&mut Recorder)>;
+
+/// The paint a label's default-coloured text runs draw in, live: the text a
+/// widget places as a retained sub-view under an environment carrying it
+/// records its runs against this paint, so the label follows the widget's
+/// label colour operand without recording again.
+#[derive(Clone)]
+pub struct LabelPaint(pub Computed<Paint>);
 
 /// Look parts whose recording may declare backdrop materials
 /// ([`Recorder::backdrop_material`]), recorded once with every operand
@@ -341,8 +348,9 @@ pub struct LiveChrome {
     state: Cell<InteractionState>,
     press_point: Cell<Option<Point>>,
     /// The widget's own reported-state binding, kept current between
-    /// renders so content resolving per-state values follows the chrome.
-    report: nami::Binding<InteractionState>,
+    /// renders so content resolving per-state values follows the chrome;
+    /// `None` for a chrome whose owner reports its state itself.
+    report: Option<nami::Binding<InteractionState>>,
     layer_color: Computed<WorkingColor>,
     shape: Operand<ShapeData>,
     fill: FillOperands,
@@ -695,7 +703,7 @@ impl LiveChrome {
         bounds: Rect,
         state: InteractionState,
         env: &Environment,
-        report: nami::Binding<InteractionState>,
+        report: Option<nami::Binding<InteractionState>>,
     ) -> Self {
         let frame = spec.frame(bounds);
         let slider = content
@@ -1300,8 +1308,10 @@ impl LiveChrome {
                 slider.drag.set(None);
             }
         }
-        if self.report.snapshot() != state {
-            self.report.set(state);
+        if let Some(report) = &self.report
+            && report.snapshot() != state
+        {
+            report.set(state);
         }
         self.retarget(Retargeting::Interaction(old));
     }
@@ -1482,6 +1492,54 @@ impl LiveChrome {
             touch_delay: spec.get_hit().get_press_delay(),
         }
     }
+
+    /// The chrome `spec` on `bounds`, at rest in `state` and subscribed to
+    /// the signals its values follow, for an owner that wraps no content in
+    /// it and reports the state itself: the owner steers it through
+    /// [`Self::sync`], [`Self::begin_wave`] and [`Self::fade_wave`], and
+    /// records it with [`Self::record_layers`].
+    pub(crate) fn realize(
+        spec: Chrome,
+        bounds: Rect,
+        state: InteractionState,
+        env: &Environment,
+    ) -> Rc<Self> {
+        let chrome = Rc::new(Self::new(
+            spec,
+            &ChromeContent::default(),
+            bounds,
+            state,
+            env,
+            None,
+        ));
+        Self::subscribe(&chrome);
+        chrome
+    }
+
+    /// Records every layer of a chrome that wraps no content into one
+    /// recording that may declare backdrop materials, in the order
+    /// [`LiveChromeParts`] lists them around a widget's content: the
+    /// surface, its backdrop material and the border over it, the custom
+    /// parts, then the interaction layers.
+    pub(crate) fn record_layers(&self, recorder: &mut Recorder) {
+        self.record_below(recorder);
+        if let (FillOperands::Backdrop(effect), Fill::Backdrop(backdrop)) =
+            (&self.fill, self.spec.surface().fill())
+        {
+            recorder.backdrop_material(
+                self.shape.live(),
+                backdrop.shader(),
+                backdrop.capture(),
+                effect.live(),
+            );
+            self.record_border(recorder);
+        }
+        let frame = self.frame.get();
+        for custom in &self.customs {
+            custom.record(recorder, frame);
+        }
+        self.record_above(recorder);
+    }
 }
 
 /// Content that grows with a chrome's press scale: `inner` recorded under
@@ -1631,7 +1689,7 @@ impl LiveChromeParts {
                     bounds,
                     state,
                     env,
-                    report.clone(),
+                    Some(report.clone()),
                 )));
             }
         }
@@ -1664,7 +1722,7 @@ impl LiveChromeParts {
                     bounds,
                     state,
                     env,
-                    report.clone(),
+                    Some(report.clone()),
                 )));
             }
         }

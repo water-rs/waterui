@@ -315,7 +315,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         nodes: Vec<PopupMenuNode>,
         target: Option<&ContextMenuTarget<E>>,
         origin: LayoutPoint,
-        metrics: TextContextMenuMetrics,
         env: &Environment,
         opened_by_hold: bool,
     ) -> bool {
@@ -336,6 +335,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // keyboard focus still resolves them (water-rs/hydrolysis#247).
         register_popup_chords::<E>(&nodes, &group, env);
         let theme = self.theme();
+        let metrics = menu_look(&theme, env).layout();
         let text = self.popup_menu_text_metrics(&nodes, metrics, env, &theme);
         let (menu_width, menu_height) = popup_menu_size(&nodes, metrics, &text);
 
@@ -501,12 +501,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 
         let window = self.window_bounds;
         let source = presentation.source_bounds;
-        let theme = self.theme();
-        let metrics = theme.text_context_menu_metrics();
+        let presentation_env = presentation.env.clone();
+        let menu = menu_look(&self.theme(), &presentation_env);
+        let metrics = menu.layout();
         let dim = peniko::Color::new([0.0, 0.0, 0.0, CONTEXT_MENU_DIM_OPACITY]);
         let shadow = peniko::Color::new([0.0, 0.0, 0.0, CONTEXT_MENU_SHADOW_OPACITY]);
-
-        let presentation_env = presentation.env.clone();
 
         // Re-measure every frame: the accessory re-lays out whenever its
         // measured size changes (an expanding picker reflows while open). Its
@@ -604,9 +603,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // the drawn text context menu gets.
         {
             self.scene_mut().record_picture(transform, |draw| {
-                theme.draw_text_context_menu_panel(&mut *draw, presentation.menu_frame);
+                menu.record_panel(&mut *draw, presentation.menu_frame);
                 if let Some(accessory_frame) = presentation.accessory_frame {
-                    theme.draw_text_context_menu_panel(&mut *draw, accessory_frame);
+                    menu.record_panel(&mut *draw, accessory_frame);
                 }
             });
         }

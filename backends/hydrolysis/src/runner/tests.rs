@@ -1368,12 +1368,10 @@ fn an_open_context_menu_presentation_builds_once_through_the_build_path() {
         "Copy".action(|| {}).resolve(&env),
     )];
     let nodes = crate::renderer::popup_menu_nodes(&items, &env, runtime.renderer.window_closable());
-    let metrics = runtime.renderer.theme().text_context_menu_metrics();
     assert!(runtime.renderer.show_context_menu(
         nodes,
         None,
         waterui_core::layout::Point::new(40.0, 40.0),
-        metrics,
         &env,
         true,
     ));

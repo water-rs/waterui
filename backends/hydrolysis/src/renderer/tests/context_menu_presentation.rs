@@ -8,7 +8,6 @@
 
 use std::time::{Duration, Instant};
 
-use crate::theme::WidgetTheme;
 use accesskit::{Action, ActionRequest, Role, TreeId, TreeUpdate};
 use nami::Binding;
 use nami::Signal as _;
@@ -401,7 +400,7 @@ fn destructive_draws_in_error_colour_and_subtitle_grows_its_row() {
         .expect("the drawn menu mounts");
     // The test theme is not M3 — derive the expectation from its metrics so
     // the test cannot drift from the tokens it is fed.
-    let menu_metrics = MinimalTestTheme::default().text_context_menu_metrics();
+    let menu_metrics = MinimalTestTheme::menu_layout();
     let three_plain_rows = 3.0 * menu_metrics.row_height;
     assert!(
         menu_frame.height() > three_plain_rows + menu_metrics.vertical_padding,
@@ -856,7 +855,7 @@ fn a_divider_row_takes_the_themes_divider_spacing() {
     // container vertical padding; the window frame adds the panel margin on
     // every side. The debug build's "Inspect element" affordance appends its
     // own divider and row.
-    let menu_metrics = MinimalTestTheme::default().text_context_menu_metrics();
+    let menu_metrics = MinimalTestTheme::menu_layout();
     let divider = crate::renderer::input::popup_menu_divider_height(menu_metrics);
     let row = menu_metrics.row_height;
     let rows = row
@@ -942,7 +941,7 @@ fn a_disabled_command_draws_its_label_dimmed_and_stays_inert() {
 
     // Rows lay out under the panel margin: first the disabled `Copy`, then
     // `Paste` — each `row_height` tall inside `vertical_padding`.
-    let metrics = MinimalTestTheme::default().text_context_menu_metrics();
+    let metrics = MinimalTestTheme::menu_layout();
     let margin = crate::num_cast::f64_as_u32(crate::renderer::POPUP_MENU_PANEL_MARGIN);
     let row_top = margin + crate::num_cast::f64_as_u32(metrics.vertical_padding);
     let row_bottom = row_top + crate::num_cast::f64_as_u32(metrics.row_height);

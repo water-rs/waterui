@@ -112,6 +112,7 @@ mod scene_offer;
 #[cfg(feature = "accessibility")]
 mod scroll_frames;
 mod scroll_hit_clip;
+mod segmented_look;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod semantic_runtime;
 mod shadow;
@@ -166,12 +167,12 @@ use crate::theme::WidgetTheme;
 use crate::theme::{
     BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, Custom, DividerMetrics, DragMapping,
     Driven, FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionFocusBinding,
-    InteractionMotion, Knob, Label, LinearProgressLook, ListMetrics, ModalInteraction, Motion,
-    NavigationMetrics, NavigationMotion, PickerMetrics, PressFeedback, ProgressControl,
-    ProgressSpec, RadioIndicatorState, RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec,
-    StateLayer, StepperLook, StepperSpec, Surface, TabItemGeometry, TabItemLayout, TableMetrics,
-    TabsMetrics, TextCaretMotion, TextContextMenuMetrics, TextFieldLook, TextFieldSpec, ToggleSpec,
-    ValueIndicator, WidgetInteractionState,
+    InteractionMotion, Knob, Label, LinearProgressLook, ListMetrics, MenuLayout, MenuLook,
+    MenuPickerLook, MenuSpec, ModalInteraction, Motion, NavigationMetrics, NavigationMotion,
+    PickerSpec, PressFeedback, ProgressControl, ProgressSpec, RadioGroupLook, SliderLayout,
+    SliderLook, SliderSpec, StateLayer, StepperLook, StepperSpec, Surface, TabItemGeometry,
+    TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion, TextFieldLook, TextFieldSpec,
+    ToggleSpec, ValueIndicator, WidgetInteractionState,
 };
 use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
 use cherenkov_record::{
@@ -2777,14 +2778,18 @@ type StepperLookFor = Rc<dyn Fn(&StepperSpec, &Environment) -> StepperLook>;
 /// The text field look a test theme hands out for a field spec.
 type TextFieldLookFor = Rc<dyn Fn(&TextFieldSpec, &Environment) -> TextFieldLook>;
 
+/// The segmented look a test theme hands out for a segmented picker spec.
+type SegmentedLookFor =
+    Rc<dyn Fn(&crate::theme::SegmentedSpec, &Environment) -> crate::theme::SegmentedLook>;
+
 /// The glass look a test theme hands out for a glass background.
 type GlassLookFor =
     Rc<dyn Fn(&waterui::background::Glass, &Environment) -> Option<crate::theme::GlassLook>>;
 
 /// A linear progress bar the theme realized: `(frame, value)`.
 type ProgressBarRealization = (Rect, f64);
-/// A recorded `draw_radio_indicator` call: `(center, state)`.
-type RadioIndicatorDraw = (Point, RadioIndicatorState);
+/// A radio indicator the theme realized: `(frame, selected)`.
+type RadioIndicatorRealization = (Rect, bool);
 
 /// How a test theme's indeterminate progress looks move.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -2853,6 +2858,9 @@ pub struct MinimalTestTheme {
     /// The stepper look the theme hands out for a spec and environment;
     /// `None` answers [`crate::testing::plain_stepper_look`].
     stepper_look: Option<StepperLookFor>,
+    /// The segmented look the theme hands out for a spec and environment;
+    /// `None` answers [`crate::testing::plain_segmented_look`].
+    segmented_look: Option<SegmentedLookFor>,
     /// The glass look the theme hands out for a glass background; `None`
     /// answers the trait's default, no glass.
     glass_look: Option<GlassLookFor>,
@@ -2867,8 +2875,8 @@ pub struct MinimalTestTheme {
     progress_specs: Rc<RefCell<Vec<ProgressSpec>>>,
     /// How the indeterminate progress looks move.
     indeterminate_progress: IndeterminateProgress,
-    /// Every `draw_radio_indicator` call.
-    radio_indicator_draws: Rc<RefCell<Vec<RadioIndicatorDraw>>>,
+    /// Every radio indicator the theme realized.
+    radio_indicator_realizations: Rc<RefCell<Vec<RadioIndicatorRealization>>>,
     /// The text field look the theme hands out for a spec and environment;
     /// `None` answers [`crate::testing::plain_text_field_look`] over
     /// `input_metrics`.
@@ -2961,6 +2969,17 @@ impl MinimalTestTheme {
         look: impl Fn(&ToggleSpec, &Environment) -> SwitchLook + 'static,
     ) -> Self {
         self.switch_look = Some(Rc::new(look));
+        self
+    }
+
+    /// Hands out the look `look` makes for each segmented picker's spec.
+    #[must_use]
+    pub fn with_segmented(
+        mut self,
+        look: impl Fn(&crate::theme::SegmentedSpec, &Environment) -> crate::theme::SegmentedLook
+        + 'static,
+    ) -> Self {
+        self.segmented_look = Some(Rc::new(look));
         self
     }
 
@@ -3084,6 +3103,23 @@ impl crate::Style for MinimalTestTheme {
     fn install_tokens(&self, _env: &mut Environment) {}
 }
 
+impl MinimalTestTheme {
+    /// The measures of the theme's menus.
+    pub(crate) const fn menu_layout() -> MenuLayout {
+        MenuLayout {
+            row_height: 56.0,
+            horizontal_padding: 16.0,
+            vertical_padding: 12.0,
+            min_width: 112.0,
+            max_width: 320.0,
+            width_per_char: 8.5,
+            corner_radius: 4.0,
+            separator_horizontal_inset: 16.0,
+            separator_thickness: 1.0,
+        }
+    }
+}
+
 impl WidgetTheme for MinimalTestTheme {
     fn interaction_motion(&self) -> InteractionMotion {
         InteractionMotion {
@@ -3163,6 +3199,16 @@ impl WidgetTheme for MinimalTestTheme {
             .map_or_else(crate::testing::plain_stepper_look, |look| look(spec, env))
     }
 
+    fn segmented_picker(
+        &self,
+        spec: &crate::theme::SegmentedSpec,
+        env: &Environment,
+    ) -> crate::theme::SegmentedLook {
+        self.segmented_look
+            .as_ref()
+            .map_or_else(crate::testing::plain_segmented_look, |look| look(spec, env))
+    }
+
     fn glass_background(
         &self,
         glass: &waterui::background::Glass,
@@ -3185,94 +3231,52 @@ impl WidgetTheme for MinimalTestTheme {
         )
     }
 
-    fn text_context_menu_metrics(&self) -> TextContextMenuMetrics {
-        TextContextMenuMetrics {
-            row_height: 56.0,
-            horizontal_padding: 16.0,
-            vertical_padding: 12.0,
-            min_width: 112.0,
-            max_width: 320.0,
-            width_per_char: 8.5,
-            corner_radius: 4.0,
-            separator_horizontal_inset: 16.0,
-            separator_thickness: 1.0,
-        }
+    fn menu(&self, _spec: &MenuSpec, _env: &Environment) -> MenuLook {
+        let layout = Self::menu_layout();
+        let radii = kurbo::RoundedRectRadii::from_single_radius(layout.corner_radius);
+        MenuLook::new(
+            layout,
+            Custom::new((), move |draw, bounds, ()| {
+                // A level-2-like shadow under the panel, deep enough for
+                // tests to distinguish it from the scrim's uniform dim.
+                draw.shadow(
+                    kurbo::RoundedRect::from_rect(bounds, radii),
+                    Shadow::new(6.0, WorkingColor::new([0.0, 0.0, 0.0, 0.35]))
+                        .offset(kurbo::Vec2::new(0.0, 3.0)),
+                );
+                draw.fill(
+                    kurbo::RoundedRect::from_rect(bounds, radii),
+                    // `WorkingColor` components are linear Display P3; the
+                    // intended panel colour is sRGB (0.96, 0.94, 0.97), so it
+                    // converts rather than passing raw.
+                    Paint::Solid(crate::renderer::working_color(peniko::Color::new([
+                        0.96, 0.94, 0.97, 1.0,
+                    ]))),
+                );
+            }),
+            Custom::new((), |_, _, ()| {}),
+        )
     }
 
-    fn draw_text_context_menu_panel(&self, draw: &mut Recorder, bounds: Rect) {
-        let radii = kurbo::RoundedRectRadii::from_single_radius(
-            self.text_context_menu_metrics().corner_radius,
-        );
-        // A level-2-like shadow under the panel, deep enough for tests to
-        // distinguish it from the scrim's uniform dim.
-        draw.shadow(
-            kurbo::RoundedRect::from_rect(bounds, radii),
-            Shadow::new(6.0, WorkingColor::new([0.0, 0.0, 0.0, 0.35]))
-                .offset(kurbo::Vec2::new(0.0, 3.0)),
-        );
-        draw.fill(
-            kurbo::RoundedRect::from_rect(bounds, radii),
-            // `WorkingColor` components are linear Display P3; the intended
-            // panel colour is sRGB (0.96, 0.94, 0.97), so it converts rather
-            // than passing raw.
-            Paint::Solid(crate::renderer::working_color(peniko::Color::new([
-                0.96, 0.94, 0.97, 1.0,
-            ]))),
-        );
+    fn menu_picker(&self, _spec: &PickerSpec, _env: &Environment) -> MenuPickerLook {
+        crate::testing::plain_menu_picker_look()
     }
 
-    fn draw_text_context_menu_separator(&self, _draw: &mut Recorder, _bounds: Rect) {}
-
-    fn picker_metrics(&self, _style: PickerStyle) -> PickerMetrics {
-        PickerMetrics {
-            min_width: 72.0,
-            min_height: 28.0,
-            horizontal_inset: 8.0,
-            vertical_inset: 6.0,
-            label_spacing: 8.0,
-            indicator_space: 18.0,
-            radio_indicator_size: 16.0,
-            radio_label_spacing: 8.0,
-            radio_row_spacing: 8.0,
-            popup_top_spacing: 4.0,
-            popup_row_height: 48.0,
-            popup_corner_radius: 6.0,
-            segment_min_width: 58.0,
-        }
-    }
-
-    fn radio_selection_motion(&self) -> RadioSelectionMotion {
-        RadioSelectionMotion {
-            inner_grow: Animation::linear(Duration::from_millis(1)),
-            inner_opacity: Animation::linear(Duration::from_millis(1)),
-            outer_color: Animation::linear(Duration::from_millis(1)),
-        }
-    }
-
-    fn draw_picker_indicator(&self, _draw: &mut Recorder, _bounds: Rect) {}
-
-    fn draw_picker_popup(&self, _draw: &mut Recorder, _popup_rect: Rect) {}
-
-    fn draw_picker_popup_row_background(
-        &self,
-        _draw: &mut Recorder,
-        _row_rect: Rect,
-        _selected: bool,
-    ) {
-    }
-
-    fn draw_picker_separator(&self, _draw: &mut Recorder, _separator: Rect) {}
-
-    fn draw_radio_indicator(
-        &self,
-        _draw: &mut Recorder,
-        center: Point,
-        _radius: f64,
-        state: RadioIndicatorState,
-    ) {
-        self.radio_indicator_draws
-            .borrow_mut()
-            .push((center, state));
+    fn radio_group(&self, _spec: &PickerSpec, _env: &Environment) -> RadioGroupLook {
+        let realizations = Rc::clone(&self.radio_indicator_realizations);
+        let plain = crate::testing::plain_radio_group_look();
+        RadioGroupLook::new(
+            plain.indicator().clone().part(Custom::new(
+                (Driven::<bool, bool>::new(move |inputs| {
+                    realizations
+                        .borrow_mut()
+                        .push((inputs.frame, *inputs.value));
+                    *inputs.value
+                }),),
+                |_recorder, _frame, (_selected,)| {},
+            )),
+            plain.layout(),
+        )
     }
 
     fn slider(&self, spec: &SliderSpec, env: &Environment) -> SliderLook {

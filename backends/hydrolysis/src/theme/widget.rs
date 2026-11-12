@@ -12,7 +12,6 @@ use waterui_core::handler::SharedAction;
 use waterui_core::interaction::InteractionState;
 use waterui_core::plugin::Plugin;
 use waterui_core::{Binding, Computed, Environment, Signal};
-use waterui_form::picker::PickerStyle;
 use waterui_graphics::color::Color;
 use waterui_text::font::Font;
 
@@ -243,31 +242,6 @@ pub struct InteractionMotion {
     pub touch_delay: Duration,
 }
 
-/// Motion policy for radio selection indicators.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RadioSelectionMotion {
-    /// Animation used when the selected inner dot grows.
-    pub inner_grow: Animation,
-    /// Animation used when the inner dot fades in or out.
-    pub inner_opacity: Animation,
-    /// Animation used when the outer ring changes between selected and
-    /// unselected colors.
-    pub outer_color: Animation,
-}
-
-/// Animated visual state for a radio indicator.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct RadioIndicatorState {
-    /// Whether the radio option is currently selected semantically.
-    pub selected: bool,
-    /// Progress from unselected outer-ring color to selected outer-ring color.
-    pub outer_selected_progress: f32,
-    /// Inner dot radius progress in the 0.0..=1.0 range.
-    pub inner_scale: f32,
-    /// Inner dot opacity in the 0.0..=1.0 range.
-    pub inner_opacity: f32,
-}
-
 /// Motion policy for text input carets.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextCaretMotion {
@@ -326,62 +300,6 @@ impl InputFieldMetrics {
             vertical_inset,
         }
     }
-}
-
-/// Layout metrics for backend-rendered context menus.
-#[derive(Debug, Clone, Copy)]
-pub struct TextContextMenuMetrics {
-    /// One-line menu row height.
-    pub row_height: f64,
-    /// Horizontal text inset.
-    pub horizontal_padding: f64,
-    /// Vertical text inset.
-    pub vertical_padding: f64,
-    /// Minimum menu width.
-    pub min_width: f64,
-    /// Maximum menu width.
-    pub max_width: f64,
-    /// Estimated width used before text layout is available.
-    pub width_per_char: f64,
-    /// Menu container corner radius.
-    pub corner_radius: f64,
-    /// Horizontal inset for separators.
-    pub separator_horizontal_inset: f64,
-    /// Separator thickness.
-    pub separator_thickness: f64,
-}
-
-/// Picker layout metrics.
-#[derive(Debug, Clone, Copy)]
-pub struct PickerMetrics {
-    /// Minimum picker width.
-    pub min_width: f64,
-    /// Minimum picker height.
-    pub min_height: f64,
-    /// Horizontal picker inset.
-    pub horizontal_inset: f64,
-    /// Vertical picker inset.
-    pub vertical_inset: f64,
-    /// Gap between an external picker label and the picker field.
-    pub label_spacing: f64,
-    /// Space reserved for picker indicators.
-    pub indicator_space: f64,
-    /// Radio indicator diameter.
-    pub radio_indicator_size: f64,
-    /// Gap between a radio indicator and its label.
-    pub radio_label_spacing: f64,
-    /// Gap between radio picker rows.
-    pub radio_row_spacing: f64,
-    /// Vertical gap above popup menu rows.
-    pub popup_top_spacing: f64,
-    /// Popup menu row minimum height.
-    pub popup_row_height: f64,
-    /// Popup menu corner radius.
-    pub popup_corner_radius: f64,
-    /// Minimum width of one segmented-picker segment, including its
-    /// `horizontal_inset` padding on both sides (M3 `ButtonDefaults.MinWidth`
-    /// is 58dp per segment; unused by non-segmented styles).
-    pub segment_min_width: f64,
 }
 
 /// How a tab bar lays out each item's icon and label.
@@ -859,100 +777,43 @@ pub trait WidgetTheme {
     /// label floating moves live operands and records nothing.
     fn text_field(&self, spec: &super::TextFieldSpec, env: &Environment) -> super::TextFieldLook;
 
-    /// Return text context menu metrics.
-    fn text_context_menu_metrics(&self) -> TextContextMenuMetrics;
-    /// Draw text context menu panel.
-    fn draw_text_context_menu_panel(&self, recorder: &mut Recorder, bounds: Rect);
-    /// Draw text context menu separator.
-    fn draw_text_context_menu_separator(&self, recorder: &mut Recorder, bounds: Rect);
+    /// The look of every menu presentation: the picker popup, the text
+    /// context menu and the popup window a menu button opens.
+    ///
+    /// Hydrolysis measures, places and hit-tests a menu from the returned
+    /// look's layout and records its panel, separators and selected row
+    /// from its parts, and requests it again only when `spec` changes.
+    fn menu(&self, spec: &super::MenuSpec, env: &Environment) -> super::MenuLook;
 
-    /// Return picker metrics for a style.
-    fn picker_metrics(&self, style: PickerStyle) -> PickerMetrics;
-    /// Return the motion policy for radio picker selection changes.
-    fn radio_selection_motion(&self) -> RadioSelectionMotion;
-    /// Draw the picker indicator.
-    fn draw_picker_indicator(&self, recorder: &mut Recorder, bounds: Rect);
-    /// Draw picker field state layer.
-    fn draw_picker_state_layer(
+    /// The look of a menu picker's field.
+    ///
+    /// Hydrolysis measures, places, hit-tests and records the field from
+    /// the returned look, and requests it again only when `spec` changes;
+    /// the popup the field opens is the [`menu`](Self::menu) look.
+    fn menu_picker(&self, spec: &super::PickerSpec, env: &Environment) -> super::MenuPickerLook;
+
+    /// The look of a radio group: the indicator each item draws and the
+    /// measures the group is laid out by.
+    ///
+    /// Each item's indicator is live over whether the item is selected, so
+    /// a selection change moves the operands of the two items it touches
+    /// and records nothing.
+    fn radio_group(&self, spec: &super::PickerSpec, env: &Environment) -> super::RadioGroupLook;
+
+    /// The look of a segmented picker.
+    ///
+    /// Hydrolysis measures, places, hit-tests, records and animates the
+    /// picker from the returned look, and requests it again only when
+    /// `spec` changes; everything else reaches the look through its
+    /// [`Driven`](super::Driven) values, which read the picker's
+    /// [`SegmentedValue`](super::SegmentedValue) or each segment's
+    /// [`Segment`](super::Segment), so a selection change, a hover, a press
+    /// or a drag moves live operands and records nothing.
+    fn segmented_picker(
         &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _state: WidgetInteractionState,
-    ) {
-    }
-    /// Draw the picker popup container.
-    fn draw_picker_popup(&self, recorder: &mut Recorder, popup_rect: Rect);
-    /// Draw one picker popup row background.
-    fn draw_picker_popup_row_background(
-        &self,
-        recorder: &mut Recorder,
-        row_rect: Rect,
-        selected: bool,
-    );
-    /// Draw one picker popup row state layer.
-    fn draw_picker_popup_row_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _row_rect: Rect,
-        _selected: bool,
-        _state: WidgetInteractionState,
-    ) {
-    }
-    /// Draw a picker separator.
-    fn draw_picker_separator(&self, recorder: &mut Recorder, separator: Rect);
-    /// Draw a radio picker indicator.
-    fn draw_radio_indicator(
-        &self,
-        recorder: &mut Recorder,
-        center: Point,
-        radius: f64,
-        state: RadioIndicatorState,
-    );
-    /// Draw radio picker state layer.
-    fn draw_radio_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _center: Point,
-        _radius: f64,
-        _selected: bool,
-        _state: WidgetInteractionState,
-    ) {
-    }
-    /// Optional segmented picker label foreground override.
-    fn segmented_picker_label_color(&self, _selected: bool) -> Option<Color> {
-        None
-    }
-    /// Draw segmented picker container and dividers.
-    fn draw_segmented_picker_container(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _segment_count: usize,
-    ) {
-    }
-    /// Draw one segmented picker segment background.
-    fn draw_segmented_picker_segment(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _selected: bool,
-        _is_first: bool,
-        _is_last: bool,
-    ) {
-    }
-    /// Draw one segmented picker state layer. `is_first`/`is_last` select the
-    /// item-shape radii the layer must be clipped to: the first item rounds
-    /// its leading side, the last its trailing side, middle items are square.
-    fn draw_segmented_picker_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _selected: bool,
-        _is_first: bool,
-        _is_last: bool,
-        _state: WidgetInteractionState,
-    ) {
-    }
+        spec: &super::SegmentedSpec,
+        env: &Environment,
+    ) -> super::SegmentedLook;
 
     /// Return how the slider of `spec` looks and responds, as plain data
     /// (water-rs/waterui#1434): the measures it is laid out by, its track,

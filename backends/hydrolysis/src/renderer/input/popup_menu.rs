@@ -1,13 +1,13 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::theme::PickerMetrics;
+use crate::theme::{MenuLayout, MenuLook, MenuSpec};
 use crate::widgets::controls::button::{ListRowChrome, MenuRowChrome, menu_row_font};
 use core::ops::RangeInclusive;
 use core::time::Duration;
 use nami::Signal;
 use waterui::form::Calendar;
-use waterui::shape::{FixedRoundedRectangle, RoundedRectangle, ShapeExt as _};
+use waterui::shape::{RoundedRectangle, ShapeExt as _};
 use waterui::theme::color::Surface;
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::label::LabelDisplayMode;
@@ -23,6 +23,16 @@ use waterui_layout::spacer::spacer;
 use waterui_layout::stack::hstack;
 use waterui_text::font::Font;
 use waterui_text::text;
+
+/// The theme's [`MenuLook`] for a menu laid out in `env`'s direction: the one
+/// look every menu presentation — the picker popup, the text context menu
+/// and the popup window of a menu button — measures and draws from.
+pub fn menu_look(theme: &Rc<dyn crate::theme::WidgetTheme>, env: &Environment) -> MenuLook {
+    theme.menu(
+        &MenuSpec::new(waterui_core::layout::layout_direction(env).snapshot()),
+        env,
+    )
+}
 
 /// Backend-private presentation service for transient popup windows.
 ///
@@ -161,6 +171,7 @@ pub struct PickerMenuRequest {
     pub(crate) width: f64,
     pub(crate) row_height: f64,
     pub(crate) selected: Id,
+    pub(crate) menu: MenuLook,
 }
 
 impl<E: crate::text::TextEngine> PopupMenuState<E> {
@@ -270,7 +281,12 @@ fn animated_popup_panel(content: impl View, group: PopupMenuStateGroup) -> impl 
 /// to the drawn `.context_menu` presentation in dark and light
 /// (water-rs/hydrolysis#200). The window leaves `POPUP_MENU_PANEL_MARGIN` of
 /// transparent room on every side for the panel's elevation shadow.
-pub struct PopupMenuSurface;
+pub struct PopupMenuSurface {
+    /// The rect of a picker popup's selected row in the panel's own space,
+    /// over which the menu look draws its selected-row part; `None` for a
+    /// menu with no selected row.
+    pub selected_row: Option<kurbo::Rect>,
+}
 impl MetadataKey for PopupMenuSurface {}
 
 /// Transparent margin a `PopupWindowManager` menu window leaves around its
@@ -281,7 +297,7 @@ pub const POPUP_MENU_PANEL_MARGIN: f64 = 14.0;
 /// A divider row's height: the theme's separator line
 /// (`md.comp.menu.divider.height`, 1 dp) inside the menu's vertical padding
 /// (`md.comp.menu.container.top-space`/`bottom-space`, 8 dp each side).
-pub const fn popup_menu_divider_height(metrics: TextContextMenuMetrics) -> f64 {
+pub const fn popup_menu_divider_height(metrics: MenuLayout) -> f64 {
     metrics
         .vertical_padding
         .mul_add(2.0, metrics.separator_thickness)
@@ -311,7 +327,7 @@ pub struct PopupMenuTextMetrics {
 
 pub fn popup_menu_size(
     nodes: &[PopupMenuNode],
-    metrics: TextContextMenuMetrics,
+    metrics: MenuLayout,
     text: &PopupMenuTextMetrics,
 ) -> (f64, f64) {
     // `md.comp.menu.container.min-width`/`max-width` (112/280 dp).
@@ -419,7 +435,7 @@ impl View for ShortcutHint {
 pub fn popup_menu_content(
     nodes: Vec<PopupMenuNode>,
     depth: usize,
-    metrics: TextContextMenuMetrics,
+    metrics: MenuLayout,
     text: PopupMenuTextMetrics,
     popup_origin: LayoutPoint,
     width: f64,
@@ -553,7 +569,7 @@ pub fn popup_menu_window(
     origin: LayoutPoint,
     group: PopupMenuStateGroup,
     depth: usize,
-    metrics: TextContextMenuMetrics,
+    metrics: MenuLayout,
     text: PopupMenuTextMetrics,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> (Window, Binding<WindowState>) {
@@ -575,7 +591,7 @@ pub fn popup_menu_window(
                     width,
                     &theme,
                 ),
-                PopupMenuSurface,
+                PopupMenuSurface { selected_row: None },
             )
             .padding_with(crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN)),
             group_for_content.clone(),
@@ -745,67 +761,105 @@ pub fn picker_menu_window(
     row_height: f64,
     selected: Id,
     group: PopupMenuStateGroup,
-    metrics: PickerMetrics,
+    look: &MenuLook,
 ) -> (Window, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
-    let height = row_height * crate::num_cast::usize_as_f64(entries.len());
+    let layout = look.layout();
+    let height = picker_menu_panel_height(layout, row_height, entries.len());
+    let selected_row = look
+        .has_selected_row()
+        .then(|| {
+            entries
+                .iter()
+                .position(|entry| entry.tag == selected)
+                .map(|index| picker_menu_row_rect(layout, row_height, width, index))
+        })
+        .flatten();
     let state_for_content = state.clone();
     let group_for_content = group;
     let entries_for_content = entries;
-    let popup_content =
-        move || {
-            let mut rows = Vec::with_capacity(entries_for_content.len());
-            for entry in entries_for_content.clone() {
-                let label = entry.label.clone();
-                let target = entry.tag;
-                let row_selection = selection.clone();
-                let row_group = group_for_content.clone();
-                let row_open = Rc::clone(&open);
-                let row = Frame::new(button(label).style(ButtonStyle::Borderless).action(
-                    move || {
-                        if row_selection.snapshot() != target {
-                            row_selection.set(target);
-                        }
-                        row_open.set(false);
-                        row_group.close_all();
-                    },
-                ))
+    let popup_content = move || {
+        let mut rows = Vec::with_capacity(entries_for_content.len());
+        for entry in entries_for_content.clone() {
+            let label = entry.label.clone();
+            let target = entry.tag;
+            let row_selection = selection.clone();
+            let row_group = group_for_content.clone();
+            let row_open = Rc::clone(&open);
+            rows.push(AnyView::new(
+                Frame::new(
+                    button(label)
+                        .style(ButtonStyle::Borderless)
+                        .action(move || {
+                            if row_selection.snapshot() != target {
+                                row_selection.set(target);
+                            }
+                            row_open.set(false);
+                            row_group.close_all();
+                        }),
+                )
                 .width(crate::num_cast::f64_as_f32(width))
-                .height(crate::num_cast::f64_as_f32(row_height));
-                if target == selected {
-                    rows.push(AnyView::new(row.background(
-                        RoundedRectangle::new(0.0).fill(Color::new(Surface).with_opacity(0.84)),
-                    )));
-                } else {
-                    rows.push(AnyView::new(row));
-                }
-            }
-            let menu_content: waterui_layout::stack::VStack<(Vec<AnyView>,)> =
-                rows.into_iter().collect();
-            let panel = menu_content
-                .alignment(HorizontalAlignment::Leading)
-                .spacing(0.0)
-                .background(
-                    FixedRoundedRectangle::new(crate::num_cast::f64_as_f32(
-                        metrics.popup_corner_radius,
-                    ))
-                    .fill(Color::new(Surface).with_opacity(0.96)),
-                );
-            AnyView::new(animated_popup_panel(panel, group_for_content.clone()))
-        };
+                .height(crate::num_cast::f64_as_f32(row_height)),
+            ));
+        }
+        let menu_content: waterui_layout::stack::VStack<(Vec<AnyView>,)> =
+            rows.into_iter().collect();
+        let rows = menu_content
+            .alignment(HorizontalAlignment::Leading)
+            .spacing(0.0)
+            .padding_with(EdgeInsets::symmetric(
+                crate::num_cast::f64_as_f32(layout.vertical_padding),
+                0.0,
+            ))
+            .with(ListRowChrome)
+            .with(MenuRowChrome);
+        let panel = Metadata::new(rows, PopupMenuSurface { selected_row })
+            .padding_with(crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN));
+        AnyView::new(animated_popup_panel(panel, group_for_content.clone()))
+    };
     let mut popup = Window::new("WaterUI Picker Menu", state_for_content, popup_content)
         .style(WindowStyle::Borderless)
         .resizable(false)
         .background(Color::transparent());
     popup.closable = false;
+    // The window inflates by the panel margin on every side, like every menu
+    // window: the panel draws inside the inset and its elevation shadow lands
+    // in the transparent ring.
     popup.frame.set(LayoutRect::new(
-        origin,
+        LayoutPoint::new(
+            origin.x - crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN),
+            origin.y - crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN),
+        ),
         LayoutSize::new(
-            crate::num_cast::f64_as_f32(width),
-            crate::num_cast::f64_as_f32(height),
+            crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN.mul_add(2.0, width)),
+            crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN.mul_add(2.0, height)),
         ),
     ));
     (popup, state)
+}
+
+/// The height of a picker popup's panel: its rows of `row_height` inside the
+/// menu's vertical padding. The window the popup opens and the accessibility
+/// option rectangles are both derived from it.
+pub fn picker_menu_panel_height(layout: MenuLayout, row_height: f64, rows: usize) -> f64 {
+    layout
+        .vertical_padding
+        .mul_add(2.0, row_height * crate::num_cast::usize_as_f64(rows))
+}
+
+/// The rect of row `index` of a picker popup's panel of `width`, in the
+/// panel's own space.
+pub fn picker_menu_row_rect(
+    layout: MenuLayout,
+    row_height: f64,
+    width: f64,
+    index: usize,
+) -> kurbo::Rect {
+    let y0 = row_height.mul_add(
+        crate::num_cast::usize_as_f64(index),
+        layout.vertical_padding,
+    );
+    kurbo::Rect::new(0.0, y0, width, y0 + row_height)
 }
 
 fn color_picker_palette() -> [(&'static str, Color); 12] {
@@ -1314,7 +1368,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(crate) fn popup_menu_text_metrics(
         &mut self,
         nodes: &[PopupMenuNode],
-        metrics: TextContextMenuMetrics,
+        metrics: MenuLayout,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> PopupMenuTextMetrics {
@@ -1374,7 +1428,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         &mut self,
         nodes: Vec<PopupMenuNode>,
         origin: LayoutPoint,
-        metrics: TextContextMenuMetrics,
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> bool {
@@ -1391,6 +1444,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             return false;
         };
         self.dismiss_active_popup_menu();
+        let metrics = menu_look(theme, env).layout();
         let group = PopupMenuStateGroup::new();
         let text = self.popup_menu_text_metrics(&nodes, metrics, env, theme);
         let (window, state) =
@@ -1462,7 +1516,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(crate) fn show_picker_menu(
         &mut self,
         request: PickerMenuRequest,
-        metrics: PickerMetrics,
         env: &Environment,
     ) -> bool {
         if request.entries.is_empty() {
@@ -1486,7 +1539,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             request.row_height,
             request.selected,
             group.clone(),
-            metrics,
+            &request.menu,
         );
         group.push(state);
         manager.show(window, env);

@@ -1888,12 +1888,12 @@ fn a_rebound_member_tracks_the_signals_value_after_recording() {
     );
 }
 
-/// Presents the mirror along the chrome's 15 ms press motion a press just
-/// started — at its start, 5 ms in and at its end — and returns what
-/// `read` saw 5 ms in, once its pressed uniform (`uniform`, 0 at rest and 1
-/// pressed) is seen strictly between: the member's sample moves with the
-/// press motion instead of jumping.
-fn along_press<T>(
+/// Presents the mirror along the chrome's 15 ms press motion a press or a
+/// release just started — at its start, 5 ms in and at its end — and
+/// returns what `read` saw 5 ms in, once its progress (`uniform`, 0 at one
+/// end of the motion and 1 at the other) is seen strictly between: the
+/// member's sample moves with the press motion instead of jumping.
+pub(super) fn along_press<T>(
     renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
     read: impl Fn(&crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>) -> T,
     uniform: impl Fn(&T) -> f32,

@@ -172,7 +172,7 @@ fn progress_indicators_sharing_a_signal_identity_fill_to_their_own_values() {
 fn radio_pickers_sharing_a_signal_identity_draw_their_own_selection() {
     let indicator_draws = Rc::new(RefCell::new(Vec::new()));
     let mut renderer = test_renderer_with_theme(MinimalTestTheme {
-        radio_indicator_draws: Rc::clone(&indicator_draws),
+        radio_indicator_realizations: Rc::clone(&indicator_draws),
         ..Default::default()
     });
     let source = Binding::container([0_i32, 1_i32]);
@@ -195,13 +195,11 @@ fn radio_pickers_sharing_a_signal_identity_draw_their_own_selection() {
     );
 
     let mut draws = indicator_draws.borrow_mut().drain(..).collect::<Vec<_>>();
-    draws.sort_by(|a, b| a.0.y.total_cmp(&b.0.y));
+    draws.sort_by(|a, b| a.0.y0.total_cmp(&b.0.y0));
     let selected = draws
         .iter()
-        .map(|(_, state)| state.outer_selected_progress)
+        .map(|(_, selected)| *selected)
         .collect::<Vec<_>>();
     assert_eq!(selected.len(), 4, "two pickers of two options each");
-    for (row, expected) in [1.0, 0.0, 0.0, 1.0].into_iter().enumerate() {
-        approx::assert_relative_eq!(selected[row], expected);
-    }
+    assert_eq!(selected, [true, false, false, true]);
 }

@@ -1019,9 +1019,10 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     LifeCycle(LifeCycleEffect),
     /// The theme's drawn context-menu surface behind the wrapped menu rows —
     /// the panel a `PopupWindowManager` window shows instead of a view-level
-    /// fill (water-rs/hydrolysis#200). Draws nothing on targets that lack a
-    /// `draw_text_context_menu_panel` implementation.
-    PopupMenuSurface,
+    /// fill (water-rs/hydrolysis#200): the panel of the theme's `MenuLook`,
+    /// and the look's selected-row part over the rect, in the panel's own
+    /// space, of a picker popup's selected row.
+    PopupMenuSurface(Option<kurbo::Rect>),
     /// A within-window `Material` background (water-rs/waterui#1854): every
     /// flush closes the scene segment painted so far — the content behind
     /// the view — and presents a keyed mount that samples a backdrop group
