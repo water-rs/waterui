@@ -12,11 +12,11 @@ use cherenkov_record::ShapeData;
 use kurbo::Rect;
 use nami::Binding;
 use waterui_controls::TextField;
-use waterui_core::AnyView;
 use waterui_core::Str;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::interaction::{InteractionState, StateValue};
 use waterui_core::layout::LayoutDirection;
+use waterui_core::{AnyView, Environment};
 use waterui_form::secure::{Secure, secure};
 use waterui_layout::stack::vstack;
 
@@ -85,7 +85,18 @@ impl Fixture {
     /// Mounts `view` under a theme whose fields wear `look`, then pumps
     /// `pumps` frames.
     fn mount(view: AnyView, direction: LayoutDirection, look: TextFieldLook, pumps: usize) -> Self {
-        let theme = MinimalTestTheme::default().with_text_field(move |_, _| look.clone());
+        Self::themed(view, direction, move |_, _| look.clone(), pumps)
+    }
+
+    /// Mounts `view` under a theme that hands out the look `look` makes for
+    /// each spec, then pumps `pumps` frames.
+    fn themed(
+        view: AnyView,
+        direction: LayoutDirection,
+        look: impl Fn(&TextFieldSpec, &Environment) -> TextFieldLook + 'static,
+        pumps: usize,
+    ) -> Self {
+        let theme = MinimalTestTheme::default().with_text_field(look);
         let specs = Rc::clone(&theme.text_field_specs);
         let view = RefCell::new(Some(view));
         let builder = AnyViewBuilder::<AnyView>::new(move || {
@@ -300,40 +311,47 @@ fn a_field_mounted_with_text_has_its_label_floated() {
     );
 }
 
+/// The plain look, its floating label in a font of `size` points when given.
+fn sized_look(size: Option<f32>) -> TextFieldLook {
+    use crate::theme::{FloatingLabel, Label as LookLabel};
+    use waterui_text::font::Font;
+
+    let plain = look();
+    let Some(size) = size else {
+        return plain;
+    };
+    let floating = plain.floating_label();
+    let styled = FloatingLabel::new(
+        LookLabel::new().font(Font::default().size(size)),
+        floating.get_float().clone(),
+    )
+    .scale(floating.get_scale())
+    .top(floating.get_top());
+    TextFieldLook::new(
+        invisible_chrome(),
+        METRICS,
+        styled,
+        plain.caret().clone(),
+        plain.selection().clone(),
+    )
+}
+
+/// How far the one run an empty field draws, its label, spans, and the scale
+/// it draws at.
+fn label_of(fixture: &Fixture) -> (f64, f64) {
+    let [(world, span)] =
+        <[_; 1]>::try_from(fixture.glyph_runs()).expect("an empty field draws only its label");
+    (scale_of(world), span)
+}
+
 /// The label draws with the look's font, at rest and floated: a larger font
 /// spans more than the look's default one, and floating scales it by the
 /// look's scale.
 #[test]
 fn the_label_draws_with_the_looks_font() {
-    use crate::theme::Label as LookLabel;
-    use waterui_text::font::Font;
-
-    let span_of = |fixture: &Fixture| {
-        let [(world, span)] =
-            <[_; 1]>::try_from(fixture.glyph_runs()).expect("an empty field draws only its label");
-        (scale_of(world), span)
-    };
-    let plain = look();
-    let large = {
-        let floating = plain.floating_label().clone();
-        let styled = crate::theme::FloatingLabel::new(
-            LookLabel::new().font(Font::default().size(40.0)),
-            floating.get_float().clone(),
-        )
-        .scale(floating.get_scale())
-        .top(floating.get_top());
-        TextFieldLook::new(
-            invisible_chrome(),
-            METRICS,
-            styled,
-            plain.caret().clone(),
-            plain.selection().clone(),
-        )
-    };
-
-    let (_, plain_span) = span_of(&Fixture::filled("", plain, 4));
-    let mut fixture = Fixture::filled("", large, 4);
-    let (rest_scale, rest_span) = span_of(&fixture);
+    let (_, plain_span) = label_of(&Fixture::filled("", sized_look(None), 4));
+    let mut fixture = Fixture::filled("", sized_look(Some(40.0)), 4);
+    let (rest_scale, rest_span) = label_of(&fixture);
     assert!(
         rest_span > plain_span * 1.5,
         "the label rests in the look's font: {rest_span} against {plain_span}"
@@ -342,7 +360,7 @@ fn the_label_draws_with_the_looks_font() {
 
     fixture.focus_field();
     fixture.settle();
-    let (floated_scale, floated_span) = span_of(&fixture);
+    let (floated_scale, floated_span) = label_of(&fixture);
     assert!(
         (floated_scale - 0.75).abs() < 1e-6,
         "the label floats at the look's scale"
@@ -350,5 +368,88 @@ fn the_label_draws_with_the_looks_font() {
     assert!(
         (floated_span - rest_span).abs() < 1e-3,
         "the floated label keeps the look's font: {floated_span} against {rest_span}"
+    );
+}
+
+/// The band a labelled field reserves is the look's `label_height` whatever
+/// the label's font (water-rs/waterui#2387): the label's own measure only
+/// decides that the band exists, so a label font larger than the metrics
+/// assume leaves the field its height on the first settled frame, with the
+/// label drawn at that font inside it.
+#[test]
+fn the_label_font_leaves_the_reserved_band() {
+    let plain = Fixture::filled("", sized_look(None), 2);
+    let large = Fixture::filled("", sized_look(Some(40.0)), 2);
+    assert_eq!(
+        large.rect().height(),
+        plain.rect().height(),
+        "the field keeps the band the look's metrics reserve"
+    );
+    assert!(label_of(&large).1 > label_of(&plain).1 * 1.5);
+}
+
+/// A spec change takes a new look, and the label follows its font: one that
+/// names a different font rebuilds the label in it, and one that names none
+/// restores the label's own.
+///
+/// A field's spec changes only when the environment it renders in does, which
+/// no mounted view arranges without rebuilding the field, so the field's
+/// realization is driven directly.
+#[test]
+fn a_spec_change_follows_the_looks_label_font() {
+    use crate::renderer::RetainedSubview;
+    use crate::theme::WidgetTheme;
+    use crate::widgets::controls::field_look::FieldChrome;
+    use waterui::Color;
+    use waterui::theme::Tint;
+    use waterui_controls::label::IntoLabel as _;
+
+    let size = Rc::new(std::cell::Cell::new(Some(40.0_f32)));
+    let theme: Rc<dyn WidgetTheme> = Rc::new({
+        let size = Rc::clone(&size);
+        MinimalTestTheme::default().with_text_field(move |_, _| sized_look(size.get()))
+    });
+    let mut fixture = Fixture::filled("", sized_look(None), 1);
+    let renderer = fixture.runtime.renderer_mut();
+    let env_with = |tint: Color| {
+        let mut env = crate::renderer::tests::test_environment();
+        env.insert(Tint::new(tint));
+        env
+    };
+    let label = "Name".into_label();
+    let mut field = FieldChrome::new();
+    let mut view = RetainedSubview::new(field.label_view(label.clone()));
+    let width = |view: &mut RetainedSubview<_>, renderer: &mut _, env: &Environment| {
+        f64::from(view.measure_intrinsic(renderer, env).width)
+    };
+    let own = width(&mut view, renderer, &env_with(Color::srgb(0, 0, 0)));
+
+    let red = env_with(Color::srgb(200, 0, 0));
+    field.look(&theme, &red);
+    field.apply_label_font(&mut view, &label, renderer, &red);
+    let large = width(&mut view, renderer, &red);
+    assert!(
+        large > own * 1.5,
+        "the look's font reaches the label: {large} against {own}"
+    );
+
+    size.set(Some(20.0));
+    let blue = env_with(Color::srgb(0, 0, 200));
+    field.look(&theme, &blue);
+    field.apply_label_font(&mut view, &label, renderer, &blue);
+    let smaller = width(&mut view, renderer, &blue);
+    assert!(
+        smaller < large * 0.75 && smaller > own,
+        "the new look's font reaches the label: {smaller} against {large} and {own}"
+    );
+
+    size.set(None);
+    let green = env_with(Color::srgb(0, 200, 0));
+    field.look(&theme, &green);
+    field.apply_label_font(&mut view, &label, renderer, &green);
+    let restored = width(&mut view, renderer, &green);
+    assert!(
+        (restored - own).abs() < 1e-3,
+        "a look with no font restores the label's own: {restored} against {own}"
     );
 }

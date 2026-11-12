@@ -97,8 +97,12 @@ pub struct FieldChrome {
     parts: Option<LiveChromeParts>,
     report: Binding<InteractionState>,
     float: Rc<FloatLabel>,
-    /// Whether the inside label view was built with the look's font.
-    font_applied: bool,
+    /// Whether the look was taken anew since the label view last took its
+    /// font.
+    label_font_stale: bool,
+    /// Whether the label view carries a look font rather than the config
+    /// label's own.
+    label_font_set: bool,
     label_color: LabelColor,
     /// The subscription that floats the label with the field's focus.
     _focus: Box<dyn Any>,
@@ -117,7 +121,8 @@ impl FieldChrome {
             parts: None,
             report,
             float,
-            font_applied: false,
+            label_font_stale: true,
+            label_font_set: false,
             label_color: Rc::default(),
             _focus: Box::new(focus),
         }
@@ -137,9 +142,13 @@ impl FieldChrome {
         AnyView::new(label.foreground(color))
     }
 
-    /// Gives the inside label view the look's label font, once. The view is
-    /// built before the theme is reachable, so the first render builds it
-    /// again from `label` with the font when the look names one.
+    /// Gives the inside label view the font of the look the field took last.
+    ///
+    /// The view is built before the theme is reachable, so the render that
+    /// takes a look builds it again from `label`: with the look's label font
+    /// when it names one, else with the config label's own font. The field
+    /// lays out again, so measurement uses the drawn font. A look the field
+    /// already applied changes nothing.
     pub(crate) fn apply_label_font<E: crate::text::TextEngine>(
         &mut self,
         label_view: &mut RetainedSubview<E>,
@@ -147,21 +156,26 @@ impl FieldChrome {
         renderer: &mut SemanticCore<E>,
         env: &Environment,
     ) {
-        let held = self
-            .held
-            .as_ref()
-            .expect("a field applies the look it requested");
-        if self.font_applied {
+        if !core::mem::take(&mut self.label_font_stale) {
             return;
         }
-        self.font_applied = true;
-        let Some(font) = held.look.floating_label().label().get_font() else {
+        let font = self
+            .held
+            .as_ref()
+            .expect("a field applies the look it requested")
+            .look
+            .floating_label()
+            .label()
+            .get_font()
+            .map(|font| font.target(&Inputs::at_rest(Rect::ZERO, InteractionState::empty(), &())));
+        if font.is_none() && !self.label_font_set {
             return;
-        };
-        let font = font.target(&Inputs::at_rest(Rect::ZERO, InteractionState::empty(), &()));
+        }
+        self.label_font_set = font.is_some();
         *label_view =
-            RetainedSubview::new(self.label_view(styled_button_label(Some(font), label.clone())));
+            RetainedSubview::new(self.label_view(styled_button_label(font, label.clone())));
         label_view.ensure_built(renderer, env);
+        renderer.context_mark_layout();
     }
 
     /// The look for the field's spec in `env`: the one already held when the
@@ -175,6 +189,7 @@ impl FieldChrome {
         if self.held.as_ref().is_none_or(|held| held.spec != spec) {
             let look = theme.text_field(&spec, env);
             let container = container_of(&look);
+            self.label_font_stale = true;
             self.held = Some(Held {
                 spec,
                 look,
