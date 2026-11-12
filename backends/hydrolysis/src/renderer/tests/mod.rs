@@ -4,6 +4,7 @@ mod collection_update;
 #[cfg(hydrolysis_gpu_painter)]
 mod frame_work;
 mod slider_look;
+mod slider_repaint;
 use super::*;
 use crate::text::{Affinity, TextEngine as _, TextLayout as _, TextPosition};
 use std::borrow::Cow;
@@ -2766,6 +2767,9 @@ fn inactive_modal_scope_does_not_trap_keyboard_focus() {
 /// The switch look a test theme hands out for a toggle spec.
 type SwitchLookFor = Rc<dyn Fn(&ToggleSpec, &Environment) -> SwitchLook>;
 
+/// The slider look a test theme hands out for a slider spec.
+type SliderLookFor = Rc<dyn Fn(&SliderSpec, &Environment) -> SliderLook>;
+
 /// The stepper look a test theme hands out for a stepper spec.
 type StepperLookFor = Rc<dyn Fn(&StepperSpec, &Environment) -> StepperLook>;
 
@@ -2828,6 +2832,9 @@ pub struct MinimalTestTheme {
     slider_drag: Option<DragMapping>,
     /// Whether the slider look draws no label, so reserves no band for one.
     slider_without_label: bool,
+    /// The slider look the theme hands out for a spec and environment;
+    /// `None` answers the fixture look the slider tests above read back.
+    slider_look: Option<SliderLookFor>,
     /// The backdrop-material plan a chrome test registers
     /// (water-rs/waterui#1788): the registry entries, and the materials the
     /// plan's [`ChromePlan::chrome`] replays.
@@ -2901,6 +2908,16 @@ impl MinimalTestTheme {
     #[must_use]
     pub fn with_switch_look(self, look: SwitchLook) -> Self {
         self.with_switch(move |_, _| look.clone())
+    }
+
+    /// Hands out the look `look` makes for each slider's spec.
+    #[must_use]
+    pub fn with_slider(
+        mut self,
+        look: impl Fn(&SliderSpec, &Environment) -> SliderLook + 'static,
+    ) -> Self {
+        self.slider_look = Some(Rc::new(look));
+        self
     }
 
     /// Hands out the look `look` makes for each switch's spec.
@@ -3230,8 +3247,11 @@ impl WidgetTheme for MinimalTestTheme {
             .push((center, state));
     }
 
-    fn slider(&self, spec: &SliderSpec, _env: &Environment) -> SliderLook {
+    fn slider(&self, spec: &SliderSpec, env: &Environment) -> SliderLook {
         self.slider_specs.borrow_mut().push(spec.clone());
+        if let Some(look) = &self.slider_look {
+            return look(spec, env);
+        }
         let tracks = Rc::clone(&self.slider_track_draws);
         let indicators = Rc::clone(&self.slider_indicator_draws);
         let layout = SliderLayout {

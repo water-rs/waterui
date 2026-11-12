@@ -409,22 +409,19 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// material becomes a `ChromeMaterial` member layer between the
     /// segments that follow — so the material samples the content behind
     /// it rather than drawing in place of it. The scope the record opens
-    /// under is the flush's material-scope stack's top: the node's
-    /// enclosing `.material_group()`, or `SOLO` outside every group.
+    /// under is [`Self::material_scope`].
+    ///
+    /// The segments are frozen into the node's run: content whose operands
+    /// change after it records lists through
+    /// [`LayeredParts`](crate::renderer::chrome::LayeredParts) instead.
     pub(crate) fn draw_context(
         &mut self,
         ctx: RenderContext,
         body: impl FnOnce(&mut cherenkov_record::Recorder),
     ) {
-        let scope = self
-            .material_group_scopes
-            .last()
-            .map_or(cherenkov_record::MaterialScope::SOLO, |cell| {
-                cherenkov_record::MaterialScope::new(mount::backdrop::scope_id(cell))
-            });
         let layered = cherenkov_record::Content::record_layered(
             &cherenkov_record::LayoutSize::new(),
-            scope,
+            self.material_scope(),
             body,
         );
         // A member whose ancestry is fully transparent holds no membership:
@@ -442,6 +439,17 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 self.scene_mut().draw_picture(ctx.local(), above);
             }
         }
+    }
+
+    /// The material scope a backdrop material recorded here belongs to:
+    /// the flush's material-scope stack's top — the node's enclosing
+    /// `.material_group()` — or `SOLO` outside every group.
+    pub(crate) fn material_scope(&self) -> cherenkov_record::MaterialScope {
+        self.material_group_scopes
+            .last()
+            .map_or(cherenkov_record::MaterialScope::SOLO, |cell| {
+                cherenkov_record::MaterialScope::new(mount::backdrop::scope_id(cell))
+            })
     }
 
     /// Lists `source` at this point of the recording node's program as a
