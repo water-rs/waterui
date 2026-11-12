@@ -328,6 +328,18 @@ impl<K: CacheKey, I: PlainId> Drop for Cached<K, I> {
     }
 }
 
+/// The refusal for a cached font registered on another target: the command
+/// that names it is skipped like any font the engine did not register.
+fn font_off_target() -> ResourceError {
+    ResourceError::Font("registered on another target".to_owned())
+}
+
+/// The refusal for a cached image registered on another target: the command
+/// that names it is skipped like any image the engine did not register.
+fn image_off_target() -> ResourceError {
+    ResourceError::Image("registered on another target".to_owned())
+}
+
 /// The resource side of one recording as Hydrolysis lowers it: the shared
 /// table's naming, plus the identity-cache entries the recording names.
 pub struct LoweringNames<'a> {
@@ -495,7 +507,10 @@ impl SceneResources {
             index: font.index,
         };
         if let Some(cached) = names.fonts.get(&key) {
-            return Ok(names.table.name(&cached.registered));
+            return names
+                .table
+                .name(&cached.registered)
+                .ok_or_else(font_off_target);
         }
         let cached = if let Some(cached) = self.fonts.get(key) {
             cached
@@ -507,7 +522,10 @@ impl SceneResources {
                 .set(self.font_registrations.get() + 1);
             self.fonts.insert(key, registered)
         };
-        let id = names.table.name(&cached.registered);
+        let id = names
+            .table
+            .name(&cached.registered)
+            .ok_or_else(font_off_target)?;
         names.fonts.insert(key, cached);
         Ok(id)
     }
@@ -533,7 +551,10 @@ impl SceneResources {
             alpha: image.alpha_type as u8,
         };
         if let Some(cached) = names.images.get(&key) {
-            return Ok(names.table.name(&cached.registered));
+            return names
+                .table
+                .name(&cached.registered)
+                .ok_or_else(image_off_target);
         }
         let cached = if let Some(cached) = self.images.get(key) {
             cached
@@ -563,7 +584,10 @@ impl SceneResources {
                 .set(self.image_registrations.get() + 1);
             self.images.insert(key, registered)
         };
-        let id = names.table.name(&cached.registered);
+        let id = names
+            .table
+            .name(&cached.registered)
+            .ok_or_else(image_off_target)?;
         names.images.insert(key, cached);
         Ok(id)
     }

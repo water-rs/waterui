@@ -244,7 +244,8 @@ fn a_device_loss_completion_keeps_its_generation() {
         .runtime
         .context()
         .mark_device_lost_for_testing("test device loss");
-    let fresh = pollster::block_on(fixture.runtime.context_after(submitted));
+    let fresh = pollster::block_on(fixture.runtime.context_after(submitted))
+        .expect("a lost context within the rebuild budget recovers");
     assert!(fresh.generation() > submitted);
     assert_eq!(frame.generation(), submitted);
     paused.release();

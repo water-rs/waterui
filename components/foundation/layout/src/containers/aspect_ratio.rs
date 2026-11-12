@@ -2,6 +2,7 @@
 
 use alloc::{vec, vec::Vec};
 use nami::{Computed, Signal, SignalExt};
+use waterui_contract::contract_violation;
 use waterui_core::{AnyView, IntoSignalF32, View, layout::LayoutInvalidationCallback};
 
 use crate::{
@@ -37,11 +38,13 @@ impl AspectRatioLayout {
     /// and `Fill` the larger. With one axis offered the other follows from the
     /// ratio, and with neither the child's own size sets the scale.
     fn resolve(&self, available: ProposalSize, content: Size) -> Size {
-        let ratio = self.ratio.snapshot();
-        assert!(
-            ratio > 0.0 && ratio.is_finite(),
-            "aspect ratio must be a positive, finite width-to-height ratio, got {ratio}"
-        );
+        let mut ratio = self.ratio.snapshot();
+        if !(ratio > 0.0 && ratio.is_finite()) {
+            contract_violation!(
+                "aspect ratio must be a positive, finite width-to-height ratio, got {ratio}; laying out with ratio 1.0"
+            );
+            ratio = 1.0;
+        }
 
         match (available.width, available.height) {
             (Some(width), Some(height)) if width.is_finite() && height.is_finite() => {
@@ -137,9 +140,9 @@ pub struct AspectRatio {
 impl AspectRatio {
     /// Constrains `content` to `ratio`, expressed as width divided by height.
     ///
-    /// # Panics
-    ///
-    /// Measuring panics if the ratio is not positive and finite.
+    /// A ratio that is not positive and finite is a contract violation: a
+    /// debug build panics when it is measured, a release build logs it and
+    /// lays out with a ratio of 1.0.
     #[must_use]
     pub fn new(content: impl View, ratio: impl IntoSignalF32 + 'static, mode: ContentMode) -> Self {
         Self {
@@ -235,6 +238,26 @@ mod tests {
         let size = layout(ContentMode::Fit).size_that_fits(ProposalSize::UNSPECIFIED, &[&child]);
         assert!((size.width - 60.0).abs() < 0.01, "got {size:?}");
         assert!((size.height - 30.0).abs() < 0.01, "got {size:?}");
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "aspect ratio must be a positive, finite")
+    )]
+    fn an_invalid_ratio_lays_out_as_a_square() {
+        for ratio in [0.0, -2.0, f32::NAN, f32::INFINITY] {
+            let layout = AspectRatioLayout {
+                ratio: Computed::constant(ratio),
+                mode: ContentMode::Fit,
+            };
+            let child = Content(Size::new(10.0, 10.0));
+            let size = layout.size_that_fits(ProposalSize::new(300.0, 100.0), &[&child]);
+            assert!(
+                (size.width - 100.0).abs() < 0.01 && (size.height - 100.0).abs() < 0.01,
+                "ratio {ratio} must lay out as 1.0, got {size:?}"
+            );
+        }
     }
 
     #[test]

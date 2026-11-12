@@ -28,7 +28,7 @@ pub use runtime::{
     HostedLayerError, SharedGpuContext, preferred_surface_format,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use runtime::{HostedFrame, RebuildHold, RenderedFrame};
+pub use runtime::{HostedFrame, RebuildHold, RenderedFrame, Unrecoverable};
 
 /// The rectangle an IME caret query ([`CaretQuery`]) answers with.
 pub use crate::draw::kurbo::Rect;

@@ -63,6 +63,31 @@ pub enum GpuRuntimeError {
     DeviceRequest(#[from] wgpu_external_frame::ahardware_buffer::DeviceRequestError),
 }
 
+/// The shared GPU device cannot be recovered.
+///
+/// A run of devices each died before presenting a frame, the rebuild budget
+/// is spent, and no fresh context will ever land. Returned by
+/// [`GpuRuntime::context_after`].
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, thiserror::Error)]
+#[error(
+    "the GPU device is unrecoverable: {} consecutive devices were lost before presenting a frame ({})",
+    .losses.len(),
+    .losses.join(" | ")
+)]
+pub struct Unrecoverable {
+    losses: Vec<String>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Unrecoverable {
+    /// The recorded loss reasons of the devices that never presented.
+    #[must_use]
+    pub fn losses(&self) -> &[String] {
+        &self.losses
+    }
+}
+
 /// What creating or presenting a hosted engine layer's frame can fail with.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -635,19 +660,43 @@ impl GpuRuntime {
     /// wait exists on `cfg(not(target_arch = "wasm32"))` only.
     ///
     /// Same budget as [`context`](Self::context): a run of devices that each
-    /// died before presenting a frame is unrecoverable, and the wait then
-    /// never resolves — the loss reasons were logged once and no fresh
-    /// context will land.
+    /// died before presenting a frame is unrecoverable. The wait then
+    /// resolves `Err` at once — waiters already parked included — because
+    /// the loss reasons were logged once and no fresh context will land.
+    ///
+    /// # Errors
+    /// [`Unrecoverable`] when the rebuild budget is spent.
     #[cfg(not(target_arch = "wasm32"))]
-    pub async fn context_after(&self, generation: u64) -> Shared<SharedGpuContext> {
+    pub async fn context_after(
+        &self,
+        generation: u64,
+    ) -> Result<Shared<SharedGpuContext>, Unrecoverable> {
         loop {
             let listener = self.inner.published.listen();
             let context = self.context();
             if context.generation() > generation && context.device_lost_reason().is_none() {
-                return context;
+                return Ok(context);
+            }
+            if let Some(unrecoverable) = self.unrecoverable() {
+                return Err(unrecoverable);
             }
             listener.await;
         }
+    }
+
+    /// The exhausted-budget error when the streak of stillborn devices
+    /// exceeds `MAX_CONSECUTIVE_UNPRODUCTIVE_REBUILDS` — the same condition
+    /// under which `start_rebuild` stops spawning rebuilds.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn unrecoverable(&self) -> Option<Unrecoverable> {
+        let losses = self
+            .inner
+            .unproductive_losses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (losses.len() > MAX_CONSECUTIVE_UNPRODUCTIVE_REBUILDS).then(|| Unrecoverable {
+            losses: losses.clone(),
+        })
     }
 
     /// Holds the next context publication until the returned guard drops.
@@ -722,6 +771,11 @@ impl GpuRuntime {
                 // `rebuild_in_flight` stays set: the device is unrecoverable,
                 // so no further attempt is ever spawned and this is logged
                 // once.
+                drop(unproductive);
+                drop(slot);
+                // Parked `context_after` waiters wake to observe the spent
+                // budget and resolve `Err`.
+                inner.published.notify(usize::MAX);
                 return;
             }
             drop(unproductive);

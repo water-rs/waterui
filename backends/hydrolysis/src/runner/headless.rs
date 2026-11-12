@@ -1623,10 +1623,15 @@ mod generation_tests {
                 );
             }
             // Naming a `Registered` whose table is not this recording's
-            // table panics — the assertion itself proves the association
-            // retargeted the new engine's table after replacement.
-            let font_id = resources.name(self.font.as_ref().expect("registered"));
-            let image_id = resources.name(self.image.as_ref().expect("registered"));
+            // table is `None` — the expectation itself proves the
+            // association retargeted the new engine's table after
+            // replacement.
+            let font_id = resources
+                .name(self.font.as_ref().expect("registered"))
+                .expect("the font is registered on the replacement engine's table");
+            let image_id = resources
+                .name(self.image.as_ref().expect("registered"))
+                .expect("the image is registered on the replacement engine's table");
             // Red band across the top: fill pixels on the device.
             recorder.fill(
                 kurbo::Rect::new(8.0, 8.0, 40.0, 24.0),

@@ -42,7 +42,8 @@ fn context_after_resolves_when_the_publication_follows_the_listen() {
     );
 
     stale.mark_device_lost_for_testing("test device loss");
-    let fresh = pollster::block_on(waiter);
+    let fresh =
+        pollster::block_on(waiter).expect("a lost context within the rebuild budget recovers");
     assert!(fresh.generation() > stale.generation());
     assert!(
         fresh.device_lost_reason().is_none(),
@@ -58,9 +59,11 @@ fn context_after_resolves_immediately_when_publication_precedes_the_listen() {
     let runtime = runtime();
     let stale = runtime.context();
     stale.mark_device_lost_for_testing("test device loss");
-    let fresh = pollster::block_on(runtime.context_after(stale.generation()));
+    let fresh = pollster::block_on(runtime.context_after(stale.generation()))
+        .expect("a lost context within the rebuild budget recovers");
 
-    let current = pollster::block_on(runtime.context_after(stale.generation()));
+    let current = pollster::block_on(runtime.context_after(stale.generation()))
+        .expect("the published context answers again");
     assert!(
         Arc::ptr_eq(&current, &fresh),
         "the same published context answers, not a second rebuild"
@@ -81,8 +84,66 @@ fn a_dropped_context_after_waiter_does_not_block_publication() {
     }
 
     stale.mark_device_lost_for_testing("test device loss");
-    let fresh = pollster::block_on(runtime.context_after(stale.generation()));
+    let fresh = pollster::block_on(runtime.context_after(stale.generation()))
+        .expect("a lost context within the rebuild budget recovers");
     assert!(fresh.generation() > stale.generation());
+}
+
+/// Loses `runtime`'s current device and every rebuilt one before any of them
+/// presents a frame, until the rebuild budget is spent. Returns the last,
+/// unrebuildable lost generation.
+fn lose_devices_until_the_budget_is_spent(runtime: &GpuRuntime) -> u64 {
+    // `MAX_CONSECUTIVE_UNPRODUCTIVE_REBUILDS` (3) rebuilds are paid for; the
+    // loss after them is the one that exhausts the budget.
+    let mut context = runtime.context();
+    for _ in 0..3 {
+        context.mark_device_lost_for_testing("test device loss");
+        context = pollster::block_on(runtime.context_after(context.generation()))
+            .expect("a loss within the rebuild budget recovers");
+    }
+    context.mark_device_lost_for_testing("test device loss");
+    context.generation()
+}
+
+/// A run of devices that each died before presenting a frame spends the
+/// rebuild budget: `context_after` then resolves `Err` instead of parking
+/// forever, for a later waiter as well as a repeat one.
+#[test]
+fn context_after_resolves_err_once_the_rebuild_budget_is_spent() {
+    let runtime = runtime();
+    let last = lose_devices_until_the_budget_is_spent(&runtime);
+
+    let error = pollster::block_on(runtime.context_after(last))
+        .expect_err("the budget is spent, so no context publishes");
+    assert_eq!(
+        error.losses().len(),
+        4,
+        "every stillborn device is recorded"
+    );
+    let again = pollster::block_on(runtime.context_after(0));
+    assert!(again.is_err(), "the verdict is stable for any generation");
+}
+
+/// A waiter already parked when the budget is exhausted wakes with `Err`:
+/// the exhaustion notifies the listener.
+#[test]
+fn a_parked_context_after_waiter_wakes_err_when_the_budget_is_spent() {
+    let runtime = runtime();
+    let mut context = runtime.context();
+    for _ in 0..3 {
+        context.mark_device_lost_for_testing("test device loss");
+        context = pollster::block_on(runtime.context_after(context.generation()))
+            .expect("a loss within the rebuild budget recovers");
+    }
+    let mut waiter = Box::pin(runtime.context_after(context.generation()));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(
+        std::future::Future::poll(waiter.as_mut(), &mut cx).is_pending(),
+        "the device is live, so the waiter parks"
+    );
+
+    context.mark_device_lost_for_testing("test device loss");
+    assert!(pollster::block_on(waiter).is_err());
 }
 
 /// Builds a `SharedDevice` from nothing but its setup context.

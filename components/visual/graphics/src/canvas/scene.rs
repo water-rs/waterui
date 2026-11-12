@@ -227,7 +227,7 @@ fn register_image(
         Err(error) => ImageStatus::Refused(Arc::clone(error)),
     };
     statuses.borrow_mut().push((image.clone(), status));
-    let id = resources.name(&registered.ok()?);
+    let id = resources.name(&registered.ok()?)?;
     names.insert_image(image, id);
     Some(id)
 }
@@ -257,7 +257,11 @@ fn register_font(
             return Ok(None);
         }
     };
-    let id = resources.name(&registered);
+    // A font registered on another target has no id here: the glyph runs
+    // that use it are not drawn.
+    let Some(id) = resources.name(&registered) else {
+        return Ok(None);
+    };
     names.insert_font(font, id);
     Ok(Some(id))
 }
@@ -383,7 +387,11 @@ impl Replay<'_, '_> {
                 Affine2::translate(corner.x, corner.y)
             })
             .computed();
-        let layout = self.resources.name(registered.layout());
+        // A layout registered on another target has no id here: the text
+        // is not drawn.
+        let Some(layout) = self.resources.name(registered.layout()) else {
+            return;
+        };
         recorder.text(layout, self.transform(&corner));
     }
 

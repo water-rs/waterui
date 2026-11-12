@@ -678,7 +678,7 @@ mod tests {
                     )
                     .expect("image registration");
                 recorder.image(
-                    resources.name(&image),
+                    resources.name(&image).expect("registered on this target"),
                     Rect::new(0.0, 0.0, 8.0, 8.0),
                     Sampling::Nearest,
                 );

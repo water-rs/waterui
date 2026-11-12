@@ -403,7 +403,7 @@ mod tests {
                 )
                 .expect("image registration");
             recorder.image(
-                resources.name(&image),
+                resources.name(&image).expect("registered on this target"),
                 Rect::new(0.0, 0.0, 10.0, 10.0),
                 Sampling::Nearest,
             );
@@ -427,7 +427,7 @@ mod tests {
                 .expect("image registration");
             recorder.fill(Rect::new(0.0, 0.0, 10.0, 10.0), self.color);
             recorder.image(
-                resources.name(&image),
+                resources.name(&image).expect("registered on this target"),
                 Rect::new(0.0, 0.0, 10.0, 10.0),
                 Sampling::Nearest,
             );
