@@ -1278,13 +1278,12 @@ impl ResolvedFramework {
             .metadata
             .get(KEY)
             .and_then(toml::Value::as_table)
-            .map(|table| {
+            .map_or_default(|table| {
                 table
                     .iter()
                     .filter_map(|(name, path)| path.as_str().map(|path| (name.as_str(), path)))
                     .collect()
-            })
-            .unwrap_or_default();
+            });
         if reexported.is_empty() {
             return Ok(());
         }

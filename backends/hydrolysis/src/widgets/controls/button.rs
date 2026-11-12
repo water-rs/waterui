@@ -121,7 +121,12 @@ fn resolve_look(theme: &Rc<dyn WidgetTheme>, spec: &ButtonSpec, env: &Environmen
     }
     let look = theme.button(spec, env);
     if env.get::<MenuRowChrome>().is_some() {
-        return lower_menu_row(&look, theme.text_context_menu_metrics().horizontal_padding);
+        return lower_menu_row(
+            &look,
+            crate::renderer::menu_look(theme, env)
+                .layout()
+                .horizontal_padding,
+        );
     }
     match env.get::<FloatingScope>() {
         Some(FloatingScope(style)) => lower_floating(&look, style),
@@ -685,7 +690,6 @@ pub fn menu_accessibility<E: crate::text::TextEngine>(
         let request = ctx.as_ref().zip(theme).map(|(ctx, theme)| {
             (
                 crate::widgets::util::popup_anchor(renderer.resolve_window_rect(ctx.bounds())),
-                theme.text_context_menu_metrics(),
                 theme.clone(),
             )
         });
@@ -701,8 +705,8 @@ pub fn menu_accessibility<E: crate::text::TextEngine>(
                     let nodes =
                         popup_menu_nodes(&items.snapshot(), &env, renderer.window_closable());
                     match &request {
-                        Some((anchor, metrics, theme)) => {
-                            renderer.show_popup_menu_nodes(nodes, *anchor, *metrics, &env, theme);
+                        Some((anchor, theme)) => {
+                            renderer.show_popup_menu_nodes(nodes, *anchor, &env, theme);
                         }
                         None => {
                             renderer.activate_popup_menu_nodes(nodes, &env);
@@ -1091,7 +1095,6 @@ pub fn render_menu_parts<E: crate::text::TextEngine>(
     // The popup anchors in window space at the trigger's bottom edge.
     let bounds = ctx.bounds;
     let anchor = crate::widgets::util::popup_anchor(ctx.renderer_mut().resolve_window_rect(bounds));
-    let menu_metrics = theme.text_context_menu_metrics();
     let menu_theme = theme.clone();
     // The popup opens in the trigger node's environment layered over the
     // dispatch's (water-rs/hydrolysis#140).
@@ -1107,7 +1110,6 @@ pub fn render_menu_parts<E: crate::text::TextEngine>(
                 renderer.show_popup_menu_nodes(
                     popup_menu_nodes(&items.snapshot(), &env, renderer.window_closable()),
                     anchor,
-                    menu_metrics,
                     &env,
                     &menu_theme,
                 )
@@ -1253,7 +1255,7 @@ fn watch_button_title<E: crate::text::TextEngine>(
     clippy::needless_pass_by_value,
     reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
 )]
-fn styled_with_default_foreground(styled: StyledStr, color: Color) -> StyledStr {
+pub fn styled_with_default_foreground(styled: StyledStr, color: Color) -> StyledStr {
     let mut out = StyledStr::empty();
     for (chunk, style) in styled.chunks() {
         let mut style = style.clone();

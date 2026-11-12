@@ -152,7 +152,11 @@ impl LiveToggle {
     /// Subscribes the toggle to `binding` and to every signal its parts'
     /// values follow, so a change retargets the operands under the
     /// animation the change carries.
-    fn subscribe(this: &Rc<Self>, binding: &Binding<bool>) {
+    fn subscribe<S>(this: &Rc<Self>, binding: &S)
+    where
+        S: Signal<Output = bool>,
+        S::Guard: 'static,
+    {
         let mut guards: Vec<Box<dyn Any>> = Vec::new();
         let weak: Weak<Self> = Rc::downgrade(this);
         guards.push(Box::new(binding.watch(move |context| {
@@ -398,7 +402,11 @@ pub struct LiveToggleParts {
 }
 
 impl LiveToggleParts {
-    fn new(toggle: LiveToggle, binding: &Binding<bool>) -> Self {
+    fn new<S>(toggle: LiveToggle, binding: &S) -> Self
+    where
+        S: Signal<Output = bool>,
+        S::Guard: 'static,
+    {
         let toggle = Rc::new(toggle);
         LiveToggle::subscribe(&toggle, binding);
         let source = |layer, parts: &[RealizedCustom<bool>]| -> Option<Rc<dyn LiveSource>> {
@@ -419,13 +427,17 @@ impl LiveToggleParts {
     /// The control `control` on `frame` showing `binding`: the parts in
     /// `slot` when they already realize it — moved to `state` — otherwise
     /// fresh parts recorded at `state`, replacing them.
-    pub(crate) fn ensure<'a>(
+    pub(crate) fn ensure<'a, S>(
         slot: &'a mut Option<Self>,
         control: &ToggleControl,
         frame: Rect,
         state: InteractionState,
-        binding: &Binding<bool>,
-    ) -> &'a Self {
+        binding: &S,
+    ) -> &'a Self
+    where
+        S: Signal<Output = bool>,
+        S::Guard: 'static,
+    {
         match slot {
             Some(parts) if parts.toggle.realizes(control, frame) => parts.toggle.sync(state),
             _ => {

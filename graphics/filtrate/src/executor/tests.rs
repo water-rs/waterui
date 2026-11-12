@@ -2180,7 +2180,7 @@ const F16_SEPARABLE: f64 = 2.0;
 /// the horizontal stage, the vertical stage and `from_srgb`: three
 /// writes of encoded values, which decoding amplifies by up to sRGB's
 /// exponent 2.4, and one of the linear result.
-const F16_SEPARABLE_SRGB: f64 = 3.0 * 2.4 + 1.0;
+const F16_SEPARABLE_SRGB: f64 = 3.0f64.mul_add(2.4, 1.0);
 
 /// Runs `filter` on the wgpu executor over f16 textures and on the CPU,
 /// checks they agree to the precision of the `steps` half-float writes on

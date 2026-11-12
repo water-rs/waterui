@@ -86,6 +86,8 @@ mod menu_shortcuts;
 mod mid_flush_subview;
 #[cfg(hydrolysis_gpu_painter)]
 pub mod mirror;
+#[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+mod nav_tabs_look;
 mod navigation_back;
 #[cfg(hydrolysis_gpu_painter)]
 mod navigation_layers;
@@ -166,11 +168,11 @@ use crate::theme::WidgetTheme;
 use crate::theme::{
     BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, Custom, DividerMetrics, DragMapping,
     Driven, FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionFocusBinding,
-    InteractionMotion, Knob, Label, LinearProgressLook, ListMetrics, ModalInteraction, Motion,
-    NavigationMetrics, NavigationMotion, PickerMetrics, PressFeedback, ProgressControl,
-    ProgressSpec, RadioIndicatorState, RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec,
-    StateLayer, StepperLook, StepperSpec, Surface, TabItemGeometry, TabItemLayout, TableMetrics,
-    TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleSpec, ValueIndicator,
+    InteractionMotion, Knob, Label, LinearProgressLook, ListMetrics, MenuLayout, MenuLook,
+    MenuPickerLook, MenuSpec, ModalInteraction, Motion, NavigationBarLook, NavigationSpec,
+    PickerSpec, PressFeedback, ProgressControl, ProgressSpec, RadioGroupLook, SliderLayout,
+    SliderLook, SliderSpec, StateLayer, StepperLook, StepperSpec, Surface, TabItemGeometry,
+    TabItemLayout, TableMetrics, TabsLook, TabsSpec, TextCaretMotion, ToggleSpec, ValueIndicator,
     WidgetInteractionState,
 };
 use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
@@ -179,7 +181,6 @@ use cherenkov_record::{
     MaterialEffect, MaterialRegistry, MaterialShader, Paint, Recorder, Shadow, SharedLive,
     WorkingColor,
 };
-use waterui_core::EasingCurve;
 use waterui_core::handler::SharedAction;
 
 fn test_renderer() -> HydrolysisRenderer<crate::text::ParleyEngine> {
@@ -2784,8 +2785,8 @@ type GlassLookFor =
 
 /// A linear progress bar the theme realized: `(frame, value)`.
 type ProgressBarRealization = (Rect, f64);
-/// A recorded `draw_radio_indicator` call: `(center, state)`.
-type RadioIndicatorDraw = (Point, RadioIndicatorState);
+/// A radio indicator the theme realized: `(frame, selected)`.
+type RadioIndicatorRealization = (Rect, bool);
 
 /// How a test theme's indeterminate progress looks move.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -2821,15 +2822,13 @@ pub struct MinimalTestTheme {
     tabs_bar_draws: Rc<RefCell<Vec<Rect>>>,
     /// Every tabs-bar divider bounds the theme was asked to draw.
     tabs_bar_divider_draws: Rc<RefCell<Vec<Rect>>>,
-    /// Forces the tab item layout the theme reports; `None` defaults to
-    /// `Vertical` like [`WidgetTheme::tabs_item_layout`]'s default.
+    /// Forces the tab item layout the theme's look reports; `None` is
+    /// `Vertical`, the look's layout when it names no horizontal width.
     forced_tab_item_layout: Option<TabItemLayout>,
-    /// `(bar_width, item_count)` arguments the theme was asked for its layout.
-    tabs_layout_queries: Rc<RefCell<Vec<(f64, usize)>>>,
-    /// `(bounds, layout)` for every `draw_tabs_highlight` call.
+    /// `(bounds, layout)` for every highlight the selected tab item records.
     tabs_highlight_draws: Rc<RefCell<Vec<(Rect, TabItemLayout)>>>,
-    /// When set, `tabs_item_layout` answers `Horizontal` from this bar extent
-    /// up — a width-class theme like M3's medium-width boundary.
+    /// When set, the tabs look lays its items out horizontally from this bar
+    /// extent up — a width-class theme like M3's medium-width boundary.
     horizontal_from_width: Option<f64>,
     /// Every frame the slider's value-indicator bubble records on.
     slider_indicator_draws: Rc<RefCell<Vec<Rect>>>,
@@ -2871,8 +2870,8 @@ pub struct MinimalTestTheme {
     progress_specs: Rc<RefCell<Vec<ProgressSpec>>>,
     /// How the indeterminate progress looks move.
     indeterminate_progress: IndeterminateProgress,
-    /// Every `draw_radio_indicator` call.
-    radio_indicator_draws: Rc<RefCell<Vec<RadioIndicatorDraw>>>,
+    /// Every radio indicator the theme realized.
+    radio_indicator_realizations: Rc<RefCell<Vec<RadioIndicatorRealization>>>,
     /// The `InputFieldMetrics` this theme reports; `None` answers the fixture
     /// defaults `input_field_metrics` carries below.
     input_metrics: Option<InputFieldMetrics>,
@@ -3088,6 +3087,54 @@ impl crate::Style for MinimalTestTheme {
     fn install_tokens(&self, _env: &mut Environment) {}
 }
 
+impl MinimalTestTheme {
+    /// The measures of the theme's menus.
+    pub(crate) const fn menu_layout() -> MenuLayout {
+        MenuLayout {
+            row_height: 56.0,
+            horizontal_padding: 16.0,
+            vertical_padding: 12.0,
+            min_width: 112.0,
+            max_width: 320.0,
+            width_per_char: 8.5,
+            corner_radius: 4.0,
+            separator_horizontal_inset: 16.0,
+            separator_thickness: 1.0,
+        }
+    }
+}
+
+/// This theme's tab indicator is a strip: 40 thick and the item's whole
+/// extent, centered, for horizontal items; otherwise 3 thick along the bar
+/// item's top (the sidebar item's trailing edge), as wide (tall) as the
+/// title.
+fn tab_highlight_strip(item: TabItemGeometry) -> Rect {
+    let thickness: f64 = match item.layout {
+        TabItemLayout::Vertical => 3.0,
+        TabItemLayout::Horizontal => 40.0,
+    };
+    let bounds = item.bounds;
+    if matches!(item.layout, TabItemLayout::Horizontal) {
+        let height = thickness.min(bounds.height());
+        let y0 = (bounds.height() - height).mul_add(0.5, bounds.y0);
+        Rect::new(bounds.x0, y0, bounds.x1, y0 + height)
+    } else if matches!(item.placement, NativeTabStyle::Sidebar) {
+        Rect::new(
+            (bounds.x1 - thickness).max(bounds.x0),
+            item.title.y0,
+            bounds.x1,
+            item.title.y1,
+        )
+    } else {
+        Rect::new(
+            item.title.x0,
+            bounds.y0,
+            item.title.x1,
+            (bounds.y0 + thickness).min(bounds.y1),
+        )
+    }
+}
+
 impl WidgetTheme for MinimalTestTheme {
     fn interaction_motion(&self) -> InteractionMotion {
         InteractionMotion {
@@ -3113,15 +3160,6 @@ impl WidgetTheme for MinimalTestTheme {
             fade_cycle_duration: Duration::from_millis(1_060),
             frame_interval: Duration::from_millis(530),
             min_opacity: 0.2,
-        }
-    }
-
-    fn navigation_motion(&self) -> NavigationMotion {
-        NavigationMotion {
-            transition_duration: Duration::from_millis(450),
-            transition_easing: EasingCurve::bezier(0.2, 0.0, 0.0, 1.0),
-            shared_axis_slide_distance: 30.0,
-            fade_through_threshold: 0.35,
         }
     }
 
@@ -3232,93 +3270,52 @@ impl WidgetTheme for MinimalTestTheme {
     ) {
     }
 
-    fn text_context_menu_metrics(&self) -> TextContextMenuMetrics {
-        TextContextMenuMetrics {
-            row_height: 56.0,
-            horizontal_padding: 16.0,
-            vertical_padding: 12.0,
-            min_width: 112.0,
-            max_width: 320.0,
-            width_per_char: 8.5,
-            corner_radius: 4.0,
-            separator_horizontal_inset: 16.0,
-            separator_thickness: 1.0,
-        }
+    fn menu(&self, _spec: &MenuSpec, _env: &Environment) -> MenuLook {
+        let layout = Self::menu_layout();
+        let radii = kurbo::RoundedRectRadii::from_single_radius(layout.corner_radius);
+        MenuLook::new(
+            layout,
+            Custom::new((), move |draw, bounds, ()| {
+                // A level-2-like shadow under the panel, deep enough for
+                // tests to distinguish it from the scrim's uniform dim.
+                draw.shadow(
+                    kurbo::RoundedRect::from_rect(bounds, radii),
+                    Shadow::new(6.0, WorkingColor::new([0.0, 0.0, 0.0, 0.35]))
+                        .offset(kurbo::Vec2::new(0.0, 3.0)),
+                );
+                draw.fill(
+                    kurbo::RoundedRect::from_rect(bounds, radii),
+                    // `WorkingColor` components are linear Display P3; the
+                    // intended panel colour is sRGB (0.96, 0.94, 0.97), so it
+                    // converts rather than passing raw.
+                    Paint::Solid(crate::renderer::working_color(peniko::Color::new([
+                        0.96, 0.94, 0.97, 1.0,
+                    ]))),
+                );
+            }),
+            Custom::new((), |_, _, ()| {}),
+        )
     }
 
-    fn draw_text_context_menu_panel(&self, draw: &mut Recorder, bounds: Rect) {
-        let radii = kurbo::RoundedRectRadii::from_single_radius(
-            self.text_context_menu_metrics().corner_radius,
-        );
-        // A level-2-like shadow under the panel, deep enough for tests to
-        // distinguish it from the scrim's uniform dim.
-        draw.shadow(
-            kurbo::RoundedRect::from_rect(bounds, radii),
-            Shadow::new(6.0, WorkingColor::new([0.0, 0.0, 0.0, 0.35]))
-                .offset(kurbo::Vec2::new(0.0, 3.0)),
-        );
-        draw.fill(
-            kurbo::RoundedRect::from_rect(bounds, radii),
-            // `WorkingColor` components are linear Display P3; the intended
-            // panel colour is sRGB (0.96, 0.94, 0.97), so it converts rather
-            // than passing raw.
-            Paint::Solid(crate::renderer::working_color(peniko::Color::new([
-                0.96, 0.94, 0.97, 1.0,
-            ]))),
-        );
+    fn menu_picker(&self, _spec: &PickerSpec, _env: &Environment) -> MenuPickerLook {
+        crate::testing::plain_menu_picker_look()
     }
 
-    fn draw_text_context_menu_separator(&self, _draw: &mut Recorder, _bounds: Rect) {}
-
-    fn picker_metrics(&self, _style: PickerStyle) -> PickerMetrics {
-        PickerMetrics {
-            min_width: 72.0,
-            min_height: 28.0,
-            horizontal_inset: 8.0,
-            vertical_inset: 6.0,
-            label_spacing: 8.0,
-            indicator_space: 18.0,
-            radio_indicator_size: 16.0,
-            radio_label_spacing: 8.0,
-            radio_row_spacing: 8.0,
-            popup_top_spacing: 4.0,
-            popup_row_height: 48.0,
-            popup_corner_radius: 6.0,
-        }
-    }
-
-    fn radio_selection_motion(&self) -> RadioSelectionMotion {
-        RadioSelectionMotion {
-            inner_grow: Animation::linear(Duration::from_millis(1)),
-            inner_opacity: Animation::linear(Duration::from_millis(1)),
-            outer_color: Animation::linear(Duration::from_millis(1)),
-        }
-    }
-
-    fn draw_picker_indicator(&self, _draw: &mut Recorder, _bounds: Rect) {}
-
-    fn draw_picker_popup(&self, _draw: &mut Recorder, _popup_rect: Rect) {}
-
-    fn draw_picker_popup_row_background(
-        &self,
-        _draw: &mut Recorder,
-        _row_rect: Rect,
-        _selected: bool,
-    ) {
-    }
-
-    fn draw_picker_separator(&self, _draw: &mut Recorder, _separator: Rect) {}
-
-    fn draw_radio_indicator(
-        &self,
-        _draw: &mut Recorder,
-        center: Point,
-        _radius: f64,
-        state: RadioIndicatorState,
-    ) {
-        self.radio_indicator_draws
-            .borrow_mut()
-            .push((center, state));
+    fn radio_group(&self, _spec: &PickerSpec, _env: &Environment) -> RadioGroupLook {
+        let realizations = Rc::clone(&self.radio_indicator_realizations);
+        let plain = crate::testing::plain_radio_group_look();
+        RadioGroupLook::new(
+            plain.indicator().clone().part(Custom::new(
+                (Driven::<bool, bool>::new(move |inputs| {
+                    realizations
+                        .borrow_mut()
+                        .push((inputs.frame, *inputs.value));
+                    *inputs.value
+                }),),
+                |_recorder, _frame, (_selected,)| {},
+            )),
+            plain.layout(),
+        )
     }
 
     fn slider(&self, spec: &SliderSpec, env: &Environment) -> SliderLook {
@@ -3422,96 +3419,58 @@ impl WidgetTheme for MinimalTestTheme {
         })
     }
 
-    fn navigation_metrics(&self) -> NavigationMetrics {
-        NavigationMetrics {
-            automatic_bar_height: 64.0,
-            inline_bar_height: 64.0,
-            medium_bar_height: 112.0,
-            large_bar_height: 152.0,
-            inline_title_height: 28.0,
-            medium_title_height: 36.0,
-            large_title_height: 36.0,
-            title_leading_inset: 16.0,
-            title_trailing_inset: 16.0,
-            large_title_bottom_inset: 28.0,
-            horizontal_inset: 4.0,
-            item_spacing: 0.0,
-            search_height: 56.0,
-            search_vertical_inset: 4.0,
-            back_button_size: 40.0,
-            back_button_leading_inset: 4.0,
-            back_button_top_inset: 12.0,
-        }
+    fn navigation_bar(&self, _spec: &NavigationSpec, _env: &Environment) -> NavigationBarLook {
+        let bar_draws = Rc::clone(&self.navigation_bar_draws);
+        let separator_draws = Rc::clone(&self.navigation_bar_separator_draws);
+        NavigationBarLook::new(
+            crate::testing::plain_navigation_metrics(),
+            crate::testing::plain_navigation_motion(),
+            invisible_chrome(),
+            Custom::new((), move |_recorder, frame, ()| {
+                bar_draws.borrow_mut().push(frame);
+            }),
+        )
+        .separator(Custom::new((), move |_recorder, frame, ()| {
+            separator_draws.borrow_mut().push(frame);
+        }))
     }
 
-    fn draw_navigation_bar(&self, _draw: &mut Recorder, bounds: Rect, _background: &Paint) {
-        self.navigation_bar_draws.borrow_mut().push(bounds);
-    }
-
-    fn draw_navigation_bar_separator(&self, _draw: &mut Recorder, bounds: Rect) {
-        self.navigation_bar_separator_draws
-            .borrow_mut()
-            .push(bounds);
-    }
-    fn draw_navigation_back_button(&self, _draw: &mut Recorder, _bounds: Rect) {}
-    fn tabs_item_layout(&self, bar_width: f64, item_count: usize) -> TabItemLayout {
-        self.tabs_layout_queries
-            .borrow_mut()
-            .push((bar_width, item_count));
-        if let Some(threshold) = self.horizontal_from_width
-            && bar_width >= threshold
-        {
-            return TabItemLayout::Horizontal;
+    fn tabs(&self, _spec: &TabsSpec, _env: &Environment) -> TabsLook {
+        let bar_draws = Rc::clone(&self.tabs_bar_draws);
+        let divider_draws = Rc::clone(&self.tabs_bar_divider_draws);
+        let highlight_draws = Rc::clone(&self.tabs_highlight_draws);
+        let metrics = crate::testing::plain_tabs_metrics();
+        let mut look = TabsLook::new(
+            metrics,
+            Custom::new((), move |_recorder, frame, ()| {
+                bar_draws.borrow_mut().push(frame);
+            }),
+            Custom::new((), move |_recorder, frame, ()| {
+                divider_draws.borrow_mut().push(frame);
+            }),
+            crate::testing::plain_tabs_motion(),
+            |_item, _selected| invisible_chrome(),
+        )
+        .highlight(move |item| {
+            let item = *item;
+            let highlight_draws = Rc::clone(&highlight_draws);
+            Custom::new((), move |_recorder, _frame, ()| {
+                // The selected item's indicator alone is observed: the other
+                // items' highlights are parts at rest.
+                if item.selected {
+                    highlight_draws
+                        .borrow_mut()
+                        .push((tab_highlight_strip(item.geometry), item.geometry.layout));
+                }
+            })
+        });
+        // The layout the theme reports: forced, or by width class.
+        if let Some(threshold) = self.horizontal_from_width {
+            look = look.horizontal(threshold, metrics);
+        } else if self.forced_tab_item_layout == Some(TabItemLayout::Horizontal) {
+            look = look.horizontal(0.0, metrics);
         }
-        self.forced_tab_item_layout
-            .unwrap_or(TabItemLayout::Vertical)
-    }
-    fn tabs_metrics(&self, _layout: TabItemLayout) -> TabsMetrics {
-        TabsMetrics {
-            bar_height: 48.0,
-            button_min_width: 48.0,
-            button_horizontal_inset: 16.0,
-            icon_label_spacing: 4.0,
-        }
-    }
-    fn draw_tabs_bar(&self, _draw: &mut Recorder, surface: Rect) {
-        self.tabs_bar_draws.borrow_mut().push(surface);
-    }
-    fn draw_tabs_bar_divider(&self, _draw: &mut Recorder, divider: Rect) {
-        self.tabs_bar_divider_draws.borrow_mut().push(divider);
-    }
-    fn draw_tabs_highlight(&self, _draw: &mut Recorder, item: TabItemGeometry) {
-        // This theme's indicator is a strip: 40 thick and the item's whole
-        // extent, centered, for horizontal items; otherwise 3 thick along the
-        // bar item's top (the sidebar item's trailing edge), as wide (tall) as
-        // the title.
-        let thickness: f64 = match item.layout {
-            TabItemLayout::Vertical => 3.0,
-            TabItemLayout::Horizontal => 40.0,
-        };
-        let bounds = item.bounds;
-        let strip = if matches!(item.layout, TabItemLayout::Horizontal) {
-            let height = thickness.min(bounds.height());
-            let y0 = (bounds.height() - height).mul_add(0.5, bounds.y0);
-            Rect::new(bounds.x0, y0, bounds.x1, y0 + height)
-        } else if matches!(item.placement, NativeTabStyle::Sidebar) {
-            Rect::new(
-                (bounds.x1 - thickness).max(bounds.x0),
-                item.title.y0,
-                bounds.x1,
-                item.title.y1,
-            )
-        } else {
-            Rect::new(
-                item.title.x0,
-                bounds.y0,
-                item.title.x1,
-                (bounds.y0 + thickness).min(bounds.y1),
-            )
-        };
-        self.tabs_highlight_draws
-            .borrow_mut()
-            .push((strip, item.layout));
+        look
     }
     fn draw_scroll_indicator(&self, _draw: &mut Recorder, _bounds: Rect) {}
 

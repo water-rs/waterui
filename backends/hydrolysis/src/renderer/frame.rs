@@ -342,8 +342,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let live_dynamics = self
             .render_tree
             .as_ref()
-            .map(RenderNode::collect_dynamic_identities)
-            .unwrap_or_default();
+            .map_or_default(RenderNode::collect_dynamic_identities);
         self.prune_dynamic_measurements(&live_dynamics);
 
         // The frame's window-level record closes before materialization:

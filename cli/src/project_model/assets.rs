@@ -476,17 +476,13 @@ fn crate_metadata_command(
 /// The features cargo resolved on each package of `metadata`'s graph — what
 /// every feature-gated declaration is checked against.
 fn resolved_features(metadata: &cargo_metadata::Metadata) -> HashMap<&PackageId, HashSet<&str>> {
-    metadata
-        .resolve
-        .as_ref()
-        .map(|resolve| {
-            resolve
-                .nodes
-                .iter()
-                .map(|node| (&node.id, node.features.iter().map(|f| f.as_str()).collect()))
-                .collect()
-        })
-        .unwrap_or_default()
+    metadata.resolve.as_ref().map_or_default(|resolve| {
+        resolve
+            .nodes
+            .iter()
+            .map(|node| (&node.id, node.features.iter().map(|f| f.as_str()).collect()))
+            .collect()
+    })
 }
 
 /// Whether cargo resolved `feature` on `package`.
@@ -3436,7 +3432,7 @@ fn required_permissions(
             required.push(RequiredPermission {
                 package: package.name.to_string(),
                 key,
-                reason: requirement.reason.clone(),
+                reason: requirement.reason,
                 evidence: PermissionEvidence::Declared,
             });
         }

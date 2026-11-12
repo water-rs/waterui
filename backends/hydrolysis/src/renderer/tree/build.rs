@@ -480,7 +480,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let view = match view.downcast::<Metadata<PopupMenuSurface>>() {
             Ok(meta) => {
                 return Self::build_wrapper(
-                    WrapperEffect::PopupMenuSurface,
+                    WrapperEffect::PopupMenuSurface(meta.value.selected_row),
                     meta.content,
                     env,
                     renderer,

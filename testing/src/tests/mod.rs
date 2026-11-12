@@ -300,11 +300,11 @@ mod token_probe {
     use hydrolysis::theme::{
         BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, DividerMetrics, DragMapping,
         FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionMotion, Knob,
-        Label, LinearProgressLook, ListMetrics, Motion, NavigationMetrics, NavigationMotion,
-        PickerMetrics, PressFeedback, ProgressControl, ProgressSpec, RadioIndicatorState,
-        RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook,
-        StepperSpec, Surface, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics,
-        TextCaretMotion, TextContextMenuMetrics, ToggleSpec, WidgetInteractionState, WidgetTheme,
+        Label, LinearProgressLook, ListMetrics, MenuLook, MenuPickerLook, MenuSpec, Motion,
+        NavigationBarLook, NavigationSpec, PickerSpec, PressFeedback, ProgressControl,
+        ProgressSpec, RadioGroupLook, SliderLayout, SliderLook, SliderSpec, StateLayer,
+        StepperLook, StepperSpec, Surface, TableMetrics, TabsLook, TabsSpec, TextCaretMotion,
+        ToggleSpec, WidgetInteractionState, WidgetTheme,
     };
     use hydrolysis::theme::{CheckboxLook, SwitchDrag, SwitchLook};
     use kurbo::{Point, Rect};
@@ -312,12 +312,11 @@ mod token_probe {
     use waterui::color::Srgb;
     use waterui::component::text;
     use waterui::env::use_env;
-    use waterui::form::picker::PickerStyle;
     use waterui::graphics::backend::draw::{Paint, Recorder};
     use waterui::reactive::constant;
     use waterui::text::font::Font;
     use waterui::theme::{color as theme_color, install_color_signal, installed_color_signal};
-    use waterui::{Color, EasingCurve, Environment, Signal as _, SignalExt as _, View};
+    use waterui::{Color, Environment, Signal as _, SignalExt as _, View};
 
     use crate::Style;
 
@@ -384,15 +383,6 @@ mod token_probe {
             }
         }
 
-        fn navigation_motion(&self) -> NavigationMotion {
-            NavigationMotion {
-                transition_duration: Duration::from_millis(450),
-                transition_easing: EasingCurve::bezier(0.2, 0.0, 0.0, 1.0),
-                shared_axis_slide_distance: 30.0,
-                fade_through_threshold: 0.35,
-            }
-        }
-
         fn button(&self, _spec: &ButtonSpec, _env: &Environment) -> ButtonLook {
             let chrome = Chrome::new(
                 Surface::clear(CornerShape::radius(0.0)),
@@ -421,6 +411,18 @@ mod token_probe {
 
         fn stepper(&self, _spec: &StepperSpec, _env: &Environment) -> StepperLook {
             hydrolysis::testing::plain_stepper_look()
+        }
+
+        fn menu(&self, _spec: &MenuSpec, _env: &Environment) -> MenuLook {
+            hydrolysis::testing::plain_menu_look()
+        }
+
+        fn menu_picker(&self, _spec: &PickerSpec, _env: &Environment) -> MenuPickerLook {
+            hydrolysis::testing::plain_menu_picker_look()
+        }
+
+        fn radio_group(&self, _spec: &PickerSpec, _env: &Environment) -> RadioGroupLook {
+            hydrolysis::testing::plain_radio_group_look()
         }
 
         fn segmented_picker(
@@ -458,72 +460,6 @@ mod token_probe {
             _recorder: &mut Recorder,
             _bounds: Rect,
             _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn text_context_menu_metrics(&self) -> TextContextMenuMetrics {
-            TextContextMenuMetrics {
-                row_height: 56.0,
-                horizontal_padding: 16.0,
-                vertical_padding: 12.0,
-                min_width: 112.0,
-                max_width: 320.0,
-                width_per_char: 8.5,
-                corner_radius: 4.0,
-                separator_horizontal_inset: 16.0,
-                separator_thickness: 1.0,
-            }
-        }
-
-        fn draw_text_context_menu_panel(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn draw_text_context_menu_separator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn picker_metrics(&self, _style: PickerStyle) -> PickerMetrics {
-            PickerMetrics {
-                min_width: 72.0,
-                min_height: 28.0,
-                horizontal_inset: 8.0,
-                vertical_inset: 6.0,
-                label_spacing: 8.0,
-                indicator_space: 18.0,
-                radio_indicator_size: 16.0,
-                radio_label_spacing: 8.0,
-                radio_row_spacing: 8.0,
-                popup_top_spacing: 4.0,
-                popup_row_height: 48.0,
-                popup_corner_radius: 6.0,
-            }
-        }
-
-        fn radio_selection_motion(&self) -> RadioSelectionMotion {
-            RadioSelectionMotion {
-                inner_grow: Animation::linear(Duration::from_millis(1)),
-                inner_opacity: Animation::linear(Duration::from_millis(1)),
-                outer_color: Animation::linear(Duration::from_millis(1)),
-            }
-        }
-
-        fn draw_picker_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn draw_picker_popup(&self, _recorder: &mut Recorder, _popup_rect: Rect) {}
-
-        fn draw_picker_popup_row_background(
-            &self,
-            _recorder: &mut Recorder,
-            _row_rect: Rect,
-            _selected: bool,
-        ) {
-        }
-
-        fn draw_picker_separator(&self, _recorder: &mut Recorder, _separator: Rect) {}
-
-        fn draw_radio_indicator(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _state: RadioIndicatorState,
         ) {
         }
 
@@ -572,49 +508,14 @@ mod token_probe {
             ))
         }
 
-        fn navigation_metrics(&self) -> NavigationMetrics {
-            NavigationMetrics {
-                automatic_bar_height: 64.0,
-                inline_bar_height: 64.0,
-                medium_bar_height: 112.0,
-                large_bar_height: 152.0,
-                inline_title_height: 28.0,
-                medium_title_height: 36.0,
-                large_title_height: 36.0,
-                title_leading_inset: 16.0,
-                title_trailing_inset: 16.0,
-                large_title_bottom_inset: 28.0,
-                horizontal_inset: 4.0,
-                item_spacing: 0.0,
-                search_height: 56.0,
-                search_vertical_inset: 4.0,
-                back_button_size: 40.0,
-                back_button_leading_inset: 4.0,
-                back_button_top_inset: 12.0,
-            }
+        fn navigation_bar(&self, _spec: &NavigationSpec, _env: &Environment) -> NavigationBarLook {
+            hydrolysis::testing::plain_navigation_look()
         }
 
-        fn draw_navigation_bar(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _background: &Paint,
-        ) {
+        fn tabs(&self, _spec: &TabsSpec, _env: &Environment) -> TabsLook {
+            hydrolysis::testing::plain_tabs_look()
         }
 
-        fn draw_navigation_bar_separator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_navigation_back_button(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn tabs_metrics(&self, _layout: TabItemLayout) -> TabsMetrics {
-            TabsMetrics {
-                bar_height: 48.0,
-                button_min_width: 48.0,
-                button_horizontal_inset: 16.0,
-                icon_label_spacing: 4.0,
-            }
-        }
-        fn draw_tabs_bar(&self, _recorder: &mut Recorder, _surface: Rect) {}
-        fn draw_tabs_bar_divider(&self, _recorder: &mut Recorder, _divider: Rect) {}
-        fn draw_tabs_highlight(&self, _recorder: &mut Recorder, _item: TabItemGeometry) {}
         fn draw_scroll_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
 
         fn divider_metrics(&self) -> DividerMetrics {

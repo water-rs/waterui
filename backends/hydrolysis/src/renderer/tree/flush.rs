@@ -96,7 +96,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 WrapperEffect::Clip(_)
                     | WrapperEffect::Border(_)
                     | WrapperEffect::Shadow(_)
-                    | WrapperEffect::PopupMenuSurface
+                    | WrapperEffect::PopupMenuSurface(_)
                     | WrapperEffect::Material(_)
                     | WrapperEffect::NavigationTransitionSource(_)
                     | WrapperEffect::NavigationTransitionDestination(_)
@@ -482,10 +482,16 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                         renderer.material_group_scopes.pop();
                     }
-                    WrapperEffect::PopupMenuSurface => {
-                        HydrolysisRenderer::apply_popup_menu_surface(renderer, ctx, |r| {
-                            node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
-                        });
+                    WrapperEffect::PopupMenuSurface(selected_row) => {
+                        HydrolysisRenderer::apply_popup_menu_surface(
+                            renderer,
+                            ctx,
+                            child_env,
+                            *selected_row,
+                            |r| {
+                                node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
+                            },
+                        );
                     }
                     WrapperEffect::AnchoredOverlay(value) => {
                         HydrolysisRenderer::apply_anchored_overlay(

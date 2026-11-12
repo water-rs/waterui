@@ -1299,8 +1299,7 @@ mod platform {
             let label = item
                 .title
                 .as_ref()
-                .map(|title| title.snapshot().to_plain().to_string())
-                .unwrap_or_default();
+                .map_or_default(|title| title.snapshot().to_plain().to_string());
             match item.icon.as_ref() {
                 Some(BarItemIcon::System(name)) => ToolbarChild {
                     view: HostedItem {

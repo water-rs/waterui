@@ -2301,8 +2301,7 @@ fn scene_clip_stack(layer: &Layer, tf: Affine, _w: usize, _h: usize) -> Vec<Vec<
     layer
         .clip
         .as_ref()
-        .map(|c| vec![shape_edges(c, tf)])
-        .unwrap_or_default()
+        .map_or_default(|c| vec![shape_edges(c, tf)])
 }
 
 #[cfg(test)]

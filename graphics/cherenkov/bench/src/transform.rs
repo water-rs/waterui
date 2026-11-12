@@ -373,15 +373,16 @@ mod tests {
         let scene = scene_with(vec![fill(0.0)]);
         let out = repeated(&scene, 4);
         let w = f64::from(scene.width);
-        for i in 0..4usize {
+        assert_eq!(out.root.items.len(), 4);
+        for (i, item) in (0u32..).zip(&out.root.items) {
             let Item::Draw(Draw::Fill {
                 shape: Shape::Rect(r),
                 ..
-            }) = &out.root.items[i]
+            }) = item
             else {
                 panic!("expected a rect fill");
             };
-            let d = copy_offset(u32::try_from(i).expect("i < 4"), scene.width, scene.height);
+            let d = copy_offset(i, scene.width, scene.height);
             assert!(d.x >= 0.0 && d.x < w);
             assert!((r.x0 - d.x).abs() < f64::EPSILON);
         }

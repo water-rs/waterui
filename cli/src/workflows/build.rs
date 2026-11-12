@@ -2255,7 +2255,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         let flags = config
             .rustflags(self.triple.to_string().as_str())
             .map_err(rustflags_resolution_error)?;
-        Ok(flags.map(|flags| flags.flags).unwrap_or_default())
+        Ok(flags.map_or_default(|flags| flags.flags))
     }
 
     /// `rustc` resolving to the toolchain the cargo invocation runs under:

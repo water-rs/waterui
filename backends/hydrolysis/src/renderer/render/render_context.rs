@@ -158,8 +158,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         grow_rect(
             self.bounds,
             self.content_area_for(self.bounds)
-                .map(|area| area.touched_edge_offsets())
-                .unwrap_or_default(),
+                .map_or_default(|area| area.touched_edge_offsets()),
         )
     }
 

@@ -4,11 +4,12 @@ use std::rc::Rc;
 
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::live_tabs::{LiveTabsParts, TabsFrames};
 use crate::renderer::{
     Edge, HydroNativeView, HydroState, RetainedSubview, WidgetRenderContext, measure_tabs_layout,
     tabs_button_rect, tabs_content_proposal,
 };
-use crate::theme::{TabItemGeometry, TabItemLayout};
+use crate::theme::{TabItemGeometry, TabItemLayout, TabsLook, TabsSpec, WidgetTheme};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -83,6 +84,12 @@ pub struct TabsRenderState<E: crate::text::TextEngine> {
     /// borrow drops.
     pending_selection: Cell<Option<Id>>,
     tabs_dirty: Rc<Cell<bool>>,
+    /// The look the theme gave for the container's spec, held while the
+    /// spec stays the same.
+    look: Option<(TabsSpec, TabsLook)>,
+    /// The parts recorded from the look, held while the look, the frames
+    /// and the tabs stay the same.
+    parts: Option<LiveTabsParts>,
     _watch: BoxWatcherGuard,
 }
 
@@ -116,11 +123,47 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
             snapshot,
             pending_selection: Cell::new(None),
             tabs_dirty,
+            look: None,
+            parts: None,
             _watch: watch,
         };
         state.reconcile();
         state.flush_pending_selection();
         state
+    }
+
+    /// The container's spec.
+    const fn spec(&self) -> TabsSpec {
+        TabsSpec::new(self.style)
+    }
+
+    /// The look for the container's spec in `env`: the one already held
+    /// when the spec is unchanged, otherwise requested again, which drops
+    /// the parts recorded from the old one.
+    fn look(&mut self, theme: &Rc<dyn WidgetTheme>, env: &Environment) -> TabsLook {
+        let spec = self.spec();
+        if self.held(spec).is_none() {
+            self.parts = None;
+            self.look = Some((spec, theme.tabs(&spec, env)));
+        }
+        self.held(spec).expect("the look was just ensured").clone()
+    }
+
+    fn held(&self, spec: TabsSpec) -> Option<&TabsLook> {
+        self.look
+            .as_ref()
+            .filter(|(held, _)| *held == spec)
+            .map(|(_, look)| look)
+    }
+
+    /// The look for the container's spec in `env` without holding it: the
+    /// held one, or a fresh one for a measurement ahead of the render that
+    /// holds it.
+    fn peek(&self, theme: &Rc<dyn WidgetTheme>, env: &Environment) -> TabsLook {
+        let spec = self.spec();
+        self.held(spec)
+            .cloned()
+            .unwrap_or_else(|| theme.tabs(&spec, env))
     }
 
     /// Applies the membership change the watcher reported, when there is
@@ -427,8 +470,9 @@ pub fn measure_tabs_node<E: crate::text::TextEngine>(
         .collect();
     // Decide the layout once from the bar's own extent so the measured bar
     // and the drawn bar answer the same layout (see `tabs_decide_layout`).
+    let look = state.peek(theme, env);
     let (layout, metrics) = tabs_decide_layout(
-        theme,
+        &look,
         state.style,
         proposal.width.map(f64::from),
         &item_sizes,
@@ -481,11 +525,14 @@ pub fn render_tabs_node<E: crate::text::TextEngine>(
     // split: `render_tabs_parts` draws the bar the split carved, so the
     // layout it places items under is the one the band was derived from.
     let dock_edge = tabs_dock_edge(style, waterui_layout::layout_direction(env).snapshot());
-    let (chrome, layout, theme_metrics) = {
+    let look = {
         let theme = ctx.theme();
-        let extent = tabs_bar_item_extent(ctx.bounds.width(), style, &theme);
-        let layout = theme.tabs_item_layout(extent, state.borrow().tabs.len());
-        let metrics = theme.tabs_metrics(layout);
+        state.borrow_mut().look(&theme, env)
+    };
+    let (chrome, layout, theme_metrics) = {
+        let extent = tabs_bar_item_extent(ctx.bounds.width(), style, &look);
+        let layout = look.item_layout(extent);
+        let metrics = look.metrics(layout);
         (
             ctx.chrome_splits([(dock_edge, metrics.bar_height)]),
             layout,
@@ -540,7 +587,37 @@ pub fn render_tabs_node<E: crate::text::TextEngine>(
             );
         }
     }
-    render_tabs_parts(ctx, state, env, chrome, layout, theme_metrics, dock_edge);
+    render_tabs_parts(
+        ctx,
+        state,
+        env,
+        TabsPlacement {
+            chrome,
+            look,
+            layout,
+            metrics: theme_metrics,
+            dock_edge,
+        },
+    );
+}
+
+/// How a render places a tab container: the chrome split its bar was carved
+/// from, its look, and the item layout and measures decided with that split.
+struct TabsPlacement {
+    chrome: crate::renderer::ChromeGroup<1>,
+    look: TabsLook,
+    layout: TabItemLayout,
+    metrics: crate::theme::TabsMetrics,
+    dock_edge: Edge,
+}
+
+/// One tab item as a render places it: its button, where its icon and label
+/// lie and the geometry its parts follow.
+struct ItemPlan {
+    button: kurbo::Rect,
+    icon: Option<kurbo::Rect>,
+    label: kurbo::Rect,
+    geometry: TabItemGeometry,
 }
 
 #[expect(
@@ -551,11 +628,15 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<TabsRenderState<E>>>,
     env: &Environment,
-    chrome: crate::renderer::ChromeGroup<1>,
-    layout: TabItemLayout,
-    theme_metrics: crate::theme::TabsMetrics,
-    dock_edge: Edge,
+    placement: TabsPlacement,
 ) {
+    let TabsPlacement {
+        chrome,
+        look,
+        layout,
+        metrics: theme_metrics,
+        dock_edge,
+    } = placement;
     let (selection, style, tab_count, relocation) = {
         let mut st = state.borrow_mut();
         st.reconcile();
@@ -592,111 +673,142 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
     // spanning the surface's reach, so a strip's divider runs from the
     // window's top edge to its bottom one.
     let bar_surface = bar.surface(dock_edge);
-    {
-        let theme = ctx.theme();
-        ctx.draw_context(|draw| {
-            theme.draw_tabs_bar(&mut *draw, bar_surface);
-            let divider = match style {
-                NativeTabStyle::Sidebar => {
-                    // One pixel on the band's inner edge — the right edge
-                    // of a left-docked strip, the left edge of a
-                    // right-docked one under right-to-left.
-                    let inner = dock_edge.inner_edge(bar_rect);
-                    match dock_edge {
-                        Edge::Leading => kurbo::Rect::new(
-                            (inner - 1.0).max(bar_rect.x0),
-                            bar_surface.y0,
-                            inner,
-                            bar_surface.y1,
-                        ),
-                        _ => kurbo::Rect::new(
-                            inner,
-                            bar_surface.y0,
-                            (inner + 1.0).min(bar_rect.x1),
-                            bar_surface.y1,
-                        ),
-                    }
-                }
-                NativeTabStyle::Automatic | NativeTabStyle::TabBar => kurbo::Rect::new(
-                    bar_surface.x0,
-                    bar_rect.y0,
-                    bar_surface.x1,
-                    (bar_rect.y0 + 1.0).min(bar_rect.y1),
+    let divider = match style {
+        NativeTabStyle::Sidebar => {
+            // One pixel on the band's inner edge — the right edge of a
+            // left-docked strip, the left edge of a right-docked one under
+            // right-to-left.
+            let inner = dock_edge.inner_edge(bar_rect);
+            match dock_edge {
+                Edge::Leading => kurbo::Rect::new(
+                    (inner - 1.0).max(bar_rect.x0),
+                    bar_surface.y0,
+                    inner,
+                    bar_surface.y1,
                 ),
-            };
-            theme.draw_tabs_bar_divider(&mut *draw, divider);
-        });
-    }
+                _ => kurbo::Rect::new(
+                    inner,
+                    bar_surface.y0,
+                    (inner + 1.0).min(bar_rect.x1),
+                    bar_surface.y1,
+                ),
+            }
+        }
+        NativeTabStyle::Automatic | NativeTabStyle::TabBar => kurbo::Rect::new(
+            bar_surface.x0,
+            bar_rect.y0,
+            bar_surface.x1,
+            (bar_rect.y0 + 1.0).min(bar_rect.y1),
+        ),
+    };
 
-    for index in 0..tab_count {
-        let button_rect = tabs_button_rect(bar_rect, tab_count, index, style);
-        let tab_id = state.borrow().tabs[index].tag;
-        let interaction_key = crate::renderer::InteractionKey::for_rc(
-            state,
-            crate::num_cast::i32_as_u32(i32::from(tab_id)) as usize,
-        );
-        // The label and icon sub-views are prebuilt (node path:
-        // `prebuild_labels`; dispatch path: `render` calls `prebuild_labels`),
-        // so measure them directly for placement.
-        let (label_size, icon_size) = {
-            let cell = state.borrow();
-            let theme = ctx.theme();
-            let label_size =
-                cell.tabs[index]
-                    .label
-                    .measure_built(ctx.state_mut(), &label_env, &theme);
-            let icon_size = cell.tabs[index]
-                .icon
-                .as_ref()
-                .map(|icon| icon.measure_built(ctx.state_mut(), env, &theme));
-            (label_size, icon_size)
-        };
-        let (icon_rect, label_rect) =
-            tabs_item_content_rects(button_rect, icon_size, label_size, &theme_metrics, layout);
-        {
-            let hit_transform = ctx.renderer_mut().current_hit_transform();
-            let hit_bounds = button_rect;
-            let (interaction, press_slot, _) =
-                ctx.renderer_mut()
-                    .bind_interaction_target(interaction_key, hit_bounds, env);
-            let interaction = crate::renderer::local_interaction_state(interaction, hit_transform);
-            let is_selected = Some(index) == selected_index;
+    // Each item's rects and geometry first: the look's parts are realized
+    // from all of them together, and recorded once while they hold.
+    let plans: Vec<ItemPlan> = (0..tab_count)
+        .map(|index| {
+            let button = tabs_button_rect(bar_rect, tab_count, index, style);
+            // The label and icon sub-views are prebuilt (node path:
+            // `prebuild_labels`; dispatch path: `render` calls `prebuild_labels`),
+            // so measure them directly for placement.
+            let (label_size, icon_size) = {
+                let cell = state.borrow();
+                let theme = ctx.theme();
+                let label_size =
+                    cell.tabs[index]
+                        .label
+                        .measure_built(ctx.state_mut(), &label_env, &theme);
+                let icon_size = cell.tabs[index]
+                    .icon
+                    .as_ref()
+                    .map(|icon| icon.measure_built(ctx.state_mut(), env, &theme));
+                (label_size, icon_size)
+            };
+            let (icon, label) =
+                tabs_item_content_rects(button, icon_size, label_size, &theme_metrics, layout);
             // A horizontal item's indicator and state layer hug the icon+label
             // content grown by the button inset, not the whole button share;
             // vertical items keep the button-wide bounds. The hit target stays
             // the full button rect either way.
-            let chrome_bounds = match layout {
+            let bounds = match layout {
                 TabItemLayout::Horizontal => {
-                    let content_x0 =
-                        icon_rect.map_or(label_rect.x0, |rect| rect.x0.min(label_rect.x0));
-                    let content_x1 =
-                        icon_rect.map_or(label_rect.x1, |rect| rect.x1.max(label_rect.x1));
+                    let content_x0 = icon.map_or(label.x0, |rect| rect.x0.min(label.x0));
+                    let content_x1 = icon.map_or(label.x1, |rect| rect.x1.max(label.x1));
                     let inset = theme_metrics.button_horizontal_inset;
                     kurbo::Rect::new(
-                        (content_x0 - inset).max(button_rect.x0),
-                        button_rect.y0,
-                        (content_x1 + inset).min(button_rect.x1),
-                        button_rect.y1,
+                        (content_x0 - inset).max(button.x0),
+                        button.y0,
+                        (content_x1 + inset).min(button.x1),
+                        button.y1,
                     )
                 }
-                TabItemLayout::Vertical => button_rect,
+                TabItemLayout::Vertical => button,
             };
-            {
-                let theme = ctx.theme();
-                let item = TabItemGeometry {
-                    bounds: chrome_bounds,
-                    icon: icon_rect,
-                    title: label_rect,
+            ItemPlan {
+                button,
+                icon,
+                label,
+                geometry: TabItemGeometry {
+                    bounds,
+                    icon,
+                    title: label,
                     layout,
                     placement: style,
-                };
-                ctx.draw_context(|draw| {
-                    if is_selected {
-                        theme.draw_tabs_highlight(&mut *draw, item);
-                    }
-                    theme.draw_tabs_button_state_layer(&mut *draw, item, is_selected, interaction);
-                });
+                },
             }
+        })
+        .collect();
+    let tags: Vec<Id> = state.borrow().tabs.iter().map(|tab| tab.tag).collect();
+    let frames = TabsFrames {
+        surface: bar_surface,
+        divider,
+        items: plans.iter().map(|plan| plan.geometry).collect(),
+    };
+    let parts = LiveTabsParts::ensure(
+        &mut state.borrow_mut().parts,
+        &look,
+        frames,
+        &tags,
+        selected_index,
+        &selection,
+        env,
+    )
+    .clone();
+    let live = Rc::clone(parts.tabs());
+    // Each item binds its own interaction on its own touch target, and its
+    // chrome follows what the handles report.
+    let targets: Vec<_> = plans
+        .iter()
+        .zip(&tags)
+        .enumerate()
+        .map(|(index, (plan, tag))| {
+            let key = crate::renderer::InteractionKey::for_rc(
+                state,
+                crate::num_cast::i32_as_u32(i32::from(*tag)) as usize,
+            );
+            let item_chrome = live.chrome(index);
+            let target = item_chrome
+                .get_hit()
+                .target(plan.button, item_chrome.frame(plan.geometry.bounds));
+            let (_, press_slot, handles) = ctx.renderer_mut().bind_live_chrome_target(
+                key.clone(),
+                target,
+                env,
+                false,
+                item_chrome,
+            );
+            let flags = ctx.renderer_mut().reported_interaction_state(&key);
+            live.sync(index, flags);
+            handles.attach_live_tab(Rc::clone(&live), index);
+            (target, press_slot)
+        })
+        .collect();
+    let render_ctx = ctx.render_context();
+    parts.push(ctx.renderer_mut(), render_ctx);
+
+    for (index, (plan, (target, press_slot))) in plans.iter().zip(targets).enumerate() {
+        let (button_rect, icon_rect, label_rect) = (plan.button, plan.icon, plan.label);
+        let tab_id = tags[index];
+        {
             let selection_binding = selection.clone();
             let enabled = {
                 let st = state.borrow();
@@ -704,7 +816,7 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
             };
             if enabled {
                 ctx.renderer_mut().register_interactive_pointer_target(
-                    hit_bounds,
+                    target,
                     press_slot,
                     move |_renderer, _point, _env| {
                         if selection_binding.snapshot() != tab_id {
@@ -823,23 +935,23 @@ const fn tabs_dock_edge(style: NativeTabStyle, direction: LayoutDirection) -> Ed
     }
 }
 
-/// The extent a style's tab bar reports to `WidgetTheme::tabs_item_layout`
-/// when the container is `container_width` wide: a bottom bar's extent is the
+/// The extent a style's tab bar reports to [`TabsLook::item_layout`] when
+/// the container is `container_width` wide: a bottom bar's extent is the
 /// container's width; a sidebar strip reports its own thickness — the
 /// vertical metrics' `bar_height` — which never widens into the pane.
-pub fn tabs_bar_item_extent(
+pub const fn tabs_bar_item_extent(
     container_width: f64,
     style: NativeTabStyle,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
+    look: &TabsLook,
 ) -> f64 {
     match style {
-        NativeTabStyle::Sidebar => theme.tabs_metrics(TabItemLayout::Vertical).bar_height,
+        NativeTabStyle::Sidebar => look.metrics(TabItemLayout::Vertical).bar_height,
         NativeTabStyle::Automatic | NativeTabStyle::TabBar => container_width,
     }
 }
 
 /// Decides the bar's item layout and metrics once for a measure pass: the
-/// theme answers `tabs_item_layout` from the bar's own extent (see
+/// look answers [`TabsLook::item_layout`] from the bar's own extent (see
 /// [`tabs_bar_item_extent`]) computed from `item_sizes`, so the bar this pass
 /// measures and the one the render pass draws under the same bounds agree.
 #[expect(
@@ -847,18 +959,18 @@ pub fn tabs_bar_item_extent(
     reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
 )]
 pub fn tabs_decide_layout(
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
+    look: &TabsLook,
     style: NativeTabStyle,
     proposed_width: Option<f64>,
     item_sizes: &[(LayoutSize, Option<LayoutSize>)],
 ) -> (TabItemLayout, crate::theme::TabsMetrics) {
     let extent = match proposed_width {
-        Some(width) => tabs_bar_item_extent(width, style, theme),
+        Some(width) => tabs_bar_item_extent(width, style, look),
         None => {
             if style == NativeTabStyle::Sidebar {
-                tabs_bar_item_extent(0.0, style, theme)
+                tabs_bar_item_extent(0.0, style, look)
             } else {
-                let vertical_metrics = theme.tabs_metrics(TabItemLayout::Vertical);
+                let vertical_metrics = look.metrics(TabItemLayout::Vertical);
                 item_sizes
                     .iter()
                     .map(|(label_size, icon_size)| {
@@ -873,8 +985,8 @@ pub fn tabs_decide_layout(
             }
         }
     };
-    let layout = theme.tabs_item_layout(extent, item_sizes.len());
-    (layout, theme.tabs_metrics(layout))
+    let layout = look.item_layout(extent);
+    (layout, look.metrics(layout))
 }
 
 /// A tab item's natural width for the bar's item layout: icon above the label
