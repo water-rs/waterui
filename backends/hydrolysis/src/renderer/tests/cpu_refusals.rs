@@ -6,6 +6,10 @@
 //! it; a build without the `gpu` feature compiles no realization for it and
 //! refuses it at measure and node build. A filtered view runs on the CPU
 //! raster unless the raster cannot run it, which its refusal names.
+//!
+//! Each refusal is a contract violation: a debug build panics with it, which
+//! these tests read; a release build logs it and the frame renders without
+//! the refused content.
 
 use waterui::ViewExt as _;
 use waterui::graphics::Color;
@@ -98,9 +102,13 @@ fn an_external_frame_is_refused_by_name() {
 }
 
 #[test]
-#[should_panic(
-    expected = "hydrolysis: a filtered view cannot run on the Cherenkov CPU backend: the view \
-                declares an output size, which the CPU raster does not resize to"
+#[cfg_attr(
+    debug_assertions,
+    should_panic(
+        expected = "hydrolysis: a filtered view cannot run on the Cherenkov CPU backend: the view \
+                    declares an output size, which the CPU raster does not resize to; the layer \
+                    draws without its filter"
+    )
 )]
 fn a_filter_output_size_is_refused_with_its_reason() {
     render_on_cpu(
