@@ -205,9 +205,7 @@ pub fn measure_date_picker_node<E: crate::text::TextEngine>(
         field_text_width = field_text_width.max(f64::from(size.width));
         field_text_height = field_text_height.max(f64::from(size.height));
     }
-    let field_width = (metrics
-        .horizontal_inset
-        .mul_add(2.0, field_text_width)
+    let field_width = (metrics.horizontal_inset.mul_add(2.0, field_text_width)
         + metrics.indicator_space)
         .max(metrics.min_width);
     let field_height = metrics
