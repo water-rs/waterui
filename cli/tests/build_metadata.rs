@@ -1,4 +1,6 @@
 //! Exercise the actual CLI build script in isolated warm Cargo/Git packages.
+//! Which Git operations rerun the script, across ref storages and
+//! worktrees, is `waterui-git-head`'s contract and is tested there.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -35,6 +37,28 @@ fn git(directory: &Path) -> std::io::Result<Command> {
     Ok(command)
 }
 
+/// The directory of the `waterui-git-head` package the build script
+/// depends on, as the workspace metadata places it.
+fn git_head_package() -> std::io::Result<PathBuf> {
+    let output = run(Host::current()
+        .std_command(env!("CARGO"))?
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["metadata", "--format-version=1", "--no-deps", "--offline"]));
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("cargo metadata JSON");
+    let manifest = metadata["packages"]
+        .as_array()
+        .expect("cargo metadata lists packages")
+        .iter()
+        .find(|package| package["name"] == "waterui-git-head")
+        .and_then(|package| package["manifest_path"].as_str())
+        .expect("the workspace contains waterui-git-head");
+    Ok(Path::new(manifest)
+        .parent()
+        .expect("a manifest path names a file in its package directory")
+        .to_path_buf())
+}
+
 impl Fixture {
     fn new() -> std::io::Result<Self> {
         let root = tempfile::tempdir().expect("isolated CLI metadata fixture");
@@ -53,6 +77,10 @@ impl Fixture {
             std::fs::write(package.join(path), source).expect("fixture input");
         }
         let fixture = Self { root, package };
+        run(fixture
+            .cargo()?
+            .args(["add", "--offline", "--build", "--path"])
+            .arg(git_head_package()?));
         run(fixture.cargo()?.args(["generate-lockfile", "--offline"]));
         Ok(fixture)
     }
@@ -135,49 +163,6 @@ impl Fixture {
 fn ordinary_branch_updates_refresh_cli_identity() -> std::io::Result<()> {
     let fixture = Fixture::new()?;
     fixture.initialize()?;
-    fixture.check(&fixture.identity()?)?;
-    fixture.commit()?;
-    fixture.check(&fixture.identity()?)?;
-    Ok(())
-}
-
-#[test]
-fn linked_branch_updates_refresh_cli_identity() -> std::io::Result<()> {
-    let mut fixture = Fixture::new()?;
-    fixture.initialize()?;
-    let linked = fixture.root.path().join("linked");
-    run(git(&fixture.package)?
-        .args(["worktree", "add", "-b", "linked"])
-        .arg(&linked));
-    fixture.package = linked;
-    fixture.check(&fixture.identity()?)?;
-    fixture.commit()?;
-    fixture.check(&fixture.identity()?)?;
-    Ok(())
-}
-
-#[test]
-fn packed_ref_updates_refresh_cli_identity() -> std::io::Result<()> {
-    let mut fixture = Fixture::new()?;
-    fixture.initialize()?;
-    let linked = fixture.root.path().join("linked");
-    run(git(&fixture.package)?
-        .args(["worktree", "add", "-b", "linked"])
-        .arg(&linked));
-    fixture.package = linked;
-    run(git(&fixture.package)?.args(["pack-refs", "--all", "--prune"]));
-    fixture.check(&fixture.identity()?)?;
-    fixture.commit()?;
-    run(git(&fixture.package)?.args(["pack-refs", "--all", "--prune"]));
-    fixture.check(&fixture.identity()?)?;
-    Ok(())
-}
-
-#[test]
-fn detached_head_updates_refresh_cli_identity() -> std::io::Result<()> {
-    let fixture = Fixture::new()?;
-    fixture.initialize()?;
-    run(git(&fixture.package)?.args(["checkout", "--detach"]));
     fixture.check(&fixture.identity()?)?;
     fixture.commit()?;
     fixture.check(&fixture.identity()?)?;

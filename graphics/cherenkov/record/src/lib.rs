@@ -84,9 +84,9 @@ pub use crate::image::{
     Rgba16F,
 };
 pub use crate::material::{
-    BackdropMaterial, CaptureClass, LayeredContent, MaterialCapture, MaterialEffect,
-    MaterialGrouping, MaterialRegistry, MaterialRun, MaterialScope, MaterialShader, OuterExtent,
-    OuterExtentError, UnionSmoothing, UnionSmoothingError,
+    BackdropMaterial, CaptureClass, ContainerRecipe, GroupMember, LayeredContent, MaterialCapture,
+    MaterialEffect, MaterialGrouping, MaterialRegistry, MaterialRun, MaterialScope, MaterialShader,
+    OuterExtent, OuterExtentError, UnionSmoothing, UnionSmoothingError,
 };
 pub use crate::ops::{
     AnimationOrigin, AnimationStart, Axis, BackdropId, ChangeSet, ContentOp, Install, KeyframeProp,

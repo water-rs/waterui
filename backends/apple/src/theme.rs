@@ -3,10 +3,11 @@
 //! The AppKit/UIKit appearance is the source of truth: the scheme the
 //! application currently draws in, resolved per semantic slot into concrete
 //! colors, and the platform's preferred text styles as concrete fonts.
-//! Every slot is a `Binding` behind a `Computed`, so a platform change —
-//! the user toggling dark mode, or an override the app applies — lands as a
-//! precise per-slot update, exactly the way the Swift `ThemeBridge` fed its
-//! signals.
+//! Every font slot is a `Binding` behind a `Computed`, and every color slot
+//! a derivation from the color scheme over one `Binding` per scheme, so a
+//! platform change — the user toggling dark mode, or an accent or contrast
+//! setting — lands as a precise per-slot update, and a scheme the app
+//! installs on a subtree re-derives that subtree's colors.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -36,7 +37,9 @@ struct FontSlot {
 /// [`refresh`] needs to reach it.
 pub struct ThemeSignals {
     scheme: Binding<waterui::graphics::color::ColorScheme>,
-    colors: Vec<Box<dyn Fn(ColorScheme)>>,
+    /// Each color slot's refresh: re-reads the platform color in both
+    /// schemes into the slot's per-scheme signals.
+    colors: Vec<Box<dyn Fn()>>,
     fonts: Vec<FontSlot>,
 }
 
@@ -77,7 +80,7 @@ impl SystemLabelSlots {
             theme::installed_color_signal::<S>(env)
                 .expect("the slot is installed before its identity is read")
                 .identity()
-                .expect("a theme slot is a binding, which has an identity")
+                .expect("a theme slot derives from bindings, so it has an identity")
         }
         Self {
             slots: [
@@ -311,7 +314,8 @@ pub fn install(env: &mut Environment, scheme: ColorScheme) -> ThemeSignals {
     signals
 }
 
-/// Re-reads the platform for `scheme` and pushes every changed slot value.
+/// Re-reads the platform's colors in both schemes and its fonts, and sets
+/// the scheme signal to `scheme`.
 /// Call it from each surface whose platform reports an appearance change.
 pub fn refresh(signals: &ThemeSignals, scheme: ColorScheme) {
     refresh_colors(signals, scheme);
@@ -334,26 +338,38 @@ pub fn refresh_host(
     }
 }
 
-/// The scheme signal and every color slot for `scheme` — shared by the
-/// ambient and host-driven refreshes.
+/// Every color slot in both schemes, then the scheme signal for `scheme` —
+/// shared by the ambient and host-driven refreshes.
 fn refresh_colors(signals: &ThemeSignals, scheme: ColorScheme) {
-    signals.scheme.set(color_scheme(scheme));
-    for set in &signals.colors {
-        set(scheme);
+    // The per-scheme colors land first, so a scheme change notifies the
+    // slots once, with the colors already current.
+    for refresh in &signals.colors {
+        refresh();
     }
+    signals.scheme.set(color_scheme(scheme));
 }
 
 impl ThemeSignals {
-    fn install_color<S: 'static>(
+    /// Installs slot `S` as the platform color `resolver` reads in each
+    /// scheme, so a scheme the app installs on a subtree re-derives the slot
+    /// there.
+    fn install_color<S: theme::ColorSlot>(
         &mut self,
         env: &mut Environment,
         resolver: impl Fn(ColorScheme) -> Option<cocoa_ui::Rgba> + 'static,
     ) {
-        let binding = waterui::reactive::binding(working::from_linear_srgb([0.0, 0.0, 0.0], 1.0));
-        theme::install_color_signal::<S>(env, binding.computed());
-        self.colors.push(Box::new(move |scheme| {
-            if let Some(rgba) = resolver(scheme) {
-                binding.set(into_working(rgba));
+        let unresolved = working::from_linear_srgb([0.0, 0.0, 0.0], 1.0);
+        let light = waterui::reactive::binding(unresolved);
+        let dark = waterui::reactive::binding(unresolved);
+        theme::install_color_derivation::<S>(
+            env,
+            theme::ColorDerivation::per_scheme(light.clone(), dark.clone()),
+        );
+        self.colors.push(Box::new(move || {
+            for (scheme, binding) in [(ColorScheme::Light, &light), (ColorScheme::Dark, &dark)] {
+                if let Some(rgba) = resolver(scheme) {
+                    binding.set(into_working(rgba));
+                }
             }
         }));
     }

@@ -3,7 +3,7 @@
 //! links the compiler-rt builtins archive the prebuilt Skia objects need on
 //! Apple targets.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Reads `(name, version, git-rev)` tuples out of a `Cargo.lock`; the rev is
 /// the `#sha` fragment of a `git+` source, `None` for registry packages.
@@ -42,82 +42,19 @@ fn lockfile_packages(text: &str) -> Vec<(String, String, Option<String>)> {
     out
 }
 
-/// Runs `git <args>` inside `dir` and returns its trimmed stdout. Fails
-/// fast: no `git` on PATH, or a nonzero exit (e.g. `dir` is not inside a
-/// git checkout), panics instead of falling back to a guessed path.
-fn git(dir: &Path, args: &[&str]) -> String {
-    let output = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .unwrap_or_else(|err| panic!("`git {}` failed to start: {err}", args.join(" ")));
-    assert!(
-        output.status.success(),
-        "`git {}` failed in {}: {}",
-        args.join(" "),
-        dir.display(),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("git stdout is utf-8")
-        .trim()
-        .to_owned()
-}
-
-/// Absolutizes a `git rev-parse` path printed from `manifest`: relative
-/// output is relative to that working directory. Canonicalizing also
-/// resolves `..` segments; a missing result means the checkout git
-/// reported is unusable, so panic.
-fn git_path(manifest: &Path, raw: &str) -> PathBuf {
-    let raw = Path::new(raw);
-    let path = if raw.is_absolute() {
-        raw.to_path_buf()
-    } else {
-        manifest.join(raw)
-    };
-    std::fs::canonicalize(&path)
-        .unwrap_or_else(|err| panic!("git path {} does not exist: {err}", path.display()))
-}
-
 /// `CHERENKOV_GIT_SHA` is `git rev-parse HEAD`. The bench is a path
 /// crate, so Cargo.lock has no revision for it; the external-cost
-/// report prints this instead of a hand-typed `--head`.
+/// report prints this instead of a hand-typed `--head`. The bench only
+/// builds from a checkout, so a missing commit is an error.
 fn emit_git_sha() {
-    let manifest = Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).to_path_buf();
-    // Ask git where the repository metadata lives instead of assuming a
-    // `.git` near the manifest. HEAD is per-worktree and sits in
-    // `--git-dir`; loose refs and `packed-refs` are shared and sit in
-    // `--git-common-dir`. `--show-toplevel` additionally fails outside a
-    // work tree, so a bare repository errors out here.
-    let rev_parse = |arg: &str| git(&manifest, &["rev-parse", arg]);
-    let gitdir = git_path(&manifest, &rev_parse("--git-dir"));
-    let commondir = git_path(&manifest, &rev_parse("--git-common-dir"));
-    let _worktree_root = git_path(&manifest, &rev_parse("--show-toplevel"));
-    // A `rerun-if-changed` path that does not exist keeps the build
-    // script dirty forever, so only watch files that exist right now.
-    let track = |path: PathBuf| {
-        if path.exists() {
-            println!("cargo:rerun-if-changed={}", path.display());
-        }
-    };
-    let head = gitdir.join("HEAD");
-    track(head.clone());
-    if let Ok(text) = std::fs::read_to_string(&head)
-        && let Some(r) = text.strip_prefix("ref:")
-    {
-        let branch = commondir.join(r.trim());
-        if branch.exists() {
-            track(branch);
-        } else if let Some(dir) = branch.ancestors().skip(1).find(|d| d.is_dir()) {
-            // The ref lives only in `packed-refs`; the next commit
-            // recreates it loose. A watched path must exist, so watch
-            // the nearest existing ancestor directory — creating the
-            // loose file inside it is what Cargo then notices.
-            track(dir.to_path_buf());
-        }
-    }
-    track(commondir.join("packed-refs"));
-    let sha = git(&manifest, &["rev-parse", "HEAD"]);
+    let manifest = std::env::var_os("CARGO_MANIFEST_DIR")
+        .expect("Cargo sets CARGO_MANIFEST_DIR for build scripts");
+    let sha = waterui_git_head::head_commit(Path::new(&manifest), None).unwrap_or_else(|| {
+        panic!(
+            "cherenkov-bench builds from a Git checkout with a commit, and {} is not one",
+            Path::new(&manifest).display()
+        )
+    });
     assert!(
         sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()),
         "git rev-parse HEAD returned {sha:?}"

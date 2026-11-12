@@ -1989,6 +1989,18 @@ fn settle_failed(
     );
     complete_ready(state);
     update_presentation_demand(state, view);
+    // A capture holding a scope may be parked on a `Deferred` this
+    // surface answered an earlier pass — a renderer still being created,
+    // a frame in flight — while the failure settled elsewhere: in another
+    // pass of the same capture, a frame completion or a routed batch
+    // failure. No frame can ever replay that deferral on the failed
+    // generation, so the settle is the redraw the capture retries on, and
+    // the retry reads the terminal `Failed` the hold now answers. It goes
+    // through the surface's own redraw channel, never the hook directly:
+    // the settle can run inside the capture's own submission.
+    if state.presentation.borrow().external().is_some() {
+        state.redraw_handle.request_redraw();
+    }
 }
 
 /// `handleRedrawRequest`: the redraw waker's main-queue body — republishes

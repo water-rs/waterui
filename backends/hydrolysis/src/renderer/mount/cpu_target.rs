@@ -25,13 +25,15 @@ use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::ProducerWake;
 use crate::renderer::effects::FilteredRuntime;
 use crate::renderer::mount::backdrop::{
-    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload,
+    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload, ChromeParams,
     MaterialBackdropGroups, MaterialMembership, MemberBind,
 };
 use crate::renderer::recording::SceneResources;
 use crate::text::TextService;
 
-use super::engine_target::{install_engine_text, mount_chrome_group, mount_material_group};
+use super::engine_target::{
+    install_engine_text, mount_chrome_group, mount_material_group, settle_chrome_groups,
+};
 use super::{FilterHandle, LayerTarget, MaterialTerms};
 
 /// Why a view that needs a GPU device cannot mount on this target. A build
@@ -169,7 +171,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_cpu::Raster {
         groups: &mut ChromeBackdropGroups<cherenkov::BackdropGroup, cherenkov::BackdropShader, E>,
         layer: &Layer,
         key: ChromeGroupKey,
-        params: cherenkov_record::MaterialCapture,
+        params: ChromeParams,
         display_scale: f64,
         membership: &MaterialMembership<E>,
         payload: impl FnOnce() -> ChromeMemberPayload<cherenkov::BackdropShader>,
@@ -191,5 +193,20 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_cpu::Raster {
 
     fn clear_chrome(tx: &mut Transaction<'_, Self>, layer: &Layer) {
         tx[layer].clear_backdrop();
+    }
+
+    fn settle_chrome(
+        host: &RasterHost,
+        tx: &mut Transaction<'_, Self>,
+        groups: &mut ChromeBackdropGroups<cherenkov::BackdropGroup, cherenkov::BackdropShader, E>,
+        display_scale: f64,
+    ) {
+        settle_chrome_groups(
+            &host.surface,
+            tx,
+            groups,
+            &host.materials.registry,
+            display_scale,
+        );
     }
 }

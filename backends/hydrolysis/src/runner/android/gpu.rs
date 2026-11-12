@@ -10,47 +10,10 @@ use std::fmt;
 use std::rc::Rc;
 
 use ndk::native_window::NativeWindow;
-use raw_window_handle::{
-    AndroidDisplayHandle, AndroidNdkWindowHandle, DisplayHandle, HasDisplayHandle, HasWindowHandle,
-    RawDisplayHandle, RawWindowHandle, WindowHandle,
-};
 
+use super::native_window::{AndroidDisplay, AndroidWindow};
 use crate::platform::{DeviceLostError, GpuGeneration, PresentationSurface, SurfaceError};
 use crate::runner::window::FrameFailure;
-
-/// The Android display's raw handle: the platform has one implicit default
-/// display, which `AndroidDisplayHandle` names.
-#[derive(Debug)]
-struct AndroidDisplay;
-
-impl HasDisplayHandle for AndroidDisplay {
-    fn display_handle(&self) -> Result<DisplayHandle<'_>, raw_window_handle::HandleError> {
-        // SAFETY: Android's display handle is a static system resource —
-        // borrowing it raw is always sound for the process lifetime.
-        Ok(unsafe {
-            DisplayHandle::borrow_raw(RawDisplayHandle::Android(AndroidDisplayHandle::new()))
-        })
-    }
-}
-
-/// A band's `ImageReader` surface as the window its swapchain presents
-/// to (water-rs/waterui#2225).
-struct BandWindow(NativeWindow);
-
-impl HasWindowHandle for BandWindow {
-    fn window_handle(&self) -> Result<WindowHandle<'_>, raw_window_handle::HandleError> {
-        let handle = RawWindowHandle::AndroidNdk(AndroidNdkWindowHandle::new(self.0.ptr().cast()));
-        // SAFETY: the wrapper holds its own reference to the native
-        // window, so the pointer stays valid for the borrow.
-        Ok(unsafe { WindowHandle::borrow_raw(handle) })
-    }
-}
-
-impl HasDisplayHandle for BandWindow {
-    fn display_handle(&self) -> Result<DisplayHandle<'_>, raw_window_handle::HandleError> {
-        AndroidDisplay.display_handle()
-    }
-}
 
 /// One band's attachment: the `ImageReader` surface behind the host's
 /// band `View` for one region above an embedded platform view
@@ -90,8 +53,11 @@ impl BandAttachment {
     /// delivers reports that space, which the band `View` tags its
     /// hardware bitmap with.
     fn target(&self) -> cherenkov_gpu::WindowTarget {
-        cherenkov_gpu::WindowTarget::new(BandWindow(self.window.clone()), (self.width, self.height))
-            .transparent(true)
+        cherenkov_gpu::WindowTarget::new(
+            AndroidWindow(self.window.clone()),
+            (self.width, self.height),
+        )
+        .transparent(true)
     }
 }
 

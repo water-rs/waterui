@@ -239,7 +239,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
         >,
         layer: &Layer,
         key: crate::renderer::mount::backdrop::ChromeGroupKey,
-        params: cherenkov_record::MaterialCapture,
+        params: crate::renderer::mount::backdrop::ChromeParams,
         display_scale: f64,
         membership: &crate::renderer::mount::backdrop::MaterialMembership<E>,
         payload: impl FnOnce() -> crate::renderer::mount::backdrop::ChromeMemberPayload<
@@ -262,30 +262,10 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
                 resolve: NodeLayers::member_layer,
             },
             (
-                move |params: &cherenkov_record::MaterialCapture, scale| {
-                    // The same spec the GPU target builds; a test reads
-                    // the device-pixel conversions off the log.
-                    let mut log = host.spec_log.borrow_mut();
-                    log.push(crate::renderer::mount::target::chrome_spec(
-                        params, scale, key,
-                    )?);
-                    // Every group built gets an id of its own, as the
-                    // engine's do: a member left on a released group
-                    // carries an id no live group has.
-                    Ok(key_id(&(key, log.len())))
+                |params: &crate::renderer::mount::backdrop::ChromeParams, scale| {
+                    mirror_chrome_group(host, &key, params, scale)
                 },
-                |tx: &mut Transaction<'_, Self>,
-                 member: &Layer,
-                 payload: &crate::renderer::mount::backdrop::ChromeMemberPayload<
-                    cherenkov::BackdropShader,
-                >,
-                 id: &BackdropId,
-                 scale: f64| {
-                    tx[member].backdrop(crate::renderer::mount::target::chrome_sample(
-                        payload, *id, scale,
-                    )?);
-                    Ok(())
-                },
+                bind_mirror_chrome_sample,
             ),
             bind,
         );
@@ -294,6 +274,66 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for MirrorTarget {
     fn clear_chrome(tx: &mut Transaction<'_, Self>, layer: &Layer) {
         tx[layer].clear_backdrop();
     }
+
+    fn settle_chrome(
+        host: &MirrorHost,
+        tx: &mut Transaction<'_, Self>,
+        groups: &mut crate::renderer::mount::backdrop::ChromeBackdropGroups<
+            BackdropId,
+            cherenkov::BackdropShader,
+            E,
+        >,
+        display_scale: f64,
+    ) {
+        groups.settle(
+            tx,
+            &host.materials.registry,
+            display_scale,
+            (
+                |key: &crate::renderer::mount::backdrop::ChromeGroupKey,
+                 params: &crate::renderer::mount::backdrop::ChromeParams,
+                 scale| mirror_chrome_group(host, key, params, scale),
+                bind_mirror_chrome_sample,
+            ),
+            NodeLayers::member_layer,
+        );
+    }
+}
+
+/// The mirror's chrome group of `key` built from `params` at `scale`.
+fn mirror_chrome_group(
+    host: &MirrorHost,
+    key: &crate::renderer::mount::backdrop::ChromeGroupKey,
+    params: &crate::renderer::mount::backdrop::ChromeParams,
+    scale: f64,
+) -> Result<BackdropId, crate::renderer::mount::backdrop::Unbound> {
+    // The same spec the GPU target builds; a test reads the device-pixel
+    // conversions off the log.
+    let mut log = host.spec_log.borrow_mut();
+    log.push(crate::renderer::mount::target::chrome_spec(
+        params, scale, *key,
+    )?);
+    // Every group built gets an id of its own, as the engine's do: a
+    // member left on a released group carries an id no live group has.
+    Ok(key_id(&(*key, log.len())))
+}
+
+/// Binds `member` to the chrome sample of `payload` on the group `id`.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "the join hook hands the group object by reference"
+)]
+fn bind_mirror_chrome_sample(
+    tx: &mut Transaction<'_, MirrorTarget>,
+    member: &Layer,
+    payload: &crate::renderer::mount::backdrop::ChromeMemberPayload<cherenkov::BackdropShader>,
+    id: &BackdropId,
+    scale: f64,
+) -> Result<(), crate::renderer::mount::backdrop::Unbound> {
+    tx[member].backdrop(crate::renderer::mount::target::chrome_sample(
+        payload, *id, scale,
+    )?);
+    Ok(())
 }
 
 /// A synthetic group id for a mirror group: stable across the group's
@@ -631,7 +671,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for NoShaderTarget {
         _groups: &mut crate::renderer::mount::backdrop::ChromeBackdropGroups<(), (), E>,
         _layer: &Layer,
         _key: crate::renderer::mount::backdrop::ChromeGroupKey,
-        _params: cherenkov_record::MaterialCapture,
+        _params: crate::renderer::mount::backdrop::ChromeParams,
         _display_scale: f64,
         _membership: &crate::renderer::mount::backdrop::MaterialMembership<E>,
         _payload: impl FnOnce() -> crate::renderer::mount::backdrop::ChromeMemberPayload<()>,

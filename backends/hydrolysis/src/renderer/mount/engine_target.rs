@@ -16,7 +16,7 @@ use waterui_graphics::backend::{Handle, TextBackend, TextRegistration, TextReque
 use super::MaterialTerms;
 use crate::renderer::material::MaterialChain;
 use crate::renderer::mount::backdrop::{
-    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload,
+    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload, ChromeParams,
     MaterialBackdropGroups, MaterialMembership, MemberBind, MemberJoin, Unbound,
 };
 use crate::renderer::recording::SceneResources;
@@ -137,7 +137,7 @@ pub fn mount_chrome_group<B, E>(
     groups: &mut ChromeBackdropGroups<cherenkov::BackdropGroup, cherenkov::BackdropShader, E>,
     layer: &Layer,
     key: ChromeGroupKey,
-    params: cherenkov_record::MaterialCapture,
+    params: ChromeParams,
     display_scale: f64,
     membership: &MaterialMembership<E>,
     payload: impl FnOnce() -> ChromeMemberPayload<cherenkov::BackdropShader>,
@@ -146,7 +146,7 @@ pub fn mount_chrome_group<B, E>(
     B: cherenkov::Backend + cherenkov_record::Target + cherenkov::Backdrop,
     E: crate::text::TextEngine,
 {
-    let Some(surface) = surface.upgrade() else {
+    if surface.upgrade().is_none() {
         contract_violation!(
             "hydrolysis materials: the engine surface was dropped during its commit; \
              the layer joins no chrome group"
@@ -154,7 +154,7 @@ pub fn mount_chrome_group<B, E>(
         groups.clear(layer.id());
         tx[layer].clear_backdrop();
         return;
-    };
+    }
     groups.join(
         tx,
         key,
@@ -167,20 +167,76 @@ pub fn mount_chrome_group<B, E>(
             resolve: super::super::layers::NodeLayers::member_layer,
         },
         (
-            move |params, scale| {
-                Ok(surface.backdrop_group_unfiltered(chrome_spec(params, scale, key)?))
-            },
-            |tx: &mut Transaction<'_, B>,
-             member: &Layer,
-             payload: &ChromeMemberPayload<cherenkov::BackdropShader>,
-             group: &cherenkov::BackdropGroup,
-             scale: f64| {
-                tx[member].backdrop(chrome_sample(payload, group.id(), scale)?);
-                Ok(())
-            },
+            |params: &ChromeParams, scale| chrome_group(surface, &key, params, scale),
+            bind_chrome_sample::<B>,
         ),
         bind,
     );
+}
+
+/// Resolves the container groups whose membership or member recordings
+/// changed in this commit (water-rs/waterui#2834), building any rebuilt
+/// group on `surface`. The body of both Cherenkov targets'
+/// [`settle_chrome`](super::LayerTarget::settle_chrome).
+pub fn settle_chrome_groups<B, E>(
+    surface: &Weak<cherenkov::Surface<B>>,
+    tx: &mut Transaction<'_, B>,
+    groups: &mut ChromeBackdropGroups<cherenkov::BackdropGroup, cherenkov::BackdropShader, E>,
+    registry: &Rc<MaterialRegistry>,
+    display_scale: f64,
+) where
+    B: cherenkov::Backend + cherenkov_record::Target + cherenkov::Backdrop,
+    E: crate::text::TextEngine,
+{
+    groups.settle(
+        tx,
+        registry,
+        display_scale,
+        (
+            |key: &ChromeGroupKey, params: &ChromeParams, scale| {
+                chrome_group(surface, key, params, scale)
+            },
+            bind_chrome_sample::<B>,
+        ),
+        super::super::layers::NodeLayers::member_layer,
+    );
+}
+
+/// The engine group a chrome group of `key` is built as on `surface` at
+/// display `scale`, from `params`.
+///
+/// # Errors
+/// [`Unbound`], reported, when the engine surface dropped or `params`
+/// cannot be built at `scale` ([`chrome_spec`]).
+fn chrome_group<B>(
+    surface: &Weak<cherenkov::Surface<B>>,
+    key: &ChromeGroupKey,
+    params: &ChromeParams,
+    scale: f64,
+) -> Result<cherenkov::BackdropGroup, Unbound>
+where
+    B: cherenkov::Backend + cherenkov::Backdrop,
+{
+    let Some(surface) = surface.upgrade() else {
+        contract_violation!(
+            "hydrolysis materials: the engine surface was dropped during its commit; \
+             the chrome group is not built"
+        );
+        return Err(Unbound);
+    };
+    Ok(surface.backdrop_group_unfiltered(chrome_spec(params, scale, *key)?))
+}
+
+/// Binds `member` to the chrome sample of `payload` on `group`.
+fn bind_chrome_sample<B: cherenkov_record::BackdropSampling>(
+    tx: &mut Transaction<'_, B>,
+    member: &Layer,
+    payload: &ChromeMemberPayload<cherenkov::BackdropShader>,
+    group: &cherenkov::BackdropGroup,
+    scale: f64,
+) -> Result<(), Unbound> {
+    tx[member].backdrop(chrome_sample(payload, group.id(), scale)?);
+    Ok(())
 }
 
 /// The spec a chrome group of `key` is created with at display `scale`:
@@ -193,17 +249,18 @@ pub fn mount_chrome_group<B, E>(
 /// [`Unbound`], reported as [`union_of`] reports it, for a union smoothing
 /// invalid at `scale`: the group is not built.
 pub fn chrome_spec(
-    params: &cherenkov_record::MaterialCapture,
+    params: &ChromeParams,
     scale: f64,
     key: ChromeGroupKey,
 ) -> Result<cherenkov::BackdropSpec, Unbound> {
-    let mut spec = cherenkov::BackdropSpec::new(params.scale, params.levels)
-        .pyramid(params.pyramid)
-        .blend_space(params.blend_space);
+    let capture = &params.capture;
+    let mut spec = cherenkov::BackdropSpec::new(capture.scale, capture.levels)
+        .pyramid(capture.pyramid)
+        .blend_space(capture.blend_space);
     if let Some(anchor) = key.anchor() {
         spec = spec.anchor(anchor);
     }
-    if let Some(union) = union_of(params, scale, key.class())? {
+    if let Some(union) = union_of(capture, scale, params.class)? {
         spec = spec.union(union);
     }
     Ok(spec)

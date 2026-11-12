@@ -152,7 +152,10 @@ pub use renderer::{FrameStageTimes, GpuIdentity};
 pub use renderer::{HydroState, HydrolysisRenderer, RenderContext};
 #[cfg(all(target_os = "android", any(hydrolysis_gpu_painter, hydrolysis_hwui)))]
 pub use runner::android;
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+#[cfg(all(
+    hydrolysis_runtime,
+    not(any(target_arch = "wasm32", target_os = "android"))
+))]
 pub use runner::init_tracing;
 #[cfg(hydrolysis_run)]
 pub use runner::run;

@@ -4,6 +4,7 @@ mod collection_update;
 #[cfg(hydrolysis_gpu_painter)]
 mod frame_work;
 mod slider_look;
+mod slider_repaint;
 use super::*;
 use crate::text::{Affinity, TextEngine as _, TextLayout as _, TextPosition};
 use std::borrow::Cow;
@@ -38,6 +39,7 @@ mod dynamic_remeasure;
 // Cherenkov painters realize.
 #[cfg(all(hydrolysis_cherenkov, not(target_arch = "wasm32")))]
 mod emoji_atlas;
+// Drives the GPU mirror's `SurfaceTree`, the sampler the GPU painter runs.
 #[cfg(hydrolysis_gpu_painter)]
 mod engine_motion;
 mod gesture_buttons;
@@ -170,8 +172,9 @@ use crate::theme::{
 };
 use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
 use cherenkov_record::{
-    BackdropShaderSource, CaptureClass, Draw, MaterialCapture, MaterialEffect, MaterialRegistry,
-    MaterialShader, Paint, Recorder, Shadow, SharedLive, WorkingColor,
+    BackdropShaderSource, CaptureClass, ContainerRecipe, Draw, GroupMember, MaterialCapture,
+    MaterialEffect, MaterialRegistry, MaterialShader, Paint, Recorder, Shadow, SharedLive,
+    WorkingColor,
 };
 use waterui_core::EasingCurve;
 use waterui_core::handler::SharedAction;
@@ -2761,6 +2764,9 @@ fn inactive_modal_scope_does_not_trap_keyboard_focus() {
 /// The switch look a test theme hands out for a toggle spec.
 type SwitchLookFor = Rc<dyn Fn(&ToggleSpec, &Environment) -> SwitchLook>;
 
+/// The slider look a test theme hands out for a slider spec.
+type SliderLookFor = Rc<dyn Fn(&SliderSpec, &Environment) -> SliderLook>;
+
 /// The stepper look a test theme hands out for a stepper spec.
 type StepperLookFor = Rc<dyn Fn(&StepperSpec, &Environment) -> StepperLook>;
 
@@ -2823,6 +2829,9 @@ pub struct MinimalTestTheme {
     slider_drag: Option<DragMapping>,
     /// Whether the slider look draws no label, so reserves no band for one.
     slider_without_label: bool,
+    /// The slider look the theme hands out for a spec and environment;
+    /// `None` answers the fixture look the slider tests above read back.
+    slider_look: Option<SliderLookFor>,
     /// The backdrop-material plan a chrome test registers
     /// (water-rs/waterui#1788): the registry entries, and the materials the
     /// plan's [`ChromePlan::chrome`] replays.
@@ -2898,6 +2907,16 @@ impl MinimalTestTheme {
         self.with_switch(move |_, _| look.clone())
     }
 
+    /// Hands out the look `look` makes for each slider's spec.
+    #[must_use]
+    pub fn with_slider(
+        mut self,
+        look: impl Fn(&SliderSpec, &Environment) -> SliderLook + 'static,
+    ) -> Self {
+        self.slider_look = Some(Rc::new(look));
+        self
+    }
+
     /// Hands out the look `look` makes for each switch's spec.
     #[must_use]
     pub fn with_switch(
@@ -2944,6 +2963,21 @@ pub struct ChromeDraw {
     pub effect: SharedLive<MaterialEffect>,
 }
 
+/// A [`ContainerRecipe`] a [`ChromePlan`] shares with the registry it
+/// fills: the plan is `Clone`, the registry takes its recipe by value.
+#[derive(Debug)]
+struct SharedRecipe(Rc<dyn ContainerRecipe>);
+
+impl ContainerRecipe for SharedRecipe {
+    fn capture(&self, members: &[GroupMember<'_>]) -> CaptureClass {
+        self.0.capture(members)
+    }
+
+    fn effects(&self, members: &[GroupMember<'_>]) -> Vec<MaterialEffect> {
+        self.0.effects(members)
+    }
+}
+
 /// The backdrop-material terms a chrome test declares: the registry
 /// `register_backdrop_shaders` fills, and the materials its
 /// [`chrome`](Self::chrome) replays.
@@ -2953,6 +2987,9 @@ pub struct ChromePlan {
     pub shaders: Vec<(MaterialShader, BackdropShaderSource)>,
     /// `(key, capture)` pairs the registry registers.
     pub captures: Vec<(CaptureClass, MaterialCapture)>,
+    /// `(shader, recipe)` pairs the registry registers as container
+    /// recipes (water-rs/waterui#2834).
+    pub containers: Vec<(MaterialShader, Rc<dyn ContainerRecipe>)>,
     /// The materials the chrome's custom part records.
     pub draws: Vec<ChromeDraw>,
     /// Scene fills the custom part records after the materials — each
@@ -3050,6 +3087,9 @@ impl WidgetTheme for MinimalTestTheme {
         }
         for (key, capture) in &self.chrome.captures {
             registry.register_capture_class(*key, *capture);
+        }
+        for (shader, recipe) in &self.chrome.containers {
+            registry.register_container_recipe(*shader, SharedRecipe(Rc::clone(recipe)));
         }
     }
 
@@ -3204,8 +3244,11 @@ impl WidgetTheme for MinimalTestTheme {
             .push((center, state));
     }
 
-    fn slider(&self, spec: &SliderSpec, _env: &Environment) -> SliderLook {
+    fn slider(&self, spec: &SliderSpec, env: &Environment) -> SliderLook {
         self.slider_specs.borrow_mut().push(spec.clone());
+        if let Some(look) = &self.slider_look {
+            return look(spec, env);
+        }
         let tracks = Rc::clone(&self.slider_track_draws);
         let indicators = Rc::clone(&self.slider_indicator_draws);
         let layout = SliderLayout {

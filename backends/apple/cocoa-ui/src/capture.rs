@@ -603,6 +603,10 @@ pub trait CapturableSurface {
     /// once more: a [`Deferred`](CaptureError::Deferred) it answered
     /// can never be replayed by a later redraw of its own, and its
     /// departure is itself the content change the capture retries on.
+    /// A surface whose terminal failure settles while a scope is open
+    /// calls `on_redraw` too, for the same reason: no later redraw can
+    /// replay a deferral it answered, and the retry reads the
+    /// [`Failed`](CaptureError::Failed) outcome instead.
     fn begin_external_rendering(&self, on_redraw: Rc<dyn Fn()>);
     /// Ends external rendering; `resume` restarts normal presentation.
     fn end_external_rendering(&self, resume: bool);

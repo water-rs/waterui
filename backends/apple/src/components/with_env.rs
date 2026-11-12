@@ -99,7 +99,12 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // The metadata's environment replaces the subtree's — `WuiWithEnv`
         // resolved `metadata.content` against `metadata.value` alone.
         let env = metadata.value;
-        let mounted = ctx.with_env(&env).render(metadata.content).mount(host_view);
+        let child = ctx.with_env(&env).render(metadata.content);
+        // A handler around this wrapper resolves in the scope of the whole
+        // env-only chain below it, so it sees every `.state(..)` install in
+        // its own modifier chain.
+        let handler_env = child.handler_env(&env);
+        let mounted = child.mount(host_view);
         view::set_translates_autoresizing(mounted.view(), true);
 
         let state = Rc::new(WithEnvState { child: mounted });
@@ -133,6 +138,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 state: Rc::clone(&state),
             },
         );
+        leaf.set_handler_env(handler_env);
 
         #[cfg(target_os = "ios")]
         {
