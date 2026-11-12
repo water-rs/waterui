@@ -213,14 +213,21 @@ impl LiveProgressParts {
         slot.as_ref().expect("the progress parts were just ensured")
     }
 
-    /// Lists the control's parts in `ctx`, bottom first.
+    /// Lists the control's parts in `ctx`, bottom first, a part with an
+    /// opacity of its own in a live scope following it.
     pub(crate) fn push<E: crate::text::TextEngine>(
         &self,
         renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
     ) {
-        for source in &self.sources {
-            renderer.push_live(ctx, source);
+        for (index, (source, part)) in self.sources.iter().zip(&self.progress.parts).enumerate() {
+            let key = crate::renderer::mount::ScopeKey {
+                role: "progress-part",
+                item: index as u64,
+            };
+            renderer.with_part_opacity(key, part.opacity(), ctx, |renderer| {
+                renderer.push_live(ctx, source);
+            });
         }
     }
 }

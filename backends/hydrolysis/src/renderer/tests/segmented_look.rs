@@ -2,7 +2,8 @@
 //! a thumb part following the selection under the look's motion without
 //! recording again, a drag between segments and its settle, the right-to-left
 //! mirror, the group opacity of a disabled picker, a backdrop material over
-//! the labels, and the accessibility tree the same placement emits.
+//! the labels, a part's own opacity following the press, and the
+//! accessibility tree the same placement emits.
 
 use core::time::Duration;
 use std::cell::RefCell;
@@ -538,6 +539,192 @@ fn a_backdrop_material_over_the_labels_captures_them() {
     assert!(
         r > 240 && g > 240 && b > 240,
         "the lens captured the label beneath it and saturated it: ({r}, {g}, {b})"
+    );
+}
+
+/// The press as an opacity: the part shows while the thumb is pressed.
+fn shown_while_pressed() -> Driven<f32, SegmentedValue> {
+    Driven::new(|inputs: &Inputs<'_, SegmentedValue>| {
+        if inputs.state.contains(InteractionState::PRESSED) {
+            1.0
+        } else {
+            0.0
+        }
+    })
+}
+
+/// A lens over the labels that exists only while the thumb is pressed: at
+/// opacity 0 at rest it leaves the labels as they are, and while pressed it
+/// captures them and saturates them to white.
+#[test]
+#[cfg(hydrolysis_gpu_painter)]
+fn a_backdrop_part_at_opacity_zero_leaves_the_labels_until_pressed() {
+    use super::toggle_glass::{GLASS, GLASS_SHADER, plan};
+    use cherenkov_record::MaterialEffect;
+
+    let themed = |lens: bool| {
+        MinimalTestTheme {
+            chrome: plan(),
+            ..MinimalTestTheme::default()
+        }
+        .with_segmented(move |_, _| {
+            let look = crate::testing::plain_segmented_look();
+            if !lens {
+                return look;
+            }
+            look.over_labels(
+                Custom::new(
+                    (
+                        Driven::<ShapeData, SegmentedValue>::new(|inputs| {
+                            ShapeData::of(&inputs.frame)
+                        }),
+                        Driven::<MaterialEffect, SegmentedValue>::constant(MaterialEffect::new(
+                            vec![1.0, 1.0, 1.0, 0.0],
+                        )),
+                    ),
+                    |recorder, _frame, (lens, effect)| {
+                        recorder.backdrop_material(lens, GLASS_SHADER, GLASS, effect);
+                    },
+                )
+                .opacity(shown_while_pressed()),
+            )
+        })
+    };
+    let mut plain = Rig::themed(themed(false), LayoutDirection::LeftToRight, false);
+    let row = plain.targets()[0];
+    let without = plain.sample(0);
+    let mut lensed = Rig::themed(themed(true), LayoutDirection::LeftToRight, false);
+    let rest = lensed.sample(0);
+    let (x, y) = (row.center().x, row.center().y);
+    lensed.down(x, y);
+    lensed.settle();
+    let pressed = lensed.sample(0);
+    lensed.up(x, y);
+    lensed.settle();
+    let released = lensed.sample(0);
+    save("segmented_pressed_lens", "without", &without);
+    save("segmented_pressed_lens", "rest", &rest);
+    save("segmented_pressed_lens", "pressed", &pressed);
+    save("segmented_pressed_lens", "released", &released);
+
+    // The darkest pixel of the first label's ink without the lens.
+    let points = |step: usize| crate::num_cast::usize_as_f64(step) / SCALE;
+    let (ink, _) = (0..device(row.width()))
+        .flat_map(|x| (0..device(row.height())).map(move |y| (x, y)))
+        .map(|(x, y)| {
+            let at = (row.x0 + points(x), row.y0 + points(y));
+            (at, pixel(&without, at.0, at.1)[0])
+        })
+        .min_by_key(|(_, red)| *red)
+        .expect("the row has pixels");
+    let plain_ink = pixel(&without, ink.0, ink.1);
+    assert!(
+        plain_ink[0] < 128,
+        "the label draws dark ink: {plain_ink:?}"
+    );
+    for (stage, snapshot) in [("at rest", &rest), ("released", &released)] {
+        let ink = pixel(snapshot, ink.0, ink.1);
+        assert!(
+            ink.iter()
+                .zip(plain_ink)
+                .all(|(channel, plain)| channel.abs_diff(plain) <= 2),
+            "{stage}, the hidden lens leaves the label as it is: {ink:?}, without it {plain_ink:?}"
+        );
+    }
+    let [r, g, b, _] = pixel(&pressed, ink.0, ink.1);
+    assert!(
+        r > 240 && g > 240 && b > 240,
+        "while pressed the lens captures the label and saturates it: ({r}, {g}, {b})"
+    );
+}
+
+/// A part whose opacity follows the press fades in as the press lands and
+/// out as it releases, along the look's press motion — half way through,
+/// half shown — and the part is recorded no further time.
+#[test]
+fn a_part_opacity_follows_the_press_without_recording() {
+    let recordings = Rc::new(std::cell::Cell::new(0_u32));
+    let look = {
+        let recordings = Rc::clone(&recordings);
+        move |_: &SegmentedSpec, _: &Environment| {
+            let plain = crate::testing::plain_segmented_look();
+            let recordings = Rc::clone(&recordings);
+            SegmentedLook::new(*plain.layout(), plain.label().clone(), linear(320)).part(
+                Custom::new(
+                    (Driven::<ShapeData, SegmentedValue>::new(|inputs| {
+                        ShapeData::of(&thumb_rect(inputs))
+                    }),),
+                    move |recorder, _frame, (thumb,)| {
+                        recordings.set(recordings.get() + 1);
+                        recorder.fill(thumb, red());
+                    },
+                )
+                .opacity(shown_while_pressed()),
+            )
+        }
+    };
+    let mut rig = Rig::new(look, LayoutDirection::LeftToRight, false);
+    let row = rig.targets()[0];
+    let picker = rig.picker();
+    let recorded = recordings.get();
+    assert!(recorded > 0, "the part recorded");
+    // Above the labels, inside the thumb.
+    let probe = (row.x0 + 4.0, row.y0 + 2.0);
+    let (x, y) = (row.center().x, row.center().y);
+
+    let rest = rig.sample(0);
+    rig.down(x, y);
+    rig.begin();
+    let pressing = rig.sample(160);
+    rig.settle();
+    let pressed = rig.sample(0);
+    rig.up(x, y);
+    rig.begin();
+    let releasing = rig.sample(160);
+    rig.settle();
+    let released = rig.sample(0);
+    for (stage, snapshot) in [
+        ("rest", &rest),
+        ("pressing", &pressing),
+        ("pressed", &pressed),
+        ("releasing", &releasing),
+        ("released", &released),
+    ] {
+        save("segmented_press_opacity", stage, snapshot);
+    }
+
+    let green = |snapshot: &HeadlessSnapshot| pixel(snapshot, probe.0, probe.1)[1];
+    let [r, ..] = pixel(&pressed, probe.0, probe.1);
+    assert!(
+        is_red(pixel(&pressed, probe.0, probe.1)),
+        "the pressed thumb shows whole: red {r}"
+    );
+    for (stage, snapshot) in [("at rest", &rest), ("released", &released)] {
+        assert!(
+            green(snapshot) > 240,
+            "{stage}, the thumb is hidden: {:?}",
+            pixel(snapshot, probe.0, probe.1)
+        );
+    }
+    // Half way through the press motion the thumb shows at half opacity
+    // over the background: its green channel lies well between hidden and
+    // whole, either way.
+    for (stage, snapshot) in [("pressing", &pressing), ("releasing", &releasing)] {
+        let mid = green(snapshot);
+        assert!(
+            (100..=220).contains(&mid),
+            "{stage}, half way the thumb shows half: {:?}",
+            pixel(snapshot, probe.0, probe.1)
+        );
+    }
+    assert!(
+        Rc::ptr_eq(&picker, &rig.picker()),
+        "the press kept the realization"
+    );
+    assert_eq!(
+        recordings.get(),
+        recorded,
+        "the opacity changes in place, recording the part no further time"
     );
 }
 

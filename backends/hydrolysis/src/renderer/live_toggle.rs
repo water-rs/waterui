@@ -15,6 +15,7 @@
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
+use std::ops::Range;
 use std::rc::{Rc, Weak};
 
 use cherenkov_record::{MaterialEffect, Recorder, ShapeData};
@@ -23,7 +24,7 @@ use nami::{Binding, Signal};
 use waterui_core::animation::{Animation, ChangeAnimation};
 use waterui_core::interaction::InteractionState;
 
-use crate::renderer::chrome::{LiveSource, varies_live};
+use crate::renderer::chrome::{LiveSource, opacity_runs, varies_live};
 use crate::renderer::recording::{LoweredResources, SceneResources};
 use crate::renderer::{HydrolysisRenderer, RenderContext};
 use crate::theme::live::Operand;
@@ -358,10 +359,12 @@ enum Layer {
     Above,
 }
 
-/// The source that records one layer of a toggle's parts.
+/// The source that records a run of one layer of a toggle's parts.
 struct ToggleSource {
     toggle: Rc<LiveToggle>,
     layer: Layer,
+    /// The parts of the layer the run records.
+    parts: Range<usize>,
 }
 
 impl LiveSource for ToggleSource {
@@ -376,37 +379,48 @@ impl LiveSource for ToggleSource {
             Layer::Below => &self.toggle.below,
             Layer::Above => &self.toggle.above,
         };
-        for part in parts {
+        for part in &parts[self.parts.clone()] {
             part.record(recorder, self.toggle.frame);
         }
         None
     }
 }
 
+/// One run of a layer of a toggle's parts: the source that records it, and
+/// the operand its layer opacity follows when it is one part with an
+/// opacity of its own.
+type ToggleRun = (Option<Operand<f32>>, Rc<dyn LiveSource>);
+
 /// A toggle's live control and the sources its program lists: the identity
-/// the mount keeps the recordings by. A layer with no parts has no source.
+/// the mount keeps the recordings by. The parts of each layer drawn whole
+/// record together; a part with an opacity of its own records alone.
 #[derive(Clone)]
 pub struct LiveToggleParts {
     toggle: Rc<LiveToggle>,
-    below: Option<Rc<dyn LiveSource>>,
-    above: Option<Rc<dyn LiveSource>>,
+    below: Vec<ToggleRun>,
+    above: Vec<ToggleRun>,
 }
 
 impl LiveToggleParts {
     fn new(toggle: LiveToggle, binding: &Binding<bool>) -> Self {
         let toggle = Rc::new(toggle);
         LiveToggle::subscribe(&toggle, binding);
-        let source = |layer, parts: &[RealizedCustom<bool>]| -> Option<Rc<dyn LiveSource>> {
-            (!parts.is_empty()).then(|| -> Rc<dyn LiveSource> {
-                Rc::new(ToggleSource {
-                    toggle: Rc::clone(&toggle),
-                    layer,
+        let runs = |layer, parts: &[RealizedCustom<bool>]| -> Vec<ToggleRun> {
+            opacity_runs(parts.iter().map(|part| part.opacity().cloned()))
+                .into_iter()
+                .map(|(opacity, parts)| -> ToggleRun {
+                    let source: Rc<dyn LiveSource> = Rc::new(ToggleSource {
+                        toggle: Rc::clone(&toggle),
+                        layer,
+                        parts,
+                    });
+                    (opacity, source)
                 })
-            })
+                .collect()
         };
         Self {
-            below: source(Layer::Below, &toggle.below),
-            above: source(Layer::Above, &toggle.above),
+            below: runs(Layer::Below, &toggle.below),
+            above: runs(Layer::Above, &toggle.above),
             toggle,
         }
     }
@@ -444,9 +458,7 @@ impl LiveToggleParts {
         renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
     ) {
-        if let Some(below) = &self.below {
-            renderer.push_live(ctx, below);
-        }
+        push_runs(renderer, ctx, &self.below, "toggle-below-part");
         if let Some(backdrop) = &self.toggle.backdrop {
             renderer.draw_context(ctx, |recorder| {
                 recorder.backdrop_material(
@@ -457,8 +469,25 @@ impl LiveToggleParts {
                 );
             });
         }
-        if let Some(above) = &self.above {
-            renderer.push_live(ctx, above);
-        }
+        push_runs(renderer, ctx, &self.above, "toggle-above-part");
+    }
+}
+
+/// Lists `runs` in `ctx`, in paint order, a run with an opacity in a live
+/// scope keyed `role` and its index.
+fn push_runs<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
+    ctx: RenderContext,
+    runs: &[ToggleRun],
+    role: &'static str,
+) {
+    for (index, (opacity, source)) in runs.iter().enumerate() {
+        let key = crate::renderer::mount::ScopeKey {
+            role,
+            item: index as u64,
+        };
+        renderer.with_part_opacity(key, opacity.as_ref(), ctx, |renderer| {
+            renderer.push_live(ctx, source);
+        });
     }
 }

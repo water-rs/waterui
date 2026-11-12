@@ -16,6 +16,7 @@
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
+use std::ops::Range;
 use std::rc::{Rc, Weak};
 
 use cherenkov_record::{
@@ -140,13 +141,11 @@ pub struct LabelPaint(pub Computed<Paint>);
 /// chrome member the program lists, and the content between two materials
 /// becomes a live source of its own.
 ///
-/// The widget keeps it while its parts stay the same, so the program lists
-/// the same sources on every record, the mount keeps their contents, and a
-/// value or interaction change reaches the engine only through the parts'
-/// operands.
+/// The widget keeps it, in a [`PartRuns`], while its parts stay the same,
+/// so the program lists the same sources on every record, the mount keeps
+/// their contents, and a value or interaction change reaches the engine
+/// only through the parts' operands.
 pub struct LayeredParts {
-    /// The material scope the parts recorded under.
-    scope: MaterialScope,
     /// The content below the first material, then the content above each
     /// material; `None` where the parts recorded nothing.
     segments: Vec<Option<Rc<dyn LiveSource>>>,
@@ -176,23 +175,9 @@ impl LayeredParts {
             segments.push(segment(index + 1, run.above));
         }
         Self {
-            scope,
             segments,
             materials,
         }
-    }
-
-    /// The parts `body` records, under `scope`: those in `slot` when they
-    /// recorded under it, otherwise `body` recorded afresh, replacing them.
-    pub(crate) fn ensure(
-        slot: &mut Option<Self>,
-        scope: MaterialScope,
-        body: impl FnOnce() -> PartsBody,
-    ) -> &Self {
-        if !slot.as_ref().is_some_and(|parts| parts.scope == scope) {
-            *slot = Some(Self::new(scope, &body()));
-        }
-        slot.as_ref().expect("the layered parts were just ensured")
     }
 
     /// Lists the parts in `ctx`: the content below the first material, then
@@ -219,6 +204,135 @@ impl LayeredParts {
             if let Some(above) = above {
                 renderer.push_live(ctx, above);
             }
+        }
+    }
+}
+
+/// Splits a sequence of look parts, given by their opacities in paint
+/// order, into the runs they record in: the parts drawn whole next to each
+/// other record together, and a part with an opacity of its own records
+/// alone, its run carrying the operand.
+pub fn opacity_runs(
+    opacities: impl IntoIterator<Item = Option<Operand<f32>>>,
+) -> Vec<(Option<Operand<f32>>, Range<usize>)> {
+    let mut runs: Vec<(Option<Operand<f32>>, Range<usize>)> = Vec::new();
+    for (index, opacity) in opacities.into_iter().enumerate() {
+        match (opacity, runs.last_mut()) {
+            (None, Some((None, whole))) => whole.end = index + 1,
+            (opacity, _) => runs.push((opacity, index..index + 1)),
+        }
+    }
+    runs
+}
+
+/// One step of a widget's look parts, in paint order: content recorded
+/// with the steps around it, or a part with an opacity of its own.
+pub struct PartStep {
+    opacity: Option<Operand<f32>>,
+    record: PartsBody,
+}
+
+impl PartStep {
+    /// Content drawn whole, recorded with the steps around it.
+    pub(crate) fn content(record: impl Fn(&mut Recorder) + 'static) -> Self {
+        Self {
+            opacity: None,
+            record: Rc::new(record),
+        }
+    }
+
+    /// Part `index` of the parts `parts` reads from `owner`, recorded on the
+    /// frame `frame` reads from it.
+    pub(crate) fn part<O: 'static, V: 'static>(
+        owner: &Rc<O>,
+        index: usize,
+        parts: impl Fn(&O) -> &[RealizedCustom<V>] + 'static,
+        frame: impl Fn(&O) -> Rect + 'static,
+    ) -> Self {
+        let opacity = parts(owner)[index].opacity().cloned();
+        let owner = Rc::clone(owner);
+        Self {
+            opacity,
+            record: Rc::new(move |recorder: &mut Recorder| {
+                parts(&owner)[index].record(recorder, frame(&owner));
+            }),
+        }
+    }
+
+    /// Every part of the parts `parts` reads from `owner`, in paint order,
+    /// recorded on the frame `frame` reads from it.
+    pub(crate) fn parts<O: 'static, V: 'static>(
+        owner: &Rc<O>,
+        parts: impl Fn(&O) -> &[RealizedCustom<V>] + Clone + 'static,
+        frame: impl Fn(&O) -> Rect + Clone + 'static,
+    ) -> impl Iterator<Item = Self> {
+        let count = parts(owner).len();
+        let owner = Rc::clone(owner);
+        (0..count).map(move |index| Self::part(&owner, index, parts.clone(), frame.clone()))
+    }
+}
+
+/// A widget's look parts recorded in runs: the steps drawn whole record
+/// together, as one [`LayeredParts`], and a part with an opacity of its own
+/// records alone, listed in a live scope whose layer opacity follows the
+/// part's. A part's opacity changing records nothing; at opacity 0 the
+/// engine skips the part's layer, a backdrop material in it included.
+///
+/// Steps that are all drawn whole are one run, listed exactly as a
+/// [`LayeredParts`] is.
+pub struct PartRuns {
+    scope: MaterialScope,
+    runs: Vec<(Option<Operand<f32>>, LayeredParts)>,
+}
+
+impl PartRuns {
+    /// The runs `steps` record under `scope`: those in `slot` when they
+    /// recorded under it, otherwise `steps` recorded afresh, replacing
+    /// them.
+    pub(crate) fn ensure(
+        slot: &mut Option<Self>,
+        scope: MaterialScope,
+        steps: impl FnOnce() -> Vec<PartStep>,
+    ) -> &Self {
+        if !slot.as_ref().is_some_and(|runs| runs.scope == scope) {
+            *slot = Some(Self::new(scope, steps()));
+        }
+        slot.as_ref().expect("the part runs were just ensured")
+    }
+
+    fn new(scope: MaterialScope, steps: Vec<PartStep>) -> Self {
+        let bodies: Rc<[PartsBody]> = steps.iter().map(|step| Rc::clone(&step.record)).collect();
+        let runs = opacity_runs(steps.into_iter().map(|step| step.opacity))
+            .into_iter()
+            .map(|(opacity, range)| {
+                let bodies = Rc::clone(&bodies);
+                let body: PartsBody = Rc::new(move |recorder: &mut Recorder| {
+                    for body in &bodies[range.clone()] {
+                        body(recorder);
+                    }
+                });
+                (opacity, LayeredParts::new(scope, &body))
+            })
+            .collect();
+        Self { scope, runs }
+    }
+
+    /// Lists the runs in `ctx`, in paint order; the live scope of the run
+    /// at `index` is keyed `role`, `index`.
+    pub(crate) fn push<E: crate::text::TextEngine>(
+        &self,
+        renderer: &mut HydrolysisRenderer<E>,
+        ctx: RenderContext,
+        role: &'static str,
+    ) {
+        for (index, (opacity, parts)) in self.runs.iter().enumerate() {
+            let key = crate::renderer::mount::ScopeKey {
+                role,
+                item: index as u64,
+            };
+            renderer.with_part_opacity(key, opacity.as_ref(), ctx, |renderer| {
+                parts.push(renderer, ctx);
+            });
         }
     }
 }
@@ -1516,29 +1630,45 @@ impl LiveChrome {
         chrome
     }
 
-    /// Records every layer of a chrome that wraps no content into one
+    /// Every layer of a chrome that wraps no content, as the steps of a
     /// recording that may declare backdrop materials, in the order
     /// [`LiveChromeParts`] lists them around a widget's content: the
     /// surface, its backdrop material and the border over it, the custom
     /// parts, then the interaction layers.
-    pub(crate) fn record_layers(&self, recorder: &mut Recorder) {
-        self.record_below(recorder);
-        if let (FillOperands::Backdrop(effect), Fill::Backdrop(backdrop)) =
-            (&self.fill, self.spec.surface().fill())
-        {
-            recorder.backdrop_material(
-                self.shape.live(),
-                backdrop.shader(),
-                backdrop.capture(),
-                effect.live(),
-            );
-            self.record_border(recorder);
-        }
-        let frame = self.frame.get();
-        for custom in &self.customs {
-            custom.record(recorder, frame);
-        }
-        self.record_above(recorder);
+    pub(crate) fn layer_steps(chrome: &Rc<Self>) -> impl Iterator<Item = PartStep> {
+        let surface = PartStep::content({
+            let chrome = Rc::clone(chrome);
+            move |recorder| {
+                chrome.record_below(recorder);
+                if let (FillOperands::Backdrop(effect), Fill::Backdrop(backdrop)) =
+                    (&chrome.fill, chrome.spec.surface().fill())
+                {
+                    recorder.backdrop_material(
+                        chrome.shape.live(),
+                        backdrop.shader(),
+                        backdrop.capture(),
+                        effect.live(),
+                    );
+                    chrome.record_border(recorder);
+                }
+            }
+        });
+        let above = PartStep::content({
+            let chrome = Rc::clone(chrome);
+            move |recorder| chrome.record_above(recorder)
+        });
+        core::iter::once(surface)
+            .chain(Self::custom_steps(chrome))
+            .chain(core::iter::once(above))
+    }
+
+    /// The chrome's custom parts, as steps recorded on its frame.
+    pub(crate) fn custom_steps(chrome: &Rc<Self>) -> impl Iterator<Item = PartStep> {
+        PartStep::parts(
+            chrome,
+            |chrome: &Self| &chrome.customs,
+            |chrome: &Self| chrome.frame.get(),
+        )
     }
 }
 
@@ -1628,9 +1758,9 @@ impl LiveSource for ChromeSource {
 /// realized the first time the chrome lists it.
 #[derive(Default)]
 struct ChromeLayers {
-    customs: Option<LayeredParts>,
-    slider: Option<LayeredParts>,
-    indicator: Option<LayeredParts>,
+    customs: Option<PartRuns>,
+    slider: Option<PartRuns>,
+    indicator: Option<PartRuns>,
 }
 
 /// A widget part's live chrome and the sources its program lists: the
@@ -1761,15 +1891,10 @@ impl LiveChromeParts {
         let scope = renderer.material_scope();
         let mut layers = self.layers.borrow_mut();
         if !chrome.customs.is_empty() {
-            LayeredParts::ensure(&mut layers.customs, scope, || {
-                let chrome = Rc::clone(chrome);
-                Rc::new(move |recorder: &mut Recorder| {
-                    for custom in &chrome.customs {
-                        custom.record(recorder, chrome.frame.get());
-                    }
-                })
+            PartRuns::ensure(&mut layers.customs, scope, || {
+                LiveChrome::custom_steps(chrome).collect()
             })
-            .push(renderer, ctx);
+            .push(renderer, ctx, "chrome-part");
         }
         if let Some(slider) = &chrome.slider {
             // The look draws left to right; a right-to-left layout mirrors
@@ -1784,19 +1909,21 @@ impl LiveChromeParts {
                     ctx.local() * Affine::new([-1.0, 0.0, 0.0, 1.0, frame.x0 + frame.x1, 0.0]),
                 );
             }
-            LayeredParts::ensure(&mut layers.slider, scope, || {
-                let chrome = Rc::clone(chrome);
-                Rc::new(move |recorder: &mut Recorder| {
-                    let slider = chrome
-                        .slider
-                        .as_ref()
-                        .expect("a slider chrome keeps its slider");
-                    for part in &slider.parts {
-                        part.record(recorder, chrome.frame.get());
-                    }
-                })
+            PartRuns::ensure(&mut layers.slider, scope, || {
+                PartStep::parts(
+                    chrome,
+                    |chrome: &LiveChrome| {
+                        &chrome
+                            .slider
+                            .as_ref()
+                            .expect("a slider chrome keeps its slider")
+                            .parts
+                    },
+                    |chrome: &LiveChrome| chrome.frame.get(),
+                )
+                .collect()
             })
-            .push(renderer, parts_ctx);
+            .push(renderer, parts_ctx, "slider-part");
         }
     }
 
@@ -1817,22 +1944,26 @@ impl LiveChromeParts {
         }
         let scope = renderer.material_scope();
         let mut layers = self.layers.borrow_mut();
-        LayeredParts::ensure(&mut layers.indicator, scope, || {
-            let chrome = Rc::clone(&self.chrome);
-            Rc::new(move |recorder: &mut Recorder| {
+        PartRuns::ensure(&mut layers.indicator, scope, || {
+            fn indicator(chrome: &LiveChrome) -> (&LiveIndicator, &IndicatorContent) {
                 let slider = chrome
                     .slider
                     .as_ref()
                     .expect("a slider chrome keeps its slider");
-                let (live, content) = slider
+                slider
                     .indicator
                     .as_ref()
                     .zip(slider.source.indicator.as_ref())
-                    .expect("a realized indicator follows its slider's indicator");
-                live.container.record(recorder, content.rest);
-            })
+                    .expect("a realized indicator follows its slider's indicator")
+            }
+            vec![PartStep::part(
+                &self.chrome,
+                0,
+                move |chrome: &LiveChrome| core::slice::from_ref(&indicator(chrome).0.container),
+                move |chrome: &LiveChrome| indicator(chrome).1.rest,
+            )]
         })
-        .push(renderer, ctx);
+        .push(renderer, ctx, "slider-indicator-part");
     }
 
     /// Lists the chrome's interaction layers above the widget's content.
