@@ -158,7 +158,8 @@ class PlatformViewRegistry internal constructor(
                     // transforms, clips and scroll already composed there;
                     // the slot's own matrix/clip is the visible-geometry check.
                     val id = content.platformViewAt(event.x, event.y)
-                    nativeGesture = id != null && slotAt(id, event.x, event.y) != null
+                    nativeGesture =
+                        id != null && !isSurface(id) && slotAt(id, event.x, event.y) != null
                     nativeTarget = if (nativeGesture) slots[id]?.view else null
                 }
                 return !nativeGesture || super.onInterceptTouchEvent(event)
@@ -178,6 +179,12 @@ class PlatformViewRegistry internal constructor(
 
     private val factories = HashMap<String, (Context) -> View>()
     private val slots = LinkedHashMap<Long, Slot>()
+
+    init {
+        // The decoder plane of the GPU video player belongs to the backend,
+        // whichever painter draws the window.
+        factories[VideoSurfaceHostView.KIND] = { context -> VideoSurfaceHostView(context) }
+    }
 
     /**
      * The [OrderedContent] recorder: records the mounted view's own display
@@ -303,6 +310,9 @@ class PlatformViewRegistry internal constructor(
         return view
     }
 
+    /** Whether placement `id` mounts a [PlatformSurface]: a view that only draws and takes no input. */
+    private fun isSurface(id: Long): Boolean = slots[id]?.mounted is PlatformSurface
+
     /** Whether the platform view of placement `id` covers (`x`, `y`). */
     internal fun containsPlatformView(id: Long, x: Float, y: Float): Boolean =
         slotAt(id, x, y) != null
@@ -358,7 +368,7 @@ class PlatformViewRegistry internal constructor(
             // when a platform view is drawn there and no interactive target
             // above it takes the point.
             val id = content.platformViewAt(x, y) ?: return false
-            return slotAt(id, x, y) != null
+            return !isSurface(id) && slotAt(id, x, y) != null
         }
         val rect = Rect()
         for (slot in slots.values) {
@@ -591,6 +601,13 @@ class PlatformViewRegistry internal constructor(
                             "a kind nor an instance",
                     )
             }
+        (mounted as? PlatformSurface)?.placed(
+            session
+                ?: throw IllegalStateException(
+                    "hydrolysis: a platform surface was placed on a registry with no session",
+                ),
+            placement.id,
+        )
         val slotView =
             NativeSlot(context, mounted).apply {
                 addView(

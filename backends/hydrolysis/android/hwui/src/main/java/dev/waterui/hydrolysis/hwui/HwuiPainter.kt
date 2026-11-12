@@ -42,6 +42,11 @@ class HwuiPainter : OrderedContent, SessionPainter {
             "hydrolysis: HWUI painter is already bound to another host"
         }
         this.host = host
+        // The one platform-view kind this painter realizes itself: the
+        // `TextureView` each GPU content view is hosted in.
+        host.platformViewRegistry.registerFactory(HostedSurfaceView.KIND) { context ->
+            HostedSurfaceView(context)
+        }
         host.setOrderedContent(this)
         highRefresh.attached(host)
         host.invalidate()

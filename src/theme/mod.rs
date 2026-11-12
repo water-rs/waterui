@@ -99,15 +99,24 @@
 //!
 //! ### Native Backend Integration
 //!
-//! Native backends should:
-//! 1. Create a `Binding<ColorScheme>` that tracks system appearance
-//! 2. Create `Computed<WorkingColor>` signals that react to color scheme changes
-//! 3. Install via `Theme::new().color_scheme(binding).colors(ColorSettings::new()...)`
+//! Native backends and style packages should:
+//! 1. Create a `Binding<ColorScheme>` that tracks system appearance and install
+//!    it with [`install_color_scheme`] (or `Theme::new().color_scheme(..)`)
+//! 2. Install each scheme-dependent colour slot as a [`ColorDerivation`] with
+//!    [`install_color_derivation`]: the slot keeps the derivation, so a
+//!    colour scheme installed later on a subtree re-derives that subtree's
+//!    slots from the subtree's scheme
+//!
+//! A colour given as a signal ([`ColorSettings`], [`install_color_signal`]) is
+//! the same in every scheme and is left as it is by a later scheme.
 
 use alloc::rc::Rc;
 use core::{any::TypeId, marker::PhantomData};
 
-use nami::{Computed, SignalExt, signal::IntoSignal};
+use nami::{
+    Computed, SignalExt,
+    signal::{IntoComputed, IntoSignal},
+};
 use waterui_core::{Environment, env::Store, plugin::Plugin};
 
 use crate::{
@@ -605,83 +614,156 @@ impl Plugin for Theme {
 /// These unit structs implement `Resolvable<Resolved = WorkingColor>`, so they
 /// can be used directly with view modifiers like `.foreground(Foreground)`.
 pub mod color {
-    use super::{Environment, WorkingColor};
+    use super::{ColorScheme, Computed, Environment, WorkingColor};
     use nami::{Signal, impl_constant};
     use waterui_core::resolve::Resolvable;
 
-    macro_rules! define_color_token {
-        ($name:ident, $doc:literal) => {
-            #[doc = $doc]
-            #[derive(Debug, Clone, Copy, Default)]
-            pub struct $name;
+    macro_rules! define_color_tokens {
+        ($( $name:ident => $doc:literal ),* $(,)?) => {
+            $(
+                #[doc = $doc]
+                #[derive(Debug, Clone, Copy, Default)]
+                pub struct $name;
 
-            impl Resolvable for $name {
-                type Resolved = WorkingColor;
+                impl Resolvable for $name {
+                    type Resolved = WorkingColor;
 
-                fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
-                    super::resolve_color_slot::<Self>(env)
+                    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
+                        super::resolve_color_slot::<Self>(env)
+                    }
                 }
-            }
 
-            impl_constant!($name);
+                impl_constant!($name);
 
-            impl crate::View for $name {
-                fn body(self, _env: &Environment) -> impl crate::View {
-                    crate::color::Color::new(self)
+                impl super::sealed::Sealed for $name {}
+
+                impl super::ColorSlot for $name {}
+
+                impl crate::View for $name {
+                    fn body(self, _env: &Environment) -> impl crate::View {
+                        crate::color::Color::new(self)
+                    }
                 }
+            )*
+
+            /// Re-derives from `scheme` every slot installed as a derivation.
+            pub(super) fn rederive(env: &mut Environment, scheme: &Computed<ColorScheme>) {
+                $( super::rederive_color_slot::<$name>(env, scheme); )*
             }
         };
     }
 
-    define_color_token!(Background, "Primary background color.");
-    define_color_token!(Surface, "Elevated surface color (cards, sheets).");
-    define_color_token!(SurfaceVariant, "Alternate surface color.");
-    define_color_token!(Border, "Border and divider color.");
-    define_color_token!(Foreground, "Primary text and icon color.");
-    define_color_token!(MutedForeground, "Secondary/dimmed text color.");
-    define_color_token!(
-        TertiaryForeground,
-        "Tertiary text color, fainter than the muted tier: a month grid's days outside the shown month."
-    );
-    define_color_token!(
-        DisabledForeground,
-        "Text and glyph color of a control or item that cannot be used."
-    );
-    define_color_token!(Accent, "Accent color for interactive elements.");
-    define_color_token!(
-        AccentContainer,
-        "Container color associated with the accent."
-    );
-    define_color_token!(AccentForeground, "Foreground on accent backgrounds.");
-    define_color_token!(
-        Tertiary,
-        "Contrasting accent color for complementary emphasis."
-    );
-    define_color_token!(
-        TertiaryContainer,
-        "Container color associated with the tertiary accent."
-    );
-    define_color_token!(
-        SelectionContainer,
-        "The fill a platform paints behind a selected item."
-    );
-    define_color_token!(
-        SelectionForeground,
-        "Foreground drawn on the selection container."
-    );
-    define_color_token!(
-        UnemphasizedSelection,
-        "The fill painted behind a selected item while its control is not focused."
-    );
-    define_color_token!(
-        Error,
-        "Destructive / error emphasis: badges, destructive buttons, validation."
-    );
-    define_color_token!(ErrorForeground, "Foreground drawn on the error color.");
-    define_color_token!(
-        Scrim,
-        "Dimming backdrop a modal layer paints between the content and a presented dialog."
-    );
+    define_color_tokens! {
+        Background => "Primary background color.",
+        Surface => "Elevated surface color (cards, sheets).",
+        SurfaceVariant => "Alternate surface color.",
+        Border => "Border and divider color.",
+        Foreground => "Primary text and icon color.",
+        MutedForeground => "Secondary/dimmed text color.",
+        TertiaryForeground => "Tertiary text color, fainter than the muted tier: a month grid's days outside the shown month.",
+        DisabledForeground => "Text and glyph color of a control or item that cannot be used.",
+        Accent => "Accent color for interactive elements.",
+        AccentContainer => "Container color associated with the accent.",
+        AccentForeground => "Foreground on accent backgrounds.",
+        Tertiary => "Contrasting accent color for complementary emphasis.",
+        TertiaryContainer => "Container color associated with the tertiary accent.",
+        SelectionContainer => "The fill a platform paints behind a selected item.",
+        SelectionForeground => "Foreground drawn on the selection container.",
+        UnemphasizedSelection => "The fill painted behind a selected item while its control is not focused.",
+        Error => "Destructive / error emphasis: badges, destructive buttons, validation.",
+        ErrorForeground => "Foreground drawn on the error color.",
+        Scrim => "Dimming backdrop a modal layer paints between the content and a presented dialog.",
+    }
+}
+
+// ============================================================================
+// Color derivations - a slot's colour as a function of the colour scheme
+// ============================================================================
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// A theme colour slot: one of the tokens in [`color`].
+///
+/// Sealed: the slots are exactly the tokens [`install_color_scheme`]
+/// re-derives when a colour scheme is installed.
+pub trait ColorSlot: sealed::Sealed + 'static {}
+
+/// How a colour slot follows the colour scheme.
+///
+/// A slot installed with [`install_color_derivation`] keeps its derivation,
+/// so a colour scheme installed later on a subtree re-derives the slot from
+/// that subtree's scheme, and a change of the scheme signal re-resolves the
+/// slot in place.
+///
+/// # Example
+///
+/// ```rust
+/// use waterui::Environment;
+/// use waterui::color::Srgb;
+/// use waterui::theme::{ColorDerivation, ColorScheme, color, install_color_derivation, install_color_scheme};
+/// use waterui::reactive::Computed;
+///
+/// let mut env = Environment::new();
+/// install_color_scheme(&mut env, Computed::constant(ColorScheme::Light));
+/// install_color_derivation::<color::Background>(
+///     &mut env,
+///     ColorDerivation::new(|scheme| match scheme {
+///         ColorScheme::Light => Srgb::WHITE.resolve(),
+///         ColorScheme::Dark => Srgb::BLACK.resolve(),
+///     }),
+/// );
+/// ```
+#[derive(Clone)]
+pub struct ColorDerivation(Rc<DeriveColor>);
+
+/// A slot's colour signal under a colour-scheme signal.
+type DeriveColor = dyn Fn(&Computed<ColorScheme>) -> Computed<WorkingColor>;
+
+impl core::fmt::Debug for ColorDerivation {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ColorDerivation").finish_non_exhaustive()
+    }
+}
+
+impl ColorDerivation {
+    /// The slot's colour for each colour scheme, as `derive` computes it.
+    #[must_use]
+    pub fn new(derive: impl Fn(ColorScheme) -> WorkingColor + 'static) -> Self {
+        let derive = Rc::new(derive);
+        Self(Rc::new(move |scheme| {
+            let derive = Rc::clone(&derive);
+            scheme.map(move |scheme| derive(scheme)).computed()
+        }))
+    }
+
+    /// The slot's colour in the light and in the dark scheme, each its own
+    /// signal: a host whose per-scheme colours change for reasons other than
+    /// the scheme (an accent or contrast setting) feeds them through these.
+    #[must_use]
+    pub fn per_scheme(
+        light: impl IntoComputed<WorkingColor>,
+        dark: impl IntoComputed<WorkingColor>,
+    ) -> Self {
+        let light = light.into_computed();
+        let dark = dark.into_computed();
+        Self(Rc::new(move |scheme| {
+            scheme
+                .zip(&light)
+                .zip(&dark)
+                .map(|((scheme, light), dark)| match scheme {
+                    ColorScheme::Light => light,
+                    ColorScheme::Dark => dark,
+                })
+                .computed()
+        }))
+    }
+
+    /// The slot's colour signal under `scheme`.
+    fn derive(&self, scheme: &Computed<ColorScheme>) -> Computed<WorkingColor> {
+        (self.0)(scheme)
+    }
 }
 
 // ============================================================================
@@ -692,13 +774,17 @@ pub mod color {
 #[derive(Clone)]
 struct ColorSlotValue<T> {
     signal: Computed<WorkingColor>,
+    /// The derivation `signal` came from, re-run by [`install_color_scheme`];
+    /// `None` for a colour that is the same in every scheme.
+    derivation: Option<ColorDerivation>,
     _marker: PhantomData<T>,
 }
 
 impl<T> ColorSlotValue<T> {
-    const fn new(signal: Computed<WorkingColor>) -> Self {
+    const fn new(signal: Computed<WorkingColor>, derivation: Option<ColorDerivation>) -> Self {
         Self {
             signal,
+            derivation,
             _marker: PhantomData,
         }
     }
@@ -770,8 +856,49 @@ pub fn installed_color_scheme(env: &Environment) -> Option<Computed<ColorScheme>
 /// // Install it for the Foreground slot
 /// install_color_signal::<color::Foreground>(&mut env, dark_mode_color);
 /// ```
+///
+/// The signal is the slot's colour in every scheme: a colour scheme installed
+/// later leaves it as it is. A colour that follows the scheme is installed
+/// with [`install_color_derivation`].
 pub fn install_color_signal<T: 'static>(env: &mut Environment, signal: Computed<WorkingColor>) {
-    env.insert(ColorSlotValue::<T>::new(signal.clone()));
+    insert_color_slot::<T>(env, signal, None);
+}
+
+/// Installs `derivation` for a colour slot, derived from the colour scheme
+/// installed in `env`.
+///
+/// The slot keeps the derivation: [`install_color_scheme`] on a subtree
+/// re-derives it from the subtree's scheme, and a change of the scheme
+/// signal re-resolves it in place.
+///
+/// # Contract
+///
+/// The colour scheme is installed first; without one this is the contract
+/// violation [`current_color_scheme`] reports.
+pub fn install_color_derivation<T: ColorSlot>(env: &mut Environment, derivation: ColorDerivation) {
+    let signal = derivation.derive(&current_color_scheme(env));
+    insert_color_slot::<T>(env, signal, Some(derivation));
+}
+
+/// Re-derives slot `T` from `scheme` when it was installed as a derivation.
+fn rederive_color_slot<T: ColorSlot>(env: &mut Environment, scheme: &Computed<ColorScheme>) {
+    let Some(derivation) = env
+        .get::<ColorSlotValue<T>>()
+        .and_then(|slot| slot.derivation.clone())
+    else {
+        return;
+    };
+    insert_color_slot::<T>(env, derivation.derive(scheme), Some(derivation));
+}
+
+/// Stores slot `T`'s signal and mirrors it into the graphics colour key the
+/// component crates resolve.
+fn insert_color_slot<T: 'static>(
+    env: &mut Environment,
+    signal: Computed<WorkingColor>,
+    derivation: Option<ColorDerivation>,
+) {
+    env.insert(ColorSlotValue::<T>::new(signal.clone(), derivation));
 
     macro_rules! mirror_graphics_color {
         ($theme_slot:ty, $graphics_slot:ty) => {
@@ -855,8 +982,12 @@ pub fn install_font_signal<T: 'static>(env: &mut Environment, signal: Computed<R
 /// Installs a color scheme signal.
 ///
 /// This is used by native backends to inject a reactive color scheme that
-/// tracks the system appearance setting.
+/// tracks the system appearance setting, and by [`Theme::color_scheme`] to
+/// set the scheme of a subtree. Every colour slot installed as a
+/// [`ColorDerivation`] is re-derived from `signal`, so the tokens `env`
+/// resolves follow the scheme installed here.
 pub fn install_color_scheme(env: &mut Environment, signal: Computed<ColorScheme>) {
+    color::rederive(env, &signal);
     env.insert(Store::<ColorScheme, Computed<ColorScheme>>::new(signal));
 }
 
@@ -1049,6 +1180,49 @@ mod tests {
             ),
             channel(blue)
         );
+    }
+
+    /// A scheme installed on a subtree re-derives a per-scheme slot there,
+    /// the graphics mirror included, and the slot keeps following its
+    /// per-scheme signals; a slot installed as a signal is left as it is.
+    #[test]
+    fn subtree_scheme_rederives_per_scheme_slots() {
+        use waterui_graphics::color::BackgroundColor;
+
+        let red = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
+        let green = WorkingColor::new([0.0, 1.0, 0.0, 1.0]);
+        let blue = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
+        let light = Binding::container(red);
+        let dark = Binding::container(blue);
+        let mut env = Environment::new();
+        install_color_scheme(&mut env, Computed::constant(ColorScheme::Light));
+        install_color_derivation::<color::Background>(
+            &mut env,
+            ColorDerivation::per_scheme(light, dark.clone()),
+        );
+        install_color_signal::<color::Accent>(&mut env, Computed::constant(green));
+
+        let mut subtree = env.clone();
+        install_color_scheme(&mut subtree, Computed::constant(ColorScheme::Dark));
+
+        let channels = |env: &Environment| color::Background.resolve(env).snapshot().components;
+        assert_eq!(channels(&env), red.components);
+        assert_eq!(channels(&subtree), blue.components);
+        assert_eq!(
+            Color::new(BackgroundColor)
+                .resolve(&subtree)
+                .snapshot()
+                .components,
+            blue.components
+        );
+        assert_eq!(
+            color::Accent.resolve(&subtree).snapshot().components,
+            green.components
+        );
+
+        let resolved = color::Background.resolve(&subtree);
+        dark.set(green);
+        assert_eq!(resolved.snapshot().components, green.components);
     }
 
     #[test]

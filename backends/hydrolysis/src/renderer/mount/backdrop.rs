@@ -16,10 +16,15 @@ use std::rc::{Rc, Weak};
 
 use cherenkov_record::{Layer, LayerId, Transaction};
 use rustc_hash::{FxHashMap, FxHashSet};
+use waterui_core::contract_violation;
 
-use cherenkov_record::{CaptureClass, MaterialEffect, MaterialGrouping, SharedLive};
+use cherenkov_record::{
+    BackdropMaterial, CaptureClass, MaterialCapture, MaterialEffect, MaterialGrouping,
+    MaterialRegistry, MaterialShader, SharedLive,
+};
 
 use crate::renderer::material::{MaterialRuntime, WithinWindowLevel};
+use crate::renderer::mount::container::{ContainerMember, Resolution};
 use crate::renderer::mount::{MaterialRequest, NodeCell};
 
 /// What a shared backdrop group is scoped to.
@@ -105,18 +110,31 @@ impl BackdropGroupKey {
     }
 }
 
-/// Which chrome group a material member joins: the tuple `(scope,
-/// capture class, install canvas)`. Members of one class inside one
-/// scope and one compositing canvas share one group — one capture, one
-/// chain; `Solo` members and members in different scopes, classes or
-/// canvases never share (water-rs/waterui#1788).
+/// What one chrome group's members agree on besides the scope and the
+/// canvas: the capture class they record, or — for a scope's members whose
+/// shader registered a container recipe — the shader itself, since the
+/// recipe resolves the group's class from all its members.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ChromeTerm {
+    Class(CaptureClass),
+    Container(MaterialShader),
+}
+
+/// Which chrome group a material member joins: the tuple `(scope, term,
+/// install canvas)`, the term being the capture class or, for a container
+/// member, its shader. Members of one class inside one scope and one
+/// compositing canvas share one group — one capture, one chain — and so do
+/// the members of one container shader, whatever their classes; `Solo`
+/// members and members in different scopes, terms or canvases never share
+/// (water-rs/waterui#1788, #2834).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ChromeGroupKey {
     /// The material scope the members share, or the member's own layer
     /// when it is a group of its own.
     scope: BackdropScope,
-    /// The members' capture class: one group runs one class's chain.
-    class: CaptureClass,
+    /// What the members share: one group runs one class's chain, and a
+    /// container's class is resolved by its recipe.
+    term: ChromeTerm,
     /// The install canvas the members' content mounts under: `None`
     /// under the surface root, `Some(frame)` under a filtered node's
     /// frame layer.
@@ -134,40 +152,49 @@ impl ChromeGroupKey {
     /// never shares; a `Shared` or `Union` class under a scope shares it
     /// and anchors at the layer the scope's `(scope, canvas)` pair
     /// registered in `anchors`, like a material group
-    /// (water-rs/waterui#2097).
+    /// (water-rs/waterui#2097). Under a scope, a material whose shader has
+    /// a container recipe in `registry` is keyed by the shader instead of
+    /// its class, and its group's class is the recipe's.
     pub(crate) fn new<E: crate::text::TextEngine>(
         member: LayerId,
-        scope: cherenkov_record::MaterialScope,
-        class: CaptureClass,
+        material: &BackdropMaterial,
         grouping: MaterialGrouping,
         canvas: Option<LayerId>,
         anchors: &ScopeAnchors<E>,
+        registry: &MaterialRegistry,
     ) -> Self {
-        let (scope, anchor) = match scope.id() {
+        let shader = material.shader();
+        let (scope, term, anchor) = match material.scope().id() {
             Some(scope) if grouping != MaterialGrouping::Solo => (
                 BackdropScope::Scoped(scope),
+                if registry.container_recipe(shader).is_some() {
+                    ChromeTerm::Container(shader)
+                } else {
+                    ChromeTerm::Class(material.capture())
+                },
                 Some(anchors.anchor(scope, canvas)),
             ),
-            _ => (BackdropScope::Solo(member), None),
+            _ => (
+                BackdropScope::Solo(member),
+                ChromeTerm::Class(material.capture()),
+                None,
+            ),
         };
         Self {
             scope,
-            class,
+            term,
             canvas,
             anchor,
         }
     }
 
-    /// The members' capture class.
-    #[cfg_attr(
-        not(hydrolysis_gpu_painter),
-        allow(
-            dead_code,
-            reason = "read by the GPU target's backdrop-shader chrome; no other target registers backdrop shaders (water-rs/waterui#4065)"
-        )
-    )]
-    pub(crate) const fn class(&self) -> CaptureClass {
-        self.class
+    /// The shader whose container recipe resolves the group, `None` for a
+    /// group keyed by its members' class.
+    pub(crate) const fn container(&self) -> Option<MaterialShader> {
+        match self.term {
+            ChromeTerm::Container(shader) => Some(shader),
+            ChromeTerm::Class(_) => None,
+        }
     }
 
     /// The layer the group's capture anchors at — `None` under the
@@ -183,6 +210,24 @@ impl ChromeGroupKey {
     pub(crate) const fn anchor(&self) -> Option<LayerId> {
         self.anchor
     }
+}
+
+/// The terms a chrome group's chain is built from: the capture class it
+/// runs — its members' own, or the one its container recipe resolved —
+/// and that class's registered capture.
+#[derive(Clone, Copy, Debug)]
+pub struct ChromeParams {
+    /// The class the group was built from.
+    #[cfg_attr(
+        not(hydrolysis_gpu_painter),
+        allow(
+            dead_code,
+            reason = "read by the GPU target's backdrop-shader chrome; no other target registers backdrop shaders (water-rs/waterui#4065)"
+        )
+    )]
+    pub class: CaptureClass,
+    /// The class's registered capture parameters.
+    pub capture: MaterialCapture,
 }
 
 /// The membership a member's `NodeLayers` holds: a marker the groups
@@ -261,6 +306,13 @@ struct MountedBackdrop<P, G> {
     /// it during the commit, and the sweep drops the members whose layers
     /// unmounted. An empty set releases the group at the same commit.
     members: FxHashSet<LayerId>,
+    /// Whether the group's membership or a member's recording changed
+    /// since its container recipe last resolved it (water-rs/waterui#2834):
+    /// [`settle`](BackdropGroups::settle) resolves it again at commit.
+    changed: bool,
+    /// The live resolution of a container group's members' effects: `None`
+    /// for a group keyed by class, and until the first settle.
+    resolution: Option<Resolution>,
 }
 
 /// A backdrop term a group or member could not be built from at its
@@ -490,11 +542,21 @@ pub struct ChromeMemberPayload<S> {
         )
     )]
     pub effect: SharedLive<MaterialEffect>,
+    /// The member's own terms when its group is a container group: its
+    /// `effect` is then a live view of the container's binding.
+    #[cfg_attr(
+        not(hydrolysis_gpu_painter),
+        allow(
+            dead_code,
+            reason = "read by the GPU target's backdrop-shader chrome; no other target registers backdrop shaders (water-rs/waterui#4065)"
+        )
+    )]
+    pub container: Option<ContainerMember>,
 }
 
 /// The chrome groups a [`Mount`] keeps (water-rs/waterui#1788).
 pub type ChromeBackdropGroups<G, S, E> =
-    BackdropGroups<ChromeGroupKey, cherenkov_record::MaterialCapture, G, ChromeMemberPayload<S>, E>;
+    BackdropGroups<ChromeGroupKey, ChromeParams, G, ChromeMemberPayload<S>, E>;
 
 impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M, E: crate::text::TextEngine>
     BackdropGroups<K, P, G, M, E>
@@ -569,22 +631,32 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M, E: crate::text::TextEngine>
             resolve,
         } = member;
         let bits = display_scale.to_bits();
-        if let Some(entry) = self
+        let current = self
             .members
-            .get_mut(&member.id())
-            .filter(|entry| entry.key == key && !entry.stale)
-            && let Some(group) = self
+            .get(&member.id())
+            .is_some_and(|entry| entry.key == key && !entry.stale)
+            && self
                 .groups
                 .get(&key)
-                .filter(|group| group.display_scale == bits)
-        {
+                .is_some_and(|group| group.display_scale == bits);
+        if current {
             // Membership unchanged: a lowering stores and binds its fresh
             // payload; a commit with no new program keeps the bind and
             // the stored payload, and builds nothing. A group with no
             // object binds no one: the member stays unbound until a
             // display-scale change rebuilds it.
             if bind == MemberBind::Always {
+                let group = self
+                    .groups
+                    .get_mut(&key)
+                    .expect("a member's group is live while its membership is current");
+                let entry = self
+                    .members
+                    .get_mut(&member.id())
+                    .expect("a current membership has an entry");
                 entry.payload = payload();
+                // A new recording is a new member to the group's recipe.
+                group.changed = true;
                 if let Some(object) = &group.group
                     && apply(tx, member, &entry.payload, object, display_scale).is_err()
                 {
@@ -595,69 +667,17 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M, E: crate::text::TextEngine>
             return;
         }
         self.leave(member.id());
+        if self
+            .groups
+            .get(&key)
+            .is_some_and(|group| group.display_scale != bits)
+        {
+            // A display-scale change rebuilds the group: its chain's
+            // parameters are in capture texels.
+            self.rebuild(tx, key, display_scale, &create, &apply, &resolve);
+        }
         let group = match self.groups.entry(key) {
-            Entry::Occupied(mut entry) => {
-                if entry.get().display_scale != bits {
-                    // A display-scale change rebuilds the group: its chain's
-                    // parameters are in capture texels. Every member keeps
-                    // its entry and is re-pointed at the new group here —
-                    // never left to the member's own commit, which a
-                    // partial commit may not run — so no member samples a
-                    // released group. A rebuild `create` rejects releases
-                    // the old object all the same — its chain was built for
-                    // the old scale — and every member it reaches is
-                    // cleared instead.
-                    let params = entry.get().params;
-                    let rebuilt = MountedBackdrop {
-                        group: create(&params, display_scale).ok(),
-                        params,
-                        display_scale: bits,
-                        members: std::mem::take(&mut entry.get_mut().members),
-                    };
-                    for other in &rebuilt.members {
-                        let Some(retained) = self
-                            .members
-                            .get(other)
-                            .and_then(|entry| entry.owner.upgrade())
-                            .and_then(|cell| cell.try_retained())
-                        else {
-                            // An unmounted member's marker is dead; the
-                            // sweep drops its entry.
-                            continue;
-                        };
-                        // Each member rebinds its own stored payload,
-                        // never the joiner's. A member whose cell is
-                        // mid-commit — on this commit's ancestor stack —
-                        // holds its layers outside the cell, so its live
-                        // layer is out of reach here.
-                        let own = self
-                            .members
-                            .get_mut(other)
-                            .expect("a member's entry outlives its membership");
-                        if let Some(layers) = &*retained.layers.borrow()
-                            && let Some(member) = resolve(layers, *other)
-                        {
-                            let bound = rebuilt.group.as_ref().map(|object| {
-                                apply(tx, member, &own.payload, object, display_scale)
-                            });
-                            if bound != Some(Ok(())) {
-                                tx[member].clear_backdrop();
-                                // A rejected bind retries at the member's
-                                // next join; an object-less group waits
-                                // for the next rebuild.
-                                own.stale = bound.is_some();
-                            }
-                        } else {
-                            // Its next join re-binds its own payload rather
-                            // than keeping a bind that still samples the
-                            // released group.
-                            own.stale = true;
-                        }
-                    }
-                    *entry.get_mut() = rebuilt;
-                }
-                entry.into_mut()
-            }
+            Entry::Occupied(entry) => entry.into_mut(),
             // First visible member of a frame: the group's chain runs on
             // the key's own runtime — the level and the resolved colour
             // scheme, both plain values. Members under one key share both
@@ -667,8 +687,11 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M, E: crate::text::TextEngine>
                 params,
                 display_scale: bits,
                 members: FxHashSet::default(),
+                changed: true,
+                resolution: None,
             }),
         };
+        group.changed = true;
         group.members.insert(member.id());
         // A new, re-keyed, rebuilt or stale membership binds under
         // either `bind` — the member's layer samples nothing of this group
@@ -695,17 +718,94 @@ impl<K: Copy + Eq + std::hash::Hash, P: Copy, G, M, E: crate::text::TextEngine>
         }
     }
 
+    /// Rebuilds the group `key` names for `display_scale` from the terms
+    /// it holds: its chain's parameters are in capture texels, and a
+    /// container recipe may resolve a different class. Every member keeps
+    /// its entry and is re-pointed at the new group here — never left to
+    /// the member's own commit, which a partial commit may not run — so no
+    /// member samples a released group. A rebuild `create` rejects
+    /// releases the old object all the same — its chain was built for the
+    /// old terms — and every member it reaches is cleared instead. The
+    /// hooks are [`join`](Self::join)'s.
+    #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
+    fn rebuild<T: cherenkov_record::BackdropSampling>(
+        &mut self,
+        tx: &mut Transaction<'_, T>,
+        key: K,
+        display_scale: f64,
+        create: &impl Fn(&P, f64) -> Result<G, Unbound>,
+        apply: &impl Fn(&mut Transaction<'_, T>, &Layer, &M, &G, f64) -> Result<(), Unbound>,
+        resolve: &impl for<'a> Fn(&'a super::layers::NodeLayers<E>, LayerId) -> Option<&'a Layer>,
+    ) {
+        let old = self
+            .groups
+            .get_mut(&key)
+            .expect("a rebuilt group is live in the table");
+        let params = old.params;
+        let rebuilt = MountedBackdrop {
+            group: create(&params, display_scale).ok(),
+            params,
+            display_scale: display_scale.to_bits(),
+            members: std::mem::take(&mut old.members),
+            changed: old.changed,
+            resolution: old.resolution.take(),
+        };
+        for other in &rebuilt.members {
+            let Some(retained) = self
+                .members
+                .get(other)
+                .and_then(|entry| entry.owner.upgrade())
+                .and_then(|cell| cell.try_retained())
+            else {
+                // An unmounted member's marker is dead; the sweep drops
+                // its entry.
+                continue;
+            };
+            // Each member rebinds its own stored payload, never the
+            // joiner's. A member whose cell is mid-commit — on this
+            // commit's ancestor stack — holds its layers outside the cell,
+            // so its live layer is out of reach here.
+            let own = self
+                .members
+                .get_mut(other)
+                .expect("a member's entry outlives its membership");
+            if let Some(layers) = &*retained.layers.borrow()
+                && let Some(member) = resolve(layers, *other)
+            {
+                let bound = rebuilt
+                    .group
+                    .as_ref()
+                    .map(|object| apply(tx, member, &own.payload, object, display_scale));
+                if bound != Some(Ok(())) {
+                    tx[member].clear_backdrop();
+                    // A rejected bind retries at the member's next join;
+                    // an object-less group waits for the next rebuild.
+                    own.stale = bound.is_some();
+                }
+            } else {
+                // Its next join re-binds its own payload rather than
+                // keeping a bind that still samples the released group.
+                own.stale = true;
+            }
+        }
+        *self
+            .groups
+            .get_mut(&key)
+            .expect("a rebuilt group is live in the table") = rebuilt;
+    }
+
     /// Takes `member` out of its group's membership. The member's layer
     /// is untouched — the join or clear that follows sets it.
     fn leave(&mut self, member: LayerId) {
         if let Some(entry) = self.members.remove(&member) {
             // Membership always names a live group: the sweep drops a
             // member's table entry before it releases the emptied group.
-            self.groups
+            let group = self
+                .groups
                 .get_mut(&entry.key)
-                .expect("hydrolysis mounts: a member's backdrop key must name a live group")
-                .members
-                .remove(&member);
+                .expect("hydrolysis mounts: a member's backdrop key must name a live group");
+            group.members.remove(&member);
+            group.changed = true;
         }
     }
 
@@ -796,12 +896,166 @@ impl<E: crate::text::TextEngine>
     }
 }
 
+impl<G, S, E: crate::text::TextEngine>
+    BackdropGroups<ChromeGroupKey, ChromeParams, G, ChromeMemberPayload<S>, E>
+{
+    /// Resolves each container group whose membership or member
+    /// recordings changed since it last resolved (water-rs/waterui#2834),
+    /// at the commit's end, before the sweeps.
+    ///
+    /// For each such group the recipe's `capture` names the class the
+    /// group is built from. A class that is unregistered or groups `Solo`
+    /// is a contract violation, reported, and the group is left unbound —
+    /// its object released and every member cleared — as an unregistered
+    /// class is at a member's install. A class other than the one the
+    /// group was built from rebuilds its engine group through
+    /// [`rebuild`](Self::rebuild), the path a display-scale change takes.
+    /// The recipe's `effects` then run again over the members, and keep
+    /// running as a member's shape or effect changes, with no further
+    /// settle.
+    ///
+    /// The hooks are [`join`](Self::join)'s, `create` handed the group's
+    /// key as well.
+    #[cfg_attr(
+        not(hydrolysis_gpu_painter),
+        allow(
+            dead_code,
+            reason = "called by the GPU target's `settle_chrome`; no other target joins a chrome group (water-rs/waterui#4065)"
+        )
+    )]
+    pub(crate) fn settle<T: cherenkov_record::BackdropSampling>(
+        &mut self,
+        tx: &mut Transaction<'_, T>,
+        registry: &Rc<MaterialRegistry>,
+        display_scale: f64,
+        hooks: (
+            impl Fn(&ChromeGroupKey, &ChromeParams, f64) -> Result<G, Unbound>,
+            impl Fn(
+                &mut Transaction<'_, T>,
+                &Layer,
+                &ChromeMemberPayload<S>,
+                &G,
+                f64,
+            ) -> Result<(), Unbound>,
+        ),
+        resolve: impl for<'a> Fn(&'a super::layers::NodeLayers<E>, LayerId) -> Option<&'a Layer>,
+    ) {
+        let (create, apply) = hooks;
+        let pending: Vec<(ChromeGroupKey, MaterialShader)> = self
+            .groups
+            .iter()
+            .filter_map(|(key, group)| {
+                let shader = key.container()?;
+                let dead = group.members.iter().any(|&member| !self.alive(member));
+                (group.changed || dead).then_some((*key, shader))
+            })
+            .collect();
+        for (key, shader) in pending {
+            let recipe = registry
+                .container_recipe(shader)
+                .expect("a container key is built only for a shader with a recipe");
+            let live: Vec<LayerId> = self.groups[&key]
+                .members
+                .iter()
+                .copied()
+                .filter(|&member| self.alive(member))
+                .collect();
+            let group = self
+                .groups
+                .get_mut(&key)
+                .expect("a pending group is live in the table");
+            group.changed = false;
+            if live.is_empty() {
+                // The sweep releases it at this commit.
+                group.resolution = None;
+                continue;
+            }
+            let resolution = Resolution::start(
+                registry,
+                shader,
+                live.iter().map(|member| {
+                    self.members[member]
+                        .payload
+                        .container
+                        .as_ref()
+                        .expect("a container member records its own terms")
+                }),
+            );
+            let class = resolution.capture(recipe);
+            let capture = match registry.capture_class(class) {
+                None => {
+                    contract_violation!(
+                        "hydrolysis materials: the container recipe of shader {shader:?} named \
+                         capture class {class:?}, which is not registered; the group is left \
+                         unbound"
+                    );
+                    None
+                }
+                Some(capture) if capture.grouping == MaterialGrouping::Solo => {
+                    contract_violation!(
+                        "hydrolysis materials: the container recipe of shader {shader:?} named \
+                         capture class {class:?}, which groups Solo; the group is left unbound"
+                    );
+                    None
+                }
+                Some(capture) => Some(*capture),
+            };
+            let group = self
+                .groups
+                .get_mut(&key)
+                .expect("a pending group is live in the table");
+            let stale = group.params.class != class || group.group.is_none();
+            if let Some(capture) = capture {
+                if stale {
+                    group.params = ChromeParams { class, capture };
+                    self.rebuild(
+                        tx,
+                        key,
+                        display_scale,
+                        &|params, scale| create(&key, params, scale),
+                        &apply,
+                        &resolve,
+                    );
+                }
+            } else if group.group.is_some() {
+                self.rebuild(
+                    tx,
+                    key,
+                    display_scale,
+                    &|_, _| Err(Unbound),
+                    &apply,
+                    &resolve,
+                );
+            }
+            let group = self
+                .groups
+                .get_mut(&key)
+                .expect("a pending group is live in the table");
+            group.resolution.insert(resolution).resolve();
+        }
+    }
+
+    /// Whether `member`'s node still holds its membership.
+    #[cfg_attr(
+        not(hydrolysis_gpu_painter),
+        allow(
+            dead_code,
+            reason = "read by `settle`, which only the GPU target calls (water-rs/waterui#4065)"
+        )
+    )]
+    fn alive(&self, member: LayerId) -> bool {
+        self.members
+            .get(&member)
+            .is_some_and(|entry| entry.marker.upgrade().is_some())
+    }
+}
+
 /// Chrome-group test accessors over the members the key maps.
 #[cfg(hydrolysis_cherenkov)]
 impl<G, E: crate::text::TextEngine>
     BackdropGroups<
         ChromeGroupKey,
-        cherenkov_record::MaterialCapture,
+        ChromeParams,
         G,
         ChromeMemberPayload<cherenkov::BackdropShader>,
         E,

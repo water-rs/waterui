@@ -937,6 +937,19 @@ impl Project {
         .await
     }
 
+    /// Whether the application's graph links the GPU video player for
+    /// `target`: a `video-gpu` feature enabled inside the application's own
+    /// subtree, resolved the way [`Self::uses_standard_webview`] resolves
+    /// `webview`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo cannot resolve the application graph or
+    /// omits a package referenced by that graph.
+    pub async fn uses_video_gpu(&self, target: &Triple) -> eyre::Result<bool> {
+        Ok(self.enabled_features(target).await?.contains("video-gpu"))
+    }
+
     /// Whether the application's graph turns on the `video` component for
     /// `target`: a `video` feature enabled inside the application's own
     /// subtree, resolved the way [`Self::uses_standard_webview`] resolves
@@ -1014,14 +1027,22 @@ impl Project {
         targets: &[Triple],
         section: GraphSection,
     ) -> eyre::Result<crate::templates::BrowserAnswers> {
-        let (webview_enabled, engine) = futures_util::future::try_join(
+        let (webview_enabled, engine, video_gpu) = futures_util::future::try_join3(
             self.uses_standard_webview_for(targets, section),
             self.linked_browser_engine_for(targets, section),
+            self.unanimous_graph_answer(
+                targets,
+                "the GPU video player usage",
+                section,
+                |enabled: &bool| enabled.to_string(),
+                |project, target| async move { project.uses_video_gpu(&target).await },
+            ),
         )
         .await?;
         Ok(crate::templates::BrowserAnswers {
             webview_enabled,
             engine,
+            video_gpu,
         })
     }
 

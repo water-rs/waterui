@@ -7,8 +7,8 @@ require(painter in setOf("gpu", "hwui")) {
     "hydrolysis.painter must be \"gpu\" or \"hwui\", got \"$painter\""
 }
 val scene = providers.gradleProperty("hydrolysis.scene").getOrElse("host")
-require(scene in setOf("host", "filters", "stretch")) {
-    "hydrolysis.scene must be host, filters or stretch"
+require(scene in setOf("host", "filters", "stretch", "gpu-video", "gpu-map")) {
+    "hydrolysis.scene must be host, filters, stretch, gpu-video or gpu-map"
 }
 
 val targetAbis =
@@ -96,6 +96,10 @@ for (buildType in listOf("debug", "release")) {
                 when (scene) {
                     "filters" -> "$painter,filter-probe"
                     "stretch" -> "$painter,stretch-probe"
+                    // The HWUI painter with the GPU crates present: the
+                    // combination that hosts GPU content (water-rs/waterui#1812).
+                    "gpu-video" -> "$painter,gpu-video-probe"
+                    "gpu-map" -> "$painter,gpu-map-probe"
                     else -> painter
                 },
             ),

@@ -176,8 +176,9 @@ use crate::theme::{
 };
 use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
 use cherenkov_record::{
-    BackdropShaderSource, CaptureClass, Draw, MaterialCapture, MaterialEffect, MaterialRegistry,
-    MaterialShader, Paint, Recorder, Shadow, SharedLive, WorkingColor,
+    BackdropShaderSource, CaptureClass, ContainerRecipe, Draw, GroupMember, MaterialCapture,
+    MaterialEffect, MaterialRegistry, MaterialShader, Paint, Recorder, Shadow, SharedLive,
+    WorkingColor,
 };
 use waterui_core::EasingCurve;
 use waterui_core::handler::SharedAction;
@@ -2973,6 +2974,21 @@ pub struct ChromeDraw {
     pub effect: SharedLive<MaterialEffect>,
 }
 
+/// A [`ContainerRecipe`] a [`ChromePlan`] shares with the registry it
+/// fills: the plan is `Clone`, the registry takes its recipe by value.
+#[derive(Debug)]
+struct SharedRecipe(Rc<dyn ContainerRecipe>);
+
+impl ContainerRecipe for SharedRecipe {
+    fn capture(&self, members: &[GroupMember<'_>]) -> CaptureClass {
+        self.0.capture(members)
+    }
+
+    fn effects(&self, members: &[GroupMember<'_>]) -> Vec<MaterialEffect> {
+        self.0.effects(members)
+    }
+}
+
 /// The backdrop-material terms a chrome test declares: the registry
 /// `register_backdrop_shaders` fills, and the materials its
 /// [`chrome`](Self::chrome) replays.
@@ -2989,6 +3005,9 @@ pub struct ChromePlan {
     pub shaders: Vec<(MaterialShader, BackdropShaderSource)>,
     /// `(key, capture)` pairs the registry registers.
     pub captures: Vec<(CaptureClass, MaterialCapture)>,
+    /// `(shader, recipe)` pairs the registry registers as container
+    /// recipes (water-rs/waterui#2834).
+    pub containers: Vec<(MaterialShader, Rc<dyn ContainerRecipe>)>,
     /// The materials the chrome's custom part records.
     pub draws: Vec<ChromeDraw>,
     /// Scene fills the custom part records after the materials — each
@@ -3093,6 +3112,9 @@ impl WidgetTheme for MinimalTestTheme {
         }
         for (key, capture) in &self.chrome.captures {
             registry.register_capture_class(*key, *capture);
+        }
+        for (shader, recipe) in &self.chrome.containers {
+            registry.register_container_recipe(*shader, SharedRecipe(Rc::clone(recipe)));
         }
     }
 
