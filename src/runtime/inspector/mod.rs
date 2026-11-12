@@ -27,6 +27,7 @@ use std::fmt::Write as _;
 use std::io;
 use std::net::TcpListener;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -118,9 +119,17 @@ pub struct InspectorServerConfig {
     stall_ratio: f64,
     /// Name reported to the inspector.
     app_name: String,
+    /// What opens an inspector when one is asked for and none is attached.
+    launcher: AnyInspectorLauncher,
 }
 
 impl InspectorServerConfig {
+    /// Replaces what opens an inspector when one is asked for and none is
+    /// attached; [`WaterCliLauncher`] unless set.
+    pub fn set_launcher(&mut self, launcher: impl InspectorLauncher) {
+        self.launcher = AnyInspectorLauncher::new(launcher);
+    }
+
     /// Address to bind.
     #[must_use]
     pub const fn host(&self) -> &IpAddr {
@@ -170,7 +179,172 @@ impl std::fmt::Debug for InspectorServerConfig {
             .field("task_window", &self.task_window)
             .field("stall_ratio", &self.stall_ratio)
             .field("app_name", &self.app_name)
-            .finish()
+            .finish_non_exhaustive()
+    }
+}
+
+/// Opens an inspector on an endpoint nobody is attached to.
+///
+/// [`InspectorRuntime::inspect_node`] and [`InspectorRuntime::open`] call it
+/// when no inspector is attached, once the endpoint is listening. A node asked
+/// for waits at the endpoint for the first inspector that attaches, so a
+/// launcher only has to get one there. [`WaterCliLauncher`] is the default; a
+/// configuration chooses another with [`InspectorServerConfig::set_launcher`].
+pub trait InspectorLauncher: Send + Sync + 'static {
+    /// Opens an inspector that attaches to `endpoint`.
+    ///
+    /// `project` is the directory of the project the application was built
+    /// from, when whoever started the application said where it is: `water
+    /// run` sets `WATERUI_PROJECT_DIR`.
+    fn launch(&self, endpoint: &InspectorEndpointInfo, project: Option<&Path>);
+}
+
+/// The object-safe form of [`InspectorLauncher`] the configuration stores.
+trait InspectorLauncherImpl: Send + Sync {
+    fn launch_erased(&self, endpoint: &InspectorEndpointInfo, project: Option<&Path>);
+}
+
+impl<T: InspectorLauncher> InspectorLauncherImpl for T {
+    fn launch_erased(&self, endpoint: &InspectorEndpointInfo, project: Option<&Path>) {
+        self.launch(endpoint, project);
+    }
+}
+
+/// A launcher of any type, shared by every copy of a configuration.
+///
+/// The default is held without an allocation, so a configuration built by the
+/// `const` [`InspectorServerConfig::new`] carries it.
+#[derive(Clone)]
+struct AnyInspectorLauncher(Option<Arc<dyn InspectorLauncherImpl>>);
+
+impl AnyInspectorLauncher {
+    /// [`WaterCliLauncher`].
+    const WATER_CLI: Self = Self(None);
+
+    fn new(launcher: impl InspectorLauncher) -> Self {
+        Self(Some(Arc::new(launcher)))
+    }
+
+    fn launch(&self, endpoint: &InspectorEndpointInfo, project: Option<&Path>) {
+        match &self.0 {
+            Some(launcher) => launcher.launch_erased(endpoint, project),
+            None => WaterCliLauncher.launch(endpoint, project),
+        }
+    }
+}
+
+/// Opens the inspector by running `water inspector` against the endpoint.
+///
+/// The CLI owns knowing how to build and run the inspector application for
+/// this platform, so this asks for it rather than reimplementing any of that.
+/// `WATERUI_CLI` names the binary; otherwise it is searched for on `PATH` and
+/// in the usual install locations, because an application launched from the
+/// Finder does not inherit the shell's `PATH`. Its output is captured and a
+/// failure reported through `tracing`, because a launched application's
+/// streams do not reach whoever started it.
+///
+/// On a phone or a simulator there is nothing to launch — the inspector runs
+/// on the developer's computer — so the endpoint is reported instead.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WaterCliLauncher;
+
+impl InspectorLauncher for WaterCliLauncher {
+    fn launch(&self, endpoint: &InspectorEndpointInfo, project: Option<&Path>) {
+        if cfg!(any(target_os = "android", target_os = "ios")) {
+            tracing::info!(
+                target: "waterui::inspector",
+                inspector_addr = %endpoint.addr,
+                "Inspect requested; the credentials are in the app's private advertisement — attach from your computer with `water inspector`"
+            );
+            return;
+        }
+
+        let Some(cli) = water_cli_path() else {
+            tracing::warn!(
+                target: "waterui::inspector",
+                inspector_addr = %endpoint.addr,
+                "Could not find the `water` CLI; attach with `WATERUI_INSPECTOR_TOKEN=<token> water inspector --target <addr>`, or point WATERUI_CLI at the binary"
+            );
+            return;
+        };
+
+        let mut command = std::process::Command::new(&cli);
+        command
+            .arg("inspector")
+            .arg("--target")
+            .arg(endpoint.addr.to_string())
+            // The credential travels in the child's environment: the CLI
+            // accepts no `--token`, because argv is readable by every
+            // process on the machine.
+            .env("WATERUI_INSPECTOR_TOKEN", &endpoint.token);
+
+        // The CLI builds the inspector against the project it is inspecting, and
+        // reads that project from its working directory. A launched application
+        // has none worth the name — a macOS app gets `/` — so the project it was
+        // told about is passed straight through.
+        if let Some(project) = project {
+            command.arg("--path").arg(project);
+        }
+
+        let addr = endpoint.addr;
+        let token = endpoint.token.clone();
+
+        // A launched application's streams do not reach whoever started it, so
+        // anything the CLI says about a failure is lost unless it is captured
+        // here and reported through the log the developer is already reading.
+        command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        match command.spawn() {
+            Ok(child) => {
+                tracing::info!(
+                    target: "waterui::inspector",
+                    inspector_addr = %addr,
+                    "Launching the inspector"
+                );
+                // The inspector is built before it can be shown, which takes long
+                // enough that a gesture looks ignored while it happens, and it can
+                // fail. Dropping the handle would leave both invisible — and leave
+                // the child unreaped — so its exit is waited for and reported.
+                let waited = thread::Builder::new()
+                    .name(String::from("waterui-inspector-launch"))
+                    .spawn(move || match child.wait_with_output() {
+                        Ok(output) if output.status.success() => tracing::info!(
+                            target: "waterui::inspector",
+                            inspector_addr = %addr,
+                            "The inspector exited"
+                        ),
+                        Ok(output) => tracing::error!(
+                            target: "waterui::inspector",
+                            status = %output.status,
+                            inspector_addr = %addr,
+                            stderr = %redacted_child_output(&output.stderr, &token).trim_end().to_owned(),
+                            stdout = %redacted_child_output(&output.stdout, &token).trim_end().to_owned(),
+                            "`water inspector` failed"
+                        ),
+                        Err(error) => tracing::error!(
+                            target: "waterui::inspector",
+                            error = %error,
+                            inspector_addr = %addr,
+                            "Lost track of the inspector process"
+                        ),
+                    });
+                if let Err(error) = waited {
+                    tracing::warn!(
+                        target: "waterui::inspector",
+                        error = %error,
+                        "Could not watch the inspector process; it is still starting"
+                    );
+                }
+            }
+            Err(error) => tracing::warn!(
+                target: "waterui::inspector",
+                error = %error,
+                inspector_addr = %addr,
+                "Could not launch `water inspector`; attach manually"
+            ),
+        }
     }
 }
 
@@ -195,6 +369,7 @@ impl InspectorServerConfig {
             task_window,
             stall_ratio,
             app_name,
+            launcher: AnyInspectorLauncher::WATER_CLI,
         }
     }
 
@@ -226,6 +401,7 @@ impl InspectorServerConfig {
             ),
             stall_ratio: parse_env("WATERUI_INSPECTOR_STALL_RATIO")?.unwrap_or(DEFAULT_STALL_RATIO),
             app_name: advertised_application_name(),
+            launcher: AnyInspectorLauncher::WATER_CLI,
         }))
     }
 
@@ -254,6 +430,7 @@ impl InspectorServerConfig {
             task_window: Duration::from_millis(DEFAULT_TASK_WINDOW_MS),
             stall_ratio: DEFAULT_STALL_RATIO,
             app_name: advertised_application_name(),
+            launcher: AnyInspectorLauncher::WATER_CLI,
         })
     }
 }
@@ -328,6 +505,7 @@ where
 pub struct InspectorRuntime {
     hub: Arc<EventHub>,
     task_probe: Arc<tasks::TaskProbe>,
+    launcher: AnyInspectorLauncher,
     listening: std::sync::OnceLock<ListeningEndpoint>,
     pending: std::sync::Mutex<Option<PendingEndpoint>>,
 }
@@ -401,9 +579,10 @@ impl InspectorRuntime {
     /// node waits for it, so the element the user pointed at is what they see
     /// when the window appears.
     ///
-    /// On a phone or a simulator there is nothing to launch — the inspector
-    /// runs on the developer's computer — so the endpoint is reported instead
-    /// and the node is revealed whenever that inspector attaches.
+    /// The configuration's [`InspectorLauncher`] does the launching. On a
+    /// phone or a simulator the default one has nothing to launch — the
+    /// inspector runs on the developer's computer — so it reports the endpoint
+    /// instead and the node is revealed whenever that inspector attaches.
     pub fn inspect_node(&self, node: waterui_inspector_protocol::NodeId) {
         self.hub.select_node(node);
         if self.hub.has_clients() {
@@ -432,13 +611,14 @@ impl InspectorRuntime {
         self.launch_inspector();
     }
 
-    /// Starts an inspector pointed at this endpoint.
+    /// Starts an inspector pointed at this endpoint, through the configured
+    /// [`InspectorLauncher`].
     ///
     /// This is where the socket is bound: being asked for the inspector is the
     /// only reason to open one.
     fn launch_inspector(&self) {
         let endpoint = match self.endpoint() {
-            Ok(endpoint) => endpoint.clone(),
+            Ok(endpoint) => endpoint,
             Err(error) => {
                 tracing::warn!(
                     target: "waterui::inspector",
@@ -449,104 +629,10 @@ impl InspectorRuntime {
             }
         };
 
-        if cfg!(any(target_os = "android", target_os = "ios")) {
-            tracing::info!(
-                target: "waterui::inspector",
-                inspector_addr = %endpoint.addr,
-                "Inspect requested; the credentials are in the app's private advertisement — attach from your computer with `water inspector`"
-            );
-            return;
-        }
-
-        // The CLI owns knowing how to build and run the inspector application
-        // for this platform, so this asks for it rather than reimplementing any
-        // of that here.
-        let Some(cli) = water_cli_path() else {
-            tracing::warn!(
-                target: "waterui::inspector",
-                inspector_addr = %endpoint.addr,
-                "Could not find the `water` CLI; attach with `WATERUI_INSPECTOR_TOKEN=<token> water inspector --target <addr>`, or point WATERUI_CLI at the binary"
-            );
-            return;
-        };
-
-        let mut command = std::process::Command::new(&cli);
-        command
-            .arg("inspector")
-            .arg("--target")
-            .arg(endpoint.addr.to_string())
-            // The credential travels in the child's environment: the CLI
-            // accepts no `--token`, because argv is readable by every
-            // process on the machine.
-            .env("WATERUI_INSPECTOR_TOKEN", &endpoint.token);
-
-        // The CLI builds the inspector against the project it is inspecting, and
-        // reads that project from its working directory. A launched application
-        // has none worth the name — a macOS app gets `/` — so `water run` tells
-        // it where the project is and it is passed straight through.
-        if let Some(project) = std::env::var_os("WATERUI_PROJECT_DIR") {
-            command.arg("--path").arg(project);
-        }
-
-        let addr = endpoint.addr;
-        let token = endpoint.token;
-
-        // A launched application's streams do not reach whoever started it, so
-        // anything the CLI says about a failure is lost unless it is captured
-        // here and reported through the log the developer is already reading.
-        command
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-
-        match command.spawn() {
-            Ok(child) => {
-                tracing::info!(
-                    target: "waterui::inspector",
-                    inspector_addr = %addr,
-                    "Launching the inspector"
-                );
-                // The inspector is built before it can be shown, which takes long
-                // enough that a gesture looks ignored while it happens, and it can
-                // fail. Dropping the handle would leave both invisible — and leave
-                // the child unreaped — so its exit is waited for and reported.
-                let waited = thread::Builder::new()
-                    .name(String::from("waterui-inspector-launch"))
-                    .spawn(move || match child.wait_with_output() {
-                        Ok(output) if output.status.success() => tracing::info!(
-                            target: "waterui::inspector",
-                            inspector_addr = %addr,
-                            "The inspector exited"
-                        ),
-                        Ok(output) => tracing::error!(
-                            target: "waterui::inspector",
-                            status = %output.status,
-                            inspector_addr = %addr,
-                            stderr = %redacted_child_output(&output.stderr, &token).trim_end().to_owned(),
-                            stdout = %redacted_child_output(&output.stdout, &token).trim_end().to_owned(),
-                            "`water inspector` failed"
-                        ),
-                        Err(error) => tracing::error!(
-                            target: "waterui::inspector",
-                            error = %error,
-                            inspector_addr = %addr,
-                            "Lost track of the inspector process"
-                        ),
-                    });
-                if let Err(error) = waited {
-                    tracing::warn!(
-                        target: "waterui::inspector",
-                        error = %error,
-                        "Could not watch the inspector process; it is still starting"
-                    );
-                }
-            }
-            Err(error) => tracing::warn!(
-                target: "waterui::inspector",
-                error = %error,
-                inspector_addr = %addr,
-                "Could not launch `water inspector`; attach manually"
-            ),
-        }
+        // `water run` tells a launched application where its project is,
+        // because the application's own working directory says nothing about it.
+        let project = std::env::var_os("WATERUI_PROJECT_DIR").map(PathBuf::from);
+        self.launcher.launch(endpoint, project.as_deref());
     }
 
     /// A handle the rendering backend uses to report frame timings.
@@ -609,9 +695,7 @@ pub fn install(environment: &mut Environment, inspector: Option<InspectorRuntime
 /// application rather than only from one started in a terminal.
 ///
 /// `WATERUI_CLI` overrides the search.
-fn water_cli_path() -> Option<std::path::PathBuf> {
-    use std::path::PathBuf;
-
+fn water_cli_path() -> Option<PathBuf> {
     if let Some(explicit) = std::env::var_os("WATERUI_CLI") {
         let explicit = PathBuf::from(explicit);
         return explicit.is_file().then_some(explicit);
@@ -738,6 +822,7 @@ impl InspectorRuntime {
         Self {
             hub,
             task_probe,
+            launcher: config.launcher.clone(),
             listening: std::sync::OnceLock::new(),
             pending: std::sync::Mutex::new(Some(PendingEndpoint {
                 config,
@@ -783,7 +868,8 @@ impl InspectorRuntime {
 
         spawn("waterui-inspector-dispatch", {
             let hub = Arc::clone(&self.hub);
-            move || server::dispatch_loop(&hub, &receiver, available)
+            let target = target.clone();
+            move || server::dispatch_loop(&hub, &receiver, &target, available)
         })?;
 
         // Publishing is what lets a tool attach without being told a port. A
@@ -792,7 +878,7 @@ impl InspectorRuntime {
         let advertisement = Advertisement {
             pid: target.pid,
             app_name: target.name.clone(),
-            backend: target.backend.clone(),
+            backend: target.backend,
             addr,
             token: config.token.clone(),
         };
@@ -812,7 +898,7 @@ impl InspectorRuntime {
         spawn("waterui-inspector-accept", {
             let hub = Arc::clone(&self.hub);
             let token = config.token.clone();
-            move || server::accept_loop(&listener, &hub, token.as_str(), &target, available)
+            move || server::accept_loop(&listener, &hub, token.as_str(), available)
         })?;
 
         tracing::info!(
@@ -852,6 +938,7 @@ mod tests {
             task_window: std::time::Duration::from_millis(super::DEFAULT_TASK_WINDOW_MS),
             stall_ratio: super::DEFAULT_STALL_RATIO,
             app_name: "CredentialDebugTest".into(),
+            launcher: super::AnyInspectorLauncher::WATER_CLI,
         };
         let rendered = format!("{config:?}");
         assert!(!rendered.contains("s3cret-runtime-token"), "{rendered}");
