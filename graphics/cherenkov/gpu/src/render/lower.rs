@@ -7090,6 +7090,7 @@ fn clip_region(clip: Option<DeviceClip>, width: u32, height: u32) -> [u32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cherenkov::testing::LayerOp;
 
     /// Clips `layer` to `shape` at once.
     const fn clip(layer: LayerId, shape: ShapeData) -> LayerOp {
@@ -8570,7 +8571,6 @@ mod tests {
     /// isolate the same way.
     #[test]
     fn a_promoted_layer_inside_an_ancestor_clip_pair_splits_the_scope() {
-        use cherenkov::testing::LayerOp;
         let rect = ShapeData::Rect(Rect::new(0.0, 0.0, 30.0, 30.0));
         let round = ShapeData::RoundedRect(kurbo::RoundedRect::new(0.0, 0.0, 30.0, 30.0, 4.0));
         let [gp, holder, video, overlay, above] = [1, 2, 3, 4, 5].map(LayerId::new);
@@ -8629,7 +8629,6 @@ mod tests {
     /// and the walk resumes under it once the inner scope closes.
     #[test]
     fn a_split_scope_reopens_under_the_clip_merged_before_it() {
-        use cherenkov::testing::LayerOp;
         let rounded = |inset: f64| {
             ShapeData::RoundedRect(kurbo::RoundedRect::new(
                 inset,
