@@ -1571,7 +1571,15 @@ fn radio_label_rect(
     } else {
         (indicator_frame.x1 + spacing, row.x1 - inset)
     };
-    label_beside_control_bounds(x0, x1, row, indicator_frame, label_height)
+    // The label is text drawn leading-aligned and wrapped across the whole
+    // room, so it takes all of it.
+    label_beside_control_bounds(
+        x0,
+        x1,
+        row,
+        indicator_frame,
+        kurbo::Size::new(x1 - x0, label_height),
+    )
 }
 
 /// Binds a segmented picker's segments, lays its look out and lists it: the

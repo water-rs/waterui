@@ -366,7 +366,7 @@ fn place(look: &SliderLook, spec: &SliderSpec, measured: &Measured, bounds: Rect
     );
     let beside = |size: Size, x0: f64| {
         (size.width > 0.0 && row.height() > 0.0)
-            .then(|| label_beside_control_bounds(x0, x0 + size.width, row, track, size.height))
+            .then(|| label_beside_control_bounds(x0, x0 + size.width, row, track, size))
     };
     let left_label = |size: Size| beside(size, bounds.x0 + layout.label_inset);
     let right_label = |size: Size| beside(size, bounds.x1 - layout.label_inset - size.width);

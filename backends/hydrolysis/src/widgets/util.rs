@@ -56,18 +56,21 @@ pub fn mirrored_in(rect: kurbo::Rect, bounds: kurbo::Rect) -> kurbo::Rect {
 
 /// The rect for a label that sits beside its control on a row — a toggle's
 /// label next to its switch or checkbox, a stepper's label next to its
-/// buttons. The label keeps the horizontal extent the widget picked for it,
-/// but vertically it takes its own height (capped to `row`) centred on the
-/// control's centre line: a single-line label shares the control's centre
-/// instead of riding the row's top edge.
+/// buttons. The widget picks the room from `x0` to `x1`, `x0` being the edge
+/// the label leads from; the label keeps its own width there (capped to the
+/// room), so a room wider than the label never centres it. Vertically it
+/// takes its own height (capped to `row`) centred on the control's centre
+/// line: a single-line label shares the control's centre instead of riding
+/// the row's top edge.
 pub fn label_beside_control_bounds(
     x0: f64,
     x1: f64,
     row: kurbo::Rect,
     control: kurbo::Rect,
-    label_height: f64,
+    label: kurbo::Size,
 ) -> kurbo::Rect {
-    let height = label_height.min(row.height());
+    let width = label.width.min((x1 - x0).max(0.0));
+    let height = label.height.min(row.height());
     let y0 = (control.y0 + control.y1 - height) * 0.5;
-    kurbo::Rect::new(x0, y0, x1, y0 + height)
+    kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
 }
