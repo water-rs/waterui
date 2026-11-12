@@ -17,6 +17,7 @@ use crate::union_cap;
 use std::borrow::Cow;
 
 use crate::BackdropShaderId;
+use crate::animation::AnimLanes;
 use crate::ops::BackdropId;
 use crate::style::BlendSpace;
 
@@ -423,6 +424,92 @@ impl BackdropSample {
     pub const fn recording_scale(&self) -> RecordingScale {
         self.recording_scale
     }
+}
+
+/// A sample animates its outer extent and its effect's parameters lane by
+/// lane: both endpoints must sample the same group at the same recording
+/// scale with the same kind of effect — for a shader, the same shader with
+/// as many uniforms. Any other pair snaps.
+///
+/// A spring may overshoot an endpoint, so a rebuilt sample projects each
+/// lane whose parameter has a domain back onto it: the outer extent and a
+/// strength stay non-negative, a depth or a rim width positive.
+impl AnimLanes for BackdropSample {
+    fn anim_lanes(&self, target: &Self) -> Option<Box<[f64]>> {
+        if self.group != target.group || self.recording_scale != target.recording_scale {
+            return None;
+        }
+        let mut lanes = vec![f64::from(self.outer.0)];
+        match (&self.effect, &target.effect) {
+            (None, None) => {}
+            (Some(BackdropEffect::Color(from)), Some(BackdropEffect::Color(_))) => {
+                lanes.extend(from.0.iter().copied().map(f64::from));
+            }
+            (Some(BackdropEffect::Refraction(from)), Some(BackdropEffect::Refraction(_))) => {
+                lanes.extend([f64::from(from.depth), f64::from(from.strength)]);
+            }
+            (Some(BackdropEffect::Rim(from)), Some(BackdropEffect::Rim(_))) => {
+                lanes.push(f64::from(from.width));
+                lanes.extend(from.color.iter().copied().map(f64::from));
+                lanes.push(f64::from(from.gain));
+            }
+            (Some(BackdropEffect::Level(from)), Some(BackdropEffect::Level(_))) => {
+                lanes.extend([from.depth, from.edge, from.interior].map(f64::from));
+            }
+            (Some(BackdropEffect::Shader(from)), Some(BackdropEffect::Shader(to)))
+                if from.shader == to.shader && from.uniforms.len() == to.uniforms.len() =>
+            {
+                lanes.extend(from.uniforms.iter().copied().map(f64::from));
+            }
+            _ => return None,
+        }
+        Some(lanes.into_boxed_slice())
+    }
+
+    fn with_lanes(&self, lanes: &[f64]) -> Self {
+        let lane = |index: usize| f64_as_f32(lanes[index]);
+        let positive = |index: usize| lane(index).max(f32::MIN_POSITIVE);
+        let effect = self.effect.as_ref().map(|effect| match effect {
+            BackdropEffect::Color(_) => {
+                BackdropEffect::Color(ColorMatrix(std::array::from_fn(|i| lane(1 + i))))
+            }
+            BackdropEffect::Refraction(_) => BackdropEffect::Refraction(Refraction {
+                depth: positive(1),
+                strength: lane(2).max(0.0),
+            }),
+            BackdropEffect::Rim(_) => BackdropEffect::Rim(Rim {
+                width: positive(1),
+                color: std::array::from_fn(|i| lane(2 + i)),
+                gain: lane(6),
+            }),
+            BackdropEffect::Level(_) => BackdropEffect::Level(LevelRamp {
+                depth: positive(1),
+                edge: lane(2),
+                interior: lane(3),
+            }),
+            BackdropEffect::Shader(shader) => BackdropEffect::Shader(BackdropShaderEffect {
+                shader: shader.shader,
+                uniforms: (0..shader.uniforms.len()).map(|i| lane(1 + i)).collect(),
+                reach: shader.reach,
+            }),
+        });
+        Self {
+            group: self.group,
+            effect,
+            outer: BackdropOuter(lane(0).max(0.0)),
+            recording_scale: self.recording_scale,
+        }
+    }
+}
+
+/// `value` narrowed to the `f32` a backdrop parameter stores: a lane
+/// holds a value interpolated between two `f32` endpoints.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a lane interpolates between two f32 parameters, so it fits an f32"
+)]
+const fn f64_as_f32(value: f64) -> f32 {
+    value as f32
 }
 
 nami_core::impl_constant!(BackdropSample);

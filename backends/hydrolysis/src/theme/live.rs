@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use cherenkov_record::{KeyframeAnimation, Live};
+use cherenkov_record::{AnimationStart, KeyframeAnimation, Live};
 use nami::Signal;
 use nami::watcher::{Context, Metadata, WatcherManager, WatcherManagerGuard};
 use waterui_core::animation::Animation;
@@ -17,6 +17,14 @@ pub struct Operand<T: 'static>(Rc<OperandCell<T>>);
 struct OperandCell<T: 'static> {
     value: RefCell<T>,
     watchers: WatcherManager<T>,
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for Operand<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Operand")
+            .field(&*self.0.value.borrow())
+            .finish()
+    }
 }
 
 impl<T> Clone for Operand<T> {
@@ -44,6 +52,32 @@ impl<T: Clone + PartialEq + 'static> Operand<T> {
             Metadata::new().with(engine_animation(animation))
         });
         self.0.watchers.notify_owned(Context::new(value, metadata));
+    }
+
+    /// Moves the operand to `value`, derived from a change that carried
+    /// `metadata`, under that change's motion: its engine animation and its
+    /// start. A keyframe track is typed by the value it was set on, so it
+    /// never reaches a derived one. An unchanged value notifies nothing.
+    #[cfg_attr(
+        not(hydrolysis_gpu_painter),
+        allow(
+            dead_code,
+            reason = "called by container groups, which only the GPU target's backdrop-shader chrome joins (water-rs/waterui#4065)"
+        )
+    )]
+    pub(crate) fn follow(&self, value: T, metadata: &Metadata) {
+        if *self.0.value.borrow() == value {
+            return;
+        }
+        *self.0.value.borrow_mut() = value.clone();
+        let mut motion = Metadata::new();
+        if let Some(animation) = metadata.try_get::<cherenkov_record::Animation>() {
+            motion = motion.with(animation);
+        }
+        if let Some(start) = metadata.try_get::<AnimationStart>() {
+            motion = motion.with(start);
+        }
+        self.0.watchers.notify_owned(Context::new(value, motion));
     }
 
     /// Runs `track` along the operand: the engine samples its keyframes on

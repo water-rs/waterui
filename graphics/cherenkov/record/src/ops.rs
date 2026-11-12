@@ -87,6 +87,39 @@ pub struct Prop<T: Animatable> {
     pub start: Option<TrackStart<T>>,
 }
 
+/// A change to a lane-decomposed layer value plus the animation that
+/// reaches it.
+///
+/// The clip shape and the backdrop sample decompose into a variable
+/// number of lanes. The value animates lane by lane from what the layer
+/// shows when the change lands; a pair of values that shares no lane
+/// layout snaps, as does a change without an animation.
+#[derive(Clone, Debug)]
+pub struct Retarget<T> {
+    /// The value the layer moves to.
+    pub target: T,
+    /// The animation applied, if any; `None` snaps. A `Decay` is a
+    /// contract violation and snaps too.
+    pub animation: Option<Animation>,
+    /// When, on the host's clock, the animation starts. `None` starts the
+    /// track at the first frame that samples it, and a retarget continues
+    /// from the previous track's last sample; `Some` continues from the
+    /// previous track evaluated there. Ignored without an `animation`.
+    pub start: Option<Instant>,
+}
+
+impl<T> Retarget<T> {
+    /// The change a bound signal's `Context` carries to `target`: its
+    /// `animation`, and the [`AnimationStart`] its metadata names.
+    pub(crate) fn of(target: T, animation: Option<Animation>, metadata: &Metadata) -> Self {
+        Self {
+            target,
+            animation,
+            start: metadata.try_get::<AnimationStart>().map(|start| start.0),
+        }
+    }
+}
+
 /// The instant an animated change's track starts at on the host's clock,
 /// and the state it starts from.
 #[derive(Clone, Debug)]
@@ -290,15 +323,16 @@ pub enum LayerOp {
     ScrollOffset(LayerId, Prop<Vec2>),
     /// Run a keyframe track on a property, replacing its track.
     Keyframes(LayerId, LayerKeyframes),
-    /// Set or clear the clip shape.
-    Clip(LayerId, Option<ShapeData>),
+    /// Set or clear the clip shape; a set animates from the shape the
+    /// layer shows.
+    Clip(LayerId, Option<Retarget<ShapeData>>),
     /// Set the blend mode.
     Blend(LayerId, BlendMode),
     /// Set or clear the filter.
     Filter(LayerId, Option<FilterId>),
     /// Set or clear the backdrop sample (group and optional per-member
-    /// effect).
-    Backdrop(LayerId, Option<BackdropSample>),
+    /// effect); a set animates from the sample the layer shows.
+    Backdrop(LayerId, Option<Retarget<BackdropSample>>),
     /// Set or clear the layer's host-window marker: a marked layer shows
     /// no recorded content — an external host window occupies its frame
     /// — and every mark splits the surface's paint order into regions,
@@ -369,8 +403,8 @@ impl LayerOp {
 
     /// The animation slot of the op's animatable prop, if it carries
     /// one: [`LayerEdit::animation`] retargets the last queued op
-    /// through it. `None` for the projection matrix and every
-    /// non-animatable op.
+    /// through it. `None` for the projection matrix, a cleared clip or
+    /// backdrop, and every non-animatable op.
     ///
     /// [`LayerEdit::animation`]: crate::LayerEdit::animation
     #[expect(
@@ -391,6 +425,8 @@ impl LayerOp {
             Self::Depth(_, prop) => Some(&mut prop.animation),
             Self::Opacity(_, prop) => Some(&mut prop.animation),
             Self::ScrollOffset(_, prop) => Some(&mut prop.animation),
+            Self::Clip(_, Some(change)) => Some(&mut change.animation),
+            Self::Backdrop(_, Some(change)) => Some(&mut change.animation),
             _ => None,
         }
     }

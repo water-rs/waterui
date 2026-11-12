@@ -12,7 +12,7 @@ use nami_core::Signal;
 use waterui_contract::contract_violation;
 
 use crate::Instant;
-use crate::animation::{AnimLanes, Animation, KeyframeAnimation, Motion, OperandTrack};
+use crate::animation::{AnimLanes, Animation, KeyframeAnimation, LaneTrack, Motion};
 use crate::display_list::{
     Command, DisplayList, DisplayListView, Edit, Operand, Picture, Slot, SlotUpdate, Splice,
 };
@@ -857,7 +857,7 @@ struct AnimState {
     /// Animated changes not yet sampled into tracks.
     animates: Vec<Animate>,
     /// A running animation per operand slot.
-    tracks: HashMap<Slot, OperandTrack>,
+    tracks: HashMap<Slot, LaneTrack>,
 }
 
 impl LiveState {
@@ -1082,7 +1082,7 @@ impl LiveState {
                     // whatever ran on the slot.
                     Motion::Keyframes(keyframes) => {
                         anim.tracks
-                            .insert(slot, OperandTrack::keyframes(target, keyframes));
+                            .insert(slot, LaneTrack::keyframes(target, keyframes));
                         continue;
                     }
                 };
@@ -1092,7 +1092,7 @@ impl LiveState {
                 if anim
                     .tracks
                     .get_mut(&slot)
-                    .is_some_and(|track| track.retarget(target.clone(), animation))
+                    .is_some_and(|track| track.retarget(target.clone(), animation, None))
                 {
                     continue;
                 }
@@ -1106,7 +1106,7 @@ impl LiveState {
                 match from.and_then(|from| from.anim_lanes(&target)) {
                     Some(from) => {
                         anim.tracks
-                            .insert(slot, OperandTrack::new(from, target, animation));
+                            .insert(slot, LaneTrack::new(from, target, animation, None));
                     }
                     // Endpoints sharing no lane decomposition snap the
                     // change like an un-animated one.

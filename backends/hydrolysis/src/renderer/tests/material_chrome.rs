@@ -10,6 +10,7 @@
 //! with a non-empty registry; a rejected source panics naming the key.
 
 use std::rc::{Rc, Weak};
+use std::time::Duration;
 
 use waterui_core::Binding;
 
@@ -1887,6 +1888,29 @@ fn a_rebound_member_tracks_the_signals_value_after_recording() {
     );
 }
 
+/// Presents the mirror along the chrome's 15 ms press motion a press just
+/// started — at its start, 5 ms in and at its end — and returns what
+/// `read` saw 5 ms in, once its pressed uniform (`uniform`, 0 at rest and 1
+/// pressed) is seen strictly between: the member's sample moves with the
+/// press motion instead of jumping.
+fn along_press<T>(
+    renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+    read: impl Fn(&crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>) -> T,
+    uniform: impl Fn(&T) -> f32,
+) -> T {
+    let start = crate::time::Instant::now();
+    renderer.mirror().present(start);
+    renderer.mirror().present(start + Duration::from_millis(5));
+    let moving = read(renderer);
+    let value = uniform(&moving);
+    assert!(
+        value > 0.0 && value < 1.0,
+        "the effect moves with the press motion: {value}"
+    );
+    renderer.mirror().present(start + Duration::from_millis(15));
+    moving
+}
+
 /// A custom part whose uniforms are a `Driven` over the interaction state:
 /// a press moves the realized operand, and the member's live sample
 /// carries the pressed uniforms with no re-recording and no frame
@@ -1947,6 +1971,7 @@ fn a_press_moves_the_members_effect_live() {
         PointerButton::Primary,
         &env,
     );
+    along_press(&renderer, bound, |uniforms| uniforms[0]);
     assert_eq!(
         bound(&renderer),
         [1.0],
@@ -2043,7 +2068,13 @@ fn a_backdrop_button_press_moves_shape_and_effect_live() {
         PointerButton::Primary,
         &env,
     );
+    let (moving_clip, _) = along_press(&renderer, bound, |(_, uniforms)| uniforms[0]);
+    assert_ne!(moving_clip, rest_clip, "the clip moves with the effect");
     let (pressed_clip, pressed_uniforms) = bound(&renderer);
+    assert_ne!(
+        pressed_clip, moving_clip,
+        "the clip reaches the pressed corners at the motion's end"
+    );
     assert_eq!(
         pressed_uniforms,
         [1.0],
