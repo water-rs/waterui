@@ -2059,9 +2059,13 @@ fn lower_live<T: LayerTarget<E>, E: crate::text::TextEngine>(
             Box::default,
             crate::renderer::recording::Recording::solid_rects,
         );
-        let resources = T::resources(cx.host);
         let mut held = None;
-        cx.tx[&live.layer].record(|recorder| held = item.source.record(recorder, resources));
+        if let Some(content) = item.source.content() {
+            cx.tx[&live.layer].content(content);
+        } else {
+            let resources = T::resources(cx.host);
+            cx.tx[&live.layer].record(|recorder| held = item.source.record(recorder, resources));
+        }
         // A source that turns binds each stage's layer rotation property
         // to the stage's operand and starts the engine's track along it:
         // the layers then turn on the engine's clock, with no work here.
