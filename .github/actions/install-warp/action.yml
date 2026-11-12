@@ -19,7 +19,11 @@ inputs:
       cargo profile the job builds (`target/debug/deps` unless the job
       passes `--release` or `--cargo-profile`); cargo never deletes
       unknown files there, so one copy placed before the build covers
-      every test binary written afterwards.
+      every test binary written afterwards. Run this action after any step
+      that restores or cleans the target directory: a `Swatinem/rust-cache`
+      restore that is not a full match deletes every file directly in
+      `target/debug` and every file in `deps` last written over a week
+      ago, which the staged DLL is, since it keeps the package's timestamp.
     required: true
   cache:
     description: >-

@@ -78,7 +78,7 @@ impl<T: 'static, U: 'static> Signal for Gate<T, U> {
     fn snapshot(&self) -> U {
         let value = self.source.snapshot();
         (self.lower)(&value, &self.names.borrow())
-            .expect("a recorded operand's resources are registered before it is recorded")
+            .expect("a gate is read as its operand is recorded, right after `Replay::paint` registered the image its value names")
     }
 
     fn watch(&self, watcher: impl Fn(Context<U>) + 'static) -> BoxWatcherGuard {
@@ -149,14 +149,14 @@ impl Session<'_> {
             let _ = register_image(&mut resources, &mut names, image, &self.statuses);
         }
         for font in drawing.fonts() {
-            register_font(&mut resources, &mut names, font)?;
+            register_font(&mut resources, &mut names, font).ok()?;
         }
         let picture = drawing.lower(&names, &mut |nested| {
-            let (picture, held) = self
-                .drawing(nested)
-                .expect("a nested drawing's fonts registered with the drawing that holds it");
+            // `None` only when the render thread went away since the fonts
+            // above registered: the nested drawing is not drawn.
+            let (picture, held) = self.drawing(nested)?;
             resources.hold(&held);
-            picture
+            Some(picture)
         });
         let held = resources.finish();
         self.drawings.borrow_mut().insert(
@@ -180,12 +180,13 @@ impl Session<'_> {
 /// `drawing` recorded for the target `resources` belongs to, outside any
 /// canvas: its recorded form and the registrations it names, which the
 /// caller holds while the picture draws. Image statuses are published as
-/// they are for a canvas.
+/// they are for a canvas. A font the target refuses is logged and its glyph
+/// runs are not drawn.
 ///
 /// # Panics
 ///
-/// When the target refuses a font of the drawing, or its render thread is
-/// gone.
+/// When the target's render thread is gone, which `resources`' owner, the
+/// engine that renders the drawing, rules out while it lives.
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub fn lower_drawing(
     drawing: &Drawing,
@@ -226,34 +227,43 @@ fn register_image(
         Err(error) => ImageStatus::Refused(Arc::clone(error)),
     };
     statuses.borrow_mut().push((image.clone(), status));
-    let id = resources.name(&registered.ok()?);
+    let id = resources.name(&registered.ok()?)?;
     names.insert_image(image, id);
     Some(id)
 }
 
-/// Registers `font` and names it in one recording; `None` when the render
-/// thread is gone.
-///
-/// # Panics
-///
-/// When the target refuses the font: unreadable bytes, or a system family
-/// on a target with no platform font stack.
+/// The render thread is gone: nothing more can be registered on its target.
+struct RenderThreadGone;
+
+/// Registers `font` and names it in one recording; `Ok(None)` when the
+/// target refuses the font — unreadable bytes, or a system family on a target
+/// with no platform font stack — which is logged and leaves the glyph runs
+/// that use it undrawn.
 fn register_font(
     resources: &mut RecordingResources<'_>,
     names: &mut Names,
     font: &Font,
-) -> Option<FontId> {
+) -> Result<Option<FontId>, RenderThreadGone> {
     if let Some(id) = names.font(font) {
-        return Some(id);
+        return Ok(Some(id));
     }
     let registered = match resources.font(font.source()) {
         Ok(registered) => registered,
-        Err(ResourceError::Lost) => return None,
-        Err(error) => panic!("a canvas glyph run's font was refused: {error}"),
+        Err(ResourceError::Lost) => return Err(RenderThreadGone),
+        Err(error) => {
+            tracing::error!(
+                "a canvas glyph run's font was refused; its glyph runs are not drawn: {error}"
+            );
+            return Ok(None);
+        }
     };
-    let id = resources.name(&registered);
+    // A font registered on another target has no id here: the glyph runs
+    // that use it are not drawn.
+    let Some(id) = resources.name(&registered) else {
+        return Ok(None);
+    };
     names.insert_font(font, id);
-    Some(id)
+    Ok(Some(id))
 }
 
 /// What replaying one part into the recorder of its region needs.
@@ -298,6 +308,8 @@ impl Replay<'_, '_> {
 
     fn font(&mut self, font: &Font) -> Option<FontId> {
         register_font(&mut self.resources, &mut self.names.borrow_mut(), font)
+            .ok()
+            .flatten()
     }
 
     /// The paint operand as a live recorded paint; `None` when it samples
@@ -327,19 +339,19 @@ impl Replay<'_, '_> {
     }
 
     /// `text` laid out in `placement` by the target and registered, in the
-    /// canvas's environment; `None` when the render thread is gone or the
-    /// text has nothing to draw.
-    ///
-    /// # Panics
-    ///
-    /// When the target cannot lay the text out: it has no text stack, or a
-    /// font of the text is refused.
+    /// canvas's environment; `None` when the render thread is gone, the
+    /// text has nothing to draw, or the target cannot lay the text out (it
+    /// has no text stack, or a font of the text is refused), which is
+    /// logged.
     fn text(&self, text: StyledStr, placement: TextPlacement) -> Option<RegisteredText> {
         let env = self.session.shared.upgrade()?.env.clone();
         match self.resources.text(text, placement, env) {
             Ok(registered) => registered,
             Err(ResourceError::Lost) => None,
-            Err(error) => panic!("canvas text was refused: {error}"),
+            Err(error) => {
+                tracing::error!("canvas text was refused; it is not drawn: {error}");
+                None
+            }
         }
     }
 
@@ -375,7 +387,11 @@ impl Replay<'_, '_> {
                 Affine2::translate(corner.x, corner.y)
             })
             .computed();
-        let layout = self.resources.name(registered.layout());
+        // A layout registered on another target has no id here: the text
+        // is not drawn.
+        let Some(layout) = self.resources.name(registered.layout()) else {
+            return;
+        };
         recorder.text(layout, self.transform(&corner));
     }
 

@@ -4,7 +4,7 @@ use core::fmt;
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
 use nami::{Computed, Signal, SignalExt as _, collection::List};
-use waterui_core::{Binding, binding};
+use waterui_core::{Binding, binding, contract_violation};
 
 use crate::{
     AudioTrackSelection, LiveWindow, MediaItem, MediaItemId, PlaybackPolicy, SubtitleSelection,
@@ -390,18 +390,29 @@ impl PlayerController {
 
     /// Seeks by a signed number of seconds and clamps at the item boundaries.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when `seconds` is not finite.
+    /// `seconds` must be finite. Otherwise a debug build panics; a release
+    /// build logs it and ignores the seek.
     ///
     /// # Errors
     ///
     /// Returns [`PlaybackError::DurationUnavailable`] before a finite duration is known.
     pub fn seek_relative(&self, seconds: f64) -> Result<(), PlaybackError> {
-        assert!(seconds.is_finite(), "relative seek seconds must be finite");
+        if !seconds.is_finite() {
+            contract_violation!("relative seek seconds must be finite; the seek is ignored");
+            return Ok(());
+        }
         let requested = {
             let state = self.state.borrow();
             let position = state.bindings.position_seconds.snapshot();
+            if !position.is_finite() {
+                contract_violation!(
+                    "the backend published a non-finite playback position {position}; \
+                     the relative seek is ignored"
+                );
+                return Ok(());
+            }
             if let Some(window) = state.bindings.live_window.snapshot() {
                 (position + seconds).clamp(
                     window.seekable_start().as_secs_f64(),
@@ -918,6 +929,54 @@ mod tests {
         assert_eq!(bindings.phase.snapshot(), PlaybackPhase::Paused);
         assert_eq!(bindings.step_forward_generation.snapshot(), 2);
         assert_eq!(bindings.step_backward_generation.snapshot(), 1);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "relative seek seconds must be finite")
+    )]
+    fn non_finite_relative_seek_is_ignored() {
+        let session = PlaybackSession::new(Playlist::single(item("only.mp4", 1)));
+        let controller = session.controller();
+
+        assert_eq!(controller.seek_relative(f64::NAN), Ok(()));
+        assert_eq!(
+            controller
+                .state
+                .borrow()
+                .bindings
+                .seek_generation
+                .snapshot(),
+            0
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "the backend published a non-finite playback position")
+    )]
+    fn a_relative_seek_from_a_non_finite_position_is_ignored() {
+        let session = PlaybackSession::new(Playlist::single(item("only.mp4", 1)));
+        let controller = session.controller();
+        controller
+            .state
+            .borrow()
+            .bindings
+            .position_seconds
+            .set(f64::NAN);
+
+        assert_eq!(controller.seek_relative(5.0), Ok(()));
+        assert_eq!(
+            controller
+                .state
+                .borrow()
+                .bindings
+                .seek_generation
+                .snapshot(),
+            0
+        );
     }
 
     #[test]

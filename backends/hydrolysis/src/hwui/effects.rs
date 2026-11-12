@@ -114,6 +114,10 @@ struct EffectStore {
     pending: Vec<(u32, Vec<EffectStage>)>,
     entries: BTreeMap<u32, EffectEntry>,
     last: Option<Instant>,
+    /// Device pixels per logical point: an effect node rasterizes its
+    /// layer at device resolution, so a length the filter declares in
+    /// points is that many times longer in the node's pixels.
+    density: f64,
 }
 
 /// The registration a `FilteredView` mount retains; its drop releases the
@@ -146,6 +150,7 @@ impl Effects {
             pending: Vec::new(),
             entries: BTreeMap::new(),
             last: None,
+            density: 1.0,
         })))
     }
 
@@ -188,7 +193,13 @@ impl Effects {
         // Every fallible check precedes the id's allocation and the
         // subscriptions: a rejected registration leaves nothing behind.
         let tracks: Vec<AnimationTrack> = params.iter().map(|&v| AnimationTrack::new(v)).collect();
-        let stages = sample(&plan, &tracks, &names, Affine::IDENTITY)?;
+        let stages = sample(
+            &plan,
+            &tracks,
+            &names,
+            Affine::IDENTITY,
+            self.0.borrow().density,
+        )?;
         let mut store = self.0.borrow_mut();
         let wire = store.registry.lock().acquire(Kind::Effect)?;
         let dropped = store.registry.dropped();
@@ -255,6 +266,7 @@ impl Effects {
                 entry.emitted = Some(stages);
             }
         }
+        let density = store.density;
         let mut animating = false;
         for (&wire, entry) in &mut store.entries {
             // Advance past targets; a snap arriving below still cancels the
@@ -268,13 +280,30 @@ impl Effects {
             for track in &mut entry.tracks {
                 animating |= track.is_active();
             }
-            let stages = sample(&entry.plan, &entry.tracks, &entry.names, entry.pose)?;
+            let stages = sample(
+                &entry.plan,
+                &entry.tracks,
+                &entry.names,
+                entry.pose,
+                density,
+            )?;
             if entry.emitted.as_ref() != Some(&stages) {
                 emit_effect(buffer, wire, &stages)?;
                 entry.emitted = Some(stages);
             }
         }
         Ok(animating)
+    }
+
+    /// Records the window's density, the scale between the points a
+    /// filter's lengths are declared in and the pixels of the node that
+    /// draws it; `true` when it moved, so the next [`encode`](Self::encode)
+    /// redefines the effects.
+    pub(crate) fn set_density(&self, density: f64) -> bool {
+        let mut store = self.0.borrow_mut();
+        let moved = store.density.to_bits() != density.to_bits();
+        store.density = density;
+        moved
     }
 
     /// Whether the effect `wire` draws in window device pixels, so its
@@ -671,12 +700,13 @@ fn stretch_values(params: &[f32], pose: Affine) -> [f32; 12] {
 }
 
 /// The current sample as wire stages, for a node whose own pixels `pose`
-/// maps to device pixels.
+/// maps to device pixels, at `density` pixels per point.
 fn sample(
     plan: &Plan,
     tracks: &[AnimationTrack],
     names: &[&'static str],
     pose: Affine,
+    density: f64,
 ) -> Result<Vec<EffectStage>, HwuiError> {
     let params: Vec<f32> = tracks.iter().map(AnimationTrack::value).collect();
     if params.iter().any(|p| !p.is_finite()) {
@@ -690,7 +720,7 @@ fn sample(
             PlanStep::Blur { param } => {
                 let radius = params[*param].max(0.0);
                 let mut values = [0f32; 12];
-                values[0] = radius;
+                values[0] = narrow(f64::from(radius) * density);
                 stages.push(EffectStage {
                     kind: effect_kind::BLUR,
                     values,
@@ -791,10 +821,18 @@ mod tests {
     }
 
     #[test]
+    fn blur_radius_is_in_the_pixels_of_the_node() {
+        let plan = Plan(vec![PlanStep::Blur { param: 0 }]);
+        let tracks = vec![AnimationTrack::new(4.0)];
+        let stages = sample(&plan, &tracks, &[], Affine::IDENTITY, 2.5).unwrap();
+        assert_eq!(stages[0].values[0], 10.0);
+    }
+
+    #[test]
     fn blur_radius_is_clamped_nonnegative() {
         let plan = Plan(vec![PlanStep::Blur { param: 0 }]);
         let tracks = vec![AnimationTrack::new(-2.0)];
-        let stages = sample(&plan, &tracks, &[], Affine::IDENTITY).unwrap();
+        let stages = sample(&plan, &tracks, &[], Affine::IDENTITY, 1.0).unwrap();
         assert_eq!(stages[0].kind, effect_kind::BLUR);
         assert_eq!(stages[0].values[0], 0.0);
     }
@@ -1297,7 +1335,7 @@ mod tests {
         };
         let plan = Plan(vec![run(0), PlanStep::Blur { param: 0 }, run(1)]);
         let tracks = vec![AnimationTrack::new(0.5), AnimationTrack::new(0.25)];
-        let stages = sample(&plan, &tracks, &[], Affine::IDENTITY).unwrap();
+        let stages = sample(&plan, &tracks, &[], Affine::IDENTITY, 1.0).unwrap();
         assert_eq!(
             stages.iter().map(|s| s.kind).collect::<Vec<_>>(),
             vec![

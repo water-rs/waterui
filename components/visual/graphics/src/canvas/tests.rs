@@ -221,6 +221,29 @@ struct Dot {
 }
 
 #[test]
+#[cfg_attr(debug_assertions, should_panic(expected = "two items share the key"))]
+fn each_does_not_record_a_later_item_that_shares_a_key() {
+    let dots = binding(Vec::from([
+        Dot { id: 1, x: 0.0 },
+        Dot { id: 1, x: 10.0 },
+        Dot { id: 2, x: 20.0 },
+    ]));
+    let mut scene = mount(Canvas::new(move |cx| {
+        cx.each(
+            dots,
+            |dot: &Dot| dot.id,
+            |cx, dot| {
+                cx.fill(
+                    dot.map(|dot| Circle::new(Point::new(dot.x, 0.0), 2.0)),
+                    red(),
+                );
+            },
+        );
+    }));
+    assert_eq!(record(&mut scene).len(), 2);
+}
+
+#[test]
 fn each_records_inserted_keys_only_and_updates_changed_items_in_place() {
     let dots = binding(Vec::from([Dot { id: 1, x: 0.0 }, Dot { id: 2, x: 10.0 }]));
     let item_runs = Rc::new(Cell::new(0));
@@ -655,16 +678,16 @@ mod text {
     }
 
     #[test]
-    #[should_panic(expected = "canvas text was refused")]
-    fn a_target_without_a_text_stack_refuses_canvas_text() {
+    fn a_target_without_a_text_stack_leaves_canvas_text_undrawn() {
         let mut scene = mount(Canvas::new(|cx| {
             cx.text(text("hello"), TextPlacement::at(Point::new(0.0, 0.0)));
         }));
         let (resources, _events) = null_resources();
         let mut names = resources.recording();
-        let _ = Content::record(&LayoutSize::new(), |recorder| {
+        let content = Content::record(&LayoutSize::new(), |recorder| {
             scene.build_scene(recorder, &mut names, 100.0, 50.0);
         });
+        assert_eq!(content.len(), 0);
     }
 }
 

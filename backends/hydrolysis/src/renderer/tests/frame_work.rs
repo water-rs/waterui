@@ -222,7 +222,9 @@ impl SceneContent for ImagePane {
                     .expect("image registration failed"),
             );
         }
-        let image = resources.name(self.image.as_ref().expect("registered above"));
+        let image = resources
+            .name(self.image.as_ref().expect("registered above"))
+            .expect("registered on this target");
         recorder.transform(
             Affine::translate((40.0, 40.0)) * Affine::rotate(0.4),
             |recorder| {

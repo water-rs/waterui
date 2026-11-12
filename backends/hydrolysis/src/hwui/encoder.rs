@@ -28,12 +28,12 @@ use cherenkov_record::{ResourceId, TextLayoutId};
 use super::buffer::{CommandBuffer, Field};
 use super::effects::Effects;
 use super::geometry::{
-    Decomposed, Tilted, affine_matrix, decompose, floor_i32, homography_matrix, intersect,
-    is_integral, multiply, project_rect, tilt, union,
+    Decomposed, Tilted, affine_matrix, ceil_i32, decompose, floor_i32, homography_matrix,
+    intersect, is_integral, multiply, project_rect, tilt, union,
 };
 use super::lower::{
     Caches, GroupNodes, Lower, Owned, Pools, Scratch, blend_code, bounds, clear_color, content_ink,
-    extent, set_position,
+    extent, set_position, set_transform,
 };
 use super::protocol::{Op, clip as clip_kind, host};
 use super::resources::Kind;
@@ -262,6 +262,50 @@ struct LayerState {
 }
 
 impl LayerState {
+    /// Whether the platform runs a `RenderEffect` on this layer's node.
+    fn has_effect(&self) -> bool {
+        self.sent.effect.is_some_and(|wire| wire != u32::MAX)
+    }
+
+    /// The pixels of this layer's node per unit of its own space.
+    ///
+    /// The platform rasterizes a node that carries an effect into a layer
+    /// of the node's own width by height and draws that layer through the
+    /// node's transform, so a node whose transform scales by the display
+    /// density would be rasterized at points and upscaled. Such a node
+    /// instead spans `density` pixels per unit and carries the inverse
+    /// scale in its transform, which leaves where it lands unchanged; its
+    /// display list draws the content scaled by the same factor. Every
+    /// other node stays in layer units.
+    fn device_scale(&self, density: f64) -> f64 {
+        if self.has_effect() { density } else { 1.0 }
+    }
+
+    /// The node's width and height in its own pixels.
+    fn node_size(&self, scale: f64) -> [i32; 2] {
+        self.size.map(|side| ceil_i32(f64::from(side) * scale))
+    }
+
+    /// How the node's clip lowers at `scale` pixels per unit: a node clip
+    /// is whole node pixels, so one whose edges fall between them is
+    /// recorded into the list instead. A node clip's bounds are relative
+    /// to the node.
+    fn node_clip(&self, scale: f64) -> ClipMode {
+        let ClipMode::Node(kind, [left, top, right, bottom], radius) = self.clip_mode else {
+            return self.clip_mode;
+        };
+        let [x, y] = self.origin;
+        let edges = [left - x, top - y, right - x, bottom - y].map(|edge| f64::from(edge) * scale);
+        if !edges.into_iter().all(is_integral) {
+            return ClipMode::List;
+        }
+        ClipMode::Node(
+            kind,
+            edges.map(|edge| floor_i32(edge.round())),
+            f32_of(f64::from(radius) * scale),
+        )
+    }
+
     fn new(outer: u32) -> Self {
         Self {
             outer,
@@ -489,6 +533,7 @@ impl Encoder {
             text_layouts: &self.text_layouts,
             scratch: &mut self.scratch,
             layer,
+            density: self.platform_scale,
         }
     }
 
@@ -683,7 +728,14 @@ impl Encoder {
                 self.layers.get_mut(&raw).unwrap().record_dirty = true;
                 self.mark_ink_ancestors(LayerId::new(raw));
             }
+            // An effect node's pixels per unit are the density: a layer's
+            // own, or a filtered group's inside its list.
+            let layers: Vec<u64> = self.layers.keys().copied().collect();
+            for raw in layers {
+                self.mark_resolution_moved(raw);
+            }
         }
+        self.effects.set_density(scale);
         let sampling = self.tree.sample(time, scale);
         self.content_animating |= self.effects.encode(time, &mut self.buffer)?;
         let mut pending = std::mem::take(&mut self.pending);
@@ -870,10 +922,11 @@ impl Encoder {
     /// height (`SkiaGpuPipeline::createOrUpdateLayer`), filters that
     /// snapshot in its pixels (`SkImages::MakeWithFilter` in
     /// `RenderNodeDrawable::drawContent`), and draws the result through the
-    /// node's whole transform, density included. The frame therefore keeps
-    /// none of the world's scale: one carried in a scaled space spans more
-    /// than the viewport in the snapshot, and the warp pulls content from
-    /// inside the clip past it.
+    /// node's whole transform. The node's pixels are device pixels (see
+    /// [`LayerState::device_scale`]), so the frame keeps the density and
+    /// none of the rest of the world's scale: one carried in a scaled space
+    /// spans more than the viewport in the snapshot, and the warp pulls
+    /// content from inside the clip past it.
     ///
     /// A node whose world transform is singular draws nothing and keeps its
     /// last definition.
@@ -885,6 +938,7 @@ impl Encoder {
     /// carry into the node's pixels.
     fn resolve_effect_poses(&mut self, time: cherenkov_record::Instant) -> Result<(), HwuiError> {
         let mut moved = false;
+        let density = self.platform_scale;
         for (&raw, state) in &self.layers {
             let Some(wire) = state.sent.effect.filter(|wire| *wire != u32::MAX) else {
                 continue;
@@ -898,8 +952,11 @@ impl Encoder {
                     what: "draws an overscroll stretch under a projective pose".to_owned(),
                 }
             })?;
-            let node =
-                world * Affine::translate((f64::from(state.origin[0]), f64::from(state.origin[1])));
+            // The node spans `density` pixels per unit of the layer's space,
+            // and its transform scales by the inverse.
+            let node = world
+                * Affine::translate((f64::from(state.origin[0]), f64::from(state.origin[1])))
+                * Affine::scale(1.0 / density);
             if node.determinant() != 0.0 {
                 moved |= self.effects.set_pose(wire, node);
             }
@@ -1048,6 +1105,7 @@ impl Encoder {
                 text_layouts: &self.text_layouts,
                 scratch: &mut self.scratch,
                 layer: raw,
+                density: self.platform_scale,
             };
             let inner = if needs_inner {
                 Some(lower.create_node()?)
@@ -1108,7 +1166,11 @@ impl Encoder {
                 Op::SetEffect,
                 &[Field::U("node", state.outer), Field::U("effect", effect)],
             )?;
+            let resolution_moved = state.has_effect() != (effect != u32::MAX);
             state.sent.effect = Some(effect);
+            if resolution_moved {
+                self.mark_resolution_moved(raw);
+            }
         }
         Ok(())
     }
@@ -1176,6 +1238,23 @@ impl Encoder {
             self.mark_ink_ancestors(id);
         }
         Ok(())
+    }
+
+    /// Re-records layer `raw` and, when its parent draws it through a
+    /// matrix, the parent, after the pixels per unit of its node moved.
+    fn mark_resolution_moved(&mut self, raw: u64) {
+        let state = self.layers.get_mut(&raw).expect("a mirrored layer");
+        state.record_dirty = true;
+        let parent = matches!(state.placement, Placement::Concat(_))
+            .then_some(state.parent)
+            .flatten();
+        if let Some(parent) = parent {
+            self.layers
+                .get_mut(&parent.raw())
+                .expect("a mirrored layer")
+                .record_dirty = true;
+        }
+        self.mark_ink_ancestors(LayerId::new(raw));
     }
 
     /// Marks `id` and its ancestors' ink dirty — the bottom-up recompute
@@ -1252,20 +1331,19 @@ impl Encoder {
 
     /// Writes `id`'s changed node properties.
     fn properties(&mut self, raw: u64) -> Result<(), HwuiError> {
+        let density = self.platform_scale;
         let state = self.layers.get_mut(&raw).expect("listed");
-        let (left, transform) = node_transform(state.placement, state.origin);
-        let [l, t, r, b] = bounds(left, state.size);
+        let scale = state.device_scale(density);
+        let (left, transform) = node_transform(state.placement, state.origin, scale);
+        let [l, t, r, b] = bounds(left, state.node_size(scale));
         // A filtered leaf keeps its implicit clip off: the native blur must
         // not be cut at node bounds. Explicit clip modes still apply.
         let clips = !matches!(state.content, Content::None)
             && state.children.is_empty()
             && self.tree.layer(LayerId::new(raw)).filter.is_none();
         let position = [l, t, r, b, i32::from(clips)];
-        let clip = match state.clip_mode {
-            ClipMode::Node(kind, [cl, ct, cr, cb], radius) => {
-                let [ox, oy] = state.origin;
-                (kind, [cl - ox, ct - oy, cr - ox, cb - oy], radius)
-            }
+        let clip = match state.node_clip(scale) {
+            ClipMode::Node(kind, edges, radius) => (kind, edges, radius),
             ClipMode::None | ClipMode::List => (clip_kind::NONE, [0; 4], 0.0),
         };
         let buffer = &mut self.buffer;
@@ -1336,6 +1414,7 @@ impl Encoder {
             text_layouts,
             scratch,
             layer: raw,
+            density: platform_scale,
         };
         let mut owned = Owned::default();
         let mut groups = GroupNodes::new();
@@ -1348,8 +1427,9 @@ impl Encoder {
             }
             Content::Shared(picture) => Some(lower.share(picture, &mut owned)?),
         };
-        lower.open_at(state.outer, state.origin, state.size)?;
-        if state.clip_mode == ClipMode::List
+        let scale = state.device_scale(platform_scale);
+        lower.open_scaled(state.outer, state.origin, state.node_size(scale), scale)?;
+        if state.node_clip(scale) == ClipMode::List
             && let Some(clip) = &state.clip
         {
             lower.clip(clip, &mut owned)?;
@@ -1381,6 +1461,14 @@ impl Encoder {
             match child.placement {
                 Placement::Node(_) | Placement::Camera(_) => lower.draw_node(child.outer, None)?,
                 Placement::Concat(rows) => {
+                    // The child's node spans `scale` pixels per unit of its
+                    // own space, which the matrix maps back to units.
+                    let scale = child.device_scale(platform_scale);
+                    let [x, y] = child.origin.map(f64::from);
+                    let node_space = Affine::translate((x, y))
+                        * Affine::scale(1.0 / scale)
+                        * Affine::translate((-x, -y));
+                    let rows = multiply(rows, affine_rows(node_space));
                     lower.draw_node(child.outer, Some(&homography_matrix(rows)))?;
                 }
             }
@@ -1440,7 +1528,9 @@ fn diff_inner(id: LayerId, state: &mut LayerState, node: &LayerNode, pending: &m
     }
     if node.clip != state.clip {
         let mode = clip_mode(node.clip.as_ref());
-        if mode == ClipMode::List || state.clip_mode == ClipMode::List {
+        // An effect node's node clip may fall back to the list at its
+        // density, so any change re-records it.
+        if mode == ClipMode::List || state.clip_mode == ClipMode::List || state.has_effect() {
             state.record_dirty = true;
         }
         state.clip.clone_from(&node.clip);
@@ -1472,34 +1562,14 @@ const fn f32_of(value: f64) -> f32 {
     value as f32
 }
 
-fn set_transform(
-    buffer: &mut CommandBuffer,
-    node: u32,
-    values: &[f32; 10],
-) -> Result<(), HwuiError> {
-    let names = [
-        "translation_x",
-        "translation_y",
-        "scale_x",
-        "scale_y",
-        "rotation",
-        "pivot_x",
-        "pivot_y",
-        "rotation_x",
-        "rotation_y",
-        "camera_distance",
-    ];
-    let mut fields = super::buffer::Fields::new();
-    fields.push(Field::U("node", node));
-    for (name, value) in names.into_iter().zip(values) {
-        fields.push(Field::F(name, *value));
-    }
-    buffer.op(Op::SetTransform, fields.as_slice())
-}
-
 /// The outer node's integer offset and `SetTransform` properties for a
-/// layer at `origin`; a `Concat` placement leaves the node untransformed.
-fn node_transform(placement: Placement, origin: [i32; 2]) -> ([i32; 2], [f32; 10]) {
+/// layer at `origin`, whose node spans `scale` pixels per unit of the
+/// layer's space; a `Concat` placement leaves the node untransformed.
+///
+/// A node of `scale` pixels per unit carries `1 / scale` of the layer's
+/// scale, `scale` times its pivot and camera distance, and the translation
+/// that keeps its pivot where the layer's transform puts it.
+fn node_transform(placement: Placement, origin: [i32; 2], pixels: f64) -> ([i32; 2], [f32; 10]) {
     let (translation, scale, rotation, pivot, camera) = match placement {
         Placement::Node(parts) => (
             parts.translation,
@@ -1520,21 +1590,26 @@ fn node_transform(placement: Placement, origin: [i32; 2]) -> ([i32; 2], [f32; 10
         }
     };
     let origin = [f64::from(origin[0]), f64::from(origin[1])];
-    let (tx, ty) = (translation.0 + origin[0], translation.1 + origin[1]);
+    let pivot = (pivot.0 - origin[0], pivot.1 - origin[1]);
+    let shift = 1.0 - pixels;
+    let (tx, ty) = (
+        shift.mul_add(pivot.0, translation.0 + origin[0]),
+        shift.mul_add(pivot.1, translation.1 + origin[1]),
+    );
     let left = [floor_i32(tx), floor_i32(ty)];
     (
         left,
         [
             f32_of(tx - f64::from(left[0])),
             f32_of(ty - f64::from(left[1])),
-            f32_of(scale.0),
-            f32_of(scale.1),
+            f32_of(scale.0 / pixels),
+            f32_of(scale.1 / pixels),
             f32_of(rotation),
-            f32_of(pivot.0 - origin[0]),
-            f32_of(pivot.1 - origin[1]),
+            f32_of(pivot.0 * pixels),
+            f32_of(pivot.1 * pixels),
             f32_of(camera[0]),
             f32_of(camera[1]),
-            f32_of(camera[2]),
+            f32_of(camera[2] * pixels),
         ],
     )
 }

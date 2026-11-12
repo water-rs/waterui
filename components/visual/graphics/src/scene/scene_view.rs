@@ -8,7 +8,7 @@ use nami::Signal;
 use nami::watcher::BoxWatcherGuard;
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis};
-use waterui_core::{AnyView, Environment, Native, NativeView, View};
+use waterui_core::{AnyView, Environment, Native, NativeView, View, contract_violation};
 
 use crate::draw::Instant;
 use crate::input::SurfaceInputEvent;
@@ -319,26 +319,28 @@ pub trait SceneContent: 'static {
 /// one back and the scene keeps the `StretchAxis::None` promise of
 /// [`scene_stretch_axis`] instead of swallowing the row's leftover space.
 ///
-/// # Panics
-///
-/// Panics when `intrinsic` is not finite and positive on both axes: a
-/// [`SceneContent`] that claims a degenerate natural size would otherwise push
-/// `NaN` geometry into layout, which surfaces far away from the content that
-/// produced it.
+/// An `intrinsic` that is not finite and positive on both axes is a contract
+/// violation: a [`SceneContent`] that claims a degenerate natural size would
+/// otherwise push `NaN` geometry into layout, which surfaces far away from the
+/// content that produced it. The content is treated as having no natural
+/// size.
 #[must_use]
 pub fn resolve_scene_proposal(intrinsic: Option<Size>, proposal: ProposalSize) -> ProposalSize {
     let Some(natural) = intrinsic else {
         return proposal;
     };
-    assert!(
-        natural.width.is_finite()
-            && natural.height.is_finite()
-            && natural.width > 0.0
-            && natural.height > 0.0,
-        "SceneContent::intrinsic_size must be finite and positive, got {}x{}",
-        natural.width,
-        natural.height
-    );
+    if !(natural.width.is_finite()
+        && natural.height.is_finite()
+        && natural.width > 0.0
+        && natural.height > 0.0)
+    {
+        contract_violation!(
+            "SceneContent::intrinsic_size must be finite and positive, got {}x{}; the content is treated as having no natural size",
+            natural.width,
+            natural.height
+        );
+        return proposal;
+    }
 
     let width = proposal.width.filter(|width| width.is_finite());
     let height = proposal.height.filter(|height| height.is_finite());
@@ -690,9 +692,16 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "must be finite and positive")]
-    fn a_degenerate_natural_size_is_rejected() {
-        let _ = resolve_scene_proposal(Some(Size::new(0.0, 10.0)), ProposalSize::UNSPECIFIED);
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "must be finite and positive")
+    )]
+    fn a_degenerate_natural_size_is_no_natural_size() {
+        let proposal = ProposalSize::new(Some(30.0), Some(40.0));
+        assert_eq!(
+            resolve_scene_proposal(Some(Size::new(0.0, 10.0)), proposal),
+            proposal
+        );
     }
 
     #[test]

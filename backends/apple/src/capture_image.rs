@@ -54,6 +54,10 @@ pub enum CaptureFailure {
     /// failure — no recapture on its context generation can produce the
     /// frame. Carries the surface's own `Arc`'d cause.
     GpuSurfaceFailed(Arc<dyn std::error::Error + Send + Sync>),
+    /// The shared GPU device is unrecoverable — every rebuilt device was
+    /// lost before presenting a frame — so no capture can ever produce
+    /// pixels.
+    GpuUnrecoverable(waterui_graphics::gpu::Unrecoverable),
     /// The native-view composition command buffer ended in a status other
     /// than `Completed`, so the composited frame never landed.
     CompositionFailed {
@@ -81,6 +85,7 @@ impl core::fmt::Display for CaptureFailure {
             Self::GpuSurfaceFailed(_) => {
                 f.write_str("a GPU surface in the captured subtree failed")
             }
+            Self::GpuUnrecoverable(unrecoverable) => write!(f, "{unrecoverable}"),
             Self::CompositionFailed { status, error } => {
                 write!(
                     f,
@@ -107,6 +112,7 @@ impl std::error::Error for CaptureFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::GpuSurfaceFailed(cause) => Some(&**cause),
+            Self::GpuUnrecoverable(cause) => Some(cause),
             Self::CompositionFailed { .. } => None,
             #[cfg(target_os = "ios")]
             Self::NoWindowScene => None,
@@ -606,9 +612,18 @@ impl CaptureDrive {
             let runtime = self.runtime.clone();
             let drive = Rc::downgrade(self);
             executor_core::spawn_local(async move {
-                runtime.context_after(generation).await;
-                if let Some(drive) = drive.upgrade() {
-                    drive.request_pump();
+                match runtime.context_after(generation).await {
+                    Ok(_published) => {
+                        if let Some(drive) = drive.upgrade() {
+                            drive.request_pump();
+                        }
+                    }
+                    // No context will ever publish: the drive stops
+                    // pumping, and the terminal capture reports the
+                    // failure to its caller.
+                    Err(unrecoverable) => {
+                        tracing::error!("windowless capture drive stopped: {unrecoverable}");
+                    }
                 }
             })
             .detach();
@@ -742,7 +757,10 @@ async fn capture_attempts(
         // publication before allocating anything against it — the
         // destination must never be allocated on a dead device.
         if context.device_lost_reason().is_some() {
-            runtime.context_after(context.generation()).await;
+            runtime
+                .context_after(context.generation())
+                .await
+                .map_err(CaptureFailure::GpuUnrecoverable)?;
             continue;
         }
         let device = crate::gpu_runtime::raw_metal_device(&context);
@@ -795,7 +813,10 @@ async fn capture_attempts(
         let forward = redraw.clone();
         let forward_runtime = runtime.clone();
         let _watch = executor_core::spawn_local(async move {
-            forward_runtime.context_after(generation).await;
+            // Either outcome wakes the retry loop: a publication retries
+            // the capture, and a spent rebuild budget is reported by the
+            // loop's own top, which parks on `context_after` again.
+            let _settled = forward_runtime.context_after(generation).await;
             Signal::fire(&forward);
         });
         Signal::wait(redraw).await;

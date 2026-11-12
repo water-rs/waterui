@@ -60,8 +60,8 @@ use core::ptr;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 
-use waterui_core::Environment;
 use waterui_core::layout::Size;
+use waterui_core::{Environment, contract_violation};
 use waterui_text::styled::StyledStr;
 
 use crate::canvas::TextPlacement;
@@ -822,39 +822,42 @@ impl RecordingResources<'_> {
     /// Name a resource in every recording that draws it — an id kept from an
     /// earlier recording is not held by this one.
     ///
-    /// # Panics
-    ///
-    /// When `resource` was registered through another target's
+    /// `None` when `resource` was registered through another target's
     /// [`SceneResources`]: its id means nothing, or something else, on this
-    /// one.
-    pub fn name<I: PlainId>(&mut self, resource: &Registered<I>) -> I {
-        assert!(
-            ptr::eq(
-                resource.entry.table.as_ptr(),
-                Rc::as_ptr(&self.resources.table)
-            ),
-            "a resource registered on another target was named in this recording"
-        );
+    /// one, so it is a contract violation — a debug build panics, a release
+    /// build logs it — and the caller skips the draw command that named it.
+    pub fn name<I: PlainId>(&mut self, resource: &Registered<I>) -> Option<I> {
+        if !ptr::eq(
+            resource.entry.table.as_ptr(),
+            Rc::as_ptr(&self.resources.table),
+        ) {
+            contract_violation!(
+                "a resource registered on another target was named in this recording; the draw command is skipped"
+            );
+            return None;
+        }
         let entry: Rc<dyn HeldEntry> = Rc::<Entry>::clone(&resource.entry);
         self.held.entry(entry_address(&entry)).or_insert(entry);
-        I::from_resource_id(resource.entry.handle.id())
+        Some(I::from_resource_id(resource.entry.handle.id()))
     }
 
     /// Holds every registration in `held` for this recording too — for a
     /// recording that draws another one, such as a picture recorded with
     /// [`Picture::record_with`](crate::backend::Picture::record_with).
     ///
-    /// # Panics
-    ///
-    /// When `held` belongs to another target's [`SceneResources`].
+    /// A `held` that belongs to another target's [`SceneResources`] is a
+    /// contract violation: its ids mean nothing on this target, so the call
+    /// is ignored and this recording holds none of its registrations.
     pub fn hold(&mut self, held: &HeldResources) {
         if held.entries.is_empty() {
             return;
         }
-        assert!(
-            ptr::eq(held.table.as_ptr(), Rc::as_ptr(&self.resources.table)),
-            "a recording naming another target's resources was drawn in this recording"
-        );
+        if !ptr::eq(held.table.as_ptr(), Rc::as_ptr(&self.resources.table)) {
+            contract_violation!(
+                "a recording naming another target's resources was drawn in this recording; its registrations are not held"
+            );
+            return;
+        }
         for entry in held.entries.iter() {
             self.held
                 .entry(entry_address(entry))
@@ -1453,15 +1456,17 @@ pub mod tests {
         let (new_resources, _new_events) = null_resources();
         let old_image = old_resources.image(one_pixel()).expect("old image");
         let mut new_recording = new_resources.recording();
+        // A debug build panics on the contract violation; a release build
+        // logs it and answers `None`.
         let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            new_recording.name(&old_image);
+            new_recording.name(&old_image)
         }));
         assert!(
-            rejected.is_err(),
+            rejected.map_or(true, |named| named.is_none()),
             "a recording on a replacement engine must reject an old resource handle"
         );
         let new_image = new_resources.image(one_pixel()).expect("new image");
-        let _new_id = new_recording.name(&new_image);
+        let _new_id = new_recording.name(&new_image).expect("this target's image");
     }
 
     fn added_images(events: &[Event]) -> Vec<ImageId> {
@@ -1525,7 +1530,11 @@ pub mod tests {
                         .image(one_pixel())
                         .expect("image registration failed")
                 });
-                recorder.image(resources.name(image), bounds, Sampling::Nearest);
+                recorder.image(
+                    resources.name(image).expect("registered on this target"),
+                    bounds,
+                    Sampling::Nearest,
+                );
             } else {
                 self.image = None;
             }
@@ -1765,7 +1774,11 @@ pub mod tests {
             .resources
             .image(one_pixel())
             .expect("image registration");
-        let fresh_id = mount.resources.recording().name(&fresh);
+        let fresh_id = mount
+            .resources
+            .recording()
+            .name(&fresh)
+            .expect("registered on this target");
         assert_ne!(fresh_id, id);
         assert_eq!(added_images(&mount.render()), [fresh_id]);
         assert_eq!(mount.resources.listed(), 1);
@@ -1836,11 +1849,39 @@ pub mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "registered on another target")]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "another target's resources")
+    )]
+    fn a_recording_from_another_target_is_not_held() {
+        let (theirs, _events) = null_resources();
+        let (ours, _events) = null_resources();
+        let image = theirs.image(one_pixel()).expect("image registration");
+        let mut recording = theirs.recording();
+        let _ = recording.name(&image);
+        let foreign = recording.finish();
+        let mut mine = ours.recording();
+        mine.hold(&foreign);
+        assert!(mine.finish().entries.is_empty());
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "registered on another target")
+    )]
     fn a_resource_from_another_target_cannot_be_named() {
         let (theirs, _events) = null_resources();
         let (ours, _events) = null_resources();
         let image = theirs.image(one_pixel()).expect("image registration");
-        let _ = ours.recording().name(&image);
+        let mut recording = ours.recording();
+        assert!(
+            recording.name(&image).is_none(),
+            "a foreign resource has no id on this target"
+        );
+        assert!(
+            recording.finish().entries.is_empty(),
+            "the foreign registration is not held"
+        );
     }
 }

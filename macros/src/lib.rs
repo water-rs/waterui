@@ -1603,15 +1603,22 @@ pub fn widget_intent(args: TokenStream, input: TokenStream) -> TokenStream {
             #hash_lit,
             #record_lit,
             [__wui_intent_ptr, __wui_intent_len] => {
-                let __wui_action: #type_ident = #waterui::widgets::serde_json::from_slice(
+                let __wui_action: #type_ident = match #waterui::widgets::serde_json::from_slice(
                     unsafe {
                         ::core::slice::from_raw_parts(
                             __wui_intent_ptr,
                             __wui_intent_len,
                         )
                     },
-                )
-                .expect("a widget intent's payload always decodes");
+                ) {
+                    ::core::result::Result::Ok(action) => action,
+                    ::core::result::Result::Err(error) => {
+                        #waterui::log::error!(
+                            "a widget intent's payload failed to decode: {error}; the intent is not performed"
+                        );
+                        return;
+                    }
+                };
                 <#type_ident as #waterui::widgets::WidgetIntent>::perform(__wui_action);
             }
         );

@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 use core::time::Duration;
 
 use suiteki::Str;
+use waterui_contract::contract_violation;
 
 use crate::schema::{
     Alignment, Axis, Color, Date, DeclaredWidgetIntent, Font, FontStyle, FontWeight,
@@ -291,13 +292,24 @@ impl Intent {
     /// the concrete `AppIntent` named by the action's kind and calls its
     /// `perform()` with the action's serialized parameters.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics if `action` cannot be serialized as JSON.
+    /// When `action` cannot be serialized as JSON — the action's own
+    /// `Serialize` implementation failed. A debug build panics; a release
+    /// build logs it and the region carries an empty payload, which the
+    /// extension cannot decode into an action.
     pub fn new<I: DeclaredWidgetIntent>(action: &I, label: impl WidgetContent) -> Self {
+        let payload = crate::serde_json::to_string(action).unwrap_or_else(|error| {
+            contract_violation!(
+                "the WidgetIntent action `{}` must serialize as JSON: {error}; \
+                 the region carries an empty payload",
+                <I as DeclaredWidgetIntent>::KIND
+            );
+            String::new()
+        });
         Self::from_action(
             <I as DeclaredWidgetIntent>::KIND,
-            crate::serde_json::to_string(action).expect("a WidgetIntent action always serializes"),
+            payload,
             label.into_node(),
         )
     }
@@ -459,16 +471,10 @@ impl From<ZStack> for Stack {
 impl Date {
     /// The current instant.
     ///
-    /// # Panics
-    /// Panics if the system clock is set before the Unix epoch.
+    /// A system clock set before the Unix epoch gives a negative offset.
     #[must_use]
     pub fn now() -> Self {
-        Self(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock is before the Unix epoch")
-                .as_secs_f64(),
-        )
+        Self::from(std::time::SystemTime::now())
     }
 
     /// An instant `seconds` after the Unix epoch.
@@ -486,11 +492,11 @@ impl Date {
 
 impl From<std::time::SystemTime> for Date {
     fn from(time: std::time::SystemTime) -> Self {
-        Self(
-            time.duration_since(std::time::UNIX_EPOCH)
-                .expect("a widget date before the Unix epoch")
-                .as_secs_f64(),
-        )
+        // An instant before the epoch is a negative offset from it.
+        Self(match time.duration_since(std::time::UNIX_EPOCH) {
+            Ok(after) => after.as_secs_f64(),
+            Err(before) => -before.duration().as_secs_f64(),
+        })
     }
 }
 

@@ -105,30 +105,44 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for WebView {
     }
 }
 
-/// The hosted leaf showing `view`'s `WKWebView`. A page another engine opened
-/// reaches the backend only when that engine's `Hook<WebView>` is missing.
+/// The hosted leaf showing `view`'s `WKWebView`, or `None` when there is no
+/// page to host: the controller failed to open the view (already reported by
+/// `waterui-webview`), or another engine opened a page that reaches the backend
+/// only when that engine's `Hook<WebView>` is missing — reported here.
 #[cfg(hydrolysis_macos_system_webview)]
-pub fn hosted(view: &WebView) -> crate::HostedView {
-    const FOREIGN: &str = "Hydrolysis hosts only pages the system WKWebView controller opened; \
-                           install the custom engine's WebView hook";
-    let handle = view
-        .handle()
-        .downcast_ref::<macos::MacSystemWebViewHandle>()
-        .expect(FOREIGN);
-    crate::HostedView::new(handle.clone())
+pub fn hosted(view: &WebView) -> Option<crate::HostedView> {
+    let handle = view.handle();
+    if handle.is_unavailable() {
+        return None;
+    }
+    let Some(handle) = handle.downcast_ref::<macos::MacSystemWebViewHandle>() else {
+        waterui_core::contract_violation!(
+            "Hydrolysis hosts only pages the system WKWebView controller opened; \
+             install the custom engine's WebView hook; the web view is not drawn"
+        );
+        return None;
+    };
+    Some(crate::HostedView::new(handle.clone()))
 }
 
-/// The hosted leaf showing `view`'s `<iframe>`. A page another engine opened
-/// reaches the backend only when that engine's `Hook<WebView>` is missing.
+/// The hosted leaf showing `view`'s `<iframe>`, or `None` when there is no
+/// page to host: the controller failed to open the view (already reported by
+/// `waterui-webview`), or another engine opened a page that reaches the backend
+/// only when that engine's `Hook<WebView>` is missing — reported here.
 #[cfg(hydrolysis_web_system_webview)]
-pub fn hosted(view: &WebView) -> crate::HostedView {
-    const FOREIGN: &str = "Hydrolysis hosts only pages the web <iframe> controller opened; \
-                           install the custom engine's WebView hook";
-    let handle = view
-        .handle()
-        .downcast_ref::<web::WebIframeHandle>()
-        .expect(FOREIGN);
-    crate::HostedView::new(handle.clone())
+pub fn hosted(view: &WebView) -> Option<crate::HostedView> {
+    let handle = view.handle();
+    if handle.is_unavailable() {
+        return None;
+    }
+    let Some(handle) = handle.downcast_ref::<web::WebIframeHandle>() else {
+        waterui_core::contract_violation!(
+            "Hydrolysis hosts only pages the web <iframe> controller opened; \
+             install the custom engine's WebView hook; the web view is not drawn"
+        );
+        return None;
+    };
+    Some(crate::HostedView::new(handle.clone()))
 }
 
 #[cfg(hydrolysis_macos_system_webview)]

@@ -108,7 +108,7 @@ impl PictureSource for TinyImageSource {
             )
             .expect("image registration failed");
         recorder.image(
-            resources.name(&image),
+            resources.name(&image).expect("registered on this target"),
             Rect::new(0.0, 0.0, 8.0, 8.0),
             Sampling::Nearest,
         );
@@ -127,7 +127,7 @@ impl PictureSource for GlyphSource {
             .expect("font registration failed");
         recorder.glyphs(
             GlyphRun {
-                font: resources.name(&font),
+                font: resources.name(&font).expect("registered on this target"),
                 size: 28.0,
                 coords: Vec::new().into(),
                 glyphs: vec![Glyph {
@@ -241,7 +241,10 @@ fn a_held_source_registers_once_and_a_released_one_registers_fresh() {
             .expect("image registration failed");
         assert_eq!(image_a, image_b);
         let mut names = resources.recording();
-        (names.name(&first), names.name(&image_a))
+        (
+            names.name(&first).expect("registered on this target"),
+            names.name(&image_a).expect("registered on this target"),
+        )
         // Every handle, and the recording that named them, drops here; the
         // table stays.
     };
@@ -257,10 +260,13 @@ fn a_held_source_registers_once_and_a_released_one_registers_fresh() {
     let mut names = resources.recording();
     assert_ne!(
         first_id,
-        names.name(&third),
+        names.name(&third).expect("registered on this target"),
         "a released registration must not come back"
     );
-    assert_ne!(image_id, names.name(&image_c));
+    assert_ne!(
+        image_id,
+        names.name(&image_c).expect("registered on this target")
+    );
 }
 
 /// Content that draws nothing on its first two frames and first draws an
@@ -286,7 +292,7 @@ impl SceneContent for LateImage {
                     .expect("image registration failed")
             });
             recorder.image(
-                resources.name(image),
+                resources.name(image).expect("registered on this target"),
                 Rect::new(0.0, 0.0, 8.0, 8.0),
                 Sampling::Nearest,
             );

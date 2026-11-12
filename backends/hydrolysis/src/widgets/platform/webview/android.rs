@@ -38,7 +38,7 @@ use waterui_webview::{
     ASSET_HTTPS_ORIGIN, AssetServer, BackendEvent, Cookie, CustomWebViewController,
     DOCUMENT_START_SCRIPT, DocumentScripts, NavigationPolicy, NavigationRequest,
     ScriptInjectionTime, ScriptMessageHandler, Url, UserScript, WatcherGuard, WatcherSet,
-    WebViewConfig, WebViewError, WebViewEvent, WebViewHandle, assets, bridge,
+    WebViewConfig, WebViewError, WebViewEvent, WebViewHandle, WebViewOpenError, assets, bridge,
 };
 
 use crate::runner::android::jni::{JniError, get_string, guard, guard_val};
@@ -99,14 +99,13 @@ impl WebViewMethods {
     }
 }
 
-/// `panic!` carrying the pending Java exception's own `toString` when there
-/// is one — the named Kotlin errors ("lacks `WEB_MESSAGE_LISTENER`", an
-/// unbound session, a non-Activity context) must reach the panic text. The
+/// The pending Java exception's own `toString` when there is one, else the
+/// JNI error — the named Kotlin errors ("lacks `WEB_MESSAGE_LISTENER`", an
+/// unbound session, a non-Activity context) must reach the failure text. The
 /// exception is cleared so the guard's `IllegalStateException` stays the
 /// pending report.
-fn panic_with_java_detail(env: &mut Env<'_>, context: &str, error: &jni::errors::Error) -> ! {
-    let detail = env
-        .exception_occurred()
+fn java_detail(env: &mut Env<'_>, error: &jni::errors::Error) -> String {
+    env.exception_occurred()
         .and_then(|throwable| {
             env.exception_clear();
             env.call_method(
@@ -123,19 +122,23 @@ fn panic_with_java_detail(env: &mut Env<'_>, context: &str, error: &jni::errors:
                     .and_then(|string| string.try_to_string(env).ok())
             })
         })
-        .unwrap_or_else(|| error.to_string());
-    panic!("android webview: {context} failed: {detail}");
+        .unwrap_or_else(|| error.to_string())
 }
 
-/// The error path of a `JavaVM::with_local_frame` call: re-acquires the
-/// attached thread's env to read the pending Java exception's own `toString`
-/// into the panic. When no env exists — the caller ran on an unattached
-/// thread, a contract breach — the JNI error is the panic text.
+/// The message for the error path of a `JavaVM::with_local_frame` call:
+/// re-acquires the attached thread's env to read the pending Java exception's
+/// own `toString` into it. When no env exists — the caller ran on an
+/// unattached thread, a contract breach — the JNI error is the detail.
+fn jni_failure(vm: &JavaVM, context: &str, error: &jni::errors::Error) -> String {
+    let detail: Result<String, jni::errors::Error> =
+        vm.with_top_local_frame(|env| Ok(java_detail(env, error)));
+    let detail = detail.unwrap_or_else(|_| error.to_string());
+    format!("android webview: {context} failed: {detail}")
+}
+
+/// `panic!` with [`jni_failure`]'s message.
 fn panic_for_jni_error(vm: &JavaVM, context: &str, error: &jni::errors::Error) -> ! {
-    let _: Result<(), jni::errors::Error> = vm.with_top_local_frame(|env| {
-        panic_with_java_detail(env, context, error);
-    });
-    panic!("android webview: {context} failed: {error}");
+    panic!("{}", jni_failure(vm, context, error));
 }
 
 /// The Rust half of one mounted `HydrolysisWebView`. Kotlin holds a leaked
@@ -369,7 +372,7 @@ impl AndroidSystemWebViewController {
 }
 
 impl CustomWebViewController for AndroidSystemWebViewController {
-    fn open(&self, config: WebViewConfig) -> impl WebViewHandle {
+    fn open(&self, config: WebViewConfig) -> Result<impl WebViewHandle, WebViewOpenError> {
         let instance = self.next_instance.get() + 1;
         self.next_instance.set(instance);
 
@@ -407,7 +410,7 @@ impl CustomWebViewController for AndroidSystemWebViewController {
                 .with_local_frame::<_, _, jni::errors::Error>(16, |env| {
                     self.create_wrapper(env, instance, native_handle, asset_server)
                 })
-                .unwrap_or_else(|error| {
+                .map_err(|error| {
                     // Keep the leak surface honest on the failure path too.
                     // SAFETY: `native_handle` and `asset_server` were
                     // `Box::into_raw`'d above; this is their only free short
@@ -426,8 +429,12 @@ impl CustomWebViewController for AndroidSystemWebViewController {
                             drop(Box::from_raw(asset_server as *mut AssetServerHandle));
                         }
                     }
-                    panic_for_jni_error(&self.vm, "HydrolysisWebView.create", &error)
-                }),
+                    WebViewOpenError::Engine(jni_failure(
+                        &self.vm,
+                        "HydrolysisWebView.create",
+                        &error,
+                    ))
+                })?,
         );
         *shared.wrapper.borrow_mut() = Some(Rc::clone(&wrapper));
 
@@ -444,12 +451,19 @@ impl CustomWebViewController for AndroidSystemWebViewController {
         };
         // The admission rules and the creation-time scripts reach Kotlin
         // before anything can navigate the view.
-        handle.inner.call_str_array(
-            WebViewMethodId::SetBridgeOrigins,
-            &handle.inner.shared.origin_rules,
-        );
-        handle.inner.push_document_start_scripts();
+        // A failure drops `handle`, whose `Drop` releases the Kotlin wrapper.
         handle
+            .inner
+            .try_call_str_array(
+                WebViewMethodId::SetBridgeOrigins,
+                &handle.inner.shared.origin_rules,
+            )
+            .map_err(WebViewOpenError::Engine)?;
+        handle
+            .inner
+            .try_push_document_start_scripts()
+            .map_err(WebViewOpenError::Engine)?;
+        Ok(handle)
     }
 
     fn asset_origin(&self) -> Option<Url> {
@@ -523,7 +537,7 @@ struct HandleInner {
 
 /// The local-frame capacity every wrapper call runs under — the fixed
 /// arguments plus a margin. The script-array loop is unbounded, so
-/// `call_str_array` adds the array length on top of this.
+/// `try_call_str_array` adds the array length on top of this.
 const LOCAL_FRAME_CAPACITY: usize = 32;
 
 impl HandleInner {
@@ -547,13 +561,27 @@ impl HandleInner {
         f: impl FnOnce(&mut Env<'_>) -> Result<T, jni::errors::Error>,
         context: &str,
     ) -> T {
+        self.try_jni(locals, dead_value, f, context)
+            .unwrap_or_else(|message| panic!("{message}"))
+    }
+
+    /// [`jni`](Self::jni), answering a failed call as its message instead of
+    /// panicking — for the calls `open` makes, where a failure is the engine
+    /// refusing the view rather than a broken contract.
+    fn try_jni<T>(
+        &self,
+        locals: usize,
+        dead_value: T,
+        f: impl FnOnce(&mut Env<'_>) -> Result<T, jni::errors::Error>,
+        context: &str,
+    ) -> Result<T, String> {
         if self.shared.pending.borrow().dead() {
-            return dead_value;
+            return Ok(dead_value);
         }
         self.shared
             .vm
             .with_local_frame(locals, f)
-            .unwrap_or_else(|error| panic_for_jni_error(&self.shared.vm, context, &error))
+            .map_err(|error| jni_failure(&self.shared.vm, context, &error))
     }
 
     /// `call_method_unchecked` on the wrapper through the cached table.
@@ -632,28 +660,25 @@ impl HandleInner {
         );
     }
 
-    /// Push a `String[]` argument to a one-argument setter. The frame
-    /// covers the array itself plus one local per element — the list is
-    /// unbounded, so a fixed capacity would overflow on enough scripts.
-    fn call_str_array(&self, method: WebViewMethodId, values: &[String]) {
+    /// Push a `String[]` argument to a one-argument setter, answering a
+    /// failure as its message. The frame covers the array itself plus one
+    /// local per element — the list is unbounded, so a fixed capacity would
+    /// overflow on enough scripts.
+    fn try_call_str_array(&self, method: WebViewMethodId, values: &[String]) -> Result<(), String> {
         let id = self.methods.id(method);
         let locals = LOCAL_FRAME_CAPACITY + values.len();
-        self.jni(
+        self.try_jni(
             locals,
             (),
             |env| {
-                let array = env
-                    .new_object_array(
-                        jint::try_from(values.len()).expect("a script list fits a jint"),
-                        jni_str!("java/lang/String"),
-                        JObject::null(),
-                    )
-                    .expect("android webview: allocating a string array failed");
+                let array = env.new_object_array(
+                    jint::try_from(values.len()).expect("a script list fits a jint"),
+                    jni_str!("java/lang/String"),
+                    JObject::null(),
+                )?;
                 for (index, value) in values.iter().enumerate() {
                     let value = env.new_string(value).expect("Java-safe UTF-8");
-                    array
-                        .set_element(env, index, &value)
-                        .expect("android webview: writing a string array failed");
+                    array.set_element(env, index, &value)?;
                 }
                 // SAFETY: `id` was resolved for the wrapper class and the
                 // table entry's signature declares `([Ljava/lang/String;)V`.
@@ -668,7 +693,7 @@ impl HandleInner {
                 .map(|_| ())
             },
             WEBVIEW_METHODS[method as usize].name,
-        );
+        )
     }
 
     /// Push the document-start script list — the transport, the shared bridge
@@ -676,6 +701,13 @@ impl HandleInner {
     /// which rebuilds its `ScriptHandler` set under the current origin rules.
     /// `rebuildDocumentStartScripts` on this side of JNI.
     fn push_document_start_scripts(&self) {
+        self.try_push_document_start_scripts()
+            .unwrap_or_else(|message| panic!("{message}"));
+    }
+
+    /// [`push_document_start_scripts`](Self::push_document_start_scripts),
+    /// answering a failure as its message.
+    fn try_push_document_start_scripts(&self) -> Result<(), String> {
         let sources: Vec<String> = [
             TRANSPORT_SCRIPT.to_string(),
             DOCUMENT_START_SCRIPT.to_string(),
@@ -689,7 +721,7 @@ impl HandleInner {
             }
         }))
         .collect();
-        self.call_str_array(WebViewMethodId::SetDocumentStartScripts, &sources);
+        self.try_call_str_array(WebViewMethodId::SetDocumentStartScripts, &sources)
     }
 
     /// Register `pending` under a fresh call id and issue `call` against

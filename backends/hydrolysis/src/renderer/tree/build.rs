@@ -379,6 +379,21 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
+        let view = match view.downcast::<IgnorableMetadata<GlassBackground>>() {
+            Ok(meta) => {
+                let IgnorableMetadata {
+                    content,
+                    value: GlassBackground(glass),
+                } = *meta;
+                return Self::build_wrapper(
+                    WrapperEffect::Glass(crate::renderer::glass::GlassEffect::new(glass)),
+                    content,
+                    env,
+                    renderer,
+                );
+            }
+            Err(view) => view,
+        };
         let view = match view.downcast::<IgnorableMetadata<MaterialGroup>>() {
             // The modifier takes no value: the wrapper's own render identity is
             // the group scope its member materials join at flush.

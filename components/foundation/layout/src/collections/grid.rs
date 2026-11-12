@@ -377,16 +377,18 @@ pub struct Grid {
 impl Grid {
     /// Creates a new Grid.
     ///
-    /// - `columns`: The number of columns in the grid. Must be greater than 0.
+    /// - `columns`: The number of columns in the grid. Must be greater than 0;
+    ///   0 is a contract violation — a debug build panics, a release build
+    ///   logs it and uses 1 column.
     /// - `rows`: A tuple of `GridRow` views.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `columns` is 0.
     pub fn new(columns: usize, rows: impl IntoIterator<Item = GridRow>) -> Self {
+        let columns = NonZeroUsize::new(columns).unwrap_or_else(|| {
+            contract_violation!("Grid columns must be greater than 0; using 1 column");
+            NonZeroUsize::MIN
+        });
         Self {
             layout: GridLayout::new(
-                NonZeroUsize::new(columns).expect("Grid columns must be greater than 0"),
+                columns,
                 Size::new(8.0, 8.0), // Default spacing
                 Alignment::Center,   // Default alignment
             ),
@@ -527,6 +529,16 @@ mod tests {
         fn priority(&self) -> i32 {
             0
         }
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "Grid columns must be greater than 0")
+    )]
+    fn a_zero_column_grid_uses_one_column() {
+        let grid = Grid::new(0, []);
+        assert_eq!(grid.layout.columns.get(), 1);
     }
 
     #[test]

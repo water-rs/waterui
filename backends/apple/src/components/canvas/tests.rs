@@ -1836,7 +1836,9 @@ mod render {
             .expect("Core Text lays the text out")
             .expect("a text with lines draws");
         let mut names = resources.recording();
-        let layout = names.name(registered.layout());
+        let layout = names
+            .name(registered.layout())
+            .expect("registered on this target");
         let mut content = record(|r| {
             r.fill(Rect::new(0., 0., 480., 40.), rgb(0.08, 0.08, 0.1));
             r.text(layout, Affine::translate((10., 8.)));

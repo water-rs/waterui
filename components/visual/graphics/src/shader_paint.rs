@@ -26,7 +26,7 @@ use nami::watcher::BoxWatcherGuard;
 use nami::{Computed, Signal, SignalExt};
 use waterui_core::layout::StretchAxis;
 use waterui_core::reactive::signal::IntoComputed;
-use waterui_core::{Environment, View};
+use waterui_core::{Environment, View, contract_violation};
 
 use crate::gpu::{Context, Frame, GpuContent, GpuContentView, RedrawHandle};
 
@@ -160,13 +160,15 @@ impl Posting {
 
     fn post(&self) {
         let uniforms = self.uniforms.snapshot();
-        assert!(
-            uniforms.len() <= UNIFORM_CAPACITY,
-            "shader paint accepts at most {UNIFORM_CAPACITY} uniform floats, got {}",
-            uniforms.len()
-        );
+        if uniforms.len() > UNIFORM_CAPACITY {
+            contract_violation!(
+                "shader paint accepts at most {UNIFORM_CAPACITY} uniform floats, got {}; the extra floats are dropped",
+                uniforms.len()
+            );
+        }
+        let kept = uniforms.len().min(UNIFORM_CAPACITY);
         let mut params = [0.0; UNIFORM_CAPACITY];
-        params[..uniforms.len()].copy_from_slice(&uniforms);
+        params[..kept].copy_from_slice(&uniforms[..kept]);
         self.shared.posted.store(Arc::new(Posted {
             animated: self.animated.snapshot(),
             params,
@@ -285,10 +287,9 @@ impl GpuContent for ShaderContent {
     }
 
     fn render(&mut self, frame: &mut Frame<'_>) {
-        let gpu = self
-            .gpu
-            .as_ref()
-            .expect("shader paint rendered before setup");
+        let gpu = self.gpu.as_ref().expect(
+            "the engine runs `GpuContent::setup`, which installs `gpu`, before every render",
+        );
         let posted = self.shared.posted.load();
         #[expect(clippy::cast_precision_loss, reason = "texture sides fit f32 exactly")]
         let globals = [
@@ -390,12 +391,22 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "at most 64 uniform floats")]
-    fn too_many_uniforms_are_refused() {
-        let _ = Posting::new(
+    #[cfg_attr(debug_assertions, should_panic(expected = "at most 64 uniform floats"))]
+    fn too_many_uniforms_are_cut_to_the_capacity() {
+        let shared = Arc::new(Shared::default());
+        let mut uniforms = vec![1.0_f32; 65];
+        uniforms[64] = 9.0;
+        let _posting = Posting::new(
             nami::constant(false).computed(),
-            nami::constant(vec![0.0_f32; 65]).computed(),
-            Arc::new(Shared::default()),
+            nami::constant(uniforms).computed(),
+            Arc::clone(&shared),
+        );
+        let posted = shared.posted.load();
+        assert!(
+            posted
+                .params
+                .iter()
+                .all(|param| param.to_bits() == 1.0_f32.to_bits())
         );
     }
 }

@@ -43,14 +43,14 @@ use crate::theme::{
 };
 
 /// The window, in points.
-const WIDTH: u32 = 160;
-const HEIGHT: u32 = 120;
+pub(super) const WIDTH: u32 = 160;
+pub(super) const HEIGHT: u32 = 120;
 /// Device pixels per point.
 const DISPLAY_SCALE: f64 = 2.0;
 
-const GLASS_SHADER: MaterialShader = MaterialShader::new(0);
+pub(super) const GLASS_SHADER: MaterialShader = MaterialShader::new(0);
 const OTHER_SHADER: MaterialShader = MaterialShader::new(1);
-const GLASS: CaptureClass = CaptureClass::new(0);
+pub(super) const GLASS: CaptureClass = CaptureClass::new(0);
 const FLAT: CaptureClass = CaptureClass::new(1);
 const UNION_GLASS: CaptureClass = CaptureClass::new(2);
 /// `UNION_GLASS`'s logical smoothing, in points.
@@ -62,7 +62,7 @@ const TINT_WGSL: &str = "fn backdrop_effect(px: BackdropPixel, params: array<vec
 
 /// The chrome test plan: `GLASS` groups `Shared`, `FLAT` is `Solo`, and two
 /// registered shaders.
-fn glass_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
+pub(super) fn glass_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
     ChromePlan {
         shaders: vec![
             (GLASS_SHADER, BackdropShaderSource::wgsl(TINT_WGSL)),
@@ -169,7 +169,7 @@ fn rendered(
 }
 
 /// The chrome member layers the window mounted, in `visit` order.
-fn chrome_layers(runtime: &HeadlessRuntime) -> Vec<cherenkov::LayerId> {
+pub(super) fn chrome_layers(runtime: &HeadlessRuntime) -> Vec<cherenkov::LayerId> {
     use crate::renderer::mount::layers::{LayerVisitor, visit};
     struct Members(Vec<cherenkov::LayerId>);
     impl<E: crate::text::TextEngine> LayerVisitor<E> for Members {
@@ -189,7 +189,7 @@ fn chrome_layers(runtime: &HeadlessRuntime) -> Vec<cherenkov::LayerId> {
 }
 
 /// The same walk over the mirror mount.
-fn mirror_chrome_layers<E: crate::text::TextEngine>(
+pub(super) fn mirror_chrome_layers<E: crate::text::TextEngine>(
     renderer: &crate::renderer::HydrolysisRenderer<E>,
 ) -> Vec<cherenkov::LayerId> {
     use crate::renderer::mount::layers::{LayerVisitor, visit};
@@ -251,7 +251,7 @@ fn chrome_cells<E: crate::text::TextEngine>(
 }
 
 /// The window's chrome group table on the GPU mount.
-fn chrome_mount(
+pub(super) fn chrome_mount(
     runtime: &HeadlessRuntime,
 ) -> &crate::renderer::mount::backdrop::ChromeBackdropGroups<
     cherenkov::BackdropGroup,
@@ -262,7 +262,10 @@ fn chrome_mount(
 }
 
 /// The shared group `member` samples — `None` while it holds no membership.
-fn member_group(runtime: &HeadlessRuntime, member: cherenkov::LayerId) -> cherenkov::BackdropId {
+pub(super) fn member_group(
+    runtime: &HeadlessRuntime,
+    member: cherenkov::LayerId,
+) -> cherenkov::BackdropId {
     chrome_mount(runtime)
         .chrome_group(member)
         .expect("the member holds a group membership")
@@ -280,7 +283,7 @@ fn mirror_frame(
 }
 
 /// One frame through the mirror mount in `env`.
-fn mirror_frame_in(
+pub(super) fn mirror_frame_in(
     renderer: &mut crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
     env: &Environment,
     view: waterui_core::AnyView,
@@ -331,7 +334,7 @@ fn mirrored(
 }
 
 /// The layer `id`'s committed node in the mirror.
-fn mirrored_node(
+pub(super) fn mirrored_node(
     renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
     id: cherenkov::LayerId,
 ) -> std::cell::Ref<'_, cherenkov::LayerNode> {

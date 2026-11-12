@@ -41,7 +41,7 @@
 use core::any::Any;
 use nami::{Binding, Computed, SignalExt};
 use waterui_core::{
-    AnyView, Environment, IntoSignalF32, View,
+    AnyView, Environment, IntoSignalF32, View, contract_violation,
     handler::{AnyViewBuilder, ViewBuilder},
     plugin::Plugin,
 };
@@ -381,9 +381,11 @@ impl Label {
     /// ordinary UI rendering and hydrolysis popup menus, but native semantic
     /// menus currently only project [`SystemIcon`].
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics for [`Label::new`] labels with arbitrary visual content.
+    /// Calling it on a [`Label::new`] label with arbitrary visual content is
+    /// a contract violation: a debug build panics, a release build logs it
+    /// and ignores the call.
     /// `icon` is a value rather than a builder so a [`SystemIcon`] stays
     /// recognizable: the semantic identity of an SF Symbol is what lets Apple
     /// chrome render it natively, and a closure would erase it. Size an icon by
@@ -399,9 +401,9 @@ impl Label {
                 ..
             } => *semantic_icon = Some(icon),
             LabelContent::Custom { .. } => {
-                panic!(
-                    "Label::icon requires a semantic text label; compose icons inside Label::new content"
-                )
+                contract_violation!(
+                    "Label::icon requires a semantic text label; compose icons inside Label::new content; the call is ignored"
+                );
             }
         }
         self
@@ -417,9 +419,11 @@ impl Label {
     /// `waterui-icons-fontawesome7`. See [`SystemIcon`] for the full
     /// rationale.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics for [`Label::new`] labels with arbitrary visual content.
+    /// Calling it on a [`Label::new`] label with arbitrary visual content is
+    /// a contract violation: a debug build panics, a release build logs it
+    /// and ignores the call.
     #[must_use]
     pub fn system_icon(mut self, icon: SystemIcon) -> Self {
         match &mut self.content {
@@ -428,9 +432,9 @@ impl Label {
                 ..
             } => *semantic_icon = Some(LabelIcon::system(icon)),
             LabelContent::Custom { .. } => {
-                panic!(
-                    "Label::system_icon requires a semantic text label; compose icons inside Label::new content"
-                )
+                contract_violation!(
+                    "Label::system_icon requires a semantic text label; compose icons inside Label::new content; the call is ignored"
+                );
             }
         }
         self
@@ -438,17 +442,19 @@ impl Label {
 
     /// Places the icon on the trailing side.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics for [`Label::new`] labels with arbitrary visual content.
+    /// Calling it on a [`Label::new`] label with arbitrary visual content is
+    /// a contract violation: a debug build panics, a release build logs it
+    /// and ignores the call.
     #[must_use]
     pub fn trailing(mut self) -> Self {
         match &mut self.content {
             LabelContent::Semantic { icon_position, .. } => *icon_position = IconPosition::Trailing,
             LabelContent::Custom { .. } => {
-                panic!(
-                    "Label::trailing requires a semantic text label; arrange Label::new content directly"
-                )
+                contract_violation!(
+                    "Label::trailing requires a semantic text label; arrange Label::new content directly; the call is ignored"
+                );
             }
         }
         self
@@ -456,17 +462,19 @@ impl Label {
 
     /// Places the icon on the leading side.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics for [`Label::new`] labels with arbitrary visual content.
+    /// Calling it on a [`Label::new`] label with arbitrary visual content is
+    /// a contract violation: a debug build panics, a release build logs it
+    /// and ignores the call.
     #[must_use]
     pub fn leading(mut self) -> Self {
         match &mut self.content {
             LabelContent::Semantic { icon_position, .. } => *icon_position = IconPosition::Leading,
             LabelContent::Custom { .. } => {
-                panic!(
-                    "Label::leading requires a semantic text label; arrange Label::new content directly"
-                )
+                contract_violation!(
+                    "Label::leading requires a semantic text label; arrange Label::new content directly; the call is ignored"
+                );
             }
         }
         self
@@ -476,9 +484,11 @@ impl Label {
     ///
     /// Signal changes invalidate only the label stack's layout.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics for [`Label::new`] labels with arbitrary visual content.
+    /// Calling it on a [`Label::new`] label with arbitrary visual content is
+    /// a contract violation: a debug build panics, a release build logs it
+    /// and ignores the call.
     #[must_use]
     pub fn spacing(mut self, spacing: impl IntoSignalF32 + 'static) -> Self {
         match &mut self.content {
@@ -487,9 +497,9 @@ impl Label {
                 ..
             } => *label_spacing = spacing.into_signal_f32().computed(),
             LabelContent::Custom { .. } => {
-                panic!(
-                    "Label::spacing requires a semantic text label; space Label::new content directly"
-                )
+                contract_violation!(
+                    "Label::spacing requires a semantic text label; space Label::new content directly; the call is ignored"
+                );
             }
         }
         self
@@ -500,10 +510,11 @@ impl Label {
     /// This affects only the on-screen label text. The semantic text exposed to
     /// controls and assistive technology remains unchanged.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics for [`Label::new`] labels because arbitrary content owns its own
-    /// visual styling.
+    /// Calling it on a [`Label::new`] label is a contract violation, because
+    /// arbitrary content owns its own visual styling: a debug build panics, a
+    /// release build logs it and ignores the call.
     #[must_use]
     pub fn font(mut self, font: impl Into<Font>) -> Self {
         match &mut self.content {
@@ -511,9 +522,9 @@ impl Label {
                 font: label_font, ..
             } => *label_font = Some(font.into()),
             LabelContent::Custom { .. } => {
-                panic!(
-                    "Label::font requires a semantic text label; style Label::new content directly"
-                )
+                contract_violation!(
+                    "Label::font requires a semantic text label; style Label::new content directly; the call is ignored"
+                );
             }
         }
         self
@@ -699,7 +710,7 @@ impl View for Label {
     fn body(self, env: &waterui_core::Environment) -> impl View {
         let mode = self.effective_display_mode(env);
         if matches!(mode, LabelDisplayMode::Automatic) {
-            panic!("Label::effective_display_mode must resolve Automatic before rendering");
+            unreachable!("Label::effective_display_mode never answers Automatic");
         }
 
         let Self { content, .. } = self;
@@ -720,13 +731,17 @@ impl View for Label {
                 match mode {
                     LabelDisplayMode::TitleOnly => AnyView::new(text),
                     LabelDisplayMode::IconOnly => AnyView::new(
-                        icon.expect("LabelDisplayMode::IconOnly requires an icon when rendered")
-                            .view
-                            .build(),
+                        icon.expect(
+                            "effective_display_mode answers IconOnly only for a label with an icon",
+                        )
+                        .view
+                        .build(),
                     ),
                     LabelDisplayMode::TitleAndIcon => {
                         let icon = icon
-                            .expect("LabelDisplayMode::TitleAndIcon requires an icon when rendered")
+                            .expect(
+                                "effective_display_mode answers TitleAndIcon only for a label with an icon",
+                            )
                             .view
                             .build();
                         match icon_position {
@@ -740,9 +755,7 @@ impl View for Label {
                     }
                     LabelDisplayMode::Hidden => AnyView::new(()),
                     LabelDisplayMode::Automatic => {
-                        panic!(
-                            "Label::effective_display_mode must resolve Automatic before rendering"
-                        );
+                        unreachable!("Label::effective_display_mode never answers Automatic");
                     }
                 }
             }
@@ -750,7 +763,7 @@ impl View for Label {
                 LabelDisplayMode::TitleOnly | LabelDisplayMode::TitleAndIcon => view.build(),
                 LabelDisplayMode::Hidden | LabelDisplayMode::IconOnly => AnyView::new(()),
                 LabelDisplayMode::Automatic => {
-                    panic!("Label::effective_display_mode must resolve Automatic before rendering");
+                    unreachable!("Label::effective_display_mode never answers Automatic");
                 }
             },
         }
@@ -839,6 +852,34 @@ mod tests {
             .snapshot()
             .to_plain()
             .into_string()
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "Label::trailing requires a semantic text label")
+    )]
+    fn icon_placement_on_arbitrary_content_is_ignored() {
+        let env = test_env();
+        let label = super::Label::new("greeting", || waterui_text::text("Visual")).trailing();
+
+        // Release outcome: the call is ignored and the label is unchanged.
+        assert!(label.has_custom_content());
+        assert_eq!(semantic_plain(&label, &env), "Hello");
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "Label::font requires a semantic text label")
+    )]
+    fn font_on_arbitrary_content_is_ignored() {
+        let env = test_env();
+        let label = super::Label::new("greeting", || waterui_text::text("Visual"))
+            .font(waterui_text::font::Body);
+
+        assert!(label.has_custom_content());
+        assert_eq!(semantic_plain(&label, &env), "Hello");
     }
 
     #[test]
