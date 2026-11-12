@@ -25,6 +25,9 @@
 //! A platform implements [`SystemPlanes`] and realizes the ordered stack of
 //! engine parts and promoted planes a [`Composition`] describes.
 
+#[cfg(not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")))]
+use core::convert::Infallible;
+
 use kurbo::{Affine, Rect, Vec2};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -1066,7 +1069,7 @@ pub type Hosted = NoHosted;
 /// no value exists, so no layer there hosts one.
 #[cfg(not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")))]
 #[derive(Debug)]
-pub enum NoHosted {}
+pub struct NoHosted(Infallible);
 
 /// A layer's hosted content: the platform object and its extent.
 #[derive(Debug)]
@@ -1327,7 +1330,7 @@ pub type Platform = NoPlanes;
 /// no value exists, so a surface there never has planes.
 #[cfg(not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")))]
 #[derive(Debug)]
-pub enum NoPlanes {}
+pub struct NoPlanes(Infallible);
 
 #[cfg(not(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32")))]
 impl Compositor for NoPlanes {

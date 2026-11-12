@@ -26,7 +26,6 @@ use super::popup_windows::find_by_label;
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
 use crate::platform::{InputEvent, KeyCode, KeyState, Modifiers, PointerButton, PointerKind};
-use crate::theme::WidgetTheme;
 
 const WINDOW: (u32, u32) = (320, 240);
 
@@ -222,9 +221,7 @@ fn command_shortcut_renders_a_trailing_aligned_hint() {
         })
         .collect();
     let snapshot = capture_until_settled(&mut runtime);
-    let row_inset = MinimalTestTheme::default()
-        .text_context_menu_metrics()
-        .horizontal_padding;
+    let row_inset = MinimalTestTheme::menu_layout().horizontal_padding;
     let (menu_frame, _) = runtime
         .context_menu_presentation_frames()
         .expect("the drawn presentation is open");

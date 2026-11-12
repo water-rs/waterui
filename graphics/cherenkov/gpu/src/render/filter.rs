@@ -528,10 +528,9 @@ impl Registry {
     /// filter no frame runs wakes nothing.
     pub fn set_surfaces(&self, uses: &FxHashMap<FilterKey, Vec<CompletionWaker>>) {
         for (id, entry) in &self.entries {
-            entry.wakes.set(
-                uses.get(id).map(Vec::as_slice).unwrap_or_default(),
-                &entry.dirty,
-            );
+            entry
+                .wakes
+                .set(uses.get(id).map_or_default(Vec::as_slice), &entry.dirty);
         }
     }
 
