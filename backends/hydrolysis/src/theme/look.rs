@@ -877,7 +877,7 @@ where
 /// parts that have no live state of their own draw into a widget's own
 /// recording.
 #[cfg(hydrolysis_runtime)]
-pub(crate) fn record_at_rest(part: &dyn CustomPart<()>, recorder: &mut Recorder, frame: Rect) {
+pub fn record_at_rest(part: &dyn CustomPart<()>, recorder: &mut Recorder, frame: Rect) {
     part.realize(&Inputs::at_rest(frame, InteractionState::empty(), &()))
         .record(recorder, frame);
 }

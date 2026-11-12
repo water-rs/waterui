@@ -1522,16 +1522,26 @@ pub fn refresh_table_slot_baseline<E: crate::text::TextEngine>(
     }
 }
 
+/// The cells of a table a frame shows: the rows and columns in view.
+#[derive(Debug, Clone, Copy)]
+pub struct VisibleCells {
+    pub rows: VisibleIndexWindow,
+    pub columns: VisibleColumnWindow,
+}
+
 pub fn update_table_slot_visible_cell_widths<E: crate::text::TextEngine>(
     columns: &[TableColumn],
     slot: &mut LazyTableSlot,
-    row_window: VisibleIndexWindow,
-    col_window: VisibleColumnWindow,
+    visible: VisibleCells,
     state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
     metrics: crate::theme::TableMetrics,
 ) {
+    let VisibleCells {
+        rows: row_window,
+        columns: col_window,
+    } = visible;
     for (column_index, column) in columns
         .iter()
         .enumerate()

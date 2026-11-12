@@ -2353,7 +2353,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
                     ctx,
                     state,
                     row_id,
-                    key,
+                    &key,
                     EditControl::MoveUp,
                     look.move_up(),
                     rect,
@@ -2375,7 +2375,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
                     ctx,
                     state,
                     row_id,
-                    key,
+                    &key,
                     EditControl::MoveDown,
                     look.move_down(),
                     rect,
@@ -2400,7 +2400,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
                 ctx,
                 state,
                 row_id,
-                delete_key,
+                &delete_key,
                 EditControl::Delete,
                 look.delete(),
                 delete_rect,
@@ -2673,7 +2673,7 @@ fn realize_control<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<ListRenderState<E>>>,
     row_id: ListItemId,
-    key: crate::renderer::InteractionKey,
+    key: &crate::renderer::InteractionKey,
     control: EditControl,
     chrome: &Chrome,
     bounds: kurbo::Rect,
@@ -2683,7 +2683,7 @@ fn realize_control<E: crate::text::TextEngine>(
     let (_, press_slot, handles) =
         ctx.renderer_mut()
             .bind_live_chrome_target(key.clone(), target, env, false, chrome);
-    let flags = ctx.renderer_mut().reported_interaction_state(&key);
+    let flags = ctx.renderer_mut().reported_interaction_state(key);
     let parts = {
         let state_ref = state.borrow();
         let mut gestures = state_ref.row_gestures.borrow_mut();

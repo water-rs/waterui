@@ -11,9 +11,9 @@ use crate::renderer::lazy::{
 #[cfg(feature = "accessibility")]
 use crate::renderer::lazy::{VisibleColumnWindow, VisibleIndexWindow};
 use crate::renderer::{
-    HydroNativeView, HydroState, MeasuredTableMetrics, RenderContext, VisibleSubviewCache,
-    WidgetRenderContext, measure_table_metrics, refresh_table_slot_baseline, table_data_cell_rect,
-    table_header_cell_rect, update_table_slot_visible_cell_widths,
+    HydroNativeView, HydroState, MeasuredTableMetrics, RenderContext, VisibleCells,
+    VisibleSubviewCache, WidgetRenderContext, measure_table_metrics, refresh_table_slot_baseline,
+    table_data_cell_rect, table_header_cell_rect, update_table_slot_visible_cell_widths,
 };
 use crate::scroll::ScrollHandle;
 use crate::theme::TableLook;
@@ -295,8 +295,10 @@ pub fn table_accessibility<E: crate::text::TextEngine>(
                 update_table_slot_visible_cell_widths(
                     &columns,
                     &mut slot,
-                    row_window,
-                    column_window,
+                    VisibleCells {
+                        rows: row_window,
+                        columns: column_window,
+                    },
                     renderer.state_mut(),
                     env,
                     theme,
@@ -577,8 +579,10 @@ pub fn render_table_parts<E: crate::text::TextEngine>(
         update_table_slot_visible_cell_widths(
             &columns,
             &mut slot,
-            row_window,
-            column_window,
+            VisibleCells {
+                rows: row_window,
+                columns: column_window,
+            },
             ctx.state_mut(),
             env,
             &theme,

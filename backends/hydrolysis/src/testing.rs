@@ -118,10 +118,11 @@ pub fn plain_menu_look() -> crate::theme::MenuLook {
     )
 }
 
-/// A list look drawing nothing: rows at least 56 points tall inset 16 by 10
-/// points, with 16-point separator insets, a 20-point move control, a
-/// 26-point delete control and section headers 48 and footers 40 points
-/// tall. A swipe dismisses at half the row's width, a reorder drag steps at
+/// A list look drawing nothing.
+///
+/// Rows are at least 56 points tall inset 16 by 10 points, with 16-point
+/// separator insets, a 20-point move control, a 26-point delete control and
+/// section headers 48 and footers 40 points tall. A swipe dismisses at half the row's width, a reorder drag steps at
 /// half a slot, a drag begins after 8 points and rows settle over 15
 /// milliseconds.
 #[must_use]
