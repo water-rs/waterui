@@ -106,7 +106,7 @@ pub const fn plain_navigation_metrics() -> crate::theme::NavigationMetrics {
 /// The page transition of a test style: 450 milliseconds on the standard
 /// easing.
 #[must_use]
-pub fn plain_navigation_motion() -> crate::theme::NavigationMotion {
+pub const fn plain_navigation_motion() -> crate::theme::NavigationMotion {
     crate::theme::NavigationMotion {
         transition_duration: std::time::Duration::from_millis(450),
         transition_easing: waterui::EasingCurve::bezier(0.2, 0.0, 0.0, 1.0),

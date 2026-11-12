@@ -183,8 +183,8 @@ impl LiveTabs {
             let Some(highlight) = &this.highlights[index] else {
                 continue;
             };
-            for driven in highlight.drivens.iter().cloned() {
-                let weak_driven = Rc::downgrade(&driven);
+            for driven in &highlight.drivens {
+                let weak_driven = Rc::downgrade(driven);
                 let target: Rc<Retargeting> = Rc::new(move |tabs, animation| {
                     if let Some(driven) = weak_driven.upgrade() {
                         tabs.with_item_inputs(index, |inputs| {
@@ -408,7 +408,7 @@ impl LiveTabsParts {
                         .computed()
                 })
                 .collect();
-            let tabs = Rc::new(LiveTabs::new(
+            let live = Rc::new(LiveTabs::new(
                 look.clone(),
                 frames,
                 tags.to_vec(),
@@ -416,9 +416,9 @@ impl LiveTabsParts {
                 &flags,
                 env,
             ));
-            LiveTabs::subscribe(&tabs, selection);
+            LiveTabs::subscribe(&live, selection);
             *slot = Some(Self {
-                tabs,
+                tabs: live,
                 layers: Rc::default(),
             });
         }

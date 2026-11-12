@@ -189,10 +189,6 @@ fn horizontal_highlight_hugs_icon_spacing_label_not_the_button() {
 /// would answer `Horizontal` for a wide window and break the strip's items
 /// and highlight.
 #[test]
-#[expect(
-    clippy::float_cmp,
-    reason = "the comparison is exact by design — the value originates from a literal fixture, not accumulated arithmetic"
-)]
 fn sidebar_tabs_lay_out_by_their_strip_extent() {
     let env = test_environment();
     let draws = Rc::new(RefCell::new(Vec::new()));

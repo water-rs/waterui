@@ -70,7 +70,7 @@ impl BackButton {
     /// interaction `key` reported.
     fn ensure<E: crate::text::TextEngine>(
         &mut self,
-        renderer: &mut HydrolysisRenderer<E>,
+        renderer: &HydrolysisRenderer<E>,
         look: &NavigationBarLook,
         rect: kurbo::Rect,
         key: &crate::renderer::InteractionKey,
@@ -2343,7 +2343,7 @@ fn record_page_body<E: crate::text::TextEngine>(
 /// page scope; all pages share one interaction key, as only the active page
 /// takes input.
 fn page_back_button<E: crate::text::TextEngine>(
-    renderer: &mut HydrolysisRenderer<E>,
+    renderer: &HydrolysisRenderer<E>,
     state: &Rc<RefCell<NavigationStackRenderState<E>>>,
     identity: u64,
     look: &NavigationBarLook,

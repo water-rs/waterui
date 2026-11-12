@@ -142,17 +142,17 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
     /// the parts recorded from the old one.
     fn look(&mut self, theme: &Rc<dyn WidgetTheme>, env: &Environment) -> TabsLook {
         let spec = self.spec();
-        if self.held(&spec).is_none() {
+        if self.held(spec).is_none() {
             self.parts = None;
             self.look = Some((spec, theme.tabs(&spec, env)));
         }
-        self.held(&spec).expect("the look was just ensured").clone()
+        self.held(spec).expect("the look was just ensured").clone()
     }
 
-    fn held(&self, spec: &TabsSpec) -> Option<&TabsLook> {
+    fn held(&self, spec: TabsSpec) -> Option<&TabsLook> {
         self.look
             .as_ref()
-            .filter(|(held, _)| held == spec)
+            .filter(|(held, _)| *held == spec)
             .map(|(_, look)| look)
     }
 
@@ -161,7 +161,7 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
     /// holds it.
     fn peek(&self, theme: &Rc<dyn WidgetTheme>, env: &Environment) -> TabsLook {
         let spec = self.spec();
-        self.held(&spec)
+        self.held(spec)
             .cloned()
             .unwrap_or_else(|| theme.tabs(&spec, env))
     }
@@ -773,7 +773,7 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
         env,
     )
     .clone();
-    let tabs = Rc::clone(parts.tabs());
+    let live = Rc::clone(parts.tabs());
     // Each item binds its own interaction on its own touch target, and its
     // chrome follows what the handles report.
     let targets: Vec<_> = plans
@@ -785,7 +785,7 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
                 state,
                 crate::num_cast::i32_as_u32(i32::from(*tag)) as usize,
             );
-            let item_chrome = tabs.chrome(index);
+            let item_chrome = live.chrome(index);
             let target = item_chrome
                 .get_hit()
                 .target(plan.button, item_chrome.frame(plan.geometry.bounds));
@@ -797,8 +797,8 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
                 item_chrome,
             );
             let flags = ctx.renderer_mut().reported_interaction_state(&key);
-            tabs.sync(index, flags);
-            handles.attach_live_tab(Rc::clone(&tabs), index);
+            live.sync(index, flags);
+            handles.attach_live_tab(Rc::clone(&live), index);
             (target, press_slot)
         })
         .collect();
@@ -939,7 +939,11 @@ const fn tabs_dock_edge(style: NativeTabStyle, direction: LayoutDirection) -> Ed
 /// the container is `container_width` wide: a bottom bar's extent is the
 /// container's width; a sidebar strip reports its own thickness — the
 /// vertical metrics' `bar_height` — which never widens into the pane.
-pub fn tabs_bar_item_extent(container_width: f64, style: NativeTabStyle, look: &TabsLook) -> f64 {
+pub const fn tabs_bar_item_extent(
+    container_width: f64,
+    style: NativeTabStyle,
+    look: &TabsLook,
+) -> f64 {
     match style {
         NativeTabStyle::Sidebar => look.metrics(TabItemLayout::Vertical).bar_height,
         NativeTabStyle::Automatic | NativeTabStyle::TabBar => container_width,
