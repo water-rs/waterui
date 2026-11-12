@@ -92,12 +92,12 @@ mod pipeline_cache;
 #[cfg(any(feature = "gpu", feature = "lanes"))]
 mod plan;
 mod reach;
+#[cfg(feature = "gpu")]
+pub mod shader_effect;
 #[cfg(any(feature = "gpu", feature = "lanes"))]
 mod shape_field;
 #[cfg(all(test, any(feature = "gpu", feature = "lanes")))]
 mod test_filters;
-#[cfg(feature = "gpu")]
-pub mod shader_effect;
 
 #[cfg(feature = "gpu")]
 pub use aux_image::TextureImage;
