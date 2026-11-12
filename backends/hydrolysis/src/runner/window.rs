@@ -2511,16 +2511,16 @@ where
                 schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::Magnification { x, y, delta, phase } => {
+                // A pinch or rotation only fires gesture actions, which mark
+                // what they change themselves: nothing here asks for a refresh.
                 runtime.pointer_position = Some((x, y));
-                let changed = runtime
+                let _fired = runtime
                     .renderer
                     .handle_magnification(x, y, delta, phase, env);
-                schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::Rotation { x, y, delta, phase } => {
                 runtime.pointer_position = Some((x, y));
-                let changed = runtime.renderer.handle_rotation(x, y, delta, phase, env);
-                schedule_redraw_or_refresh(runtime, changed);
+                let _fired = runtime.renderer.handle_rotation(x, y, delta, phase, env);
             }
             InputEvent::TextInput { text } => {
                 let changed = !ime_owned
@@ -2822,7 +2822,7 @@ pub(super) fn advance_runtime<P: PlatformWindow, E: crate::text::TextEngine>(
     // `HydrolysisWindowOrigin`, the same extension pointer dispatch gets.
     let gesture_env = env.extending(runtime_window_origin(runtime));
     if runtime.renderer.handle_gesture_tick(now, &gesture_env) {
-        tracing::debug!("wake cause: gesture tick fired");
+        tracing::debug!("wake cause: context-menu hold opened");
         runtime.request_refresh();
     }
     // Smoothed wheel scrolling eases offsets toward their targets per frame;

@@ -71,6 +71,7 @@ mod list_row_focus;
 mod list_row_hit;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod list_row_metrics;
+mod list_swipe_frames;
 #[cfg(feature = "accessibility")]
 mod list_table_scroll_frames;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]

@@ -531,6 +531,16 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
             .clone()
     }
 
+    /// A row's drag changed what the list records — a swipe began, listing
+    /// the row's dismiss background, or a row was lifted or lowered. That
+    /// state is the drag's own, read by no signal, so the drag marks the
+    /// list itself; every other drag frame moves live operands only.
+    fn mark_rows_relisted(&self) {
+        if let Some(cell) = self.owner.upgrade() {
+            cell.mark(crate::renderer::Dirty::PAINT);
+        }
+    }
+
     /// Slides every other row of the visible window to make room for the
     /// row `lifted` at `from`, dragged to `to`: each row between its origin
     /// and its destination moves one slot, the rest rest. `animation` is the
@@ -2883,7 +2893,9 @@ fn register_row_swipe_gesture<E: crate::text::TextEngine>(
                 let gestures = list.gestures();
                 match event.phase() {
                     GesturePhase::Started | GesturePhase::Updated => {
-                        motion.track_swipe(offset, row.width, gestures.swipe_threshold);
+                        if motion.track_swipe(offset, row.width, gestures.swipe_threshold) {
+                            list.mark_rows_relisted();
+                        }
                     }
                     GesturePhase::Ended => {
                         if offset.abs() >= row.width * gestures.swipe_threshold {
@@ -2958,12 +2970,16 @@ fn register_row_reorder_gesture<E: crate::text::TextEngine>(
                         // The lifted row follows the pointer; every row
                         // between its origin and its destination slides one
                         // slot to make room.
-                        motion.set_lifted(true);
+                        if motion.set_lifted(true) {
+                            list.mark_rows_relisted();
+                        }
                         motion.displace(kurbo::Vec2::new(0.0, dy), None);
                         list.shift_rows_for_reorder(row_id, row.index, to, Some(&gestures.settle));
                     }
                     GesturePhase::Ended => {
-                        motion.set_lifted(false);
+                        if motion.set_lifted(false) {
+                            list.mark_rows_relisted();
+                        }
                         motion.displace(kurbo::Vec2::ZERO, None);
                         list.shift_rows_for_reorder(row_id, row.index, row.index, None);
                         if to != row.index {
@@ -2977,7 +2993,9 @@ fn register_row_reorder_gesture<E: crate::text::TextEngine>(
                         }
                     }
                     GesturePhase::Cancelled => {
-                        motion.set_lifted(false);
+                        if motion.set_lifted(false) {
+                            list.mark_rows_relisted();
+                        }
                         motion.displace(kurbo::Vec2::ZERO, Some(&gestures.settle));
                         list.shift_rows_for_reorder(
                             row_id,

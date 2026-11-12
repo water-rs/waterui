@@ -66,10 +66,15 @@ impl RowMotion {
 
     /// The row follows a swipe that has travelled `offset` across a row
     /// `width` wide, dismissing past `threshold` of it.
-    pub fn track_swipe(&self, offset: f64, width: f64, threshold: f64) {
-        self.swiping.set(true);
+    ///
+    /// Returns whether this began the swipe: the list must record again to
+    /// list the row's dismiss background.
+    #[must_use]
+    pub fn track_swipe(&self, offset: f64, width: f64, threshold: f64) -> bool {
+        let began = !self.swiping.replace(true);
         self.displace(Vec2::new(offset, 0.0), None);
         self.set_progress(swipe_progress(offset, width, threshold), None);
+        began
     }
 
     /// The row springs back to rest under `animation`.
@@ -85,17 +90,21 @@ impl RowMotion {
     }
 
     /// Whether the row's dismiss background is listed.
-    pub fn swiping(&self) -> bool {
+    pub const fn swiping(&self) -> bool {
         self.swiping.get()
     }
 
     /// Whether a reorder drag lifts the row.
-    pub fn lifted(&self) -> bool {
+    pub const fn lifted(&self) -> bool {
         self.lifted.get()
     }
 
-    pub fn set_lifted(&self, lifted: bool) {
-        self.lifted.set(lifted);
+    /// Lifts or lowers the row. Returns whether that changed: the list must
+    /// record again to paint the row lifted, over the rows it travels past,
+    /// or back at rest.
+    #[must_use]
+    pub const fn set_lifted(&self, lifted: bool) -> bool {
+        self.lifted.replace(lifted) != lifted
     }
 
     fn set_progress(&self, progress: f64, animation: Option<&Animation>) {
