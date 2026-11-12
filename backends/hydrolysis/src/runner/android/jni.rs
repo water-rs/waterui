@@ -937,7 +937,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeHostedSurf
                 "hydrolysis android: ANativeWindow_fromSurface returned null".to_owned(),
             ));
         };
-        session(session_ptr).hwui.hosted.attach(
+        session!(session_ptr).hwui.hosted.attach(
             crate::num_cast::i64_as_u64(view),
             window,
             crate::num_cast::i32_as_u32(width.max(0)),
@@ -961,7 +961,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeHostedSurf
     height: jint,
 ) {
     guard(&mut env, |_env| {
-        session(session_ptr).hwui.hosted.resize(
+        session!(session_ptr).hwui.hosted.resize(
             crate::num_cast::i64_as_u64(view),
             crate::num_cast::i32_as_u32(width.max(0)),
             crate::num_cast::i32_as_u32(height.max(0)),
@@ -983,7 +983,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeHostedSurf
     view: jlong,
 ) {
     guard(&mut env, |_env| {
-        session(session_ptr)
+        session!(session_ptr)
             .hwui
             .hosted
             .detach(crate::num_cast::i64_as_u64(view));
@@ -1004,7 +1004,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeVideoPlane
     host: JObject<'local>,
 ) {
     guard(&mut env, |env| {
-        super::video_plane::VideoPlanes::in_environment(&session(session_ptr).env).host_attached(
+        super::video_plane::VideoPlanes::in_environment(&session!(session_ptr).env).host_attached(
             env,
             crate::num_cast::i64_as_u64(plane),
             &host,
@@ -1026,7 +1026,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeVideoPlane
     plane: jlong,
 ) {
     guard(&mut env, |_env| {
-        super::video_plane::VideoPlanes::in_environment(&session(session_ptr).env)
+        super::video_plane::VideoPlanes::in_environment(&session!(session_ptr).env)
             .surface_destroyed(crate::num_cast::i64_as_u64(plane));
         Ok(())
     });

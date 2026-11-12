@@ -62,7 +62,7 @@ impl VideoPlaneHost {
 }
 
 /// `host` as a passthrough wrapper over its picture.
-pub(crate) fn unwrap_host(host: Native<AndroidVideoSurfaceHost>) -> AnyView {
+pub fn unwrap_host(host: Native<AndroidVideoSurfaceHost>) -> AnyView {
     let (content, bridge) = host.into_inner().into_parts();
     AnyView::new(Metadata {
         content,
