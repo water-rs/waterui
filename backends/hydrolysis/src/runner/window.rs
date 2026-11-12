@@ -2865,7 +2865,7 @@ pub(super) fn advance_runtime<P: PlatformWindow, E: crate::text::TextEngine>(
         tracing::debug!("wake cause: structural mark");
         runtime.request_refresh();
     }
-    let next_deadline = runtime.renderer.next_gesture_deadline();
+    let next_deadline = runtime.renderer.next_wake_deadline();
     if next_deadline.is_some() {
         tracing::debug!(?next_deadline, "wake armed: engine deadline");
     }

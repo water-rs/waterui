@@ -44,3 +44,23 @@ fn settle_runs_a_spring_scroll_to_its_target() {
         "settle must return only once the spring scroll lands on its target"
     );
 }
+
+/// A focused field's caret blinks for as long as it holds focus: the blink
+/// repaints pixels without moving semantic state, so it is never finite
+/// work, and settling a scene with a focused field returns.
+#[test]
+fn settle_returns_with_a_focused_field() {
+    let value = waterui::binding(waterui::Str::from(""));
+    let mut app = ui()
+        .viewport(320, 120)
+        .theme(TestStyle::new())
+        .mount_offscreen(move || waterui::component::field("Email", &value).size(280.0, 56.0));
+    let field = app.query().role(Role::TEXT_INPUT).label("Email").single();
+    app.query().role(Role::TEXT_INPUT).label("Email").focus();
+    app.settle();
+    assert_eq!(
+        app.tree().focus(),
+        field.id(),
+        "the field keeps focus while the scene settles"
+    );
+}
