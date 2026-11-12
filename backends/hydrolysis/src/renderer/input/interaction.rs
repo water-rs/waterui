@@ -312,6 +312,15 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
             .collect()
     }
 
+    /// Every bound tab item's live tab container, one per item.
+    #[cfg(test)]
+    pub(crate) fn live_tabs(&self) -> Vec<Rc<crate::renderer::live_tabs::LiveTabs>> {
+        self.states
+            .values()
+            .filter_map(|state| state.handles.as_ref()?.live_tabs())
+            .collect()
+    }
+
     pub(crate) fn handles_for_key(
         &self,
         key: &InteractionKey,

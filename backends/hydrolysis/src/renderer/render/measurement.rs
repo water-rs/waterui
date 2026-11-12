@@ -4,7 +4,9 @@ use super::*;
 use crate::num_cast::f64_as_f32;
 use crate::text::TextEngine;
 use crate::text::TextLayout as _;
-use crate::theme::{ListMetrics, WidgetTheme};
+use crate::theme::{
+    ListMetrics, NavigationBarLook, NavigationMetrics, NavigationSpec, TabsSpec, WidgetTheme,
+};
 use crate::widgets::layout::container::resolve_lazy_container_extent;
 use crate::widgets::nav::tabs::{tabs_decide_layout, tabs_item_natural_width};
 use std::rc::Rc;
@@ -59,17 +61,20 @@ pub fn table_data_cell_rect(
     )
 }
 
+/// The navigation chrome's look for the spec of `env`.
+pub fn navigation_look(theme: &Rc<dyn WidgetTheme>, env: &Environment) -> NavigationBarLook {
+    theme.navigation_bar(&NavigationSpec::new(layout_direction(env).snapshot()), env)
+}
+
 fn navigation_bar_height<E: crate::text::TextEngine>(
     view: &NavigationView,
     state: &mut HydroState<E>,
-    theme: &Rc<dyn WidgetTheme>,
+    metrics: NavigationMetrics,
 ) -> f64 {
     if state.measure_signal(&view.bar.hidden) {
         0.0
     } else {
-        let metrics = theme.navigation_metrics();
-        let base =
-            navigation_base_bar_height_for_display_mode_metrics(view.bar.display_mode, metrics);
+        let base = navigation_base_bar_height(view.bar.display_mode, metrics);
         let search_extra = if view.bar.search.is_some() {
             metrics
                 .search_vertical_inset
@@ -91,16 +96,10 @@ fn navigation_bar_height<E: crate::text::TextEngine>(
     }
 }
 
-pub fn navigation_base_bar_height_for_display_mode(
+/// The height of a bar showing its title in `display_mode`, under `metrics`.
+pub const fn navigation_base_bar_height(
     display_mode: waterui::navigation::NavigationTitleDisplayMode,
-    theme: &Rc<dyn WidgetTheme>,
-) -> f64 {
-    navigation_base_bar_height_for_display_mode_metrics(display_mode, theme.navigation_metrics())
-}
-
-const fn navigation_base_bar_height_for_display_mode_metrics(
-    display_mode: waterui::navigation::NavigationTitleDisplayMode,
-    metrics: crate::theme::NavigationMetrics,
+    metrics: NavigationMetrics,
 ) -> f64 {
     match display_mode {
         waterui::navigation::NavigationTitleDisplayMode::Automatic => metrics.automatic_bar_height,
@@ -840,7 +839,8 @@ pub fn measure_navigation_view_intrinsic<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
-    let bar_height = navigation_bar_height(navigation, state, theme);
+    let metrics = navigation_look(theme, env).metrics();
+    let bar_height = navigation_bar_height(navigation, state, metrics);
     let mut principal_width = 0.0_f64;
     let mut principal_height = 0.0_f64;
     let mut leading_width = 0.0_f64;
@@ -849,7 +849,6 @@ pub fn measure_navigation_view_intrinsic<E: crate::text::TextEngine>(
     let mut trailing_height = 0.0_f64;
     let mut bottom_width = 0.0_f64;
     let mut bottom_height = 0.0_f64;
-    let metrics = theme.navigation_metrics();
     for item in navigation.bar.toolbar.items() {
         let (content, scoped) = flatten_environment_metadata_ref(item.content(), env);
         let size = measure_view_intrinsic(
@@ -1008,8 +1007,9 @@ pub fn measure_tabs_layout<E: crate::text::TextEngine>(
         .collect();
     // Decide the layout once from the bar's own extent so the measured bar
     // and the drawn bar answer the same layout (see `tabs_decide_layout`).
+    let look = theme.tabs(&TabsSpec::new(tabs.get_style()), env);
     let (layout, metrics) = tabs_decide_layout(
-        theme,
+        &look,
         tabs.get_style(),
         proposal.width.map(f64::from),
         &item_sizes,

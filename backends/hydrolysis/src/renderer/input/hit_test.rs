@@ -4620,19 +4620,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         chain
     }
 
-    pub(crate) fn register_pointer_target<F>(&mut self, bounds: kurbo::Rect, action: F)
-    where
-        F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
-    {
-        self.register_pointer_target_action(
-            bounds,
-            false,
-            None,
-            Rc::new(RefCell::new(action)),
-            self.render_depth,
-        );
-    }
-
     pub(crate) fn register_pointer_drag_target<F>(&mut self, bounds: kurbo::Rect, action: F)
     where
         F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
@@ -4962,6 +4949,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// state: a disabled control samples an at-rest [`WidgetInteractionState`]
     /// (with its `disabled` flag set) and registers no hover target, so the
     /// pointer neither hovers nor presses it.
+    #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
     pub(crate) fn bind_control_interaction_target(
         &mut self,
         key: InteractionKey,

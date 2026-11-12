@@ -3,8 +3,8 @@
 //! edge — while the bar's title, items, search field and tab items keep
 //! their laid-out frames inside the safe area.
 //!
-//! The surface's geometry is the bounds the renderer hands
-//! `WidgetTheme::draw_navigation_bar` / `draw_tabs_bar`, which
+//! The surface's geometry is the frame the renderer records the navigation
+//! look's bar part and the tabs look's bar part on, which
 //! [`MinimalTestTheme`] records verbatim — the recorded paint geometry, not
 //! pixels. The bounds sit in the bar widget's own draw space (origin at the
 //! widget's frame), so the window's edges land at `-top_inset` and
