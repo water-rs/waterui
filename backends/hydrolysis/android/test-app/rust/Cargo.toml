@@ -16,13 +16,23 @@ name = "hydrolysis_test_app"
 hydrolysis = { workspace = true, default-features = false, features = ["accessibility", "testing"] }
 waterui = { workspace = true, default-features = false }
 waterui-core.workspace = true
+waterui-map = { workspace = true, optional = true }
+waterui-map-gpu = { workspace = true, optional = true }
+waterui-url = { workspace = true, optional = true }
 
 [features]
 default = ["gpu"]
 gpu = ["hydrolysis/gpu", "waterui/gpu"]
 hwui = ["hydrolysis/hwui"]
-filter-probe = []
-stretch-probe = []
+# A probe scene replaces the host scene. Each probe feature implies `probe`.
+probe = []
+filter-probe = ["probe"]
+stretch-probe = ["probe"]
+# GPU content under the HWUI painter (`--features hwui,gpu-video-probe`):
+# the GPU video player and the GPU vector map, each its own scene
+# (water-rs/waterui#1812).
+gpu-video-probe = ["probe", "gpu", "hydrolysis/video-gpu", "waterui/video-gpu", "waterui/remote"]
+gpu-map-probe = ["probe", "gpu", "dep:waterui-map", "dep:waterui-map-gpu", "dep:waterui-url"]
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni.workspace = true

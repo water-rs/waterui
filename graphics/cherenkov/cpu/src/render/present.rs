@@ -10,6 +10,7 @@
 //! `oracle/src/gamut.rs` is the `f64` reference of the same algorithm, and
 //! `oracle/src/tone.rs` the `f64` reference of the tone map.
 
+use cherenkov::OutputAlpha;
 use filtrate_core::space::{P3_TO_SRGB, srgb_encode, transform};
 
 /// Signed cube root — the `OKLab` LMS nonlinearity for possibly-negative
@@ -327,11 +328,14 @@ fn tone_map(headroom: f32, rgb: [f32; 3]) -> [f32; 3] {
     [rgb[0] * s, rgb[1] * s, rgb[2] * s]
 }
 
-/// Presents premultiplied working-space pixels to encoded premultiplied
-/// sRGB bytes.
+/// Presents premultiplied working-space pixels to encoded sRGB bytes in
+/// the `alpha` convention.
 ///
-/// The `present.wgsl` `srgb-shader` path under `OutputAlpha::Premultiplied`,
-/// ending in the unorm-8 store an sRGB destination produces. Alpha is
+/// The `present.wgsl` `srgb-shader` path, ending in the unorm-8 store an
+/// sRGB destination produces: [`OutputAlpha::Premultiplied`] multiplies the
+/// encoded channels by alpha, [`OutputAlpha::Straight`] stores them
+/// independent of it, and [`OutputAlpha::Opaque`] presents the
+/// premultiplied colour (the frame over black) with alpha `1`. Alpha is
 /// stored linearly, as `Rgba8*` formats do. `headroom` is the display's
 /// headroom; an sRGB destination's representable ceiling caps the
 /// tone-map target at `1`.
@@ -341,19 +345,27 @@ fn tone_map(headroom: f32, rgb: [f32; 3]) -> [f32; 3] {
     clippy::cast_sign_loss,
     reason = "gamut-mapped channels are in [0,1]; the unorm-8 store rounds"
 )]
-pub fn present_srgb8(level: fearless_simd::Level, headroom: f32, pixels: &[[f32; 4]]) -> Vec<u8> {
+pub fn present_srgb8(
+    level: fearless_simd::Level,
+    headroom: f32,
+    alpha: OutputAlpha,
+    pixels: &[[f32; 4]],
+) -> Vec<u8> {
     cherenkov_simd::dispatch!(level, _simd => {
         let target = headroom.min(1.0);
         let mut out = Vec::with_capacity(pixels.len() * 4);
         for &[r, g, b, a] in pixels {
-            let straight = if a > 0.0 {
-                tone_map(target, [r / a, g / a, b / a])
-            } else {
-                [0.0; 3]
+            let (color, a) = match alpha {
+                OutputAlpha::Opaque => ([r, g, b], 1.0),
+                OutputAlpha::Premultiplied | OutputAlpha::Straight if a > 0.0 => {
+                    ([r / a, g / a, b / a], a)
+                }
+                OutputAlpha::Premultiplied | OutputAlpha::Straight => ([0.0; 3], a),
             };
-            let mapped = gamut_map(transform(&P3_TO_SRGB, straight));
+            let mapped = gamut_map(transform(&P3_TO_SRGB, tone_map(target, color)));
+            let scale = if alpha == OutputAlpha::Premultiplied { a } else { 1.0 };
             for c in mapped {
-                out.push((srgb_encode(c) * a * 255.0).round() as u8);
+                out.push((srgb_encode(c) * scale * 255.0).round() as u8);
             }
             out.push((a.clamp(0.0, 1.0) * 255.0).round() as u8);
         }

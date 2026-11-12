@@ -607,7 +607,7 @@ impl SurfaceView {
     }
 
     /// The visibility event this view fires — see
-    /// [`VisibilityEmitter`](crate::visibility::VisibilityEmitter).
+    /// [`VisibilityEmitter`].
     pub fn visibility_emitter(&self) -> &VisibilityEmitter {
         &self.ivars().emitter
     }

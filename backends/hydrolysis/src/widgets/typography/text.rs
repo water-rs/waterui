@@ -13,7 +13,7 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<TextConfig> {
         env: &Environment,
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
-        let content = state.measure_signal(view.as_inner().content());
+        let content = state.measure_signal(&view.as_inner().content());
         let alignment = state.measure_signal(view.as_inner().paragraph_alignment());
         HydrolysisRenderer::measure_text_dimensions(
             state,
@@ -33,7 +33,7 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<TextConfig> {
         _theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
-        let content = state.measure_signal(view.as_inner().content());
+        let content = state.measure_signal(&view.as_inner().content());
         let alignment = state.measure_signal(view.as_inner().paragraph_alignment());
         HydrolysisRenderer::measure_text_dimensions(
             state,

@@ -136,6 +136,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
     crate::components::cursor::install(dispatcher);
     #[cfg(feature = "hittable")]
     crate::components::hittable::install(dispatcher);
+    #[cfg(feature = "on_change")]
+    crate::components::on_change::install(dispatcher);
     #[cfg(feature = "on_event")]
     crate::components::on_event::install(dispatcher);
     #[cfg(feature = "on_key_press")]

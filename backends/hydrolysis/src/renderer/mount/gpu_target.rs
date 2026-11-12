@@ -6,25 +6,25 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
-use cherenkov_record::{FilterId, Layer, MaterialRegistry, ResourceError, Transaction};
+use cherenkov_record::{FilterId, Layer, MaterialRegistry, Transaction};
 use rustc_hash::FxHashMap;
 use waterui_core::contract_violation;
+use waterui_graphics::backend::Reactive;
 use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
-use waterui_graphics::backend::{Handle, Reactive, TextBackend, TextRegistration, TextRequest};
 use waterui_graphics::gpu::PresentedSize;
 
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::ProducerWake;
 use crate::renderer::effects::{AppliedFilterMetrics, FilteredRuntime};
 use crate::renderer::mount::backdrop::{
-    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload,
+    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload, ChromeParams,
     MaterialBackdropGroups, MaterialMembership, MemberBind, MemberJoin, Unbound,
 };
 use crate::renderer::recording::SceneResources;
 use crate::text::TextService;
-use crate::text::{CanvasLayout, shape_canvas_text};
 
-use super::{FilterHandle, FilterRegistration, LayerTarget, MaterialTerms};
+use super::engine_target::{install_engine_text, mount_material_group};
+use super::{FilterHandle, LayerTarget, MaterialTerms};
 
 impl MaterialTerms<cherenkov::BackdropShader> {
     /// Attaches the registry to `engine` (water-rs/waterui#1788).
@@ -63,61 +63,6 @@ pub fn attach_material_shaders(
         .collect()
 }
 
-/// Installs on `resources` the registry that lays canvas text out through
-/// `text` and registers it with `engine`.
-pub fn install_gpu_text<E: crate::text::TextEngine>(
-    resources: &SceneResources,
-    engine: &Rc<crate::engine::GpuEngine>,
-    text: &Arc<TextService<E>>,
-) {
-    resources.install_text(text, || {
-        Rc::new(GpuText {
-            engine: Rc::clone(engine),
-            service: Arc::clone(text),
-            faces: RefCell::default(),
-        })
-    });
-}
-
-/// Canvas text on the GPU target: laid out by the session's text engine,
-/// registered with the Cherenkov engine as glyph runs.
-struct GpuText<E: crate::text::TextEngine> {
-    engine: Rc<crate::engine::GpuEngine>,
-    service: Arc<TextService<E>>,
-    /// The faces text layouts have registered, by blob and index, so a text
-    /// laid out again does not register its fonts again. Each layout holds
-    /// its own share of a face; the cache holds one for as long as the
-    /// registry lives.
-    faces: RefCell<FxHashMap<(u64, u32), cherenkov::Font>>,
-}
-
-impl<E: crate::text::TextEngine> TextBackend for GpuText<E> {
-    fn register_text(
-        &self,
-        request: TextRequest,
-    ) -> Result<Option<TextRegistration>, ResourceError> {
-        let Some(CanvasLayout { layout, size }) = shape_canvas_text(&self.service, &request) else {
-            return Ok(None);
-        };
-        let mut faces = self.faces.borrow_mut();
-        let text = self.service.cherenkov_text(&layout, &mut |face| {
-            let key = (face.data.id(), face.index);
-            if let Some(font) = faces.get(&key) {
-                return Ok(font.clone());
-            }
-            let font = self.engine.font(cherenkov::FontSource {
-                data: Arc::from(face.data.data()),
-                index: face.index,
-            })?;
-            faces.insert(key, font.clone());
-            Ok(font)
-        })?;
-        drop(faces);
-        let handle = self.engine.text_layout(text)?;
-        Ok(Some(TextRegistration::new(Handle::new(handle), size)))
-    }
-}
-
 /// The Cherenkov GPU target's host: one per engine window surface.
 pub struct CherenkovHost {
     pub engine: Rc<crate::engine::GpuEngine>,
@@ -144,7 +89,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
     type Host = CherenkovHost;
     type Group = cherenkov::BackdropGroup;
     type Shader = cherenkov::BackdropShader;
-    const BACKDROP_SHADERS: bool = true;
+    const BACKDROP_SHADER_REFUSAL: Option<&'static str> = None;
 
     #[cfg(hydrolysis_hosted)]
     fn mount_hosted(
@@ -167,7 +112,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
     }
 
     fn install_text(host: &CherenkovHost, text: &Arc<TextService<E>>) {
-        install_gpu_text(&host.resources, &host.engine, text);
+        install_engine_text(&host.resources, &host.engine, text);
     }
 
     fn mount_gpu_content(
@@ -255,46 +200,14 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
         membership: &MaterialMembership<E>,
         bind: MemberBind,
     ) {
-        let Some(surface) = host.surface.upgrade() else {
-            contract_violation!(
-                "hydrolysis material: the engine surface was dropped during its commit; \
-                 the layer joins no backdrop group"
-            );
-            groups.clear(layer.id());
-            tx[layer].clear_backdrop();
-            return;
-        };
-        groups.join(
+        mount_material_group(
+            &host.surface,
             tx,
+            groups,
+            layer,
             key,
-            key.runtime(),
             display_scale,
-            MemberJoin {
-                layer,
-                membership,
-                payload: || (),
-                resolve: super::super::layers::NodeLayers::frame_layer,
-            },
-            (
-                |runtime: &crate::renderer::material::MaterialRuntime, scale| {
-                    let spec = cherenkov::BackdropSpec::new(
-                        crate::renderer::material::capture_scale(),
-                        cherenkov::CaptureLevels::ONE,
-                    );
-                    // A `.material_group()` scope's groups capture beneath
-                    // its anchor layer (water-rs/waterui#2097).
-                    let spec = key.anchor.map_or(spec, |anchor| spec.anchor(anchor));
-                    Ok(surface.backdrop_group(runtime.chain(scale), spec))
-                },
-                |tx: &mut Transaction<'_, Self>,
-                 member: &Layer,
-                 _payload: &(),
-                 group: &cherenkov::BackdropGroup,
-                 _scale: f64| {
-                    tx[member].backdrop(group.sample());
-                    Ok(())
-                },
-            ),
+            membership,
             bind,
         );
     }
@@ -313,13 +226,13 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
         groups: &mut ChromeBackdropGroups<cherenkov::BackdropGroup, cherenkov::BackdropShader, E>,
         layer: &Layer,
         key: ChromeGroupKey,
-        params: cherenkov_record::MaterialCapture,
+        params: ChromeParams,
         display_scale: f64,
         membership: &MaterialMembership<E>,
         payload: impl FnOnce() -> ChromeMemberPayload<cherenkov::BackdropShader>,
         bind: MemberBind,
     ) {
-        let Some(surface) = host.surface.upgrade() else {
+        if host.surface.upgrade().is_none() {
             contract_violation!(
                 "hydrolysis materials: the engine surface was dropped during its commit; \
                  the layer joins no chrome group"
@@ -327,7 +240,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
             groups.clear(layer.id());
             tx[layer].clear_backdrop();
             return;
-        };
+        }
         groups.join(
             tx,
             key,
@@ -340,17 +253,8 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
                 resolve: super::super::layers::NodeLayers::member_layer,
             },
             (
-                move |params, scale| {
-                    Ok(surface.backdrop_group_unfiltered(chrome_spec(params, scale, key)?))
-                },
-                |tx: &mut Transaction<'_, Self>,
-                 member: &Layer,
-                 payload: &ChromeMemberPayload<cherenkov::BackdropShader>,
-                 group: &cherenkov::BackdropGroup,
-                 scale: f64| {
-                    tx[member].backdrop(chrome_sample(payload, group.id(), scale)?);
-                    Ok(())
-                },
+                |params: &ChromeParams, scale| chrome_group(host, &key, params, scale),
+                bind_chrome_sample,
             ),
             bind,
         );
@@ -359,6 +263,60 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
     fn clear_chrome(tx: &mut Transaction<'_, Self>, layer: &Layer) {
         tx[layer].clear_backdrop();
     }
+
+    fn settle_chrome(
+        host: &CherenkovHost,
+        tx: &mut Transaction<'_, Self>,
+        groups: &mut ChromeBackdropGroups<cherenkov::BackdropGroup, cherenkov::BackdropShader, E>,
+        display_scale: f64,
+    ) {
+        groups.settle(
+            tx,
+            &host.materials.registry,
+            display_scale,
+            (
+                |key: &ChromeGroupKey, params: &ChromeParams, scale| {
+                    chrome_group(host, key, params, scale)
+                },
+                bind_chrome_sample,
+            ),
+            super::super::layers::NodeLayers::member_layer,
+        );
+    }
+}
+
+/// The engine group a chrome group of `key` is built as at display
+/// `scale`, from `params`.
+///
+/// # Errors
+/// [`Unbound`], reported, when the engine surface dropped or `params`
+/// cannot be built at `scale` ([`chrome_spec`]).
+fn chrome_group(
+    host: &CherenkovHost,
+    key: &ChromeGroupKey,
+    params: &ChromeParams,
+    scale: f64,
+) -> Result<cherenkov::BackdropGroup, Unbound> {
+    let Some(surface) = host.surface.upgrade() else {
+        contract_violation!(
+            "hydrolysis materials: the engine surface was dropped during its commit; \
+             the chrome group is not built"
+        );
+        return Err(Unbound);
+    };
+    Ok(surface.backdrop_group_unfiltered(chrome_spec(params, scale, *key)?))
+}
+
+/// Binds `member` to the chrome sample of `payload` on `group`.
+fn bind_chrome_sample(
+    tx: &mut Transaction<'_, cherenkov_gpu::Gpu>,
+    member: &Layer,
+    payload: &ChromeMemberPayload<cherenkov::BackdropShader>,
+    group: &cherenkov::BackdropGroup,
+    scale: f64,
+) -> Result<(), Unbound> {
+    tx[member].backdrop(chrome_sample(payload, group.id(), scale)?);
+    Ok(())
 }
 
 /// The spec a chrome group of `key` is created with at display `scale`:
@@ -371,17 +329,18 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
 /// [`Unbound`], reported as [`union_of`] reports it, for a union smoothing
 /// invalid at `scale`: the group is not built.
 pub fn chrome_spec(
-    params: &cherenkov_record::MaterialCapture,
+    params: &ChromeParams,
     scale: f64,
     key: ChromeGroupKey,
 ) -> Result<cherenkov::BackdropSpec, Unbound> {
-    let mut spec = cherenkov::BackdropSpec::new(params.scale, params.levels)
-        .pyramid(params.pyramid)
-        .blend_space(params.blend_space);
+    let capture = &params.capture;
+    let mut spec = cherenkov::BackdropSpec::new(capture.scale, capture.levels)
+        .pyramid(capture.pyramid)
+        .blend_space(capture.blend_space);
     if let Some(anchor) = key.anchor() {
         spec = spec.anchor(anchor);
     }
-    if let Some(union) = union_of(params, scale, key.class())? {
+    if let Some(union) = union_of(capture, scale, params.class)? {
         spec = spec.union(union);
     }
     Ok(spec)
@@ -527,11 +486,5 @@ fn external_frame_plane_size(frame: &cherenkov_gpu::interop::ExternalFrame) -> (
         FramePlanes::Rgb { plane, .. } => (plane.width(), plane.height()),
         #[cfg(all(unix, not(target_vendor = "apple")))]
         FramePlanes::Native(frame) => frame.size(),
-    }
-}
-
-impl FilterRegistration for cherenkov::Filter {
-    fn filter_id(&self) -> cherenkov_record::FilterId {
-        self.id()
     }
 }

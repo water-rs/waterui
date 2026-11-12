@@ -675,16 +675,17 @@ fn label_leaf(
 /// with static content.
 pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_native::<TextConfig>(|config, ctx| {
+        let content = config.content();
         let (mut leaf, state, label) = label_leaf(
             ctx,
             config.line_limit(),
-            &config.content().snapshot(),
+            &content.snapshot(),
             config.paragraph_alignment().snapshot(),
         );
 
         // Content changes re-resolve every chunk signal; paragraph
         // alignment pushes straight to the label inside the leaf.
-        leaf.watch(config.content(), move |ctx| {
+        leaf.watch(&content, move |ctx| {
             let duration = cross_dissolve_duration(ctx.metadata());
             apply_styled(&state, ctx.value());
             rebuild(&state.borrow(), duration);

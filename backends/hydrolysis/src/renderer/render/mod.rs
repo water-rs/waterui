@@ -2,11 +2,11 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub use crate::text::FontFamilyResolution;
 pub use crate::text::{ResolvedTextLayoutInput, TailMark, TextService, resolve_text_layout_input};
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 mod compositor;
 mod measurement;
 mod measurement_cache;
@@ -15,8 +15,12 @@ mod state;
 mod subview;
 mod view_helpers;
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub use compositor::FrameError;
+#[cfg(hydrolysis_cpu_painter)]
+pub use compositor::FrameGeometry;
+#[cfg(hydrolysis_cpu_painter)]
+pub use compositor::RasterWindow;
 #[cfg(hydrolysis_gpu_painter)]
 pub use compositor::{CherenkovWindow, FrameRenderTarget};
 pub use measurement::*;

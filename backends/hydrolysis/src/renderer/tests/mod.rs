@@ -1,12 +1,18 @@
 mod collection_update;
+// Suites that drive the GPU painter itself — its device, GPU-content views,
+// filters or backdrop shaders — run on builds that have it.
+#[cfg(hydrolysis_gpu_painter)]
 mod frame_work;
 mod slider_look;
+mod slider_repaint;
 use super::*;
 use crate::text::{Affinity, TextEngine as _, TextLayout as _, TextPosition};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::future::Future;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
+#[cfg(hydrolysis_gpu_painter)]
+use std::rc::Weak;
 use std::sync::mpsc;
 
 use executor_core::LocalExecutor;
@@ -17,26 +23,39 @@ mod anchored_overlay;
 mod animation_slots;
 mod change_animation;
 mod chrome_primitives;
+#[cfg(hydrolysis_gpu_painter)]
 mod chrome_safe_area;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod context_menu_occlusion;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod context_menu_presentation;
+#[cfg(hydrolysis_cpu_painter)]
+mod cpu_refusals;
 mod drag_drop;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod dynamic_remeasure;
-#[cfg(not(target_arch = "wasm32"))]
+// The patch-free capture this pins is an applied filter's, which only the
+// GPU painter realizes until the CPU backend gains shader effects
+// (water-rs/waterui#4065); that issue lifts the painter gate.
+#[cfg(all(hydrolysis_gpu_painter, not(target_arch = "wasm32")))]
 mod emoji_atlas;
+// Drives the GPU mirror's `SurfaceTree`, the sampler the GPU painter runs.
+#[cfg(hydrolysis_gpu_painter)]
+mod engine_motion;
 mod gesture_buttons;
 mod gesture_capture;
 mod gesture_env;
 mod gesture_retention;
 mod gesture_surface;
+#[cfg(hydrolysis_gpu_painter)]
 mod gpu_surface_direct;
+#[cfg(hydrolysis_gpu_painter)]
 mod gpu_surface_idle;
+#[cfg(hydrolysis_gpu_painter)]
 mod gpu_surface_input;
 mod group_opacity;
 mod image_ingest;
+#[cfg(hydrolysis_gpu_painter)]
 mod ime;
 mod interaction_state;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
@@ -54,19 +73,26 @@ mod list_row_metrics;
 mod list_table_scroll_frames;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod list_visibility;
+#[cfg(hydrolysis_gpu_painter)]
 mod material;
+#[cfg(hydrolysis_gpu_painter)]
 mod material_chrome;
+#[cfg(hydrolysis_gpu_painter)]
 mod material_group;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod menu_shortcuts;
 mod mid_flush_subview;
+#[cfg(hydrolysis_gpu_painter)]
 pub mod mirror;
 mod navigation_back;
+#[cfg(hydrolysis_gpu_painter)]
 mod navigation_layers;
 mod navigation_text_input;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod nested_menu_dispatch;
 mod opacity_binding;
+mod painted;
+#[cfg(hydrolysis_gpu_painter)]
 mod perf_full_rebuild;
 mod perf_scroll;
 #[cfg(not(target_arch = "wasm32"))]
@@ -96,8 +122,13 @@ mod teardown_order;
 mod text_ink;
 mod text_measure_direction;
 mod text_wrap_width;
+// The glass switch's theme registers a backdrop shader, which only the GPU
+// painter realizes until the CPU backend gains backdrop shaders
+// (water-rs/waterui#4065); that issue lifts this gate.
+#[cfg(hydrolysis_gpu_painter)]
 mod toggle_glass;
 mod toggle_looks;
+#[cfg(hydrolysis_gpu_painter)]
 mod top_edge;
 mod touch_scroll;
 mod tree;
@@ -145,8 +176,9 @@ use crate::theme::{
 };
 use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
 use cherenkov_record::{
-    BackdropShaderSource, CaptureClass, Draw, MaterialCapture, MaterialEffect, MaterialRegistry,
-    MaterialShader, Paint, Recorder, Shadow, SharedLive, WorkingColor,
+    BackdropShaderSource, CaptureClass, ContainerRecipe, Draw, GroupMember, MaterialCapture,
+    MaterialEffect, MaterialRegistry, MaterialShader, Paint, Recorder, Shadow, SharedLive,
+    WorkingColor,
 };
 use waterui_core::EasingCurve;
 use waterui_core::handler::SharedAction;
@@ -308,6 +340,7 @@ pub fn test_environment_with_scheme(
 /// The member layer ids of every backdrop membership the frame's nodes
 /// hold, flush order — including the members inside filtered groups, which
 /// the walk descends into.
+#[cfg(hydrolysis_gpu_painter)]
 pub fn material_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::LayerId> {
     struct Members(Vec<cherenkov::LayerId>);
     impl<E: crate::text::TextEngine> mount::layers::LayerVisitor<E> for Members {
@@ -327,6 +360,7 @@ pub fn material_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::Layer
     members.0
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 pub fn mounted_anchor_parent_children(
     runtime: &crate::HeadlessRuntime,
     scope: std::num::NonZeroU64,
@@ -368,6 +402,7 @@ pub fn mounted_anchor_parent_children(
     visitor.children
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 pub fn inner_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::LayerId> {
     struct Inner(Vec<cherenkov::LayerId>);
     impl<E: crate::text::TextEngine> mount::layers::LayerVisitor<E> for Inner {
@@ -388,6 +423,7 @@ pub fn inner_layers(runtime: &crate::HeadlessRuntime) -> Vec<cherenkov::LayerId>
 }
 
 /// The window's mount — the test renders one window.
+#[cfg(hydrolysis_gpu_painter)]
 pub fn window_mount(
     runtime: &crate::HeadlessRuntime,
 ) -> &mount::Mount<cherenkov_gpu::Gpu, crate::text::ParleyEngine> {
@@ -403,6 +439,7 @@ pub fn window_mount(
 /// the link it held: swapping in `Weak::new()` stands in for a surface
 /// dropped during the window's commit, swapping the returned link back
 /// restores it.
+#[cfg(hydrolysis_gpu_painter)]
 pub fn swap_host_surface(
     runtime: &mut crate::HeadlessRuntime,
     surface: Weak<cherenkov::Surface<cherenkov_gpu::Gpu>>,
@@ -420,6 +457,7 @@ pub fn swap_host_surface(
 }
 
 /// The window's backdrop-group table — the test renders one window.
+#[cfg(hydrolysis_gpu_painter)]
 pub fn mounts(
     runtime: &crate::HeadlessRuntime,
 ) -> &mount::backdrop::MaterialBackdropGroups<cherenkov::BackdropGroup, crate::text::ParleyEngine> {
@@ -427,6 +465,7 @@ pub fn mounts(
 }
 
 /// The engine's current backdrop-capture bytes.
+#[cfg(hydrolysis_gpu_painter)]
 pub fn capture_bytes(runtime: &crate::HeadlessRuntime) -> u64 {
     runtime
         .renderer()
@@ -528,19 +567,20 @@ fn subscribed_snapshot_preserves_registration_animation_metadata() {
     clippy::float_cmp,
     reason = "the snapshot is the signal's stored literal read back untouched; any drift means the read went through arithmetic it must not"
 )]
-fn animated_scalar_subscribes_before_reading_its_snapshot() {
+fn wrapper_motion_subscribes_before_reading_its_snapshot() {
     let signal = registration_signal(0.25, nami::watcher::Context::from(0.25));
-    let mut renderer = test_renderer();
-    let owner = Rc::new(());
+    let renderer = test_renderer();
 
-    let resolved = renderer.resolve_owned_scalar(
+    let motion = super::mount::motion::Motion::new(
         &signal,
-        &owner,
-        usize::MAX,
-        cherenkov_record::tree::RATE_FAST,
+        f64::from,
+        renderer.frame_signals(),
+        Rc::clone(renderer.placement_clock()),
+        Box::new(|| {}),
+        false,
     );
 
-    assert_eq!(resolved, 0.25);
+    assert_eq!(motion.target(), 0.25);
     assert!(signal.subscribed.get());
 }
 
@@ -2728,6 +2768,9 @@ fn inactive_modal_scope_does_not_trap_keyboard_focus() {
 /// The switch look a test theme hands out for a toggle spec.
 type SwitchLookFor = Rc<dyn Fn(&ToggleSpec, &Environment) -> SwitchLook>;
 
+/// The slider look a test theme hands out for a slider spec.
+type SliderLookFor = Rc<dyn Fn(&SliderSpec, &Environment) -> SliderLook>;
+
 /// The stepper look a test theme hands out for a stepper spec.
 type StepperLookFor = Rc<dyn Fn(&StepperSpec, &Environment) -> StepperLook>;
 
@@ -2790,6 +2833,9 @@ pub struct MinimalTestTheme {
     slider_drag: Option<DragMapping>,
     /// Whether the slider look draws no label, so reserves no band for one.
     slider_without_label: bool,
+    /// The slider look the theme hands out for a spec and environment;
+    /// `None` answers the fixture look the slider tests above read back.
+    slider_look: Option<SliderLookFor>,
     /// The backdrop-material plan a chrome test registers
     /// (water-rs/waterui#1788): the registry entries, and the materials the
     /// plan's [`ChromePlan::chrome`] replays.
@@ -2865,6 +2911,16 @@ impl MinimalTestTheme {
         self.with_switch(move |_, _| look.clone())
     }
 
+    /// Hands out the look `look` makes for each slider's spec.
+    #[must_use]
+    pub fn with_slider(
+        mut self,
+        look: impl Fn(&SliderSpec, &Environment) -> SliderLook + 'static,
+    ) -> Self {
+        self.slider_look = Some(Rc::new(look));
+        self
+    }
+
     /// Hands out the look `look` makes for each switch's spec.
     #[must_use]
     pub fn with_switch(
@@ -2900,6 +2956,13 @@ impl MinimalTestTheme {
 /// One `backdrop_material` a chrome test's plan replays each time its
 /// chrome records (water-rs/waterui#1788).
 #[derive(Clone)]
+#[cfg_attr(
+    not(hydrolysis_gpu_painter),
+    expect(
+        dead_code,
+        reason = "only the GPU painter records backdrop materials until water-rs/waterui#4065"
+    )
+)]
 pub struct ChromeDraw {
     /// The member's live clip shape — a signal for the signal-rebind test.
     pub shape: SharedLive<kurbo::RoundedRect>,
@@ -2911,15 +2974,40 @@ pub struct ChromeDraw {
     pub effect: SharedLive<MaterialEffect>,
 }
 
+/// A [`ContainerRecipe`] a [`ChromePlan`] shares with the registry it
+/// fills: the plan is `Clone`, the registry takes its recipe by value.
+#[derive(Debug)]
+struct SharedRecipe(Rc<dyn ContainerRecipe>);
+
+impl ContainerRecipe for SharedRecipe {
+    fn capture(&self, members: &[GroupMember<'_>]) -> CaptureClass {
+        self.0.capture(members)
+    }
+
+    fn effects(&self, members: &[GroupMember<'_>]) -> Vec<MaterialEffect> {
+        self.0.effects(members)
+    }
+}
+
 /// The backdrop-material terms a chrome test declares: the registry
 /// `register_backdrop_shaders` fills, and the materials its
 /// [`chrome`](Self::chrome) replays.
 #[derive(Clone, Default)]
+#[cfg_attr(
+    not(hydrolysis_gpu_painter),
+    expect(
+        dead_code,
+        reason = "only the GPU painter records backdrop materials until water-rs/waterui#4065"
+    )
+)]
 pub struct ChromePlan {
     /// `(key, source)` pairs the registry registers.
     pub shaders: Vec<(MaterialShader, BackdropShaderSource)>,
     /// `(key, capture)` pairs the registry registers.
     pub captures: Vec<(CaptureClass, MaterialCapture)>,
+    /// `(shader, recipe)` pairs the registry registers as container
+    /// recipes (water-rs/waterui#2834).
+    pub containers: Vec<(MaterialShader, Rc<dyn ContainerRecipe>)>,
     /// The materials the chrome's custom part records.
     pub draws: Vec<ChromeDraw>,
     /// Scene fills the custom part records after the materials — each
@@ -2934,6 +3022,13 @@ impl ChromePlan {
     /// materials, then its fills — installed as a plugin, every tappable
     /// view under it records them.
     #[must_use]
+    #[cfg_attr(
+        not(hydrolysis_gpu_painter),
+        expect(
+            dead_code,
+            reason = "only the GPU painter records backdrop materials until water-rs/waterui#4065"
+        )
+    )]
     pub fn chrome(&self) -> Chrome {
         let draws = self.draws.clone();
         let fills = self.fills.clone();
@@ -3017,6 +3112,9 @@ impl WidgetTheme for MinimalTestTheme {
         }
         for (key, capture) in &self.chrome.captures {
             registry.register_capture_class(*key, *capture);
+        }
+        for (shader, recipe) in &self.chrome.containers {
+            registry.register_container_recipe(*shader, SharedRecipe(Rc::clone(recipe)));
         }
     }
 
@@ -3171,8 +3269,11 @@ impl WidgetTheme for MinimalTestTheme {
             .push((center, state));
     }
 
-    fn slider(&self, spec: &SliderSpec, _env: &Environment) -> SliderLook {
+    fn slider(&self, spec: &SliderSpec, env: &Environment) -> SliderLook {
         self.slider_specs.borrow_mut().push(spec.clone());
+        if let Some(look) = &self.slider_look {
+            return look(spec, env);
+        }
         let tracks = Rc::clone(&self.slider_track_draws);
         let indicators = Rc::clone(&self.slider_indicator_draws);
         let layout = SliderLayout {
@@ -3822,6 +3923,7 @@ fn secure_text_context_menu_excludes_copy_and_cut() {
 }
 
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn bare_text_at_window_root_renders_into_page() {
     let mut renderer = test_renderer();
     let env = test_environment();
@@ -3842,6 +3944,7 @@ fn bare_text_at_window_root_renders_into_page() {
 }
 
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn bare_str_at_window_root_renders_into_page() {
     let mut renderer = test_renderer();
     let env = test_environment();
@@ -3915,6 +4018,7 @@ fn resolved_text_fast_path_matches_the_recursive_measure() {
 }
 
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn bare_str_renders_into_page() {
     let mut renderer = test_renderer();
     let env = test_environment();
@@ -4318,6 +4422,7 @@ fn a_labelled_container_that_stands_reports_its_response_rectangle() {
 
 /// A GPU context whose generations' engines report their composition
 /// decisions into the returned sink.
+#[cfg(hydrolysis_gpu_painter)]
 fn diagnostic_gpu() -> (
     crate::platform::OffscreenGpuContext,
     cherenkov_gpu::composition::Sink,

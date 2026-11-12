@@ -17,6 +17,7 @@ use nami::Signal as _;
 use rustc_hash::FxHashSet;
 
 use super::cell::NodeCell;
+use super::motion::{LayerMotion, Motion};
 use super::placement::Placement;
 use crate::renderer::chrome::LiveSource;
 use crate::renderer::recording::Recording;
@@ -312,7 +313,15 @@ pub struct MaterialRequest {
 
 /// A node's finished record.
 pub struct Program<E: crate::text::TextEngine> {
+    /// The alpha the record is made under: what decides whether content
+    /// recorded here can show at all. The frame layer's opacity is this
+    /// value unless `opacity_motion` drives it.
     pub opacity: f32,
+    /// The engine-run opacity the frame layer follows (water-rs/waterui#2203).
+    pub opacity_motion: Option<Motion<f32>>,
+    /// The engine-run transform components the frame layer follows over its
+    /// place (water-rs/waterui#2203).
+    pub motion: Option<Rc<LayerMotion>>,
     pub clip: Option<ShapeData>,
     pub filter: Option<Rc<RefCell<crate::renderer::effects::FilteredRuntime>>>,
     pub material: Option<MaterialRequest>,
@@ -325,6 +334,8 @@ impl<E: crate::text::TextEngine> Program<E> {
     const fn new() -> Self {
         Self {
             opacity: 1.0,
+            opacity_motion: None,
+            motion: None,
             clip: None,
             filter: None,
             material: None,

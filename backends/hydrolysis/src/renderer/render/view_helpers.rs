@@ -152,15 +152,26 @@ pub const fn restore_a11y_naming_scope<E: crate::text::TextEngine>(
 /// The `Env` scoping for a static [`AccessibilityState`]: a hidden state
 /// suppresses the whole subtree's emission (a constant can never un-hide), and
 /// the state is stored as a constant [`AccessibilityStateSignal`] so emission
-/// resolves one code path for static and reactive state alike.
+/// resolves one code path for static and reactive state alike. Like the
+/// reactive scope, it merges over the state an enclosing scope installed.
 pub fn a11y_scoped_env_for_state(env: &Environment, value: &AccessibilityState) -> Environment {
     let mut scoped = env.clone();
     if value.is_hidden() {
         scoped.insert(AccessibilityHidden::new(true));
     }
-    scoped.insert(AccessibilityStateSignal::new(Computed::constant(
-        value.clone(),
-    )));
+    AccessibilityStateSignal::install(&mut scoped, Computed::constant(value.clone()));
+    scoped
+}
+
+/// The `Env` scoping for a reactive [`AccessibilityStateSignal`]: the scope
+/// merges field by field over the state an enclosing scope installed, so a
+/// `.disabled(..)` inside a `.visible(..)` keeps both flags.
+pub fn a11y_scoped_env_for_state_signal(
+    env: &Environment,
+    value: &AccessibilityStateSignal,
+) -> Environment {
+    let mut scoped = env.clone();
+    AccessibilityStateSignal::install(&mut scoped, value.state().clone());
     scoped
 }
 
@@ -220,7 +231,7 @@ pub fn a11y_scoped_env_for_view<E: crate::text::TextEngine>(
         // node that represents the wrapped view reads it from the scope.
         AccessibilityGeometry => a11y_scoped_env::<AccessibilityGeometry>,
         AccessibilityState => a11y_scoped_env_for_state,
-        AccessibilityStateSignal => a11y_scoped_env::<AccessibilityStateSignal>,
+        AccessibilityStateSignal => a11y_scoped_env_for_state_signal,
     )
 }
 
@@ -323,6 +334,12 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         };
     }
 
+    #[cfg(hydrolysis_video_plane)]
+    if let Some(metadata) =
+        view.downcast_ref::<Metadata<crate::runner::android::video_plane::VideoPlaneHost>>()
+    {
+        return Some(&metadata.content);
+    }
     passthrough_metadata_content!(
         Environment,
         Retain,
@@ -338,6 +355,7 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         GestureObserver,
         LifeCycleHook,
         OnEvent,
+        OnChange,
         OnKeyPress,
         Secure,
         StandardDynamicRange,
@@ -452,6 +470,29 @@ fn normalize_layout_view_with_budget(
     let next_remaining = remaining - 1;
     let mut view = view;
 
+    // The GPU video player's host is unwrapped here: its picture is only
+    // reachable by consuming it, so layout and build see a passthrough.
+    #[cfg(hydrolysis_video_plane)]
+    if view.is::<Native<waterui_video_gpu::AndroidVideoSurfaceHost>>() {
+        let host = *view
+            .downcast::<Native<waterui_video_gpu::AndroidVideoSurfaceHost>>()
+            .expect("layout normalization failed to downcast the video surface host");
+        return normalize_layout_view_with_budget(
+            crate::runner::android::video_plane::unwrap_host(host),
+            env,
+            remaining,
+        );
+    }
+    #[cfg(hydrolysis_video_plane)]
+    if view.is::<Metadata<crate::runner::android::video_plane::VideoPlaneHost>>() {
+        let Metadata { content, value } = *view
+            .downcast::<Metadata<crate::runner::android::video_plane::VideoPlaneHost>>()
+            .expect("layout normalization failed to downcast the video plane host");
+        return AnyView::new(Metadata {
+            content: normalize_layout_view_with_budget(content, env, remaining),
+            value,
+        });
+    }
     if view.is::<Metadata<Environment>>() {
         let Metadata { content, value } = *view
             .downcast::<Metadata<Environment>>()
@@ -513,6 +554,7 @@ fn normalize_layout_view_with_budget(
         GestureObserver,
         LifeCycleHook,
         OnEvent,
+        OnChange,
         OnKeyPress,
         Secure,
         StandardDynamicRange,
@@ -577,7 +619,7 @@ fn normalize_layout_view_with_budget(
     }
     normalize_env_scoping_ignorable_metadata!(
         AccessibilityHidden, a11y_scoped_env;
-        AccessibilityStateSignal, a11y_scoped_env;
+        AccessibilityStateSignal, a11y_scoped_env_for_state_signal;
         AccessibilityState, a11y_scoped_env_for_state
     );
 

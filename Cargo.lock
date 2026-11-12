@@ -1729,6 +1729,7 @@ dependencies = [
  "vello_common",
  "vello_cpu",
  "vello_gpu",
+ "waterui-git-head",
  "wgpu",
 ]
 
@@ -2171,7 +2172,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -4629,6 +4630,7 @@ dependencies = [
  "block2 0.6.2",
  "cfg_aliases",
  "cherenkov",
+ "cherenkov-cpu",
  "cherenkov-gpu",
  "cherenkov-record",
  "console_error_panic_hook",
@@ -4703,6 +4705,7 @@ dependencies = [
  "waterui-text",
  "waterui-url",
  "waterui-video",
+ "waterui-video-gpu",
  "waterui-watcher-set",
  "waterui-webview",
  "wayland-client",
@@ -4725,6 +4728,9 @@ dependencies = [
  "jni 0.22.4",
  "waterui",
  "waterui-core",
+ "waterui-map",
+ "waterui-map-gpu",
+ "waterui-url",
 ]
 
 [[package]]
@@ -7276,6 +7282,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-application-services"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69282c2b5bc58fba07cb9de2113619532eb551e98efe3d8d695509ef45fbd53b"
+dependencies = [
+ "bitflags 2.13.2",
+ "objc2-core-foundation",
+]
+
+[[package]]
 name = "objc2-audio-toolbox"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7777,6 +7793,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-screen-capture-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74b7c5390f477482f001bc354d6571a70db7e4f8d5288e860c45521fbce11394"
+dependencies = [
+ "block2 0.6.2",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "objc2-security"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8089,7 +8118,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
@@ -12195,7 +12224,7 @@ dependencies = [
 [[package]]
 name = "waterkit-audio"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "async-channel",
  "block2 0.6.2",
@@ -12242,7 +12271,7 @@ dependencies = [
 [[package]]
 name = "waterkit-build"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "futures-channel",
  "jni 0.22.4",
@@ -12253,7 +12282,7 @@ dependencies = [
 [[package]]
 name = "waterkit-camera"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "async-channel",
  "core-graphics-types 0.2.0",
@@ -12301,7 +12330,7 @@ dependencies = [
 [[package]]
 name = "waterkit-clipboard"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "async-channel",
  "block2 0.6.2",
@@ -12333,7 +12362,7 @@ dependencies = [
 [[package]]
 name = "waterkit-codec"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "avif-parse",
  "cfg_aliases",
@@ -12362,6 +12391,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "waterkit-build",
+ "waterkit-core",
  "waterkit-video-core",
  "wgpu",
  "wgpu-hal",
@@ -12372,7 +12402,7 @@ dependencies = [
 [[package]]
 name = "waterkit-core"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#b4f93fd62acfece53061e7c3125b5b954e66d86c"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "dispatch2",
  "executor-core",
@@ -12388,7 +12418,7 @@ dependencies = [
 [[package]]
 name = "waterkit-deeplink"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#b4f93fd62acfece53061e7c3125b5b954e66d86c"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "async-channel",
  "block2 0.6.2",
@@ -12412,7 +12442,7 @@ dependencies = [
 [[package]]
 name = "waterkit-dialog"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "block2 0.6.2",
  "dispatch2",
@@ -12435,7 +12465,7 @@ dependencies = [
 [[package]]
 name = "waterkit-fs"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "async-fs",
  "dirs 7.0.0",
@@ -12453,7 +12483,7 @@ dependencies = [
 [[package]]
 name = "waterkit-haptic"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "block2 0.6.2",
  "futures",
@@ -12474,7 +12504,7 @@ dependencies = [
 [[package]]
 name = "waterkit-location"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "async-channel",
  "dispatch2",
@@ -12499,7 +12529,7 @@ dependencies = [
 [[package]]
 name = "waterkit-menu"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "async-channel",
  "futures",
@@ -12514,9 +12544,11 @@ dependencies = [
 [[package]]
 name = "waterkit-permission"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "async-channel",
+ "async-io",
+ "async-process",
  "block2 0.6.2",
  "dispatch2",
  "futures",
@@ -12524,12 +12556,20 @@ dependencies = [
  "js-sys",
  "ndk-context",
  "objc2 0.6.5",
+ "objc2-application-services",
  "objc2-av-foundation",
  "objc2-contacts 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-core-location 0.3.2",
  "objc2-event-kit",
  "objc2-foundation 0.3.2",
  "objc2-photos",
+ "objc2-screen-capture-kit",
+ "objc2-security",
+ "serde",
+ "serde_json",
+ "tempfile",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "waterkit-build",
@@ -12542,7 +12582,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "waterkit-video-container",
  "waterkit-video-core",
@@ -12553,7 +12593,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-container"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "broadcast-common",
  "byteorder",
@@ -12568,7 +12608,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-core"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -12576,7 +12616,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-player"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "aes",
  "async-channel",
@@ -12611,7 +12651,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-streaming"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#8e288a866a2904b09ed9ec91d54098665e3b3216"
+source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "async-fs",
  "base64 0.23.1",
@@ -12970,6 +13010,7 @@ dependencies = [
  "walkdir",
  "waterui-assets-core",
  "waterui-assets-planner",
+ "waterui-git-head",
  "waterui-inspector-protocol",
  "waterui-mcp-protocol",
  "waterui-meta",
@@ -13073,6 +13114,13 @@ dependencies = [
  "waterui-text",
  "waterui-url",
  "zeroize",
+]
+
+[[package]]
+name = "waterui-git-head"
+version = "0.5.1"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]
@@ -13239,6 +13287,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "waterui-git-head",
  "windows-sys 0.61.2",
 ]
 
@@ -13306,6 +13355,7 @@ dependencies = [
  "smallvec",
  "waterui",
  "waterui-color",
+ "waterui-contract",
  "waterui-core",
  "waterui-testing",
 ]
@@ -13408,7 +13458,7 @@ dependencies = [
 [[package]]
 name = "waterui-math"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/math?branch=dev#ec88928076fa1e1e4da9613e6224dc0a921a3ca9"
+source = "git+https://github.com/water-rs/math?branch=dev#4f4e006ebd8015a721cc7579b768e87e3b581a23"
 dependencies = [
  "kurbo",
  "mathcat",
@@ -13710,7 +13760,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=dev#32a950955e29e70aba57348ab531fa21f6408b29"
+source = "git+https://github.com/water-rs/video-gpu?branch=dev#5a9a47c9df0c6c19e27dfc35c6d930b894668bc5"
 dependencies = [
  "async-channel",
  "executor-core",

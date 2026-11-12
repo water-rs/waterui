@@ -1117,7 +1117,9 @@ pub mod view_renderer {
 /// `build_filtered_parts` construction, for the settle-contract trials.
 #[cfg(all(target_os = "macos", feature = "gpu_surface"))]
 pub mod filtered {
-    pub use crate::components::filtered::native_test::{MountedFilteredSurface, WakeProbe};
+    pub use crate::components::filtered::native_test::{
+        MountedFilteredSurface, ParentCapture, WakeProbe,
+    };
 }
 
 /// The web view leaf's harness reach.

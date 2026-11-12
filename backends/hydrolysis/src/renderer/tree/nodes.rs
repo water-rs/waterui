@@ -7,6 +7,7 @@ use super::layout::{SignatureHasher, hash_size};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::renderer::mount::motion::{LayerMotion, Motion};
 use crate::text::{TextEngine, TextLayout as _};
 use waterui::gesture::TapGesture;
 use waterui_core::transition::TransitionSpec;
@@ -989,6 +990,13 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// A hover-enter/move/exit handler re-registered every flush. The handler is
     /// shared so the node can re-register the same `OnEvent` each frame.
     OnEvent(Rc<RefCell<OnEvent>>),
+    /// An `.on_change(..)` subscription, made at build against the
+    /// environment the wrapped content resolves in and held for the node's
+    /// life. Paint-, layout- and accessibility-transparent.
+    OnChange {
+        /// The subscription, never read: dropping it ends the handler.
+        _subscription: nami::watcher::BoxWatcherGuard,
+    },
     /// An `.on_key_press` ancestor scope: pushed onto the renderer's key
     /// handler stack while the child flushes, so a focused input inside the
     /// subtree bubbles its unconsumed keys here.
@@ -1044,15 +1052,16 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
 
 impl<E: crate::text::TextEngine> WrapperEffect<E> {
     /// Whether this effect carries a callback that captures an environment —
-    /// a hover/`on_tap`/gesture handler, a drop destination, a context menu,
-    /// an anchored overlay or a lifecycle hook. Such a handler resolves against
-    /// the environment its *content* resolves in (water-rs/waterui#1292), and a
-    /// handler wrapper is itself transparent to that resolution when it sits in
-    /// an outer handler's modifier chain.
+    /// a hover/`on_tap`/gesture handler, an `.on_change` handler, a drop
+    /// destination, a context menu, an anchored overlay or a lifecycle hook.
+    /// Such a handler resolves against the environment its *content* resolves
+    /// in (water-rs/waterui#1292), and a handler wrapper is itself transparent
+    /// to that resolution when it sits in an outer handler's modifier chain.
     pub(super) const fn captures_environment(&self) -> bool {
         matches!(
             self,
             Self::OnEvent(_)
+                | Self::OnChange { .. }
                 | Self::GestureObserver(_)
                 | Self::DropDestination(_)
                 | Self::ContextMenu(_)
@@ -1274,31 +1283,156 @@ pub struct ContainerNode<E: crate::text::TextEngine> {
     pub(crate) _guards: Vec<BoxWatcherGuard>,
 }
 
-/// An animated-opacity wrapper: re-samples its alpha each flush and pushes a
-/// layer around the child. Layout-transparent (the child measures/places as if
-/// the wrapper were absent), matching the SwiftUI/WaterUI transform model.
+/// An opacity wrapper: its layer's opacity follows the value on the
+/// engine's clock — each change hands the layer the change's animation —
+/// so a fade never re-records (water-rs/waterui#2203). Layout-transparent
+/// (the child measures/places as if the wrapper were absent), matching the
+/// SwiftUI/WaterUI transform model.
 pub struct OpacityNode<E: crate::text::TextEngine> {
     pub(crate) core: NodeCore<E>,
-    pub(crate) value: Opacity,
+    pub(crate) motion: Motion<f32>,
     pub(crate) child: RenderNode<E>,
 }
 
+/// A scale wrapper: its layer scales about the anchor on the engine's
+/// clock, a track per axis (water-rs/waterui#2203).
 pub struct ScaleNode<E: crate::text::TextEngine> {
     pub(crate) core: NodeCore<E>,
-    pub(crate) value: Scale,
+    pub(crate) anchor: waterui::style::Anchor,
+    pub(crate) motion: Rc<LayerMotion>,
     pub(crate) child: RenderNode<E>,
 }
 
+/// A rotation wrapper: its layer turns about the anchor on the engine's
+/// clock (water-rs/waterui#2203).
 pub struct RotationNode<E: crate::text::TextEngine> {
     pub(crate) core: NodeCore<E>,
-    pub(crate) value: Rotation,
+    pub(crate) anchor: waterui::style::Anchor,
+    pub(crate) motion: Rc<LayerMotion>,
     pub(crate) child: RenderNode<E>,
 }
 
+/// An offset wrapper: its layer translates on the engine's clock, a track
+/// per axis (water-rs/waterui#2203).
 pub struct OffsetNode<E: crate::text::TextEngine> {
     pub(crate) core: NodeCore<E>,
-    pub(crate) value: Offset,
+    pub(crate) motion: Rc<LayerMotion>,
     pub(crate) child: RenderNode<E>,
+}
+
+/// A wrapper property's value as its engine layer property reads it.
+fn unit(value: f32) -> f64 {
+    f64::from(value)
+}
+
+/// A rotation's degrees as the engine's radians.
+fn radians(degrees: f32) -> f64 {
+    f64::from(degrees).to_radians()
+}
+
+/// A transform wrapper's motion axis following `signal` into the layer's
+/// `f64` lanes through `map`.
+fn transform_axis<E: crate::text::TextEngine>(
+    renderer: &SemanticCore<E>,
+    core: &NodeCore<E>,
+    signal: &Computed<f32>,
+    map: fn(f32) -> f64,
+) -> Motion<f64> {
+    renderer.wrapper_motion(signal, map, &core.cell, false)
+}
+
+/// A transform wrapper's core, its placement moved by `motion`.
+fn moved_core<E: crate::text::TextEngine>(
+    renderer: &SemanticCore<E>,
+    motion: impl FnOnce(&NodeCore<E>) -> LayerMotion,
+) -> (NodeCore<E>, Rc<LayerMotion>) {
+    let core = renderer.new_core();
+    let motion = Rc::new(motion(&core));
+    core.cell.placement().set_motion(Rc::clone(&motion));
+    (core, motion)
+}
+
+impl<E: crate::text::TextEngine> OpacityNode<E> {
+    pub(crate) fn new(
+        value: &Opacity,
+        renderer: &mut SemanticCore<E>,
+        child: impl FnOnce(&mut SemanticCore<E>) -> RenderNode<E>,
+    ) -> Self {
+        let core = renderer.new_core();
+        let motion = renderer.wrapper_motion(value.value(), |alpha| alpha, &core.cell, true);
+        Self {
+            core,
+            motion,
+            child: child(renderer),
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> ScaleNode<E> {
+    pub(crate) fn new(
+        value: &Scale,
+        renderer: &mut SemanticCore<E>,
+        child: impl FnOnce(&mut SemanticCore<E>) -> RenderNode<E>,
+    ) -> Self {
+        let clock = Rc::clone(renderer.placement_clock());
+        let (core, motion) = moved_core(renderer, |core| {
+            LayerMotion::scale(
+                transform_axis(renderer, core, value.x(), unit),
+                transform_axis(renderer, core, value.y(), unit),
+                clock,
+            )
+        });
+        Self {
+            core,
+            anchor: value.anchor(),
+            motion,
+            child: child(renderer),
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> RotationNode<E> {
+    pub(crate) fn new(
+        value: &Rotation,
+        renderer: &mut SemanticCore<E>,
+        child: impl FnOnce(&mut SemanticCore<E>) -> RenderNode<E>,
+    ) -> Self {
+        let clock = Rc::clone(renderer.placement_clock());
+        let (core, motion) = moved_core(renderer, |core| {
+            LayerMotion::rotation(
+                transform_axis(renderer, core, value.angle(), radians),
+                clock,
+            )
+        });
+        Self {
+            core,
+            anchor: value.anchor(),
+            motion,
+            child: child(renderer),
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> OffsetNode<E> {
+    pub(crate) fn new(
+        value: &Offset,
+        renderer: &mut SemanticCore<E>,
+        child: impl FnOnce(&mut SemanticCore<E>) -> RenderNode<E>,
+    ) -> Self {
+        let clock = Rc::clone(renderer.placement_clock());
+        let (core, motion) = moved_core(renderer, |core| {
+            LayerMotion::offset(
+                transform_axis(renderer, core, &value.x, unit),
+                transform_axis(renderer, core, &value.y, unit),
+                clock,
+            )
+        });
+        Self {
+            core,
+            motion,
+            child: child(renderer),
+        }
+    }
 }
 
 pub struct ScrollNode<E: crate::text::TextEngine> {
@@ -1348,6 +1482,10 @@ pub struct RetainNode<E: crate::text::TextEngine> {
     pub(crate) core: NodeCore<E>,
     pub(super) _retain: Retain,
     pub(super) child: RenderNode<E>,
+    /// The decoder plane the GPU video player's host wraps its picture in:
+    /// a platform view placed at the child's frame, below it.
+    #[cfg(hydrolysis_video_plane)]
+    pub(super) plane: Option<crate::runner::android::video_plane::VideoPlane>,
 }
 
 pub struct EnvNode<E: crate::text::TextEngine> {

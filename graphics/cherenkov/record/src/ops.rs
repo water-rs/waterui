@@ -9,7 +9,9 @@ use kurbo::{Affine, Vec2};
 use crate::Instant;
 use crate::Target;
 use crate::WorkingColor;
-use crate::animation::{Animation, Keyframes, Repeat};
+use nami_core::watcher::Metadata;
+
+use crate::animation::{Animatable, Animation, Keyframes, Repeat};
 use crate::backdrop::BackdropSample;
 use crate::display_list::{Edit, Picture, SlotUpdate};
 use crate::projective::Projective;
@@ -73,18 +75,125 @@ impl BackdropId {
 
 /// A property target plus the animation that reaches it.
 #[derive(Clone, Debug)]
-pub struct Prop<T> {
+pub struct Prop<T: Animatable> {
     /// The value the property moves to.
     pub target: T,
     /// The animation applied, if any; `None` snaps.
     pub animation: Option<Animation>,
-    /// The instant the animation starts at, on the host's clock. `None`
-    /// keeps the engine's own timing: the track starts at the first frame
-    /// that samples it, and a retarget continues from the previous track's
-    /// last sample. `Some(t)` starts the track at `t`, and a retarget
-    /// continues from the previous track's value and velocity evaluated at
-    /// `t`. A `start` without an `animation` is ignored.
-    pub start: Option<Instant>,
+    /// When, on the host's clock, the animation starts, and from where.
+    /// `None` keeps the engine's own timing: the track starts at the first
+    /// frame that samples it, and a retarget continues from the previous
+    /// track's last sample. A `start` without an `animation` is ignored.
+    pub start: Option<TrackStart<T>>,
+}
+
+/// The instant an animated change's track starts at on the host's clock,
+/// and the state it starts from.
+#[derive(Clone, Debug)]
+pub struct TrackStart<T: Animatable> {
+    /// The instant the track starts at.
+    pub at: Instant,
+    /// The position and velocity the track starts from at `at`. `None`
+    /// continues the previous track evaluated at `at` — its value and
+    /// velocity there, or the property's value at rest. `Some` starts the
+    /// track from exactly this state whatever ran before: a host that
+    /// binds a property while its own track runs hands the binding that
+    /// whole track. Boxed: a host hands one only when it binds a running
+    /// track, and every layer op would otherwise carry its lanes inline.
+    pub origin: Option<Box<TrackOrigin<T>>>,
+}
+
+impl<T: Animatable> TrackStart<T> {
+    /// A start at `at` that continues whatever ran before.
+    #[must_use]
+    pub const fn at(at: Instant) -> Self {
+        Self { at, origin: None }
+    }
+
+    /// The start a bound change's metadata names: its [`AnimationStart`],
+    /// with the [`AnimationOrigin`] next to it, if any.
+    #[must_use]
+    pub fn of(metadata: &Metadata) -> Option<Self> {
+        let at = metadata.try_get::<AnimationStart>()?.0;
+        Some(Self {
+            at,
+            origin: metadata
+                .try_get::<AnimationOrigin<T>>()
+                .map(|origin| Box::new(origin.0)),
+        })
+    }
+
+    /// The same start in another property's lanes, through `lanes`: the
+    /// start of one axis of a two-axis property.
+    pub(crate) fn map<U: Animatable>(&self, lanes: impl Fn(T::Lanes) -> U::Lanes) -> TrackStart<U> {
+        TrackStart {
+            at: self.at,
+            origin: self.origin.as_ref().map(|origin| {
+                Box::new(TrackOrigin {
+                    from: lanes(origin.from),
+                    velocity: lanes(origin.velocity),
+                })
+            }),
+        }
+    }
+}
+
+/// A track's state at its start: its position and its velocity per second,
+/// lane by lane.
+#[derive(Clone, Copy)]
+pub struct TrackOrigin<T: Animatable> {
+    /// The position lanes the track starts from.
+    pub from: T::Lanes,
+    /// The velocity lanes the track starts with, per second.
+    pub velocity: T::Lanes,
+}
+
+impl<T: Animatable> std::fmt::Debug for TrackOrigin<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TrackOrigin")
+            .field("from", &self.from.as_ref())
+            .field("velocity", &self.velocity.as_ref())
+            .finish()
+    }
+}
+
+/// The state a bound change's track starts from, carried in the change's
+/// `Context` metadata next to its [`AnimationStart`]: the change hands the
+/// binding a track already running on the host's clock.
+#[derive(Clone, Copy, Debug)]
+pub struct AnimationOrigin<T: Animatable>(pub TrackOrigin<T>);
+
+/// One axis of a two-axis layer property — translation or scale — which
+/// animates per axis, so x and y can run different animations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Axis {
+    /// The horizontal axis.
+    X,
+    /// The vertical axis.
+    Y,
+}
+
+impl Axis {
+    /// Both axes, x first: the order a [`Vec2`]'s lanes take.
+    pub const BOTH: [Self; 2] = [Self::X, Self::Y];
+
+    /// The axis's component of `value`.
+    #[must_use]
+    pub const fn of(self, value: Vec2) -> f64 {
+        match self {
+            Self::X => value.x,
+            Self::Y => value.y,
+        }
+    }
+
+    /// `value` with this axis's component replaced by `component`.
+    #[must_use]
+    pub const fn with(self, value: Vec2, component: f64) -> Vec2 {
+        match self {
+            Self::X => Vec2::new(component, value.y),
+            Self::Y => Vec2::new(value.x, component),
+        }
+    }
 }
 
 /// A property's keyframe track: the value the property holds once a finite
@@ -155,8 +264,14 @@ pub enum LayerOp {
     Translation(LayerId, Prop<Vec2>),
     /// Sets the unwrapped rotation angle in radians; initially zero.
     Rotation(LayerId, Prop<f64>),
+    /// Sets one axis of the translation with a track of its own: the other
+    /// axis keeps whatever it runs. `Translation` sets both axes at once.
+    TranslationAxis(LayerId, Axis, Prop<f64>),
     /// Sets the x/y scale factors; initially (1, 1).
     Scale(LayerId, Prop<Vec2>),
+    /// Sets one axis's scale factor with a track of its own: the other
+    /// axis keeps whatever it runs. `Scale` sets both axes at once.
+    ScaleAxis(LayerId, Axis, Prop<f64>),
     /// Sets x/y skew angles in radians; initially zero.
     Skew(LayerId, Prop<Vec2>),
     /// Sets the local pivot for rotation, skew and scale; initially zero.
@@ -227,8 +342,10 @@ impl LayerOp {
             | Self::Remove(id)
             | Self::Transform(id, _)
             | Self::Translation(id, _)
+            | Self::TranslationAxis(id, ..)
             | Self::Rotation(id, _)
             | Self::Scale(id, _)
+            | Self::ScaleAxis(id, ..)
             | Self::Skew(id, _)
             | Self::Pivot(id, _)
             | Self::Projection(id, _)
@@ -264,7 +381,9 @@ impl LayerOp {
         match self {
             Self::Transform(_, prop) => Some(&mut prop.animation),
             Self::Translation(_, prop) => Some(&mut prop.animation),
-            Self::Rotation(_, prop) => Some(&mut prop.animation),
+            Self::Rotation(_, prop)
+            | Self::TranslationAxis(_, _, prop)
+            | Self::ScaleAxis(_, _, prop) => Some(&mut prop.animation),
             Self::Scale(_, prop) => Some(&mut prop.animation),
             Self::Skew(_, prop) => Some(&mut prop.animation),
             Self::Pivot(_, prop) => Some(&mut prop.animation),

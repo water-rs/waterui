@@ -11,8 +11,13 @@
 //! A leaf answering more than the offer it was just measured at is the contract
 //! break; the layout must never clip it back (layout-spec §4.2).
 
+// The `GpuContentView` cases build GPU-content nodes, which only a build with
+// the `gpu` feature realizes: without it the leaf is refused by name
+// (`cpu_refusals`).
+
 use std::cell::RefCell;
 use std::rc::Rc;
+#[cfg(hydrolysis_gpu)]
 use std::sync::{Arc, Mutex};
 
 use cherenkov_record::Recorder;
@@ -24,8 +29,10 @@ use waterui_core::views::ForEach;
 use waterui_graphics::backend::{
     RecordingResources, SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent,
 };
+#[cfg(hydrolysis_gpu)]
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui_graphics::input::SurfaceInputEvent;
+#[cfg(hydrolysis_gpu)]
 use waterui_graphics::{GpuContent, GpuContentView};
 use waterui_layout::LazyContainer;
 use waterui_layout::stack::hstack;
@@ -43,8 +50,10 @@ const DIVIDER_WIDTH: f32 = 7.0;
 
 /// The issue's pane: a GPU surface that accepts its own input events, so the
 /// leaf is the same kind a terminal or embedded engine installs.
+#[cfg(hydrolysis_gpu)]
 struct PaneProbe;
 
+#[cfg(hydrolysis_gpu)]
 impl GpuContent for PaneProbe {
     fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
@@ -109,6 +118,7 @@ impl SceneContent for IntrinsicScenePane {
 /// natural size resolves only after it starts — `intrinsic_size` stays
 /// `None`, and the stream's size arrives through `measure` alone (a decoder
 /// that learns its dimensions once it opens).
+#[cfg(hydrolysis_gpu)]
 struct DeferredSizeProbe {
     natural: Arc<Mutex<Option<Size>>>,
     /// The `intrinsic_size` snapshot the view declares at construction —
@@ -116,6 +126,7 @@ struct DeferredSizeProbe {
     declared: Option<Size>,
 }
 
+#[cfg(hydrolysis_gpu)]
 impl GpuContent for DeferredSizeProbe {
     fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
@@ -138,6 +149,7 @@ impl GpuContent for DeferredSizeProbe {
 /// Which kind of input-receiving leaf the panes are built from.
 #[derive(Clone, Copy)]
 enum Pane {
+    #[cfg(hydrolysis_gpu)]
     GpuSurface,
     Scene,
 }
@@ -217,6 +229,7 @@ impl SubView for OfferProbe<'_> {
 
 fn pane_view(kind: Pane) -> AnyView {
     match kind {
+        #[cfg(hydrolysis_gpu)]
         Pane::GpuSurface => AnyView::new(GpuContentView::new(PaneProbe).on_input(|_| {})),
         Pane::Scene => AnyView::new(SceneView::new(ScenePane)),
     }
@@ -470,6 +483,7 @@ fn connected_dynamic_panes_answer_the_offer_not_their_intrinsic() {
     );
 }
 
+#[cfg(hydrolysis_gpu)]
 #[test]
 fn gpu_surface_panes_take_their_offered_share() {
     let (env, mut renderer, mut node, log) = probe_issue_stack(Pane::GpuSurface);
@@ -736,6 +750,7 @@ fn input_scene_view_panes_split_the_divider_width() {
 /// The issue's reproduction is the unconstrained-axis pass: laid out through
 /// `resolve_scene_proposal(None, …)` the leaf answered the proposal (0 on
 /// the open axis) instead of the 100x200 `measure` reports.
+#[cfg(hydrolysis_gpu)]
 #[test]
 fn gpu_content_is_sized_by_its_live_measure() {
     let env = test_environment();
@@ -798,6 +813,7 @@ fn gpu_content_is_sized_by_its_live_measure() {
 /// mark, so a `measure` answer that moves after mount must surface through
 /// `size_drifted` — a re-probe at the latched proposal — or an enclosing
 /// retained sub-view keeps the leaf at its first box forever.
+#[cfg(hydrolysis_gpu)]
 #[test]
 fn gpu_content_measure_drift_marks_layout() {
     use crate::renderer::tree::RetainedSubview;
@@ -838,6 +854,7 @@ fn gpu_content_measure_drift_marks_layout() {
 /// one — is content-sized no matter what `measure` reports. Zero and
 /// partial-zero naturals are valid measured sizes, not an unspecified
 /// declaration.
+#[cfg(hydrolysis_gpu)]
 #[test]
 fn gpu_content_stretch_uses_its_declared_contract() {
     let env = test_environment();

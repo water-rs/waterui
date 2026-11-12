@@ -107,6 +107,20 @@ pub struct NativeLeaf {
     /// but only a leaf a site holds directly can be claimed — the
     /// outermost-modifier rule docs/layout-spec.md §4.5 states.
     transition: Option<crate::transition::TransitionClaim>,
+    /// The environment this leaf's modifier chain resolves in, recorded by
+    /// the environment-only and handler wrappers that pass it through: a
+    /// `with_env` leaf records its scope, a handler wrapper the environment
+    /// its own handler resolved in. A handler wrapped around this leaf
+    /// resolves in it, so a `.state(..)` install on either side of the
+    /// handler in the same chain reaches it (water-rs/waterui#1292). `None`
+    /// for every other leaf: the chain ends there.
+    handler_env: Option<Environment>,
+    /// Whether an accessibility-state scope already applied its state to
+    /// this leaf's view. The innermost scope applies the state merged over
+    /// every enclosing scope (`AccessibilityStateSignal::install`), so an
+    /// enclosing scope rendered around the same leaf must not apply its own,
+    /// less specific state over it.
+    accessibility_state_applied: bool,
     /// The view controllers [`mount`] adopted from this leaf's subtree —
     /// `UIKit` only forwards appearance and layout callbacks down a real
     /// containment chain.
@@ -140,9 +154,27 @@ impl NativeLeaf {
             view,
             geometry,
             transition: None,
+            handler_env: None,
+            accessibility_state_applied: false,
             #[cfg(target_os = "ios")]
             attached_controllers: Vec::new(),
         }
+    }
+
+    /// The environment a handler wrapped around this leaf resolves in:
+    /// the environment this leaf's modifier chain resolved in, or `env` —
+    /// the environment the wrapper renders under — when the chain ends at
+    /// this leaf.
+    #[must_use]
+    pub fn handler_env(&self, env: &Environment) -> Environment {
+        self.handler_env.as_ref().unwrap_or(env).clone()
+    }
+
+    /// Records the environment this leaf's modifier chain resolves in —
+    /// called by an environment-only or handler wrapper, so a handler
+    /// wrapped around it resolves through the same chain.
+    pub fn set_handler_env(&mut self, env: Environment) {
+        self.handler_env = Some(env);
     }
 
     /// Stores the leaf's `.transition(...)` declaration — the
@@ -169,6 +201,14 @@ impl NativeLeaf {
     #[must_use]
     pub const fn take_transition(&mut self) -> Option<crate::transition::TransitionClaim> {
         self.transition.take()
+    }
+
+    /// Claims this leaf's view for an accessibility-state scope, answering
+    /// whether the claim is new. `false` means a nested scope already
+    /// applied the state merged over this one, and this scope applies
+    /// nothing.
+    pub(crate) const fn claim_accessibility_state(&mut self) -> bool {
+        !core::mem::replace(&mut self.accessibility_state_applied, true)
     }
 
     /// The platform view. Borrowed: the leaf owns it.

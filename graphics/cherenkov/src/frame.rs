@@ -218,6 +218,20 @@ pub struct Readback {
     pub pixels: Vec<[f32; 4]>,
 }
 
+/// Alpha convention of a presented frame's pixels: a host-owned GPU
+/// presentation texture, or the bytes a CPU presentation pass produces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputAlpha {
+    /// The destination is opaque.
+    Opaque,
+    /// Channels are multiplied by alpha in the destination encoding. For
+    /// sRGB this multiplication follows transfer encoding, including when the
+    /// texture format applies the transfer in hardware.
+    Premultiplied,
+    /// Channels are independent of alpha.
+    Straight,
+}
+
 /// The storage format of an [`Offscreen`] target.
 ///
 /// A backend renders into exactly the requested format, or fails surface

@@ -7,7 +7,7 @@ use super::*;
 use crate::theme::live::Operand;
 use kurbo::Shape as _;
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub fn duration_micros_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
@@ -202,15 +202,21 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.has_pending_semantic_update()
             || self.os_file_drop_pending()
             || self.animations_active()
+            || self.motions_active()
             || self.engine_tracks_active(perpetual)
             || self.next_gesture_deadline().is_some()
             || self.has_gliding_smooth_scrolls()
             || self.has_active_touch_fling()
     }
 
-    #[cfg(hydrolysis_gpu_painter)]
-    pub(crate) const fn measurement_cache_stats(&self) -> (u32, u32) {
-        self.state.measurement.stats()
+    /// The view-dimension cache's (hits, misses) since the last presented
+    /// frame, rolling the counters: a frame that measured nothing reports
+    /// zero rather than the last measuring frame's counts.
+    #[cfg(hydrolysis_cherenkov)]
+    pub(crate) const fn take_measurement_cache_stats(&mut self) -> (u32, u32) {
+        let stats = self.state.measurement.stats();
+        self.state.measurement.reset_counters();
+        stats
     }
 }
 
@@ -343,7 +349,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // so the flat lists rebuild against the post-retire registries.
         self.core.leave_reader(None);
 
-        self.core.registries();
+        self.core.frame_registries();
         // Same frame-end record `flush_window_tree` runs: the first-frame
         // build ends here, not in the flush tail, and the placements it
         // registered publish only through this drain.
@@ -403,22 +409,19 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// material becomes a `ChromeMaterial` member layer between the
     /// segments that follow — so the material samples the content behind
     /// it rather than drawing in place of it. The scope the record opens
-    /// under is the flush's material-scope stack's top: the node's
-    /// enclosing `.material_group()`, or `SOLO` outside every group.
+    /// under is [`Self::material_scope`].
+    ///
+    /// The segments are frozen into the node's run: content whose operands
+    /// change after it records lists through
+    /// [`LayeredParts`](crate::renderer::chrome::LayeredParts) instead.
     pub(crate) fn draw_context(
         &mut self,
         ctx: RenderContext,
         body: impl FnOnce(&mut cherenkov_record::Recorder),
     ) {
-        let scope = self
-            .material_group_scopes
-            .last()
-            .map_or(cherenkov_record::MaterialScope::SOLO, |cell| {
-                cherenkov_record::MaterialScope::new(mount::backdrop::scope_id(cell))
-            });
         let layered = cherenkov_record::Content::record_layered(
             &cherenkov_record::LayoutSize::new(),
-            scope,
+            self.material_scope(),
             body,
         );
         // A member whose ancestry is fully transparent holds no membership:
@@ -436,6 +439,17 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 self.scene_mut().draw_picture(ctx.local(), above);
             }
         }
+    }
+
+    /// The material scope a backdrop material recorded here belongs to:
+    /// the flush's material-scope stack's top — the node's enclosing
+    /// `.material_group()` — or `SOLO` outside every group.
+    pub(crate) fn material_scope(&self) -> cherenkov_record::MaterialScope {
+        self.material_group_scopes
+            .last()
+            .map_or(cherenkov_record::MaterialScope::SOLO, |cell| {
+                cherenkov_record::MaterialScope::new(mount::backdrop::scope_id(cell))
+            })
     }
 
     /// Lists `source` at this point of the recording node's program as a
@@ -688,7 +702,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// The engine's scheduling answer from the last presented frame, drained
     /// once so one pump consumes it: `Next::At` asks the host for the frame
     /// an in-flight animation needs, `Next::Idle` parks the display link.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) const fn take_engine_next(&mut self) -> Option<Next> {
         self.engine_next.take()
     }

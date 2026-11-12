@@ -13,7 +13,8 @@ use core::fmt;
 use crate::draw::Recorder;
 use crate::draw::kurbo::Affine;
 use cherenkov::{
-    Engine, FrameTime, LayerContent, Offscreen, OffscreenFormat, RenderError, Surface, SurfaceError,
+    Engine, FrameTime, LayerContent, Offscreen, OffscreenFormat, OutputAlpha, RenderError, Surface,
+    SurfaceError,
 };
 use cherenkov_cpu::{Level, Raster, RasterConfig, present_srgb8};
 
@@ -340,7 +341,12 @@ impl Rasterizer {
             height: self.height,
             // An image view in a platform surface is an SDR sRGB destination:
             // the presentation pass tone-maps to its ceiling.
-            data: present_srgb8(self.level, 1.0, &readback.pixels),
+            data: present_srgb8(
+                self.level,
+                1.0,
+                OutputAlpha::Premultiplied,
+                &readback.pixels,
+            ),
         })
     }
 
@@ -373,7 +379,12 @@ impl Rasterizer {
             height: self.height,
             // An image view in a platform surface is an SDR sRGB destination:
             // the presentation pass tone-maps to its ceiling.
-            data: present_srgb8(self.level, 1.0, &readback.pixels),
+            data: present_srgb8(
+                self.level,
+                1.0,
+                OutputAlpha::Premultiplied,
+                &readback.pixels,
+            ),
         })
     }
 }

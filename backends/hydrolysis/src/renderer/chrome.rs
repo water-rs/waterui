@@ -19,8 +19,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use cherenkov_record::{
-    ColorStop, Draw as _, Fixed, MaterialEffect, Paint, RadialGradient, Recorder, Shadow,
-    ShapeData, Stroke, WorkingColor,
+    BackdropMaterial, ColorStop, Content, Draw as _, Fixed, LayoutSize, MaterialEffect,
+    MaterialScope, Paint, RadialGradient, Recorder, Shadow, ShapeData, Stroke, WorkingColor,
 };
 use kurbo::{Affine, Point, Rect, Vec2};
 use nami::{Computed, Signal};
@@ -54,6 +54,15 @@ pub trait LiveSource {
         recorder: &mut Recorder,
         resources: &SceneResources,
     ) -> Option<LoweredResources>;
+
+    /// The source's content, recorded by the source itself rather than
+    /// into the layer's recorder: a [`LayeredParts`] segment is one part of
+    /// a layered recording ([`Content::record_layered`]), which a plain
+    /// recorder cannot open. The mount installs it in place of calling
+    /// [`Self::record`]; `None`, the default, records through it.
+    fn content(&self) -> Option<Content> {
+        None
+    }
 
     /// Fixed content available to scene inspection, when this source owns a recording.
     fn recording(&self) -> Option<&crate::renderer::recording::Recording> {
@@ -112,6 +121,147 @@ impl LiveSource for LiveCaret {
             });
         });
         None
+    }
+}
+
+/// A look's recording of its parts, which may declare backdrop materials.
+type PartsBody = Rc<dyn Fn(&mut Recorder)>;
+
+/// Look parts whose recording may declare backdrop materials
+/// ([`Recorder::backdrop_material`]), recorded once with every operand
+/// live: the recording splits at each material, the material becomes a
+/// chrome member the program lists, and the content between two materials
+/// becomes a live source of its own.
+///
+/// The widget keeps it while its parts stay the same, so the program lists
+/// the same sources on every record, the mount keeps their contents, and a
+/// value or interaction change reaches the engine only through the parts'
+/// operands.
+pub struct LayeredParts {
+    /// The material scope the parts recorded under.
+    scope: MaterialScope,
+    /// The content below the first material, then the content above each
+    /// material; `None` where the parts recorded nothing.
+    segments: Vec<Option<Rc<dyn LiveSource>>>,
+    /// The materials, in recording order.
+    materials: Vec<BackdropMaterial>,
+}
+
+impl LayeredParts {
+    /// `body` recorded under `scope`.
+    fn new(scope: MaterialScope, body: &PartsBody) -> Self {
+        let layered = Content::record_layered(&LayoutSize::new(), scope, |recorder| body(recorder));
+        let segment = |index: usize, content: Content| -> Option<Rc<dyn LiveSource>> {
+            (!content.is_empty()).then(|| -> Rc<dyn LiveSource> {
+                Rc::new(Segment {
+                    body: Rc::clone(body),
+                    scope,
+                    index,
+                    recorded: RefCell::new(Some(content)),
+                })
+            })
+        };
+        let mut segments = Vec::with_capacity(layered.runs.len() + 1);
+        let mut materials = Vec::with_capacity(layered.runs.len());
+        segments.push(segment(0, layered.below));
+        for (index, run) in layered.runs.into_iter().enumerate() {
+            materials.push(run.material);
+            segments.push(segment(index + 1, run.above));
+        }
+        Self {
+            scope,
+            segments,
+            materials,
+        }
+    }
+
+    /// The parts `body` records, under `scope`: those in `slot` when they
+    /// recorded under it, otherwise `body` recorded afresh, replacing them.
+    pub(crate) fn ensure(
+        slot: &mut Option<Self>,
+        scope: MaterialScope,
+        body: impl FnOnce() -> PartsBody,
+    ) -> &Self {
+        if !slot.as_ref().is_some_and(|parts| parts.scope == scope) {
+            *slot = Some(Self::new(scope, &body()));
+        }
+        slot.as_ref().expect("the layered parts were just ensured")
+    }
+
+    /// Lists the parts in `ctx`: the content below the first material, then
+    /// each material as a chrome member with the content above it.
+    pub(crate) fn push<E: crate::text::TextEngine>(
+        &self,
+        renderer: &mut HydrolysisRenderer<E>,
+        ctx: RenderContext,
+    ) {
+        // A member whose ancestry is fully transparent holds no membership:
+        // the group belongs to its visible members.
+        let visible = renderer.record_alpha() > 0.0;
+        let (below, above) = self
+            .segments
+            .split_first()
+            .expect("layered parts hold the content below their first material");
+        if let Some(below) = below {
+            renderer.push_live(ctx, below);
+        }
+        for (material, above) in self.materials.iter().zip(above) {
+            renderer
+                .program()
+                .push_chrome(material.clone(), ctx.local(), visible);
+            if let Some(above) = above {
+                renderer.push_live(ctx, above);
+            }
+        }
+    }
+}
+
+/// One content of a [`LayeredParts`] recording, between two of its
+/// materials.
+struct Segment {
+    body: PartsBody,
+    scope: MaterialScope,
+    /// The segment's place: `0` below the first material, `n` above the
+    /// `n`th.
+    index: usize,
+    /// The content the parts recorded when they were realized, until the
+    /// mount installs it; a later install records the parts again.
+    recorded: RefCell<Option<Content>>,
+}
+
+impl LiveSource for Segment {
+    fn record(
+        &self,
+        _recorder: &mut Recorder,
+        _resources: &SceneResources,
+    ) -> Option<LoweredResources> {
+        waterui_core::contract_violation!(
+            "a layered look part's segment installs its own content; recording it into another \
+             recorder drops it"
+        );
+        None
+    }
+
+    fn content(&self) -> Option<Content> {
+        if let Some(content) = self.recorded.borrow_mut().take() {
+            return Some(content);
+        }
+        let body = &self.body;
+        let layered =
+            Content::record_layered(&LayoutSize::new(), self.scope, |recorder| body(recorder));
+        let Some(above) = self.index.checked_sub(1) else {
+            return Some(layered.below);
+        };
+        let runs = layered.runs.len();
+        let content = layered.runs.into_iter().nth(above).map(|run| run.above);
+        if content.is_none() {
+            waterui_core::contract_violation!(
+                "a look's parts declared {runs} backdrop materials, fewer than the {} they \
+                 declared when they were realized; the content above the missing one is not drawn",
+                self.index
+            );
+        }
+        Some(content.unwrap_or_else(|| Content::record(&LayoutSize::new(), |_| {})))
     }
 }
 
@@ -1384,6 +1534,15 @@ impl LiveSource for ChromeSource {
     }
 }
 
+/// The look parts a [`LiveChrome`] records beyond its own layers, each
+/// realized the first time the chrome lists it.
+#[derive(Default)]
+struct ChromeLayers {
+    customs: Option<LayeredParts>,
+    slider: Option<LayeredParts>,
+    indicator: Option<LayeredParts>,
+}
+
 /// A widget part's live chrome and the sources its program lists: the
 /// identity the mount keeps the recordings by.
 #[derive(Clone)]
@@ -1392,6 +1551,8 @@ pub struct LiveChromeParts {
     below: Rc<dyn LiveSource>,
     edge: Option<Rc<dyn LiveSource>>,
     above: Rc<dyn LiveSource>,
+    /// The custom parts, the slider's parts and its indicator's container.
+    layers: Rc<RefCell<ChromeLayers>>,
 }
 
 impl LiveChromeParts {
@@ -1410,6 +1571,7 @@ impl LiveChromeParts {
             below: source(Half::Below),
             edge,
             above: source(Half::Above),
+            layers: Rc::default(),
             chrome,
         }
     }
@@ -1473,32 +1635,46 @@ impl LiveChromeParts {
         if let Some(edge) = &self.edge {
             renderer.push_live(ctx, edge);
         }
+        let scope = renderer.material_scope();
+        let mut layers = self.layers.borrow_mut();
         if !chrome.customs.is_empty() {
-            renderer.draw_context(ctx, |recorder| {
-                for custom in &chrome.customs {
-                    custom.record(recorder, chrome.frame);
-                }
-            });
-        }
-        if let Some(slider) = &chrome.slider {
-            renderer.draw_context(ctx, |recorder| {
-                let frame = chrome.frame;
-                let record = |recorder: &mut Recorder| {
-                    for part in &slider.parts {
-                        part.record(recorder, frame);
+            LayeredParts::ensure(&mut layers.customs, scope, || {
+                let chrome = Rc::clone(chrome);
+                Rc::new(move |recorder: &mut Recorder| {
+                    for custom in &chrome.customs {
+                        custom.record(recorder, chrome.frame);
                     }
-                };
-                if slider.source.mirrored {
-                    // The look draws left to right; a right-to-left layout
-                    // mirrors it about the row.
-                    recorder.transform(
-                        Fixed(Affine::new([-1.0, 0.0, 0.0, 1.0, frame.x0 + frame.x1, 0.0])),
-                        record,
-                    );
-                } else {
-                    record(recorder);
-                }
-            });
+                })
+            })
+            .push(renderer, ctx);
+        }
+        if chrome.slider.is_some() {
+            LayeredParts::ensure(&mut layers.slider, scope, || {
+                let chrome = Rc::clone(chrome);
+                Rc::new(move |recorder: &mut Recorder| {
+                    let slider = chrome
+                        .slider
+                        .as_ref()
+                        .expect("a slider chrome keeps its slider");
+                    let frame = chrome.frame;
+                    let record = |recorder: &mut Recorder| {
+                        for part in &slider.parts {
+                            part.record(recorder, frame);
+                        }
+                    };
+                    if slider.source.mirrored {
+                        // The look draws left to right; a right-to-left
+                        // layout mirrors it about the row.
+                        recorder.transform(
+                            Fixed(Affine::new([-1.0, 0.0, 0.0, 1.0, frame.x0 + frame.x1, 0.0])),
+                            record,
+                        );
+                    } else {
+                        record(recorder);
+                    }
+                })
+            })
+            .push(renderer, ctx);
         }
     }
 
@@ -1509,18 +1685,32 @@ impl LiveChromeParts {
         renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
     ) {
-        let Some(indicator) = self.chrome.slider.as_ref().and_then(|slider| {
-            slider
-                .indicator
-                .as_ref()
-                .zip(slider.source.indicator.as_ref())
-        }) else {
+        let has_indicator = self
+            .chrome
+            .slider
+            .as_ref()
+            .is_some_and(|slider| slider.indicator.is_some());
+        if !has_indicator {
             return;
-        };
-        let (live, content) = indicator;
-        renderer.draw_context(ctx, |recorder| {
-            live.container.record(recorder, content.rest);
-        });
+        }
+        let scope = renderer.material_scope();
+        let mut layers = self.layers.borrow_mut();
+        LayeredParts::ensure(&mut layers.indicator, scope, || {
+            let chrome = Rc::clone(&self.chrome);
+            Rc::new(move |recorder: &mut Recorder| {
+                let slider = chrome
+                    .slider
+                    .as_ref()
+                    .expect("a slider chrome keeps its slider");
+                let (live, content) = slider
+                    .indicator
+                    .as_ref()
+                    .zip(slider.source.indicator.as_ref())
+                    .expect("a realized indicator follows its slider's indicator");
+                live.container.record(recorder, content.rest);
+            })
+        })
+        .push(renderer, ctx);
     }
 
     /// Lists the chrome's interaction layers above the widget's content.

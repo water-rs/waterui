@@ -8,7 +8,7 @@
 //! defaults whenever possible and use these helpers as the final step to ensure
 //! assistive technologies convey the intended experience.
 
-use nami::{Computed, impl_constant, signal::IntoComputed};
+use nami::{Computed, SignalExt, impl_constant, signal::IntoComputed, zip::zip};
 use suiteki::Str;
 
 use crate::layout::{PlacedGeometry, Rect};
@@ -313,49 +313,54 @@ impl AccessibilityChildren {
 
 /// Describes nuanced state transitions that assistive technologies use to keep
 /// users in sync with complex widgets.
-#[allow(clippy::struct_excessive_bools)]
+///
+/// Every field is optional: a field left unset says nothing and inherits the
+/// value an enclosing state scope set, so nested state modifiers — a
+/// `.disabled(..)` inside a `.visible(..)` — combine instead of replacing one
+/// another. [`inheriting`](Self::inheriting) is that merge: the inner scope's
+/// set fields win and its unset fields take the outer scope's.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AccessibilityState {
-    disabled: bool,
-    selected: bool,
+    disabled: Option<bool>,
+    selected: Option<bool>,
     checked: Option<AccessibilityChecked>,
     expanded: Option<bool>,
-    busy: bool,
-    hidden: bool,
+    busy: Option<bool>,
+    hidden: Option<bool>,
 }
 
 impl MetadataKey for AccessibilityState {}
 impl_constant!(AccessibilityState);
 
 impl AccessibilityState {
-    /// Creates a default accessibility state.
+    /// Creates a state that sets nothing, inheriting every field.
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            disabled: false,
-            selected: false,
+            disabled: None,
+            selected: None,
             checked: None,
             expanded: None,
-            busy: false,
-            hidden: false,
+            busy: None,
+            hidden: None,
         }
     }
 
     /// Marks whether the element is currently disabled.
     #[must_use]
     pub const fn disabled(mut self, disabled: bool) -> Self {
-        self.disabled = disabled;
+        self.disabled = Some(disabled);
         self
     }
 
     /// Marks whether the element is currently selected.
     #[must_use]
     pub const fn selected(mut self, selected: bool) -> Self {
-        self.selected = selected;
+        self.selected = Some(selected);
         self
     }
 
-    /// Sets the checkbox or tri-state checked value.
+    /// Sets the checkbox or tri-state checked value; `None` leaves it unset.
     #[must_use]
     pub const fn checked(mut self, checked: Option<bool>) -> Self {
         self.checked = match checked {
@@ -373,7 +378,7 @@ impl AccessibilityState {
         self
     }
 
-    /// Sets the expanded or collapsed state when applicable.
+    /// Sets the expanded or collapsed state; `None` leaves it unset.
     #[must_use]
     pub const fn expanded(mut self, expanded: Option<bool>) -> Self {
         self.expanded = expanded;
@@ -383,26 +388,44 @@ impl AccessibilityState {
     /// Marks whether the element is busy processing work.
     #[must_use]
     pub const fn busy(mut self, busy: bool) -> Self {
-        self.busy = busy;
+        self.busy = Some(busy);
         self
     }
 
     /// Marks whether the element should be hidden from accessibility output.
     #[must_use]
     pub const fn hidden(mut self, hidden: bool) -> Self {
-        self.hidden = hidden;
+        self.hidden = Some(hidden);
         self
     }
 
-    /// Returns whether the element is disabled.
+    /// Merges this state over `outer`, the state of an enclosing scope: each
+    /// field this state sets wins, and each field it leaves unset takes
+    /// `outer`'s.
     #[must_use]
-    pub const fn is_disabled(&self) -> bool {
+    pub const fn inheriting(self, outer: &Self) -> Self {
+        Self {
+            disabled: or(self.disabled, outer.disabled),
+            selected: or(self.selected, outer.selected),
+            checked: match self.checked {
+                Some(checked) => Some(checked),
+                None => outer.checked,
+            },
+            expanded: or(self.expanded, outer.expanded),
+            busy: or(self.busy, outer.busy),
+            hidden: or(self.hidden, outer.hidden),
+        }
+    }
+
+    /// The disabled flag, or `None` when this state leaves it unset.
+    #[must_use]
+    pub const fn disabled_state(&self) -> Option<bool> {
         self.disabled
     }
 
-    /// Returns whether the element is selected.
+    /// The selected flag, or `None` when this state leaves it unset.
     #[must_use]
-    pub const fn is_selected(&self) -> bool {
+    pub const fn selected_state(&self) -> Option<bool> {
         self.selected
     }
 
@@ -418,16 +441,49 @@ impl AccessibilityState {
         self.expanded
     }
 
-    /// Returns whether the element is marked busy.
+    /// The busy flag, or `None` when this state leaves it unset.
     #[must_use]
-    pub const fn is_busy(&self) -> bool {
+    pub const fn busy_state(&self) -> Option<bool> {
         self.busy
     }
 
-    /// Returns whether the element is hidden from accessibility output.
+    /// The hidden flag, or `None` when this state leaves it unset.
+    #[must_use]
+    pub const fn hidden_state(&self) -> Option<bool> {
+        self.hidden
+    }
+
+    /// Returns whether the element is disabled; an unset flag reads `false`.
+    #[must_use]
+    pub const fn is_disabled(&self) -> bool {
+        matches!(self.disabled, Some(true))
+    }
+
+    /// Returns whether the element is selected; an unset flag reads `false`.
+    #[must_use]
+    pub const fn is_selected(&self) -> bool {
+        matches!(self.selected, Some(true))
+    }
+
+    /// Returns whether the element is marked busy; an unset flag reads `false`.
+    #[must_use]
+    pub const fn is_busy(&self) -> bool {
+        matches!(self.busy, Some(true))
+    }
+
+    /// Returns whether the element is hidden from accessibility output; an
+    /// unset flag reads `false`.
     #[must_use]
     pub const fn is_hidden(&self) -> bool {
-        self.hidden
+        matches!(self.hidden, Some(true))
+    }
+}
+
+/// `Option::or` for `bool`, usable in a `const fn`.
+const fn or(inner: Option<bool>, outer: Option<bool>) -> Option<bool> {
+    match inner {
+        Some(value) => Some(value),
+        None => outer,
     }
 }
 
@@ -449,12 +505,36 @@ impl AccessibilityStateSignal {
     pub const fn state(&self) -> &Computed<AccessibilityState> {
         &self.0
     }
+
+    /// Merges `local` over the state scope `env` inherits, reactively: the
+    /// result follows both signals, and each field `local` leaves unset takes
+    /// the enclosing scope's value ([`AccessibilityState::inheriting`]).
+    #[must_use]
+    pub fn resolve(env: &Environment, local: impl IntoComputed<AccessibilityState>) -> Self {
+        let local = local.into_computed();
+        match env.get::<Self>() {
+            Some(inherited) => Self(
+                zip(local, inherited.0.clone())
+                    .map(|(local, inherited)| local.inheriting(&inherited))
+                    .into_computed(),
+            ),
+            None => Self(local),
+        }
+    }
+
+    /// Installs a state scope into `env`, merged over any scope already
+    /// inherited from an enclosing state modifier.
+    pub fn install(env: &mut Environment, local: impl IntoComputed<AccessibilityState>) {
+        let merged = Self::resolve(env, local);
+        env.insert(merged);
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AccessibilityRole, default_role};
+    use super::{AccessibilityRole, AccessibilityState, AccessibilityStateSignal, default_role};
     use crate::{Environment, IgnorableMetadata};
+    use nami::Signal;
 
     /// A surface with nothing said about it publishes the role it was given.
     #[test]
@@ -479,6 +559,41 @@ mod tests {
             view.downcast_ref::<IgnorableMetadata<AccessibilityRole>>()
                 .is_none(),
             "a view whose role the application chose must not be wrapped again"
+        );
+    }
+
+    /// Nested state scopes merge field by field: the inner scope's set fields
+    /// win, its unset fields inherit, and the merge follows both signals.
+    #[test]
+    fn nested_state_scopes_merge_field_by_field() {
+        let outer = nami::Binding::container(AccessibilityState::new().hidden(true).selected(true));
+        let mut env = Environment::new();
+        AccessibilityStateSignal::install(&mut env, outer.clone());
+        AccessibilityStateSignal::install(
+            &mut env,
+            AccessibilityState::new().disabled(true).selected(false),
+        );
+        let merged = env
+            .get::<AccessibilityStateSignal>()
+            .expect("the inner scope installs a state signal")
+            .state()
+            .clone();
+
+        assert_eq!(
+            merged.snapshot(),
+            AccessibilityState::new()
+                .hidden(true)
+                .selected(false)
+                .disabled(true)
+        );
+
+        outer.set(AccessibilityState::new().busy(true));
+        assert_eq!(
+            merged.snapshot(),
+            AccessibilityState::new()
+                .busy(true)
+                .selected(false)
+                .disabled(true)
         );
     }
 }
