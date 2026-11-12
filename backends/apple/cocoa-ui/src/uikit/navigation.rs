@@ -1207,6 +1207,10 @@ impl NavigationController {
 
     /// Inserts `child` into the controller's view above its pages and
     /// beneath the navigation bar and toolbar.
+    ///
+    /// # Panics
+    ///
+    /// Never: `UIViewController.view` loads the view on access.
     pub fn insert_beneath_bars(&self, child: &objc2_ui_kit::UIView) {
         let view = self
             .view()

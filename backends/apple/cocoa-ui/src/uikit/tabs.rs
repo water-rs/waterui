@@ -283,6 +283,10 @@ impl TabsController {
     ///
     /// An `index` out of range breaks the contract: it is reported and
     /// `None` is answered.
+    ///
+    /// # Panics
+    ///
+    /// Never: the tabs are installed when the controller is constructed.
     #[must_use]
     pub fn tab_item(&self, index: usize) -> Option<Retained<UITabBarItem>> {
         let controllers = self

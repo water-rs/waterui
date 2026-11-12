@@ -336,9 +336,10 @@ pub fn force_text_fields_display(view: &crate::PlatformView) {
 /// Mounts `view` in `window` through a plain `UIViewController`, unhides the
 /// window and lays everything out — the `UIKit` analogue of
 /// `orderFrontRegardless`.
-#[cfg(target_os = "ios")]
+///
 /// Off the main thread this breaks the contract: it is reported and the
 /// window is not shown.
+#[cfg(target_os = "ios")]
 pub fn show_capture_window(window: &CaptureWindow, view: &crate::PlatformView, size: Size) {
     let Some(mtm) = objc2::MainThreadMarker::new() else {
         contract_violation!("show_capture_window runs on the main thread; the window is not shown");
@@ -445,14 +446,16 @@ pub fn view_template_image(
     ))
 }
 
-/// Any connected `UIWindowScene`:
-/// capture windows must attach to a real scene, and any connected one works.
+/// Any connected `UIWindowScene`.
+///
+/// Capture windows must attach to a real scene, and any connected one works.
 /// `None` also in a process without a `UIApplication`, which connects no
 /// scene.
-#[cfg(target_os = "ios")]
-#[must_use]
+///
 /// Off the main thread this breaks the contract: it is reported and no scene
 /// is answered.
+#[cfg(target_os = "ios")]
+#[must_use]
 pub fn any_window_scene() -> Option<Retained<objc2_ui_kit::UIWindowScene>> {
     let Some(mtm) = objc2::MainThreadMarker::new() else {
         contract_violation!("any_window_scene runs on the main thread; no scene is answered");
