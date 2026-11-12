@@ -4949,6 +4949,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// state: a disabled control samples an at-rest [`WidgetInteractionState`]
     /// (with its `disabled` flag set) and registers no hover target, so the
     /// pointer neither hovers nor presses it.
+    #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
     pub(crate) fn bind_control_interaction_target(
         &mut self,
         key: InteractionKey,
