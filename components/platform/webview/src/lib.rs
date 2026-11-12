@@ -1115,6 +1115,13 @@ impl WebViewOpen {
         })
     }
 
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::unnecessary_wraps,
+            reason = "only a native asset view can fail to resolve its entry URL; the web build has no asset views"
+        )
+    )]
     fn create(
         self,
         controller: &WebViewController,

@@ -537,7 +537,7 @@ struct HandleInner {
 
 /// The local-frame capacity every wrapper call runs under — the fixed
 /// arguments plus a margin. The script-array loop is unbounded, so
-/// `call_str_array` adds the array length on top of this.
+/// `try_call_str_array` adds the array length on top of this.
 const LOCAL_FRAME_CAPACITY: usize = 32;
 
 impl HandleInner {
@@ -660,16 +660,10 @@ impl HandleInner {
         );
     }
 
-    /// Push a `String[]` argument to a one-argument setter. The frame
-    /// covers the array itself plus one local per element — the list is
-    /// unbounded, so a fixed capacity would overflow on enough scripts.
-    fn call_str_array(&self, method: WebViewMethodId, values: &[String]) {
-        self.try_call_str_array(method, values)
-            .unwrap_or_else(|message| panic!("{message}"));
-    }
-
-    /// [`call_str_array`](Self::call_str_array), answering a failure as its
-    /// message.
+    /// Push a `String[]` argument to a one-argument setter, answering a
+    /// failure as its message. The frame covers the array itself plus one
+    /// local per element — the list is unbounded, so a fixed capacity would
+    /// overflow on enough scripts.
     fn try_call_str_array(&self, method: WebViewMethodId, values: &[String]) -> Result<(), String> {
         let id = self.methods.id(method);
         let locals = LOCAL_FRAME_CAPACITY + values.len();
