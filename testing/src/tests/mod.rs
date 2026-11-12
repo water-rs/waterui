@@ -307,7 +307,7 @@ mod token_probe {
         TabsMetrics, TextCaretMotion, ToggleSpec, WidgetInteractionState, WidgetTheme,
     };
     use hydrolysis::theme::{CheckboxLook, SwitchDrag, SwitchLook};
-    use kurbo::Rect;
+    use kurbo::{Point, Rect};
     use waterui::animation::Animation;
     use waterui::color::Srgb;
     use waterui::component::text;
