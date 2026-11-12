@@ -89,8 +89,11 @@ pub use widget::{
 use waterui::{
     Environment, Plugin,
     color::{Srgb, WorkingColor},
-    reactive::{Computed, SignalExt as _, signal::IntoComputed},
-    theme::{ColorScheme, ColorSettings, FontSettings, Theme, installed_color_scheme},
+    reactive::signal::IntoComputed,
+    theme::{
+        ColorDerivation, ColorScheme, ColorSettings, FontSettings, Theme, color as token,
+        install_color_derivation, installed_color_scheme,
+    },
 };
 
 /// The framework's baseline palette for one colour scheme, as encoded sRGB.
@@ -184,13 +187,46 @@ fn color(rgb: u32) -> WorkingColor {
     Srgb::from_u32(rgb).resolve()
 }
 
-/// One palette slot as a signal over `scheme`: a scheme change re-resolves
-/// exactly the views that read the slot.
+/// Installs every palette slot as a derivation from the colour scheme: a
+/// scheme change re-resolves exactly the views that read a slot, and a scheme
+/// installed on a subtree re-derives the slots that subtree resolves.
 #[cfg(hydrolysis_runtime)]
-fn slot(scheme: &Computed<ColorScheme>, pick: fn(&Palette) -> u32) -> Computed<WorkingColor> {
-    scheme
-        .map(move |scheme| color(pick(palette(scheme))))
-        .computed()
+fn install_default_colors(env: &mut Environment) {
+    macro_rules! slots {
+        ($( $slot:ident => $field:ident ),* $(,)?) => {
+            $(
+                install_color_derivation::<token::$slot>(
+                    env,
+                    ColorDerivation::new(|scheme| color(palette(scheme).$field)),
+                );
+            )*
+        };
+    }
+    slots! {
+        Background => background,
+        Surface => surface,
+        SurfaceVariant => surface_variant,
+        Border => border,
+        Foreground => foreground,
+        MutedForeground => muted_foreground,
+        TertiaryForeground => tertiary_foreground,
+        Accent => accent,
+        AccentContainer => accent_container,
+        AccentForeground => accent_foreground,
+        Tertiary => tertiary,
+        TertiaryContainer => tertiary_container,
+        SelectionContainer => selection_container,
+        SelectionForeground => selection_foreground,
+        UnemphasizedSelection => unemphasized_selection,
+        Error => error,
+        ErrorForeground => error_foreground,
+    }
+    install_color_derivation::<token::DisabledForeground>(
+        env,
+        ColorDerivation::new(|scheme| {
+            color(palette(scheme).foreground).with_alpha(DISABLED_FOREGROUND_ALPHA)
+        }),
+    );
 }
 
 /// Writes `resolved` into `scheme`, only when it moved.
@@ -218,9 +254,10 @@ pub(crate) fn sync_color_scheme(scheme: &nami::Binding<ColorScheme>, resolved: C
 /// the host keeps current — the system appearance on macOS — or a fixed
 /// scheme where the host has none. The installed colour scheme is the
 /// application's own when it installed one and `appearance` otherwise, and
-/// the framework default colours are signals over that scheme, so a plain
-/// view is drawn in the right scheme and an appearance change updates the
-/// bound tokens in place, never rebuilding the tree.
+/// the framework default colours are derivations from that scheme, so a
+/// plain view is drawn in the right scheme, an appearance change updates the
+/// bound tokens in place, never rebuilding the tree, and a scheme installed
+/// on a subtree re-derives the tokens of that subtree.
 ///
 /// The style installs into an environment that already carries the
 /// application's entries layered over the framework defaults, so a style
@@ -237,38 +274,13 @@ pub(crate) fn install_theme_tokens(
     let scheme = installed_color_scheme(env).unwrap_or_else(|| appearance.into_computed());
     let mut defaults = Environment::new();
     Theme::new()
-        .color_scheme(scheme.clone())
-        .colors(
-            ColorSettings::new()
-                .background(slot(&scheme, |p| p.background))
-                .surface(slot(&scheme, |p| p.surface))
-                .surface_variant(slot(&scheme, |p| p.surface_variant))
-                .border(slot(&scheme, |p| p.border))
-                .foreground(slot(&scheme, |p| p.foreground))
-                .muted_foreground(slot(&scheme, |p| p.muted_foreground))
-                .tertiary_foreground(slot(&scheme, |p| p.tertiary_foreground))
-                .disabled_foreground(
-                    scheme
-                        .map(|scheme| {
-                            color(palette(scheme).foreground).with_alpha(DISABLED_FOREGROUND_ALPHA)
-                        })
-                        .computed(),
-                )
-                .accent(slot(&scheme, |p| p.accent))
-                .accent_container(slot(&scheme, |p| p.accent_container))
-                .accent_foreground(slot(&scheme, |p| p.accent_foreground))
-                .tertiary(slot(&scheme, |p| p.tertiary))
-                .tertiary_container(slot(&scheme, |p| p.tertiary_container))
-                .selection_container(slot(&scheme, |p| p.selection_container))
-                .selection_foreground(slot(&scheme, |p| p.selection_foreground))
-                .unemphasized_selection(slot(&scheme, |p| p.unemphasized_selection))
-                .error(slot(&scheme, |p| p.error))
-                .error_foreground(slot(&scheme, |p| p.error_foreground))
-                // Scrim: black at 32% over the content beneath a modal layer.
-                .scrim(Srgb::BLACK.resolve().with_alpha(0.32)),
-        )
+        .color_scheme(scheme)
+        // Scrim: black at 32% over the content beneath a modal layer, the
+        // same in both schemes.
+        .colors(ColorSettings::new().scrim(Srgb::BLACK.resolve().with_alpha(0.32)))
         .fonts(FontSettings::default_scale())
         .install(&mut defaults);
+    install_default_colors(&mut defaults);
     let mut styled = env.layered_on(&defaults);
     if let Some(style) = style {
         style.install_tokens(&mut styled);

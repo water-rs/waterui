@@ -349,9 +349,15 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 }
                 node.flush_content(renderer, ctx, env);
             }
-            Self::Retain(node) => node
-                .child
-                .flush(renderer, ctx, env, kurbo::Affine::IDENTITY),
+            Self::Retain(node) => {
+                #[cfg(hydrolysis_video_plane)]
+                if let Some(plane) = &node.plane {
+                    let (table, placement) = plane.placement();
+                    renderer.register_platform_view_placement(ctx.bounds(), table, placement);
+                }
+                node.child
+                    .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
+            }
             Self::Env(node) => {
                 renderer.register_modal_scope(&node.env);
                 node.child
@@ -1238,6 +1244,13 @@ fn record_hosted_gpu<E, R>(
     #[cfg(not(feature = "accessibility"))]
     emit_graphics_image_accessibility(renderer, Some(ctx), env, label, value, wants_input);
     renderer.pop_render_owner();
+    // The HWUI painter hosts the view in a platform surface of its own,
+    // placed like any other platform view.
+    #[cfg(hydrolysis_hwui_gpu)]
+    {
+        let (table, placement) = runtime.borrow().placement();
+        renderer.register_platform_view_placement(ctx.bounds(), table, placement);
+    }
     if wants_input {
         renderer.register_surface_input_target(
             ctx.bounds(),

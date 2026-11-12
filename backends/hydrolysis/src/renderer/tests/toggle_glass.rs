@@ -55,8 +55,8 @@ const TRAVEL: f64 = 22.0;
 /// §8.2's lens growth: the knob scales by `1 + 0.35·p`.
 const LENS_GROWTH: f64 = 0.35;
 
-const GLASS_SHADER: MaterialShader = MaterialShader::new(0);
-const GLASS: CaptureClass = CaptureClass::new(0);
+pub(super) const GLASS_SHADER: MaterialShader = MaterialShader::new(0);
+pub(super) const GLASS: CaptureClass = CaptureClass::new(0);
 /// `backdrop_sample + params[0]`: an effect that is visible in the pixels.
 const TINT_WGSL: &str = "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> { return backdrop_sample(px.p) + params[0]; }\n";
 
@@ -199,7 +199,7 @@ fn glass_switch(spec: &ToggleSpec, env: &Environment) -> SwitchLook {
 }
 
 /// The shader and capture class the lens uses.
-fn plan() -> ChromePlan {
+pub(super) fn plan() -> ChromePlan {
     ChromePlan {
         shaders: vec![(GLASS_SHADER, BackdropShaderSource::wgsl(TINT_WGSL))],
         captures: vec![(

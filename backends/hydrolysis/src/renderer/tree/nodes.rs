@@ -1486,6 +1486,10 @@ pub struct RetainNode<E: crate::text::TextEngine> {
     pub(crate) core: NodeCore<E>,
     pub(super) _retain: Retain,
     pub(super) child: RenderNode<E>,
+    /// The decoder plane the GPU video player's host wraps its picture in:
+    /// a platform view placed at the child's frame, below it.
+    #[cfg(hydrolysis_video_plane)]
+    pub(super) plane: Option<crate::runner::android::video_plane::VideoPlane>,
 }
 
 pub struct EnvNode<E: crate::text::TextEngine> {

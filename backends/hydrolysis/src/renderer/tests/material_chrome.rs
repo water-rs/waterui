@@ -14,9 +14,9 @@ use std::rc::{Rc, Weak};
 use waterui_core::Binding;
 
 use cherenkov_record::{
-    BackdropEffect, BackdropShaderSource, CaptureClass, CaptureLevels, CaptureScale, Live,
-    MaterialCapture, MaterialEffect, MaterialGrouping, MaterialRegistry, MaterialShader,
-    OuterExtent, ShapeData, UnionSmoothing,
+    BackdropEffect, BackdropShaderSource, CaptureClass, CaptureLevels, CaptureScale,
+    ContainerRecipe, GroupMember, Live, MaterialCapture, MaterialEffect, MaterialGrouping,
+    MaterialRegistry, MaterialShader, OuterExtent, ShapeData, UnionSmoothing,
 };
 use kurbo::{Affine, Rect, RoundedRect, Shape as _};
 use nami::SignalExt as _;
@@ -68,6 +68,7 @@ pub(super) fn glass_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
             (GLASS_SHADER, BackdropShaderSource::wgsl(TINT_WGSL)),
             (OTHER_SHADER, BackdropShaderSource::wgsl(TINT_WGSL)),
         ],
+        containers: Vec::new(),
         captures: vec![
             (
                 GLASS,
@@ -2062,4 +2063,376 @@ fn a_backdrop_button_press_moves_shape_and_effect_live() {
         recordings,
         "the press recorded no chrome"
     );
+}
+
+/// A `Shared` class whose capture is coarser than `GLASS`'s, so a group's
+/// spec shows which class it was built from.
+const WIDE: CaptureClass = CaptureClass::new(5);
+
+/// What a container recipe returns for `members`: the capture class of the
+/// largest member, and for each member an effect tagged with the class
+/// the group resolved, the class the member recorded and the member's
+/// position in the slice. Depends on the set of members, never their
+/// order, except for the position tag the tests read as a set.
+#[derive(Debug)]
+struct LargestRecipe;
+
+fn area(shape: &ShapeData) -> f64 {
+    let bounds = shape.bounds();
+    bounds.width() * bounds.height()
+}
+
+impl ContainerRecipe for LargestRecipe {
+    fn capture(&self, members: &[GroupMember<'_>]) -> CaptureClass {
+        members
+            .iter()
+            .max_by(|a, b| area(a.shape).total_cmp(&area(b.shape)))
+            .expect("a group has members")
+            .capture
+    }
+
+    fn effects(&self, members: &[GroupMember<'_>]) -> Vec<MaterialEffect> {
+        let class = self.capture(members);
+        members
+            .iter()
+            .enumerate()
+            .map(|(index, member)| {
+                MaterialEffect::new(vec![
+                    tag(class.raw()),
+                    tag(member.capture.raw()),
+                    tag(u32::try_from(index).expect("a few members")),
+                ])
+            })
+            .collect()
+    }
+}
+
+/// A small integer as an effect uniform, exact in `f32`.
+fn tag(value: u32) -> f32 {
+    f32::from(u16::try_from(value).expect("test tags are small"))
+}
+
+/// `glass_plan` with `WIDE` registered and `LargestRecipe` the container
+/// recipe of `GLASS_SHADER` — `OTHER_SHADER` has none.
+fn container_plan(draws: Vec<ChromeDraw>) -> ChromePlan {
+    let mut plan = glass_plan(draws);
+    plan.captures.push((
+        WIDE,
+        MaterialCapture {
+            scale: CaptureScale::new(0.25).expect("0.25 is a valid capture scale"),
+            levels: CaptureLevels::ONE,
+            pyramid: cherenkov::CapturePyramid::Box,
+            grouping: MaterialGrouping::Shared,
+            blend_space: cherenkov::BlendSpace::Linear,
+        },
+    ));
+    plan.containers.push((GLASS_SHADER, Rc::new(LargestRecipe)));
+    plan
+}
+
+const SMALL: Rect = Rect::new(0.0, 0.0, 8.0, 8.0);
+const LARGE: Rect = Rect::new(0.0, 0.0, 40.0, 40.0);
+
+/// A `class` material of `shader` over `shape`, whose own effect is
+/// `[99]` — never a value the recipe returns.
+fn sized_draw(
+    class: CaptureClass,
+    shader: MaterialShader,
+    shape: impl Into<Live<RoundedRect>>,
+) -> ChromeDraw {
+    ChromeDraw {
+        shape: shape.into().into_shared(),
+        shader,
+        capture: class,
+        effect: Live::from(MaterialEffect::new(vec![99.0])).into_shared(),
+    }
+}
+
+fn rounded(rect: Rect) -> RoundedRect {
+    RoundedRect::from_rect(rect, 2.0)
+}
+
+/// The uniforms the mirror's member `layer` binds.
+fn bound_uniforms(
+    renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+    layer: cherenkov::LayerId,
+) -> Vec<f32> {
+    let node = mirrored_node(renderer, layer);
+    let Some(BackdropEffect::Shader(effect)) = node
+        .backdrop
+        .as_ref()
+        .expect("the member binds a sample")
+        .effect()
+    else {
+        panic!("the member's effect is its shader effect")
+    };
+    effect.uniforms.clone()
+}
+
+/// The member whose clip is `rect`.
+fn member_clipped_to(
+    renderer: &crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+    rect: Rect,
+) -> cherenkov::LayerId {
+    let [member] = <[_; 1]>::try_from(
+        mirror_chrome_layers(renderer)
+            .into_iter()
+            .filter(|&member| {
+                mirrored_node(renderer, member)
+                    .clip
+                    .as_ref()
+                    .map(ShapeData::bounds)
+                    == Some(rect)
+            })
+            .collect::<Vec<_>>(),
+    )
+    .expect("one member is clipped to the rect");
+    member
+}
+
+/// Members of different classes under one scope whose shader has a
+/// container recipe share one group built from the class the recipe
+/// resolves, and each binds the effect the recipe returned for it
+/// (water-rs/waterui#2834).
+#[test]
+fn a_containers_members_share_one_group_at_the_resolved_class() {
+    let renderer = mirrored(
+        tap_color("#27272A").material_group(),
+        MinimalTestTheme {
+            chrome: container_plan(vec![
+                sized_draw(GLASS, GLASS_SHADER, rounded(SMALL)),
+                sized_draw(WIDE, GLASS_SHADER, rounded(LARGE)),
+            ]),
+            ..Default::default()
+        },
+    );
+    assert_eq!(mirror_chrome_layers(&renderer).len(), 2);
+    assert_eq!(
+        renderer.mirror().chrome_groups().chrome_group_count(),
+        1,
+        "one container group holds both members whatever their classes",
+    );
+    let small = member_clipped_to(&renderer, rounded(SMALL).bounding_box());
+    let large = member_clipped_to(&renderer, rounded(LARGE).bounding_box());
+    let group = |member| {
+        mirrored_node(&renderer, member)
+            .backdrop
+            .as_ref()
+            .expect("the member binds a sample")
+            .group()
+    };
+    assert_eq!(group(small), group(large), "both sample one group");
+    let specs = renderer.mirror().spec_log();
+    assert_eq!(
+        specs.last().map(|spec| spec.scale()),
+        CaptureScale::new(0.25).ok(),
+        "the group stands at the class the recipe resolved, the largest member's",
+    );
+    let (small, large) = (
+        bound_uniforms(&renderer, small),
+        bound_uniforms(&renderer, large),
+    );
+    assert_eq!(
+        (small[..2].to_vec(), large[..2].to_vec()),
+        (
+            vec![tag(WIDE.raw()), tag(GLASS.raw())],
+            vec![tag(WIDE.raw()), tag(WIDE.raw())],
+        ),
+        "each member binds the recipe's effect for it, tagged with the resolved class",
+    );
+    let mut positions = [small[2], large[2]];
+    positions.sort_by(f32::total_cmp);
+    assert_eq!(positions, [0.0, 1.0], "the recipe saw both members at once");
+}
+
+/// A live shape change of one member runs the recipe's `effects` over both
+/// members again with no flush — the recipe now names the other member
+/// largest.
+#[test]
+fn a_live_shape_change_re_resolves_every_members_effect() {
+    let small = nami::binding(rounded(SMALL));
+    let renderer = mirrored(
+        tap_color("#27272A").material_group(),
+        MinimalTestTheme {
+            chrome: container_plan(vec![
+                sized_draw(GLASS, GLASS_SHADER, small.map(|shape| shape)),
+                sized_draw(WIDE, GLASS_SHADER, rounded(LARGE)),
+            ]),
+            ..Default::default()
+        },
+    );
+    let wide_member = member_clipped_to(&renderer, rounded(LARGE).bounding_box());
+    let glass_member = member_clipped_to(&renderer, rounded(SMALL).bounding_box());
+    assert_eq!(bound_uniforms(&renderer, glass_member)[0], tag(WIDE.raw()));
+    let group = mirrored_node(&renderer, wide_member)
+        .backdrop
+        .as_ref()
+        .expect("the member binds a sample")
+        .group();
+
+    small.set(rounded(Rect::new(0.0, 0.0, 80.0, 80.0)));
+
+    for member in [glass_member, wide_member] {
+        assert_eq!(
+            bound_uniforms(&renderer, member)[0],
+            tag(GLASS.raw()),
+            "the recipe re-resolved both members with no flush",
+        );
+    }
+    assert_eq!(
+        mirrored_node(&renderer, wide_member)
+            .backdrop
+            .as_ref()
+            .expect("the member binds a sample")
+            .group(),
+        group,
+        "a shape change keeps the group",
+    );
+}
+
+/// Outside any scope a member is a group of its own and binds its own
+/// effect; a shader with no recipe keeps class keying inside a scope.
+#[test]
+fn members_outside_a_scope_or_without_a_recipe_keep_their_own_terms() {
+    let alone = mirrored(
+        tap_view(),
+        MinimalTestTheme {
+            chrome: container_plan(vec![
+                sized_draw(GLASS, GLASS_SHADER, rounded(SMALL)),
+                sized_draw(WIDE, GLASS_SHADER, rounded(LARGE)),
+            ]),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        alone.mirror().chrome_groups().chrome_group_count(),
+        2,
+        "members outside every scope are groups of their own",
+    );
+    for member in mirror_chrome_layers(&alone) {
+        assert_eq!(
+            bound_uniforms(&alone, member),
+            [99.0],
+            "a member outside every scope keeps the effect it recorded",
+        );
+    }
+
+    let classes = mirrored(
+        tap_color("#27272A").material_group(),
+        MinimalTestTheme {
+            chrome: container_plan(vec![
+                sized_draw(GLASS, OTHER_SHADER, rounded(SMALL)),
+                sized_draw(WIDE, OTHER_SHADER, rounded(LARGE)),
+            ]),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        classes.mirror().chrome_groups().chrome_group_count(),
+        2,
+        "a shader without a recipe keys its members by class",
+    );
+    for member in mirror_chrome_layers(&classes) {
+        assert_eq!(
+            bound_uniforms(&classes, member),
+            [99.0],
+            "a member keeps the effect it recorded",
+        );
+    }
+}
+
+/// A recipe that breaks its contract: `capture` names `class`, and
+/// `effects` is one short for a group of two or more when `short`.
+#[derive(Debug)]
+struct BrokenRecipe {
+    class: CaptureClass,
+    short: bool,
+}
+
+impl ContainerRecipe for BrokenRecipe {
+    fn capture(&self, _: &[GroupMember<'_>]) -> CaptureClass {
+        self.class
+    }
+
+    fn effects(&self, members: &[GroupMember<'_>]) -> Vec<MaterialEffect> {
+        let count = if self.short && members.len() > 1 {
+            members.len() - 1
+        } else {
+            members.len()
+        };
+        vec![MaterialEffect::new(vec![7.0]); count]
+    }
+}
+
+/// A container scene of two `GLASS` members under `recipe`.
+fn broken_container(
+    recipe: BrokenRecipe,
+) -> crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine> {
+    let mut plan = glass_plan(vec![
+        sized_draw(GLASS, GLASS_SHADER, rounded(SMALL)),
+        sized_draw(GLASS, GLASS_SHADER, rounded(LARGE)),
+    ]);
+    plan.containers.push((GLASS_SHADER, Rc::new(recipe)));
+    mirrored(
+        tap_color("#27272A").material_group(),
+        MinimalTestTheme {
+            chrome: plan,
+            ..Default::default()
+        },
+    )
+}
+
+/// An `effects` of the wrong length is a contract violation, and every
+/// member keeps the value it last had.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "returned 1 effects for 2 members")
+)]
+fn a_recipe_returning_the_wrong_number_of_effects_is_reported() {
+    let renderer = broken_container(BrokenRecipe {
+        class: GLASS,
+        short: true,
+    });
+    for member in mirror_chrome_layers(&renderer) {
+        assert_eq!(
+            bound_uniforms(&renderer, member),
+            [7.0],
+            "every member keeps the effect of its one-off resolution",
+        );
+    }
+}
+
+/// A recipe naming a class that is not registered is a contract
+/// violation, and the group is left unbound.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "capture class CaptureClass(77), which is not registered")
+)]
+fn a_recipe_naming_an_unregistered_class_is_reported() {
+    let renderer = broken_container(BrokenRecipe {
+        class: CaptureClass::new(77),
+        short: false,
+    });
+    for member in mirror_chrome_layers(&renderer) {
+        assert!(mirrored_node(&renderer, member).backdrop.is_none());
+    }
+}
+
+/// A recipe naming a class that groups `Solo` is a contract violation, and
+/// the group is left unbound.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "capture class CaptureClass(1), which groups Solo")
+)]
+fn a_recipe_naming_a_solo_class_is_reported() {
+    let renderer = broken_container(BrokenRecipe {
+        class: FLAT,
+        short: false,
+    });
+    for member in mirror_chrome_layers(&renderer) {
+        assert!(mirrored_node(&renderer, member).backdrop.is_none());
+    }
 }

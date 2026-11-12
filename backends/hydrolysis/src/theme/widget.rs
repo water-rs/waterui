@@ -746,10 +746,20 @@ pub trait WidgetTheme {
     /// [`CaptureClass`]: cherenkov_record::CaptureClass
     /// [`MaterialCapture`]: cherenkov_record::MaterialCapture
     ///
+    /// The theme also registers here a [`ContainerRecipe`] for each shader
+    /// whose members under one `.material_group()` scope are drawn as one
+    /// container: the backend resolves such a group through the recipe,
+    /// which names the group's capture class from all its members and
+    /// gives each member its effect, instead of grouping the members by
+    /// the class each recorded.
+    ///
+    /// [`ContainerRecipe`]: cherenkov_record::ContainerRecipe
+    ///
     /// The contract a backend that realizes backdrop materials follows: it
     /// calls this once, before it draws any chrome, and keeps the
     /// registry; it registers every shader with each engine it attaches
-    /// and creates material groups from the capture classes. The theme
+    /// and creates material groups from the capture classes, or from the
+    /// class a container recipe resolves. The theme
     /// holds no engine handles. The default registers nothing, which is
     /// right for a theme that records no backdrop material.
     fn register_backdrop_shaders(&self, _registry: &mut MaterialRegistry) {}
