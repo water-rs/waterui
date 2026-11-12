@@ -24,7 +24,7 @@ use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::ProducerWake;
 use crate::renderer::effects::FilteredRuntime;
 use crate::renderer::mount::backdrop::{
-    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload,
+    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload, ChromeParams,
     MaterialBackdropGroups, MaterialMembership, MemberBind,
 };
 use crate::renderer::recording::SceneResources;
@@ -175,7 +175,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_cpu::Raster {
         _groups: &mut ChromeBackdropGroups<cherenkov::BackdropGroup, Infallible, E>,
         _layer: &Layer,
         _key: ChromeGroupKey,
-        _params: cherenkov_record::MaterialCapture,
+        _params: ChromeParams,
         _display_scale: f64,
         _membership: &MaterialMembership<E>,
         payload: impl FnOnce() -> ChromeMemberPayload<Infallible>,

@@ -21,10 +21,11 @@ use waterui_core::contract_violation;
 use waterui_graphics::backend::HeldResources;
 
 use super::backdrop::{
-    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, MaterialBackdropGroups,
+    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeParams, MaterialBackdropGroups,
     MaterialMembership, MemberBind, ScopeAnchors, scope_id,
 };
 use super::cell::NodeCell;
+use super::container::{ContainerMember, solo_effect};
 use super::motion::{LayerMotion, Motion};
 use super::placement::Placement;
 use super::program::{
@@ -339,9 +340,9 @@ pub struct MemberLayer<E: crate::text::TextEngine> {
     /// clip, its live effect binds the backdrop sample — and a group
     /// rebuild rebinds them from these handles.
     chrome: Option<ChromeMaterial>,
-    /// The class's resolved capture parameters — the terms a no-program
-    /// commit re-keys and re-joins by.
-    params: Option<cherenkov_record::MaterialCapture>,
+    /// The member's own class and its resolved capture parameters — the
+    /// terms a no-program commit re-keys and re-joins by.
+    params: Option<ChromeParams>,
     /// The member's group membership, held so its layers' drop ends it.
     membership: Option<MaterialMembership<E>>,
 }
@@ -915,6 +916,9 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
                 .map(|guard| node_want(guard))
                 .collect::<Vec<_>>();
             reconcile(cx.tx, window, &wants, window_committed, window_token);
+            // Container groups resolve once every member of this commit has
+            // joined, before the sweeps release the emptied ones.
+            T::settle_chrome(cx.host, cx.tx, cx.chrome_groups, cx.display_scale);
             cx.groups.sweep();
             cx.chrome_groups.sweep();
             cx.scope_anchors.sweep();
@@ -2470,14 +2474,14 @@ fn lower_chrome<T: LayerTarget<E>, E: crate::text::TextEngine>(
     } else {
         None
     };
-    if let Some((class, params)) = registered {
+    if let Some(params) = registered {
         let key = ChromeGroupKey::new(
             member.layer.id(),
-            chrome.material.scope(),
-            class,
-            params.grouping,
+            &chrome.material,
+            params.capture.grouping,
             canvas,
             cx.scope_anchors,
+            &T::material_terms(cx.host).registry,
         );
         let membership = member
             .membership
@@ -2492,7 +2496,7 @@ fn lower_chrome<T: LayerTarget<E>, E: crate::text::TextEngine>(
             params,
             cx.display_scale,
             membership,
-            || chrome_member_payload::<T, E>(host, chrome),
+            || chrome_member_payload::<T, E>(host, chrome, key),
             MemberBind::Always,
         );
         member.params = Some(params);
@@ -2506,19 +2510,16 @@ fn lower_chrome<T: LayerTarget<E>, E: crate::text::TextEngine>(
     members.len() - 1
 }
 
-/// The capture class and its terms `chrome` draws with, or `None` after a
+/// The capture class and its terms `chrome` records, or `None` after a
 /// reported violation when the theme's registry lacks the class or shader
 /// the material names, or the engine holds no handle for the shader.
 fn chrome_terms<T: LayerTarget<E>, E: crate::text::TextEngine>(
     host: &T::Host,
     chrome: &ChromeMaterial,
-) -> Option<(
-    cherenkov_record::CaptureClass,
-    cherenkov_record::MaterialCapture,
-)> {
+) -> Option<ChromeParams> {
     let terms = T::material_terms(host);
     let class = chrome.material.capture();
-    let Some(params) = terms.registry.capture_class(class).copied() else {
+    let Some(capture) = terms.registry.capture_class(class).copied() else {
         contract_violation!(
             "hydrolysis materials: capture class {class:?} is not registered; the theme \
              declares its classes through `WidgetTheme::register_backdrop_shaders`; the member draws no chrome"
@@ -2540,25 +2541,56 @@ fn chrome_terms<T: LayerTarget<E>, E: crate::text::TextEngine>(
         );
         return None;
     }
-    Some((class, params))
+    Some(ChromeParams { class, capture })
 }
 
 /// The member's own binding payload (water-rs/waterui#1788): the
 /// shader's engine handle and its live effect — the terms the group table
 /// stores on the member's entry so a group rebuild rebinds each member's
-/// own sample.
+/// own sample. A member of the container group `key` (water-rs/waterui#2834)
+/// binds instead a live view of a binding the group's resolution sets,
+/// which starts from the recipe's resolution of the member alone, and
+/// carries its own terms for the group to resolve.
 fn chrome_member_payload<T: LayerTarget<E>, E: crate::text::TextEngine>(
     host: &T::Host,
     chrome: &ChromeMaterial,
+    key: ChromeGroupKey,
 ) -> super::backdrop::ChromeMemberPayload<T::Shader> {
-    let shader = T::material_terms(host)
+    let terms = T::material_terms(host);
+    let shader = terms
         .shaders
         .get(&chrome.material.shader())
         .expect("`chrome_terms` checked that the engine holds a handle for the shader")
         .clone();
+    let material = &chrome.material;
+    let Some(recipe) = key
+        .container()
+        .and_then(|container| terms.registry.container_recipe(container))
+    else {
+        return super::backdrop::ChromeMemberPayload {
+            shader,
+            effect: material.effect().clone(),
+            container: None,
+        };
+    };
+    let own = material.effect();
+    let alone = solo_effect(
+        recipe,
+        material.shader(),
+        material.shape().rebound().value(),
+        material.capture(),
+        own.rebound().value(),
+    );
+    let binding = nami::binding(alone);
     super::backdrop::ChromeMemberPayload {
         shader,
-        effect: chrome.material.effect().clone(),
+        effect: cherenkov_record::Live::from(binding.clone()).into_shared(),
+        container: Some(ContainerMember {
+            shape: material.shape().clone(),
+            effect: own.clone(),
+            capture: material.capture(),
+            binding,
+        }),
     }
 }
 
@@ -2589,14 +2621,13 @@ fn commit_chrome<T: LayerTarget<E>, E: crate::text::TextEngine>(
         ) else {
             continue;
         };
-        let class = chrome.material.capture();
         let key = ChromeGroupKey::new(
             member.layer.id(),
-            chrome.material.scope(),
-            class,
-            params.grouping,
+            &chrome.material,
+            params.capture.grouping,
             canvas,
             cx.scope_anchors,
+            &T::material_terms(cx.host).registry,
         );
         // A no-program commit binds only a new membership or a rebuilt
         // group — an unchanged member keeps its bind and its stored
@@ -2611,7 +2642,7 @@ fn commit_chrome<T: LayerTarget<E>, E: crate::text::TextEngine>(
             params,
             cx.display_scale,
             membership,
-            || chrome_member_payload::<T, E>(host, chrome),
+            || chrome_member_payload::<T, E>(host, chrome, key),
             MemberBind::OnChange,
         );
     }

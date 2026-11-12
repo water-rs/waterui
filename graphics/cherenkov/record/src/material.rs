@@ -36,9 +36,16 @@
 //! the backdrop as it stood where the scope paints, so no member of the
 //! scope — in any class — sees another; a group of its own samples it as
 //! it stood at its member.
+//!
+//! Inside a scope, a material whose shader has a [`ContainerRecipe`]
+//! registered joins the group keyed by the scope, the shader and the
+//! canvas instead, whatever class it recorded: the recipe resolves the
+//! group's capture class from all its members, and each member's effect
+//! within the group. Any other material keeps the class key.
 
 use std::collections::hash_map::Entry;
 use std::num::NonZeroU64;
+use std::rc::Rc;
 
 use rustc_hash::FxHashMap;
 use waterui_contract::contract_violation;
@@ -462,6 +469,40 @@ pub struct LayeredContent {
     pub runs: Vec<MaterialRun>,
 }
 
+/// One member of a container group, as the theme's [`ContainerRecipe`]
+/// sees it.
+///
+/// It carries the member's current shape, in its own recording's logical
+/// coordinates, and the capture class and effect it recorded for itself
+/// standing alone.
+#[derive(Clone, Copy, Debug)]
+pub struct GroupMember<'a> {
+    /// The member's current shape.
+    pub shape: &'a ShapeData,
+    /// The capture class the member recorded.
+    pub capture: CaptureClass,
+    /// The effect the member recorded.
+    pub effect: &'a MaterialEffect,
+}
+
+/// How a theme derives, from all members of a container, the terms the
+/// container's one group is drawn with (registered per shader, since the
+/// effect's uniform layout is the shader's).
+///
+/// # Contract
+/// Both methods depend on the set of members, never on their order.
+/// `capture` names a registered class whose grouping is not
+/// [`MaterialGrouping::Solo`]. `effects` returns one effect per member, in
+/// the order given.
+pub trait ContainerRecipe: core::fmt::Debug {
+    /// The capture class the group is created with; called at commit when
+    /// the group's membership or a member's recording changes.
+    fn capture(&self, members: &[GroupMember<'_>]) -> CaptureClass;
+    /// Each member's effect within the group; called whenever a member's
+    /// shape or effect changes, with no re-recording.
+    fn effects(&self, members: &[GroupMember<'_>]) -> Vec<MaterialEffect>;
+}
+
 /// The backdrop shaders and capture classes a widget theme declares, under
 /// its own keys.
 ///
@@ -473,6 +514,7 @@ pub struct LayeredContent {
 pub struct MaterialRegistry {
     shaders: FxHashMap<MaterialShader, BackdropShaderSource>,
     captures: FxHashMap<CaptureClass, MaterialCapture>,
+    containers: FxHashMap<MaterialShader, Rc<dyn ContainerRecipe>>,
 }
 
 impl MaterialRegistry {
@@ -526,6 +568,35 @@ impl MaterialRegistry {
         self
     }
 
+    /// Registers the container `recipe` for the members whose material
+    /// runs `shader`.
+    ///
+    /// # Contract
+    /// A `shader` registered twice is a contract violation; the first
+    /// registration stays and `recipe` is dropped.
+    pub fn register_container_recipe(
+        &mut self,
+        shader: MaterialShader,
+        recipe: impl ContainerRecipe + 'static,
+    ) -> &mut Self {
+        match self.containers.entry(shader) {
+            Entry::Vacant(slot) => {
+                slot.insert(Rc::new(recipe));
+            }
+            Entry::Occupied(_) => contract_violation!(
+                "backdrop material container recipe for shader {shader:?} is registered twice; \
+                 the first registration stays"
+            ),
+        }
+        self
+    }
+
+    /// The container recipe registered for `shader`.
+    #[must_use]
+    pub fn container_recipe(&self, shader: MaterialShader) -> Option<&dyn ContainerRecipe> {
+        self.containers.get(&shader).map(Rc::as_ref)
+    }
+
     /// The shader source registered under `key`.
     #[must_use]
     pub fn shader(&self, key: MaterialShader) -> Option<&BackdropShaderSource> {
@@ -551,7 +622,7 @@ impl MaterialRegistry {
     /// Whether nothing is registered.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.shaders.is_empty() && self.captures.is_empty()
+        self.shaders.is_empty() && self.captures.is_empty() && self.containers.is_empty()
     }
 }
 
@@ -936,6 +1007,74 @@ mod tests {
             .register_capture_class(CHROME, capture)
             .register_capture_class(CHROME, other);
         assert_eq!(registry.capture_class(CHROME), Some(&capture));
+    }
+
+    /// A recipe that names [`CHROME`] and gives every member its index.
+    #[derive(Debug)]
+    struct IndexRecipe;
+
+    impl ContainerRecipe for IndexRecipe {
+        fn capture(&self, _: &[GroupMember<'_>]) -> CaptureClass {
+            CHROME
+        }
+
+        #[allow(clippy::cast_precision_loss)]
+        fn effects(&self, members: &[GroupMember<'_>]) -> Vec<MaterialEffect> {
+            (0..members.len())
+                .map(|index| MaterialEffect::new(vec![index as f32]))
+                .collect()
+        }
+    }
+
+    #[test]
+    fn a_container_recipe_is_found_by_its_shader() {
+        let mut registry = MaterialRegistry::new();
+        assert!(registry.container_recipe(GLASS).is_none());
+        registry.register_container_recipe(GLASS, IndexRecipe);
+        assert!(!registry.is_empty());
+        assert!(registry.container_recipe(MaterialShader::new(2)).is_none());
+        let recipe = registry.container_recipe(GLASS).expect("registered");
+        let shape = ShapeData::Rect(Rect::new(0., 0., 1., 1.));
+        let effect = MaterialEffect::default();
+        let members = [GroupMember {
+            shape: &shape,
+            capture: CaptureClass::new(1),
+            effect: &effect,
+        }; 2];
+        assert_eq!(recipe.capture(&members), CHROME);
+        assert_eq!(
+            recipe.effects(&members),
+            [MaterialEffect::new(vec![0.]), MaterialEffect::new(vec![1.])]
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(
+            expected = "container recipe for shader MaterialShader(1) is registered twice"
+        )
+    )]
+    fn a_duplicate_container_recipe_keeps_the_first_registration() {
+        #[derive(Debug)]
+        struct Other;
+
+        impl ContainerRecipe for Other {
+            fn capture(&self, _: &[GroupMember<'_>]) -> CaptureClass {
+                CaptureClass::new(9)
+            }
+
+            fn effects(&self, _: &[GroupMember<'_>]) -> Vec<MaterialEffect> {
+                Vec::new()
+            }
+        }
+
+        let mut registry = MaterialRegistry::new();
+        registry
+            .register_container_recipe(GLASS, IndexRecipe)
+            .register_container_recipe(GLASS, Other);
+        let recipe = registry.container_recipe(GLASS).expect("registered");
+        assert_eq!(recipe.capture(&[]), CHROME);
     }
 
     #[test]
