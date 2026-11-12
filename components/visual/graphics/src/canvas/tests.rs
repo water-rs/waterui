@@ -16,7 +16,7 @@ use super::{
 use crate::color::WorkingColor;
 use crate::draw::{self, Content, ContentChange, LayoutSize, Operand};
 use crate::scene::resources::tests::{Mount, null_resources, removed_images};
-use crate::scene_view::{SceneContent, SceneFrame, SceneInvalidator, SceneUpdate};
+use crate::scene_view::{NextFrame, SceneContent, SceneFrame, SceneInvalidator, SceneUpdate};
 
 fn mount(canvas: Canvas) -> CanvasScene {
     CanvasScene::mount(canvas, &Environment::new())
@@ -208,7 +208,9 @@ fn a_scope_records_again_alone() {
     assert_eq!(invalidations.get(), 1, "the host is asked for one pass");
     assert_eq!(
         update(&mut scene),
-        SceneUpdate::Retained { again: false },
+        SceneUpdate::Retained {
+            next: NextFrame::Idle
+        },
         "the installed recording stays"
     );
     assert_eq!(edited(&mut content), 5);
@@ -409,12 +411,13 @@ fn time_advances_only_while_observed() {
     }));
     let (resources, _events) = null_resources();
     let mut names = resources.recording();
-    let mut animating = true;
+    let mut animating = NextFrame::Perpetual;
     let _ = Content::record(&LayoutSize::new(), |recorder| {
         animating = idle.build_scene(recorder, &mut names, 1.0, 1.0);
     });
-    assert!(
-        !animating,
+    assert_eq!(
+        animating,
+        NextFrame::Idle,
         "a canvas that does not read time asks for no frame"
     );
 
@@ -428,7 +431,11 @@ fn time_advances_only_while_observed() {
     let _ = Content::record(&LayoutSize::new(), |recorder| {
         animating = clocked.build_scene(recorder, &mut names, 1.0, 1.0);
     });
-    assert!(animating, "a canvas bound to time asks for the next frame");
+    assert_eq!(
+        animating,
+        NextFrame::Perpetual,
+        "a canvas bound to time asks for every next frame, with no end"
+    );
     drop(names.finish());
 }
 
@@ -449,8 +456,10 @@ fn time_is_the_presented_frames_clock() {
 
     assert_eq!(
         update_at(&mut scene, start + core::time::Duration::from_millis(48)),
-        SceneUpdate::Retained { again: true },
-        "a canvas bound to time keeps asking for frames"
+        SceneUpdate::Retained {
+            next: NextFrame::Perpetual
+        },
+        "a canvas bound to time keeps asking for frames, with no end"
     );
     let Some(ContentChange::Update(updates)) = content.take_change() else {
         panic!("a presented frame updates the time operand in place");
@@ -482,13 +491,17 @@ fn time_until_holds_at_its_end_and_stops_asking_for_frames() {
 
     assert_eq!(
         update_at(&mut scene, start + core::time::Duration::from_millis(48)),
-        SceneUpdate::Retained { again: true },
-        "before its end the clock keeps asking for frames"
+        SceneUpdate::Retained {
+            next: NextFrame::Finite
+        },
+        "before its end the clock keeps asking for frames, toward an end"
     );
     let _ = content.take_change();
     assert_eq!(
         update_at(&mut scene, start + core::time::Duration::from_millis(500)),
-        SceneUpdate::Retained { again: false },
+        SceneUpdate::Retained {
+            next: NextFrame::Idle
+        },
         "at its end the clock stops asking for frames"
     );
     let Some(ContentChange::Update(updates)) = content.take_change() else {
@@ -531,7 +544,7 @@ mod text {
     use crate::canvas::TextPlacement;
     use crate::draw::{Content, LayoutSize, ResourceError, TextLayoutId};
     use crate::scene::resources::tests::null_resources;
-    use crate::scene_view::{SceneContent as _, SceneFrame, SceneUpdate};
+    use crate::scene_view::{NextFrame, SceneContent as _, SceneFrame, SceneUpdate};
 
     /// A registration naming a layout the test made up.
     struct Layout(TextLayoutId);
@@ -637,7 +650,9 @@ mod text {
         assert_eq!(invalidations.get(), 1, "a new width asks for a pass");
         assert_eq!(
             scene.update_scene(&resources, frame()),
-            SceneUpdate::Retained { again: false }
+            SceneUpdate::Retained {
+                next: NextFrame::Idle
+            }
         );
         words.set(text("two"));
         assert_eq!(invalidations.get(), 2, "a new text asks for a pass");

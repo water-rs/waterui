@@ -18,7 +18,7 @@ use support::{mount_rendered, node_bounds_with_role};
 use waterui::View;
 use waterui::ViewExt as _;
 use waterui::component::hstack;
-use waterui::graphics::backend::{RecordingResources, SceneContent, SceneView};
+use waterui::graphics::backend::{NextFrame, RecordingResources, SceneContent, SceneView};
 use waterui::layout::frame::Frame;
 use waterui::layout::scroll::ScrollView;
 use waterui::text::text;
@@ -34,7 +34,7 @@ impl SceneContent for TestSceneContent {
         _resources: &mut RecordingResources<'_>,
         width: f32,
         height: f32,
-    ) -> bool {
+    ) -> NextFrame {
         self.0.set(true);
         recorder.fill(
             Rect::from_origin_size(
@@ -45,7 +45,7 @@ impl SceneContent for TestSceneContent {
                 1.0, 0.0, 0.0, 1.0,
             ])),
         );
-        false
+        NextFrame::Idle
     }
 
     fn rebuild_for_engine(&mut self) {}
@@ -70,7 +70,7 @@ impl SceneContent for NaturallySizedContent {
         _resources: &mut RecordingResources<'_>,
         width: f32,
         height: f32,
-    ) -> bool {
+    ) -> NextFrame {
         recorder.fill(
             Rect::from_origin_size(
                 kurbo::Point::ZERO,
@@ -80,7 +80,7 @@ impl SceneContent for NaturallySizedContent {
                 0.0, 0.4, 1.0, 1.0,
             ])),
         );
-        false
+        NextFrame::Idle
     }
 
     fn rebuild_for_engine(&mut self) {}
@@ -274,4 +274,113 @@ fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
     assert_eq!(snapshot.width(), 96);
     assert_eq!(snapshot.height(), 72);
     assert_eq!(snapshot.rgba8().len(), 96 * 72 * 4);
+}
+
+/// One 60 Hz frame of the pumped clock.
+const FRAME: std::time::Duration = std::time::Duration::from_micros(16_667);
+
+/// A rendered runtime showing a 40 x 40 canvas whose square slides along the
+/// clock `clock` hands it, the seconds it has read reported to `seen`.
+fn clocked_canvas(
+    seen: &Rc<Cell<std::time::Duration>>,
+    clock: impl Fn(&waterui::graphics::canvas::Cx) -> waterui::reactive::Computed<std::time::Duration>
+    + 'static,
+) -> hydrolysis::HeadlessRuntime {
+    use hydrolysis::testing::TestStyle;
+    use waterui::SignalExt as _;
+    use waterui::graphics::canvas::Canvas;
+    use waterui::graphics::color::WorkingColor;
+    use waterui_core::AnyView;
+    use waterui_core::handler::AnyViewBuilder;
+    use waterui_core::layout::{Affine2, Rect};
+
+    let clock = Rc::new(clock);
+    let seen = Rc::clone(seen);
+    let content = AnyViewBuilder::new(move || {
+        let clock = Rc::clone(&clock);
+        let seen = Rc::clone(&seen);
+        AnyView::new(
+            Canvas::new(move |cx| {
+                let time = clock(cx);
+                let seen = Rc::clone(&seen);
+                cx.transform(
+                    time.map(move |t| {
+                        seen.set(t);
+                        Affine2::translate(t.as_secs_f32(), 0.0)
+                    }),
+                    |cx| {
+                        cx.fill(
+                            Rect::from_size(Size::new(8.0, 8.0)),
+                            WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+                        );
+                    },
+                );
+            })
+            .size(40.0, 40.0),
+        )
+    });
+    hydrolysis::HeadlessRuntime::new_for_tests(
+        Environment::new(),
+        content,
+        96,
+        72,
+        TestStyle::new(),
+    )
+}
+
+/// A canvas following its unbounded clock asks for every frame for as long
+/// as it is shown: the runtime presents them, and counts them as perpetual
+/// work — never settled, yet with nothing left that ends on its own.
+#[test]
+fn a_canvas_on_its_unbounded_clock_is_perpetual_work() {
+    let seen = Rc::new(Cell::new(std::time::Duration::ZERO));
+    let mut runtime = clocked_canvas(&seen, waterui::graphics::canvas::Cx::time);
+    let mut at = std::time::Instant::now();
+    for _ in 0..30 {
+        at += FRAME;
+        let _ = runtime.pump_at(false, at);
+    }
+    assert!(
+        seen.get() >= FRAME * 25,
+        "the canvas clock advances with the presented frames: {:?}",
+        seen.get()
+    );
+    assert!(
+        !runtime.is_settled(),
+        "the clocked canvas is scheduled work for as long as it is shown"
+    );
+    assert!(
+        runtime.is_settled_except_perpetual(),
+        "nothing but work with no end remains"
+    );
+    assert!(
+        !runtime.has_pending_semantic_update(),
+        "the frames it asks for continue it; they are no unapplied change"
+    );
+}
+
+/// A canvas whose only clock holds at an end asks for frames until it gets
+/// there: that is finite work, and the runtime comes fully to rest after it.
+#[test]
+fn a_canvas_on_a_bounded_clock_is_finite_work_until_its_end() {
+    let end = std::time::Duration::from_millis(200);
+    let seen = Rc::new(Cell::new(std::time::Duration::ZERO));
+    let mut runtime = clocked_canvas(&seen, move |cx| cx.time_until(end));
+    let mut at = std::time::Instant::now();
+    for _ in 0..4 {
+        at += FRAME;
+        let _ = runtime.pump_at(false, at);
+    }
+    assert!(
+        !runtime.is_settled_except_perpetual(),
+        "short of its end the bounded clock is work that will finish"
+    );
+    let mut frames = 0;
+    while !runtime.is_settled() {
+        assert!(frames < 60, "the bounded clock never reached its end");
+        at += FRAME;
+        let _ = runtime.pump_at(false, at);
+        frames += 1;
+    }
+    assert_eq!(seen.get(), end, "the clock holds at its end");
 }

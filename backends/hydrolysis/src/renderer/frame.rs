@@ -177,8 +177,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
     /// Whether the renderer has scheduled work that will still change layout,
     /// semantics, or reactive state on a future frame: pending patches or
-    /// rebuilds, active animations, armed gesture deadlines, gliding smooth
-    /// scrolls, or an OS file drop awaiting its delivering drain.
+    /// rebuilds, active animations, scene content asking for its next frame,
+    /// armed gesture deadlines, gliding smooth scrolls, or an OS file drop
+    /// awaiting its delivering drain.
     ///
     /// Visual-only redraw requests (caret blink, the visible-window present
     /// cadence) are deliberately excluded: they repaint pixels without moving
@@ -190,9 +191,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     /// [`Self::has_scheduled_semantic_work`] without repeat-forever
-    /// animations: whether any scheduled work remains that will finish on
-    /// its own. A scene whose only activity is a perpetual animation has
-    /// none.
+    /// animations and scene content with no end, such as a canvas following
+    /// its unbounded clock: whether any scheduled work remains that will
+    /// finish on its own. A scene whose only activity is perpetual has none.
     #[must_use]
     pub fn has_finite_semantic_work(&self) -> bool {
         self.scheduled_semantic_work(PerpetualAnimation::Ignored)
@@ -204,6 +205,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             || self.animations_active()
             || self.motions_active()
             || self.engine_tracks_active(perpetual)
+            || self.scene_frames_requested(perpetual)
             || self.next_gesture_deadline().is_some()
             || self.has_gliding_smooth_scrolls()
             || self.has_active_touch_fling()

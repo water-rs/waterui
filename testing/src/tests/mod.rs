@@ -1,5 +1,6 @@
 mod canvas;
 mod harness;
+mod settle;
 mod shape_morph;
 mod transitions;
 
@@ -23,7 +24,7 @@ use waterui::component::{text, vstack};
 use waterui::graphics::WorkingColor;
 use waterui::graphics::backend::draw::{self, Draw as _, Recorder};
 use waterui::graphics::backend::{
-    RecordingResources, SceneContent, SceneView, SceneViewMergeToParent,
+    NextFrame, RecordingResources, SceneContent, SceneView, SceneViewMergeToParent,
 };
 use waterui::graphics::canvas::Canvas;
 use waterui::graphics::color::Srgb;
@@ -1016,7 +1017,7 @@ impl SceneContent for TestSceneContent {
         _resources: &mut RecordingResources<'_>,
         width: f32,
         height: f32,
-    ) -> bool {
+    ) -> NextFrame {
         self.0.set(true);
         let rect = kurbo::Rect::from_origin_size(
             (8.0, 8.0),
@@ -1024,7 +1025,7 @@ impl SceneContent for TestSceneContent {
         );
         let red = draw::Color::<draw::Srgb>::new([1.0, 0.0, 0.0, 1.0]);
         recorder.fill(rect, WorkingColor::from(red));
-        false
+        NextFrame::Idle
     }
 
     fn rebuild_for_engine(&mut self) {}

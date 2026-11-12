@@ -1449,7 +1449,9 @@ impl<R: RuntimeDriver> SemanticApp<R> {
 
     /// Pumps virtual frames until the runtime reports quiescence — no queued
     /// input, no spawned work awaiting a drain, and no renderer-scheduled
-    /// semantic work — or until the virtual cap elapses.
+    /// semantic work. Finite work runs to its end however long it lasts: a
+    /// physical spring settles on its own clock, and returning before it
+    /// lands would hand the test an in-flight value.
     ///
     /// Quiescence alone is not the whole story: a view whose content arrives
     /// through a load — a `Photo` fetch or decode, a `Suspense` future — holds
@@ -1478,18 +1480,27 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     ///
     /// Repeat-forever animations (an indeterminate progress spinner, a
     /// repeating morph) do not hold settling: a scene whose only remaining
-    /// activity is one settles at once. The virtual cap bounds anything else
-    /// that never ends; every finite transition ends well before it. Each pump
-    /// advances the virtual clock one frame, so the cap costs pump work, never
-    /// wall-clock sleeps.
+    /// activity is one settles at once. Each pump advances the virtual clock
+    /// one frame, so finite work costs pump work, never wall-clock sleeps.
     ///
     /// Public because a test that drives non-visual work — a handler that spawns
     /// onto the local executor, a coalesced push that lands on the next tick —
     /// has to be able to say "let queued work finish" without inventing an
     /// accessibility node to wait on.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the runtime still reports finite work after a minute of
+    /// virtual time: work the runtime counts as finite that never ends is a
+    /// runtime defect, and returning would hand the test a scene still in
+    /// motion. A test that samples a transition mid-flight steps it with
+    /// [`Self::pump_for`] instead of settling.
     pub fn settle(&mut self) {
-        /// Virtual time budget for work that never ends; ~62 pumps at 16ms.
-        const SETTLE_CAP: Duration = Duration::from_secs(1);
+        /// Guard against finite work that never ends, not a budget for work
+        /// that does: a minute of virtual time outlasts any transition a UI
+        /// schedules, and pumping it at one frame per pump costs a few
+        /// seconds of wall clock on the path that is already a defect.
+        const SETTLE_CAP: Duration = Duration::from_secs(60);
         /// Wall-clock budget for content still owed once the scene is
         /// quiescent. Long enough for a remote fetch on a slow link; bounded
         /// so a load that never completes cannot hang the caller forever.
@@ -1501,9 +1512,11 @@ impl<R: RuntimeDriver> SemanticApp<R> {
             let _ = self.pump_once();
             if !self.runtime.is_settled_except_perpetual() {
                 remaining = remaining.saturating_sub(VIRTUAL_FRAME);
-                if remaining.is_zero() {
-                    return;
-                }
+                assert!(
+                    !remaining.is_zero(),
+                    "settle: the runtime still reports finite work after {SETTLE_CAP:?} of \
+                     virtual time; finite work that never ends is a runtime defect"
+                );
                 continue;
             }
             // Quiescent but a view may still owe content its load has not

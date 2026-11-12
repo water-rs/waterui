@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use cherenkov_record::{Axis, FilterId, Fixed, Layer, LayerId, ShapeData, Shared, Transaction};
 
 use waterui_core::contract_violation;
-use waterui_graphics::backend::HeldResources;
+use waterui_graphics::backend::{HeldResources, NextFrame, SceneUpdate};
 
 use super::backdrop::{
     BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeParams, MaterialBackdropGroups,
@@ -613,6 +613,75 @@ pub struct Mount<T: LayerTarget<E>, E: crate::text::TextEngine> {
     stats: MountStats,
 }
 
+/// The scene nodes whose content asked, at the commit that last presented
+/// it, for the frame after — split the way the engine splits the tracks it
+/// runs, into work that ends on its own and work that does not.
+///
+/// A request is continuation work, not an unapplied change: the next pump
+/// re-marks each owner quietly before its flush, as the animation tick does
+/// for the scalars it samples, and the commit that presents the owner again
+/// files whatever the content asks for then. Settle queries read the two
+/// sets separately, so a canvas following its unbounded clock is perpetual
+/// work and one whose bounded clocks are short of their end is finite work.
+pub struct SceneFrames<E: crate::text::TextEngine> {
+    finite: Vec<Weak<NodeCell<E>>>,
+    perpetual: Vec<Weak<NodeCell<E>>>,
+}
+
+impl<E: crate::text::TextEngine> Default for SceneFrames<E> {
+    fn default() -> Self {
+        Self {
+            finite: Vec::new(),
+            perpetual: Vec::new(),
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> SceneFrames<E> {
+    /// Files `request`, made by the content `owner` presents.
+    fn file(&mut self, owner: &Rc<NodeCell<E>>, request: NextFrame) {
+        match request {
+            NextFrame::Idle => {}
+            NextFrame::Finite => self.finite.push(Rc::downgrade(owner)),
+            NextFrame::Perpetual => self.perpetual.push(Rc::downgrade(owner)),
+        }
+    }
+
+    /// Whether finite scene work asked for the next frame.
+    pub fn has_finite(&self) -> bool {
+        self.finite.iter().any(|owner| owner.strong_count() > 0)
+    }
+
+    /// Whether perpetual scene work asked for the next frame.
+    pub fn has_perpetual(&self) -> bool {
+        self.perpetual.iter().any(|owner| owner.strong_count() > 0)
+    }
+
+    /// Takes every filed request, marking each live owner `PAINT` without a
+    /// frame request of its own: the frame they asked for is continuation
+    /// work the pump schedules. Returns whether any owner was marked.
+    pub fn mark_owners(&mut self) -> bool {
+        let mut marked = false;
+        for owner in self.finite.drain(..).chain(self.perpetual.drain(..)) {
+            if let Some(owner) = owner.upgrade() {
+                owner.mark_quiet(super::Dirty::PAINT);
+                marked = true;
+            }
+        }
+        marked
+    }
+}
+
+/// Where a commit reports what it learns for the renderer that owns the
+/// tree: a producer's wake for each node that mounts one, and the frames each
+/// scene node's content asks for next.
+pub struct CommitReports<'r, E: crate::text::TextEngine> {
+    /// Hands out the wake a mounted producer posts its frames through.
+    pub wakes: &'r mut dyn FnMut(&Rc<NodeCell<E>>) -> ProducerWake,
+    /// Collects the frames scene content asks for next.
+    pub scene_frames: &'r mut SceneFrames<E>,
+}
+
 /// The state one commit threads through the node walk.
 pub struct CommitCx<'m, 'tx, 's, T: LayerTarget<E>, E: crate::text::TextEngine> {
     pub tx: &'tx mut Transaction<'s, T>,
@@ -632,6 +701,9 @@ pub struct CommitCx<'m, 'tx, 's, T: LayerTarget<E>, E: crate::text::TextEngine> 
     stats: &'m mut MountStats,
     #[cfg_attr(not(hydrolysis_gpu), expect(dead_code))]
     wakes: &'m mut dyn FnMut(&Rc<NodeCell<E>>) -> ProducerWake,
+    /// Where the scene nodes this commit presents file the frames their
+    /// content asks for next.
+    scene_frames: &'m mut SceneFrames<E>,
 }
 
 impl<T: LayerTarget<E>, E: crate::text::TextEngine> CommitCx<'_, '_, '_, T, E> {
@@ -828,16 +900,21 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
     ///
     /// `window_material` is the window background's material request
     /// (#1855): the window layer is the member, joined before the roots
-    /// so the root's content mounts over its backdrop group.
+    /// so the root's content mounts over its backdrop group. What the
+    /// commit learns for the renderer goes to `reports`.
     pub fn commit(
         &mut self,
         host: &T::Host,
         window_transform: kurbo::Affine,
         display_scale: f64,
         roots: &[Rc<NodeCell<E>>],
-        wakes: &mut dyn FnMut(&Rc<NodeCell<E>>) -> ProducerWake,
+        reports: CommitReports<'_, E>,
         window_material: Option<&MaterialRequest>,
     ) {
+        let CommitReports {
+            wakes,
+            scene_frames,
+        } = reports;
         let shared = Rc::clone(&self.shared);
         let mut graveyard: Vec<Box<dyn Any>> = Vec::new();
         let Self {
@@ -905,6 +982,7 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
                 graveyard: &mut graveyard,
                 stats,
                 wakes,
+                scene_frames,
             };
             for cell in roots {
                 commit_cell(&mut cx, cell, None, false);
@@ -1545,10 +1623,8 @@ fn mount_scene<T: LayerTarget<E>, E: crate::text::TextEngine>(
             },
         )
     });
-    if let Some(waterui_graphics::backend::SceneUpdate::Retained { again }) = update {
-        if again {
-            cell.mark(super::Dirty::PAINT);
-        }
+    if let Some(SceneUpdate::Retained { next }) = update {
+        cx.scene_frames.file(cell, next);
         return None;
     }
     let mut names = resources.waterui().recording();
@@ -1561,15 +1637,13 @@ fn mount_scene<T: LayerTarget<E>, E: crate::text::TextEngine>(
             |event| content.borrow_mut().input(event),
         );
     }
-    let owner = Rc::clone(cell);
+    let mut next = NextFrame::Idle;
     cx.tx[frame].record(|recorder| {
-        if content
+        next = content
             .borrow_mut()
-            .build_scene(recorder, &mut names, width, height)
-        {
-            owner.mark(super::Dirty::PAINT);
-        }
+            .build_scene(recorder, &mut names, width, height);
     });
+    cx.scene_frames.file(cell, next);
     cx.stats.installs += 1;
     Some(names.finish())
 }

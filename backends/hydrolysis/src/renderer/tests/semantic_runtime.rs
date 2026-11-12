@@ -33,7 +33,7 @@ use waterui_form::picker::date::DatePicker;
 use waterui_form::picker::{PickerStyle, picker};
 use waterui_form::secure::secure;
 use waterui_graphics::Color;
-use waterui_graphics::backend::{RecordingResources, SceneContent, SceneView};
+use waterui_graphics::backend::{NextFrame, RecordingResources, SceneContent, SceneView};
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 #[cfg(hydrolysis_gpu)]
@@ -1699,8 +1699,8 @@ impl SceneContent for Chart {
         _resources: &mut RecordingResources<'_>,
         _width: f32,
         _height: f32,
-    ) -> bool {
-        false
+    ) -> NextFrame {
+        NextFrame::Idle
     }
 
     fn accessibility_label(&self) -> Option<String> {

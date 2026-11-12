@@ -26,7 +26,7 @@ use crate::canvas::resource::{GlyphRun, ImageSource};
 use crate::canvas::text::TextPlacement;
 use crate::color::{Color, WorkingColor};
 use crate::draw::{Recorder, Region, ShapeData};
-use crate::scene_view::SceneInvalidator;
+use crate::scene_view::{NextFrame, SceneInvalidator};
 
 /// What every context of one mounted canvas shares.
 pub struct Shared {
@@ -101,15 +101,22 @@ impl Shared {
         }
     }
 
-    /// Whether a clock something observes still has frames to advance on:
-    /// the unbounded clock, or a bounded one short of its end.
-    pub(crate) fn clocks_running(&self) -> bool {
-        self.clock.observed()
-            || self
-                .bounded_clocks
-                .borrow()
-                .iter()
-                .any(|(end, clock)| clock.observed() && clock.snapshot() < *end)
+    /// The frames the observed clocks still advance on: perpetual while
+    /// something observes the unbounded clock, finite while only bounded
+    /// ones short of their end are observed, idle otherwise.
+    pub(crate) fn frame_request(&self) -> NextFrame {
+        if self.clock.observed() {
+            NextFrame::Perpetual
+        } else if self
+            .bounded_clocks
+            .borrow()
+            .iter()
+            .any(|(end, clock)| clock.observed() && clock.snapshot() < *end)
+        {
+            NextFrame::Finite
+        } else {
+            NextFrame::Idle
+        }
     }
 
     /// Queues `stale` to record again in place at the host's next update.

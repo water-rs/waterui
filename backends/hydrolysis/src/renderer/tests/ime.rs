@@ -31,7 +31,7 @@ use waterui_controls::text_field::field;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Binding, Str};
 use waterui_form::secure::{Secure, secure};
-use waterui_graphics::backend::{RecordingResources, SceneContent, SceneView};
+use waterui_graphics::backend::{NextFrame, RecordingResources, SceneContent, SceneView};
 use waterui_graphics::gpu::{
     Context as GpuContext, ExternalFrameSource, ExternalFrameView, Frame as GpuFrame, FrameOutput,
 };
@@ -658,8 +658,8 @@ impl SceneContent for SceneProbe {
         _resources: &mut RecordingResources<'_>,
         _width: f32,
         _height: f32,
-    ) -> bool {
-        false
+    ) -> NextFrame {
+        NextFrame::Idle
     }
 
     fn wants_input_events(&self) -> bool {

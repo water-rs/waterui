@@ -19,8 +19,8 @@ use waterui_graphics::backend::draw::{
 };
 use waterui_graphics::backend::raster::{Rasterizer, RgbaBitmap};
 use waterui_graphics::backend::{
-    FontSource, ImageColorSpace, ImageData, Picture, PictureSource, RecordingResources, Registered,
-    Rgba8, SceneContent, SceneInvalidator, SceneView, invalidate_on_change,
+    FontSource, ImageColorSpace, ImageData, NextFrame, Picture, PictureSource, RecordingResources,
+    Registered, Rgba8, SceneContent, SceneInvalidator, SceneView, invalidate_on_change,
 };
 
 /// sRGB red as the engine's working colour — `WorkingColor::new` names
@@ -277,7 +277,7 @@ impl SceneContent for LateImage {
         resources: &mut RecordingResources<'_>,
         _width: f32,
         _height: f32,
-    ) -> bool {
+    ) -> NextFrame {
         self.frame += 1;
         if self.frame >= 3 {
             let image = self.image.get_or_insert_with(|| {
@@ -291,7 +291,7 @@ impl SceneContent for LateImage {
                 Sampling::Nearest,
             );
         }
-        false
+        NextFrame::Idle
     }
 
     fn rebuild_for_engine(&mut self) {

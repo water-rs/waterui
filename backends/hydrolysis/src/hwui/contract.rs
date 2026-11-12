@@ -1998,12 +1998,16 @@ fn the_hwui_mount_commits_and_reuses_its_nodes() {
     let mut wakes = |_cell: &std::rc::Rc<
         crate::renderer::mount::NodeCell<crate::text::ParleyEngine>,
     >| { unreachable!("no mounted root carries a producer") };
+    let mut scene_frames = crate::renderer::mount::SceneFrames::default();
     mount.commit(
         &host,
         kurbo::Affine::IDENTITY,
         1.0,
         std::slice::from_ref(&node.cell),
-        &mut wakes,
+        crate::renderer::mount::CommitReports {
+            wakes: &mut wakes,
+            scene_frames: &mut scene_frames,
+        },
         None,
     );
     let _ = surface
@@ -2031,7 +2035,10 @@ fn the_hwui_mount_commits_and_reuses_its_nodes() {
         kurbo::Affine::IDENTITY,
         1.0,
         std::slice::from_ref(&node.cell),
-        &mut wakes,
+        crate::renderer::mount::CommitReports {
+            wakes: &mut wakes,
+            scene_frames: &mut scene_frames,
+        },
         None,
     );
     let _ = surface

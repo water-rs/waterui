@@ -45,7 +45,7 @@ use waterui_controls::button::button;
 use waterui_controls::menu::CommandExt as _;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
-use waterui_graphics::backend::{RecordingResources, SceneContent};
+use waterui_graphics::backend::{NextFrame, RecordingResources, SceneContent};
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui_graphics::{GpuContent, GpuContentView};
 use waterui_layout::frame::Frame;
@@ -211,7 +211,7 @@ impl SceneContent for ImagePane {
         resources: &mut RecordingResources<'_>,
         _width: f32,
         _height: f32,
-    ) -> bool {
+    ) -> NextFrame {
         use cherenkov_record::{Extend, ImagePattern, Paint, Sampling};
         use kurbo::Affine;
 
@@ -248,7 +248,7 @@ impl SceneContent for ImagePane {
                 );
             },
         );
-        false
+        NextFrame::Idle
     }
 
     fn set_invalidator(

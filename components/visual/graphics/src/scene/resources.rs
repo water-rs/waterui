@@ -1382,7 +1382,7 @@ pub mod tests {
     use super::{
         Content, HeldResources, RecordingResources, Registered, SceneResources, SourceBytes,
     };
-    use crate::scene_view::{SceneContent, SceneFrame, SceneUpdate};
+    use crate::scene_view::{NextFrame, SceneContent, SceneFrame, SceneUpdate};
 
     fn null_engine() -> (Rc<Engine<Null>>, Receiver<Event>) {
         let (events, probe) = channel();
@@ -1511,7 +1511,7 @@ pub mod tests {
             resources: &mut RecordingResources<'_>,
             width: f32,
             height: f32,
-        ) -> bool {
+        ) -> NextFrame {
             self.frame += 1;
             let bounds = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
             recorder.fill(bounds, WorkingColor::BLACK);
@@ -1525,7 +1525,7 @@ pub mod tests {
             } else {
                 self.image = None;
             }
-            false
+            NextFrame::Idle
         }
 
         fn rebuild_for_engine(&mut self) {

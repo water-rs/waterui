@@ -31,7 +31,7 @@ use crate::draw::{
     self, Draw as _, FontId, ImageId, Instant, Recorder, ResourceError, ShapeData, kurbo,
 };
 use crate::scene::resources::{HeldResources, RecordingResources, RegisteredText, SceneResources};
-use crate::scene_view::{SceneContent, SceneFrame, SceneInvalidator, SceneUpdate};
+use crate::scene_view::{NextFrame, SceneContent, SceneFrame, SceneInvalidator, SceneUpdate};
 
 /// A change's metadata as the recorder reads it: an app animation the
 /// change was made under becomes the engine animation that animates the
@@ -575,7 +575,7 @@ impl SceneContent for CanvasScene {
         resources: &mut RecordingResources<'_>,
         width: f32,
         height: f32,
-    ) -> bool {
+    ) -> NextFrame {
         self.follow(width, height, None);
         // A fresh recording installs every part anew.
         drop(self.shared.take_stale());
@@ -584,7 +584,7 @@ impl SceneContent for CanvasScene {
             session.record(part, recorder);
         });
         session.publish_statuses();
-        self.shared.clocks_running()
+        self.shared.frame_request()
     }
 
     fn update_scene(&mut self, resources: &SceneResources, frame: SceneFrame) -> SceneUpdate {
@@ -618,7 +618,7 @@ impl SceneContent for CanvasScene {
         }
         session.publish_statuses();
         SceneUpdate::Retained {
-            again: self.shared.clocks_running(),
+            next: self.shared.frame_request(),
         }
     }
 

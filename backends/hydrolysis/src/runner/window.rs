@@ -1394,7 +1394,12 @@ pub(super) fn pump_window_scene<P: PlatformWindow, E: crate::text::TextEngine>(
         runtime.request_refresh();
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
-    } else if runtime.renderer.animations_active() && !runtime.mode.is_pending() {
+    } else if (runtime.renderer.animations_active()
+        || runtime
+            .renderer
+            .scene_frames_requested(crate::animation::PerpetualAnimation::Counts))
+        && !runtime.mode.is_pending()
+    {
         schedule_animation_update(runtime, true);
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;

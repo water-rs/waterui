@@ -31,7 +31,7 @@ mod stretch;
 pub mod target;
 
 pub use cell::{Dirty, NodeCell, NodeCore};
-pub use layers::{Mount, MountStats};
+pub use layers::{CommitReports, Mount, MountStats, SceneFrames};
 pub use placement::{HitClasses, HitGate, Placement, PlacementClock, ScopeDelta};
 pub use program::{
     LiveOpacity, LiveTransform, MaterialRequest, ProducerContent, ProgramBuilder,
@@ -68,6 +68,9 @@ impl<E: crate::text::TextEngine> crate::renderer::HydrolysisRenderer<E> {
         let roots = self.mount_roots();
         let host_wake = self.host_redraw_handle.clone();
         let window_material = self.core.window_material;
+        // Taken out for the commit, which files into it while the producer
+        // wakes borrow the rest of the core.
+        let mut scene_frames = std::mem::take(&mut self.core.scene_frames);
         let core = &mut self.core;
         let mut wakes =
             |cell: &std::rc::Rc<NodeCell<E>>| core.producer_wake(cell, host_wake.clone());
@@ -76,9 +79,13 @@ impl<E: crate::text::TextEngine> crate::renderer::HydrolysisRenderer<E> {
             self.window_display_transform,
             scale,
             &roots,
-            &mut wakes,
+            CommitReports {
+                wakes: &mut wakes,
+                scene_frames: &mut scene_frames,
+            },
             window_material.as_ref(),
         );
+        self.core.scene_frames = scene_frames;
         self.core.clear_commit_marks();
         let taken = mount.take_stats();
         self.last_mount_stats = layers::census(&roots, taken);

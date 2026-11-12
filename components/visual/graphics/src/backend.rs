@@ -42,8 +42,8 @@ pub use crate::scene::resources::{
     SceneBackend, SceneResources, ShaderBackend, TextBackend, TextRegistration, TextRequest,
 };
 pub use crate::scene::scene_view::{
-    SceneContent, SceneFrame, SceneInvalidator, SceneUpdate, SceneView, SceneViewMergeToParent,
-    invalidate_on_change, resolve_scene_proposal, scene_stretch_axis,
+    NextFrame, SceneContent, SceneFrame, SceneInvalidator, SceneUpdate, SceneView,
+    SceneViewMergeToParent, invalidate_on_change, resolve_scene_proposal, scene_stretch_axis,
 };
 pub use crate::scene::source::{
     FontSource, Format, ImageColorSpace, ImageData, ImageFormat, ResourceError, Rgba8, Rgba16F,

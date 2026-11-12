@@ -25,7 +25,9 @@ use waterui_core::AnyView;
 use waterui_core::Binding;
 use waterui_core::View;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_graphics::backend::{RecordingResources, SceneContent, SceneInvalidator, SceneView};
+use waterui_graphics::backend::{
+    NextFrame, RecordingResources, SceneContent, SceneInvalidator, SceneView,
+};
 use waterui_graphics::gpu::{
     Context as GpuContext, ExternalFrameSource, ExternalFrameView, Frame as GpuFrame, FrameOutput,
 };
@@ -668,9 +670,9 @@ impl SceneContent for SceneProbe {
         _resources: &mut RecordingResources<'_>,
         _width: f32,
         _height: f32,
-    ) -> bool {
+    ) -> NextFrame {
         *self.builds.borrow_mut() += 1;
-        false
+        NextFrame::Idle
     }
 
     fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {

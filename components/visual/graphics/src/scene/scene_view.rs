@@ -50,6 +50,37 @@ pub struct SceneFrame {
     pub time: Instant,
 }
 
+/// Which frames scene content needs after the one it was just presented in.
+///
+/// The same split the engine makes for the tracks it runs: work that ends on
+/// its own is finite, work that repeats until it is replaced is perpetual. A
+/// host presents the next frame for either; a host that asks whether its
+/// scene has come to rest waits for finite work and not for perpetual work,
+/// which would otherwise never let it rest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every scene host handles each answer; a new answer must fail their build instead of falling into a wildcard arm"
+)]
+pub enum NextFrame {
+    /// No frame: the content draws the same until it invalidates itself.
+    Idle,
+    /// Another frame, for work that reaches its end: a canvas clock from
+    /// `time_until` short of its end, a transition with a known duration.
+    Finite,
+    /// Another frame, for work with no end: a canvas reading its unbounded
+    /// `time`, a simulation that runs for as long as it is shown.
+    Perpetual,
+}
+
+impl NextFrame {
+    /// Whether the content asks for another frame at all.
+    #[must_use]
+    pub const fn wants_frame(self) -> bool {
+        !matches!(self, Self::Idle)
+    }
+}
+
 /// What [`SceneContent::update_scene`] did with the content's installed
 /// recording.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,10 +93,10 @@ pub enum SceneUpdate {
     /// with [`SceneContent::build_scene`] and installs the result.
     Record,
     /// The installed recording was brought up to date in place, and stays
-    /// installed. `again` asks for another frame.
+    /// installed.
     Retained {
-        /// Whether the content requires another frame to be presented.
-        again: bool,
+        /// The frames the content needs next.
+        next: NextFrame,
     },
 }
 
@@ -135,7 +166,8 @@ pub trait SceneContent: 'static {
     /// [`HeldResources`](crate::backend::HeldResources) for as long as the
     /// recording is installed.
     ///
-    /// Returns true when the content requires another frame to be rendered.
+    /// Returns the frames the content needs after this one: see
+    /// [`NextFrame`].
     ///
     /// [`Registered`]: crate::backend::Registered
     fn build_scene(
@@ -144,7 +176,7 @@ pub trait SceneContent: 'static {
         resources: &mut RecordingResources<'_>,
         width: f32,
         height: f32,
-    ) -> bool;
+    ) -> NextFrame;
 
     /// Reconstructs this content for a newly created engine generation.
     ///
@@ -474,8 +506,8 @@ mod tests {
     use crate::draw::{Draw, kurbo::Shape};
 
     use super::{
-        NativeView, ProposalSize, Recorder, RecordingResources, SceneContent, SceneView, Size,
-        StretchAxis, resolve_scene_proposal, scene_stretch_axis,
+        NativeView, NextFrame, ProposalSize, Recorder, RecordingResources, SceneContent, SceneView,
+        Size, StretchAxis, resolve_scene_proposal, scene_stretch_axis,
     };
 
     /// Content that is naturally 100x200 — twice as tall as it is wide.
@@ -492,13 +524,13 @@ mod tests {
             _resources: &mut RecordingResources<'_>,
             width: f32,
             height: f32,
-        ) -> bool {
+        ) -> NextFrame {
             recorder.fill(
                 crate::draw::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height))
                     .to_path(0.1),
                 crate::draw::WorkingColor::BLACK,
             );
-            false
+            NextFrame::Idle
         }
 
         fn intrinsic_size(&self) -> Option<Size> {
@@ -515,8 +547,8 @@ mod tests {
             _resources: &mut RecordingResources<'_>,
             _width: f32,
             _height: f32,
-        ) -> bool {
-            false
+        ) -> NextFrame {
+            NextFrame::Idle
         }
 
         fn intrinsic_size(&self) -> Option<Size> {
@@ -536,8 +568,8 @@ mod tests {
             _resources: &mut RecordingResources<'_>,
             _width: f32,
             _height: f32,
-        ) -> bool {
-            false
+        ) -> NextFrame {
+            NextFrame::Idle
         }
 
         fn rebuild_for_engine(&mut self) {}
@@ -553,8 +585,8 @@ mod tests {
             _resources: &mut RecordingResources<'_>,
             _width: f32,
             _height: f32,
-        ) -> bool {
-            false
+        ) -> NextFrame {
+            NextFrame::Idle
         }
 
         fn accessibility_value(&self) -> Option<alloc::string::String> {
