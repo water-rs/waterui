@@ -3,7 +3,7 @@
 use super::*;
 use crate::animation::PerpetualAnimation;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::platform::GpuUnavailable;
+use crate::platform::PainterUnavailable;
 use crate::renderer::MenuShortcutRegistry;
 #[cfg(feature = "accessibility")]
 use crate::renderer::accessibility::{
@@ -16,10 +16,118 @@ use std::sync::{
 #[cfg(feature = "accessibility")]
 use waterui_core::contract_violation;
 
+/// The headless window's render target: the one of the runtime's
+/// [`OffscreenPainter`].
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+pub(super) enum HeadlessSurface {
+    /// The GPU painter's offscreen texture.
+    #[cfg(hydrolysis_gpu_painter)]
+    Gpu(crate::platform::OffscreenSurface),
+    /// The CPU painter's framebuffer.
+    #[cfg(hydrolysis_cpu_painter)]
+    Cpu(crate::platform::RasterOffscreen),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl HeadlessSurface {
+    /// A `width` x `height` RGBA8 target on `painter`.
+    pub(super) fn on_painter(painter: &OffscreenPainter, width: u32, height: u32) -> Self {
+        match painter {
+            #[cfg(hydrolysis_gpu_painter)]
+            OffscreenPainter::Gpu(gpu) => Self::Gpu(crate::platform::OffscreenSurface::on_context(
+                gpu.clone(),
+                width,
+                height,
+                wgpu::TextureFormat::Rgba8Unorm,
+            )),
+            #[cfg(hydrolysis_cpu_painter)]
+            OffscreenPainter::Cpu(state) => Self::Cpu(crate::platform::RasterOffscreen::new(
+                Rc::clone(state),
+                width,
+                height,
+            )),
+        }
+    }
+}
+
+#[cfg(all(test, hydrolysis_gpu_painter))]
+impl HeadlessSurface {
+    /// The GPU painter's texture, for tests that drive the device itself.
+    pub(super) const fn gpu(&mut self) -> &mut crate::platform::OffscreenSurface {
+        match self {
+            Self::Gpu(surface) => surface,
+            #[cfg(hydrolysis_cpu_painter)]
+            Self::Cpu(_) => panic!("the runtime under test renders on the CPU painter"),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::platform::OffscreenTarget for HeadlessSurface {
+    fn size(&self) -> (u32, u32) {
+        match self {
+            #[cfg(hydrolysis_gpu_painter)]
+            Self::Gpu(surface) => crate::platform::OffscreenTarget::size(surface),
+            #[cfg(hydrolysis_cpu_painter)]
+            Self::Cpu(surface) => crate::platform::OffscreenTarget::size(surface),
+        }
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        match self {
+            #[cfg(hydrolysis_gpu_painter)]
+            Self::Gpu(surface) => crate::platform::OffscreenTarget::resize(surface, width, height),
+            #[cfg(hydrolysis_cpu_painter)]
+            Self::Cpu(surface) => crate::platform::OffscreenTarget::resize(surface, width, height),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl super::window::CapturedFrame for HeadlessSurface {
+    fn render_captured(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
+        clear_color: peniko::Color,
+        display_scale: f64,
+        capture: bool,
+    ) -> Result<super::window::SurfaceRenderResult, super::window::FrameFailure> {
+        match self {
+            #[cfg(hydrolysis_gpu_painter)]
+            Self::Gpu(surface) => {
+                surface.render_captured(renderer, clear_color, display_scale, capture)
+            }
+            #[cfg(hydrolysis_cpu_painter)]
+            Self::Cpu(surface) => {
+                surface.render_captured(renderer, clear_color, display_scale, capture)
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl super::window::PaintedFrame for HeadlessSurface {
+    fn render_frame(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
+        clear_color: peniko::Color,
+        display_scale: f64,
+    ) -> Result<super::window::SurfaceRenderResult, super::window::FrameFailure> {
+        super::window::CapturedFrame::render_captured(
+            self,
+            renderer,
+            clear_color,
+            display_scale,
+            false,
+        )
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub(super) struct HeadlessPlatformWindow {
-    inner: OffscreenWindow,
+    inner: OffscreenWindow<HeadlessSurface>,
     pending_events: VecDeque<InputEvent>,
     redraw_requested: Arc<AtomicBool>,
     #[cfg(test)]
@@ -50,14 +158,10 @@ pub(super) struct HeadlessPlatformWindow {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl HeadlessPlatformWindow {
-    pub(super) fn on_context(
-        gpu: OffscreenGpuContext,
-        width: u32,
-        height: u32,
-        format: wgpu::TextureFormat,
-    ) -> Self {
+    /// A `width` x `height` window on `painter`.
+    pub(super) fn on_painter(painter: &OffscreenPainter, width: u32, height: u32) -> Self {
         Self {
-            inner: OffscreenWindow::on_context(gpu, width, height, format),
+            inner: OffscreenWindow::new(HeadlessSurface::on_painter(painter, width, height)),
             pending_events: VecDeque::new(),
             redraw_requested: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
@@ -187,15 +291,15 @@ impl PlatformWindow for HeadlessPlatformWindow {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl crate::platform::GpuSurfaceWindow for HeadlessPlatformWindow {
-    type Presentation = crate::platform::OffscreenSurface;
-    fn surface(&mut self) -> &mut crate::platform::OffscreenSurface {
-        crate::platform::GpuSurfaceWindow::surface(&mut self.inner)
+impl crate::platform::PaintedWindow for HeadlessPlatformWindow {
+    type Presentation = HeadlessSurface;
+    fn surface(&mut self) -> &mut HeadlessSurface {
+        self.inner.surface()
     }
 
-    fn gpu_surface_redraw_handle(&self) -> Option<waterui_graphics::RedrawHandle> {
+    fn host_redraw_handle(&self) -> Option<crate::renderer::HostRedraw> {
         let pending = Arc::clone(&self.redraw_requested);
-        Some(waterui_graphics::RedrawHandle::new(move || {
+        Some(crate::renderer::HostRedraw::new(move || {
             pending.store(true, Ordering::Release);
         }))
     }
@@ -363,10 +467,11 @@ pub struct HeadlessRuntime {
     /// The style the runtime was launched with, kept so popup windows'
     /// renderers measure and encode with the same widget theme.
     theme: Rc<dyn crate::theme::WidgetTheme>,
-    /// Every window this runtime opens renders on this one device: the main
-    /// window, and each popup it later vends. Requesting a device per window
-    /// made a runtime that opens a popup pay for two.
-    gpu: OffscreenGpuContext,
+    /// Every window this runtime opens renders with this one painter — on
+    /// one device, or one CPU engine: the main window, and each popup it
+    /// later vends. Requesting a device per window made a runtime that opens
+    /// a popup pay for two.
+    painter: OffscreenPainter,
     /// The application's font collection, the same one the environment carries.
     /// Popup windows get their own renderer, which is seeded from this so it
     /// shapes with the same faces as the main one.
@@ -398,7 +503,7 @@ impl std::fmt::Debug for HeadlessRuntime {
 
 /// Lets the device release a runtime's GPU resources once the runtime is gone.
 #[cfg(not(target_arch = "wasm32"))]
-struct ReclaimGpuOnDrop(OffscreenGpuContext);
+struct ReclaimGpuOnDrop(OffscreenPainter);
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Drop for ReclaimGpuOnDrop {
@@ -431,7 +536,8 @@ impl HeadlessRuntime {
     /// [`FontFamilyResolution`].
     ///
     /// # Errors
-    /// [`GpuUnavailable`] when the host has no GPU Hydrolysis can render on.
+    /// [`PainterUnavailable`] when the painter
+    /// [`OffscreenPainter::select`] chose cannot render on this host.
     pub fn new(
         env: Environment,
         content: AnyViewBuilder<AnyView>,
@@ -439,9 +545,9 @@ impl HeadlessRuntime {
         height: u32,
         style: impl crate::Style,
         family_resolution: FontFamilyResolution,
-    ) -> Result<Self, GpuUnavailable> {
-        Ok(Self::on_gpu_context(
-            pollster::block_on(OffscreenGpuContext::new())?,
+    ) -> Result<Self, PainterUnavailable> {
+        Ok(Self::on_painter(
+            OffscreenPainter::select()?,
             env,
             default_window(content),
             width,
@@ -463,7 +569,7 @@ impl HeadlessRuntime {
     /// window runner for the same tree.
     ///
     /// # Errors
-    /// [`GpuUnavailable`] when the host has no GPU Hydrolysis can render on.
+    /// [`PainterUnavailable`], as [`Self::new`].
     pub fn new_with_window(
         env: Environment,
         window: Window,
@@ -471,9 +577,9 @@ impl HeadlessRuntime {
         height: u32,
         style: impl crate::Style,
         family_resolution: FontFamilyResolution,
-    ) -> Result<Self, GpuUnavailable> {
-        Ok(Self::on_gpu_context(
-            pollster::block_on(OffscreenGpuContext::new())?,
+    ) -> Result<Self, PainterUnavailable> {
+        Ok(Self::on_painter(
+            OffscreenPainter::select()?,
             env,
             window,
             width,
@@ -526,7 +632,7 @@ impl HeadlessRuntime {
     /// fonts fail the test instead of silently substituting a face.
     ///
     /// # Panics
-    /// Panics when the host has no GPU Hydrolysis can render on: a test
+    /// Panics when the selected painter cannot render on this host: a test
     /// host cannot run without one.
     #[cfg(any(test, feature = "testing"))]
     #[must_use]
@@ -537,8 +643,8 @@ impl HeadlessRuntime {
         height: u32,
         style: impl crate::Style,
     ) -> Self {
-        Self::on_gpu_context(
-            OffscreenGpuContext::for_tests(),
+        Self::on_painter(
+            OffscreenPainter::for_tests(),
             env,
             default_window(content),
             width,
@@ -553,7 +659,7 @@ impl HeadlessRuntime {
     /// cannot express — a translucent [`Window::background`], for one.
     ///
     /// # Panics
-    /// Panics when the host has no GPU Hydrolysis can render on, as
+    /// Panics when the selected painter cannot render on this host, as
     /// [`Self::new_for_tests`].
     #[cfg(any(test, feature = "testing"))]
     #[must_use]
@@ -564,8 +670,8 @@ impl HeadlessRuntime {
         height: u32,
         style: impl crate::Style,
     ) -> Self {
-        Self::on_gpu_context(
-            OffscreenGpuContext::for_tests(),
+        Self::on_painter(
+            OffscreenPainter::for_tests(),
             env,
             window,
             width,
@@ -575,28 +681,30 @@ impl HeadlessRuntime {
         )
     }
 
-    /// Creates a test runtime on an already-requested [`OffscreenGpuContext`].
+    /// Creates a test runtime on an already-selected [`OffscreenPainter`]
+    /// (or, with the GPU painter, an `OffscreenGpuContext`, which converts
+    /// into one).
     ///
     /// A wgpu device is expensive to request and, on a runner whose only
     /// adapter is a software rasterizer, expensive to hold: a probe that builds
     /// a fresh runtime per sample exhausted the machine requesting one device
-    /// per sample. Such a probe requests one context and passes it to every
-    /// runtime. The device is all that is shared — the view tree, the renderer
-    /// and the retained scene are still built from scratch per runtime, so what
-    /// a measurement observes is unchanged. Family resolution is strict, as
-    /// on [`Self::new_for_tests`].
+    /// per sample. Such a probe selects one painter and passes it to every
+    /// runtime. The device or engine is all that is shared — the view tree,
+    /// the renderer and the retained scene are still built from scratch per
+    /// runtime, so what a measurement observes is unchanged. Family
+    /// resolution is strict, as on [`Self::new_for_tests`].
     #[cfg(any(test, feature = "testing"))]
     #[must_use]
     pub fn new_for_tests_on_context(
-        gpu: OffscreenGpuContext,
+        painter: impl Into<OffscreenPainter>,
         env: Environment,
         content: AnyViewBuilder<AnyView>,
         width: u32,
         height: u32,
         style: impl crate::Style,
     ) -> Self {
-        Self::on_gpu_context(
-            gpu,
+        Self::on_painter(
+            painter.into(),
             env,
             default_window(content),
             width,
@@ -610,8 +718,8 @@ impl HeadlessRuntime {
         clippy::needless_pass_by_value,
         reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
     )]
-    fn on_gpu_context(
-        gpu: OffscreenGpuContext,
+    fn on_painter(
+        painter: OffscreenPainter,
         env: Environment,
         window: Window,
         width: u32,
@@ -654,7 +762,8 @@ impl HeadlessRuntime {
         // collection a window's subtree resolves — so it must be installed
         // last (water-rs/waterui#2703).
         env.insert(waterui_core::ViewRenderer::new(
-            crate::view_renderer::HydrolysisViewRenderer::new(
+            crate::view_renderer::HydrolysisViewRenderer::on_painter(
+                &painter,
                 Rc::clone(&theme),
                 env.clone(),
                 family_resolution,
@@ -687,12 +796,8 @@ impl HeadlessRuntime {
 
         window.arm_close_requests(&env);
 
-        let mut platform = HeadlessPlatformWindow::on_context(
-            gpu.clone(),
-            width.max(1),
-            height.max(1),
-            wgpu::TextureFormat::Rgba8Unorm,
-        );
+        let mut platform =
+            HeadlessPlatformWindow::on_painter(&painter, width.max(1), height.max(1));
         platform.apply_properties(&window);
         let mut renderer = HydrolysisRenderer::with_engine(
             Rc::clone(&theme),
@@ -704,7 +809,7 @@ impl HeadlessRuntime {
                 .mint_window_id(),
         );
         renderer.set_window_closable(window.closable);
-        let runtime = RuntimeWindow::new_gpu(
+        let runtime = RuntimeWindow::new_painted(
             window,
             platform,
             renderer,
@@ -725,8 +830,8 @@ impl HeadlessRuntime {
             fonts,
             family_resolution,
             _executor_teardown: DrainExecutorOnDrop::new(local_executor.clone()),
-            _gpu_reclaim: ReclaimGpuOnDrop(gpu.clone()),
-            gpu,
+            _gpu_reclaim: ReclaimGpuOnDrop(painter.clone()),
+            painter,
             local_executor,
         }
     }
@@ -738,12 +843,7 @@ impl HeadlessRuntime {
         let frame = crate::platform::validated_window_frame(window.frame.snapshot());
         let width = crate::num_cast::f32_as_u32(frame.width().max(1.0));
         let height = crate::num_cast::f32_as_u32(frame.height().max(1.0));
-        let mut platform = HeadlessPlatformWindow::on_context(
-            self.gpu.clone(),
-            width,
-            height,
-            wgpu::TextureFormat::Rgba8Unorm,
-        );
+        let mut platform = HeadlessPlatformWindow::on_painter(&self.painter, width, height);
         // The vended window's host reports the same touch-gesture
         // parameters the main window's does: a `set_touch_scroll_config`
         // call applies to every window the runtime owns.
@@ -763,7 +863,7 @@ impl HeadlessRuntime {
         );
         renderer.set_window_closable(window.closable);
         window.arm_close_requests(&self.env);
-        RuntimeWindow::new_gpu(
+        RuntimeWindow::new_painted(
             window,
             platform,
             renderer,
@@ -830,16 +930,19 @@ impl HeadlessRuntime {
 
     /// The adapter and device this runtime renders on — attribution for a
     /// `frame-profile` report, including whether the device was opened with
-    /// `TIMESTAMP_QUERY`.
-    #[cfg(feature = "frame-profile")]
+    /// `TIMESTAMP_QUERY`. `None` when the runtime renders on the CPU painter.
+    #[cfg(all(feature = "frame-profile", hydrolysis_gpu_painter))]
     #[must_use]
-    pub fn gpu_identity(&self) -> crate::GpuIdentity {
-        let surface = self.runtime.platform.inner.surface_ref();
-        crate::GpuIdentity::new(
-            surface.adapter().get_info(),
-            surface.adapter().features(),
-            surface.device().features(),
-        )
+    pub fn gpu_identity(&self) -> Option<crate::GpuIdentity> {
+        match self.runtime.platform.inner.surface_ref() {
+            HeadlessSurface::Gpu(surface) => Some(crate::GpuIdentity::new(
+                surface.adapter().get_info(),
+                surface.adapter().features(),
+                surface.device().features(),
+            )),
+            #[cfg(hydrolysis_cpu_painter)]
+            HeadlessSurface::Cpu(_) => None,
+        }
     }
 
     /// Performs an accessibility action against the merged tree.
@@ -1116,7 +1219,7 @@ impl HeadlessRuntime {
 
     /// The environment the runtime renders its windows in, for tests that
     /// read what a frame resolved against — its colour scheme, say.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) const fn env(&self) -> &Environment {
         &self.env
     }
@@ -1529,10 +1632,10 @@ fn translate_input_event(event: InputEvent, dx: f32, dy: f32) -> InputEvent {
 /// bound to a *new* [`OffscreenGpuContext`] — the same shape the platform
 /// runner performs when a device is replaced — then drives the normal
 /// production `pump_at` path.
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 mod generation_tests {
     use super::*;
-    use crate::platform::GpuSurfaceWindow;
+    use crate::platform::{OffscreenGpuContext, PaintedWindow as _};
     use crate::renderer::tests::{MinimalTestTheme, test_environment};
     use cherenkov_record::{
         Draw as _, FontId, Glyph, GlyphRun, GlyphStyle, ImageId, Recorder, Sampling, WorkingColor,
@@ -1561,18 +1664,18 @@ mod generation_tests {
         gpu: OffscreenGpuContext,
     ) -> OffscreenGpuContext {
         let (width, height) = runtime.runtime.platform.content_size();
-        runtime.runtime.platform = HeadlessPlatformWindow::on_context(
-            gpu.clone(),
-            width,
-            height,
-            wgpu::TextureFormat::Rgba8Unorm,
-        );
+        let painter = OffscreenPainter::Gpu(gpu);
+        runtime.runtime.platform = HeadlessPlatformWindow::on_painter(&painter, width, height);
         runtime
             .runtime
             .platform
             .apply_properties(&runtime.runtime.window);
-        runtime._gpu_reclaim = ReclaimGpuOnDrop(gpu.clone());
-        std::mem::replace(&mut runtime.gpu, gpu)
+        runtime._gpu_reclaim = ReclaimGpuOnDrop(painter.clone());
+        match std::mem::replace(&mut runtime.painter, painter) {
+            OffscreenPainter::Gpu(replaced) => replaced,
+            #[cfg(hydrolysis_cpu_painter)]
+            OffscreenPainter::Cpu(_) => panic!("the runtime under test renders on the GPU"),
+        }
     }
 
     /// Scene content that registers real resources — the installed Roboto
@@ -1729,7 +1832,7 @@ mod generation_tests {
         // reclaim — the mechanism every frame's `reclaim_device` uses — so
         // wgpu detects the loss lazily and delivers the platform-installed
         // callback. Bounded wait: a missing callback fails, never skips.
-        let surface = runtime.runtime.platform.surface();
+        let surface = runtime.runtime.platform.surface().gpu();
         let device_loss = surface.device_loss().clone();
         surface.device().destroy();
         let device = surface.device().clone();
@@ -1800,5 +1903,45 @@ mod generation_tests {
             runtime.runtime.renderer.root_is_dirty(),
             "re-installed invalidator requests a frame on the new engine"
         );
+    }
+}
+
+/// The offscreen painter selection of a build with both painters, driven
+/// through its seam: the host's hardware-GPU report.
+#[cfg(all(test, hydrolysis_both_painters))]
+mod painter_selection_tests {
+    use super::*;
+    use crate::renderer::tests::{MinimalTestTheme, test_environment};
+
+    /// A host without a hardware GPU takes the CPU painter, and a runtime
+    /// on it renders and reads back its frames through the CPU engine —
+    /// the main window's surface and the readback are the CPU ones.
+    #[test]
+    fn a_host_without_a_hardware_gpu_renders_on_the_cpu_painter() {
+        let painter = OffscreenPainter::select_with(true)
+            .unwrap_or_else(|error| panic!("the CPU painter must open: {error}"));
+        assert!(
+            matches!(painter, OffscreenPainter::Cpu(_)),
+            "a host without a hardware GPU must select the CPU painter, got {painter:?}"
+        );
+        let mut runtime = HeadlessRuntime::new_for_tests_on_context(
+            painter,
+            test_environment(),
+            AnyViewBuilder::<AnyView>::new(|| AnyView::new(waterui::text!("CPU"))),
+            64,
+            32,
+            MinimalTestTheme::default(),
+        );
+        assert!(matches!(
+            runtime.runtime.platform.inner.surface_ref(),
+            HeadlessSurface::Cpu(_)
+        ));
+        let snapshot = runtime
+            .pump_snapshot()
+            .into_snapshot()
+            .expect("a capture pump reads its frame back");
+        assert_eq!((snapshot.width(), snapshot.height()), (64, 32));
+        assert_eq!(snapshot.output_alpha(), cherenkov::OutputAlpha::Straight);
+        assert_eq!(snapshot.rgba8().len(), 64 * 32 * 4);
     }
 }

@@ -6,11 +6,11 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
-use cherenkov_record::{FilterId, Layer, MaterialRegistry, ResourceError, Transaction};
+use cherenkov_record::{FilterId, Layer, MaterialRegistry, Transaction};
 use rustc_hash::FxHashMap;
 use waterui_core::contract_violation;
+use waterui_graphics::backend::Reactive;
 use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
-use waterui_graphics::backend::{Handle, Reactive, TextBackend, TextRegistration, TextRequest};
 use waterui_graphics::gpu::PresentedSize;
 
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
@@ -22,9 +22,9 @@ use crate::renderer::mount::backdrop::{
 };
 use crate::renderer::recording::SceneResources;
 use crate::text::TextService;
-use crate::text::{CanvasLayout, shape_canvas_text};
 
-use super::{FilterHandle, FilterRegistration, LayerTarget, MaterialTerms};
+use super::engine_target::{install_engine_text, mount_material_group};
+use super::{FilterHandle, LayerTarget, MaterialTerms};
 
 impl MaterialTerms<cherenkov::BackdropShader> {
     /// Attaches the registry to `engine` (water-rs/waterui#1788).
@@ -63,61 +63,6 @@ pub fn attach_material_shaders(
         .collect()
 }
 
-/// Installs on `resources` the registry that lays canvas text out through
-/// `text` and registers it with `engine`.
-pub fn install_gpu_text<E: crate::text::TextEngine>(
-    resources: &SceneResources,
-    engine: &Rc<crate::engine::GpuEngine>,
-    text: &Arc<TextService<E>>,
-) {
-    resources.install_text(text, || {
-        Rc::new(GpuText {
-            engine: Rc::clone(engine),
-            service: Arc::clone(text),
-            faces: RefCell::default(),
-        })
-    });
-}
-
-/// Canvas text on the GPU target: laid out by the session's text engine,
-/// registered with the Cherenkov engine as glyph runs.
-struct GpuText<E: crate::text::TextEngine> {
-    engine: Rc<crate::engine::GpuEngine>,
-    service: Arc<TextService<E>>,
-    /// The faces text layouts have registered, by blob and index, so a text
-    /// laid out again does not register its fonts again. Each layout holds
-    /// its own share of a face; the cache holds one for as long as the
-    /// registry lives.
-    faces: RefCell<FxHashMap<(u64, u32), cherenkov::Font>>,
-}
-
-impl<E: crate::text::TextEngine> TextBackend for GpuText<E> {
-    fn register_text(
-        &self,
-        request: TextRequest,
-    ) -> Result<Option<TextRegistration>, ResourceError> {
-        let Some(CanvasLayout { layout, size }) = shape_canvas_text(&self.service, &request) else {
-            return Ok(None);
-        };
-        let mut faces = self.faces.borrow_mut();
-        let text = self.service.cherenkov_text(&layout, &mut |face| {
-            let key = (face.data.id(), face.index);
-            if let Some(font) = faces.get(&key) {
-                return Ok(font.clone());
-            }
-            let font = self.engine.font(cherenkov::FontSource {
-                data: Arc::from(face.data.data()),
-                index: face.index,
-            })?;
-            faces.insert(key, font.clone());
-            Ok(font)
-        })?;
-        drop(faces);
-        let handle = self.engine.text_layout(text)?;
-        Ok(Some(TextRegistration::new(Handle::new(handle), size)))
-    }
-}
-
 /// The Cherenkov GPU target's host: one per engine window surface.
 pub struct CherenkovHost {
     pub engine: Rc<crate::engine::GpuEngine>,
@@ -144,7 +89,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
     type Host = CherenkovHost;
     type Group = cherenkov::BackdropGroup;
     type Shader = cherenkov::BackdropShader;
-    const BACKDROP_SHADERS: bool = true;
+    const BACKDROP_SHADER_REFUSAL: Option<&'static str> = None;
 
     #[cfg(hydrolysis_hosted)]
     fn mount_hosted(
@@ -167,7 +112,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
     }
 
     fn install_text(host: &CherenkovHost, text: &Arc<TextService<E>>) {
-        install_gpu_text(&host.resources, &host.engine, text);
+        install_engine_text(&host.resources, &host.engine, text);
     }
 
     fn mount_gpu_content(
@@ -255,46 +200,14 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
         membership: &MaterialMembership<E>,
         bind: MemberBind,
     ) {
-        let Some(surface) = host.surface.upgrade() else {
-            contract_violation!(
-                "hydrolysis material: the engine surface was dropped during its commit; \
-                 the layer joins no backdrop group"
-            );
-            groups.clear(layer.id());
-            tx[layer].clear_backdrop();
-            return;
-        };
-        groups.join(
+        mount_material_group(
+            &host.surface,
             tx,
+            groups,
+            layer,
             key,
-            key.runtime(),
             display_scale,
-            MemberJoin {
-                layer,
-                membership,
-                payload: || (),
-                resolve: super::super::layers::NodeLayers::frame_layer,
-            },
-            (
-                |runtime: &crate::renderer::material::MaterialRuntime, scale| {
-                    let spec = cherenkov::BackdropSpec::new(
-                        crate::renderer::material::capture_scale(),
-                        cherenkov::CaptureLevels::ONE,
-                    );
-                    // A `.material_group()` scope's groups capture beneath
-                    // its anchor layer (water-rs/waterui#2097).
-                    let spec = key.anchor.map_or(spec, |anchor| spec.anchor(anchor));
-                    Ok(surface.backdrop_group(runtime.chain(scale), spec))
-                },
-                |tx: &mut Transaction<'_, Self>,
-                 member: &Layer,
-                 _payload: &(),
-                 group: &cherenkov::BackdropGroup,
-                 _scale: f64| {
-                    tx[member].backdrop(group.sample());
-                    Ok(())
-                },
-            ),
+            membership,
             bind,
         );
     }
@@ -527,11 +440,5 @@ fn external_frame_plane_size(frame: &cherenkov_gpu::interop::ExternalFrame) -> (
         FramePlanes::Rgb { plane, .. } => (plane.width(), plane.height()),
         #[cfg(all(unix, not(target_vendor = "apple")))]
         FramePlanes::Native(frame) => frame.size(),
-    }
-}
-
-impl FilterRegistration for cherenkov::Filter {
-    fn filter_id(&self) -> cherenkov_record::FilterId {
-        self.id()
     }
 }

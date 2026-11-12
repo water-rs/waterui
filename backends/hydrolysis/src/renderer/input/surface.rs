@@ -893,7 +893,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
     /// Replaces where surface pastes read the clipboard from, so a test
     /// controls what the clipboard holds and when its read finishes.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn set_clipboard_read(&mut self, clipboard: ClipboardRead) {
         self.hit_test.clipboard_read = clipboard;
     }

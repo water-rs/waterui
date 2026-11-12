@@ -21,7 +21,7 @@ use super::window::{FrameMode, FrameProfile};
 ///
 /// `refresh_rate_hz` is the rate the window runtime last observed from its
 /// platform; a window with no known rate reports at the headless pacing.
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub(super) fn publish_frame(
     environment: &Environment,
     mode: FrameMode,
@@ -61,7 +61,7 @@ pub(super) fn publish_frame(
 }
 
 /// How much of the pipeline the frame ran, from the mode it was scheduled with.
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 const fn frame_kind(mode: FrameMode) -> FrameKind {
     match mode {
         FrameMode::Idle => FrameKind::Idle,
@@ -73,7 +73,7 @@ const fn frame_kind(mode: FrameMode) -> FrameKind {
 ///
 /// Zero means "unknown" to the protocol, which reports no budget usage rather
 /// than pretending the frame was perfectly on budget.
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 fn budget_us(refresh_hz: f64) -> u32 {
     if refresh_hz <= 0.0 {
         return 0;
@@ -81,7 +81,7 @@ fn budget_us(refresh_hz: f64) -> u32 {
     micros(Duration::from_secs_f64(1.0 / refresh_hz))
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 fn micros(duration: Duration) -> u32 {
     u32::try_from(duration.as_micros()).unwrap_or(u32::MAX)
 }

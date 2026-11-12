@@ -3343,12 +3343,13 @@ mod tests {
         declare("hydrolysis", &["accessibility"], &mut older);
         let older = features(&older);
         assert!(older.get("gpu").is_none(), "{older:?}");
+        assert!(older.get("cpu").is_none(), "{older:?}");
         assert!(older.get("hwui").is_none(), "{older:?}");
         assert!(older.contains_key("waterui-preview-mode"), "{older:?}");
 
         let mut current = super::FeatureTables::new();
-        declare("waterui", &["gpu", "video"], &mut current);
-        declare("hydrolysis", &["gpu", "hwui"], &mut current);
+        declare("waterui", &["gpu", "cpu", "video"], &mut current);
+        declare("hydrolysis", &["gpu", "cpu", "hwui"], &mut current);
         let current = features(&current);
         let forwards = |name: &str| {
             let mut entries = current[name]
@@ -3361,6 +3362,7 @@ mod tests {
             entries
         };
         assert_eq!(forwards("gpu"), ["hydrolysis/gpu", "waterui/gpu"]);
+        assert_eq!(forwards("cpu"), ["hydrolysis/cpu", "waterui/cpu"]);
         assert_eq!(forwards("hwui"), ["hydrolysis/hwui"]);
 
         // A facade without `gpu` keeps only the `hydrolysis` half.
@@ -6245,9 +6247,10 @@ pub mod hydrolysis {
         Ok(outputs)
     }
 
-    /// The launcher features that select an Android painter, named after
-    /// the `hydrolysis` features they forward to.
-    const ANDROID_PAINTER_FEATURES: [&str; 2] = ["gpu", "hwui"];
+    /// The launcher features that select a painter, named after the
+    /// `hydrolysis` features they forward to: the Cherenkov render backends
+    /// (`gpu`, `cpu`) and the Android `RenderNode` painter (`hwui`).
+    const PAINTER_FEATURES: [&str; 3] = ["gpu", "cpu", "hwui"];
 
     /// The `[features]` tables of the `waterui` and `hydrolysis` packages the
     /// manifest [`scaffold`] writes into `base_dir` resolves to — what
@@ -6294,8 +6297,8 @@ pub mod hydrolysis {
     ) -> io::Result<Vec<(std::path::PathBuf, Vec<u8>)>> {
         let declared = |features: &[&str]| features.iter().map(ToString::to_string).collect();
         let tables = FeatureTables::from([
-            ("waterui".to_string(), declared(&["gpu"])),
-            ("hydrolysis".to_string(), declared(&["gpu", "hwui"])),
+            ("waterui".to_string(), declared(&["gpu", "cpu"])),
+            ("hydrolysis".to_string(), declared(&["gpu", "cpu", "hwui"])),
         ]);
         rendered_outputs(ctx, package_name, &tables)
     }
@@ -6364,15 +6367,15 @@ pub mod hydrolysis {
                 ],
             ),
         ]);
-        // The Android painters: `water build`/`run`/`package` enable the
-        // resolved painter's feature on the launcher, mirroring the
-        // test-app's wiring — `gpu` links the Cherenkov GPU attachment and
-        // the GPU-capable `waterui`, `hwui` the platform `RenderNode` target
-        // and no GPU stack. Off Android the features select nothing the
-        // desktop build lacks. Each forward is kept only where the resolved
-        // package declares the feature, so a framework revision that
-        // predates a painter resolves without it.
-        for painter in ANDROID_PAINTER_FEATURES {
+        // The painters: an Android build enables the resolved painter's
+        // feature on the launcher, mirroring the test-app's wiring — `gpu`
+        // links the Cherenkov GPU attachment and the GPU-capable `waterui`,
+        // `hwui` the platform `RenderNode` target and no GPU stack. A desktop
+        // or offscreen build enables the resolved `[hydrolysis] render`
+        // backends, `gpu` and/or `cpu`. Each forward is kept only where the
+        // resolved package declares the feature, so a framework revision
+        // that predates a painter resolves without it.
+        for painter in PAINTER_FEATURES {
             let forwards = super::feature_forwards(painter, painter_tables);
             if !forwards.is_empty() {
                 features.insert((*painter).to_string(), forwards);
@@ -7799,10 +7802,11 @@ const FORWARDED_FEATURES: &[&str] = &[
 /// compile only for apps whose graph holds `waterui-video` /
 /// `waterui-webview`. The CEF runtime listens under its own feature names —
 /// `webview-cef` turns on `waterui-browser-cef/webview`. The Hydrolysis
-/// launcher's Android painter features (`gpu`, `hwui`) forward to
+/// launcher's painter features (`gpu`, `cpu`, `hwui`) forward to
 /// `hydrolysis` the same way.
 const BACKEND_FEATURE_FORWARDS: &[(&str, &str, &str)] = &[
     ("gpu", "hydrolysis", "gpu"),
+    ("cpu", "hydrolysis", "cpu"),
     ("hwui", "hydrolysis", "hwui"),
     ("map", "waterui-apple", "map"),
     ("media", "waterui-apple", "media"),
@@ -7813,9 +7817,9 @@ const BACKEND_FEATURE_FORWARDS: &[(&str, &str, &str)] = &[
 
 /// The selectable features that also reach the `waterui` facade crate — the
 /// gpu/media/video/webview capability surface the native Apple entry
-/// compiles; the Hydrolysis launcher's `gpu` painter feature reaches the
-/// facade through the same entry.
-const APPLE_RUNTIME_FEATURE_FORWARDS: &[&str] = &["gpu", "media", "video", "webview"];
+/// compiles; the Hydrolysis launcher's `gpu` and `cpu` painter features
+/// reach the facade through the same entry.
+const APPLE_RUNTIME_FEATURE_FORWARDS: &[&str] = &["gpu", "cpu", "media", "video", "webview"];
 
 /// The declaration `name` carries in `manifest`, wherever it lives:
 /// `[dependencies]` or a `[target.*.dependencies]` table. A generated

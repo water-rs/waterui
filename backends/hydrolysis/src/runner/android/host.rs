@@ -33,8 +33,6 @@ use waterui::theme::ColorScheme;
 use waterui::window::WindowState;
 use waterui_core::contract_violation;
 use waterui_core::layout::LayoutDirection;
-#[cfg(hydrolysis_gpu_painter)]
-use waterui_graphics::gpu::RedrawHandle;
 
 use super::accessibility::AccessibilitySnapshot;
 #[cfg(hydrolysis_gpu_painter)]
@@ -42,7 +40,7 @@ use super::gpu::{AndroidGpuContext, AndroidSurface};
 use super::ime::ImeBridge;
 use super::jni::JniError;
 #[cfg(hydrolysis_gpu_painter)]
-use crate::platform::GpuSurfaceWindow;
+use crate::platform::PaintedWindow;
 use crate::platform::{InputEvent, PlatformWindow, TextInputState, validated_window_frame};
 #[cfg(hydrolysis_gpu_painter)]
 use crate::renderer::FontFamilyResolution;
@@ -418,7 +416,7 @@ fn color_space_name(space: wgpu::SurfaceColorSpace) -> Option<&'static str> {
 
 /// The Kotlin host's window on the runner's side: host services only. The
 /// GPU attachment is a separate object — this type's [`PlatformWindow`] impl
-/// never touches it, and [`GpuSurfaceWindow::surface`] is the only path that
+/// never touches it, and [`PaintedWindow::surface`] is the only path that
 /// hands it to the painter.
 pub struct AndroidHostWindow {
     metrics: MetricsSnapshot,
@@ -800,14 +798,14 @@ impl AndroidHostWindow {
 }
 
 #[cfg(hydrolysis_gpu_painter)]
-impl GpuSurfaceWindow for AndroidHostWindow {
+impl PaintedWindow for AndroidHostWindow {
     type Presentation = AndroidSurface;
     fn surface(&mut self) -> &mut AndroidSurface {
         &mut self.surface
     }
 
-    fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
-        Some(RedrawHandle::new(self.content_redraw_wake()))
+    fn host_redraw_handle(&self) -> Option<crate::renderer::HostRedraw> {
+        Some(crate::renderer::HostRedraw::new(self.content_redraw_wake()))
     }
 
     /// The compositor blur a behind-window material asks for — the host's
@@ -1260,7 +1258,7 @@ fn gpu_runtime_window(
     );
     renderer.set_window_id(window_id);
     renderer.set_window_closable(window.closable);
-    Ok(RuntimeWindow::new_gpu(
+    Ok(RuntimeWindow::new_painted(
         window,
         platform,
         renderer,

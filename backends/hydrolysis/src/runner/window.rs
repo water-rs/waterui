@@ -3,19 +3,19 @@
 
 use super::*;
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use crate::animation::PerpetualAnimation;
-#[cfg(hydrolysis_gpu_painter)]
-use crate::platform::GpuSurfaceWindow;
+#[cfg(hydrolysis_cherenkov)]
+use crate::platform::PaintedWindow;
 // Concrete `PresentationSurface` method calls — `WinitSurface::device_loss`
-// and `BrowserSurface::device_loss` in the `GpuSurfaceFrame` impls below —
+// and `BrowserSurface::device_loss` in the `PaintedFrame` impls below —
 // exist only on these cfgs; everywhere else the trait is reached through
 // `dyn SurfaceProvider`, which needs no import.
 #[cfg(any(
     all(target_os = "macos", hydrolysis_winit),
     all(target_arch = "wasm32", feature = "web")
 ))]
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use crate::platform::PresentationSurface as _;
 use crate::renderer::material::{BehindWindowLevel, Blending, WithinWindowLevel};
 #[cfg(any(target_os = "android", test))]
@@ -57,7 +57,7 @@ impl FrameMode {
     /// animation tick, and every animation other than a perpetual one is
     /// counted separately by the renderer's own scheduled-work query, so when
     /// perpetual animation is ignored only `Refresh` remains pending.
-    #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+    #[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
     pub(super) const fn is_pending_with(self, perpetual: PerpetualAnimation) -> bool {
         match perpetual {
             PerpetualAnimation::Counts => self.is_pending(),
@@ -68,7 +68,7 @@ impl FrameMode {
     /// Whether the scheduled frame exists to apply an unapplied semantic
     /// change. `Animate` is scheduled continuation work, not staleness.
     #[cfg(not(target_arch = "wasm32"))]
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(super) const fn is_unapplied_change(self) -> bool {
         matches!(self, Self::Refresh)
     }
@@ -157,11 +157,11 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
     }
 }
 
-#[cfg(hydrolysis_gpu_painter)]
-impl<P: GpuSurfaceWindow> RuntimeWindow<P, crate::text::ParleyEngine> {
-    /// The GPU painter's window: the shared construction plus the surface
+#[cfg(hydrolysis_cherenkov)]
+impl<P: PaintedWindow> RuntimeWindow<P, crate::text::ParleyEngine> {
+    /// A Cherenkov painter's window: the shared construction plus the host
     /// redraw handle, installed before the window's first frame.
-    pub(super) fn new_gpu(
+    pub(super) fn new_painted(
         window: Window,
         platform: P,
         renderer: HydrolysisRenderer<crate::text::ParleyEngine>,
@@ -169,8 +169,8 @@ impl<P: GpuSurfaceWindow> RuntimeWindow<P, crate::text::ParleyEngine> {
         env: &Environment,
     ) -> Self {
         let mut runtime = Self::new(window, platform, renderer, config, env);
-        if let Some(handle) = runtime.platform.gpu_surface_redraw_handle() {
-            runtime.renderer.set_host_redraw_handle(handle.into());
+        if let Some(handle) = runtime.platform.host_redraw_handle() {
+            runtime.renderer.set_host_redraw_handle(handle);
         }
         runtime
     }
@@ -556,7 +556,7 @@ pub(super) const fn schedule_animation_update<P: PlatformWindow, E: crate::text:
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// A captured headless frame: raw pixels, the alpha convention the
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 /// producing surface reports, plus dimensions.
 #[non_exhaustive]
 pub struct HeadlessSnapshot {
@@ -569,12 +569,12 @@ pub struct HeadlessSnapshot {
     rgba8: Vec<u8>,
     /// The alpha convention the producing surface presented with — the
     /// convention `rgba8` reads, not a comment's claim about it.
-    output_alpha: cherenkov_gpu::interop::OutputAlpha,
+    output_alpha: cherenkov::OutputAlpha,
 }
 
 // The accessors are the public surface `runner` re-exports off wasm32; the
 // browser runner only builds and drops a snapshot.
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
 impl HeadlessSnapshot {
     /// Snapshot width in pixels.
     #[must_use]
@@ -603,19 +603,19 @@ impl HeadlessSnapshot {
     /// The alpha convention the producing surface presented with — the
     /// convention `rgba8` reads, not a comment's claim about it.
     #[must_use]
-    pub const fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
+    pub const fn output_alpha(&self) -> cherenkov::OutputAlpha {
         self.output_alpha
     }
 
     /// Takes the value apart into its fields, in declaration order.
     #[must_use]
-    pub fn into_parts(self) -> (u32, u32, Vec<u8>, cherenkov_gpu::interop::OutputAlpha) {
+    pub fn into_parts(self) -> (u32, u32, Vec<u8>, cherenkov::OutputAlpha) {
         (self.width, self.height, self.rgba8, self.output_alpha)
     }
 }
 
 #[derive(Debug)]
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub(super) struct RenderWindowResult {
     pub(super) rebuilt: bool,
     pub(super) snapshot: Option<HeadlessSnapshot>,
@@ -630,7 +630,7 @@ pub(super) struct RenderWindowResult {
 
 /// What became of one frame a live window's pump ran.
 #[derive(Debug)]
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub(super) enum WindowFrame {
     /// The frame reached the surface.
     Presented,
@@ -649,7 +649,7 @@ pub(super) enum WindowFrame {
     target_os = "android",
     all(target_arch = "wasm32", feature = "web")
 ))]
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 impl WindowFrame {
     /// Whether the frame reached the surface.
     #[must_use]
@@ -660,7 +660,7 @@ impl WindowFrame {
 
 /// Why a window's frame did not reach its surface.
 #[derive(Debug)]
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub enum FrameFailure {
     /// Transient: the frame is skipped and the pump asks for another.
     Skipped(crate::platform::SurfaceError),
@@ -669,7 +669,7 @@ pub enum FrameFailure {
     Failed(crate::renderer::FrameError),
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 impl From<crate::platform::SurfaceError> for FrameFailure {
     fn from(error: crate::platform::SurfaceError) -> Self {
         Self::Skipped(error)
@@ -683,7 +683,7 @@ impl From<crate::platform::DeviceLostError> for FrameFailure {
     }
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 impl From<crate::renderer::FrameError> for FrameFailure {
     /// A terminal frame error ends the surface; a render failure skips the
     /// frame and reports the surface lost, so the next frame retries — a
@@ -1016,7 +1016,7 @@ impl FrameProfile {
 }
 
 impl FrameProfile {
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(super) const fn with_total(mut self, total: Duration) -> Self {
         self.total = total;
         self
@@ -1143,8 +1143,8 @@ impl SurfaceBackground {
 /// renderer the within-window material the root mounts over, and returns the
 /// clear colour. This is the one place the background reaches the
 /// presentation path.
-#[cfg(hydrolysis_gpu_painter)]
-pub(super) fn apply_window_background<P: GpuSurfaceWindow, E: crate::text::TextEngine>(
+#[cfg(hydrolysis_cherenkov)]
+pub(super) fn apply_window_background<P: PaintedWindow, E: crate::text::TextEngine>(
     runtime: &mut RuntimeWindow<P, E>,
     env: &Environment,
 ) -> peniko::Color {
@@ -1160,17 +1160,17 @@ pub fn window_requires_transparency(window: &Window, env: &Environment) -> bool 
     SurfaceBackground::of(window, env).transparent()
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 crate::engine::cfg_async_fn! {
     /// Runs one frame and reports what became of it: presented to the
     /// surface, skipped — an idle frame, or one whose surface had to be
     /// reconfigured — or failed for good, when the surface cannot render
     /// again. The frame renders through the window's presentation kind
-    /// ([`GpuSurfaceFrame`]).
+    /// ([`PaintedFrame`]).
     ///
     /// Async on wasm32, where the engine render inside awaits the browser device.
     #[cfg(not(hydrolysis_hwui))]
-    pub(super) fn render_window<P: GpuSurfaceWindow>(
+    pub(super) fn render_window<P: PaintedWindow>(
         runtime: &mut RuntimeWindow<P, crate::text::ParleyEngine>,
         env: &Environment,
         drain_local_tasks: &mut dyn FnMut() -> bool,
@@ -1189,7 +1189,7 @@ crate::engine::cfg_async_fn! {
         FrameReader::Display,
         drain_local_tasks,
         #[cfg(not(target_arch = "wasm32"))]
-        GpuSurfaceFrame::render_frame,
+        PaintedFrame::render_frame,
         #[cfg(target_arch = "wasm32")]
         async |surface: &mut P::Presentation, renderer, clear_color, display_scale| {
             surface
@@ -1472,7 +1472,7 @@ pub(super) fn pump_window_semantics<P: PlatformWindow, E: crate::text::TextEngin
     rebuilt
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub struct SurfaceRenderResult {
     acquire: Duration,
     render: Duration,
@@ -1480,7 +1480,7 @@ pub struct SurfaceRenderResult {
     snapshot: Option<HeadlessSnapshot>,
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 impl SurfaceRenderResult {
     #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
     pub(crate) const fn engine_presented(render: Duration) -> Self {
@@ -1500,8 +1500,8 @@ impl SurfaceRenderResult {
 /// acquire, copy or present to call.
 ///
 /// [`SurfaceProvider`]: crate::platform::SurfaceProvider
-#[cfg(hydrolysis_gpu_painter)]
-pub trait GpuSurfaceFrame {
+#[cfg(hydrolysis_cherenkov)]
+pub trait PaintedFrame {
     /// Renders and presents one frame into the surface, reporting the
     /// stage durations, or why the frame was skipped or the surface can
     /// never render again.
@@ -1513,7 +1513,7 @@ pub trait GpuSurfaceFrame {
         display_scale: f64,
     ) -> Result<SurfaceRenderResult, FrameFailure>;
 
-    /// [`GpuSurfaceFrame::render_frame`], async on wasm32 where the browser
+    /// [`PaintedFrame::render_frame`], async on wasm32 where the browser
     /// device renders inside an await.
     #[cfg(target_arch = "wasm32")]
     fn render_frame(
@@ -1527,7 +1527,7 @@ pub trait GpuSurfaceFrame {
 /// Every host-acquired surface renders through [`render_host_acquired_frame`];
 /// a live window reads no snapshot.
 #[cfg(hydrolysis_gpu_painter)]
-impl<S: crate::platform::SurfaceProvider> GpuSurfaceFrame for S {
+impl<S: crate::platform::SurfaceProvider> PaintedFrame for S {
     #[cfg(all(not(target_arch = "wasm32"), not(hydrolysis_hwui)))]
     fn render_frame(
         &mut self,
@@ -1690,7 +1690,7 @@ crate::engine::cfg_async_fn! {
 ///
 /// [`SurfaceProvider`]: crate::platform::SurfaceProvider
 #[cfg(all(target_os = "macos", hydrolysis_winit))]
-impl GpuSurfaceFrame for crate::platform::WinitSurface {
+impl PaintedFrame for crate::platform::WinitSurface {
     fn render_frame(
         &mut self,
         renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
@@ -1720,7 +1720,7 @@ impl GpuSurfaceFrame for crate::platform::WinitSurface {
 /// and `present` report zero. No snapshot can be asked of this kind: a
 /// browser surface is never read back.
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
-impl GpuSurfaceFrame for crate::platform::BrowserSurface {
+impl PaintedFrame for crate::platform::BrowserSurface {
     #[allow(
         clippy::future_not_send,
         reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
@@ -1763,7 +1763,7 @@ impl GpuSurfaceFrame for crate::platform::BrowserSurface {
         reason = "the browser has no headless runtime, so only `Display` frames exist there"
     )
 )]
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub(super) enum FrameReader {
     /// A live window: the display reads the presented surface.
     #[cfg(not(hydrolysis_hwui))]
@@ -1777,7 +1777,7 @@ pub(super) enum FrameReader {
     Nobody,
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 impl FrameReader {
     /// The reader of a headless frame: the snapshot when the pump captures
     /// one, nobody otherwise.
@@ -1795,21 +1795,108 @@ impl FrameReader {
     }
 }
 
-/// Runs one frame of a host-acquired window for `reader`: a
-/// [`FrameReader::Snapshot`] reads the acquired frame back. Bound on
-/// [`SurfaceProvider`](crate::platform::SurfaceProvider), because only an
-/// acquired frame can be read back — an engine-presented window has none,
-/// so a snapshot of one does not compile.
+/// A presentation whose frame can be read back: a host-acquired GPU
+/// surface ([`SurfaceProvider`](crate::platform::SurfaceProvider)), the CPU
+/// painter's framebuffer, or the headless window's selected one of the two.
+/// An engine-presented window has no frame to read, so a snapshot of one
+/// does not compile.
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(hydrolysis_cherenkov)]
+pub trait CapturedFrame {
+    /// Renders one frame and, with `capture`, reads it back as a snapshot,
+    /// or reports why the frame was skipped or the surface can never render
+    /// again.
+    fn render_captured(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
+        clear_color: peniko::Color,
+        display_scale: f64,
+        capture: bool,
+    ) -> Result<SurfaceRenderResult, FrameFailure>;
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(hydrolysis_gpu_painter)]
-pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
+impl<S: crate::platform::SurfaceProvider> CapturedFrame for S {
+    fn render_captured(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
+        clear_color: peniko::Color,
+        display_scale: f64,
+        capture: bool,
+    ) -> Result<SurfaceRenderResult, FrameFailure> {
+        render_host_acquired_frame(renderer, self, clear_color, display_scale, capture)
+    }
+}
+
+/// The CPU painter's frame: the renderer commits and renders into its
+/// framebuffer surface on the target's engine, and a capture reads the
+/// presentation pass's sRGB bytes in straight alpha, the convention the
+/// GPU offscreen texture presents with. There is no acquire or present:
+/// the framebuffer is the frame.
+#[cfg(hydrolysis_cpu_painter)]
+impl CapturedFrame for crate::platform::RasterOffscreen {
+    fn render_captured(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
+        clear_color: peniko::Color,
+        display_scale: f64,
+        capture: bool,
+    ) -> Result<SurfaceRenderResult, FrameFailure> {
+        let (width, height) = crate::platform::OffscreenTarget::size(self);
+        let render_started_at = Instant::now();
+        // A surface the engine cannot create ends the window; a failed
+        // render or readback skips the frame and the next one retries.
+        let pixels = renderer.render_raster_frame(
+            &self.state,
+            crate::renderer::FrameGeometry {
+                display_scale,
+                width,
+                height,
+                base_color: crate::renderer::working_color(clear_color),
+            },
+            capture.then_some(cherenkov::OutputAlpha::Straight),
+        )?;
+        Ok(SurfaceRenderResult {
+            acquire: Duration::ZERO,
+            render: render_started_at.elapsed(),
+            present: Duration::ZERO,
+            snapshot: pixels.map(|rgba8| HeadlessSnapshot {
+                width,
+                height,
+                rgba8,
+                output_alpha: cherenkov::OutputAlpha::Straight,
+            }),
+        })
+    }
+}
+
+/// The CPU framebuffer as a window presentation: nothing reads a live
+/// frame of it, so the frame is rendered without a capture.
+#[cfg(hydrolysis_cpu_painter)]
+impl PaintedFrame for crate::platform::RasterOffscreen {
+    fn render_frame(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
+        clear_color: peniko::Color,
+        display_scale: f64,
+    ) -> Result<SurfaceRenderResult, FrameFailure> {
+        self.render_captured(renderer, clear_color, display_scale, false)
+    }
+}
+
+/// Runs one frame of a window whose frame can be read back for `reader`: a
+/// [`FrameReader::Snapshot`] reads the frame back ([`CapturedFrame`]).
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(hydrolysis_cherenkov)]
+pub(super) fn render_window_with_capture<P>(
     runtime: &mut RuntimeWindow<P, crate::text::ParleyEngine>,
     env: &Environment,
     reader: FrameReader,
     drain_local_tasks: &mut dyn FnMut() -> bool,
 ) -> RenderWindowResult
 where
-    P::Presentation: crate::platform::SurfaceProvider,
+    P: PaintedWindow<Presentation: CapturedFrame>,
 {
     render_window_pumped(
         runtime,
@@ -1817,18 +1904,12 @@ where
         reader,
         drain_local_tasks,
         |surface: &mut P::Presentation, renderer, clear_color, display_scale| {
-            render_host_acquired_frame(
-                renderer,
-                surface,
-                clear_color,
-                display_scale,
-                reader.captures(),
-            )
+            surface.render_captured(renderer, clear_color, display_scale, reader.captures())
         },
     )
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 crate::engine::cfg_async_fn! {
     /// The frame pump [`render_window`] and [`render_window_with_capture`]
     /// share: `render_frame` renders the frame through the window's surface,
@@ -1838,7 +1919,7 @@ crate::engine::cfg_async_fn! {
     /// device.
     // the pump renders, encodes and delivers in one pass; the sequence is the feature
     #[allow(clippy::too_many_lines)]
-    fn render_window_pumped<P: GpuSurfaceWindow> {
+    fn render_window_pumped<P: PaintedWindow> {
         runtime: &mut RuntimeWindow<P, crate::text::ParleyEngine>,
         env: &Environment,
         reader: FrameReader,

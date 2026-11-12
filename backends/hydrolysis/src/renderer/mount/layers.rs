@@ -457,7 +457,7 @@ impl<E: crate::text::TextEngine> NodeLayers<E> {
         Some(layers.frame())
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn committed_anchor_parent_children(
         &self,
         scope: NonZeroU64,
@@ -492,7 +492,7 @@ impl<E: crate::text::TextEngine> NodeLayers<E> {
             })
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn inner_id(&self) -> Option<LayerId> {
         self.inner.as_ref().map(|(inner, _)| inner.id())
     }
@@ -514,21 +514,28 @@ impl<E: crate::text::TextEngine> NodeLayers<E> {
 
     /// The member's frame layer id when the node holds a backdrop-group
     /// membership — a test-facing answer.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn material_member(&self) -> Option<LayerId> {
         self.material.as_ref().map(|_| self.frame.id())
     }
 
     /// The material request the frame last lowered, whether or not it is
     /// currently visible — a test-facing answer.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) const fn material_request(&self) -> Option<MaterialRequest> {
         self.material_request
     }
 
     /// The member layer `id` names — a `ChromeMaterial` member anywhere
     /// in this node's lists — the layer a rebuilt chrome group re-points.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
+    #[cfg_attr(
+        not(hydrolysis_gpu_painter),
+        allow(
+            dead_code,
+            reason = "read by the GPU target's backdrop-shader chrome; no other target registers backdrop shaders (water-rs/waterui#4065)"
+        )
+    )]
     pub(crate) fn member_layer(&self, id: LayerId) -> Option<&Layer> {
         self.members
             .iter()
@@ -539,8 +546,9 @@ impl<E: crate::text::TextEngine> NodeLayers<E> {
     }
 
     /// The `ChromeMaterial` member layers the node mounted, across its
-    /// own, inner and scope lists — a test-facing answer.
-    #[cfg(test)]
+    /// own, inner and scope lists — a test-facing answer. Only the GPU
+    /// painter mounts chrome members until water-rs/waterui#4065.
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn chrome_members(&self) -> Vec<(u32, LayerId)> {
         self.members
             .iter()
@@ -621,7 +629,7 @@ pub struct CommitCx<'m, 'tx, 's, T: LayerTarget<E>, E: crate::text::TextEngine> 
     scope_anchors: &'m mut ScopeAnchors<E>,
     graveyard: &'m mut Vec<Box<dyn Any>>,
     stats: &'m mut MountStats,
-    #[cfg_attr(all(hydrolysis_hwui, not(hydrolysis_gpu)), expect(dead_code))]
+    #[cfg_attr(not(hydrolysis_gpu), expect(dead_code))]
     wakes: &'m mut dyn FnMut(&Rc<NodeCell<E>>) -> ProducerWake,
 }
 
@@ -727,19 +735,22 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> CommitCx<'_, '_, '_, T, E> {
 
 impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
     /// The mount binds to a target whose engine realizes materials.
-    /// `registry` is the theme's `MaterialRegistry`: a target with no
-    /// backdrop shaders — a CPU engine — reports on this attach when the
-    /// registry is not empty, and its material chrome is not drawn
+    /// `registry` is the theme's `MaterialRegistry`: a target that refuses
+    /// backdrop shaders ([`LayerTarget::BACKDROP_SHADER_REFUSAL`]) reports
+    /// its reason on this attach when the registry is not empty, and its
+    /// material chrome is not drawn
     /// (water-rs/waterui#1788).
     pub fn new(
         shared: Rc<RefCell<Shared<T>>>,
         registry: &cherenkov_record::MaterialRegistry,
     ) -> Self {
-        if !(T::BACKDROP_SHADERS || registry.is_empty()) {
+        if let Some(refusal) = T::BACKDROP_SHADER_REFUSAL
+            && !registry.is_empty()
+        {
             contract_violation!(
-                "hydrolysis materials: this layer target's engine has no backdrop shaders, \
-                 but the theme registered {}; the material chrome is not drawn; \
-                 attach the theme to a GPU engine or register no shaders",
+                "hydrolysis materials: the theme registered the backdrop shaders {}, but {refusal}; \
+                 the material chrome is not drawn; attach the theme to a GPU engine or register \
+                 no shaders",
                 registry
                     .shaders()
                     .map(|(key, _)| format!("{key:?}"))
@@ -769,14 +780,14 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub const fn window(&self) -> &Layer {
         &self.window
     }
 
     /// The window layer's child list as `reconcile` last committed it —
     /// the engine's authoritative paint order. A test-facing answer.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub fn window_children(&self) -> Vec<LayerId> {
         self.window_committed.iter().map(|&(id, _)| id).collect()
     }
@@ -784,7 +795,7 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
     /// The window layer's clip as last committed — `Some` over the window
     /// rect while its backdrop request bounds the window's material.
     /// A test-facing answer.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) const fn window_clip(&self) -> Option<&ShapeData> {
         self.window_props.clip.as_ref()
     }
@@ -794,19 +805,19 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
     }
 
     /// The mount's backdrop-group table.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) const fn groups(&self) -> &MaterialBackdropGroups<T::Group, E> {
         &self.groups
     }
 
     /// The mount's `.material_group()` scope-anchor registrations.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) const fn scope_anchors(&self) -> &ScopeAnchors<E> {
         &self.scope_anchors
     }
 
     /// The mount's chrome-group table.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) const fn chrome_groups(&self) -> &ChromeBackdropGroups<T::Group, T::Shader, E> {
         &self.chrome_groups
     }
@@ -1021,7 +1032,7 @@ fn node_want<'a, E: crate::text::TextEngine>(
 /// `Affine::scale(scale_factor)`), so the display scale lives in
 /// `transform` and must not be multiplied in again
 /// (water-rs/waterui#2935).
-#[cfg_attr(all(hydrolysis_hwui, not(hydrolysis_gpu)), expect(dead_code))]
+#[cfg_attr(not(hydrolysis_gpu), expect(dead_code))]
 fn gpu_content_pixels(transform: kurbo::Affine, bounds: kurbo::Rect) -> (u32, u32) {
     let [a, b, c, d, _, _] = transform.as_coeffs();
     let x_scale = a.hypot(b);
@@ -1038,7 +1049,7 @@ fn gpu_content_pixels(transform: kurbo::Affine, bounds: kurbo::Rect) -> (u32, u3
     size
 }
 
-#[cfg_attr(all(hydrolysis_hwui, not(hydrolysis_gpu)), expect(dead_code))]
+#[cfg_attr(not(hydrolysis_gpu), expect(dead_code))]
 fn install_transform(bounds: kurbo::Rect, pixels: (u32, u32)) -> kurbo::Affine {
     kurbo::Affine::translate((bounds.x0, bounds.y0))
         * kurbo::Affine::scale_non_uniform(
@@ -1560,7 +1571,7 @@ fn mount_scene<T: LayerTarget<E>, E: crate::text::TextEngine>(
 }
 
 /// Ensures the node's install layer; returns whether it was just created.
-#[cfg_attr(all(hydrolysis_hwui, not(hydrolysis_gpu)), expect(dead_code))]
+#[cfg_attr(not(hydrolysis_gpu), expect(dead_code))]
 fn ensure_install<T: LayerTarget<E>, E: crate::text::TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
     layers: &mut NodeLayers<E>,

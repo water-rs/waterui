@@ -3,7 +3,9 @@ use crate::renderer::{HydrolysisRenderer, tree::RenderNode};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use waterui::{AnyView, Color, Environment, View, ViewExt};
+#[cfg(hydrolysis_gpu)]
 use waterui_graphics::backend::FilteredView;
+#[cfg(hydrolysis_gpu)]
 use waterui_graphics::backend::filtrate::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
     RetainedMemory,
@@ -712,8 +714,10 @@ fn spacer_min_length_is_the_stack_compression_floor() {
     );
 }
 
+#[cfg(hydrolysis_gpu)]
 struct LayoutOnlyEffect;
 
+#[cfg(hydrolysis_gpu)]
 impl Effect for LayoutOnlyEffect {
     fn setup(
         &mut self,
@@ -738,6 +742,7 @@ impl Effect for LayoutOnlyEffect {
     fn trim(&mut self) {}
 }
 
+#[cfg(hydrolysis_gpu)]
 #[test]
 fn view_effect_relayouts_equal_bounds_with_a_new_proposal() {
     let env = test_environment();

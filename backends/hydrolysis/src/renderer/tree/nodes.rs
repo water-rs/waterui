@@ -990,6 +990,13 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// A hover-enter/move/exit handler re-registered every flush. The handler is
     /// shared so the node can re-register the same `OnEvent` each frame.
     OnEvent(Rc<RefCell<OnEvent>>),
+    /// An `.on_change(..)` subscription, made at build against the
+    /// environment the wrapped content resolves in and held for the node's
+    /// life. Paint-, layout- and accessibility-transparent.
+    OnChange {
+        /// The subscription, never read: dropping it ends the handler.
+        _subscription: nami::watcher::BoxWatcherGuard,
+    },
     /// An `.on_key_press` ancestor scope: pushed onto the renderer's key
     /// handler stack while the child flushes, so a focused input inside the
     /// subtree bubbles its unconsumed keys here.
@@ -1045,15 +1052,16 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
 
 impl<E: crate::text::TextEngine> WrapperEffect<E> {
     /// Whether this effect carries a callback that captures an environment —
-    /// a hover/`on_tap`/gesture handler, a drop destination, a context menu,
-    /// an anchored overlay or a lifecycle hook. Such a handler resolves against
-    /// the environment its *content* resolves in (water-rs/waterui#1292), and a
-    /// handler wrapper is itself transparent to that resolution when it sits in
-    /// an outer handler's modifier chain.
+    /// a hover/`on_tap`/gesture handler, an `.on_change` handler, a drop
+    /// destination, a context menu, an anchored overlay or a lifecycle hook.
+    /// Such a handler resolves against the environment its *content* resolves
+    /// in (water-rs/waterui#1292), and a handler wrapper is itself transparent
+    /// to that resolution when it sits in an outer handler's modifier chain.
     pub(super) const fn captures_environment(&self) -> bool {
         matches!(
             self,
             Self::OnEvent(_)
+                | Self::OnChange { .. }
                 | Self::GestureObserver(_)
                 | Self::DropDestination(_)
                 | Self::ContextMenu(_)

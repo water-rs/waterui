@@ -456,6 +456,10 @@ locale-list = ["waterui-internal/locale-list", "waterui-dylib?/locale-list"]
 # it to cross-compile a lean WaterUI app for embedded targets without the GPU
 # stack.
 gpu = ["effects", "waterui-internal/gpu", "waterui-dylib?/gpu"]
+# CPU rendering stack (waterui-graphics' Cherenkov engine on `cherenkov-cpu`),
+# with no wgpu. A self-drawn backend built with both renders on the GPU when
+# the host has a usable hardware adapter and on the CPU otherwise.
+cpu = ["effects", "waterui-internal/cpu", "waterui-dylib?/cpu"]
 # Filters on views and their portable description, without the GPU stack.
 # Implied by `gpu`.
 effects = ["waterui-internal/effects", "waterui-dylib?/effects"]

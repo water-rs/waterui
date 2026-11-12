@@ -311,6 +311,7 @@ async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)
         build_options,
         &[],
         &[HYDROLYSIS_MCP_FEATURE],
+        true,
     )
     .await?;
     let assets_root = stage_hydrolysis_resources(

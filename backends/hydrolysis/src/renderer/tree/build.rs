@@ -558,6 +558,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
+        let view = match view.downcast::<Metadata<OnChange>>() {
+            Ok(meta) => {
+                let Metadata { content, value } = *meta;
+                return Self::build_on_change(value, content, env, renderer);
+            }
+            Err(view) => view,
+        };
         let view = match view.downcast::<Metadata<OnKeyPress>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
@@ -710,6 +717,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
+        #[cfg(not(hydrolysis_gpu))]
+        if refuse_gpu_device_view(&view) {
+            return Self::build_empty(renderer, env);
+        }
         // A platform-view embedding leaf: it records its frame onto the host's
         // `PlatformViewSink` each flush; mounting the real native child is the
         // host's work. No sink means this runner cannot embed — the leaf
@@ -961,6 +972,32 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             _ => env,
         }
+    }
+
+    /// Build an `.on_change(..)` wrapper. The handler subscribes once, at
+    /// build, against the environment the content resolves in — the same
+    /// resolution `build_wrapper` applies to the other handler effects — so a
+    /// `.state(&s)` between the view and `.on_change` reaches the handler. The
+    /// node owns the subscription: it ends when the node leaves the retained
+    /// tree.
+    fn build_on_change(
+        on_change: OnChange,
+        content: AnyView,
+        env: &Environment,
+        renderer: &mut SemanticCore<E>,
+    ) -> Self {
+        let child = Self::build_view(content, env, renderer);
+        let env = Self::resolved_handler_env(&child, env).clone();
+        Self::Wrapper(Box::new(WrapperNode {
+            accessibility_identity: Rc::new(()),
+            core: renderer.new_core(),
+            effect: WrapperEffect::OnChange {
+                _subscription: on_change.subscribe(&env),
+            },
+            env,
+            released_offsets: Cell::default(),
+            child,
+        }))
     }
 
     /// Build a node-owned lifecycle hook wrapper. An appear hook is retained until
@@ -1453,6 +1490,7 @@ fn is_background_fill_leaf<E: crate::text::TextEngine>(node: &RenderNode<E>) -> 
                 node.effect,
                 WrapperEffect::LayoutPriority(_)
                     | WrapperEffect::LifeCycle(_)
+                    | WrapperEffect::OnChange { .. }
                     | WrapperEffect::Focused(_)
                     | WrapperEffect::OnKeyPress(_)
                     | WrapperEffect::MaterialGroup

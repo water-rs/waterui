@@ -6,7 +6,9 @@
 //! water-rs/waterui#1673: the suite belongs to the crate that owns the
 //! harness.
 
+#[cfg(feature = "gpu")]
 use std::sync::Arc;
+#[cfg(feature = "gpu")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -26,7 +28,9 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::{Point, Rect, Size};
 use waterui_core::{AnyView, Environment};
 
-use crate::{PerfConfig, Role, TestHost, ui};
+#[cfg(feature = "gpu")]
+use crate::TestHost;
+use crate::{PerfConfig, Role, ui};
 /// Installs the custom foreground token the origin tests layered over the
 /// theme package: the harness no longer takes a theme-installer closure, so
 /// the override is a view-scoped plugin — applied after the style's tokens,
@@ -44,7 +48,9 @@ const fn white_foreground() -> ForegroundSlot {
     ForegroundSlot(WorkingColor::new([1.0, 1.0, 1.0, 1.0]))
 }
 
-// Origin: waterui `testing/src/tests.rs`.
+// Origin: waterui `testing/src/tests.rs`. `TestHost` hands tests a wgpu
+// device, so it exists only with the GPU painter.
+#[cfg(feature = "gpu")]
 #[test]
 fn smoke_snapshot_size_matches_target() {
     let host = TestHost::new(Environment::new(), 64, 48, Material3::defaults());
@@ -527,18 +533,23 @@ fn ui_test_drains_local_tasks_through_headless_runtime() {
 // Rendered-runtime behavior the semantic pipeline cannot express
 // ============================================================================
 
+// `GpuContentView` needs a GPU device, so these run only with the GPU painter.
+#[cfg(feature = "gpu")]
 use waterui::graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
+#[cfg(feature = "gpu")]
 use waterui::graphics::{GpuContent, GpuContentView};
 
 /// A `GpuContent` that draws nothing until its `setup` has run — the
 /// readiness flag distinguishes "the engine ran setup" from "a render slipped
 /// in first", the property the async-setup regression exercised.
+#[cfg(feature = "gpu")]
 #[derive(Debug)]
 struct DeferredClearRenderer {
     color: wgpu::Color,
     ready: Arc<AtomicBool>,
 }
 
+#[cfg(feature = "gpu")]
 impl GpuContent for DeferredClearRenderer {
     fn setup(&mut self, _gpu: &GpuContext<'_>) {
         self.ready.store(true, Ordering::Relaxed);
@@ -583,6 +594,7 @@ impl GpuContent for DeferredClearRenderer {
 /// Origin: waterui `testing/src/tests.rs`; the style parameter replaced the
 /// origin's `install_theme`/`install_m3` environment writes, which is where
 /// the same install now happens.
+#[cfg(feature = "gpu")]
 #[test]
 fn headless_capture_waits_for_gpu_setup() {
     let ready = Arc::new(AtomicBool::new(false));

@@ -7,7 +7,7 @@ use super::*;
 use crate::theme::live::Operand;
 use kurbo::Shape as _;
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub fn duration_micros_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
@@ -212,7 +212,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// The view-dimension cache's (hits, misses) since the last presented
     /// frame, rolling the counters: a frame that measured nothing reports
     /// zero rather than the last measuring frame's counts.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) const fn take_measurement_cache_stats(&mut self) -> (u32, u32) {
         let stats = self.state.measurement.stats();
         self.state.measurement.reset_counters();
@@ -694,7 +694,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// The engine's scheduling answer from the last presented frame, drained
     /// once so one pump consumes it: `Next::At` asks the host for the frame
     /// an in-flight animation needs, `Next::Idle` parks the display link.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) const fn take_engine_next(&mut self) -> Option<Next> {
         self.engine_next.take()
     }
