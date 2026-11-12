@@ -15,12 +15,10 @@ use kurbo::Rect;
 use waterui_core::layout::LayoutDirection;
 
 #[cfg(hydrolysis_runtime)]
-use super::look::Inputs;
+use super::look::record_at_rest;
 use super::look::{Custom, CustomPart, DrivenSet};
 #[cfg(hydrolysis_runtime)]
 use cherenkov_record::Recorder;
-#[cfg(hydrolysis_runtime)]
-use waterui_core::interaction::InteractionState;
 
 /// What Hydrolysis asks a theme's [`menu`](super::WidgetTheme::menu) look
 /// for: everything structural about one menu.
@@ -181,11 +179,4 @@ impl MenuLook {
             y + self.layout.separator_thickness / 2.0,
         )
     }
-}
-
-/// Records `part` over `frame` with every value at rest.
-#[cfg(hydrolysis_runtime)]
-fn record_at_rest(part: &dyn CustomPart<()>, recorder: &mut Recorder, frame: Rect) {
-    part.realize(&Inputs::at_rest(frame, InteractionState::empty(), &()))
-        .record(recorder, frame);
 }

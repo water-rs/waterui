@@ -118,6 +118,101 @@ pub fn plain_menu_look() -> crate::theme::MenuLook {
     )
 }
 
+/// A list look drawing nothing: rows at least 56 points tall inset 16 by 10
+/// points, with 16-point separator insets, a 20-point move control, a
+/// 26-point delete control and section headers 48 and footers 40 points
+/// tall. A swipe dismisses at half the row's width, a reorder drag steps at
+/// half a slot, a drag begins after 8 points and rows settle over 15
+/// milliseconds.
+#[must_use]
+pub fn plain_list_look() -> crate::theme::ListLook {
+    use crate::theme::{Custom, ListControls, ListGestures, ListLook, ListMetrics};
+    ListLook::new(
+        ListMetrics {
+            one_line_row_height: 56.0,
+            horizontal_inset: 16.0,
+            vertical_inset: 10.0,
+            divider_leading_inset: 16.0,
+            divider_trailing_inset: 16.0,
+            move_control_width: 20.0,
+            delete_control_width: 26.0,
+            trailing_control_spacing: 6.0,
+            trailing_control_vertical_inset: 6.0,
+            section_header_height: 48.0,
+            section_footer_height: 40.0,
+        },
+        ListGestures {
+            swipe_threshold: 0.5,
+            reorder_threshold: 0.5,
+            slop: 8.0,
+            settle: waterui::animation::Animation::linear(std::time::Duration::from_millis(15)),
+        },
+        Custom::new((), |_recorder, _frame, ()| {}),
+        Custom::new((), |_recorder, _frame, ()| {}),
+        ListControls {
+            move_up: plain_chrome(),
+            move_down: plain_chrome(),
+            delete: plain_chrome(),
+        },
+    )
+}
+
+/// A table look drawing nothing: columns at least 72 points wide, padded 32
+/// points, cells inset 16 points vertically, a header 56 points tall and
+/// rows 52 points tall.
+#[must_use]
+pub fn plain_table_look() -> crate::theme::TableLook {
+    use crate::theme::{Custom, TableLook, TableMetrics};
+    TableLook::new(
+        TableMetrics {
+            min_column_width: 72.0,
+            cell_horizontal_padding: 32.0,
+            cell_vertical_inset: 16.0,
+            header_height: 56.0,
+            row_height: 52.0,
+            outline_width: 1.0,
+        },
+        Custom::new((), |_recorder, _frame, ()| {}),
+        Custom::new((), |_recorder, _frame, ()| {}),
+        Custom::new((), |_recorder, _frame, ()| {}),
+        Custom::new((), |_recorder, _frame, ()| {}),
+    )
+}
+
+/// A badge look drawing nothing: a 6-point dot and a 16-point count pill
+/// padded 4 points, in the default font and white.
+#[must_use]
+pub fn plain_badge_look() -> crate::theme::BadgeLook {
+    use crate::theme::{BadgeLook, BadgeMetrics, Custom};
+    BadgeLook::new(
+        BadgeMetrics {
+            small_size: 6.0,
+            large_size: 16.0,
+            large_horizontal_padding: 4.0,
+            small_offset_x: 6.0,
+            small_offset_y: 6.0,
+            large_offset_x: 12.0,
+            large_offset_y: 14.0,
+        },
+        waterui_text::font::Font::default(),
+        waterui::Color::srgb(255, 255, 255),
+        Custom::new((), |_recorder, _frame, ()| {}),
+        Custom::new((), |_recorder, _frame, ()| {}),
+    )
+}
+
+/// A scroll indicator look drawing nothing: a thumb 2.5 points thick, 6.5
+/// while dragged, inset 1.5 points from the edge, at least 12 points long,
+/// taking a drag in a 12-point gutter.
+#[must_use]
+pub fn plain_scroll_indicator_look() -> crate::theme::ScrollIndicatorLook {
+    use crate::theme::{Custom, ScrollIndicatorLook};
+    ScrollIndicatorLook::new(2.5, 6.5, Custom::new((), |_recorder, _frame, ()| {}))
+        .edge_inset(1.5)
+        .min_extent(12.0)
+        .gutter(12.0)
+}
+
 /// A menu picker look drawing nothing: a field at least 72 by 28 points,
 /// inset 8 by 6 points with 18 points for the indicator, 8 points below its
 /// label and 4 points above the popup it opens.
@@ -194,21 +289,20 @@ mod test_style {
     use std::time::Duration;
 
     use crate::theme::{
-        BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, DividerMetrics, DragMapping,
-        FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionMotion, Knob,
-        Label, LinearProgressLook, ListMetrics, MenuLook, MenuPickerLook, MenuSpec, Motion,
+        BadgeLook, ButtonLook, ButtonSpec, Chrome, CornerShape, DragMapping, FocusIndicator,
+        HitRegion, IndicatorLook, InputFieldMetrics, InteractionMotion, Knob, Label,
+        LinearProgressLook, ListLook, ListSpec, MenuLook, MenuPickerLook, MenuSpec, Motion,
         NavigationMetrics, NavigationMotion, PickerSpec, PressFeedback, ProgressControl,
-        ProgressSpec, RadioGroupLook, SliderLayout, SliderLook, SliderSpec, StateLayer,
-        StepperLook, StepperSpec, Surface, TabItemGeometry, TabItemLayout, TableMetrics,
+        ProgressSpec, RadioGroupLook, ScrollIndicatorLook, SliderLayout, SliderLook, SliderSpec,
+        StateLayer, StepperLook, StepperSpec, Surface, TabItemGeometry, TabItemLayout, TableLook,
         TabsMetrics, TextCaretMotion, ToggleSpec, WidgetInteractionState, WidgetTheme,
     };
     use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
     use cherenkov_record::{Paint, Recorder};
-    use kurbo::{Point, Rect};
+    use kurbo::Rect;
     use waterui::animation::Animation;
     use waterui::{Color, EasingCurve, Environment};
     use waterui_graphics::color::Srgb;
-    use waterui_text::font::Font;
 
     type TokenInstaller = std::sync::Arc<dyn Fn(&mut Environment) + Send + Sync>;
 
@@ -483,79 +577,21 @@ mod test_style {
         fn draw_tabs_bar(&self, _recorder: &mut Recorder, _surface: Rect) {}
         fn draw_tabs_bar_divider(&self, _recorder: &mut Recorder, _divider: Rect) {}
         fn draw_tabs_highlight(&self, _recorder: &mut Recorder, _item: TabItemGeometry) {}
-        fn draw_scroll_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn divider_metrics(&self) -> DividerMetrics {
-            DividerMetrics { thickness: 1.0 }
+        fn scroll_indicator(&self, _env: &Environment) -> ScrollIndicatorLook {
+            super::plain_scroll_indicator_look()
         }
 
-        fn draw_divider(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn badge_metrics(&self) -> BadgeMetrics {
-            BadgeMetrics {
-                small_size: 6.0,
-                large_size: 16.0,
-                large_horizontal_padding: 4.0,
-                small_offset_x: 6.0,
-                small_offset_y: 6.0,
-                large_offset_x: 12.0,
-                large_offset_y: 14.0,
-            }
+        fn badge(&self, _env: &Environment) -> BadgeLook {
+            super::plain_badge_look()
         }
 
-        fn badge_label_color(&self) -> Color {
-            Color::srgb(255, 255, 255)
+        fn list(&self, _spec: &ListSpec, _env: &Environment) -> ListLook {
+            super::plain_list_look()
         }
 
-        fn badge_label_font(&self) -> Font {
-            Font::default()
+        fn table(&self, _env: &Environment) -> TableLook {
+            super::plain_table_look()
         }
-
-        fn draw_badge_small(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_badge_large(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn list_metrics(&self) -> ListMetrics {
-            ListMetrics {
-                one_line_row_height: 56.0,
-                horizontal_inset: 16.0,
-                vertical_inset: 10.0,
-                divider_leading_inset: 16.0,
-                divider_trailing_inset: 16.0,
-                move_control_width: 20.0,
-                delete_control_width: 26.0,
-                trailing_control_spacing: 6.0,
-                trailing_control_vertical_inset: 6.0,
-                section_header_height: 48.0,
-                section_footer_height: 40.0,
-            }
-        }
-
-        fn draw_list_row_background(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _alternate: bool,
-        ) {
-        }
-        fn draw_list_move_control(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_list_delete_control(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_list_separator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn table_metrics(&self) -> TableMetrics {
-            TableMetrics {
-                min_column_width: 72.0,
-                cell_horizontal_padding: 32.0,
-                cell_vertical_inset: 16.0,
-                header_height: 56.0,
-                row_height: 52.0,
-                outline_width: 1.0,
-            }
-        }
-
-        fn draw_table_background(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_table_header_background(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_table_cell_border(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_table_column_separator(&self, _recorder: &mut Recorder, _from: Point, _to: Point) {}
     }
 }
 

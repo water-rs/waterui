@@ -11,6 +11,7 @@ use crate::renderer::{
     WidgetRenderContext, measure_transient_view_intrinsic, measure_view_dimensions_with_proposal,
     normalize_view_for_render,
 };
+use crate::theme::BadgeLook;
 #[cfg(feature = "accessibility")]
 use accesskit::{Node as AccessibilityNode, Role as AccessibilityNodeRole};
 
@@ -61,10 +62,10 @@ fn badge_content_size<E: crate::text::TextEngine>(
     measure_transient_view_intrinsic(&content, state, env, theme)
 }
 
-fn badge_large_label(value: i32, theme: &Rc<dyn crate::theme::WidgetTheme>) -> StyledStr {
+fn badge_large_label(value: i32, look: &BadgeLook) -> StyledStr {
     StyledStr::plain(value.to_string())
-        .font(theme.badge_label_font())
-        .foreground(theme.badge_label_color())
+        .font(look.label_font().clone())
+        .foreground(look.label_color().clone())
 }
 
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<BadgeConfig> {
@@ -148,15 +149,15 @@ pub fn draw_badge_indicator<E: crate::text::TextEngine>(
     value: i32,
     env: &Environment,
 ) {
-    let theme = ctx.theme();
-    let metrics = theme.badge_metrics();
+    let look = ctx.theme().badge(env);
+    let metrics = look.metrics();
 
     // Measure before placing: the badge's leading edge sits `offset_x` inside
     // the content's trailing edge — mirrored to the leading edge in RTL — and
     // its bottom edge overlaps the top edge by `offset_y`, matching
     // `BadgedBox` in Compose.
     let large = (value != 0).then(|| {
-        let label = badge_large_label(value, &theme);
+        let label = badge_large_label(value, &look);
         let text_size = HydrolysisRenderer::measure_text_dimensions(
             ctx.state_mut(),
             label.clone(),
@@ -200,15 +201,13 @@ pub fn draw_badge_indicator<E: crate::text::TextEngine>(
 
     let Some((label, text_size)) = large else {
         ctx.draw_context(|draw| {
-            theme.draw_badge_small(&mut *draw, rect);
+            look.record_small(&mut *draw, rect);
         });
         return;
     };
-    {
-        ctx.draw_context(|draw| {
-            theme.draw_badge_large(&mut *draw, rect);
-        });
-    }
+    ctx.draw_context(|draw| {
+        look.record_large(&mut *draw, rect);
+    });
 
     // The count indicator is vector-drawn, so it must emit its own semantic
     // node — otherwise the badge value is invisible to assistive technology.
