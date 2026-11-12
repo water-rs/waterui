@@ -1,26 +1,43 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
     measure_date_picker_intrinsic,
 };
+use crate::theme::{MenuPickerLook, PickerSpec, SpecTint};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
+use nami::{Binding, Signal as _};
 use std::cell::RefCell;
 use std::rc::Rc;
-use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
+use waterui_controls::ControlSize;
+use waterui_core::interaction::InteractionState;
+use waterui_core::layout::{
+    HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions, layout_direction,
+};
 use waterui_core::{AnyView, Environment, Native};
-use waterui_form::picker::PickerStyle;
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_text::styled::StyledStr;
 
 use crate::renderer::RetainedSubview;
-use crate::renderer::local_interaction_state;
-use crate::widgets::util::inset_rect;
+use crate::widgets::controls::picker::label_styled;
 #[cfg(feature = "accessibility")]
 use crate::widgets::util::widget_disabled;
+use crate::widgets::util::{inset_rect, mirrored_in};
+
+/// The request a date picker's field makes of the theme: a field of the size
+/// pickers default to, in the layout direction and tint of `env`. A date
+/// picker has no size of its own to configure.
+pub fn date_picker_spec(env: &Environment) -> PickerSpec {
+    PickerSpec::new(
+        ControlSize::Small,
+        layout_direction(env).snapshot(),
+        SpecTint::resolve(env),
+    )
+}
 
 /// The retained render state of a date picker: the cloneable [`DatePickerConfig`]
 /// drives the field + accessibility, and its main label is held as a
@@ -29,6 +46,12 @@ use crate::widgets::util::widget_disabled;
 pub struct DatePickerRenderState<E: crate::text::TextEngine> {
     config: DatePickerConfig,
     label_view: RetainedSubview<E>,
+    /// The field's look, held while its spec is.
+    look: Option<(PickerSpec, MenuPickerLook)>,
+    /// The field's live chrome.
+    parts: Option<LiveChromeParts>,
+    /// The state the field last reported, which feeds the chrome.
+    report: Binding<InteractionState>,
 }
 
 impl<E: crate::text::TextEngine> DatePickerRenderState<E> {
@@ -36,6 +59,9 @@ impl<E: crate::text::TextEngine> DatePickerRenderState<E> {
         Self {
             label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
             config,
+            look: None,
+            parts: None,
+            report: Binding::container(InteractionState::empty()),
         }
     }
 
@@ -150,7 +176,7 @@ pub fn measure_date_picker_node<E: crate::text::TextEngine>(
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let config = &render_state.config;
-    let metrics = theme.picker_metrics(PickerStyle::Menu);
+    let metrics = theme.menu_picker(&date_picker_spec(env), env).layout();
     let input_metrics = theme.input_field_metrics();
     let label_size = render_state.label_view.measure_built(state, env, theme);
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
@@ -225,9 +251,20 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let theme = ctx.theme();
-    let metrics = theme.picker_metrics(PickerStyle::Menu);
+    let spec = date_picker_spec(env);
     let input_metrics = theme.input_field_metrics();
     let mut state = state.borrow_mut();
+    if state.look.as_ref().is_none_or(|(held, _)| *held != spec) {
+        let look = theme.menu_picker(&spec, env);
+        state.look = Some((spec, look));
+        state.parts = None;
+    }
+    let look = state
+        .look
+        .as_ref()
+        .map(|(_, look)| look.clone())
+        .expect("the look was just ensured");
+    let metrics = look.layout();
     // The value/range/ty are read from the retained config; the label is a retained
     // node sub-view re-flushed at its rect (reactive content stays live).
     let (value_binding, range, ty) = {
@@ -283,19 +320,37 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
             .clamp(*range.start(), *range.end()),
     );
 
-    let hit_bounds = field_bounds;
-    let (interaction, press_slot, _) =
-        ctx.renderer_mut()
-            .bind_interaction_target(interaction_key, hit_bounds, env);
-    {
-        let interaction =
-            local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
-        ctx.draw_context(|draw| {
-            theme.draw_input_field(&mut *draw, field_bounds, interaction);
-            theme.draw_picker_indicator(&mut *draw, field_bounds);
-            theme.draw_picker_state_layer(&mut *draw, field_bounds, interaction);
-        });
+    let chrome = look.chrome().clone();
+    let hit_bounds = chrome.target(field_bounds);
+    let (_, press_slot, handles) = ctx.renderer_mut().bind_live_chrome_target(
+        interaction_key.clone(),
+        hit_bounds,
+        env,
+        false,
+        &chrome,
+    );
+    let flags = ctx
+        .renderer_mut()
+        .reported_interaction_state(&interaction_key);
+    if state.report.snapshot() != flags {
+        state.report.set(flags);
     }
+    let report = state.report.clone();
+    let parts = LiveChromeParts::ensure(
+        &mut state.parts,
+        &chrome,
+        &ChromeContent::default(),
+        field_bounds,
+        flags,
+        env,
+        &report,
+    )
+    .clone();
+    handles.attach_live(Rc::clone(parts.chrome()));
+    let render_ctx = ctx.render_context();
+    parts.push_below(ctx.renderer_mut(), render_ctx);
+    // The look draws the field left to right, with the dropdown indicator at
+    // its right end; a right-to-left layout reflects the field's content.
     let text_bounds = inset_rect(
         field_bounds,
         input_metrics.horizontal_inset,
@@ -307,16 +362,23 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
         (text_bounds.x1 - metrics.indicator_space).max(text_bounds.x0),
         text_bounds.y1,
     );
+    let text_bounds = if layout_direction(env).snapshot().is_right_to_left() {
+        mirrored_in(text_bounds, field_bounds)
+    } else {
+        text_bounds
+    };
     ctx.render_styled_text(
-        StyledStr::plain(value),
+        label_styled(look.get_value(), StyledStr::plain(value)),
         HorizontalAlignment::Leading,
         env,
         text_bounds,
     );
+    let render_ctx = ctx.render_context();
+    parts.push_above(ctx.renderer_mut(), render_ctx);
 
     // The popup anchors in window space at the field's bottom edge.
     let origin =
-        crate::widgets::util::popup_anchor(ctx.renderer_mut().resolve_window_rect(hit_bounds));
+        crate::widgets::util::popup_anchor(ctx.renderer_mut().resolve_window_rect(field_bounds));
     // The popup opens in the picker's environment layered over the
     // dispatch's (water-rs/hydrolysis#140).
     let picker_env = env.clone();

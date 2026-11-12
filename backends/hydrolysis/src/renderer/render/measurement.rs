@@ -1560,7 +1560,12 @@ pub fn measure_date_picker_intrinsic<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
-    let metrics = theme.picker_metrics(PickerStyle::Menu);
+    let metrics = theme
+        .menu_picker(
+            &crate::widgets::controls::date_picker::date_picker_spec(env),
+            env,
+        )
+        .layout();
     let input_metrics = theme.input_field_metrics();
     let label_size = measure_label_intrinsic(date_picker.label(), state, env, theme);
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
@@ -1695,11 +1700,18 @@ pub fn measure_picker_intrinsic_with_label_size<E: crate::text::TextEngine>(
 
     match picker.style() {
         PickerStyle::Automatic | PickerStyle::Menu => {
-            let metrics = theme.picker_metrics(PickerStyle::Menu);
+            let look = theme.menu_picker(
+                &crate::widgets::controls::picker::picker_spec(picker, env),
+                env,
+            );
+            let metrics = look.layout();
             let mut max_item_width: f64 = 0.0;
             let mut max_item_height: f64 = 0.0;
             for item in &items {
-                let styled = resolved_text_styled(&item.content, env, state);
+                let styled = crate::widgets::controls::picker::label_styled(
+                    look.get_value(),
+                    resolved_text_styled(&item.content, env, state),
+                );
                 let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
                 max_item_width = max_item_width.max(f64::from(size.width));
                 max_item_height = max_item_height.max(f64::from(size.height));
@@ -1735,16 +1747,24 @@ pub fn measure_picker_intrinsic_with_label_size<E: crate::text::TextEngine>(
             )
         }
         PickerStyle::Radio => {
-            let metrics = theme.picker_metrics(PickerStyle::Radio);
+            let look = theme.radio_group(
+                &crate::widgets::controls::picker::picker_spec(picker, env),
+                env,
+            );
+            let metrics = look.layout();
+            let indicator = look.indicator();
             let mut max_item_width: f64 = 0.0;
             let mut total_height = 0.0;
             for (index, item) in items.iter().enumerate() {
-                let styled = resolved_text_styled(&item.content, env, state);
+                let styled = crate::widgets::controls::picker::label_styled(
+                    look.get_label(),
+                    resolved_text_styled(&item.content, env, state),
+                );
                 let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
                 max_item_width = max_item_width.max(f64::from(size.width));
-                total_height += f64::from(size.height).max(metrics.radio_indicator_size);
+                total_height += f64::from(size.height).max(indicator.size().height);
                 if index + 1 < item_count {
-                    total_height += metrics.radio_row_spacing;
+                    total_height += metrics.row_spacing;
                 }
             }
             // A visible group label heads the picker above the option rows:
@@ -1753,7 +1773,7 @@ pub fn measure_picker_intrinsic_with_label_size<E: crate::text::TextEngine>(
             // stacks on top of the rows. A zero-height (hidden) label adds
             // nothing — same presence rule as the menu field label.
             let content_width =
-                (metrics.radio_indicator_size + metrics.radio_label_spacing + max_item_width)
+                (indicator.size().width + indicator.get_label_spacing() + max_item_width)
                     .max(f64::from(label_size.width));
             let width = metrics
                 .horizontal_inset

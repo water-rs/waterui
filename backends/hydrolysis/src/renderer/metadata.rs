@@ -246,18 +246,29 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// surface ([`WrapperEffect::PopupMenuSurface`]): on Material 3 themes it
     /// is `md.comp.menu.container.color` (`surface-container`), the extra-small
     /// 4 dp `md.sys.shape.corner.extra-small` shape and
-    /// `md.comp.menu.container.elevation` level 2 — drawn by the theme's
-    /// `draw_text_context_menu_panel`. The window leaves the panel's shadow
-    /// room inside its own bounds via `POPUP_MENU_PANEL_MARGIN`.
+    /// `md.comp.menu.container.elevation` level 2 — drawn by the panel part
+    /// of the theme's `MenuLook`, with the look's selected-row part over
+    /// `selected_row` (a picker popup's selected row, in the panel's own
+    /// space). The window leaves the panel's shadow room inside its own
+    /// bounds via `POPUP_MENU_PANEL_MARGIN`.
     pub(super) fn apply_popup_menu_surface(
         renderer: &mut Self,
         ctx: RenderContext,
+        env: &Environment,
+        selected_row: Option<kurbo::Rect>,
         render_content: impl FnOnce(&mut Self),
     ) {
         {
-            let theme = renderer.theme();
+            let look = crate::renderer::input::menu_look(&renderer.theme(), env);
             renderer.scene_mut().record_picture(ctx.local(), |draw| {
-                theme.draw_text_context_menu_panel(&mut *draw, ctx.bounds());
+                look.record_panel(&mut *draw, ctx.bounds());
+                if let Some(row) = selected_row {
+                    let bounds = ctx.bounds();
+                    look.record_selected_row(
+                        &mut *draw,
+                        row.with_origin((bounds.x0 + row.x0, bounds.y0 + row.y0)),
+                    );
+                }
             });
         }
         render_content(renderer);

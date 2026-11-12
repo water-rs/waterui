@@ -2212,7 +2212,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         // layered over this dispatch's, so `.state(&value)`
                         // overlays reach the item actions.
                         let menu_env = menu_target.env.layered_on(env);
-                        let metrics = self.theme().text_context_menu_metrics();
                         self.show_context_menu(
                             items,
                             Some(&menu_target),
@@ -2220,7 +2219,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                                 crate::num_cast::f64_as_f32(point.x),
                                 crate::num_cast::f64_as_f32(point.y),
                             ),
-                            metrics,
                             &menu_env,
                             false,
                         );
@@ -2330,7 +2328,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     let menu_env = menu_target
                         .as_ref()
                         .map_or_else(|| env.clone(), |target| target.env.layered_on(env));
-                    let metrics = self.theme().text_context_menu_metrics();
                     let changed = self.show_context_menu(
                         items,
                         menu_target.as_ref(),
@@ -2338,7 +2335,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                             crate::num_cast::f64_as_f32(point.x),
                             crate::num_cast::f64_as_f32(point.y),
                         ),
-                        metrics,
                         &menu_env,
                         false,
                     );
@@ -4052,7 +4048,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let menu_env = menu_target
             .as_ref()
             .map_or_else(|| env.clone(), |target| target.env.layered_on(env));
-        let metrics = self.theme().text_context_menu_metrics();
         self.show_context_menu(
             items,
             menu_target.as_ref(),
@@ -4060,7 +4055,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 crate::num_cast::f64_as_f32(point.x),
                 crate::num_cast::f64_as_f32(point.y),
             ),
-            metrics,
             &menu_env,
             true,
         )

@@ -60,29 +60,106 @@ pub fn plain_toggle_control() -> crate::theme::ToggleControl {
     .label_spacing(3.0)
 }
 
+/// A chrome drawing nothing: a clear square surface and a state layer with no
+/// feedback, over a 15 millisecond linear motion.
+fn plain_chrome() -> crate::theme::Chrome {
+    use crate::theme::Surface;
+    use crate::theme::{Chrome, CornerShape, FocusIndicator, Motion, PressFeedback, StateLayer};
+    Chrome::new(
+        Surface::clear(CornerShape::radius(0.0)),
+        StateLayer::new(waterui::graphics::Color::new(
+            waterui::theme::color::Foreground,
+        )),
+        PressFeedback::new(),
+        FocusIndicator::Tint,
+        Motion::uniform(waterui::animation::Animation::linear(
+            std::time::Duration::from_millis(15),
+        )),
+    )
+}
+
 /// A stepper look with ends 14 by 14 points, 4 points apart and 8 points from
 /// the label, drawing nothing: what a test style's steppers measure, place
 /// and hit-test as.
 #[must_use]
 pub fn plain_stepper_look() -> crate::theme::StepperLook {
-    use crate::theme::{Chrome, CornerShape, FocusIndicator, Motion, PressFeedback, StateLayer};
-    use crate::theme::{StepperLook, Surface};
-    let end = || {
-        Chrome::new(
-            Surface::clear(CornerShape::radius(0.0)),
-            StateLayer::new(waterui::graphics::Color::new(
-                waterui::theme::color::Foreground,
-            )),
-            PressFeedback::new(),
-            FocusIndicator::Tint,
-            Motion::uniform(waterui::animation::Animation::linear(
-                std::time::Duration::from_millis(15),
-            )),
-        )
-    };
-    StepperLook::new(end(), end(), kurbo::Size::new(14.0, 14.0))
+    crate::theme::StepperLook::new(plain_chrome(), plain_chrome(), kurbo::Size::new(14.0, 14.0))
         .spacing(4.0)
         .label_spacing(8.0)
+}
+
+/// The measures of a test style's menus: 56 point rows, 12 points of vertical
+/// padding, 16 of horizontal, at least 112 points wide and at most 320.
+#[must_use]
+pub const fn plain_menu_layout() -> crate::theme::MenuLayout {
+    crate::theme::MenuLayout {
+        row_height: 56.0,
+        horizontal_padding: 16.0,
+        vertical_padding: 12.0,
+        min_width: 112.0,
+        max_width: 320.0,
+        width_per_char: 8.5,
+        corner_radius: 4.0,
+        separator_horizontal_inset: 16.0,
+        separator_thickness: 1.0,
+    }
+}
+
+/// A menu look measured by [`plain_menu_layout`], drawing nothing: what a
+/// test style's picker popups, text context menus and popup windows measure,
+/// place and hit-test as.
+#[must_use]
+pub fn plain_menu_look() -> crate::theme::MenuLook {
+    use crate::theme::Custom;
+    crate::theme::MenuLook::new(
+        plain_menu_layout(),
+        Custom::new((), |_recorder, _frame, ()| {}),
+        Custom::new((), |_recorder, _frame, ()| {}),
+    )
+}
+
+/// A menu picker look drawing nothing: a field at least 72 by 28 points,
+/// inset 8 by 6 points with 18 points for the indicator, 8 points below its
+/// label and 4 points above the popup it opens.
+#[must_use]
+pub fn plain_menu_picker_look() -> crate::theme::MenuPickerLook {
+    crate::theme::MenuPickerLook::new(
+        plain_chrome(),
+        crate::theme::MenuPickerLayout {
+            min_width: 72.0,
+            min_height: 28.0,
+            horizontal_inset: 8.0,
+            vertical_inset: 6.0,
+            label_spacing: 8.0,
+            indicator_space: 18.0,
+            popup_gap: 4.0,
+        },
+    )
+}
+
+/// A radio group look drawing nothing: indicators 16 points square and
+/// 8 points from their labels, in rows 8 points apart, in a group at least
+/// 72 by 28 points inset 8 by 6 points.
+#[must_use]
+pub fn plain_radio_group_look() -> crate::theme::RadioGroupLook {
+    use crate::theme::{Motion, RadioGroupLook, RadioLayout, ToggleControl};
+    RadioGroupLook::new(
+        ToggleControl::new(
+            kurbo::Size::new(16.0, 16.0),
+            Motion::uniform(waterui::animation::Animation::linear(
+                std::time::Duration::from_millis(1),
+            )),
+        )
+        .label_spacing(8.0),
+        RadioLayout {
+            min_width: 72.0,
+            min_height: 28.0,
+            horizontal_inset: 8.0,
+            vertical_inset: 6.0,
+            label_spacing: 8.0,
+            row_spacing: 8.0,
+        },
+    )
 }
 
 /// A segmented look drawing nothing: what a test style's segmented pickers
@@ -119,18 +196,17 @@ mod test_style {
     use crate::theme::{
         BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, DividerMetrics, DragMapping,
         FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionMotion, Knob,
-        Label, LinearProgressLook, ListMetrics, Motion, NavigationMetrics, NavigationMotion,
-        PickerMetrics, PressFeedback, ProgressControl, ProgressSpec, RadioIndicatorState,
-        RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook,
-        StepperSpec, Surface, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics,
-        TextCaretMotion, TextContextMenuMetrics, ToggleSpec, WidgetInteractionState, WidgetTheme,
+        Label, LinearProgressLook, ListMetrics, MenuLook, MenuPickerLook, MenuSpec, Motion,
+        NavigationMetrics, NavigationMotion, PickerSpec, PressFeedback, ProgressControl,
+        ProgressSpec, RadioGroupLook, SliderLayout, SliderLook, SliderSpec, StateLayer,
+        StepperLook, StepperSpec, Surface, TabItemGeometry, TabItemLayout, TableMetrics,
+        TabsMetrics, TextCaretMotion, ToggleSpec, WidgetInteractionState, WidgetTheme,
     };
     use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
     use cherenkov_record::{Paint, Recorder};
     use kurbo::{Point, Rect};
     use waterui::animation::Animation;
     use waterui::{Color, EasingCurve, Environment};
-    use waterui_form::picker::PickerStyle;
     use waterui_graphics::color::Srgb;
     use waterui_text::font::Font;
 
@@ -264,6 +340,18 @@ mod test_style {
             super::plain_stepper_look()
         }
 
+        fn menu(&self, _spec: &MenuSpec, _env: &Environment) -> MenuLook {
+            super::plain_menu_look()
+        }
+
+        fn menu_picker(&self, _spec: &PickerSpec, _env: &Environment) -> MenuPickerLook {
+            super::plain_menu_picker_look()
+        }
+
+        fn radio_group(&self, _spec: &PickerSpec, _env: &Environment) -> RadioGroupLook {
+            super::plain_radio_group_look()
+        }
+
         fn segmented_picker(
             &self,
             _spec: &crate::theme::SegmentedSpec,
@@ -299,71 +387,6 @@ mod test_style {
             _recorder: &mut Recorder,
             _bounds: Rect,
             _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn text_context_menu_metrics(&self) -> TextContextMenuMetrics {
-            TextContextMenuMetrics {
-                row_height: 56.0,
-                horizontal_padding: 16.0,
-                vertical_padding: 12.0,
-                min_width: 112.0,
-                max_width: 320.0,
-                width_per_char: 8.5,
-                corner_radius: 4.0,
-                separator_horizontal_inset: 16.0,
-                separator_thickness: 1.0,
-            }
-        }
-
-        fn draw_text_context_menu_panel(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_text_context_menu_separator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn picker_metrics(&self, _style: PickerStyle) -> PickerMetrics {
-            PickerMetrics {
-                min_width: 72.0,
-                min_height: 28.0,
-                horizontal_inset: 8.0,
-                vertical_inset: 6.0,
-                label_spacing: 8.0,
-                indicator_space: 18.0,
-                radio_indicator_size: 16.0,
-                radio_label_spacing: 8.0,
-                radio_row_spacing: 8.0,
-                popup_top_spacing: 4.0,
-                popup_row_height: 48.0,
-                popup_corner_radius: 6.0,
-            }
-        }
-
-        fn radio_selection_motion(&self) -> RadioSelectionMotion {
-            RadioSelectionMotion {
-                inner_grow: Animation::linear(Duration::from_millis(1)),
-                inner_opacity: Animation::linear(Duration::from_millis(1)),
-                outer_color: Animation::linear(Duration::from_millis(1)),
-            }
-        }
-
-        fn draw_picker_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn draw_picker_popup(&self, _recorder: &mut Recorder, _popup_rect: Rect) {}
-
-        fn draw_picker_popup_row_background(
-            &self,
-            _recorder: &mut Recorder,
-            _row_rect: Rect,
-            _selected: bool,
-        ) {
-        }
-
-        fn draw_picker_separator(&self, _recorder: &mut Recorder, _separator: Rect) {}
-
-        fn draw_radio_indicator(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _state: RadioIndicatorState,
         ) {
         }
 

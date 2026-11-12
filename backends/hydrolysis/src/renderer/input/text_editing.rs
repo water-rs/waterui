@@ -2,6 +2,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::text::{TextLayout as _, TextPosition, TextSelection};
+use crate::theme::MenuLayout;
 use cherenkov_record::Draw as _;
 use unicode_segmentation::UnicodeSegmentation;
 use waterui_core::contract_violation;
@@ -909,10 +910,7 @@ pub fn selection_range_contains_index(
     !range.is_empty() && range.contains(&index)
 }
 
-pub fn text_context_menu_size(
-    nodes: &[PopupMenuNode],
-    metrics: TextContextMenuMetrics,
-) -> (f64, f64) {
+pub fn text_context_menu_size(nodes: &[PopupMenuNode], metrics: MenuLayout) -> (f64, f64) {
     let max_label_chars = crate::num_cast::usize_as_f64(
         nodes
             .iter()
@@ -936,7 +934,7 @@ pub fn text_context_menu_overlay_bounds(
     anchor: kurbo::Point,
     nodes: &[PopupMenuNode],
     window_bounds: kurbo::Rect,
-    metrics: TextContextMenuMetrics,
+    metrics: MenuLayout,
 ) -> kurbo::Rect {
     let (width, height) = text_context_menu_size(nodes, metrics);
     let preferred_x = anchor.x;
@@ -1481,11 +1479,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             return;
         }
 
-        let theme = self.theme();
-        let metrics = theme.text_context_menu_metrics();
+        let menu = menu_look(&self.theme(), &overlay.env);
+        let metrics = menu.layout();
         {
             self.scene_mut().record_picture(transform, |draw| {
-                theme.draw_text_context_menu_panel(&mut *draw, overlay.bounds);
+                menu.record_panel(&mut *draw, overlay.bounds);
             });
         }
         for (index, row) in overlay.rows.iter().enumerate() {
@@ -1505,7 +1503,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     row.bounds.y1,
                 );
                 self.scene_mut().record_picture(transform, |draw| {
-                    theme.draw_text_context_menu_separator(&mut *draw, separator);
+                    menu.record_separator(&mut *draw, separator);
                 });
             }
 
@@ -1529,18 +1527,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     );
                 }
                 PopupMenuNode::Divider => {
-                    let separator = kurbo::Rect::new(
-                        row.bounds.x0 + metrics.separator_horizontal_inset,
-                        metrics
-                            .separator_thickness
-                            .mul_add(-0.5, f64::mul_add(row.bounds.height(), 0.5, row.bounds.y0)),
-                        row.bounds.x1 - metrics.separator_horizontal_inset,
-                        metrics
-                            .separator_thickness
-                            .mul_add(0.5, f64::mul_add(row.bounds.height(), 0.5, row.bounds.y0)),
-                    );
+                    let separator = menu.separator_rect(row.bounds);
                     self.scene_mut().record_picture(transform, |draw| {
-                        theme.draw_text_context_menu_separator(&mut *draw, separator);
+                        menu.record_separator(&mut *draw, separator);
                     });
                 }
             }
@@ -1607,7 +1596,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     ) {
         let env = &overlay.env;
         let theme = Rc::clone(&overlay.theme);
-        let metrics = theme.text_context_menu_metrics();
+        let metrics = menu_look(&theme, env).layout();
         let text = self.popup_menu_text_metrics(&items, metrics, env, &theme);
         let Some(origin) = popup_window_origin(
             LayoutPoint::new(
@@ -2225,7 +2214,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             .unwrap_or(HydrolysisTextContextMenuMode::NativeWindow);
 
         if mode == HydrolysisTextContextMenuMode::Overlay {
-            let metrics = self.theme().text_context_menu_metrics();
+            let metrics = menu_look(&self.theme(), &menu_env).layout();
             let bounds =
                 text_context_menu_overlay_bounds(point, &nodes, self.window_bounds, metrics);
             let mut rows = Vec::with_capacity(nodes.len());
@@ -2262,7 +2251,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // path a `.context_menu` takes: `show_popup_menu_nodes` sizes the
         // panel, builds the borderless window, and leaves submenu rows
         // wired to open deeper popups (water-rs/hydrolysis#317).
-        let metrics = self.theme().text_context_menu_metrics();
         let theme = self.theme();
         self.show_popup_menu_nodes(
             nodes,
@@ -2270,7 +2258,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 crate::num_cast::f64_as_f32(point.x),
                 crate::num_cast::f64_as_f32(point.y),
             ),
-            metrics,
             &menu_env,
             &theme,
         );
