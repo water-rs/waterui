@@ -182,10 +182,12 @@ enum Retargeting<'a> {
 /// [`Self::fade_wave`].
 pub struct LiveChrome {
     spec: Chrome,
-    /// The widget's bounds in its record space.
-    bounds: Rect,
+    /// The widget's bounds in its record space. Fixed for a chrome with parts
+    /// recorded against its frame; a [`Self::follow_bounds`] chrome moves
+    /// with the widget's bounds.
+    bounds: Cell<Rect>,
     /// The chrome's frame in the widget's record space.
-    frame: Rect,
+    frame: Cell<Rect>,
     state: Cell<InteractionState>,
     press_point: Cell<Option<Point>>,
     /// The widget's own reported-state binding, kept current between
@@ -220,7 +222,7 @@ pub struct LiveChrome {
 impl std::fmt::Debug for LiveChrome {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LiveChrome")
-            .field("frame", &self.frame)
+            .field("frame", &self.frame.get())
             .field("state", &self.state.get())
             .finish_non_exhaustive()
     }
@@ -637,8 +639,8 @@ impl LiveChrome {
             press_point: Cell::new(None),
             report,
             spec,
-            bounds,
-            frame,
+            bounds: Cell::new(bounds),
+            frame: Cell::new(frame),
             #[cfg(test)]
             recordings: Cell::new(0),
         }
@@ -726,7 +728,7 @@ impl LiveChrome {
 
     const fn inputs(&self) -> Inputs<'static, ()> {
         Inputs {
-            frame: self.frame,
+            frame: self.frame.get(),
             state: self.state.get(),
             value: &(),
             drag: None,
@@ -797,6 +799,26 @@ impl LiveChrome {
         nami::Signal::snapshot(&self.shape)
     }
 
+    /// Moves the chrome to the widget's `bounds`: the silhouette and every
+    /// operand that follows the frame retarget with no animation and nothing
+    /// re-records. Only a chrome with no parts recorded against its frame
+    /// follows bounds ([`LiveChromeParts::ensure_following`]).
+    fn follow_bounds(&self, bounds: Rect) {
+        debug_assert!(
+            self.customs.is_empty()
+                && self.slider.is_none()
+                && self.waves.is_none()
+                && self.wash.is_none()
+                && self.ring.is_none(),
+            "a chrome with parts recorded against its frame cannot follow its bounds"
+        );
+        if self.bounds.replace(bounds) == bounds {
+            return;
+        }
+        self.frame.set(self.spec.frame(bounds));
+        self.retarget(Retargeting::Animated(None));
+    }
+
     /// Whether this chrome realizes `spec` on `bounds`.
     fn realizes(
         &self,
@@ -807,7 +829,7 @@ impl LiveChrome {
     ) -> bool {
         self.spec.same(spec)
             && self.content.realizes(content, state)
-            && self.bounds == bounds
+            && self.bounds.get() == bounds
             && match (&self.slider, &content.slider) {
                 (Some(live), Some(slider)) => live.source.same(slider),
                 (None, None) => true,
@@ -848,7 +870,7 @@ impl LiveChrome {
         self.shape
             .set(shape.shape(silhouette, corners), shape_animation);
         self.content_scale.set(
-            Self::scale_about(self.frame, Self::scale_of(&self.spec, state)),
+            Self::scale_about(self.frame.get(), Self::scale_of(&self.spec, state)),
             self.animation(None, retargeting),
         );
         match (&self.fill, surface.fill()) {
@@ -935,7 +957,7 @@ impl LiveChrome {
                 .expect("an indicator value belongs to a chrome with an indicator")
                 .rest
         } else {
-            self.frame
+            self.frame.get()
         };
         driven.retarget(
             &Inputs {
@@ -965,7 +987,7 @@ impl LiveChrome {
         if let Some(indicator) = &slider.indicator {
             // The bubble tracks the knob it is held by.
             indicator.offset.set(
-                LiveSlider::indicator_offset(&slider.source, self.frame, value),
+                LiveSlider::indicator_offset(&slider.source, self.frame.get(), value),
                 None,
             );
         }
@@ -1154,7 +1176,7 @@ impl LiveChrome {
             slider.press_value.set(slider.value.get());
         }
         if let Some(wash) = &self.wash {
-            let center = origin.unwrap_or_else(|| self.frame.center());
+            let center = origin.unwrap_or_else(|| self.frame.get().center());
             wash.center.set(center);
             wash.paint.set(
                 wash_paint(center, wash.radius, wash.color.snapshot(), 0.0),
@@ -1164,7 +1186,7 @@ impl LiveChrome {
         let Some((ripple, waves)) = &self.waves else {
             return;
         };
-        let (start, end) = ripple.wave(self.frame, origin);
+        let (start, end) = ripple.wave(self.frame.get(), origin);
         let wave = &waves[index];
         wave.shape.set(ShapeData::Circle(start), None);
         wave.shape.set(ShapeData::Circle(end), Some(&ripple.grow));
@@ -1174,6 +1196,15 @@ impl LiveChrome {
             with_alpha(self.layer_color.snapshot(), opacity),
             Some(&ripple.fade_in),
         );
+    }
+
+    /// Moves the active press point to `point`, in the widget's record
+    /// space: the look's values that read it follow the pointer with no
+    /// animation.
+    pub(crate) fn move_press(&self, point: Point) {
+        if self.press_point.replace(Some(point)) != Some(point) {
+            self.retarget(Retargeting::Animated(None));
+        }
     }
 
     /// Fades ripple wave `index` out under the ripple's fade-out; its
@@ -1255,13 +1286,14 @@ impl LiveChrome {
     /// elevation's shadows and the focus ring.
     pub(crate) fn visual_bounds(&self) -> Rect {
         let scale = Self::scale_of(&self.spec, InteractionState::PRESSED);
-        let scaled = Rect::from_center_size(self.frame.center(), self.frame.size() * scale);
+        let frame = self.frame.get();
+        let scaled = Rect::from_center_size(frame.center(), frame.size() * scale);
         let shadow = every_state()
             .map(|state| {
                 self.spec
                     .surface()
                     .get_elevation()
-                    .target(&Inputs::at_rest(self.frame, state, &()))
+                    .target(&Inputs::at_rest(frame, state, &()))
                     .extent()
             })
             .fold(0.0_f64, f64::max);
@@ -1272,7 +1304,7 @@ impl LiveChrome {
         let reach = shadow.max(ring);
         scaled
             .inflate(reach, reach)
-            .union(self.spec.target(self.bounds))
+            .union(self.spec.target(self.bounds.get()))
     }
 
     /// The motion the renderer's interaction bookkeeping runs with for this
@@ -1444,6 +1476,39 @@ impl LiveChromeParts {
         slot.as_ref().expect("the chrome parts were just ensured")
     }
 
+    /// The surface-only chrome `spec` behind a view of `bounds`: the parts
+    /// in `slot` when they already realize it — moved to `bounds` through
+    /// their live operands, with no re-recording — otherwise fresh parts
+    /// replacing them. `spec` must carry no parts recorded against its
+    /// frame (custom parts, press waves, a wash or a focus ring), which
+    /// could not follow the bounds.
+    pub(crate) fn ensure_following<'a>(
+        slot: &'a mut Option<Self>,
+        spec: &Chrome,
+        bounds: Rect,
+        state: InteractionState,
+        env: &Environment,
+        report: &nami::Binding<InteractionState>,
+    ) -> &'a Self {
+        match slot {
+            Some(parts) if parts.chrome.spec.same(spec) => {
+                parts.chrome.follow_bounds(bounds);
+                parts.chrome.sync(state);
+            }
+            _ => {
+                *slot = Some(Self::new(LiveChrome::new(
+                    spec.clone(),
+                    &ChromeContent::default(),
+                    bounds,
+                    state,
+                    env,
+                    report.clone(),
+                )));
+            }
+        }
+        slot.as_ref().expect("the chrome parts were just ensured")
+    }
+
     pub(crate) const fn chrome(&self) -> &Rc<LiveChrome> {
         &self.chrome
     }
@@ -1476,13 +1541,13 @@ impl LiveChromeParts {
         if !chrome.customs.is_empty() {
             renderer.draw_context(ctx, |recorder| {
                 for custom in &chrome.customs {
-                    custom.record(recorder, chrome.frame);
+                    custom.record(recorder, chrome.frame.get());
                 }
             });
         }
         if let Some(slider) = &chrome.slider {
             renderer.draw_context(ctx, |recorder| {
-                let frame = chrome.frame;
+                let frame = chrome.frame.get();
                 let record = |recorder: &mut Recorder| {
                     for part in &slider.parts {
                         part.record(recorder, frame);

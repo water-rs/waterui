@@ -117,6 +117,8 @@ pub struct OwnerRegistrations<E: crate::text::TextEngine> {
     pub cursor_targets: Vec<RetainedEntry<crate::renderer::CursorTarget<E>, E>>,
     /// Hover targets.
     pub hover_targets: Vec<RetainedEntry<crate::renderer::HoverTarget<E>, E>>,
+    /// Press observers.
+    pub pointer_observers: Vec<RetainedEntry<crate::renderer::PointerObserver<E>, E>>,
     /// Drop destinations.
     pub drop_targets: Vec<RetainedEntry<crate::renderer::DropTarget<E>, E>>,
     /// Context-menu targets.
@@ -315,6 +317,7 @@ owner_tagged!(
     crate::renderer::input::PointerTarget<E>,
     crate::renderer::input::CursorTarget<E>,
     crate::renderer::input::HoverTarget<E>,
+    crate::renderer::input::PointerObserver<E>,
     crate::renderer::input::DropTarget<E>,
     crate::renderer::input::ScrollTarget<E>,
     crate::renderer::input::ContextMenuTarget<E>,
@@ -341,6 +344,7 @@ impl<E: crate::text::TextEngine> Default for OwnerRegistrations<E> {
             gesture_occluders: Vec::default(),
             cursor_targets: Vec::default(),
             hover_targets: Vec::default(),
+            pointer_observers: Vec::default(),
             drop_targets: Vec::default(),
             context_menu_targets: Vec::default(),
             scroll_targets: Vec::default(),

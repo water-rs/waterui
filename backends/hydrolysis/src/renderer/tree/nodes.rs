@@ -1034,6 +1034,10 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// modifier instance join one shared backdrop group and two instances
     /// are two groups.
     MaterialGroup,
+    /// A `.background(Glass…)` (water-rs/waterui#4495): every flush lists the
+    /// theme's glass look behind the child, its backdrop material joining the
+    /// nearest enclosing `.material_group()` scope. The glass takes no input.
+    Glass(crate::renderer::glass::GlassEffect),
     /// An `.anchored_overlay(...)` (water-rs/waterui#1275): every flush the
     /// wrapper registers the anchor's live bounds plus the effect's handles
     /// for the post-flush `render_anchored_overlays` pass, which measures,

@@ -47,6 +47,8 @@ mod gesture_env;
 mod gesture_retention;
 mod gesture_surface;
 #[cfg(hydrolysis_gpu_painter)]
+mod glass_background;
+#[cfg(hydrolysis_gpu_painter)]
 mod gpu_surface_direct;
 #[cfg(hydrolysis_gpu_painter)]
 mod gpu_surface_idle;
@@ -2769,6 +2771,10 @@ type SwitchLookFor = Rc<dyn Fn(&ToggleSpec, &Environment) -> SwitchLook>;
 /// The stepper look a test theme hands out for a stepper spec.
 type StepperLookFor = Rc<dyn Fn(&StepperSpec, &Environment) -> StepperLook>;
 
+/// The glass look a test theme hands out for a glass background.
+type GlassLookFor =
+    Rc<dyn Fn(&waterui::background::Glass, &Environment) -> Option<crate::theme::GlassLook>>;
+
 /// A linear progress bar the theme realized: `(frame, value)`.
 type ProgressBarRealization = (Rect, f64);
 /// A recorded `draw_radio_indicator` call: `(center, state)`.
@@ -2838,6 +2844,9 @@ pub struct MinimalTestTheme {
     /// The stepper look the theme hands out for a spec and environment;
     /// `None` answers [`crate::testing::plain_stepper_look`].
     stepper_look: Option<StepperLookFor>,
+    /// The glass look the theme hands out for a glass background; `None`
+    /// answers the trait's default, no glass.
+    glass_look: Option<GlassLookFor>,
     /// Every spec the theme was asked for a stepper look.
     stepper_specs: Rc<RefCell<Vec<StepperSpec>>>,
     /// Every linear progress bar the theme's look realized, with the value
@@ -2917,6 +2926,24 @@ impl MinimalTestTheme {
     #[must_use]
     pub fn with_stepper_look(mut self, look: StepperLook) -> Self {
         self.stepper_look = Some(Rc::new(move |_, _| look.clone()));
+        self
+    }
+
+    /// Hands out the glass look `look` makes for each glass background.
+    #[must_use]
+    #[cfg_attr(
+        not(hydrolysis_gpu_painter),
+        expect(
+            dead_code,
+            reason = "its tests mirror the GPU painter's backdrop layers and build only with it"
+        )
+    )]
+    pub fn with_glass_background(
+        mut self,
+        look: impl Fn(&waterui::background::Glass, &Environment) -> Option<crate::theme::GlassLook>
+        + 'static,
+    ) -> Self {
+        self.glass_look = Some(Rc::new(look));
         self
     }
 
@@ -3100,6 +3127,14 @@ impl WidgetTheme for MinimalTestTheme {
         self.stepper_look
             .as_ref()
             .map_or_else(crate::testing::plain_stepper_look, |look| look(spec, env))
+    }
+
+    fn glass_background(
+        &self,
+        glass: &waterui::background::Glass,
+        env: &Environment,
+    ) -> Option<crate::theme::GlassLook> {
+        self.glass_look.as_ref().and_then(|look| look(glass, env))
     }
 
     fn input_field_metrics(&self) -> InputFieldMetrics {

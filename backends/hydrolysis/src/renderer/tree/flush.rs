@@ -438,6 +438,11 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         node.child
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                     }
+                    WrapperEffect::Glass(effect) => {
+                        HydrolysisRenderer::apply_glass(renderer, ctx, child_env, effect, |r| {
+                            node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
+                        });
+                    }
                     WrapperEffect::MaterialGroup => {
                         // The scope's anchor is an item at its position:
                         // the pass-through wrapper mounts a plain, empty

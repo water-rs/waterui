@@ -754,6 +754,48 @@ pub trait WidgetTheme {
     /// right for a theme that records no backdrop material.
     fn register_backdrop_shaders(&self, _registry: &mut MaterialRegistry) {}
 
+    /// The look of `glass` behind content; `None` draws no glass (the
+    /// default).
+    ///
+    /// Hydrolysis requests the look once for each `.background(Glass…)` the
+    /// first time it draws it, in the environment the content resolves in,
+    /// and realizes it: the outline is `glass`'s shape — the rectangle
+    /// family, a capsule, a circle, an ellipse or a custom path — on the
+    /// content's frame, following the frame as it changes, and the [`GlassLook`] states what
+    /// fills it. The look's [`Backdrop`](super::Backdrop) is recorded behind
+    /// the content as a backdrop material, with the border and the
+    /// elevation as a [`Surface`](super::Surface) records them, in the
+    /// nearest enclosing `.material_group()` scope — two glass backgrounds
+    /// under one scope share one capture, and outside every scope each is
+    /// a group of its own. The material's shape and effect, the border and
+    /// the elevation are live operands, so a frame or input change records
+    /// nothing.
+    ///
+    /// The glass takes no part in hit testing: it never intercepts a tap,
+    /// so the content and the views beneath it receive their input as if
+    /// there were no glass, and it takes no keyboard focus. A glass that is
+    /// [`interactive`](waterui::background::Glass::is_interactive) shows
+    /// press feedback through its [`Driven`](super::Driven) values, which
+    /// read the interaction state and the press point: a primary press
+    /// inside the content's frame sets `PRESSED` and the press point
+    /// while it is held — whichever view the press goes to, a button inside
+    /// the content included — and moves the point with the pointer. A glass
+    /// that is not interactive reads the inputs at rest.
+    ///
+    /// The tint is [`Glass::tint_color`](waterui::background::Glass::tint_color),
+    /// a live [`Color`] the look resolves through `env` (`Color::resolve`);
+    /// the backend does nothing with it.
+    ///
+    /// Material-bearing parts need the theme's shaders and capture classes
+    /// registered by [`Self::register_backdrop_shaders`].
+    fn glass_background(
+        &self,
+        _glass: &waterui::background::Glass,
+        _env: &Environment,
+    ) -> Option<super::GlassLook> {
+        None
+    }
+
     /// The look of a button: a `Button`, an icon-only button and a menu
     /// trigger.
     ///
