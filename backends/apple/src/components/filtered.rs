@@ -357,10 +357,12 @@ fn can_attach_now(view: &PlatformView) -> bool {
 /// reaches the presentation layer through `apply_to_view`'s recursive
 /// sublayer walk.
 fn configure_dynamic_range(state: &FilteredState, mode: cocoa_ui::dynamic_range::DynamicRange) {
-    assert!(
-        !state.attached.get(),
-        "FilteredView dynamic range cannot change while attached"
-    );
+    if state.attached.get() {
+        waterui::contract_violation!(
+            "FilteredView dynamic range cannot change while attached; the change is ignored"
+        );
+        return;
+    }
     cocoa_ui::dynamic_range::apply_to_view(mode, &state.view);
     apply_presentation_contract(state, mode);
     state.capture_texture.borrow_mut().take();
@@ -505,23 +507,32 @@ fn attach_if_needed(
     let capture_usages = wgpu::TextureUsages::TEXTURE_BINDING
         | wgpu::TextureUsages::RENDER_ATTACHMENT
         | wgpu::TextureUsages::COPY_DST;
-    assert!(
-        context
-            .adapter()
-            .get_texture_format_features(PRESENTATION_FORMAT)
-            .allowed_usages
-            .contains(capture_usages),
-        "filtered attach: output format {PRESENTATION_FORMAT:?} cannot be used for capture"
-    );
-    assert!(
-        width > 0 && height > 0,
-        "FilteredView attach: dimensions must be non-zero, got {width}x{height}"
-    );
+    if !context
+        .adapter()
+        .get_texture_format_features(PRESENTATION_FORMAT)
+        .allowed_usages
+        .contains(capture_usages)
+    {
+        // The adapter refuses the format: no capture can run on it.
+        tracing::error!(
+            "filtered attach: output format {PRESENTATION_FORMAT:?} cannot be used for capture; \
+             the view is not attached"
+        );
+        return;
+    }
+    if width == 0 || height == 0 {
+        waterui::contract_violation!(
+            "FilteredView attach: dimensions must be non-zero, got {width}x{height}; \
+             the view is not attached"
+        );
+        return;
+    }
     state.input_size.set((width, height));
     // One presenter per attach: the persistent layer gets a fresh
     // `CAMetalDisplayLink` bound to the current context's device and the
     // drawable size this attach measures.
     let presenter = MetalPresenter::new(
+        objc2::MainThreadOnly::mtm(&*state.view),
         state.presentation_layer.clone(),
         Rc::clone(&state.frame_sink),
         state.armed.is_some(),
@@ -581,15 +592,48 @@ fn detach_if_needed(state: &FilteredState) {
 /// allocation `ensureCaptureTexture` performs, minus the state write.
 /// The transition ghost's one-shot capture targets this; `ViewCapture`
 /// rasterizes into it and the filtered leaf renders it as `frozen_input`.
+///
+/// # Errors
+///
+/// [`CaptureTextureError`] when the device cannot allocate the texture.
 pub fn new_capture_input(
     context: &SharedGpuContext,
     width: u32,
     height: u32,
-) -> Retained<MetalTexture> {
+) -> Result<Retained<MetalTexture>, CaptureTextureError> {
+    new_capture_texture(
+        &crate::gpu_runtime::raw_metal_device(context),
+        output_pixel_format(),
+        width,
+        height,
+    )
+}
+
+/// The device refused a capture texture — an operational failure the
+/// capture settles as a failed frame, never a crash.
+#[derive(Debug, thiserror::Error)]
+#[error("the GPU device could not allocate a {width}x{height} capture texture")]
+pub struct CaptureTextureError {
+    width: u32,
+    height: u32,
+}
+
+/// A private-storage render target on `device` at `format`, the allocation
+/// every capture texture shares.
+///
+/// # Errors
+///
+/// [`CaptureTextureError`] when the device cannot allocate the texture.
+pub fn new_capture_texture(
+    device: &MetalDevice,
+    format: objc2_metal::MTLPixelFormat,
+    width: u32,
+    height: u32,
+) -> Result<Retained<MetalTexture>, CaptureTextureError> {
     // SAFETY: creates a valid descriptor; Metal validates the arguments.
     let descriptor = unsafe {
         objc2_metal::MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-            output_pixel_format(),
+            format,
             width as usize,
             height as usize,
             false,
@@ -599,9 +643,9 @@ pub fn new_capture_input(
         objc2_metal::MTLTextureUsage::ShaderRead | objc2_metal::MTLTextureUsage::RenderTarget,
     );
     descriptor.setStorageMode(objc2_metal::MTLStorageMode::Private);
-    crate::gpu_runtime::raw_metal_device(context)
+    device
         .newTextureWithDescriptor(&descriptor)
-        .expect("Failed to create the filtered-content capture texture")
+        .ok_or(CaptureTextureError { width, height })
 }
 
 /// `ensureCaptureTexture` — a private-storage render target in the
@@ -612,18 +656,18 @@ fn ensure_capture_texture(
     context: &SharedGpuContext,
     width: u32,
     height: u32,
-) -> Retained<MetalTexture> {
+) -> Result<Retained<MetalTexture>, CaptureTextureError> {
     let pixel_format = output_pixel_format();
     if let Some(texture) = state.capture_texture.borrow().as_ref()
         && texture.width() == width as usize
         && texture.height() == height as usize
         && texture.pixelFormat() == pixel_format
     {
-        return texture.clone();
+        return Ok(texture.clone());
     }
-    let texture = new_capture_input(context, width, height);
+    let texture = new_capture_input(context, width, height)?;
     *state.capture_texture.borrow_mut() = Some(texture.clone());
-    texture
+    Ok(texture)
 }
 
 /// `initializeGpuIfNeeded`. A zero-sized host is legitimate and detaches:
@@ -685,8 +729,11 @@ fn attach(state: &Rc<FilteredState>) {
     attach_if_needed(state, &context, width, height);
     // A frozen input needs no capture texture — its texture is the
     // input and the capture path never runs.
-    if let FilteredInput::Captured { .. } = &state.input {
-        let _ = ensure_capture_texture(state, &context, width, height);
+    if let FilteredInput::Captured { .. } = &state.input
+        && let Err(error) = ensure_capture_texture(state, &context, width, height)
+    {
+        let error: Arc<dyn std::error::Error + Send + Sync> = Arc::new(error);
+        settle_capture_failure(state, context.generation(), &error);
     }
 }
 
@@ -864,7 +911,18 @@ fn render_frame(state: &Rc<FilteredState>, frame: DrawableFrame) {
     let FilteredInput::Captured { capture, .. } = &state.input else {
         unreachable!("the frozen input returns above")
     };
-    let input = ensure_capture_texture(state, &context, width, height);
+    let input = match ensure_capture_texture(state, &context, width, height) {
+        Ok(input) => input,
+        Err(error) => {
+            // The frame's lease releases unpresented and the view settles
+            // failed until a new context generation rebinds it.
+            drop(frame);
+            state.render_in_flight.set(false);
+            let error: Arc<dyn std::error::Error + Send + Sync> = Arc::new(error);
+            settle_capture_failure(state, context.generation(), &error);
+            return;
+        }
+    };
     let generation = context.generation();
     let work = PresentWork {
         frame,
@@ -1181,10 +1239,13 @@ fn encode_effects(
             state.current_scale.get() as f32,
         );
         let output = EffectOutput::new(device, queue, output_target);
-        needs_redraw |= effect
+        let drew = effect
             .encode_render(&input, &output, &mut encoder)
-            .unwrap_or_else(|error| panic!("filtered render: {error}"))
-            || effect.redraw_hint();
+            .unwrap_or_else(|error| {
+                tracing::error!("filtered render: {error}; the effect's pass is skipped");
+                false
+            });
+        needs_redraw |= drew || effect.redraw_hint();
     }
     (needs_redraw, encoder)
 }
@@ -1318,7 +1379,7 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, work: PresentWork) {
     // slot inside this same submission — GPU→GPU, ordered after the
     // effects on the shared queue; the settle promotes it only on a
     // real `PresentedFrame` receipt.
-    let frozen = state.armed.as_ref().map(|armed| {
+    let frozen = state.armed.as_ref().and_then(|armed| {
         armed.encode_copy(
             &context,
             &output_wgpu_texture,
@@ -1567,18 +1628,33 @@ fn spawn_setup(state: &Rc<FilteredState>) {
                 // main thread; the chain's setups run together.
                 std::panic::AssertUnwindSafe(async {
                     let setups = effects.iter_mut().map(|effect| effect.setup(&ctx));
-                    for outcome in futures::future::join_all(setups).await {
-                        outcome.unwrap_or_else(|error| panic!("filtered setup failed: {error}"));
-                    }
+                    futures::future::join_all(setups)
+                        .await
+                        .into_iter()
+                        .find_map(Result::err)
+                        .map(|error| error.to_string())
                 })
                 .catch_unwind()
                 .await
             };
-            if let Err(payload) = outcome {
-                if context.device_lost_reason().is_none() {
-                    std::panic::resume_unwind(payload);
+            let setup_failure = match outcome {
+                Ok(failure) => failure,
+                Err(payload) => {
+                    if context.device_lost_reason().is_none() {
+                        std::panic::resume_unwind(payload);
+                    }
+                    continue;
                 }
-                continue;
+            };
+            if let Some(failure) = setup_failure {
+                if context.device_lost_reason().is_some() {
+                    continue;
+                }
+                // A setup the device did not lose to fails the same way on
+                // every retry: the effects stay uninstalled, so the view is
+                // never drawn.
+                tracing::error!("filtered setup failed: {failure}; the view is not drawn");
+                return;
             }
             if context.device_lost_reason().is_none()
                 && runtime.context().generation() == context.generation()
@@ -1851,10 +1927,12 @@ impl CapturableSurface for FilteredCapturable {
             return;
         };
         let count = state.capture_suppression.get();
-        assert!(
-            count > 0,
-            "FilteredView capture suppression scopes are unbalanced"
-        );
+        if count == 0 {
+            waterui::contract_violation!(
+                "FilteredView capture suppression scopes are unbalanced; the end is ignored"
+            );
+            return;
+        }
         state.capture_suppression.set(count - 1);
         if count == 1 {
             state.presentation_layer.setHidden(false);
@@ -1881,10 +1959,12 @@ impl CapturableSurface for FilteredCapturable {
             return;
         };
         let count = state.external_count.get();
-        assert!(
-            count > 0,
-            "FilteredView external rendering scopes are unbalanced"
-        );
+        if count == 0 {
+            waterui::contract_violation!(
+                "FilteredView external rendering scopes are unbalanced; the end is ignored"
+            );
+            return;
+        }
         state.external_count.set(count - 1);
         if count == 1 {
             *state.external_redraw.borrow_mut() = None;
@@ -1911,12 +1991,16 @@ impl CapturableSurface for FilteredCapturable {
         // this capture; `retain` takes our own reference on it.
         let retained =
             unsafe { Retained::<MetalTexture>::retain(std::ptr::from_ref(texture).cast_mut()) }
-                .expect("FilteredView external render received a null texture");
-        assert_eq!(
-            retained.pixelFormat(),
-            output_pixel_format(),
-            "FilteredView external target must be in the presentation format"
-        );
+                .expect("`retain` of a pointer made from a reference is non-null");
+        if retained.pixelFormat() != output_pixel_format() {
+            waterui::contract_violation!(
+                "FilteredView external target must be in the presentation format \
+                 ({:?}), got {:?}; the frame is deferred",
+                output_pixel_format(),
+                retained.pixelFormat()
+            );
+            return false;
+        }
         if state.park.is_failed() {
             // Prepared without a target: `render_prepared_external_texture`
             // answers the settled terminal failure itself, matching the
@@ -2064,9 +2148,9 @@ impl CapturableSurface for FilteredCapturable {
             };
             let (needs_redraw, mut encoder) =
                 encode_effects(&state, &context, &input, &output, timing);
-            let frozen = armed
-                .as_ref()
-                .map(|armed| armed.encode_copy(&context, &output, (width, height), &mut encoder));
+            let frozen = armed.as_ref().and_then(|armed| {
+                armed.encode_copy(&context, &output, (width, height), &mut encoder)
+            });
             drop(input);
             drop(output);
             if needs_redraw {
@@ -2075,7 +2159,15 @@ impl CapturableSurface for FilteredCapturable {
             submit_external(&state, &context, encoder, completion, frozen);
             return;
         }
-        let input_native = ensure_capture_texture(&state, &context, width, height);
+        let input_native = match ensure_capture_texture(&state, &context, width, height) {
+            Ok(input) => input,
+            Err(error) => {
+                let error: Arc<dyn std::error::Error + Send + Sync> = Arc::new(error);
+                settle_capture_failure(&state, context.generation(), &error);
+                completion(Err(CaptureError::Failed(error)));
+                return;
+            }
+        };
         let input = imported_input(&state, &context, input_native.clone(), width, height);
         let completion = std::sync::Mutex::new(Some(completion));
         let weak = Sendable(Rc::downgrade(&state));
@@ -2160,7 +2252,7 @@ impl CapturableSurface for FilteredCapturable {
             };
             let (needs_redraw, mut encoder) =
                 encode_effects(&state, &context, &input, &output, timing);
-            let frozen = armed_for_copy.as_ref().map(|Sendable(armed)| {
+            let frozen = armed_for_copy.as_ref().and_then(|Sendable(armed)| {
                 armed.encode_copy(&context, &output, (width, height), &mut encoder)
             });
             drop(input);
@@ -2373,7 +2465,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
         {
             return crate::components::native_filter::mount(mtm, ctx, content, chained, &plan);
         }
-        let services = services(ctx.env());
+        let Some(services) = services(ctx.env()) else {
+            return crate::gpu_runtime::unavailable_leaf(mtm, "filtered");
+        };
         let (sources, guard_list): (Vec<AnyEffect>, Vec<ParamGuards>) = chained.into_iter().unzip();
         // The chain presents outermost-last: effects render content-adjacent
         // first, so reverse the collection order.
@@ -2563,21 +2657,7 @@ fn wire_filtered_state(
     cocoa_ui::view::add_subview(view, &output_view);
 
     let gpu_context = runtime.context();
-    // SAFETY: `raw_device` is the `MTLDevice` the runtime created and
-    // still owns; `retain` takes our own reference on it.
-    let device = unsafe {
-        Retained::<MetalDevice>::retain(
-            Retained::as_ptr(
-                gpu_context
-                    .device()
-                    .as_hal::<wgpu_hal::api::Metal>()
-                    .expect("the Apple runtime's device is Metal")
-                    .raw_device(),
-            )
-            .cast_mut(),
-        )
-        .expect("the Metal device is non-null")
-    };
+    let device = crate::gpu_runtime::raw_metal_device(&gpu_context);
 
     let state = Rc::new_cyclic(|weak| {
         let frame_sink: Rc<dyn Fn(DrawableFrame)> = Rc::new({
@@ -2729,13 +2809,14 @@ fn wire_filtered_state(
 }
 
 /// The runtime, pipeline caches and capture pass `env`'s GPU installation
-/// hands every filtered realization.
-fn services(env: &waterui_backend_core::Environment) -> GpuServices {
-    GpuServices {
-        runtime: crate::gpu_runtime::runtime(env),
-        pipelines: crate::gpu_runtime::filter_pipelines(env),
-        captures: crate::gpu_runtime::capture_pass(env),
-    }
+/// hands every filtered realization — `None` when the process has no GPU
+/// runtime, the caller reports it and realizes nothing.
+fn services(env: &waterui_backend_core::Environment) -> Option<GpuServices> {
+    Some(GpuServices {
+        runtime: crate::gpu_runtime::runtime(env)?,
+        pipelines: crate::gpu_runtime::filter_pipelines(env)?,
+        captures: crate::gpu_runtime::capture_pass(env)?,
+    })
 }
 
 /// A transition's blur effect over an already-realized input — the
@@ -2770,12 +2851,13 @@ impl fmt::Debug for FrozenEffect {
 
 impl FrozenEffect {
     /// The blur realization (§2.6): one `filtrate::filters::Blur` fed
-    /// by `radius` over the frozen `input` frame.
+    /// by `radius` over the frozen `input` frame. `None` (reported) when the
+    /// process has no GPU runtime.
     pub fn blur(
         radius: waterui_core::reactive::Binding<f32>,
         env: &waterui_backend_core::Environment,
         input: Retained<MetalTexture>,
-    ) -> Self {
+    ) -> Option<Self> {
         let mut guards = ParamGuards::default();
         let effect = AnyEffect::filter(waterui_graphics::backend::filtrate::filters::Blur(
             guards.bind(radius),
@@ -2798,20 +2880,21 @@ impl FrozenEffect {
         input: Retained<MetalTexture>,
     ) -> Option<Self> {
         let effects = effects_from_body(body, env)?;
-        Some(Self::new(
-            effects,
-            FilteredInput::Frozen { texture: input },
-            env,
-        ))
+        Self::new(effects, FilteredInput::Frozen { texture: input }, env)
     }
 
     /// Builds the filtered pipeline over `input` — the construction the
-    /// effect and the mounted leaf share, minus the leaf.
+    /// effect and the mounted leaf share, minus the leaf. `None` (reported)
+    /// when the process has no GPU runtime: no effect is drawn.
     fn new(
         effects: Vec<(AnyEffect, ParamGuards)>,
         input: FilteredInput,
         env: &waterui_backend_core::Environment,
-    ) -> Self {
+    ) -> Option<Self> {
+        let Some(services) = services(env) else {
+            tracing::error!("GPU runtime unavailable; the transition effect is not drawn");
+            return None;
+        };
         let mtm = MainThreadMarker::new().expect("a transition effect builds on the main thread");
         let view = HostView::new(mtm, cocoa_ui::Rect::ZERO);
         #[cfg(target_os = "macos")]
@@ -2824,14 +2907,14 @@ impl FrozenEffect {
             .map(|(effect, guards)| (effect.build(), guards))
             .unzip();
         let (state, guard, capturable) =
-            wire_filtered_state(mtm, services(env), &view, input, built, env);
-        Self {
+            wire_filtered_state(mtm, services, &view, input, built, env);
+        Some(Self {
             view,
             state,
             capturable,
             guards,
             guard,
-        }
+        })
     }
 
     /// The output view — added to the host as a plain subview over the
@@ -2901,14 +2984,26 @@ impl LiveEffect {
     /// Captures `content_view` in place and adds the effect output to
     /// `output_parent`, covering the same area. The content is never
     /// reparented; it hides only once the effect's first frame
-    /// presents, so no frame shows a gap.
+    /// presents, so no frame shows a gap. `None` (reported) when the process
+    /// has no GPU runtime: no effect is drawn.
     pub fn attach(
         effects: Vec<(AnyEffect, ParamGuards)>,
         content_view: &PlatformView,
         output_parent: &PlatformView,
         env: &waterui_backend_core::Environment,
-    ) -> Self {
-        Self::build(effects, content_view, output_parent, output_parent, env)
+    ) -> Option<Self> {
+        let Some(services) = services(env) else {
+            tracing::error!("GPU runtime unavailable; the transition effect is not drawn");
+            return None;
+        };
+        Some(Self::build(
+            effects,
+            services,
+            content_view,
+            output_parent,
+            output_parent,
+            env,
+        ))
     }
 
     /// Whether the effect's first frame has presented — the captured
@@ -2955,6 +3050,10 @@ impl LiveEffect {
         env: &waterui_backend_core::Environment,
     ) -> Option<Self> {
         let effects = effects_from_body(body, env)?;
+        let Some(services) = services(env) else {
+            tracing::error!("GPU runtime unavailable; the transition effect is not drawn");
+            return None;
+        };
         // The output lives in the window overlay, but invalidations from
         // the captured subtree rise through the content's own ancestors —
         // the transition host — so that is where the sink must sit.
@@ -2962,6 +3061,7 @@ impl LiveEffect {
             .expect("a transition's content view is mounted inside its host");
         Some(Self::build(
             effects,
+            services,
             content_view,
             output_parent,
             &sink_view,
@@ -2975,6 +3075,7 @@ impl LiveEffect {
     /// itself when the output sits beside the content, as a blur does).
     fn build(
         effects: Vec<(AnyEffect, ParamGuards)>,
+        services: GpuServices,
         content_view: &PlatformView,
         output_parent: &PlatformView,
         sink_view: &PlatformView,
@@ -3003,7 +3104,7 @@ impl LiveEffect {
             .map(|(effect, guards)| (effect.build(), guards))
             .unzip();
         let (state, mut guard, capturable) =
-            wire_filtered_state(mtm, services(env), &output, input, built, env);
+            wire_filtered_state(mtm, services, &output, input, built, env);
         // The content hides only when the effect's first frame lands —
         // until then it keeps painting, so no frame shows a gap.
         if let FilteredInput::Captured { content_view, .. } = &state.input {

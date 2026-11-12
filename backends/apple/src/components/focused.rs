@@ -80,7 +80,7 @@ fn request_sync(sync: &Rc<FocusSync>, mtm: cocoa_ui::MainThreadMarker) {
 
 /// Drives the platform toward the binding's value — `performScheduledSync`:
 /// nothing happens while either the container or the anchor is outside a
-/// window; a refused request is the same `fatalError` the Swift port raised.
+/// window; a refused request is logged and the platform keeps its focus.
 fn perform_sync(sync: &FocusSync) {
     let Some(container) = sync.container.load() else {
         return;
@@ -89,16 +89,16 @@ fn perform_sync(sync: &FocusSync) {
         return;
     }
     if sync.binding.snapshot() {
-        if !sync.target.has_focus() {
-            assert!(
-                sync.target.request_focus(),
-                "Metadata<Focused> failed to focus its resolved TextField/SecureField anchor."
+        if !sync.target.has_focus() && !sync.target.request_focus() {
+            tracing::error!(
+                "Metadata<Focused> failed to focus its resolved TextField/SecureField anchor; \
+                 the focus is unchanged"
             );
         }
-    } else if sync.target.has_focus() {
-        assert!(
-            sync.target.clear_focus(),
-            "Metadata<Focused> failed to blur its resolved TextField/SecureField anchor."
+    } else if sync.target.has_focus() && !sync.target.clear_focus() {
+        tracing::error!(
+            "Metadata<Focused> failed to blur its resolved TextField/SecureField anchor; \
+             the focus is unchanged"
         );
     }
 }
@@ -158,8 +158,21 @@ pub fn install(dispatcher: &mut Dispatcher) {
             move |view| view::set_frame(&child, bounds(view))
         });
 
+        let state = Rc::new(FocusedState { child: mounted });
+
+        let mut leaf = NativeLeaf::new(
+            host_view,
+            FocusedSubView {
+                state: Rc::clone(&state),
+            },
+        );
+
         // `requireSingleWuiFocusTarget`: exactly one anchor in the subtree.
-        let target = require_single_target(focus::targets_in(host_view));
+        // Without one the wrapper stays a transparent container.
+        let Some(target) = require_single_target(focus::targets_in(host_view)) else {
+            leaf.keep(state);
+            return leaf;
+        };
 
         let sync = Rc::new(FocusSync {
             container: cocoa_ui::objc2::rc::Weak::new(&*view::retain_base(host_view)),
@@ -174,15 +187,6 @@ pub fn install(dispatcher: &mut Dispatcher) {
             let sync = Rc::clone(&sync);
             move |_| request_sync(&sync, mtm)
         });
-
-        let state = Rc::new(FocusedState { child: mounted });
-
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            FocusedSubView {
-                state: Rc::clone(&state),
-            },
-        );
 
         // The objects the watchers fire on are kept first so the guards
         // — kept after — drop before them (reverse insertion order).
@@ -217,18 +221,23 @@ pub fn install(dispatcher: &mut Dispatcher) {
 }
 
 /// `requireSingleWuiFocusTarget`: `Metadata<Focused>` wraps exactly one
-/// focus anchor — none, or several, is the same `fatalError` the Swift
-/// wrapper raised.
-fn require_single_target(mut anchors: Vec<focus::FocusTarget>) -> focus::FocusTarget {
-    match anchors.len() {
-        1 => anchors.pop().unwrap_or_else(|| unreachable!()),
-        0 => panic!(
-            "Metadata<Focused> requires exactly one TextField or SecureField focus anchor in its subtree, found 0."
-        ),
-        count => panic!(
-            "Metadata<Focused> requires exactly one TextField or SecureField focus anchor in its subtree, found {count}."
-        ),
+/// focus anchor — none or several is a contract violation of the view
+/// above. With none there is nothing to focus (`None`); with several the
+/// first anchor in the subtree is the one the binding drives.
+fn require_single_target(anchors: Vec<focus::FocusTarget>) -> Option<focus::FocusTarget> {
+    let count = anchors.len();
+    if count != 1 {
+        waterui::contract_violation!(
+            "Metadata<Focused> requires exactly one TextField or SecureField focus anchor in its \
+             subtree, found {count}; {}",
+            if count == 0 {
+                "the wrapper drives no focus"
+            } else {
+                "the first anchor is driven"
+            }
+        );
     }
+    anchors.into_iter().next()
 }
 
 #[cfg(test)]
@@ -236,10 +245,10 @@ mod tests {
     use super::*;
 
     /// No anchor in the subtree is the first `requireSingleWuiFocusTarget`
-    /// trap.
+    /// violation: nothing is driven.
     #[test]
-    #[should_panic(expected = "found 0")]
-    fn zero_anchors_panic() {
-        let _ = require_single_target(Vec::new());
+    #[cfg_attr(debug_assertions, should_panic(expected = "found 0"))]
+    fn zero_anchors_drive_no_focus() {
+        assert!(require_single_target(Vec::new()).is_none());
     }
 }

@@ -31,6 +31,8 @@ use super::trait_change::{TraitChangeObservation, register_trait_change};
 use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Edges, MeasureProposal, Point, Rect, Size};
 use crate::keys::{self, KeyEvent};
+use waterui_contract::contract_violation;
+
 use crate::pointer::{PointerEvent, PointerEvents};
 use crate::response::{ReportsResponse, ResponseGeometry};
 use crate::visibility::VisibilityEmitter;
@@ -990,16 +992,17 @@ impl HostView {
 
     /// Removes `view`, one of this view's subviews.
     ///
-    /// # Panics
-    ///
-    /// If `view` is not a subview of this view.
+    /// A `view` that is not a subview of this view breaks the contract: it is
+    /// reported and the view is left where it is.
     pub fn remove_subview(&self, view: &UIView) {
         let this: &UIView = self;
-        assert!(
-            view.superview()
-                .is_some_and(|parent| ptr::eq(&raw const *parent, this)),
-            "{view:?} is not a subview of {this:?}"
-        );
+        if !view
+            .superview()
+            .is_some_and(|parent| ptr::eq(&raw const *parent, this))
+        {
+            contract_violation!("{view:?} is not a subview of {this:?}; the view is not removed");
+            return;
+        }
         view.removeFromSuperview();
     }
 

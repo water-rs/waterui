@@ -1309,6 +1309,7 @@ mod gesture_events {
                 })
             }),
             &render_environment(),
+            mtm(),
         );
         let host = leaf.view();
         let _window = scene_window(mtm(), host);
@@ -1336,6 +1337,7 @@ mod gesture_events {
                 })
             }),
             &render_environment(),
+            mtm(),
         );
         let host = leaf.view();
         let _window = scene_window(mtm(), host);
@@ -1389,6 +1391,7 @@ mod gesture_events {
                 )
             }),
             &render_environment(),
+            mtm(),
         );
         let host = leaf.view();
         let _window = scene_window(mtm(), host);
@@ -1442,6 +1445,7 @@ mod gesture_events {
                 )
             }),
             &render_environment(),
+            mtm(),
         );
         let host = leaf.view();
         let _window = scene_window(mtm(), host);

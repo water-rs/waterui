@@ -116,6 +116,13 @@ fn embedding_trials() -> Vec<Trial> {
             },
         ),
         Trial::test(
+            "embedding::an_app_without_a_root_window_mounts_nothing_and_every_entry_ignores_it",
+            || {
+                embedding::an_app_without_a_root_window_mounts_nothing_and_every_entry_ignores_it();
+                Ok(())
+            },
+        ),
+        Trial::test(
             "embedding::the_embedded_root_follows_the_host_bounds_and_detaches_on_drop",
             || {
                 embedding::the_embedded_root_follows_the_host_bounds_and_detaches_on_drop();
@@ -1064,7 +1071,7 @@ mod resolve {
         let _mtm = mtm();
         let mut env = env();
         configure(&mut env);
-        waterui_apple::dispatch::render(AnyView::new(view), &env)
+        waterui_apple::dispatch::render(AnyView::new(view), &env, mtm())
     }
 
     /// [`render`] under a [`ManualTransitionClock`]: every transition the
@@ -3059,7 +3066,7 @@ mod material_vibrancy {
             text("default"),
             text("explicit").foreground(Color::srgb(200, 30, 30)),
         ));
-        let leaf = waterui_apple::dispatch::render(AnyView::new(content), &env);
+        let leaf = waterui_apple::dispatch::render(AnyView::new(content), &env, mtm);
         container.add_subview(leaf.view());
         let leaf_view = view::retain_base(leaf.view());
 
@@ -3153,7 +3160,7 @@ mod material_vibrancy {
             text("label-valued").foreground(Working(light_label)),
         ))
         .background(Material::Regular);
-        let leaf = waterui_apple::dispatch::render(AnyView::new(content), &env);
+        let leaf = waterui_apple::dispatch::render(AnyView::new(content), &env, mtm());
 
         let mut found = Vec::new();
         labels(leaf.view(), &mut found, false);
@@ -3216,7 +3223,7 @@ mod material_vibrancy {
         ))
         .padding()
         .background(Glass::regular());
-        let leaf = waterui_apple::dispatch::render(AnyView::new(content), &env);
+        let leaf = waterui_apple::dispatch::render(AnyView::new(content), &env, mtm());
 
         let mut found = Vec::new();
         glass_labels(leaf.view(), &mut found, false);
@@ -3423,6 +3430,7 @@ mod material_reduce_transparency {
         let leaf = waterui_apple::dispatch::render(
             AnyView::new(vstack((text("default"),)).padding()),
             &env,
+            mtm,
         );
         container.add_subview(leaf.view());
         let leaf_view = view::retain_base(leaf.view());
@@ -3566,6 +3574,13 @@ mod gpu_surface {
             Trial::test(
                 "gpu_surface::a_deferred_external_frame_requests_a_redraw",
                 a_deferred_external_frame_requests_a_redraw,
+            ),
+            Trial::test(
+                "gpu_surface::a_gpu_view_mounts_empty_without_a_runtime",
+                || {
+                    a_gpu_view_mounts_empty_without_a_runtime();
+                    Ok(())
+                },
             ),
             Trial::test(
                 "gpu_surface::view_render_answers_gpu_failure_over_a_failed_child",
@@ -4226,6 +4241,35 @@ mod gpu_surface {
         Ok(())
     }
 
+    /// A GPU-backed view under an environment with no GPU runtime — the
+    /// device refused it at launch — mounts as an empty view of its
+    /// proposed size instead of panicking.
+    pub fn a_gpu_view_mounts_empty_without_a_runtime() {
+        use waterui_apple::dispatch;
+        use waterui_apple::native_test_support::gpu_surface::fixture_scene_view;
+        use waterui_backend_core::{AnyView, Environment};
+        use waterui_core::layout::{ProposalSize, Size};
+
+        let mut env = Environment::new();
+        dispatch::install(&mut env);
+        let leaf = dispatch::render(AnyView::new(fixture_scene_view()), &env, mtm());
+        let size = leaf
+            .layout()
+            .measure(ProposalSize::new(Some(120.0), Some(80.0)))
+            .size;
+        assert_eq!(
+            size,
+            Size::new(120.0, 80.0),
+            "the unavailable view takes the proposed size"
+        );
+        let unspecified = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        assert_eq!(
+            unspecified,
+            Size::zero(),
+            "an unspecified proposal measures zero"
+        );
+    }
+
     /// `ViewRenderer::render` over a GPU child on a sealed-failure
     /// generation resolves `Err(RenderError::Gpu(_))` — the Arc'd
     /// `HostedLayerError` stays in `source()` — instead of hanging or
@@ -4255,9 +4299,12 @@ mod gpu_surface {
         // Seal the shared generation the rendered leaf's `SceneView`
         // mounts on — the same typed carrier a real surface rejection
         // produces.
-        let generation =
-            pollster::block_on(scene_engine(&env).generation(&runtime, &runtime.context()))
-                .map_err(|error| format!("the shared engine generation: {error}"))?;
+        let generation = pollster::block_on(
+            scene_engine(&env)
+                .ok_or("the fixture environment installs the scene engine")?
+                .generation(&runtime, &runtime.context()),
+        )
+        .map_err(|error| format!("the shared engine generation: {error}"))?;
         let max = runtime.context().device().limits().max_texture_dimension_2d;
         generation.seal_failure_for_test(HostedLayerError::Surface(SurfaceError::TooLarge {
             width: u32::MAX,
@@ -8083,6 +8130,7 @@ mod owner_lifetimes {
             let leaf_inst = waterui_apple::dispatch::render(
                 waterui_backend_core::AnyView::new(hierarchy(&track, &items)),
                 &env,
+                mtm,
             );
             let (parent, mounted) = mount_hosted(mtm, leaf_inst);
             let _window = leaf::attach(mtm, &parent);
@@ -8145,6 +8193,7 @@ mod owner_lifetimes {
             let leaf_inst = waterui_apple::dispatch::render(
                 waterui_backend_core::AnyView::new(hierarchy(&track, &items)),
                 &env,
+                mtm,
             );
             assert!(
                 leaf_inst
@@ -8266,6 +8315,7 @@ mod owner_lifetimes {
             let leaf_inst = waterui_apple::dispatch::render(
                 waterui_backend_core::AnyView::new(scroll(vstack((text!("top"), text!("bottom"))))),
                 &env,
+                mtm,
             );
             let (parent, mounted) = mount_hosted(mtm, leaf_inst);
             let _window = leaf::attach(mtm, &parent);
@@ -8321,6 +8371,7 @@ mod owner_lifetimes {
             let leaf_inst = waterui_apple::dispatch::render(
                 waterui_backend_core::AnyView::new(scroll(text!("body"))),
                 &env,
+                mtm,
             );
             let (parent, mounted) = mount_hosted(mtm, leaf_inst);
             let _window = leaf::attach(mtm, &parent);
@@ -9902,6 +9953,7 @@ mod navigation {
                 ),
             )),
             &env,
+            mtm(),
         );
         let foreground = Foreground.resolve(&env).snapshot();
         assert_ne!(
@@ -11394,7 +11446,7 @@ mod a11y_frame {
     /// and presents its first frame, so the table realizes its visible
     /// rows.
     fn mounted_list(list: AnyView, direction: LayoutDirection) -> (NativeLeaf, impl Sized) {
-        let leaf = dispatch::render(list, &resolve::env().extending(direction));
+        let leaf = dispatch::render(list, &resolve::env().extending(direction), mtm());
         let window = mount_and_order_front(leaf.view());
         present_first_frame(mtm(), leaf.view());
         view::layout_immediately(leaf.view());
@@ -11612,7 +11664,7 @@ mod a11y_frame {
         let mut env = resolve::env();
         let runtime = block_on_main(30.0, GpuRuntime::new()).expect("the harness has a GPU");
         install_gpu(&mut env, runtime);
-        let leaf = dispatch::render(AnyView::new(GpuContentView::new(Clear)), &env);
+        let leaf = dispatch::render(AnyView::new(GpuContentView::new(Clear)), &env, mtm());
         let _window = mount_and_order_front(leaf.view());
         view::layout_immediately(leaf.view());
         let view = leaf.view();
@@ -11992,6 +12044,66 @@ mod embedding {
         drop(embed);
         assert_eq!(view::subviews(&host).len(), 0);
         assert_eq!(host.frame().size, NSSize::new(300.0, 200.0));
+    }
+
+    /// An app that declares no root window is a contract violation: a debug
+    /// build panics, a release build mounts nothing and returns a null
+    /// handle that `drop`, `measure`, `update_visibility` and
+    /// `update_environment` all accept as a mount with no content.
+    pub fn an_app_without_a_root_window_mounts_nothing_and_every_entry_ignores_it() {
+        let mtm = mtm();
+        let host = plain_view(mtm);
+        let runtime = Box::new(waterui_apple::embedding::Runtime::for_test());
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: `runtime` outlives the call; `host` is a live view and the
+            // paths are NUL-terminated.
+            unsafe {
+                waterui_apple::embedding::mount(
+                    (&raw const *runtime).cast::<c_void>(),
+                    std::ptr::from_ref(&*host).cast_mut().cast(),
+                    c"/tmp/waterui-embed-test-assets".as_ptr(),
+                    c"/tmp/waterui-embed-test-fonts".as_ptr(),
+                    None,
+                    |env| App::new_with_windows(Vec::<waterui::window::Window>::new(), env),
+                )
+            }
+        }));
+        if cfg!(debug_assertions) {
+            let payload = outcome.expect_err("a debug build panics on the contract violation");
+            let message = payload.downcast_ref::<String>().map_or_else(
+                || {
+                    payload
+                        .downcast_ref::<&'static str>()
+                        .copied()
+                        .unwrap_or_default()
+                },
+                String::as_str,
+            );
+            assert!(
+                message.contains("must declare a root window"),
+                "the panic names the violation, got: {message}"
+            );
+            return;
+        }
+        let mount = outcome.expect("a release build reports the violation and continues");
+        assert!(mount.is_null(), "no root window mounts nothing");
+        assert_eq!(view::subviews(&host).len(), 0, "the host gains no content");
+        let mut out = [1.0f64; 2];
+        // SAFETY: a null mount is the documented no-content handle; `out` is a
+        // two-element f64.
+        unsafe {
+            waterui_apple::embedding::waterui_apple_measure(
+                mount,
+                10.0,
+                10.0,
+                true,
+                true,
+                out.as_mut_ptr(),
+            );
+            waterui_apple::embedding::waterui_apple_update_visibility(mount);
+            waterui_apple::embedding::waterui_apple_mount_drop(mount);
+        }
+        assert_eq!(out, [0.0, 0.0], "a null mount measures as zero");
     }
 
     /// TEST ONLY: synthetic host metrics — every style differs, so a
@@ -15595,7 +15707,7 @@ mod transition {
         .expect("the harness provides a GPU runtime");
         waterui_apple::native_test_support::install_gpu(&mut env, runtime);
         configure(&mut env);
-        waterui_apple::dispatch::render(waterui_backend_core::AnyView::new(view), &env)
+        waterui_apple::dispatch::render(waterui_backend_core::AnyView::new(view), &env, mtm())
     }
 
     /// A `MeshGradient` mounts the `SceneView` GPU surface leaf the

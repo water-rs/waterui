@@ -62,25 +62,29 @@ pub(super) fn parts_of(value: Date) -> DateParts {
 ///
 /// # Panics
 ///
-/// When the parts are not a valid calendar date.
+/// When the parts are not a valid calendar date — impossible for control
+/// output: the platform calendar only reports the date of a real day.
 pub(super) fn to_jiff(parts: DateParts) -> Date {
     Date::new(
-        i16::try_from(parts.year).expect("year in range"),
-        i8::try_from(parts.month).expect("month in range"),
-        i8::try_from(parts.day).expect("day in range"),
+        i16::try_from(parts.year).expect("the calendar reports a year that fits i16"),
+        i8::try_from(parts.month).expect("the calendar reports a month that fits i8"),
+        i8::try_from(parts.day).expect("the calendar reports a day that fits i8"),
     )
-    .expect("WaterUI received an invalid calendar date")
+    .expect("the calendar reports the parts of a real Gregorian date")
 }
 
-/// The `NSDate` at midnight of `value`.
-///
-/// # Panics
-///
-/// When the Gregorian calendar cannot resolve `value`.
+/// The `NSDate` at midnight of `value`. `None`, logged, when the Gregorian
+/// calendar cannot resolve `value`: the caller skips the step that needed it.
 #[cfg(target_os = "ios")]
-fn ns_date(value: Date) -> cocoa_ui::Retained<objc2_foundation::NSDate> {
-    cocoa_ui::date::ns_date_from_date_parts(parts_of(value))
-        .expect("WaterUI received an invalid calendar date")
+fn ns_date(value: Date) -> Option<cocoa_ui::Retained<objc2_foundation::NSDate>> {
+    let date = cocoa_ui::date::ns_date_from_date_parts(parts_of(value));
+    if date.is_none() {
+        tracing::error!(
+            "the Gregorian calendar cannot resolve the calendar date {value}; \
+             the date is not applied"
+        );
+    }
+    date
 }
 
 /// The selection a calendar-shaped component binds, and what a pick does
@@ -454,10 +458,9 @@ fn platform_calendar(
     locale: &str,
 ) -> platform::CalendarView {
     let calendar = platform::CalendarView::new(ctx.mtm(), mode, locale);
-    calendar.set_available_range(&cocoa_ui::date::interval(
-        &ns_date(*range.start()),
-        &ns_date(*range.end()),
-    ));
+    if let (Some(start), Some(end)) = (ns_date(*range.start()), ns_date(*range.end())) {
+        calendar.set_available_range(&cocoa_ui::date::interval(&start, &end));
+    }
     calendar.set_can_select({
         let range = range.clone();
         move |parts| range.contains(&to_jiff(parts))

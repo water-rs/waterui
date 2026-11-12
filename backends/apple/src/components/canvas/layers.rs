@@ -23,7 +23,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use cocoa_ui::mesh::{Mesh, MeshPass, MeshSurface, Placement};
+use cocoa_ui::mesh::{Mesh, MeshError, MeshPass, MeshSurface, Placement};
 use cocoa_ui::objc2::rc::Retained;
 use cocoa_ui::objc2::runtime::{AnyObject, NSObject, ProtocolObject};
 use cocoa_ui::objc2::{AnyThread, DefinedClass, define_class, msg_send};
@@ -67,7 +67,7 @@ pub struct Ctx<'a> {
     /// Device pixels per point.
     pub scale: f64,
     /// The mesh gradient pass, opened when the first mesh needs it.
-    pub mesh: &'a OnceCell<Rc<MeshPass>>,
+    pub mesh: &'a OnceCell<Option<Rc<MeshPass>>>,
     /// Called once a mesh paint has finished.
     pub wake: &'a Wake,
 }
@@ -159,28 +159,50 @@ impl MeshState {
             inverse: self.transform.inverse().as_coeffs(),
         };
         if surfaces.targets[back].as_ref().map(MeshSurface::size) != Some((width, height)) {
-            surfaces.targets[back] = Some(self.pass.surface(width, height));
+            match self.pass.surface(width, height) {
+                Ok(surface) => surfaces.targets[back] = Some(surface),
+                Err(error) => {
+                    self.abandon(&mut surfaces, &error);
+                    return;
+                }
+            }
         }
         let target = surfaces.targets[back]
             .as_ref()
-            .expect("the back surface was just made");
+            .expect("the back surface was just made or already had this size");
         let (done, wake) = (Arc::clone(&surfaces.done), Arc::clone(wake));
         #[cfg_attr(
             not(all(test, target_os = "macos")),
             expect(unused_variables, reason = "only a macOS render test waits on it")
         )]
-        let buffer = self
+        let buffer = match self
             .pass
             .paint_to_surface(&self.mesh, placement, target, move || {
                 done.fetch_max(generation, Ordering::Release);
                 wake();
-            });
+            }) {
+            Ok(buffer) => buffer,
+            Err(error) => {
+                self.abandon(&mut surfaces, &error);
+                return;
+            }
+        };
         surfaces.pending = Some(Pending {
             #[cfg(all(test, target_os = "macos"))]
             buffer,
             generation,
             surface: back,
         });
+    }
+
+    /// A paint the device refused: logged, and the layer shows nothing
+    /// rather than a stale mesh — the mesh is not drawn.
+    fn abandon(&self, surfaces: &mut Surfaces, error: &MeshError) {
+        tracing::error!("the mesh gradient paint failed: {error}; the mesh is not drawn");
+        surfaces.pending = None;
+        surfaces.front = None;
+        // SAFETY: nil clears the contents.
+        unsafe { self.layer.setContents(None) };
     }
 
     /// Shows the latest paint if the GPU has finished it. Paints on one
@@ -631,9 +653,8 @@ pub fn run_layer(commands: &[Command], range: Range<usize>, ctx: Ctx<'_>) -> Ret
 /// The bitmap holds half floats in extended sRGB: an encoded space, which
 /// is where the run's groups blend, with room for colours above SDR white.
 ///
-/// # Panics
-///
-/// When Core Graphics refuses a bitmap the size of the run.
+/// When Core Graphics refuses a bitmap the size of the run, the failure is
+/// logged and the run is not drawn.
 pub fn draw_run(layer: &CALayer, commands: &[Command], range: Range<usize>, ctx: Ctx<'_>) {
     let scale = ctx.scale;
     let Some(extent) = replay::extent(commands, range.clone(), ctx.registry) else {
@@ -675,8 +696,17 @@ pub fn draw_run(layer: &CALayer, commands: &[Command], range: Range<usize>, ctx:
                 | CGImageComponentInfo::Float.0
                 | CGImageByteOrderInfo::Order16Little.0,
         )
-    }
-    .unwrap_or_else(|| panic!("Core Graphics makes a {width}x{height} half-float bitmap"));
+    };
+    let Some(context) = context else {
+        tracing::error!(
+            "Core Graphics could not make a {width}x{height} half-float bitmap; \
+             the run is not drawn"
+        );
+        // SAFETY: nil clears the contents.
+        unsafe { layer.setContents(None) };
+        place(layer, Rect::ZERO);
+        return;
+    };
     // The bitmap is y-up; the canvas is y-down with the extent's corner at
     // the bitmap's top-left.
     #[expect(
@@ -697,7 +727,13 @@ pub fn draw_run(layer: &CALayer, commands: &[Command], range: Range<usize>, ctx:
         commands,
         range.clone(),
     );
-    let image = CGBitmapContextCreateImage(Some(&context)).expect("a bitmap context captures");
+    let Some(image) = CGBitmapContextCreateImage(Some(&context)) else {
+        tracing::error!("Core Graphics could not capture the run's bitmap; the run is not drawn");
+        // SAFETY: nil clears the contents.
+        unsafe { layer.setContents(None) };
+        place(layer, Rect::ZERO);
+        return;
+    };
     set_contents(layer, &image);
     layer.setContentsScale(scale);
     place(layer, extent);
@@ -767,7 +803,27 @@ impl Built {
                 }
             }
             PaintClass::Mesh { mesh, transform } => {
-                let pass = Rc::clone(ctx.mesh.get_or_init(|| Rc::new(MeshPass::new())));
+                // The pass opens once per canvas: a refusal is logged then
+                // and every mesh of the canvas draws nothing.
+                let Some(pass) = ctx
+                    .mesh
+                    .get_or_init(|| match MeshPass::new() {
+                        Ok(pass) => Some(Rc::new(pass)),
+                        Err(error) => {
+                            tracing::error!(
+                                "the mesh gradient pass cannot open: {error}; \
+                                 the canvas draws no mesh gradient"
+                            );
+                            None
+                        }
+                    })
+                    .clone()
+                else {
+                    return Self {
+                        layer: container(),
+                        parts: Parts::Plain,
+                    };
+                };
                 let layer = container();
                 // SAFETY: the static is a constant Core Animation exports.
                 layer.setContentsGravity(unsafe { kCAGravityResize });
@@ -861,11 +917,7 @@ impl Built {
                 layer.setAllowsGroupOpacity(true);
                 layer.setOpacity(group.opacity);
                 set_composite(&layer, group.blend);
-                assert!(
-                    group.filter.is_none(),
-                    "a canvas group records no filter; got {:?}",
-                    group.filter
-                );
+                plan::reject_group_filter(group);
                 Self {
                     layer,
                     parts: Parts::Plain,

@@ -483,7 +483,7 @@ mod platform {
         // the safe-area rect.
         let host = HostView::new(mtm, Rect::ZERO);
         host.set_manages_safe_area(true);
-        let tabs_view = tabs.view().expect("tab bar view");
+        let tabs_view = tabs.view().expect("a tab bar controller always has a view");
         view::add_subview(&host, &tabs_view);
         host.set_primary_content_handler({
             let tabs_view = tabs_view.clone();

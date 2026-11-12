@@ -631,6 +631,7 @@ fn an_armed_presenter_constructs_pauses_and_invalidates_cleanly() {
 
     let updates = Rc::new(Cell::new(0u32));
     let presenter = MetalPresenter::new(
+        mtm,
         layer,
         {
             let updates = Rc::clone(&updates);
@@ -689,6 +690,7 @@ fn a_presenter_on_a_screenless_window_delivers_nothing() {
 
     let updates = Rc::new(Cell::new(0u32));
     let presenter = MetalPresenter::new(
+        mtm,
         layer,
         {
             let updates = Rc::clone(&updates);

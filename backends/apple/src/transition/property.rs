@@ -120,21 +120,23 @@ impl PropertyTarget {
 
     /// Writes one sample inside `core_animation::without_animation`.
     ///
-    /// # Panics
-    ///
-    /// When a property is not finite or `blur` is negative — the same
-    /// contract `record_blurred` declares in Hydrolysis.
+    /// A property that is not finite or a negative `blur` — the same
+    /// contract `record_blurred` declares in Hydrolysis — is a contract
+    /// violation, and the sample is not applied.
     pub fn apply(&self, sample: &TransitionProperties) {
-        assert!(
-            sample.opacity().is_finite()
-                && sample.scale().iter().all(|value| value.is_finite())
-                && sample.translation().iter().all(|value| value.is_finite())
-                && sample.rotation().is_finite()
-                && sample.blur().is_finite()
-                && sample.blur() >= 0.0,
-            "waterui-apple: a transition sampled {sample:?} — every property must be finite \
-             and the blur radius non-negative"
-        );
+        if !(sample.opacity().is_finite()
+            && sample.scale().iter().all(|value| value.is_finite())
+            && sample.translation().iter().all(|value| value.is_finite())
+            && sample.rotation().is_finite()
+            && sample.blur().is_finite()
+            && sample.blur() >= 0.0)
+        {
+            waterui::contract_violation!(
+                "waterui-apple: a transition sampled {sample:?} — every property must be finite \
+                 and the blur radius non-negative; the sample is not applied"
+            );
+            return;
+        }
         cocoa_ui::core_animation::without_animation(|| {
             view::set_alpha(&self.host, f64::from(sample.opacity()));
             #[cfg(target_os = "macos")]
@@ -178,11 +180,12 @@ pub struct InsertionRun {
     env: waterui_backend_core::Environment,
     /// The lazy blur effect (§2.6) — created on the first sample whose
     /// `blur > 0`, kept when the radius returns to 0. The run's drop
-    /// tears it down.
+    /// tears it down. The effect is `None` when the process has no GPU
+    /// runtime — reported once at creation and never retried.
     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
     blur: Option<(
         waterui::reactive::Binding<f32>,
-        crate::components::filtered::LiveEffect,
+        Option<crate::components::filtered::LiveEffect>,
     )>,
     /// The `captures_content` realization (§2.7): the window overlay and
     /// its live-capture effect — built when the run arms. The run's drop

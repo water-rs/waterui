@@ -36,6 +36,8 @@ use objc2_foundation::{
 };
 
 use crate::callback::guarded;
+use waterui_contract::contract_violation;
+
 use crate::geometry::Rect;
 use crate::input::{
     GesturePhase, PointerButton, ScrollPhase, ScrollUnit, SurfaceEvent, click_count,
@@ -573,7 +575,12 @@ fn plain_text(value: &AnyObject) -> String {
         return attributed.string().to_string();
     }
     value.downcast_ref::<NSString>().map_or_else(
-        || panic!("AppKit supplied unsupported text input {value:?}"),
+        || {
+            contract_violation!(
+                "AppKit supplied unsupported text input {value:?}; it is read as empty"
+            );
+            String::new()
+        },
         std::string::ToString::to_string,
     )
 }
@@ -617,9 +624,8 @@ fn pasteboard_text() -> Option<String> {
 /// with a zero delta. `MayBegin` is the fingers touching down before any
 /// scroll: the gesture has not begun, so it is no event.
 ///
-/// # Panics
-///
-/// When `AppKit` reports a phase value that is none of its documented ones.
+/// A phase value that is none of `AppKit`'s documented ones breaks the
+/// contract: it is reported and read as no phase.
 fn scroll_phase(phase: NSEventPhase, momentum: NSEventPhase) -> Option<ScrollPhase> {
     let gesture = |phase: NSEventPhase| match phase {
         NSEventPhase::Began => Some(GesturePhase::Began),
@@ -627,7 +633,12 @@ fn scroll_phase(phase: NSEventPhase, momentum: NSEventPhase) -> Option<ScrollPha
         NSEventPhase::Ended => Some(GesturePhase::Ended),
         NSEventPhase::Cancelled => Some(GesturePhase::Cancelled),
         NSEventPhase::MayBegin => None,
-        other => panic!("AppKit reported an unknown scroll event phase {other:?}"),
+        other => {
+            contract_violation!(
+                "AppKit reported an unknown scroll event phase {other:?}; it is ignored"
+            );
+            None
+        }
     };
     if momentum != NSEventPhase::None {
         gesture(momentum).map(ScrollPhase::Momentum)

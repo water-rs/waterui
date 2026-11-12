@@ -17,6 +17,8 @@ use objc2_core_graphics::{
     CGImage, CGImageAlphaInfo,
 };
 
+use waterui_contract::contract_violation;
+
 use crate::geometry::{Rect, Size};
 
 unsafe extern "C" {
@@ -41,20 +43,22 @@ const BYTES_PER_PIXEL: usize = 4;
 /// The context holds a raw pointer into `pixels`' buffer, so callers must not
 /// reallocate the buffer until the context is dropped.
 ///
-/// # Panics
-///
-/// When `pixels` is not exactly `width*height*4` bytes.
+/// `None` when the system cannot make the context, and also when `pixels` is
+/// not exactly `width*height*4` bytes, which breaks the contract and is
+/// reported.
 #[must_use]
 pub fn bitmap_context(
     pixels: &mut [u8],
     width: usize,
     height: usize,
 ) -> Option<CFRetained<CGContext>> {
-    assert_eq!(
-        pixels.len(),
-        width * height * BYTES_PER_PIXEL,
-        "a bitmap context needs exactly width*height*4 bytes"
-    );
+    if pixels.len() != width * height * BYTES_PER_PIXEL {
+        contract_violation!(
+            "a bitmap context needs exactly width*height*4 bytes: {width}x{height} over {} bytes; no context is made",
+            pixels.len()
+        );
+        return None;
+    }
     // SAFETY: `pixels` is a live `width*height*4` buffer kept alive by the
     // caller for the context's use; the RGB colorspace is a fresh system
     // object.
@@ -75,16 +79,18 @@ pub fn bitmap_context(
 
 /// A `CGImage` holding a copy of `pixels`' premultiplied RGBA8 content.
 ///
-/// # Panics
-///
-/// When `pixels` is not exactly `width*height*4` bytes.
+/// `None` when the system cannot make the image, and also when `pixels` is
+/// not exactly `width*height*4` bytes, which breaks the contract and is
+/// reported.
 #[must_use]
 pub fn image_from_rgba(pixels: &[u8], width: usize, height: usize) -> Option<CFRetained<CGImage>> {
-    assert_eq!(
-        pixels.len(),
-        width * height * BYTES_PER_PIXEL,
-        "an RGBA8 image needs exactly width*height*4 bytes"
-    );
+    if pixels.len() != width * height * BYTES_PER_PIXEL {
+        contract_violation!(
+            "an RGBA8 image needs exactly width*height*4 bytes: {width}x{height} over {} bytes; no image is made",
+            pixels.len()
+        );
+        return None;
+    }
     let data = CFData::from_bytes(pixels);
     let provider = CGDataProvider::with_cf_data(Some(&data))?;
     // SAFETY: `decode` is null; every other argument describes the
@@ -330,12 +336,15 @@ pub fn force_text_fields_display(view: &crate::PlatformView) {
 /// Mounts `view` in `window` through a plain `UIViewController`, unhides the
 /// window and lays everything out — the `UIKit` analogue of
 /// `orderFrontRegardless`.
-#[cfg(target_os = "ios")]
-/// # Panics
 ///
-/// On a failure to confirm the main thread.
+/// Off the main thread this breaks the contract: it is reported and the
+/// window is not shown.
+#[cfg(target_os = "ios")]
 pub fn show_capture_window(window: &CaptureWindow, view: &crate::PlatformView, size: Size) {
-    let mtm = objc2::MainThreadMarker::new().expect("main thread");
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        contract_violation!("show_capture_window runs on the main thread; the window is not shown");
+        return;
+    };
     let controller = objc2_ui_kit::UIViewController::new(mtm);
     window.setRootViewController(Some(&controller));
     if let Some(content) = controller.view() {
@@ -437,17 +446,21 @@ pub fn view_template_image(
     ))
 }
 
-/// Any connected `UIWindowScene`:
-/// capture windows must attach to a real scene, and any connected one works.
+/// Any connected `UIWindowScene`.
+///
+/// Capture windows must attach to a real scene, and any connected one works.
 /// `None` also in a process without a `UIApplication`, which connects no
 /// scene.
+///
+/// Off the main thread this breaks the contract: it is reported and no scene
+/// is answered.
 #[cfg(target_os = "ios")]
 #[must_use]
-/// # Panics
-///
-/// Off the main thread.
 pub fn any_window_scene() -> Option<Retained<objc2_ui_kit::UIWindowScene>> {
-    let mtm = objc2::MainThreadMarker::new().expect("main thread");
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        contract_violation!("any_window_scene runs on the main thread; no scene is answered");
+        return None;
+    };
     let application = crate::uikit::shared_application(mtm)?;
     let scenes = application.connectedScenes();
     let iterator = scenes.iter();

@@ -352,16 +352,13 @@ impl MetalPresenter {
     /// transition's frozen-frame hand-off pass `true`; everything else
     /// keeps render-target-only drawables.
     ///
-    /// # Panics
-    ///
-    /// When called off the main thread.
     #[must_use]
     pub fn new(
+        mtm: MainThreadMarker,
         layer: Retained<CAMetalLayer>,
         on_frame: Rc<dyn Fn(DrawableFrame)>,
         readable: bool,
     ) -> Self {
-        let mtm = MainThreadMarker::new().expect("MetalPresenter is created on the main thread");
         let inner = Rc::new_cyclic(|this| PresenterInner {
             layer,
             generation: Cell::new(0),

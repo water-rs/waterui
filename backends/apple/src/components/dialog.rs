@@ -249,8 +249,13 @@ struct ActionRun {
 /// window's line in the [`AlertQueue`].
 #[cfg(target_os = "macos")]
 fn present(state: &Rc<DialogState>) {
-    let window = window_of(&state.host)
-        .expect("a dialog reaches the front of its window's line only from a host in a window");
+    let Some(window) = window_of(&state.host) else {
+        // The host left its window between joining the line and coming up:
+        // the dialog leaves the line and the next one comes up.
+        tracing::error!("a dialog's host is no longer in a window; the dialog is not presented");
+        state.queue.finished(&Rc::downgrade(state));
+        return;
+    };
     let title = state.title.snapshot().to_semantic().to_string();
     let message = state
         .message
@@ -377,10 +382,16 @@ fn present(state: &Rc<DialogState>) {
     if let Some(preferred) = preferred {
         controller.set_preferred(&preferred);
     }
-    assert!(
-        controller.present(&state.host),
-        "a dialog reaches the front of its window's line only from a host in a window with a root view controller"
-    );
+    if !controller.present(&state.host) {
+        // The host has no window with a root view controller: the dialog
+        // leaves the line and the next one comes up.
+        tracing::error!(
+            "a dialog's host is not in a window with a root view controller; \
+             the dialog is not presented"
+        );
+        state.queue.finished(&Rc::downgrade(state));
+        return;
+    }
     *state.alert.borrow_mut() = Some(controller);
 }
 

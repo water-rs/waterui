@@ -131,15 +131,20 @@ impl<Id: Copy + Eq + Hash> SlotSequence<Id> {
         Reconciled { departed, inserted }
     }
 
-    /// Drops a ghost whose transition completed. Panics when the key is
-    /// unknown — a completion firing twice or a key from another sequence
-    /// is a bug, not an event.
+    /// Drops a ghost whose transition completed. A key that is not a
+    /// member — a completion firing twice or a key from another sequence —
+    /// is a contract violation, and the removal is ignored.
     pub fn remove_ghost(&mut self, key: GhostKey) {
-        let position = self
+        let Some(position) = self
             .slots
             .iter()
             .position(|slot| matches!(slot, Slot::Ghost(k) if *k == key))
-            .expect("transition ghost key is not a member of this sequence");
+        else {
+            waterui::contract_violation!(
+                "transition ghost key is not a member of this sequence; the removal is ignored"
+            );
+            return;
+        };
         self.slots.remove(position);
     }
 
@@ -300,9 +305,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "transition ghost key is not a member")]
-    fn remove_ghost_panics_on_unknown_key() {
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "transition ghost key is not a member")
+    )]
+    fn remove_ghost_ignores_unknown_key() {
         let mut sequence = SlotSequence::new(['a']);
         sequence.remove_ghost(GhostKey(u64::MAX));
+        assert_eq!(slots(&sequence), vec![Slot::Live('a')]);
     }
 }

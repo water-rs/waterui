@@ -648,6 +648,23 @@ fn subview_order(state: &ContainerState) -> Vec<Retained<PlatformView>> {
         .collect()
 }
 
+/// Whether `ids` are pairwise distinct. A duplicate id is a contract
+/// violation of the collection above the container; the update carrying it
+/// is not applied and the container keeps its previous children.
+fn has_unique_ids(ids: &[ItemId]) -> bool {
+    let mut seen = HashSet::with_capacity(ids.len());
+    for &id in ids {
+        if !seen.insert(id) {
+            waterui::contract_violation!(
+                "duplicate child view id in container: {id:?}; the update is ignored and \
+                 the container keeps its previous children"
+            );
+            return false;
+        }
+    }
+    true
+}
+
 /// `syncChildren`: the id-keyed reconcile — the slot sequence first
 /// rebases every live id and ghost against the new order, departing
 /// members retire through [`depart_members`] (a declared, placed
@@ -659,13 +676,6 @@ fn sync_children(
     state_rc: &Rc<RefCell<ContainerState>>,
     ids: Vec<ItemId>,
 ) {
-    let mut seen = HashSet::with_capacity(ids.len());
-    for &id in &ids {
-        assert!(
-            seen.insert(id),
-            "duplicate child view id in container: {id:?}"
-        );
-    }
     let reconciled = state.slots.reconcile(&ids, |id| {
         state
             .rendered
@@ -743,6 +753,9 @@ fn deliver_children(state: &Rc<RefCell<ContainerState>>, pending: &Rc<RefCell<Pe
         crate::animation::with_platform_animation(&metadata, {
             let state = Rc::clone(state);
             move || {
+                if !has_unique_ids(&ids) {
+                    return;
+                }
                 let mut borrowed = state.borrow_mut();
                 borrowed.snapshot = snapshot;
                 if borrowed.lazy.is_some() {
@@ -789,13 +802,7 @@ fn update_virtual_ids(
     state_rc: &Rc<RefCell<ContainerState>>,
     ids: Vec<ItemId>,
 ) {
-    let mut seen = HashSet::with_capacity(ids.len());
-    for &id in &ids {
-        assert!(
-            seen.insert(id),
-            "duplicate child view id in container: {id:?}"
-        );
-    }
+    let seen: HashSet<ItemId> = ids.iter().copied().collect();
     let reconciled = state.slots.reconcile(&ids, |id| {
         state
             .rendered
@@ -1232,10 +1239,13 @@ fn perform_fixed_layout(state: &mut ContainerState) {
             f64::from(placed_frame.width()),
             f64::from(placed_frame.height()),
         );
-        assert!(
-            frame.is_valid_for_layout(),
-            "container received an invalid layout rect for member {index}: {frame:?}"
-        );
+        if !frame.is_valid_for_layout() {
+            waterui::contract_violation!(
+                "container received an invalid layout rect for member {index}: {frame:?}; \
+                 the member is not placed"
+            );
+            continue;
+        }
         match member {
             Member::Id { id, .. } => {
                 let child = &state.rendered[id];
@@ -1508,6 +1518,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
                     .filter_map(|index| state_ref.snapshot.get_id(index))
                     .collect()
             };
+            if !has_unique_ids(&ids) {
+                return;
+            }
             let mut state_ref = state.borrow_mut();
             if state_ref.lazy.is_some() {
                 update_virtual_ids(&mut state_ref, &state, ids);

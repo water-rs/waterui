@@ -388,7 +388,8 @@ impl WindowToolbar {
             // SAFETY: `window` is a live `NSWindow`; `Weak` takes its retain
             // out immediately.
             window: RefCell::new(Weak::from_retained(&unsafe {
-                Retained::retain(std::ptr::from_ref(window).cast_mut()).expect("live window")
+                Retained::retain(std::ptr::from_ref(window).cast_mut())
+                    .expect("`window` is a live reference, so retaining it answers non-null")
             })),
             toolbar: NSToolbar::initWithIdentifier(
                 mtm.alloc(),
@@ -475,7 +476,7 @@ impl WindowToolbar {
             // its retain out immediately.
             Weak::from_retained(&unsafe {
                 Retained::retain(std::ptr::from_ref(c).cast_mut())
-                    .expect("live split view controller")
+                    .expect("`c` is a live reference, so retaining it answers non-null")
             })
         }));
         self.observe_sidebar();

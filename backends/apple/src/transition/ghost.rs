@@ -51,6 +51,10 @@ struct RemovalBlur {
     /// The site's environment — `FrozenEffect::blur` reads its GPU
     /// services when the capture lands.
     env: Environment,
+    /// The site's GPU runtime, resolved once when the blur starts — `None`
+    /// when the process has none (reported then): the removal runs without
+    /// a blur and never retries.
+    runtime: Option<waterui_graphics::gpu::GpuRuntime>,
     /// A frozen capture is in flight — the next tick waits for it.
     pending: Cell<bool>,
     /// The capture answered `Deferred` — a retry is owed and the run
@@ -231,11 +235,14 @@ impl Ghost {
             .expect("a collection ghost holds a slot");
         let expected =
             cocoa_ui::Size::new(f64::from(slot.size().width), f64::from(slot.size().height));
-        assert!(
-            frame.size.width.to_bits() == expected.width.to_bits()
-                && frame.size.height.to_bits() == expected.height.to_bits(),
-            "container placed a ghost at {frame:?}, not its frozen slot size {expected:?}"
-        );
+        if frame.size.width.to_bits() != expected.width.to_bits()
+            || frame.size.height.to_bits() != expected.height.to_bits()
+        {
+            waterui::contract_violation!(
+                "container placed a ghost at {frame:?}, not its frozen slot size {expected:?}; \
+                 the ghost is placed at the given frame"
+            );
+        }
         view::set_frame_pixel_aligned(&self.0.visual.host, frame, offset);
     }
 }
@@ -256,9 +263,14 @@ impl GhostRun {
                 return;
             };
             if realization.blur.is_none() && radius > 0.0 {
+                let runtime = crate::gpu_runtime::runtime(&self.env);
+                if runtime.is_none() {
+                    tracing::error!("GPU runtime unavailable; the removal blur is not drawn");
+                }
                 realization.blur = Some(Rc::new(RemovalBlur {
                     radius: waterui::reactive::Binding::container(radius),
                     env: self.env.clone(),
+                    runtime,
                     pending: Cell::new(false),
                     deferred: Cell::new(false),
                     input: RefCell::new(None),
@@ -274,6 +286,9 @@ impl GhostRun {
             }
             blur
         };
+        let Some(runtime) = blur.runtime.as_ref() else {
+            return;
+        };
         if blur.pending.get() || blur.effect.borrow().is_some() {
             return;
         }
@@ -281,10 +296,9 @@ impl GhostRun {
         blur.deferred.set(false);
         let weak_blur = Rc::downgrade(&blur);
         let weak_run = Rc::downgrade(self);
-        let runtime = crate::gpu_runtime::runtime(&blur.env);
         *blur.input.borrow_mut() = Some(crate::transition::pixel::FrozenInput::start(
             &self.visual,
-            &runtime,
+            runtime,
             move |outcome| {
                 let Some(blur) = weak_blur.upgrade() else {
                     return;
@@ -292,11 +306,16 @@ impl GhostRun {
                 blur.pending.set(false);
                 match outcome {
                     Ok(texture) => {
-                        let effect = crate::components::filtered::FrozenEffect::blur(
+                        // `None` only when a GPU service is missing — the
+                        // services install together with the runtime this
+                        // capture ran on, so it is reported and unreachable.
+                        let Some(effect) = crate::components::filtered::FrozenEffect::blur(
                             blur.radius.clone(),
                             &blur.env,
                             texture,
-                        );
+                        ) else {
+                            return;
+                        };
                         if let Some(run) = weak_run.upgrade() {
                             let root = run.visual.root.clone();
                             view::add_subview(&run.visual.host, effect.view());

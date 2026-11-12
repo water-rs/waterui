@@ -100,8 +100,14 @@ impl<T: QuitTarget> QuitGate<T> {
             // `AppKit` is already waiting for the open question's reply.
             Phase::Pending => return TerminateReply::Later,
             Phase::Idle => {}
+            // The quit hook the question runs reached `AppKit`'s terminate
+            // again before answering: the question in flight decides.
             phase @ (Phase::Deciding | Phase::Decided(_)) => {
-                unreachable!("applicationShouldTerminate: re-entered while {phase:?}")
+                waterui::contract_violation!(
+                    "applicationShouldTerminate: re-entered while {phase:?}; \
+                     the re-entrant request is cancelled and the question in flight decides"
+                );
+                return TerminateReply::Cancel;
             }
         }
         self.phase.set(Phase::Deciding);
@@ -295,6 +301,22 @@ mod tests {
         assert_eq!(gate.should_terminate(|| {}), TerminateReply::Later);
         gate.terminate();
         assert_eq!(app.sent(), [Sent::Reply(false), Sent::Reply(true)]);
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "re-entered while Deciding"))]
+    fn quit_gate_cancels_a_request_that_re_enters_while_deciding() {
+        let (gate, app) = new_gate();
+        let inner = Cell::new(None);
+        assert_eq!(
+            gate.should_terminate(|| {
+                inner.set(Some(gate.should_terminate(|| panic!("filed twice"))));
+                gate.terminate();
+            }),
+            TerminateReply::Now
+        );
+        assert_eq!(inner.get(), Some(TerminateReply::Cancel));
+        assert_eq!(app.sent(), []);
     }
 
     #[test]

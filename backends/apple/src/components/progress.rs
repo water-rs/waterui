@@ -383,10 +383,19 @@ fn apply_value(
     value: f64,
     animated: bool,
 ) {
-    assert!(
-        is_indeterminate(value) || (value.is_finite() && (0.0..=1.0).contains(&value)),
-        "Progress value must be finite within 0...1 or positive infinity"
-    );
+    let value = if is_indeterminate(value) || (value.is_finite() && (0.0..=1.0).contains(&value)) {
+        value
+    } else {
+        waterui::contract_violation!(
+            "Progress value must be finite within 0...1 or positive infinity, got {value}; \
+             the nearest value in 0...1 applies (NaN reads as 0)"
+        );
+        if value.is_nan() {
+            0.0
+        } else {
+            value.clamp(0.0, 1.0)
+        }
+    };
     let indeterminate = is_indeterminate(value);
     // `animated` reaches the kit only where the control supports it.
     #[cfg(target_os = "macos")]

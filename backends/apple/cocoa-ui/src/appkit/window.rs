@@ -669,13 +669,17 @@ impl Delegate {
 /// The main screen's backing scale — the display scale an off-window view
 /// rasterizes at, `1.0` when there is no main screen.
 ///
-/// # Panics
-///
-/// Off the main thread.
+/// Off the main thread this breaks the contract: it is reported and `1.0` is
+/// answered.
 #[must_use]
 pub fn main_screen_scale() -> f64 {
-    objc2_app_kit::NSScreen::mainScreen(objc2::MainThreadMarker::new().expect("main thread"))
-        .map_or(1.0, |screen| screen.backingScaleFactor())
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        waterui_contract::contract_violation!(
+            "main_screen_scale runs on the main thread; 1.0 is answered"
+        );
+        return 1.0;
+    };
+    objc2_app_kit::NSScreen::mainScreen(mtm).map_or(1.0, |screen| screen.backingScaleFactor())
 }
 
 /// Whether `window` could show a frame it was handed: visible and not

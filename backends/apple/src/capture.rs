@@ -20,6 +20,11 @@ pub enum CaptureError {
         /// Bitmap height in pixels.
         height: usize,
     },
+    /// The capture host is in no window, or its window has no content view,
+    /// so there is nothing to tag with a dynamic range.
+    #[cfg(target_os = "macos")]
+    #[error("the capture host is not inside a window with a content view")]
+    NoWindow,
     /// `AppKit` gave the view no bitmap to cache its display into.
     #[cfg(target_os = "macos")]
     #[error("the view provided no bitmap representation to cache its display into")]
@@ -76,10 +81,9 @@ pub async fn capture_presented(
     // it above the tagged view, and a never-ordered window has no screen
     // for the untagged fallback to read. `Standard` is the honest answer —
     // the capture has no display to be extended-range on.
-    let window = cocoa_ui::view::window(host).expect("capture host is inside a window");
-    let ancestor = window
-        .contentView()
-        .expect("capture window has a content view");
+    let ancestor = cocoa_ui::view::window(host)
+        .and_then(|window| window.contentView())
+        .ok_or(CaptureError::NoWindow)?;
     cocoa_ui::dynamic_range::apply_to_view(
         cocoa_ui::dynamic_range::DynamicRange::Standard,
         &ancestor,
@@ -178,7 +182,7 @@ pub async fn capture_presented(
     )?;
     cocoa_ui::bitmap::scale_to_pixels(&context, scale);
     cocoa_ui::bitmap::begin_layer_flip(&context, bounds.size.height);
-    let layer = cocoa_ui::view::layer(host).expect("a UIKit view is always layer-backed");
+    let layer = cocoa_ui::view::layer(host).expect("every `UIView` owns a backing layer");
     cocoa_ui::bitmap::with_uikit_context(&context, || {
         cocoa_ui::bitmap::render_layer(&layer, &context);
     });

@@ -16,6 +16,7 @@ use objc2::runtime::ProtocolObject;
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::{CGColorSpace, kCGColorSpaceExtendedLinearDisplayP3, kCGColorSpaceSRGB};
 use objc2_metal::{MTLPixelFormat, MTLTexture};
+use waterui_contract::contract_violation;
 
 /// The wgpu format matching `format`, or `None` for a Metal format wgpu
 /// presentation here has no use for.
@@ -35,17 +36,22 @@ pub const fn metal_to_wgpu_format(format: MTLPixelFormat) -> Option<wgpu::Textur
 
 /// The Metal format matching `format`.
 ///
-/// # Panics
-///
-/// When `format` has no Metal equivalent a presentation uses, which is every
-/// format but `Bgra8Unorm`, `Bgra8UnormSrgb` and `Rgba16Float`.
+/// A `format` other than `Bgra8Unorm`, `Bgra8UnormSrgb` and `Rgba16Float` has
+/// no Metal equivalent a presentation uses: that breaks the contract, is
+/// reported and answers [`MTLPixelFormat::Invalid`], which no texture is
+/// made in.
 #[must_use]
 pub fn wgpu_to_metal_format(format: wgpu::TextureFormat) -> MTLPixelFormat {
     match format {
         wgpu::TextureFormat::Bgra8Unorm => MTLPixelFormat::BGRA8Unorm,
         wgpu::TextureFormat::Bgra8UnormSrgb => MTLPixelFormat::BGRA8Unorm_sRGB,
         wgpu::TextureFormat::Rgba16Float => MTLPixelFormat::RGBA16Float,
-        _ => panic!("{format:?} has no Metal equivalent a presentation uses"),
+        _ => {
+            contract_violation!(
+                "{format:?} has no Metal equivalent a presentation uses; the Invalid pixel format is answered"
+            );
+            MTLPixelFormat::Invalid
+        }
     }
 }
 
@@ -132,8 +138,8 @@ pub unsafe fn import_texture(
 ///
 /// # Panics
 ///
-/// When `CGColorSpaceCreateWithName` rejects the system constant names —
-/// it cannot on supported targets.
+/// Never in practice: `CGColorSpaceCreateWithName` resolves its own
+/// constants.
 #[must_use]
 pub fn color_space(format: MTLPixelFormat) -> CFRetained<CGColorSpace> {
     let name = if format == MTLPixelFormat::RGBA16Float {
@@ -143,7 +149,8 @@ pub fn color_space(format: MTLPixelFormat) -> CFRetained<CGColorSpace> {
         // SAFETY: see above.
         unsafe { kCGColorSpaceSRGB }
     };
-    CGColorSpace::with_name(Some(name)).expect("could not create the surface color space")
+    CGColorSpace::with_name(Some(name))
+        .expect("CGColorSpaceCreateWithName names its own constants: both are system constants")
 }
 
 /// The primaries of the colour a texture of some format holds.
@@ -173,9 +180,9 @@ pub struct ShaderColor {
 /// hold the same sRGB-encoded bytes, but the texture unit decodes them on
 /// sample and encodes on store, so the shader sees linear sRGB.
 ///
-/// # Panics
-///
-/// When `format` is not one a presentation or capture target uses.
+/// A `format` that is not one a presentation or capture target uses breaks
+/// the contract: it is reported and the format is read as plain sRGB-encoded
+/// 8-bit pixels.
 #[must_use]
 pub fn shader_color(format: MTLPixelFormat) -> ShaderColor {
     match format {
@@ -191,6 +198,40 @@ pub fn shader_color(format: MTLPixelFormat) -> ShaderColor {
             primaries: Primaries::Srgb,
             encoded: false,
         },
-        other => panic!("{other:?} has no colour contract a presentation or capture uses"),
+        other => {
+            contract_violation!(
+                "{other:?} has no colour contract a presentation or capture uses; it is read as sRGB-encoded 8-bit pixels"
+            );
+            ShaderColor {
+                primaries: Primaries::Srgb,
+                encoded: true,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "no Metal equivalent"))]
+    fn an_unmapped_wgpu_format_answers_the_invalid_pixel_format() {
+        assert_eq!(
+            wgpu_to_metal_format(wgpu::TextureFormat::R8Unorm),
+            MTLPixelFormat::Invalid
+        );
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "no colour contract"))]
+    fn an_unmapped_pixel_format_reads_as_srgb_encoded() {
+        assert_eq!(
+            shader_color(MTLPixelFormat::R8Unorm),
+            ShaderColor {
+                primaries: Primaries::Srgb,
+                encoded: true,
+            }
+        );
     }
 }

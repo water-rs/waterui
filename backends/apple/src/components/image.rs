@@ -78,20 +78,22 @@ fn platform_color(color: &WorkingColor) -> Retained<cocoa_ui::objc2_app_kit::NSC
 #[cfg(target_os = "ios")]
 fn apply_symbol_font(mtm: cocoa_ui::MainThreadMarker, view: &ImageView, font: &ResolvedFont) {
     let font = cocoa_ui::font::system(mtm, f64::from(font.size()), resolved_weight(mtm, font));
-    assert!(
-        view.set_symbol_font(&font),
-        "SF Symbol rejected the themed font configuration"
-    );
+    if !view.set_symbol_font(&font) {
+        tracing::error!(
+            "SF Symbol rejected the themed font configuration; the symbol keeps its size"
+        );
+    }
 }
 
 /// Pushes the themed font onto the symbol: a point-size/weight symbol
 /// configuration rebuilt from the symbol's name on `AppKit`.
 #[cfg(target_os = "macos")]
 fn apply_symbol_font(mtm: cocoa_ui::MainThreadMarker, view: &ImageView, font: &ResolvedFont) {
-    assert!(
-        view.set_symbol_configuration(f64::from(font.size()), resolved_weight(mtm, font)),
-        "SF Symbol rejected the themed font configuration"
-    );
+    if !view.set_symbol_configuration(f64::from(font.size()), resolved_weight(mtm, font)) {
+        tracing::error!(
+            "SF Symbol rejected the themed font configuration; the symbol keeps its size"
+        );
+    }
 }
 
 /// The image view's layout face: intrinsic, non-stretching.
@@ -122,10 +124,9 @@ impl SubView for ImageSubView {
         reason = "the layout contract is f32; measured points always fit"
     )]
     fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
-        let size = self
-            .view
-            .image_size()
-            .expect("SF Symbol has no intrinsic size");
+        // A symbol the platform did not resolve (an unknown name, reported
+        // when the leaf is built) has no image and measures zero.
+        let size = self.view.image_size().unwrap_or_default();
         ViewDimensions::new(Size::new(size.width as f32, size.height as f32))
     }
 
@@ -148,10 +149,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
         view.set_scale_mode(cocoa_ui::ScaleMode::Fit);
 
         let name = config.name().as_str();
-        assert!(
-            view.set_system_symbol(name),
-            "Unknown SF Symbol name: {name}"
-        );
+        if !view.set_system_symbol(name) {
+            waterui::contract_violation!(
+                "Unknown SF Symbol name: {name}; the view draws no symbol"
+            );
+        }
 
         // The image view draws the symbol in the leaf's response rectangle
         // at the symbol's own size, which the leaf answers

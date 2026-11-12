@@ -84,10 +84,9 @@ fn family_candidates(family: &str) -> impl Iterator<Item = &str> {
 /// A face with no bold or italic variant keeps its own, as the platform's
 /// trait resolution does.
 ///
-/// # Panics
-///
-/// When the family names no installed font and no generic — the same
-/// `fatalError` the Swift port raises.
+/// A family that names no installed font and no generic is a contract
+/// violation of the app that declared it (the font is not bundled or
+/// registered); the font's design face is used instead.
 pub(super) fn platform_font(
     mtm: cocoa_ui::MainThreadMarker,
     resolved: &ResolvedFont,
@@ -96,6 +95,10 @@ pub(super) fn platform_font(
     let size = f64::from(resolved.size());
     let face = face_weight(resolved);
     let weight = platform_weight(face.weight);
+    let design_face = || match resolved.design() {
+        FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
+        FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
+    };
     let mut font = match resolved.family() {
         Some(family) if !family.is_empty() => {
             let mut resolved_font = None;
@@ -109,15 +112,14 @@ pub(super) fn platform_font(
                 }
             }
             resolved_font.unwrap_or_else(|| {
-                panic!(
-                    "WaterUI: font family '{family}' not found. Ensure the font is bundled and registered."
-                )
+                waterui::contract_violation!(
+                    "WaterUI: font family '{family}' not found. Ensure the font is bundled and \
+                     registered; the font's design face is used"
+                );
+                design_face()
             })
         }
-        _ => match resolved.design() {
-            FontDesign::Default => cocoa_ui::font::system(mtm, size, weight),
-            FontDesign::Monospaced => cocoa_ui::font::monospaced(mtm, size, weight),
-        },
+        _ => design_face(),
     };
     if face.bold_trait
         && let Some(bold_font) = cocoa_ui::font::bold_variant(&font)

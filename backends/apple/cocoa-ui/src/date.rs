@@ -20,6 +20,7 @@ use objc2_foundation::{
     NSCalendar, NSCalendarIdentifierGregorian, NSCalendarUnit, NSDate, NSDateComponents,
     NSDateInterval,
 };
+use waterui_contract::contract_violation;
 
 /// The year, month and day of a calendar date.
 ///
@@ -230,20 +231,30 @@ impl YearMonth {
         }
     }
 
+    /// The month number, `1..=12`. A month outside that range breaks the
+    /// contract: it is reported and the nearest valid month is used.
+    fn valid_month(self) -> i32 {
+        if !(1..=12).contains(&self.month) {
+            contract_violation!(
+                "a month is 1 through 12, got {}; the nearest month is used",
+                self.month
+            );
+        }
+        self.month.clamp(1, 12)
+    }
+
     /// The number of days in the month under the proleptic Gregorian
     /// calendar.
     ///
-    /// # Panics
-    ///
-    /// When the month is not `1..=12`.
+    /// A month outside `1..=12` breaks the contract: it is reported and the
+    /// nearest valid month is counted.
     #[must_use]
-    pub const fn day_count(self) -> i32 {
-        match self.month {
+    pub fn day_count(self) -> i32 {
+        match self.valid_month() {
             2 if is_leap_year(self.year) => 29,
             2 => 28,
             4 | 6 | 9 | 11 => 30,
-            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-            _ => panic!("a month is 1 through 12"),
+            _ => 31,
         }
     }
 
@@ -251,26 +262,18 @@ impl YearMonth {
     /// (Saturday) — `NSCalendar`'s numbering — under the proleptic
     /// Gregorian calendar (Sakamoto's method).
     ///
-    /// # Panics
-    ///
-    /// When the month is not `1..=12`.
+    /// A month outside `1..=12` breaks the contract: it is reported and the
+    /// nearest valid month is used.
     #[must_use]
-    pub const fn first_weekday(self) -> i32 {
+    pub fn first_weekday(self) -> i32 {
         const MONTH_OFFSETS: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
-        assert!(
-            1 <= self.month && self.month <= 12,
-            "a month is 1 through 12"
-        );
-        let year = if self.month < 3 {
-            self.year - 1
-        } else {
-            self.year
-        };
+        let month = self.valid_month();
+        let year = if month < 3 { self.year - 1 } else { self.year };
         #[expect(
             clippy::cast_sign_loss,
-            reason = "the assertion above keeps the month in 1..=12"
+            reason = "`valid_month` keeps the month in 1..=12"
         )]
-        let offset = MONTH_OFFSETS[(self.month - 1) as usize];
+        let offset = MONTH_OFFSETS[(month - 1) as usize];
         // The day of the month is 1; Sunday is 0.
         let weekday =
             (year + year.div_euclid(4) - year.div_euclid(100) + year.div_euclid(400) + offset + 1)
@@ -286,7 +289,7 @@ const fn is_leap_year(year: i32) -> bool {
 
 /// `day` moved by `days` calendar days, crossing month and year boundaries.
 #[must_use]
-pub const fn add_days(day: DateParts, days: i32) -> DateParts {
+pub fn add_days(day: DateParts, days: i32) -> DateParts {
     let mut month = YearMonth::of(day);
     let mut value = day.day + days;
     while value < 1 {
@@ -392,6 +395,14 @@ mod tests {
                 month: 1,
             }
         );
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "a month is 1 through 12"))]
+    fn an_invalid_month_counts_as_the_nearest_valid_month() {
+        let month = |month| YearMonth { year: 2026, month };
+        assert_eq!(month(13).day_count(), month(12).day_count());
+        assert_eq!(month(0).first_weekday(), month(1).first_weekday());
     }
 
     #[test]

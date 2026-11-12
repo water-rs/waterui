@@ -119,14 +119,16 @@ pub fn text_item_provider(text: &str) -> Retained<NSItemProvider> {
 
 /// An item provider carrying a URL.
 ///
-/// # Panics
-///
-/// If `url` is not a valid URL — the payload's URL invariant makes this
-/// unreachable, mirroring the Swift `fatalError`.
+/// A `url` that is not a valid URL breaks the contract: it is reported and an
+/// empty provider, which carries nothing to drop, is answered.
 #[must_use]
 pub fn url_item_provider(url: &str) -> Retained<NSItemProvider> {
-    let url = NSURL::URLWithString(&NSString::from_str(url))
-        .unwrap_or_else(|| panic!("invalid drag URL: {url:?}"));
+    let Some(url) = NSURL::URLWithString(&NSString::from_str(url)) else {
+        waterui_contract::contract_violation!(
+            "invalid drag URL: {url:?}; an empty item provider is answered"
+        );
+        return NSItemProvider::new();
+    };
     NSItemProvider::initWithObject(NSItemProvider::alloc(), ProtocolObject::from_ref(&*url))
 }
 

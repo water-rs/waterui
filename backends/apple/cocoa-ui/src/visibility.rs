@@ -50,6 +50,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
+use objc2::MainThreadOnly;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 
@@ -392,11 +393,6 @@ impl VisibilityWatch {
     /// subscribe the window watch at all), and vice versa. The whole
     /// sequence is synchronous on the main thread, so no wake can be
     /// lost between the detach and the re-subscribe.
-    ///
-    /// # Panics
-    ///
-    /// Off the main thread — the scroll and lifecycle registrations,
-    /// like every `UIKit`/`AppKit` call here, are main-thread only.
     pub fn refresh(&self, view: &PlatformView) {
         self.wakes.borrow_mut().take();
         *self.wakes.borrow_mut() = Some(subscribe_visibility_wakes(view, &self.handler));
@@ -443,8 +439,7 @@ impl VisibilityWatch {
         };
         if !window_unchanged {
             *window_slot = owner.map(|owner| {
-                let mtm = crate::MainThreadMarker::new()
-                    .expect("visibility refresh runs on the main thread");
+                let mtm = view.mtm();
                 WindowBinding {
                     _observers: imp::window_lifecycle_names()
                         .iter()

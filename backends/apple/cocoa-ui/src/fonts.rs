@@ -25,11 +25,6 @@ use objc2_core_text::{CTFontManagerRegisterFontsForURL, CTFontManagerScope};
 /// If `path` cannot be expressed as a file URL, or Core Text refuses the
 /// file: it is missing, is not a font, or holds a font already registered.
 /// The error carries Core Text's own description of the failure.
-///
-/// # Panics
-///
-/// If Core Text refuses the file without describing why, which it documents
-/// it never does.
 pub fn register_font(path: &Path) -> Result<(), FontRegistrationError> {
     let url = CFURL::from_file_path(path).ok_or_else(|| FontRegistrationError {
         path: path.to_path_buf(),
@@ -43,17 +38,21 @@ pub fn register_font(path: &Path) -> Result<(), FontRegistrationError> {
     if registered {
         return Ok(());
     }
-    let error =
-        NonNull::new(error).expect("Core Text must describe why it refused to register a font");
-    // SAFETY: Core Text returned the error under the create rule; see the
-    // module safety note.
-    let error = unsafe { CFRetained::from_raw(error) };
+    let reason = NonNull::new(error).map_or_else(
+        || String::from("Core Text refused the file without describing why"),
+        |error| {
+            // SAFETY: Core Text returned the error under the create rule;
+            // see the module safety note.
+            let error = unsafe { CFRetained::from_raw(error) };
+            error.description().map_or_else(
+                || String::from("Core Text gave an error without a description"),
+                |description| description.to_string(),
+            )
+        },
+    );
     Err(FontRegistrationError {
         path: path.to_path_buf(),
-        reason: error
-            .description()
-            .expect("CFErrorCopyDescription is documented never to return null")
-            .to_string(),
+        reason,
     })
 }
 

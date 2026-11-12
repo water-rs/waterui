@@ -155,7 +155,10 @@ pub fn submit_with_completion(
             })
         })
     }
-    .expect("a recording Metal marker encoder must expose its raw command buffer");
+    .expect(
+        "the Metal HAL begins native encoding when the marker encoder is created, so it \
+         exposes its raw command buffer",
+    );
 
     let service_context = Arc::clone(context);
     let service = RcBlock::new(

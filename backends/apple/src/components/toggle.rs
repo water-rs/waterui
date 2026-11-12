@@ -40,14 +40,24 @@ use platform::{Kind, StateChange, Toggle};
 /// The control a resolved style draws. The native payload never carries
 /// `Automatic`: `ToggleConfig`'s resolver replaces it with the platform
 /// default before the backend sees the config.
-const fn kind(style: ToggleStyle) -> Kind {
+///
+/// An unresolved `Automatic` or a style the backend does not know is a
+/// contract violation of the framework above; the switch is drawn.
+fn kind(style: ToggleStyle) -> Kind {
     match style {
         ToggleStyle::Switch => Kind::Switch,
         ToggleStyle::Checkbox => Kind::Checkbox,
         ToggleStyle::Automatic => {
-            panic!("the toggle payload reached the backend with an unresolved Automatic style")
+            waterui::contract_violation!(
+                "the toggle payload reached the backend with an unresolved Automatic style; \
+                 the switch is drawn"
+            );
+            Kind::Switch
         }
-        _ => panic!("unsupported WaterUI toggle style"),
+        _ => {
+            waterui::contract_violation!("unsupported WaterUI toggle style; the switch is drawn");
+            Kind::Switch
+        }
     }
 }
 
@@ -274,9 +284,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "unresolved Automatic style")]
-    fn kind_rejects_an_unresolved_automatic_style() {
-        let _ = kind(ToggleStyle::Automatic);
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "unresolved Automatic style")
+    )]
+    fn kind_draws_a_switch_for_an_unresolved_automatic_style() {
+        assert_eq!(kind(ToggleStyle::Automatic), Kind::Switch);
     }
 
     /// A change that disables animation writes directly, even when an

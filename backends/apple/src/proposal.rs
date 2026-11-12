@@ -165,7 +165,8 @@ impl CommittedGeometry {
 ///
 /// When `view`'s class carries no response geometry.
 fn slot_of(view: &PlatformView) -> &ResponseGeometry {
-    response::of(view).expect("a laid-out leaf's view carries its response geometry")
+    response::of(view)
+        .expect("every leaf view class the backend lays out carries its response geometry")
 }
 
 /// Wires the leaf whose platform view is `view` and whose layout face is
@@ -189,9 +190,12 @@ pub fn install(view: &PlatformView, layout: &Rc<dyn SubView>) -> CommittedGeomet
             let layout = layout
                 .upgrade()
                 .expect("a leaf's layout face outlives its view's commit handler");
-            geometry
-                .commit_leaf(view, slot_of(view), &*layout)
-                .expect("a placed leaf's layout face resolves its response");
+            if let Err(error) = geometry.commit_leaf(view, slot_of(view), &*layout) {
+                waterui::contract_violation!(
+                    "a placed leaf's layout face failed to resolve its response: {error}; \
+                     the leaf keeps the geometry it last committed"
+                );
+            }
         }
     });
     slot.set_response_handler({

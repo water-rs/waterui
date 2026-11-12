@@ -309,14 +309,21 @@ fn apply_alignment(field: &TextField, alignment: HorizontalAlignment) {
 /// The `Keyboard` a `KeyboardType` asks for — `WuiKeyboardType.uiKeyboardType`'s
 /// table. `AppKit` has no on-screen keyboard; there the hint is unused.
 #[cfg(target_os = "ios")]
-const fn keyboard(kind: &KeyboardType) -> platform::Keyboard {
+/// A kind the backend does not know is a contract violation of the
+/// framework above; the plain text keyboard is used.
+fn keyboard(kind: &KeyboardType) -> platform::Keyboard {
     match kind {
         KeyboardType::Text => platform::Keyboard::Text,
         KeyboardType::Email => platform::Keyboard::Email,
         KeyboardType::URL => platform::Keyboard::Url,
         KeyboardType::Number => platform::Keyboard::Number,
         KeyboardType::PhoneNumber => platform::Keyboard::PhoneNumber,
-        _ => panic!("unsupported WaterUI keyboard type"),
+        _ => {
+            waterui::contract_violation!(
+                "unsupported WaterUI keyboard type; the text keyboard is used"
+            );
+            platform::Keyboard::Text
+        }
     }
 }
 
@@ -714,25 +721,37 @@ pub fn install(dispatcher: &mut Dispatcher) {
 }
 
 /// A `TextSelection`'s byte range as the UTF-16 units the kit's selection
-/// APIs count. An edge off a char boundary is a contract violation.
-fn utf16_range(text: &str, range: &Range<usize>) -> NSRange {
+/// APIs count. An edge off a char boundary is a contract violation of the
+/// caller; there is no range (`None`) and the command is ignored.
+fn utf16_range(text: &str, range: &Range<usize>) -> Option<NSRange> {
     let edge = |byte: usize| {
-        cocoa_ui::text::utf16_offset_at_byte(text, byte).unwrap_or_else(|| {
-            panic!("selection edge {byte} is not a UTF-8 boundary of the field's text")
-        })
+        let edge = cocoa_ui::text::utf16_offset_at_byte(text, byte);
+        if edge.is_none() {
+            waterui::contract_violation!(
+                "selection edge {byte} is not a UTF-8 boundary of the field's text; \
+                 the selection command is ignored"
+            );
+        }
+        edge
     };
-    let location = edge(range.start);
-    NSRange::new(location, edge(range.end) - location)
+    let location = edge(range.start)?;
+    Some(NSRange::new(location, edge(range.end)? - location))
 }
 
-/// The field editor's UTF-16 range as `TextSelection`'s byte range.
-fn utf16_byte_range(text: &str, range: NSRange) -> Range<usize> {
+/// The field editor's UTF-16 range as `TextSelection`'s byte range. A
+/// platform edge inside a surrogate pair or past the text is logged and
+/// answers `None`.
+fn utf16_byte_range(text: &str, range: NSRange) -> Option<Range<usize>> {
     let edge = |unit: usize| {
-        cocoa_ui::text::byte_offset_at_utf16(text, unit).expect(
-            "the platform reported a selection edge inside a surrogate pair or past the text",
-        )
+        let edge = cocoa_ui::text::byte_offset_at_utf16(text, unit);
+        if edge.is_none() {
+            tracing::error!(
+                "the platform reported a selection edge {unit} inside a surrogate pair or past the text"
+            );
+        }
+        edge
     };
-    edge(range.location)..edge(range.location + range.length)
+    Some(edge(range.location)?..edge(range.location + range.length)?)
 }
 
 /// The [`CustomTextSelection`] a `selection_menu` command's `TextSelection`
@@ -756,52 +775,72 @@ impl Clone for FieldSelection {
 impl FieldSelection {
     /// The field with a live editing session, beginning one through the
     /// platform's own first-responder path when the selection is written
-    /// outside an open session.
-    fn editable_field(&self) -> Retained<TextField> {
-        let field = self
-            .field
-            .load()
-            .expect("a selection command fired after its field was released");
-        assert!(
-            field.selected_range().is_some() || field.begin_editing(),
-            "the field cannot begin an editing session for the selection command"
-        );
+    /// outside an open session. `None` when the field is gone or cannot begin
+    /// a session: the command is ignored.
+    fn editable_field(&self) -> Option<Retained<TextField>> {
+        let field = self.live_field()?;
+        if field.selected_range().is_none() && !field.begin_editing() {
+            tracing::error!(
+                "the field cannot begin an editing session for the selection command; \
+                 the command is ignored"
+            );
+            return None;
+        }
+        Some(field)
+    }
+
+    /// The field, or `None` after it was released: a selection command that
+    /// outlives its field is a contract violation of the app holding the
+    /// `TextSelection`, and answers as an empty selection.
+    fn live_field(&self) -> Option<Retained<TextField>> {
+        let field = self.field.load();
+        if field.is_none() {
+            waterui::contract_violation!(
+                "a selection command fired after its field was released; \
+                 the command answers as an empty selection"
+            );
+        }
         field
     }
 }
 
 impl CustomTextSelection for FieldSelection {
     fn text(&self) -> Str {
-        Str::from(
-            self.field
-                .load()
-                .expect("a selection command fired after its field was released")
-                .string(),
-        )
+        self.live_field()
+            .map_or_else(Str::default, |field| Str::from(field.string()))
     }
 
     fn range(&self) -> Range<usize> {
-        let field = self
-            .field
-            .load()
-            .expect("a selection command fired after its field was released");
+        let Some(field) = self.live_field() else {
+            return 0..0;
+        };
         let text = field.string();
-        let utf16 = field
-            .selected_range()
-            .expect("a selection command fired on a field with no editing session");
-        utf16_byte_range(&text, utf16)
+        let Some(utf16) = field.selected_range() else {
+            waterui::contract_violation!(
+                "a selection command fired on a field with no editing session; \
+                 the selection reads as empty"
+            );
+            return 0..0;
+        };
+        utf16_byte_range(&text, utf16).unwrap_or(0..0)
     }
 
     fn replace_range(&self, range: Range<usize>, inserted: &str) {
-        let field = self.editable_field();
-        let utf16 = utf16_range(&field.string(), &range);
-        field.replace_range(utf16, &NSString::from_str(inserted));
+        let Some(field) = self.editable_field() else {
+            return;
+        };
+        if let Some(utf16) = utf16_range(&field.string(), &range) {
+            field.replace_range(utf16, &NSString::from_str(inserted));
+        }
     }
 
     fn select(&self, range: Range<usize>) {
-        let field = self.editable_field();
-        let utf16 = utf16_range(&field.string(), &range);
-        field.set_selected_range(utf16);
+        let Some(field) = self.editable_field() else {
+            return;
+        };
+        if let Some(utf16) = utf16_range(&field.string(), &range) {
+            field.set_selected_range(utf16);
+        }
     }
 
     fn styled_value(&self) -> Option<Binding<StyledStr>> {

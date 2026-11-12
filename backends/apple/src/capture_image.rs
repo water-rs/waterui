@@ -51,9 +51,12 @@ pub struct CapturedRgba {
 #[derive(Debug)]
 pub enum CaptureFailure {
     /// A GPU surface inside the captured subtree reported a terminal
-    /// failure — no recapture on its context generation can produce the
-    /// frame. Carries the surface's own `Arc`'d cause.
+    /// failure: no recapture on its context generation can produce the
+    /// frame. Carries the surface's cause, `Arc`'d.
     GpuSurfaceFailed(Arc<dyn std::error::Error + Send + Sync>),
+    /// The capture needs a GPU runtime and the process has none: the
+    /// device refused to create it at launch.
+    GpuRuntimeUnavailable,
     /// The shared GPU device is unrecoverable — every rebuilt device was
     /// lost before presenting a frame — so no capture can ever produce
     /// pixels.
@@ -83,8 +86,9 @@ impl core::fmt::Display for CaptureFailure {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::GpuSurfaceFailed(_) => {
-                f.write_str("a GPU surface in the captured subtree failed")
+                f.write_str("a GPU surface in the captured view failed for good")
             }
+            Self::GpuRuntimeUnavailable => f.write_str("the process has no GPU runtime"),
             Self::GpuUnrecoverable(unrecoverable) => write!(f, "{unrecoverable}"),
             Self::CompositionFailed { status, error } => {
                 write!(
@@ -113,7 +117,7 @@ impl std::error::Error for CaptureFailure {
         match self {
             Self::GpuSurfaceFailed(cause) => Some(&**cause),
             Self::GpuUnrecoverable(cause) => Some(cause),
-            Self::CompositionFailed { .. } => None,
+            Self::GpuRuntimeUnavailable | Self::CompositionFailed { .. } => None,
             #[cfg(target_os = "ios")]
             Self::NoWindowScene => None,
             Self::TargetAllocation { .. } => None,
@@ -391,8 +395,8 @@ fn rgba_target(
 /// [`CaptureFailure::NoWindowScene`] when a detached view has no window
 /// scene to host it, and [`CaptureFailure::TargetAllocation`] when the
 /// readback target cannot be allocated. `render_to_rgba` maps them onto
-/// its `RenderError`; [`template_image`] and [`drag_image`] fail fast
-/// through [`terminal_capture_failure`].
+/// its `RenderError`; [`template_image`] and [`drag_image`] log them
+/// through [`report_capture_failure`] and answer an empty image.
 #[expect(
     clippy::future_not_send,
     reason = "capture runs on the main thread; the future holds the main-thread capture and window host"
@@ -439,7 +443,7 @@ pub async fn capture_rgba(
     // Context, device and destination resolve per attempt: a context
     // replacement mid-wait makes the old-generation target obsolete, and
     // the readback must come from the successfully fenced current one.
-    let runtime = crate::gpu_runtime::runtime(env);
+    let runtime = crate::gpu_runtime::runtime(env).ok_or(CaptureFailure::GpuRuntimeUnavailable)?;
     let target = capture_attempts(&runtime, guard.capture(), &redraw, width, height, mtm).await?;
     drop(guard);
     drop(host);
@@ -470,7 +474,7 @@ fn read_target(target: &ProtocolObject<dyn MTLTexture>, width: u32, height: u32)
     unsafe {
         target.getBytes_bytesPerRow_fromRegion_mipmapLevel(
             std::ptr::NonNull::new(pixels.as_mut_ptr().cast())
-                .expect("the texel buffer is non-null"),
+                .expect("a `Vec`'s buffer pointer is never null"),
             width as usize * 4,
             MTLRegion {
                 origin: MTLOrigin { x: 0, y: 0, z: 0 },
@@ -518,7 +522,9 @@ pub struct CaptureDrive {
     /// The mounted root every pass lays out and captures.
     root: Retained<cocoa_ui::PlatformView>,
     /// The environment's GPU runtime — the context resolves per pass.
-    runtime: waterui_graphics::gpu::GpuRuntime,
+    /// `None` when the process has none: no pass can run and the terminal
+    /// capture fails with [`CaptureFailure::GpuRuntimeUnavailable`].
+    runtime: Option<waterui_graphics::gpu::GpuRuntime>,
     /// The capture window's backing scale — the scratch and readback
     /// targets' point-to-pixel factor.
     scale: f64,
@@ -603,13 +609,17 @@ impl CaptureDrive {
     /// owed content changed are the bounds the collection sees.
     fn pump(self: &Rc<Self>) {
         self.queued.set(false);
-        let context = self.runtime.context();
+        // Without a runtime no GPU surface exists to join: nothing to pump.
+        let Some(runtime) = &self.runtime else {
+            return;
+        };
+        let context = runtime.context();
         if context.device_lost_reason().is_some() {
             // A dead context produces no frame: the pass re-requests on
             // the rebuilt context's publication — the same wake the
             // parked surfaces take.
             let generation = context.generation();
-            let runtime = self.runtime.clone();
+            let runtime = runtime.clone();
             let drive = Rc::downgrade(self);
             executor_core::spawn_local(async move {
                 match runtime.context_after(generation).await {
@@ -635,7 +645,13 @@ impl CaptureDrive {
         }
         let (width, height) = pixel_extent(bounds.size, self.scale);
         let device = crate::gpu_runtime::raw_metal_device(&context);
-        let target = scratch_target(&device, width, height);
+        let Some(target) = scratch_target(&device, width, height) else {
+            tracing::error!(
+                "the device could not allocate a {width}x{height} capture scratch target; \
+                 the pass is skipped"
+            );
+            return;
+        };
         self.capture
             .capture(&target, context.generation(), |outcome| {
                 if let Err(cocoa_ui::capture::CaptureError::Failed(error)) = &outcome {
@@ -652,7 +668,9 @@ impl CaptureDrive {
     /// # Errors
     ///
     /// [`CaptureFailure::GpuSurfaceFailed`] with the `Arc`'d cause a
-    /// surface's terminal `CaptureError::Failed` reported, or
+    /// surface's terminal `CaptureError::Failed` reported —
+    /// [`CaptureFailure::GpuRuntimeUnavailable`] when the process has no GPU
+    /// runtime — or
     /// [`CaptureFailure::CompositionFailed`] when the native-view
     /// composition command buffer did not complete.
     #[expect(
@@ -668,24 +686,22 @@ impl CaptureDrive {
                 height: 0,
             });
         }
+        let Some(runtime) = &self.runtime else {
+            return Err(CaptureFailure::GpuRuntimeUnavailable);
+        };
         let (width, height) = pixel_extent(bounds.size, self.scale);
         // The redraw contract the retry loop waits on — surface requests
         // now wake a recapture instead of queueing a pump pass.
         let redraw = Rc::new(RefCell::new(Signal::default()));
         let previous = self.terminal.borrow_mut().replace(redraw.clone());
-        assert!(
-            previous.is_none(),
-            "a capture drive performs one terminal capture"
-        );
-        let target = capture_attempts(
-            &self.runtime,
-            &self.capture,
-            &redraw,
-            width,
-            height,
-            self.mtm,
-        )
-        .await?;
+        if previous.is_some() {
+            waterui::contract_violation!(
+                "a capture drive performs one terminal capture; \
+                 the later capture takes over the redraw signal"
+            );
+        }
+        let target =
+            capture_attempts(runtime, &self.capture, &redraw, width, height, self.mtm).await?;
         Ok(read_target(&target, width, height))
     }
 }
@@ -706,7 +722,7 @@ fn scratch_target(
     device: &ProtocolObject<dyn MTLDevice>,
     width: u32,
     height: u32,
-) -> Retained<ProtocolObject<dyn MTLTexture>> {
+) -> Option<Retained<ProtocolObject<dyn MTLTexture>>> {
     // SAFETY: a 2D descriptor is always valid to construct.
     let descriptor = unsafe {
         MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
@@ -718,9 +734,7 @@ fn scratch_target(
     };
     descriptor.setUsage(MTLTextureUsage::RenderTarget);
     descriptor.setStorageMode(MTLStorageMode::Private);
-    device
-        .newTextureWithDescriptor(&descriptor)
-        .expect("the device allocates the capture drive's scratch target")
+    device.newTextureWithDescriptor(&descriptor)
 }
 
 /// The recapture loop behind [`capture_rgba`]: context, device and
@@ -829,11 +843,10 @@ async fn capture_attempts(
 /// `render_to_rgba` returns its typed [`RenderError`](waterui_core::view_renderer::RenderError)
 /// instead; [`template_image`] and [`drag_image`] remain here because
 /// `AppKit` and `UIKit` give their icon/drag paths no error channel at all —
-/// so they fail fast with the cause rather than ship an empty image.
-/// Never produces an empty raster: the typed failure aborts here, its
-/// whole `source()` chain in the message.
+/// so the failure is logged with its whole `source()` chain and the caller
+/// answers an empty image, the same one a genuinely empty view yields.
 #[cold]
-pub fn terminal_capture_failure(error: &dyn std::error::Error) -> ! {
+pub fn report_capture_failure(error: &dyn std::error::Error) {
     let mut message = error.to_string();
     let mut source = error.source();
     while let Some(cause) = source {
@@ -841,7 +854,7 @@ pub fn terminal_capture_failure(error: &dyn std::error::Error) -> ! {
         message.push_str(&cause.to_string());
         source = cause.source();
     }
-    panic!("view capture failed: {message}")
+    tracing::error!("view capture failed: {message}; the image is empty");
 }
 
 /// `view` rasterized as a template image, capped at `max_side` points —
@@ -859,20 +872,24 @@ pub async fn template_image(
     max_side: f64,
 ) -> Retained<PlatformImage> {
     let bounds = cocoa_ui::view::bounds(view);
-    let captured = capture_rgba(view, env, view.mtm())
-        .await
-        .unwrap_or_else(|error| terminal_capture_failure(&error));
+    let captured = match capture_rgba(view, env, view.mtm()).await {
+        Ok(captured) => captured,
+        Err(error) => {
+            report_capture_failure(&error);
+            return PlatformImage::new();
+        }
+    };
     if captured.width == 0 || captured.height == 0 {
-        // A genuinely empty view bounds is the only empty-image contract —
-        // never a masked conversion failure.
         return PlatformImage::new();
     }
-    let image = cocoa_ui::bitmap::image_from_rgba(
+    let Some(image) = cocoa_ui::bitmap::image_from_rgba(
         &captured.pixels,
         captured.width as usize,
         captured.height as usize,
-    )
-    .expect("CGImage creation from captured pixels failed");
+    ) else {
+        tracing::error!("CGImage creation from captured pixels failed; the image is empty");
+        return PlatformImage::new();
+    };
     let shrink = (max_side / f64::max(bounds.size.width, bounds.size.height)).min(1.0);
     cocoa_ui::bitmap::template_image(
         &image,
@@ -896,18 +913,24 @@ pub async fn drag_image(
     env: &Environment,
 ) -> Retained<cocoa_ui::objc2_app_kit::NSImage> {
     let bounds = cocoa_ui::view::bounds(view);
-    let captured = capture_rgba(view, env, view.mtm())
-        .await
-        .unwrap_or_else(|error| terminal_capture_failure(&error));
+    let captured = match capture_rgba(view, env, view.mtm()).await {
+        Ok(captured) => captured,
+        Err(error) => {
+            report_capture_failure(&error);
+            return cocoa_ui::objc2_app_kit::NSImage::new();
+        }
+    };
     if captured.width == 0 || captured.height == 0 {
         return cocoa_ui::objc2_app_kit::NSImage::new();
     }
-    let image = cocoa_ui::bitmap::image_from_rgba(
+    let Some(image) = cocoa_ui::bitmap::image_from_rgba(
         &captured.pixels,
         captured.width as usize,
         captured.height as usize,
-    )
-    .expect("CGImage creation from captured pixels failed");
+    ) else {
+        tracing::error!("CGImage creation from captured pixels failed; the image is empty");
+        return cocoa_ui::objc2_app_kit::NSImage::new();
+    };
     cocoa_ui::objc2_app_kit::NSImage::initWithCGImage_size(
         cocoa_ui::objc2_app_kit::NSImage::alloc(),
         &image,

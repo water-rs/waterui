@@ -53,6 +53,7 @@ use objc2_web_kit::{
     WKScriptMessageHandlerWithReply, WKUIDelegate, WKURLSchemeHandler, WKURLSchemeTask,
     WKUserScript, WKUserScriptInjectionTime, WKWebViewConfiguration, WKWindowFeatures,
 };
+use waterui_contract::contract_violation;
 
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSResponder, NSView};
@@ -1309,16 +1310,17 @@ impl WebViewController {
 
     /// Navigates to `url`.
     ///
-    /// # Panics
-    ///
-    /// When `url` is not a URL Foundation can parse.
+    /// A `url` Foundation cannot parse breaks the contract: it is reported and
+    /// nothing is loaded.
     ///
     /// Returns the navigation the engine started — the same `WKNavigation`
     /// the action later reports as `mainFrameNavigation`, which the policy
     /// uses to tell the loads the application issued from the page's own.
     pub fn load_url(&self, url: &str) -> Option<Retained<WKNavigation>> {
-        let url = NSURL::URLWithString(&NSString::from_str(url))
-            .expect("WebView received an invalid URL");
+        let Some(url) = NSURL::URLWithString(&NSString::from_str(url)) else {
+            contract_violation!("WebView received an invalid URL {url:?}; nothing is loaded");
+            return None;
+        };
         // SAFETY: `url` is a live `NSURL`.
         let request = NSURLRequest::requestWithURL(&url);
         self.load_request(&request)

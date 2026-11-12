@@ -16,6 +16,7 @@ use objc2_app_kit::{NSControlSize, NSFont};
 use objc2_foundation::NSString;
 #[cfg(target_os = "ios")]
 use objc2_ui_kit::UIFont;
+use waterui_contract::contract_violation;
 
 /// The platform font object: `NSFont` on macOS, `UIFont` on iOS.
 #[cfg(target_os = "ios")]
@@ -183,9 +184,7 @@ pub fn weight_of(font: &Font) -> f64 {
 /// the descriptor it came from, so the bold of the macOS headline style
 /// declares Bold while drawing the Heavy face.
 ///
-/// # Panics
-///
-/// Panics as [`weight_coordinate`] does.
+/// Reports as [`weight_coordinate`] does.
 #[must_use]
 pub fn drawn_weight(font: &Font) -> f64 {
     // SAFETY: see the module safety note.
@@ -198,7 +197,7 @@ pub fn drawn_weight(font: &Font) -> f64 {
 ///
 /// # Panics
 ///
-/// Panics as [`weight_coordinate`] does.
+/// Never in practice: the named weights are a fixed non-empty table.
 #[must_use]
 pub fn weight_at_coordinate(size: f64, coordinate: f64) -> f64 {
     const NAMED: [f64; 9] = [
@@ -220,16 +219,20 @@ pub fn weight_at_coordinate(size: f64, coordinate: f64) -> f64 {
         .into_iter()
         .min_by(|(_, a), (_, b)| a.total_cmp(b))
         .map(|(named, _)| named)
-        .expect("the named weights are not empty")
+        .expect("`NAMED` holds nine weights, so the minimum exists")
 }
 
 /// The coordinate `font` takes on the `OpenType` `wght` axis: its configured
 /// variation, or the axis default when it leaves the axis there — `CoreText`
 /// reports only non-default variation values.
 ///
+/// A face with no `wght` axis breaks the contract: the system face is
+/// variable. It is reported and the axis's default, `400` (regular), is
+/// answered.
+///
 /// # Panics
 ///
-/// Panics when the face has no `wght` axis; the system face is variable.
+/// Never in practice: `CoreText` documents variation axis values as numbers.
 #[must_use]
 pub fn weight_coordinate(font: &Font) -> f64 {
     use objc2_core_text::{
@@ -253,7 +256,12 @@ pub fn weight_coordinate(font: &Font) -> f64 {
         }
     }
     // SAFETY: `CTFontCopyVariationAxes` reads a live font.
-    let axes = unsafe { font.variation_axes() }.expect("the system face has variation axes");
+    let Some(axes) = (unsafe { font.variation_axes() }) else {
+        contract_violation!(
+            "the font has no variation axes, so no `wght` axis; the regular weight coordinate is answered"
+        );
+        return REGULAR_WEIGHT_COORDINATE;
+    };
     // SAFETY: `CFArray` and `CFDictionary` are toll-free bridged with their
     // Foundation counterparts; each axis is a dictionary keyed by strings.
     let axes = unsafe {
@@ -267,21 +275,31 @@ pub fn weight_coordinate(font: &Font) -> f64 {
             &*core::ptr::from_ref(kCTFontVariationAxisDefaultValueKey).cast::<NSString>(),
         )
     };
+    // `CoreText` documents the axis identifier and default as numbers.
     let number = |value: Retained<AnyObject>| {
         value
             .downcast::<NSNumber>()
-            .expect("variation axis values are numbers")
+            .expect("CoreText documents variation axis values as numbers")
     };
-    axes.iter()
+    let default = axes
+        .iter()
         .find(|entry| {
             entry
                 .objectForKey(identifier_key)
                 .is_some_and(|identifier| *number(identifier) == *wght)
         })
         .and_then(|entry| entry.objectForKey(default_key))
-        .map(|default| number(default).doubleValue())
-        .expect("the system face varies along the wght axis")
+        .map(|default| number(default).doubleValue());
+    default.unwrap_or_else(|| {
+        contract_violation!(
+            "the font does not vary along the `wght` axis; the regular weight coordinate is answered"
+        );
+        REGULAR_WEIGHT_COORDINATE
+    })
 }
+
+/// The `OpenType` `wght` axis default: regular weight is `400`.
+const REGULAR_WEIGHT_COORDINATE: f64 = 400.0;
 
 /// The point size of `font`.
 ///

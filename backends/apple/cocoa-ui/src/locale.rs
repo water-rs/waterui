@@ -13,9 +13,6 @@ use crate::notification::{self, NotificationName, NotificationObserver};
 /// preferred-language tags, so a locale built from those tags alone loses
 /// it.
 ///
-/// # Panics
-///
-/// Never in practice: the frameworks report weekdays 1 through 7.
 #[must_use]
 pub fn first_weekday_preference(language_tag: &str) -> Option<&'static str> {
     const WEEKDAYS: [&str; 7] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
@@ -24,11 +21,12 @@ pub fn first_weekday_preference(language_tag: &str) -> Option<&'static str> {
     calendar.setLocale(Some(&NSLocale::localeWithLocaleIdentifier(
         &NSString::from_str(language_tag),
     )));
-    (preferred != calendar.firstWeekday()).then(|| {
-        *WEEKDAYS
-            .get(preferred.wrapping_sub(1))
-            .expect("NSCalendar reports weekdays 1 through 7")
-    })
+    if preferred == calendar.firstWeekday() {
+        return None;
+    }
+    // `NSCalendar` reports weekdays 1 through 7; anything else names no
+    // weekday, so no preference is answered.
+    WEEKDAYS.get(preferred.wrapping_sub(1)).copied()
 }
 
 /// The user's preferred languages as BCP 47 tags, most preferred first.

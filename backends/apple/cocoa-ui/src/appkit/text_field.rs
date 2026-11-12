@@ -38,6 +38,8 @@ use objc2_foundation::{
 };
 
 use crate::callback::guarded;
+use waterui_contract::contract_violation;
+
 use crate::geometry::Size;
 use crate::notification::{self, NotificationName, NotificationObserver};
 
@@ -110,9 +112,12 @@ define_class!(
         #[unsafe(method(controlTextDidBeginEditing:))]
         fn control_text_did_begin_editing(&self, _notification: &NSNotification) {
             guarded("TextField controlTextDidBeginEditing:", || {
-                let editor = self
-                    .field_editor()
-                    .expect("controlTextDidBeginEditing posts with a live field editor");
+                let Some(editor) = self.field_editor() else {
+                    contract_violation!(
+                        "controlTextDidBeginEditing posted without a live field editor; undo is not wired"
+                    );
+                    return;
+                };
                 // The editor's own undo manager — `None` when the session
                 // runs with native undo disabled.
                 let Some(undo_manager) = editor.undoManager() else {
@@ -384,14 +389,16 @@ impl TextField {
 
     /// Selects `range` (UTF-16 units) in the live edit.
     ///
-    /// # Panics
-    ///
-    /// If the field is not being edited — call [`Self::begin_editing`]
-    /// first when the selection must be written without a live session.
+    /// A field that is not being edited breaks the contract: it is reported
+    /// and the call is ignored — call [`Self::begin_editing`] first when the
+    /// selection must be written without a live session.
     pub fn set_selected_range(&self, range: NSRange) {
-        let editor = self
-            .field_editor()
-            .expect("set_selected_range on a field that is not being edited");
+        let Some(editor) = self.field_editor() else {
+            contract_violation!(
+                "set_selected_range on a field that is not being edited; the call is ignored"
+            );
+            return;
+        };
         editor.setSelectedRange(range);
     }
 
@@ -407,14 +414,15 @@ impl TextField {
     /// top registers a second change the undo replay corrupts, so there is
     /// exactly one call.
     ///
-    /// # Panics
-    ///
-    /// If the field is not being edited — call [`Self::begin_editing`]
-    /// first.
+    /// A field that is not being edited breaks the contract: it is reported
+    /// and the call is ignored — call [`Self::begin_editing`] first.
     pub fn replace_range(&self, range: NSRange, text: &NSString) {
-        let editor = self
-            .field_editor()
-            .expect("replace_range on a field that is not being edited");
+        let Some(editor) = self.field_editor() else {
+            contract_violation!(
+                "replace_range on a field that is not being edited; the call is ignored"
+            );
+            return;
+        };
         // SAFETY: the input-system entry; `text` is a live `NSString`, the
         // `AnyObject` the client accepts.
         unsafe {
