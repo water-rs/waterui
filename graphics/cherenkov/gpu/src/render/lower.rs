@@ -229,16 +229,21 @@ pub struct Capture {
     pub levels: u32,
 }
 
-/// A reduced-scale capture (`resolve.wgsl`): the pass's `region` is on the
-/// capture grid, and the device pixels under it resolve into it. With no
-/// draw ranges the resolve reads `copy_from` directly; with looked-through
-/// composites to apply first, `device` is copied 1:1 into the surface's
-/// shared staging texture, the composites draw there, and the resolve
-/// reads it.
+/// A resolved capture (`resolve.wgsl`) — one at reduced scale, or one
+/// whose group's working space is unlike the pass's: the pass's `region`
+/// is on the capture grid, and the device pixels under it, moved into
+/// `space`, resolve into it. With no draw ranges the resolve reads
+/// `copy_from` directly; with looked-through composites to apply first,
+/// `device` is copied 1:1 into the surface's shared staging texture, the
+/// composites draw there in the pass's space, and the resolve reads it.
 #[derive(Clone, Copy, Debug)]
 pub struct Resolve {
-    /// The capture scale `s`, below 1.
+    /// The capture scale `s`: below 1, or 1 for a capture resolved only
+    /// to move it into `space`.
     pub scale: f32,
+    /// The space the capture stores: the group's working space
+    /// (`BackdropSpec::member_blend_space`).
+    pub space: cherenkov::BlendSpace,
     /// The device rect `(x, y, w, h)` the region's texels cover, clipped
     /// to `extent`.
     pub device: [u32; 4],
@@ -3437,13 +3442,16 @@ impl<'a> Lowering<'a> {
         }
         let scale = plan.spec.scale();
         let levels = plan.spec.levels().get();
+        let space = plan.spec.member_blend_space();
         let current = self.current_target();
-        // The capture texture stores the semantic target's space, and
+        // The capture pass draws in the semantic target's space, and
         // every looked-through scratch shares it — layers never sit
         // inside an encoded group scope, so each is stored in the root's
         // linear space and composites over the copy source-over at full
-        // opacity.
-        self.capture_space.insert(gid, self.target_space(copy_from));
+        // opacity. The capture itself stores the group's working space:
+        // a capture in another space resolves into it, at any scale.
+        let copy_space = self.target_space(copy_from);
+        self.capture_space.insert(gid, copy_space);
         // Only a looked-through level that painted something before the
         // capture composites over the copy. Whether it did is the
         // lowering's own record: the scratch's passes since its level
@@ -3477,7 +3485,8 @@ impl<'a> Lowering<'a> {
                 },
                 None,
             );
-            let resolve = (!scale.is_full()).then(|| self.resolve(*region, scale));
+            let resolve = (!scale.is_full() || space != copy_space)
+                .then(|| self.resolve(*region, scale, space));
             if let Some(open) = &mut self.frame.open {
                 open.capture = Some(Capture {
                     group: gid,
@@ -3513,15 +3522,21 @@ impl<'a> Lowering<'a> {
         self.capture_isolation = true;
     }
 
-    /// The resolve of capture-grid `region` at `scale`: the device rect
-    /// its texels cover, one pixel wider on each side so the shader's f32
-    /// spans never reach past it, clipped to this walk's raster.
+    /// The resolve of capture-grid `region` at `scale` into `space`: the
+    /// device rect its texels cover, one pixel wider on each side so the
+    /// shader's f32 spans never reach past it, clipped to this walk's
+    /// raster.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "the region lies on the grid of this walk's raster, which is a small positive size"
     )]
-    fn resolve(&self, region: [u32; 4], scale: cherenkov::CaptureScale) -> Resolve {
+    fn resolve(
+        &self,
+        region: [u32; 4],
+        scale: cherenkov::CaptureScale,
+        space: cherenkov::BlendSpace,
+    ) -> Resolve {
         let (w, h) = (self.width as u32, self.height as u32);
         let s = f64::from(scale.get());
         let x0 = ((f64::from(region[0]) / s).floor() as u32).saturating_sub(1);
@@ -3530,6 +3545,7 @@ impl<'a> Lowering<'a> {
         let y1 = ((f64::from(region[1] + region[3]) / s).ceil() as u32 + 1).min(h);
         Resolve {
             scale: scale.get(),
+            space,
             device: [x0, y0, x1 - x0, y1 - y0],
             extent: [w, h],
         }
@@ -3660,7 +3676,9 @@ impl<'a> Lowering<'a> {
         {
             pipeline = effect_pipeline;
         }
-        if self.capture_space.get(&gid).copied() == Some(cherenkov::BlendSpace::SrgbEncoded) {
+        // The capture stores the group's working space; every read of it
+        // interpolates there and returns the linear working space.
+        if spec.member_blend_space() == cherenkov::BlendSpace::SrgbEncoded {
             inst.meta[3] |= FLAG_TEX_SRGB << 24;
         }
         if explicit {
@@ -6806,11 +6824,16 @@ pub const fn globals(size: [f32; 2], origin: [f32; 2], space: cherenkov::BlendSp
         attachment_origin: origin,
         size,
         origin,
-        space: match space {
-            cherenkov::BlendSpace::Linear => 0,
-            cherenkov::BlendSpace::SrgbEncoded => 1,
-        },
+        space: space_code(space),
         pad: 0,
+    }
+}
+
+/// A space as the shaders code it: `SPACE_LINEAR` (0) or `SPACE_SRGB` (1).
+pub const fn space_code(space: cherenkov::BlendSpace) -> u32 {
+    match space {
+        cherenkov::BlendSpace::Linear => 0,
+        cherenkov::BlendSpace::SrgbEncoded => 1,
     }
 }
 

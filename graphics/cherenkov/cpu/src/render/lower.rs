@@ -357,6 +357,11 @@ pub struct CaptureItem {
     /// the `[1, 5, 10, 10, 5, 1] / 32` binomial kernel centred on the same
     /// boxes.
     pub pyramid: cherenkov::CapturePyramid,
+    /// The group's working space (`BackdropSpec::blend_space`): the
+    /// capture's area mean, its chain, its pyramid and every member read
+    /// average premultiplied values in it, and reads return the linear
+    /// working space.
+    pub space: cherenkov::BlendSpace,
     /// The capture rect in capture texels (`union ⊕ apron` on the grid,
     /// clamped to the grid's extent).
     pub region: IRect,
@@ -2452,6 +2457,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 scale: spec.scale(),
                 levels: spec.levels().get(),
                 pyramid: spec.capture_pyramid(),
+                space: spec.member_blend_space(),
                 region,
                 union: IRect {
                     x0: 0,

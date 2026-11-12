@@ -786,12 +786,22 @@ impl BackdropSpec {
         }
     }
 
-    /// A group whose members composite their samples onto their canvas
-    /// in `space`: each member's composite — the effect's result at its
-    /// coverage, antialiased edge and outer extent included — blends with
-    /// the canvas in that space, converted there and back. The default
-    /// [`BlendSpace::Linear`] blends in the linear working space; a
-    /// member's own content and descendants composite as before.
+    /// A group working in `space`.
+    ///
+    /// The capture's area mean ([`CaptureScale`]), the group's filters,
+    /// its pyramid reduction ([`CaptureLevels`], box and Gaussian alike)
+    /// and every `backdrop_sample*` read ([`BackdropShaderSource`])
+    /// average premultiplied values in `space`; a read still returns the
+    /// linear working space, so effects see the same `BackdropPixel`
+    /// contract either way. Each member's composite — the effect's result
+    /// at its coverage, antialiased edge and outer extent included — then
+    /// blends with the canvas in `space`, converted there and back.
+    ///
+    /// The default [`BlendSpace::Linear`] does all of this in the linear
+    /// working space; [`BlendSpace::SrgbEncoded`] averages and blends
+    /// sRGB-encoded values, as display glass blurs, so a blurred
+    /// transition spreads less into dark regions. A member's own content
+    /// and descendants composite as before.
     #[must_use]
     pub const fn blend_space(self, space: BlendSpace) -> Self {
         Self {
@@ -839,9 +849,9 @@ impl BackdropSpec {
         self.union
     }
 
-    /// The space the group's members composite their samples in
-    /// ([`BlendSpace::Linear`] unless [`BackdropSpec::blend_space`] set
-    /// it).
+    /// The group's working space: the space its capture averages in and
+    /// its members composite their samples in ([`BlendSpace::Linear`]
+    /// unless [`BackdropSpec::blend_space`] set it).
     #[must_use]
     pub const fn member_blend_space(self) -> BlendSpace {
         self.blend_space
@@ -897,6 +907,8 @@ impl From<CaptureScale> for BackdropSpec {
 /// the read is bilinear at `q · s / 2^k` on `k = floor(level)` and
 /// `k = ceil(level)`, mixed by `fract(level)`; `backdrop_sample` is the
 /// level-0 read. The return value is premultiplied and written unclamped.
+/// Every read interpolates in the group's working space
+/// ([`BackdropSpec::blend_space`]) and returns the linear working space.
 ///
 /// On a group whose pyramid is [`CapturePyramid::Gaussian`],
 /// `fn backdrop_sample_blur(q: vec2<f32>, sigma: f32) -> vec4<f32>` is the

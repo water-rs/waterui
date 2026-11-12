@@ -50,7 +50,11 @@
 //! before its own isolation begins. The group's filters then run over the copy: `GaussianBlur` is the
 //! oracle's true Gaussian, the one layer filters run
 //! (`filter::gaussian_blur_rgba`), clamp-to-edge; `ColorMatrix` applies its three rows to
-//! the premultiplied `[r, g, b, a]` pixel, alpha untouched. Every member
+//! the premultiplied `[r, g, b, a]` pixel, alpha untouched. The copy, its
+//! area mean, its filters and its pyramid live in the group's
+//! `blend_space`, so an sRGB-encoded group averages encoded premultiplied
+//! values; every read of the capture interpolates in that space and
+//! returns the linear working space. Every member
 //! composites the filtered capture under its own clip's exact coverage,
 //! source-over, as its bottom-most content; its items and children draw
 //! after. The member — its backdrop sample and its content — composites
@@ -320,27 +324,25 @@ fn flattened(chain: &[Level]) -> Canvas {
 }
 
 /// One group's filtered capture of `chain`'s flattened image, at the
-/// group's scale and pyramid depth.
+/// group's scale and pyramid depth, in the group's working space
+/// (`blend_space`): the area mean, the filters and the pyramid average
+/// premultiplied values in that space.
 fn backdrop_capture(chain: &[Level], group: &BackdropGroup) -> Capture {
-    let space = chain
+    let stored = chain
         .iter()
         .rposition(|level| level.semantic)
         .map_or(BlendSpace::Linear, |i| chain[i].space);
+    let space = group.blend_space;
     let scale = group.scale;
-    let flat = flattened(chain);
+    let mut flat = flattened(chain);
+    move_canvas(&mut flat, stored, space);
     let mut capture = if scale < 1.0 {
         downsample(&flat, scale)
     } else {
         flat
     };
-    if !group.filters.is_empty() {
-        // The chain runs in the working space whatever space the capture
-        // is stored in.
-        move_canvas(&mut capture, space, BlendSpace::Linear);
-        for filter in &group.filters {
-            apply_backdrop_filter(&mut capture, filter);
-        }
-        move_canvas(&mut capture, BlendSpace::Linear, space);
+    for filter in &group.filters {
+        apply_backdrop_filter(&mut capture, filter);
     }
     // The blur pyramid: level `k` is the group's reduction of level
     // `k − 1` (the filtered capture) — the exact 2×2 box, or the
@@ -367,8 +369,10 @@ fn backdrop_capture(chain: &[Level], group: &BackdropGroup) -> Capture {
     }
 }
 
-/// One group's filtered capture: the capture grid's pixels, the space
-/// they were captured in, the grid's scale against device pixels, and
+/// One group's filtered capture: the capture grid's pixels, the group's
+/// working space they are stored and averaged in (every read of them
+/// returns the linear working space), the grid's scale against device
+/// pixels, and
 /// the pyramid's deeper levels (`levels[k − 1]` is level `k`,
 /// `k` in `1..n`; empty on a one-level capture).
 struct Capture {
@@ -1357,7 +1361,6 @@ impl Renderer {
             self.shape_coverage(clip, FillRule::NonZero, tf, clips)
         };
         if let Some(capture) = backdrops.captures.get(&gid) {
-            let cap_space = capture.space;
             let sdf_clip = member_sdf_clip(child, clip, tf, field_member)?;
             // The member's position in the group's paint order — the
             // ownership tie-break's `ord`.
@@ -1421,10 +1424,10 @@ impl Renderer {
                     Some((eval, params)) => eval.at(&reads.pixel(p, field), params),
                     None => sample_backdrop(child, capture, p, sdf_clip.as_ref(), field),
                 };
-                // The sample at its coverage blends source-over in the
-                // group's member space: the canvas converts into it and
-                // the result back.
-                let src = move_space(src.map(|v| v * c), cap_space, member_space);
+                // The sample — read in the linear working space — at its
+                // coverage blends source-over in the group's member
+                // space: the canvas converts into it and the result back.
+                let src = move_space(src.map(|v| v * c), BlendSpace::Linear, member_space);
                 *dst = if member_space == space {
                     src_over(*dst, src)
                 } else {
@@ -1744,10 +1747,12 @@ fn sample_backdrop(
     match &layer.backdrop_effect {
         // `bilinear` at a texel centre is the texel: a 1:1 capture keeps
         // the exact pre-effect read.
-        None if scale >= 1.0 => {
+        None if scale >= 1.0 => move_space(
             pixels[usize::min(p[1] as usize, height - 1) * width
-                + usize::min(p[0] as usize, width - 1)]
-        }
+                + usize::min(p[0] as usize, width - 1)],
+            capture.space,
+            BlendSpace::Linear,
+        ),
         None => at(p),
         Some(E::ColorMatrix { matrix }) => {
             // 3x4 on the premultiplied sample, filtrate layout: the fourth
@@ -1921,20 +1926,23 @@ impl crate::shader::BackdropReads for MemberReads<'_> {
 }
 
 /// `backdrop_sample(q)`: the capture's bilinear read at device point `q`,
-/// texel coordinate `q · s`.
+/// texel coordinate `q · s`, interpolated in the capture's space and
+/// returned in the linear working space.
 fn capture_at(capture: &Capture, q: [f64; 2]) -> [f64; 4] {
     let (base, scale) = (&capture.canvas, capture.scale);
-    crate::sdf::bilinear(
+    let read = crate::sdf::bilinear(
         &base.pixels,
         base.width,
         base.height,
         [q[0] * scale, q[1] * scale],
-    )
+    );
+    move_space(read, capture.space, BlendSpace::Linear)
 }
 
 /// `backdrop_sample_level(q, level)`: `level` clamped to `[0, n−1]`,
 /// bilinear at `floor`/`ceil` mixed by `fract`, at level-k texel
-/// coordinate `q · s / 2^k`.
+/// coordinate `q · s / 2^k`, interpolated in the capture's space and
+/// returned in the linear working space.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -1959,7 +1967,11 @@ fn capture_level(capture: &Capture, q: [f64; 2], level: f64) -> [f64; 4] {
     };
     let (lo, hi) = (read(k0), read(k1));
     let t = lc - k0;
-    std::array::from_fn(|i| (hi[i] - lo[i]).mul_add(t, lo[i]))
+    move_space(
+        std::array::from_fn(|i| (hi[i] - lo[i]).mul_add(t, lo[i])),
+        capture.space,
+        BlendSpace::Linear,
+    )
 }
 
 /// The `Backdrop` error for a union member whose clip gives

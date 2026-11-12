@@ -1,6 +1,7 @@
-//! Reduced-scale backdrop captures: the resolve pipeline (`resolve.wgsl`)
-//! that downsamples the device pixels under a capture region onto the
-//! capture grid, and the per-pass parameters it reads.
+//! Resolved backdrop captures: the resolve pipeline (`resolve.wgsl`)
+//! that resolves the device pixels under a capture region onto the
+//! capture grid in the group's working space, and the per-pass parameters
+//! it reads.
 
 use bytemuck::{Pod, Zeroable};
 
@@ -19,11 +20,13 @@ pub struct Params {
     pub extent: [f32; 2],
     /// The capture scale.
     pub scale: f32,
-    /// Padding to the uniform alignment.
-    pub pad: f32,
+    /// The space the capture stores and averages in, coded as
+    /// [`super::lower::globals`] codes a pass's space.
+    pub capture_space: u32,
 }
 
-/// The resolve a capture pass runs, when its capture is reduced.
+/// The resolve a capture pass runs, when its capture is reduced or
+/// stored in a space unlike its source's.
 pub fn of(pass: &Pass) -> Option<Resolve> {
     pass.capture.and_then(|capture| capture.resolve)
 }
@@ -52,7 +55,7 @@ pub fn params(pass: &Pass) -> Params {
         },
         extent: [resolve.extent[0] as f32, resolve.extent[1] as f32],
         scale: resolve.scale,
-        pad: 0.0,
+        capture_space: super::lower::space_code(resolve.space),
     })
 }
 

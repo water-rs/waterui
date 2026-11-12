@@ -40,7 +40,7 @@ const SHARED: &str = include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl"));
 const BLEND: &str = include_str!("../src/render/blend.wgsl");
 const PROJECTIVE: &str = include_str!("../src/render/projective.wgsl");
 const MIP: &str = include_str!("../src/render/mip.wgsl");
-const RESOLVE: &str = include_str!("../src/render/resolve.wgsl");
+const RESOLVE: &str = include_str!(concat!(env!("OUT_DIR"), "/resolve.wgsl"));
 
 /// The Metal language version `build.rs` precompiles the engine modules
 /// at: 2.3, the first to take `-ftexture-write-rounding-mode` (#2773).

@@ -602,9 +602,10 @@ const MIP: Fixed = Fixed {
     entries: entries::MIP,
 };
 
-/// `resolve.wgsl`, the backdrop capture resolve module.
+/// The space fragment plus `resolve.wgsl`, the backdrop capture resolve
+/// module.
 const RESOLVE: Fixed = Fixed {
-    wgsl: include_str!("resolve.wgsl"),
+    wgsl: include_str!(concat!(env!("OUT_DIR"), "/resolve.wgsl")),
     #[cfg(cherenkov_spirv)]
     spirv: spirv::RESOLVE,
     metallib: RESOLVE_METALLIB,

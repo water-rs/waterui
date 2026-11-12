@@ -120,10 +120,14 @@ pub struct MaterialCapture {
     pub pyramid: CapturePyramid,
     /// How the class's members form groups inside a material scope.
     pub grouping: MaterialGrouping,
-    /// The space the class's members composite their samples onto their
-    /// canvas in ([`BackdropSpec::blend_space`]): a material specified
-    /// in sRGB-encoded space composites its antialiased edge and outer
-    /// extent with [`BlendSpace::SrgbEncoded`].
+    /// The class's groups' working space ([`BackdropSpec::blend_space`]):
+    /// their captures' area mean, filters, pyramid reduction and every
+    /// `backdrop_sample*` read average premultiplied values in it — reads
+    /// still return the linear working space — and their members
+    /// composite their samples onto their canvas in it. A material
+    /// specified in sRGB-encoded space, as display glass blurs, uses
+    /// [`BlendSpace::SrgbEncoded`] for its blur and its antialiased edge
+    /// and outer extent alike.
     ///
     /// [`BackdropSpec::blend_space`]: crate::BackdropSpec::blend_space
     pub blend_space: BlendSpace,
