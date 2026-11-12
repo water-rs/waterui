@@ -301,6 +301,17 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
             .collect()
     }
 
+    /// Every bound segment's live segmented picker, one per segment.
+    #[cfg(test)]
+    pub(crate) fn live_segmenteds(
+        &self,
+    ) -> Vec<Rc<crate::renderer::live_segmented::LiveSegmented>> {
+        self.states
+            .values()
+            .filter_map(|state| state.handles.as_ref()?.live_segmented())
+            .collect()
+    }
+
     pub(crate) fn handles_for_key(
         &self,
         key: &InteractionKey,

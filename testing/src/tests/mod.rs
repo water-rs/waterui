@@ -423,6 +423,14 @@ mod token_probe {
             hydrolysis::testing::plain_stepper_look()
         }
 
+        fn segmented_picker(
+            &self,
+            _spec: &hydrolysis::theme::SegmentedSpec,
+            _env: &Environment,
+        ) -> hydrolysis::theme::SegmentedLook {
+            hydrolysis::testing::plain_segmented_look()
+        }
+
         fn input_field_metrics(&self) -> InputFieldMetrics {
             InputFieldMetrics {
                 label_height: 14.0,
@@ -485,7 +493,6 @@ mod token_probe {
                 popup_top_spacing: 4.0,
                 popup_row_height: 48.0,
                 popup_corner_radius: 6.0,
-                segment_min_width: 58.0,
             }
         }
 

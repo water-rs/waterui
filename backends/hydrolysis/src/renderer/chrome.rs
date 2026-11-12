@@ -125,7 +125,14 @@ impl LiveSource for LiveCaret {
 }
 
 /// A look's recording of its parts, which may declare backdrop materials.
-type PartsBody = Rc<dyn Fn(&mut Recorder)>;
+pub type PartsBody = Rc<dyn Fn(&mut Recorder)>;
+
+/// The paint a label's default-coloured text runs draw in, live: the text a
+/// widget places as a retained sub-view under an environment carrying it
+/// records its runs against this paint, so the label follows the widget's
+/// label colour operand without recording again.
+#[derive(Clone)]
+pub struct LabelPaint(pub Computed<Paint>);
 
 /// Look parts whose recording may declare backdrop materials
 /// ([`Recorder::backdrop_material`]), recorded once with every operand

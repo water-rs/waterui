@@ -600,12 +600,19 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             alignment,
             env,
             TailMark::None,
+            None,
         );
     }
 
+    /// Records `styled` broken at `max_width` with its `tail` treatment, its
+    /// default-coloured runs drawn in `paint`, live, when given.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+    )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the text, its placement, its environment and its paint are independent inputs"
     )]
     pub(crate) fn render_styled_text_limited(
         &mut self,
@@ -615,9 +622,10 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         alignment: HorizontalAlignment,
         env: &Environment,
         tail: TailMark,
+        paint: Option<&nami::Computed<cherenkov_record::Paint>>,
     ) {
         let input = resolve_text_layout_input(&styled, alignment, env);
-        self.record_text_input(ctx, max_width, &input, tail);
+        self.record_text_input(ctx, max_width, &input, tail, paint);
     }
 
     /// [`Self::render_styled_text_limited`], also returning the layout the
@@ -625,6 +633,10 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// re-fetched from the shared cache rather than shaped twice. The text
     /// leaf uses it for per-span geometry (tap targets and `Link`
     /// accessibility children); paint-only callers skip the lookup.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the text, its placement, its environment and its paint are independent inputs"
+    )]
     pub(crate) fn render_styled_text_with_layout(
         &mut self,
         ctx: RenderContext,
@@ -633,9 +645,10 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         alignment: HorizontalAlignment,
         env: &Environment,
         tail: TailMark,
+        paint: Option<&nami::Computed<cherenkov_record::Paint>>,
     ) -> E::Layout {
         let input = resolve_text_layout_input(styled, alignment, env);
-        self.record_text_input(ctx, max_width, &input, tail);
+        self.record_text_input(ctx, max_width, &input, tail, paint);
         let (max_lines, tail_ellipsis) = tail.parts();
         if tail_ellipsis {
             self.state
@@ -647,23 +660,32 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     }
 
     /// Records `input` broken at `max_width` and positioned at `ctx`'s
-    /// origin, and pushes the recording as a live source.
+    /// origin, its default-coloured runs in `paint` when given, and pushes
+    /// the recording as a live source.
     fn record_text_input(
         &mut self,
         ctx: RenderContext,
         max_width: f32,
         input: &crate::text::ResolvedTextLayoutInput,
         tail: TailMark,
+        paint: Option<&nami::Computed<cherenkov_record::Paint>>,
     ) {
         let state = &mut self.state;
         let max_width = Some(max_width);
-        let fragment = state.text.record(
-            input,
-            max_width,
-            tail,
-            &mut state.counters,
-            &mut state.text_scenes,
-        );
+        let fragment = match paint {
+            Some(paint) => {
+                state
+                    .text
+                    .record_painted(input, max_width, tail, paint, &mut state.counters)
+            }
+            None => state.text.record(
+                input,
+                max_width,
+                tail,
+                &mut state.counters,
+                &mut state.text_scenes,
+            ),
+        };
         let source: Rc<dyn crate::renderer::chrome::LiveSource> = fragment;
         self.push_live(
             {
@@ -1599,6 +1621,40 @@ pub fn measure_button_view_intrinsic<E: crate::text::TextEngine>(
     )
 }
 
+/// Measures a segmented picker of `items` under `look` beneath a heading of
+/// `label_size`: each item's label at the larger of its selected and
+/// unselected fonts, laid out by the look's layout.
+pub fn measure_segmented_intrinsic<E: crate::text::TextEngine>(
+    look: &crate::theme::SegmentedLook,
+    items: &[waterui_form::picker::PickerItem<waterui_core::id::Id>],
+    label_size: LayoutSize,
+    state: &mut HydroState<E>,
+    env: &Environment,
+) -> LayoutSize {
+    if items.is_empty() {
+        contract_violation!(
+            "hydrolysis picker requires at least one item; the picker measures as zero"
+        );
+        return LayoutSize::zero();
+    }
+    let count = items.len();
+    let sizes: Vec<LayoutSize> = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let styled = resolved_text_styled(&item.content, env, state);
+            crate::widgets::controls::picker::segmented_label_size(
+                look,
+                &styled,
+                crate::theme::Segment { index, count },
+                state,
+                env,
+            )
+        })
+        .collect();
+    crate::widgets::controls::picker::segmented_intrinsic(look.layout(), &sizes, label_size)
+}
+
 pub fn measure_picker_intrinsic<E: crate::text::TextEngine>(
     picker: &PickerConfig,
     state: &mut HydroState<E>,
@@ -1621,11 +1677,6 @@ pub fn measure_picker_intrinsic<E: crate::text::TextEngine>(
 /// the retained-node path passes the label measured from its built
 /// [`crate::renderer::RetainedSubview`], so layout and the in-field label
 /// render agree on the label height.
-// one continuous intrinsic-measurement pass per widget kind; splitting it would only mirror the match arms artificially
-#[expect(
-    clippy::too_many_lines,
-    reason = "the measurement walks each picker's structure end to end; the length is the enumeration, not logic"
-)]
 pub fn measure_picker_intrinsic_with_label_size<E: crate::text::TextEngine>(
     picker: &PickerConfig,
     label_size: LayoutSize,
@@ -1726,40 +1777,9 @@ pub fn measure_picker_intrinsic_with_label_size<E: crate::text::TextEngine>(
             )
         }
         PickerStyle::Segmented => {
-            let metrics = theme.picker_metrics(PickerStyle::Segmented);
-            let mut total_width: f64 = 0.0;
-            let mut item_heights = Vec::with_capacity(items.len());
-            for item in &items {
-                let styled = resolved_text_styled(&item.content, env, state);
-                let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
-                total_width += metrics
-                    .horizontal_inset
-                    .mul_add(2.0, f64::from(size.width))
-                    .max(metrics.segment_min_width);
-                item_heights.push(size.height);
-            }
-            // A visible group label heads the segment row edge to edge: its
-            // width competes with the row's total width with no inset term,
-            // and it adds its height plus the metrics' label spacing on top,
-            // so the row keeps its unlabelled height. A zero-height (hidden)
-            // label adds nothing — same presence rule as the menu field label.
-            let width = total_width
-                .max(f64::from(label_size.width))
-                .max(metrics.min_width);
-            // The minimum height floors the row alone: the heading adds on
-            // top of it so the row keeps its unlabelled height.
-            let row_height =
-                crate::widgets::controls::picker::segmented_row_height(metrics, item_heights);
-            let height = row_height
-                + if label_size.height > 0.0 {
-                    f64::from(label_size.height) + metrics.label_spacing
-                } else {
-                    0.0
-                };
-            LayoutSize::new(
-                crate::num_cast::f64_as_f32(width),
-                crate::num_cast::f64_as_f32(height),
-            )
+            let spec = crate::widgets::controls::picker::segmented_spec(picker, item_count, env);
+            let look = theme.segmented_picker(&spec, env);
+            measure_segmented_intrinsic(&look, &items, label_size, state, env)
         }
         other => {
             contract_violation!(

@@ -36,6 +36,7 @@ mod input;
 mod interaction_layers;
 mod lifecycle;
 pub mod live_progress;
+pub mod live_segmented;
 pub mod live_toggle;
 pub mod material;
 mod metadata;

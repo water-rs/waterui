@@ -378,10 +378,6 @@ pub struct PickerMetrics {
     pub popup_row_height: f64,
     /// Popup menu corner radius.
     pub popup_corner_radius: f64,
-    /// Minimum width of one segmented-picker segment, including its
-    /// `horizontal_inset` padding on both sides (M3 `ButtonDefaults.MinWidth`
-    /// is 58dp per segment; unused by non-segmented styles).
-    pub segment_min_width: f64,
 }
 
 /// How a tab bar lays out each item's icon and label.
@@ -934,41 +930,20 @@ pub trait WidgetTheme {
         _state: WidgetInteractionState,
     ) {
     }
-    /// Optional segmented picker label foreground override.
-    fn segmented_picker_label_color(&self, _selected: bool) -> Option<Color> {
-        None
-    }
-    /// Draw segmented picker container and dividers.
-    fn draw_segmented_picker_container(
+    /// The look of a segmented picker.
+    ///
+    /// Hydrolysis measures, places, hit-tests, records and animates the
+    /// picker from the returned look, and requests it again only when
+    /// `spec` changes; everything else reaches the look through its
+    /// [`Driven`](super::Driven) values, which read the picker's
+    /// [`SegmentedValue`](super::SegmentedValue) or each segment's
+    /// [`Segment`](super::Segment), so a selection change, a hover, a press
+    /// or a drag moves live operands and records nothing.
+    fn segmented_picker(
         &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _segment_count: usize,
-    ) {
-    }
-    /// Draw one segmented picker segment background.
-    fn draw_segmented_picker_segment(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _selected: bool,
-        _is_first: bool,
-        _is_last: bool,
-    ) {
-    }
-    /// Draw one segmented picker state layer. `is_first`/`is_last` select the
-    /// item-shape radii the layer must be clipped to: the first item rounds
-    /// its leading side, the last its trailing side, middle items are square.
-    fn draw_segmented_picker_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _selected: bool,
-        _is_first: bool,
-        _is_last: bool,
-        _state: WidgetInteractionState,
-    ) {
-    }
+        spec: &super::SegmentedSpec,
+        env: &Environment,
+    ) -> super::SegmentedLook;
 
     /// Return how the slider of `spec` looks and responds, as plain data
     /// (water-rs/waterui#1434): the measures it is laid out by, its track,

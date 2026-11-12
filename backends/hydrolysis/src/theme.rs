@@ -15,7 +15,8 @@
 //! - the looks a theme returns for the widgets ported to the declarative
 //!   contract (water-rs/waterui#1434), such as [`ButtonLook`] for a
 //!   [`ButtonSpec`], [`SwitchLook`] for a [`ToggleSpec`], [`StepperLook`]
-//!   for a [`StepperSpec`] and [`LinearProgressLook`] for a
+//!   for a [`StepperSpec`], [`SegmentedLook`] for a [`SegmentedSpec`] and
+//!   [`LinearProgressLook`] for a
 //!   [`ProgressSpec`], and [`GlassLook`] for a `.background(Glass…)`, built from the look vocabulary: [`Driven`] values over
 //!   the widget's [`Inputs`] with their [`Motion`], [`Custom`] parts,
 //!   [`Label`] styling and [`HitRegion`]s;
@@ -55,6 +56,7 @@ mod glass;
 pub(crate) mod live;
 mod look;
 mod progress;
+mod segmented;
 mod stepper;
 mod toggle;
 mod widget;
@@ -73,6 +75,10 @@ pub use look::{
 pub(crate) use look::{Change, CustomPart, LayerRotation, LiveDriven, RealizedCustom, Retarget};
 pub use progress::{
     IndicatorLook, LinearLayout, LinearProgressLook, ProgressControl, ProgressSpec,
+};
+pub use segmented::{
+    Segment, SegmentLabel, SegmentedDrag, SegmentedLayout, SegmentedLook, SegmentedSpec,
+    SegmentedValue,
 };
 pub use stepper::{StepperLook, StepperSpec};
 pub use toggle::{CheckboxLook, SwitchDrag, SwitchLook, ToggleBackdrop, ToggleControl, ToggleSpec};

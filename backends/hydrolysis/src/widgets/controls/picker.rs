@@ -1,16 +1,24 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::chrome::LabelPaint;
+use crate::renderer::live_segmented::{LiveSegmented, LiveSegmentedParts, SegmentedFrames};
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, PickerMenuEntry, PickerMenuRequest,
     RenderContext, RetainedSubview, WidgetRenderContext, measure_picker_intrinsic,
     measure_picker_intrinsic_with_label_size,
+};
+use crate::renderer::{InteractionKey, Track, TrackAction, measure_segmented_intrinsic};
+use crate::theme::{
+    Inputs, Segment, SegmentedLayout, SegmentedLook, SegmentedSpec, SpecTint, WidgetTheme,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
     Toggled as AccessibilityToggled,
 };
-use nami::{Binding, Signal};
+use kurbo::{Point, Rect, Vec2};
+use nami::{Binding, Computed, Signal, SignalExt as _};
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use waterui::ViewExt as _;
@@ -20,12 +28,15 @@ use waterui_core::Environment;
 use waterui_core::Native;
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
+use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{
     HorizontalAlignment, ProposalSize, Size as LayoutSize, StretchAxis, ViewDimensions,
     layout_direction,
 };
 use waterui_form::picker::PickerItem;
 use waterui_form::picker::{PickerConfig, PickerStyle};
+use waterui_text::IntoText as _;
+use waterui_text::font::Font;
 use waterui_text::styled::StyledStr;
 
 use crate::renderer::local_interaction_state;
@@ -51,6 +62,34 @@ pub struct PickerRenderState<E: crate::text::TextEngine> {
     pub(crate) config: PickerConfig,
     label_view: RetainedSubview<E>,
     menu_open: Rc<Cell<bool>>,
+    segmented: SegmentedState<E>,
+}
+
+/// A segmented picker's retained state: the look the theme gave for its
+/// spec, the parts recorded from it, and each segment's label.
+struct SegmentedState<E: crate::text::TextEngine> {
+    look: Option<(SegmentedSpec, SegmentedLook)>,
+    parts: Option<LiveSegmentedParts>,
+    /// Each segment's label, leading first, built for the held look.
+    labels: Vec<RetainedSubview<E>>,
+    /// Raised by the items' watcher: the labels are built again.
+    items_changed: Rc<Cell<bool>>,
+    /// Raised by the selection's watcher for the accessibility publish.
+    selection_changed: Rc<Cell<bool>>,
+    watches: Vec<Box<dyn Any>>,
+}
+
+impl<E: crate::text::TextEngine> Default for SegmentedState<E> {
+    fn default() -> Self {
+        Self {
+            look: None,
+            parts: None,
+            labels: Vec::new(),
+            items_changed: Rc::new(Cell::new(false)),
+            selection_changed: Rc::new(Cell::new(false)),
+            watches: Vec::new(),
+        }
+    }
 }
 
 impl<E: crate::text::TextEngine> PickerRenderState<E> {
@@ -59,7 +98,49 @@ impl<E: crate::text::TextEngine> PickerRenderState<E> {
             label_view: RetainedSubview::new(menu_picker_label_view(config.label())),
             config,
             menu_open: Rc::new(Cell::new(false)),
+            segmented: SegmentedState::default(),
         }
+    }
+
+    /// The segmented look for `spec` in `env`: the one already held when
+    /// the spec is unchanged, otherwise requested again, which drops the
+    /// parts and the labels built from the previous one.
+    fn segmented_look(
+        &mut self,
+        theme: &Rc<dyn WidgetTheme>,
+        spec: SegmentedSpec,
+        env: &Environment,
+    ) -> SegmentedLook {
+        if let Some(look) = self.held_segmented_look(&spec) {
+            return look.clone();
+        }
+        let look = theme.segmented_picker(&spec, env);
+        self.segmented.look = Some((spec, look.clone()));
+        self.segmented.parts = None;
+        self.segmented.labels.clear();
+        look
+    }
+
+    fn held_segmented_look(&self, spec: &SegmentedSpec) -> Option<&SegmentedLook> {
+        self.segmented
+            .look
+            .as_ref()
+            .filter(|(held, _)| held == spec)
+            .map(|(_, look)| look)
+    }
+
+    /// The segmented look for `spec` in `env` without holding it: the held
+    /// one, or a fresh one for a measurement or an accessibility emission
+    /// ahead of the render that holds it.
+    fn peek_segmented_look(
+        &self,
+        theme: &Rc<dyn WidgetTheme>,
+        spec: &SegmentedSpec,
+        env: &Environment,
+    ) -> SegmentedLook {
+        self.held_segmented_look(spec)
+            .cloned()
+            .unwrap_or_else(|| theme.segmented_picker(spec, env))
     }
 
     /// Eagerly build the label sub-view (the measure path has only
@@ -309,25 +390,88 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                     );
                 }
             }
-            PickerStyle::Radio | PickerStyle::Segmented => {
-                let mut group = AccessibilityNode::new(
-                    crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
-                        env,
-                        AccessibilityNodeRole::Group,
-                    ),
-                );
-                let default_label =
-                    crate::renderer::SemanticCore::<E>::accessibility_label_from_label(
-                        picker.label(),
+            PickerStyle::Segmented => {
+                let mut group = option_group::<E>(renderer, picker, env);
+                // The rendered tree follows the selection live: the render
+                // path reads it unwatched, and the watcher's flag publishes
+                // each change. The semantic walk has no render to skip.
+                let selected = if ctx.is_some() {
+                    picker.selection().snapshot()
+                } else {
+                    renderer.read_signal(picker.selection())
+                };
+                let labels: Vec<_> = items
+                    .iter()
+                    .map(|item| renderer.read_resolved_text_styled(&item.content, env))
+                    .collect();
+                // The segments' rectangles come from the placement the
+                // parts and labels are drawn by.
+                let segment_rects = ctx.as_ref().zip(theme).map(|(ctx, theme)| {
+                    let spec = segmented_spec(picker, items.len(), env);
+                    let look = state.peek_segmented_look(theme, &spec, env);
+                    let sizes: Vec<_> = labels
+                        .iter()
+                        .enumerate()
+                        .map(|(index, styled)| {
+                            let segment = Segment {
+                                index,
+                                count: items.len(),
+                            };
+                            segmented_label_size(&look, styled, segment, renderer.state_mut(), env)
+                        })
+                        .collect();
+                    let heading = state
+                        .label_view
+                        .measure_built(renderer.state_mut(), env, theme);
+                    place_segmented(
+                        look.layout(),
+                        &sizes,
+                        f64::from(heading.height),
+                        ctx.bounds(),
+                        spec.direction(),
+                    )
+                    .drawn
+                });
+                let mut options = Vec::with_capacity(items.len());
+                for (index, (item, label)) in items.iter().zip(&labels).enumerate() {
+                    let rect = segment_rects.as_ref().map(|rects| rects[index]);
+                    let key = option_key(owner, item.tag);
+                    register_option(
+                        renderer,
+                        &mut group,
+                        &key,
+                        picker,
+                        item.tag,
+                        label.to_plain().to_string(),
+                        item.tag == selected,
+                        disabled,
+                        rect,
                         env,
                     );
-                let group_label = renderer.resolve_accessibility_label(env, default_label);
-                if let Some(label) = group_label {
-                    group.set_label(label);
+                    options.push((key, item.tag));
                 }
-                if let Some(value) = renderer.resolve_accessibility_value(env, None) {
-                    group.set_value(value);
+                if ctx.is_some() {
+                    // An option's discriminator is its tag's 32 bits, so
+                    // `usize::MAX` names the group alone.
+                    renderer.register_live_selection(
+                        InteractionKey::for_rc(owner, usize::MAX),
+                        Rc::clone(&state.segmented.selection_changed),
+                        picker.selection().clone(),
+                        options,
+                    );
                 }
+                match ctx {
+                    Some(ctx) => {
+                        let _ =
+                            renderer.register_accessibility_node(group, ctx.bounds(), env, None);
+                    }
+                    None => {
+                        let _ = renderer.register_accessibility_node_semantic(group, env, None);
+                    }
+                }
+            }
+            PickerStyle::Radio => {
+                let mut group = option_group::<E>(renderer, picker, env);
                 let geometry = ctx
                     .as_ref()
                     .zip(theme)
@@ -367,86 +511,37 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                         (styled.to_plain().to_string(), size)
                     })
                     .collect();
-                let label_heights: Vec<f32> = labels.iter().map(|(_, size)| size.height).collect();
-                for (index, (item, (label, label_size))) in items.iter().zip(labels).enumerate() {
+                for (item, (label, label_size)) in items.iter().zip(labels) {
                     let row_rect = geometry.map(|(ctx, metrics)| {
-                        if picker.style() == PickerStyle::Segmented {
-                            let row_height =
-                                segmented_row_height(metrics, label_heights.iter().copied());
-                            let (_, segment_row) =
-                                segmented_label_area(ctx.bounds(), group_label_height, row_height);
-                            let segment_width =
-                                segment_row.width() / crate::num_cast::usize_as_f64(items.len());
-                            let x0 = segment_width
-                                .mul_add(crate::num_cast::usize_as_f64(index), segment_row.x0);
-                            kurbo::Rect::new(x0, segment_row.y0, x0 + segment_width, segment_row.y1)
-                        } else {
-                            let y = row_y.unwrap_or_else(|| ctx.bounds().y0);
-                            let row_height =
-                                f64::from(label_size.height).max(metrics.radio_indicator_size);
-                            let rect = kurbo::Rect::new(
-                                ctx.bounds().x0,
-                                y,
-                                ctx.bounds().x1,
-                                (y + row_height).min(ctx.bounds().y1),
-                            );
-                            row_y = Some(rect.y1 + metrics.radio_row_spacing);
-                            rect
-                        }
+                        let y = row_y.unwrap_or_else(|| ctx.bounds().y0);
+                        let row_height =
+                            f64::from(label_size.height).max(metrics.radio_indicator_size);
+                        let rect = kurbo::Rect::new(
+                            ctx.bounds().x0,
+                            y,
+                            ctx.bounds().x1,
+                            (y + row_height).min(ctx.bounds().y1),
+                        );
+                        row_y = Some(rect.y1 + metrics.radio_row_spacing);
+                        rect
                     });
                     if let Some(rect) = row_rect
                         && rect.height() <= 0.0
                     {
                         break;
                     }
-                    let mut option = AccessibilityNode::new(
-                        crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
-                            env,
-                            AccessibilityNodeRole::RadioButton,
-                        ),
+                    register_option(
+                        renderer,
+                        &mut group,
+                        &option_key(owner, item.tag),
+                        picker,
+                        item.tag,
+                        label,
+                        item.tag == selected,
+                        disabled,
+                        row_rect,
+                        env,
                     );
-                    option.set_label(label);
-                    let is_selected = item.tag == selected;
-                    option.set_toggled(AccessibilityToggled::from(is_selected));
-                    option.set_selected(is_selected);
-                    option.add_action(AccessibilityAction::Focus);
-                    if disabled {
-                        option.set_disabled();
-                    } else {
-                        option.add_action(AccessibilityAction::Click);
-                    }
-                    let option_target =
-                        (!disabled).then(|| AccessibilityActionTarget::PickerSelect {
-                            selection: picker.selection().clone(),
-                            target: item.tag,
-                        });
-                    let child_id = match row_rect {
-                        Some(row_rect) => {
-                            let row_bounds = row_rect;
-                            renderer.register_accessibility_child_node_with_key(
-                                i64::from(i32::from(item.tag)),
-                                option,
-                                row_bounds,
-                                env,
-                                option_target,
-                            )
-                        }
-                        None => renderer.register_accessibility_child_node_with_key_semantic(
-                            i64::from(i32::from(item.tag)),
-                            option,
-                            env,
-                            option_target,
-                        ),
-                    };
-                    if let Some(child_id) = child_id {
-                        group.push_child(child_id);
-                        let discriminator =
-                            crate::num_cast::i32_as_u32(i32::from(item.tag)) as usize;
-                        renderer.register_accessibility_focus_link(
-                            &crate::renderer::InteractionKey::for_rc(owner, discriminator),
-                            child_id,
-                        );
-                    }
                 }
                 match ctx {
                     Some(ctx) => {
@@ -470,6 +565,91 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
     }
 }
 
+/// The interaction identity of the option tagged `tag`: the key its
+/// segment or row binds its interaction by and links its node to.
+fn option_key<E: crate::text::TextEngine>(
+    owner: &Rc<RefCell<PickerRenderState<E>>>,
+    tag: Id,
+) -> InteractionKey {
+    InteractionKey::for_rc(owner, crate::num_cast::i32_as_u32(i32::from(tag)) as usize)
+}
+
+/// The group node a radio or segmented picker's options hang under.
+#[cfg(feature = "accessibility")]
+fn option_group<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    picker: &PickerConfig,
+    env: &Environment,
+) -> AccessibilityNode {
+    let mut group = AccessibilityNode::new(
+        crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
+            env,
+            AccessibilityNodeRole::Group,
+        ),
+    );
+    let default_label =
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(picker.label(), env);
+    if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
+        group.set_label(label);
+    }
+    if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+        group.set_value(value);
+    }
+    group
+}
+
+/// Emits the radio-button node of the option tagged `tag` under `group`, at
+/// `rect` in the rendered tree (`None` in the semantic one), linked to the
+/// interaction `key` binds.
+#[cfg(feature = "accessibility")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one option's independent facts: its group, identity, selection, label, state and place"
+)]
+fn register_option<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    group: &mut AccessibilityNode,
+    key: &InteractionKey,
+    picker: &PickerConfig,
+    tag: Id,
+    label: String,
+    is_selected: bool,
+    disabled: bool,
+    rect: Option<kurbo::Rect>,
+    env: &Environment,
+) {
+    let mut option = AccessibilityNode::new(
+        crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
+            env,
+            AccessibilityNodeRole::RadioButton,
+        ),
+    );
+    option.set_label(label);
+    option.set_toggled(AccessibilityToggled::from(is_selected));
+    option.set_selected(is_selected);
+    option.add_action(AccessibilityAction::Focus);
+    if disabled {
+        option.set_disabled();
+    } else {
+        option.add_action(AccessibilityAction::Click);
+    }
+    let target = (!disabled).then(|| AccessibilityActionTarget::PickerSelect {
+        selection: picker.selection().clone(),
+        target: tag,
+    });
+    let child_key = i64::from(i32::from(tag));
+    let child_id = match rect {
+        Some(rect) => renderer
+            .register_accessibility_child_node_with_key(child_key, option, rect, env, target),
+        None => renderer
+            .register_accessibility_child_node_with_key_semantic(child_key, option, env, target),
+    };
+    if let Some(child_id) = child_id {
+        group.push_child(child_id);
+        renderer.register_accessibility_focus_link(key, child_id);
+    }
+}
+
 /// Measures a retained picker leaf from its [`PickerRenderState`], reading the
 /// label size from its already-built [`RetainedSubview`] so layout and the
 /// in-field label render agree (mirrors [`measure_picker_intrinsic`]).
@@ -485,8 +665,15 @@ pub fn measure_picker_node<E: crate::text::TextEngine>(
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let label_size = state.label_view.measure_built(hydro, env, theme);
-    let intrinsic =
-        measure_picker_intrinsic_with_label_size(&state.config, label_size, hydro, env, theme);
+    let intrinsic = if state.config.style() == PickerStyle::Segmented {
+        // The held look, so the measurement and the drawing agree.
+        let items = hydro.measure_signal(state.config.items());
+        let spec = segmented_spec(&state.config, items.len(), env);
+        let look = state.peek_segmented_look(theme, &spec, env);
+        measure_segmented_intrinsic(&look, &items, label_size, hydro, env)
+    } else {
+        measure_picker_intrinsic_with_label_size(&state.config, label_size, hydro, env, theme)
+    };
     let width = match (
         waterui_core::NativeView::stretch_axis(&state.config),
         proposal.width,
@@ -728,7 +915,7 @@ pub fn render_menu_picker<E: crate::text::TextEngine>(
     let (label_bounds, text_bounds) =
         menu_picker_content_rects(ctx.bounds, metrics, label_size, right_to_left);
     if let Some(label_bounds) = label_bounds {
-        flush_picker_label(ctx, owner, env, label_bounds);
+        flush_picker_label(ctx, &mut owner.borrow_mut().label_view, env, label_bounds);
     }
     ctx.render_styled_text(
         StyledStr::plain(selected_text),
@@ -814,8 +1001,96 @@ pub fn radio_group_label_area(
     }
 }
 
+/// The spec of the segmented picker `config` describes, with `count`
+/// segments, in `env`.
+pub fn segmented_spec(config: &PickerConfig, count: usize, env: &Environment) -> SegmentedSpec {
+    SegmentedSpec::new(
+        config.size(),
+        count,
+        layout_direction(env).snapshot(),
+        SpecTint::resolve(env),
+    )
+}
+
+/// The font `look` draws `segment`'s label in, selected or not.
+fn segment_font(look: &SegmentedLook, segment: Segment, selected: bool) -> Font {
+    let state = if selected {
+        InteractionState::SELECTED
+    } else {
+        InteractionState::empty()
+    };
+    look.label()
+        .get_font()
+        .target(&Inputs::at_rest(Rect::ZERO, state, &segment))
+}
+
+/// The size `segment`'s label `styled` is laid out at under `look`: the
+/// larger of its selected and unselected fonts' in each direction, so a
+/// selection change never changes the picker's size.
+pub fn segmented_label_size<E: crate::text::TextEngine>(
+    look: &SegmentedLook,
+    styled: &StyledStr,
+    segment: Segment,
+    state: &mut HydroState<E>,
+    env: &Environment,
+) -> LayoutSize {
+    let unselected = HydrolysisRenderer::measure_text_intrinsic_size(
+        state,
+        styled.clone().font(segment_font(look, segment, false)),
+        env,
+    );
+    let selected = HydrolysisRenderer::measure_text_intrinsic_size(
+        state,
+        styled.clone().font(segment_font(look, segment, true)),
+        env,
+    );
+    LayoutSize::new(
+        unselected.width.max(selected.width),
+        unselected.height.max(selected.height),
+    )
+}
+
+/// The intrinsic size of a segmented picker laid out by `layout` whose
+/// segments' labels measure `sizes` under a heading of `label_size`: each
+/// segment as wide as its label and padding, at least the least segment
+/// width, the row as tall as [`segmented_row_height`], and a visible heading
+/// above it, spaced by the layout's label spacing.
+pub fn segmented_intrinsic(
+    layout: &SegmentedLayout,
+    sizes: &[LayoutSize],
+    label_size: LayoutSize,
+) -> LayoutSize {
+    let total_width: f64 = sizes
+        .iter()
+        .map(|size| {
+            layout
+                .label_padding
+                .x
+                .mul_add(2.0, f64::from(size.width))
+                .max(layout.minimum_segment_width)
+        })
+        .sum();
+    // The heading spans the row edge to edge: its width competes with the
+    // row's with no padding term. A zero-height (hidden) heading adds
+    // nothing.
+    let width = total_width
+        .max(f64::from(label_size.width))
+        .max(layout.minimum_width);
+    let row_height = segmented_row_height(layout, sizes.iter().map(|size| size.height));
+    let height = row_height
+        + if label_size.height > 0.0 {
+            f64::from(label_size.height) + layout.label_spacing
+        } else {
+            0.0
+        };
+    LayoutSize::new(
+        crate::num_cast::f64_as_f32(width),
+        crate::num_cast::f64_as_f32(height),
+    )
+}
+
 /// The segment row's height from its segments' label heights: the tallest
-/// label plus the vertical insets, floored at the minimum height.
+/// label plus its vertical padding, floored at the layout's row height.
 ///
 /// Layout carries extents as `f32`, so the row height is quantised to `f32`
 /// here, once. The measured size adds the heading on top of this value, and
@@ -823,23 +1098,85 @@ pub fn radio_group_label_area(
 /// as the bounds minus the heading would inherit the rounding of the `f32`
 /// total instead, and the labelled row would differ from the unlabelled one.
 pub fn segmented_row_height(
-    metrics: PickerMetrics,
+    layout: &SegmentedLayout,
     item_heights: impl IntoIterator<Item = f32>,
 ) -> f64 {
     let max_item_height = item_heights.into_iter().map(f64::from).fold(0.0, f64::max);
     f64::from(crate::num_cast::f64_as_f32(
-        metrics
-            .vertical_inset
+        layout
+            .label_padding
+            .y
             .mul_add(2.0, max_item_height)
-            .max(metrics.min_height),
+            .max(layout.row_height),
     ))
+}
+
+/// Where a segmented picker's heading, parts and labels lie in its bounds.
+#[derive(Debug, Clone)]
+pub struct SegmentedPlacement {
+    /// The heading's rect, when the heading is visible.
+    pub heading: Option<Rect>,
+    /// The frames the parts record against, left to right.
+    pub frames: SegmentedFrames,
+    /// Each segment's rect as drawn, leading first: the frames mirrored
+    /// about the row in a right-to-left layout.
+    pub drawn: Vec<Rect>,
+}
+
+/// Places a segmented picker laid out by `layout` in `bounds`: the heading of
+/// `label_height` at the top, the row of equal segments on the bottom edge,
+/// mirrored about the row in a right-to-left `direction`. Every consumer —
+/// the parts, the labels, the touch targets and the accessibility tree —
+/// reads this one placement.
+pub fn place_segmented(
+    layout: &SegmentedLayout,
+    sizes: &[LayoutSize],
+    label_height: f64,
+    bounds: Rect,
+    direction: waterui_core::layout::LayoutDirection,
+) -> SegmentedPlacement {
+    let row_height = segmented_row_height(layout, sizes.iter().map(|size| size.height));
+    let (heading, row) = segmented_label_area(bounds, label_height, row_height);
+    let count = crate::num_cast::usize_as_f64(sizes.len());
+    let width = row.width() / count;
+    let segments: Vec<Rect> = (0..sizes.len())
+        .map(|index| {
+            let x0 = width.mul_add(crate::num_cast::usize_as_f64(index), row.x0);
+            Rect::new(x0, row.y0, x0 + width, row.y1)
+        })
+        .collect();
+    let mirrored = direction.is_right_to_left();
+    let drawn = segments
+        .iter()
+        .map(|segment| {
+            if mirrored {
+                Rect::new(
+                    row.x0 + row.x1 - segment.x1,
+                    segment.y0,
+                    row.x0 + row.x1 - segment.x0,
+                    segment.y1,
+                )
+            } else {
+                *segment
+            }
+        })
+        .collect();
+    SegmentedPlacement {
+        heading,
+        frames: SegmentedFrames {
+            row,
+            segments,
+            mirrored,
+        },
+        drawn,
+    }
 }
 
 /// The segmented picker's label layout: the segment row is flush with the
 /// control's sides and bottom edge at its own [`segmented_row_height`], so its
 /// height is the same with or without a heading. The heading spans the full
 /// width at the top edge, edge to edge like the row below it, and the
-/// metrics' label spacing separates the two. Same presence rule: a label
+/// layout's label spacing separates the two. Same presence rule: a label
 /// measuring zero height (a hidden one) draws nothing and takes no space.
 pub fn segmented_label_area(
     bounds: kurbo::Rect,
@@ -858,14 +1195,12 @@ pub fn segmented_label_area(
 /// by `picker_accessibility`, so the sub-view emits no node of its own.
 fn flush_picker_label<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
-    owner: &Rc<RefCell<PickerRenderState<E>>>,
+    label_view: &mut RetainedSubview<E>,
     env: &Environment,
     rect: kurbo::Rect,
 ) {
-    let mut state = owner.borrow_mut();
     let render_ctx = ctx.render_context();
     let label_area = ctx.safe_area_for(rect);
-    let label_view = &mut state.label_view;
     ctx.renderer_mut()
         .with_suppressed_accessibility(|renderer| {
             label_view.place(
@@ -909,7 +1244,7 @@ pub fn render_radio_picker<E: crate::text::TextEngine>(
         bounds.y0 + metrics.vertical_inset,
     );
     if let Some(heading) = heading {
-        flush_picker_label(ctx, owner, env, heading);
+        flush_picker_label(ctx, &mut owner.borrow_mut().label_view, env, heading);
     }
     for (row_index, item) in items.into_iter().enumerate() {
         let label = ctx
@@ -997,9 +1332,16 @@ pub fn render_radio_picker<E: crate::text::TextEngine>(
     }
 }
 
+/// Binds a segmented picker's segments, lays its look out and lists it: the
+/// parts below the labels, the labels, the parts over them, and each
+/// segment's touch target.
 #[expect(
     clippy::needless_pass_by_value,
     reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
 pub fn render_segmented_picker<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
@@ -1009,129 +1351,291 @@ pub fn render_segmented_picker<E: crate::text::TextEngine>(
     env: &Environment,
 ) {
     let theme = ctx.theme();
-    let metrics = theme.picker_metrics(PickerStyle::Segmented);
-    let selected = ctx.renderer_mut().read_signal(&selection);
-    let bounds = ctx.bounds;
-    let item_count = items.len();
     // Reading the disabled signal watches it, so a change schedules a frame
     // and this persistent node re-renders (and re-registers input) with the
-    // new state.
+    // new state. The selection is read unwatched: a change moves the parts'
+    // operands and the two labels it changes, and re-renders nothing.
     let disabled = {
         let signal = widget_disabled(env);
         ctx.renderer_mut().read_signal(&signal)
     };
-    // Each segment's label, measured once: the tallest sizes the row exactly
-    // as layout measured it, and each centres in its own segment.
-    let labels: Vec<_> = items
+    let mut state = owner.borrow_mut();
+    let spec = segmented_spec(&state.config, items.len(), env);
+    let direction = spec.direction();
+    let look = state.segmented_look(&theme, spec, env);
+    if state.segmented.watches.is_empty() {
+        let frames = ctx.renderer_mut().frame_signals();
+        let watches = segmented_watches(&state.config, &state.segmented, frames);
+        state.segmented.watches = watches;
+    }
+    let count = items.len();
+    if state.segmented.items_changed.replace(false) || state.segmented.labels.len() != count {
+        state.segmented.labels = items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let segment = Segment { index, count };
+                let mut label =
+                    RetainedSubview::new(segment_label_view(&look, segment, item, &selection, env));
+                label.ensure_built(ctx.renderer_mut(), env);
+                label
+            })
+            .collect();
+    }
+    // Each label is laid out at the larger of its two fonts, so the row is
+    // as layout measured it whichever segment is selected.
+    let sizes: Vec<LayoutSize> = items
         .iter()
-        .map(|item| {
-            let label = ctx
+        .enumerate()
+        .map(|(index, item)| {
+            let styled = ctx
                 .renderer_mut()
                 .read_resolved_text_styled(&item.content, env);
-            let size = HydrolysisRenderer::measure_text_intrinsic_size(
+            segmented_label_size(
+                &look,
+                &styled,
+                Segment { index, count },
                 ctx.state_mut(),
-                label.clone(),
                 env,
-            );
-            (label, size)
+            )
         })
         .collect();
-    // The group heading spans the full width at the top edge; the segment
-    // row keeps its unlabelled height on the bottom edge below it.
-    let label_size = owner
-        .borrow_mut()
-        .label_view
-        .measure_intrinsic(ctx.renderer_mut(), env);
-    let row_height = segmented_row_height(metrics, labels.iter().map(|(_, size)| size.height));
-    let (heading, row_bounds) =
-        segmented_label_area(bounds, f64::from(label_size.height), row_height);
-    if let Some(heading) = heading {
-        flush_picker_label(ctx, owner, env, heading);
+    let heading = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
+    let placed = place_segmented(
+        look.layout(),
+        &sizes,
+        f64::from(heading.height),
+        ctx.bounds,
+        direction,
+    );
+    if let Some(rect) = placed.heading {
+        flush_picker_label(ctx, &mut state.label_view, env, rect);
     }
-    let segment_width = row_bounds.width() / crate::num_cast::usize_as_f64(item_count);
 
-    // The container is recorded first so it sits beneath every segment, state
-    // layer and label.
-    ctx.draw_context(|draw| {
-        theme.draw_segmented_picker_container(&mut *draw, row_bounds, item_count);
-    });
+    let tags: Vec<Id> = items.iter().map(|item| item.tag).collect();
+    // A selection naming no item is reported; the thumb then rests on the
+    // leading segment until the selection names one.
+    let selected = selected_item_index(&items, selection.snapshot()).unwrap_or(0);
+    // Each segment binds its own interaction on its own touch target, so the
+    // look's hit region applies per segment.
+    let bound: Vec<_> = placed
+        .drawn
+        .iter()
+        .zip(&tags)
+        .map(|(frame, tag)| {
+            let key = option_key(owner, *tag);
+            let target = look.target(*frame);
+            let (_, press_slot, handles) = ctx.renderer_mut().bind_live_segment_target(
+                key.clone(),
+                target,
+                env,
+                disabled,
+                &look,
+            );
+            let flags = ctx.renderer_mut().reported_interaction_state(&key);
+            (target, press_slot, handles, flags)
+        })
+        .collect();
+    let parts = LiveSegmentedParts::ensure(
+        &mut state.segmented.parts,
+        &look,
+        placed.frames.clone(),
+        &tags,
+        selected,
+        disabled,
+        &selection,
+        env,
+    )
+    .clone();
+    let picker = Rc::clone(parts.picker());
+    for (index, (_, _, handles, flags)) in bound.iter().enumerate() {
+        picker.sync(index, *flags);
+        handles.attach_live_segment(Rc::clone(&picker), index);
+    }
 
-    for (index, (item, (label, label_size))) in items.into_iter().zip(labels).enumerate() {
-        let x0 = segment_width.mul_add(crate::num_cast::usize_as_f64(index), row_bounds.x0);
-        let segment_rect = kurbo::Rect::new(x0, row_bounds.y0, x0 + segment_width, row_bounds.y1);
-        let is_selected = item.tag == selected;
-        let hit_rect = segment_rect;
-        let discriminator = crate::num_cast::i32_as_u32(i32::from(item.tag)) as usize;
-        let interaction_key = crate::renderer::InteractionKey::for_rc(owner, discriminator);
-        let (interaction, press_slot, _) = ctx.renderer_mut().bind_control_interaction_target(
-            interaction_key,
-            hit_rect,
-            env,
-            disabled,
-        );
-        let interaction =
-            local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
-        {
-            ctx.draw_context(|draw| {
-                theme.draw_segmented_picker_segment(
-                    &mut *draw,
-                    segment_rect,
-                    is_selected,
-                    index == 0,
-                    index + 1 == item_count,
-                );
-                theme.draw_segmented_picker_state_layer(
-                    &mut *draw,
-                    segment_rect,
-                    is_selected,
-                    index == 0,
-                    index + 1 == item_count,
-                    interaction,
-                );
-            });
+    // The picker as one group at the look's group opacity: the parts below
+    // the labels, the labels in their drawn segments, then the parts over
+    // them, so a backdrop material over the labels captures them.
+    let padding = look.layout().label_padding;
+    let labels = &mut state.segmented.labels;
+    let reach = picker.visual_bounds();
+    let body = |ctx: &mut WidgetRenderContext<'_, E>| {
+        let render_ctx = ctx.render_context();
+        parts.push_below(ctx.renderer_mut(), render_ctx);
+        for (index, label) in labels.iter_mut().enumerate() {
+            let rect = segmented_label_rect(placed.drawn[index], sizes[index], padding.x);
+            let env = env.extending(LabelPaint(picker.label_paint(index)));
+            flush_picker_label(ctx, label, &env, rect);
         }
-        // Render the segment label directly as styled text (no dispatch), mirroring
-        // the radio/menu picker styles. The item's resolved `StyledStr` carries its
-        // own per-chunk styling; the selected/unselected foreground override is
-        // applied to all chunks so the live selection signal drives the color each
-        // frame without rebuilding a view.
-        let label_rect = segmented_label_rect(segment_rect, label_size, metrics);
-        let styled = match theme.segmented_picker_label_color(is_selected) {
-            Some(color) => label.foreground(color),
-            None => label,
+        let render_ctx = ctx.render_context();
+        parts.push_above(ctx.renderer_mut(), render_ctx);
+    };
+    let key = crate::renderer::mount::ScopeKey {
+        role: "segmented-group",
+        item: 0,
+    };
+    if let Some(opacity) = picker.live_group_opacity() {
+        let operands = crate::renderer::ScopeOperands {
+            opacity: Some(opacity),
+            transform: None,
         };
-        ctx.render_styled_text(styled, HorizontalAlignment::Leading, env, label_rect);
+        ctx.with_live_scope(key, operands, reach, body);
+    } else {
+        let opacity = picker.fixed_group_opacity();
+        ctx.with_scope_if(opacity < 1.0, key, opacity, reach, body);
+    }
 
-        // A disabled segmented picker registers no tap target: the pointer
-        // neither presses nor selects a segment. Targets are re-registered
-        // every flush, so re-enabling restores interactivity on the next frame.
-        if disabled {
-            continue;
-        }
-        let tag = item.tag;
-        ctx.renderer_mut()
-            .register_interactive_pointer_target(hit_rect, press_slot, {
-                let selection = selection.clone();
-                move |_renderer, _point, _env| {
-                    if selection.snapshot() == tag {
-                        return false;
-                    }
-                    selection.set(tag);
-                    true
-                }
-            });
+    // A disabled segmented picker registers no touch target: the pointer
+    // neither presses nor selects a segment. Targets are re-registered
+    // every flush, so re-enabling restores interactivity on the next frame.
+    if disabled {
+        return;
+    }
+    for (index, ((target, press_slot, ..), tag)) in bound.into_iter().zip(tags).enumerate() {
+        let track = segment_track(
+            Rc::clone(&picker),
+            index,
+            tag,
+            selection.clone(),
+            press_slot.slop,
+        );
+        let keyboard = selection.clone();
+        ctx.renderer_mut().register_tracked_pointer_target(
+            target,
+            press_slot,
+            track,
+            move |_renderer, _point, _env| select(&keyboard, tag),
+        );
     }
 }
 
+/// Selects `tag` through `selection`; whether that changed the selection.
+fn select(selection: &Binding<Id>, tag: Id) -> bool {
+    if selection.snapshot() == tag {
+        return false;
+    }
+    selection.set(tag);
+    true
+}
+
+/// The watchers a segmented picker keeps: the items', which has the labels
+/// built again, and the selection's, which has the accessibility tree
+/// publish the change. Each skips the emission its registration makes.
+fn segmented_watches<E: crate::text::TextEngine>(
+    config: &PickerConfig,
+    state: &SegmentedState<E>,
+    frames: crate::renderer::FrameSignals,
+) -> Vec<Box<dyn Any>> {
+    let armed = Rc::new(Cell::new(false));
+    let items_changed = Rc::clone(&state.items_changed);
+    let items_armed = Rc::clone(&armed);
+    let items = config.items().watch(move |_| {
+        if items_armed.get() {
+            items_changed.set(true);
+        }
+    });
+    let selection_changed = Rc::clone(&state.selection_changed);
+    let selection_armed = Rc::clone(&armed);
+    let selection = config.selection().watch(move |_| {
+        if !selection_armed.get() {
+            return;
+        }
+        selection_changed.set(true);
+        // Wakes the pump for the accessibility publish. A redraw is the
+        // cheapest request: it marks nothing and re-encodes nothing.
+        frames.request_redraw();
+    });
+    armed.set(true);
+    vec![Box::new(items), Box::new(selection)]
+}
+
+/// The label view of `segment`, showing `item`: the item's text in the
+/// look's font for the segment's selected state. Its content changes only
+/// when that state does, so a selection change lays out again the two
+/// labels it changes and no other.
+fn segment_label_view(
+    look: &SegmentedLook,
+    segment: Segment,
+    item: &PickerItem<Id>,
+    selection: &Binding<Id>,
+    env: &Environment,
+) -> AnyView {
+    let tag = item.tag;
+    let unselected = segment_font(look, segment, false);
+    let selected = segment_font(look, segment, true);
+    let is_selected = selection.map(move |current: Id| current == tag).distinct();
+    let content = item.content.resolve(env).content();
+    let styled: Computed<StyledStr> = Computed::new(content.zip(&is_selected).map(
+        move |(styled, is_selected): (StyledStr, bool)| {
+            styled.font(if is_selected {
+                selected.clone()
+            } else {
+                unselected.clone()
+            })
+        },
+    ));
+    AnyView::new(styled.into_text())
+}
+
+/// The handler of a segment's press: a press on the selected segment that
+/// moves farther than `slop` horizontally drags the thumb, which follows the
+/// touch and settles on the nearest segment on release; any other press
+/// released within reach selects the segment.
+fn segment_track(
+    picker: Rc<LiveSegmented>,
+    index: usize,
+    tag: Id,
+    selection: Binding<Id>,
+    slop: f64,
+) -> TrackAction {
+    let start = Cell::new(None::<Point>);
+    let dragging = Cell::new(false);
+    Rc::new(RefCell::new(move |step: Track| match step {
+        Track::Begin(point) => {
+            start.set(Some(point));
+            dragging.set(false);
+        }
+        Track::Move(point) => {
+            if !picker.drags() || picker.selected() != index {
+                return;
+            }
+            let Some(from) = start.get() else {
+                return;
+            };
+            let offset = Vec2::new(point.x - from.x, 0.0);
+            if !dragging.get() && offset.x.abs() > slop {
+                dragging.set(true);
+                picker.begin_drag();
+            }
+            if dragging.get() {
+                picker.drag_to(offset);
+            }
+        }
+        Track::Release { within_reach, .. } => {
+            start.set(None);
+            if dragging.replace(false) {
+                picker.end_drag(&selection);
+            } else if within_reach {
+                select(&selection, tag);
+            }
+        }
+        Track::Cancel => {
+            start.set(None);
+            if dragging.replace(false) {
+                picker.cancel_drag();
+            }
+        }
+    }))
+}
+
+/// Where a label of `label_size` lies in its drawn segment: centred, no
+/// wider than the segment less the look's horizontal label padding.
 fn segmented_label_rect(
     segment_rect: kurbo::Rect,
     label_size: waterui_core::layout::Size,
-    metrics: PickerMetrics,
+    padding: f64,
 ) -> kurbo::Rect {
-    let max_width = metrics
-        .horizontal_inset
-        .mul_add(-2.0, segment_rect.width())
-        .max(0.0);
+    let max_width = padding.mul_add(-2.0, segment_rect.width()).max(0.0);
     let width = f64::from(label_size.width).min(max_width);
     let height = f64::from(label_size.height).min(segment_rect.height());
     let x0 = (segment_rect.width() - width).mul_add(0.5, segment_rect.x0);
@@ -1176,7 +1680,6 @@ mod tests {
             popup_top_spacing: 4.0,
             popup_row_height: 48.0,
             popup_corner_radius: 4.0,
-            segment_min_width: 58.0,
         }
     }
 

@@ -334,6 +334,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
             alignment,
             env,
             max_lines.map_or(TailMark::None, TailMark::Clip),
+            None,
         );
     }
 

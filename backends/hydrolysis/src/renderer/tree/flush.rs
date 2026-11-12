@@ -196,14 +196,32 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 TextNode::emit_accessibility(renderer, Some(ctx), &styled, env);
                 renderer.pop_render_owner();
                 let tail = text.line_limit.map_or(TailMark::None, TailMark::Ellipsis);
+                // A widget label placed under a live label paint draws its
+                // default-coloured runs in it.
+                let paint = env
+                    .get::<crate::renderer::chrome::LabelPaint>()
+                    .map(|paint| paint.0.clone());
                 if styled.tap_spans().is_empty() {
                     // Content that lost its spans drops their retained targets.
                     text.tap_span_targets.borrow_mut().clear();
-                    renderer
-                        .render_styled_text_limited(ctx, max_width, styled, alignment, env, tail);
+                    renderer.render_styled_text_limited(
+                        ctx,
+                        max_width,
+                        styled,
+                        alignment,
+                        env,
+                        tail,
+                        paint.as_ref(),
+                    );
                 } else {
                     let layout = renderer.render_styled_text_with_layout(
-                        ctx, max_width, &styled, alignment, env, tail,
+                        ctx,
+                        max_width,
+                        &styled,
+                        alignment,
+                        env,
+                        tail,
+                        paint.as_ref(),
                     );
                     // Span targets and `Link` children belong to this leaf:
                     // register them under its render owner so their ancestry
