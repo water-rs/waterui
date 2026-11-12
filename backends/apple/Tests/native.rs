@@ -3540,6 +3540,10 @@ mod gpu_surface {
                 a_scope_end_beyond_the_orphaned_count_still_panics,
             ),
             Trial::test(
+                "gpu_surface::a_failure_inside_a_capture_scope_wakes_the_capture",
+                a_failure_inside_a_capture_scope_wakes_the_capture,
+            ),
+            Trial::test(
                 "gpu_surface::a_failed_child_answers_the_terminal_capture_outcome_once",
                 a_failed_child_answers_the_terminal_capture_outcome_once,
             ),
@@ -3948,6 +3952,38 @@ mod gpu_surface {
             before + 1,
             "the teardown wakes the capture holding the scope exactly once"
         );
+        Ok(())
+    }
+
+    /// A failure settling inside an open capture scope wakes the
+    /// capture's redraw hook: a capture parked on a deferral this surface
+    /// answered earlier retries on it and reads the terminal outcome,
+    /// since the failed generation never issues another redraw.
+    pub fn a_failure_inside_a_capture_scope_wakes_the_capture() -> Result<(), libtest_mimic::Failed>
+    {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted.ensure_attached();
+        let wakes = Rc::new(Cell::new(0_u32));
+        mounted.begin_capture(Rc::new({
+            let wakes = Rc::clone(&wakes);
+            move || wakes.set(wakes.get() + 1)
+        }));
+        let before = wakes.get();
+        mounted.settle_failure(mounted.current_generation());
+        assert!(
+            mounted.pump_main(5.0, || wakes.get() > before),
+            "the settled failure wakes the capture holding the scope"
+        );
+        assert!(
+            matches!(
+                mounted.render_capture_frame(64, 64),
+                Err(cocoa_ui::capture::CaptureError::Failed(_))
+            ),
+            "the woken capture's retry reads the terminal outcome"
+        );
+        mounted.end_capture(true);
         Ok(())
     }
 
