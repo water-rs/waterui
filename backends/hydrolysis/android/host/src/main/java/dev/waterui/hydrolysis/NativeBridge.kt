@@ -71,9 +71,14 @@ object NativeBridge {
      * carries the overscroll stretch stage kind. 27 = [nativeSetMetrics]
      * carries the `ViewConfiguration` double-tap timeout and slop, and
      * [nativeOnFrame] carries the vsync callback's expected presentation
-     * time in place of the advisory vsync timestamp.
+     * time in place of the advisory vsync timestamp. 28 = the HWUI
+     * painter's hosted GPU-content edge: [nativeHostedSurfaceAttached] /
+     * [nativeHostedSurfaceResized] / [nativeHostedSurfaceDestroyed] carry
+     * the `Surface` of each GPU content view's `TextureView`
+     * (water-rs/waterui#1812). 29 = the GPU video player's decoder-plane
+     * edge: [nativeVideoPlaneAttached] / [nativeVideoPlaneSurfaceDestroyed].
      */
-    private const val SCHEMA: Int = 27
+    private const val SCHEMA: Int = 29
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0
@@ -381,5 +386,36 @@ object NativeBridge {
 
     /** Platform-view placement frame set, or null when unchanged. */
     @JvmStatic external fun nativePlatformViewFrames(sessionPtr: Long): String?
+
+    /**
+     * The `TextureView` mounted for GPU content placement [view] has a
+     * [surface] of `width` by `height` pixels the session presents frames
+     * into (HWUI painter with GPU content, water-rs/waterui#1812).
+     */
+    @JvmStatic
+    external fun nativeHostedSurfaceAttached(
+        sessionPtr: Long,
+        view: Long,
+        surface: Surface,
+        width: Int,
+        height: Int,
+    )
+
+    /** The hosted [view]'s surface changed size. */
+    @JvmStatic
+    external fun nativeHostedSurfaceResized(sessionPtr: Long, view: Long, width: Int, height: Int)
+
+    /** The hosted [view]'s surface is being released; the swapchain drops before this returns. */
+    @JvmStatic external fun nativeHostedSurfaceDestroyed(sessionPtr: Long, view: Long)
+
+    /**
+     * The [host] object of the GPU video player's decoder plane [plane]
+     * exists: the session hands it to the player, which calls
+     * `acquireVideoSurface` / `deactivateVideoSurface` on it.
+     */
+    @JvmStatic external fun nativeVideoPlaneAttached(sessionPtr: Long, plane: Long, host: Any)
+
+    /** The decoder plane [plane]'s `Surface` was destroyed by the platform. */
+    @JvmStatic external fun nativeVideoPlaneSurfaceDestroyed(sessionPtr: Long, plane: Long)
 
 }

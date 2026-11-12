@@ -1171,6 +1171,17 @@ fn session_mounts(
     // into; the published table is what `nativePlatformViewFrames` serves.
     let platform_views = crate::platform_view::PlatformViewSink::new();
     env.insert(platform_views.clone());
+    // GPU content under the HWUI painter: each view's own platform surface,
+    // placed through the same sink (water-rs/waterui#1812).
+    #[cfg(hydrolysis_hwui_gpu)]
+    env.insert(Rc::new(super::hosted_gpu::HostedGpu::new(
+        platform_views.clone(),
+    )));
+    // The GPU video player's decoder planes, placed through the same sink.
+    #[cfg(hydrolysis_video_plane)]
+    env.insert(Rc::new(super::video_plane::VideoPlanes::new(
+        platform_views.clone(),
+    )));
     // The session-wide "focus sits inside a platform-view container"
     // state the Kotlin registry reports through
     // `onNativePlatformViewFocus`: while a mounted child holds the IME,
@@ -1296,6 +1307,10 @@ fn hwui_runtime_window(
         theme,
         platform.frame_wake(),
         effect_wake,
+        #[cfg(hydrolysis_hwui_gpu)]
+        env.get::<Rc<super::hosted_gpu::HostedGpu>>()
+            .expect("session_mounts installs the hosted-GPU owner under HWUI with GPU content")
+            .clone(),
     )?;
     renderer.set_window_id(window_id);
     renderer.set_window_closable(window.closable);

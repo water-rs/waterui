@@ -362,7 +362,7 @@ impl From<cherenkov::Next> for Next {
 /// its `ProducerKey` through the renderer's wake channel and wakes the
 /// host, so the next frame update marks exactly the owning cell `PRODUCER`.
 #[cfg_attr(
-    not(hydrolysis_gpu_painter),
+    not(hydrolysis_gpu),
     expect(
         dead_code,
         reason = "only GPU and external-frame producers wake the host"
@@ -388,7 +388,7 @@ impl std::fmt::Debug for ProducerWake {
 impl ProducerWake {
     /// Posts the producer key and wakes the host for a frame.
     #[cfg_attr(
-        not(hydrolysis_gpu_painter),
+        not(hydrolysis_gpu),
         expect(
             dead_code,
             reason = "only GPU and external-frame producers wake the host"

@@ -101,6 +101,14 @@ fn main() {
         // The Android HWUI render target: the retained layer tree recorded
         // into `RenderNode` display lists, on Android only.
         hydrolysis_hwui: { all(feature = "hwui", android_platform) },
+        // The HWUI painter with GPU content: each GPU content view is hosted
+        // in its own platform surface the painter composites in session
+        // order (water-rs/waterui#1812).
+        hydrolysis_hwui_gpu: { all(hydrolysis_hwui, feature = "gpu") },
+        // The GPU video player's Android decoder plane: the backend realizes
+        // `waterui-video-gpu`'s `AndroidVideoSurfaceHost` only when the
+        // application links the player (the `video-gpu` feature).
+        hydrolysis_video_plane: { all(android_platform, feature = "video-gpu") },
         // Runtime implementation exists only when a painter is selected.
         hydrolysis_runtime: { any(hydrolysis_cherenkov, hydrolysis_hwui) },
         // The Cherenkov GPU engine and its wgpu device stack are linkable:

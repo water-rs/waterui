@@ -334,6 +334,12 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         };
     }
 
+    #[cfg(hydrolysis_video_plane)]
+    if let Some(metadata) =
+        view.downcast_ref::<Metadata<crate::runner::android::video_plane::VideoPlaneHost>>()
+    {
+        return Some(&metadata.content);
+    }
     passthrough_metadata_content!(
         Environment,
         Retain,
@@ -464,6 +470,29 @@ fn normalize_layout_view_with_budget(
     let next_remaining = remaining - 1;
     let mut view = view;
 
+    // The GPU video player's host is unwrapped here: its picture is only
+    // reachable by consuming it, so layout and build see a passthrough.
+    #[cfg(hydrolysis_video_plane)]
+    if view.is::<Native<waterui_video_gpu::AndroidVideoSurfaceHost>>() {
+        let host = *view
+            .downcast::<Native<waterui_video_gpu::AndroidVideoSurfaceHost>>()
+            .expect("layout normalization failed to downcast the video surface host");
+        return normalize_layout_view_with_budget(
+            crate::runner::android::video_plane::unwrap_host(host),
+            env,
+            remaining,
+        );
+    }
+    #[cfg(hydrolysis_video_plane)]
+    if view.is::<Metadata<crate::runner::android::video_plane::VideoPlaneHost>>() {
+        let Metadata { content, value } = *view
+            .downcast::<Metadata<crate::runner::android::video_plane::VideoPlaneHost>>()
+            .expect("layout normalization failed to downcast the video plane host");
+        return AnyView::new(Metadata {
+            content: normalize_layout_view_with_budget(content, env, remaining),
+            value,
+        });
+    }
     if view.is::<Metadata<Environment>>() {
         let Metadata { content, value } = *view
             .downcast::<Metadata<Environment>>()
