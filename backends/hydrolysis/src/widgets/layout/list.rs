@@ -2352,9 +2352,11 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
                 let (hit_bounds, press_slot) = realize_control(
                     ctx,
                     state,
-                    row_id,
-                    &key,
-                    EditControl::MoveUp,
+                    &ControlSlot {
+                        row_id,
+                        key: &key,
+                        kind: EditControl::MoveUp,
+                    },
                     look.move_up(),
                     rect,
                     &row_env,
@@ -2374,9 +2376,11 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
                 let (hit_bounds, press_slot) = realize_control(
                     ctx,
                     state,
-                    row_id,
-                    &key,
-                    EditControl::MoveDown,
+                    &ControlSlot {
+                        row_id,
+                        key: &key,
+                        kind: EditControl::MoveDown,
+                    },
                     look.move_down(),
                     rect,
                     &row_env,
@@ -2399,9 +2403,11 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
             let (delete_hit_bounds, delete_press_slot) = realize_control(
                 ctx,
                 state,
-                row_id,
-                &delete_key,
-                EditControl::Delete,
+                &ControlSlot {
+                    row_id,
+                    key: &delete_key,
+                    kind: EditControl::Delete,
+                },
                 look.delete(),
                 delete_rect,
                 &row_env,
@@ -2662,23 +2668,27 @@ enum EditControl {
     Delete,
 }
 
+/// Which control of which row [`realize_control`] realizes, and the
+/// interaction key its chrome binds under.
+#[derive(Clone, Copy)]
+struct ControlSlot<'a> {
+    row_id: ListItemId,
+    key: &'a crate::renderer::InteractionKey,
+    kind: EditControl,
+}
+
 /// Binds the interaction target of an edit control's chrome on `bounds`,
 /// realizes the chrome the row keeps for it and lists its layers. Returns the
 /// control's touch target and press slot, for its tap target.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the control is identified by its row, its interaction key and its chrome, and placed by its bounds and environment"
-)]
 fn realize_control<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<ListRenderState<E>>>,
-    row_id: ListItemId,
-    key: &crate::renderer::InteractionKey,
-    control: EditControl,
+    control: &ControlSlot<'_>,
     chrome: &Chrome,
     bounds: kurbo::Rect,
     env: &Environment,
 ) -> (kurbo::Rect, crate::renderer::PressSlot) {
+    let ControlSlot { row_id, key, kind } = *control;
     let target = chrome.target(bounds);
     let (_, press_slot, handles) =
         ctx.renderer_mut()
@@ -2688,7 +2698,7 @@ fn realize_control<E: crate::text::TextEngine>(
         let state_ref = state.borrow();
         let mut gestures = state_ref.row_gestures.borrow_mut();
         let row = gestures.entry(row_id).or_insert_with(RowGestures::empty);
-        let kept = match control {
+        let kept = match kind {
             EditControl::MoveUp => &mut row.controls.move_up,
             EditControl::MoveDown => &mut row.controls.move_down,
             EditControl::Delete => &mut row.controls.delete,
