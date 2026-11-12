@@ -728,9 +728,22 @@ jobs:
           # templates against the framework the project resolves, which no
           # other phase does: a template naming an API the framework has
           # renamed compiles nowhere else, and shipped broken for exactly that
-          # reason. macOS is the only runner whose preview platform exists, and
-          # the Hydrolysis renderer is the template that has a runtime to drift
-          # from, so it runs there regardless of the leg's own backend.
+          # reason. The macOS leg previews the Hydrolysis renderer (the
+          # template that has a runtime to drift from) and both Apple
+          # realizations, regardless of the leg's own backend. The Linux and
+          # Windows legs preview through Hydrolysis on their own platform:
+          # hosted runners have no GPU, so those previews exercise the
+          # offscreen CPU path with no environment variable selecting it.
+          if [ "$E2E_PLATFORM" = "linux" ]; then
+            phase "water preview e2eapp (hydrolysis, linux)"
+            (cd e2eapp && water preview main --platform linux --backend hydrolysis \
+              --theme material3 \
+              --output ../e2e-logs/preview-linux.png 2>&1 \
+              | tee ../e2e-logs/preview-linux.log) \
+              || fail "water preview --platform linux failed"
+            [ -s e2e-logs/preview-linux.png ] || fail "water preview --platform linux wrote no PNG"
+          fi
+
           if [ "$E2E_PLATFORM" = "macos" ]; then
             phase "water preview e2eapp (hydrolysis)"
             # The Hydrolysis renderer draws every widget itself, so it has no
@@ -888,6 +901,20 @@ jobs:
           Copy-Item "$(Split-Path $reported -Parent)\*" $keep -Recurse -Force
           Record package $t0
           Collect-Timings package
+
+          # The runner has no GPU, so this preview renders on the offscreen
+          # CPU path; no environment variable selects it.
+          Phase "water preview e2eapp (hydrolysis, windows)"
+          Push-Location e2eapp
+          water preview main --platform windows --backend hydrolysis --theme material3 `
+            --output "$logs\preview-windows.png" 2>&1 |
+            Tee-Object "$logs\preview-windows.log"
+          $previewExit = $LASTEXITCODE
+          Pop-Location
+          if ($previewExit) { Fail "water preview --platform windows failed" }
+          if (-not (Test-Path "$logs\preview-windows.png") -or (Get-Item "$logs\preview-windows.png").Length -eq 0) {
+            Fail "water preview --platform windows wrote no PNG"
+          }
 
           Phase "water run e2eapp"
           $p = Start-Process -FilePath water -ArgumentList "run --platform $env:E2E_PLATFORM --backend $env:E2E_BACKEND" -PassThru `
