@@ -109,6 +109,20 @@ pub enum BlendMode {
     PlusLighter,
 }
 
+impl BlendMode {
+    /// Whether a transparent source changes the destination under this
+    /// operator — `Clear`, `Src`, `SrcIn`, `SrcOut`, `DestIn` and
+    /// `DestAtop` — instead of leaving it as it is. Such a composite covers
+    /// the whole clip it applies under, not only the source's pixels.
+    #[must_use]
+    pub const fn is_destructive(self) -> bool {
+        matches!(
+            self,
+            Self::Clear | Self::Src | Self::SrcIn | Self::SrcOut | Self::DestIn | Self::DestAtop
+        )
+    }
+}
+
 /// The space in which a group blends.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

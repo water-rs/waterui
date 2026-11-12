@@ -240,7 +240,7 @@ pub(super) fn extend_items(rows: &mut (usize, usize), items: &[Item], h: usize) 
         // blending and filters can write transparent source pixels too.
         match item {
             Item::PushIsolate { .. } => {}
-            Item::PopIsolate { blend, .. } if !super::blend::is_destructive(blend.0) => {}
+            Item::PopIsolate { blend, .. } if !blend.0.is_destructive() => {}
             item => union(rows, bins::item_rows(item, h)),
         }
     }

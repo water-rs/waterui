@@ -2913,3 +2913,146 @@ fn a_member_inside_the_anchors_blended_child_is_unsupported() {
         "unexpected result {result:?}"
     );
 }
+
+/// The left half of a 64 × 64 surface red, the right half blue.
+fn red_and_blue(r: &mut cherenkov::Recorder) {
+    r.fill(
+        Rect::new(0.0, 0.0, 32.0, 64.0),
+        WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+    );
+    r.fill(
+        Rect::new(32.0, 0.0, 64.0, 64.0),
+        WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+    );
+}
+
+/// A layer over [`red_and_blue`] holding a green panel and a member of a
+/// blurring group, with the handles that keep them alive.
+struct FadedGlass {
+    layer: cherenkov::Layer,
+    _glass: cherenkov::Layer,
+    _group: cherenkov::BackdropGroup,
+}
+
+/// [`FadedGlass`] on `surface`, the layer at `fade`'s opacity; with no
+/// `fade` the layer is left out.
+fn faded_glass(surface: &cherenkov::Surface<Raster>, fade: Option<f32>) -> FadedGlass {
+    let group = surface.backdrop_group(
+        filtrate::filters::GaussianBlur::new(3.0f32),
+        cherenkov::CaptureScale::FULL,
+    );
+    let layer = surface.layer();
+    let glass = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(red_and_blue));
+        if let Some(opacity) = fade {
+            tx[surface.root()].push(&layer);
+            tx[&layer]
+                .opacity(opacity)
+                .push(&glass)
+                .content(surface.record(|r| {
+                    r.fill(
+                        Rect::new(4.0, 4.0, 60.0, 20.0),
+                        WorkingColor::new([0.0, 1.0, 0.0, 1.0]),
+                    );
+                }));
+            tx[&glass]
+                .clip(Rect::new(8.0, 24.0, 56.0, 56.0))
+                .backdrop(group.sample());
+        }
+    });
+    FadedGlass {
+        layer,
+        _glass: glass,
+        _group: group,
+    }
+}
+
+fn image(readback: cherenkov::Readback) -> F32Image {
+    F32Image {
+        width: readback.width,
+        height: readback.height,
+        pixels: readback.pixels,
+    }
+}
+
+/// A layer at opacity 0 draws nothing beneath it, its member's capture
+/// included, and shows again when its opacity rises — on a surface whose
+/// later frames repaint only what changed.
+#[test]
+fn a_layer_at_opacity_zero_skips_its_content_and_its_captures() {
+    let size = (64, 64);
+    let target = || Offscreen::new(size, OffscreenFormat::LinearF32);
+    let engine = engine();
+    let surface = engine.surface(target(), || {}).expect("surface");
+    let scene = faded_glass(&surface, Some(0.0));
+    for opacity in [0.0, 0.5, 0.0, 1.0] {
+        surface.update(|tx| {
+            tx[&scene.layer].opacity(opacity);
+        });
+        engine.render(FrameTime::now()).expect("render");
+        let draws = engine.stats().draws;
+        let actual = image(surface.readback().expect("readback"));
+        // The reference renders on an engine of its own, so its stats
+        // count its frame alone; at opacity 0 it has no faded layer.
+        let reference_engine = self::engine();
+        let reference = reference_engine.surface(target(), || {}).expect("surface");
+        let _reference = faded_glass(&reference, (opacity > 0.0).then_some(opacity));
+        reference_engine.render(FrameTime::now()).expect("render");
+        let expected = image(reference.readback().expect("readback"));
+        assert_images_match(&expected, &actual);
+        if opacity == 0.0 {
+            assert_eq!(
+                draws,
+                reference_engine.stats().draws,
+                "a hidden layer draws nothing"
+            );
+        }
+    }
+}
+
+/// A hidden member that is its group's capture point still captures for
+/// a later member that shows.
+#[test]
+fn a_hidden_capture_point_still_captures_for_a_shown_member() {
+    let size = (64, 64);
+    let build = |surface: &cherenkov::Surface<Raster>, hidden: bool| {
+        let group = surface.backdrop_group(
+            filtrate::filters::GaussianBlur::new(3.0f32),
+            cherenkov::CaptureScale::FULL,
+        );
+        let fade = surface.layer();
+        let first = surface.layer();
+        let second = surface.layer();
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(red_and_blue));
+            if hidden {
+                tx[surface.root()].push(&fade);
+                tx[&fade].opacity(0.0_f32).push(&first);
+                tx[&first]
+                    .clip(Rect::new(4.0, 4.0, 60.0, 20.0))
+                    .backdrop(group.sample());
+            }
+            tx[surface.root()].push(&second);
+            tx[&second]
+                .clip(Rect::new(8.0, 32.0, 56.0, 56.0))
+                .backdrop(group.sample());
+        });
+        (group, [fade, first, second])
+    };
+    let render = |hidden: bool| {
+        let engine = engine();
+        let surface = engine
+            .surface(Offscreen::new(size, OffscreenFormat::LinearF32), || {})
+            .expect("surface");
+        let _scene = build(&surface, hidden);
+        engine.render(FrameTime::now()).expect("render");
+        image(surface.readback().expect("readback"))
+    };
+    let shown = render(false);
+    // The shown member samples the blurred backdrop: the red and blue
+    // halves mix across its middle.
+    let mixed = shown.pixels[44 * 64 + 32];
+    assert!(mixed[0] > 0.2 && mixed[2] > 0.2, "pixel {mixed:?}");
+    assert_images_match(&shown, &render(true));
+}

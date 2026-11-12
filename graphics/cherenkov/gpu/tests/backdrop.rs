@@ -4296,3 +4296,143 @@ fn sample_blur_over_a_box_group_fails_the_frame() -> Result<(), Box<dyn std::err
     Ok(())
 }
 }
+
+/// The left half of a 64 × 64 surface red, the right half blue.
+fn red_and_blue(r: &mut cherenkov::Recorder) {
+    r.fill(
+        Rect::new(0.0, 0.0, 32.0, 64.0),
+        WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+    );
+    r.fill(
+        Rect::new(32.0, 0.0, 64.0, 64.0),
+        WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+    );
+}
+
+/// A layer over [`red_and_blue`] holding a green panel and a member of a
+/// blurring group, with the handles that keep them alive.
+struct FadedGlass {
+    layer: cherenkov::Layer,
+    _glass: cherenkov::Layer,
+    _group: cherenkov::BackdropGroup,
+}
+
+/// [`FadedGlass`] on `surface`, the layer at `fade`'s opacity; with no
+/// `fade` the layer is left out.
+fn faded_glass(surface: &cherenkov::Surface<Gpu>, fade: Option<f32>) -> FadedGlass {
+    let group = surface.backdrop_group(
+        filtrate::filters::GaussianBlur::new(3.0f32),
+        cherenkov::CaptureScale::FULL,
+    );
+    let layer = surface.layer();
+    let glass = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(red_and_blue));
+        if let Some(opacity) = fade {
+            tx[surface.root()].push(&layer);
+            tx[&layer]
+                .opacity(opacity)
+                .push(&glass)
+                .content(surface.record(|r| {
+                    r.fill(
+                        Rect::new(4.0, 4.0, 60.0, 20.0),
+                        WorkingColor::new([0.0, 1.0, 0.0, 1.0]),
+                    );
+                }));
+            tx[&glass]
+                .clip(Rect::new(8.0, 24.0, 56.0, 56.0))
+                .backdrop(group.sample());
+        }
+    });
+    FadedGlass {
+        layer,
+        _glass: glass,
+        _group: group,
+    }
+}
+
+split_fn! {
+/// [`faded_glass`] rendered alone on an engine of its own: its image and
+/// the passes its frame recorded.
+fn faded_glass_reference(fade: Option<f32>) -> Result<(cherenkov::Readback, u32), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    let _scene = faded_glass(&surface, fade);
+    wait!(engine.render(FrameTime::now()))?;
+    let passes = engine.stats().passes;
+    Ok((wait!(surface.readback())?, passes))
+}
+}
+
+split_test! {
+/// A layer at opacity 0 draws nothing beneath it, its member's capture
+/// included, and shows again when its opacity rises.
+fn a_layer_at_opacity_zero_skips_its_content_and_its_captures() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    let scene = faded_glass(&surface, Some(0.0));
+    for opacity in [0.0_f32, 0.5, 0.0, 1.0] {
+        surface.update(|tx| {
+            tx[&scene.layer].opacity(opacity);
+        });
+        wait!(engine.render(FrameTime::now()))?;
+        let passes = engine.stats().passes;
+        let actual = wait!(surface.readback())?;
+        // At opacity 0 the reference has no faded layer.
+        let (expected, reference_passes) =
+            wait!(faded_glass_reference((opacity > 0.0).then_some(opacity)))?;
+        assert_images_match(&crop(&expected, 0..64, 0..64), &crop(&actual, 0..64, 0..64));
+        if opacity == 0.0 {
+            assert_eq!(passes, reference_passes, "a hidden layer captures nothing");
+        }
+    }
+    Ok(())
+}
+}
+
+split_fn! {
+/// Two members of one blurring group: the first, at the top, under a
+/// layer at opacity 0 when `hidden`, else left out; the second shown.
+fn hidden_capture_point(hidden: bool) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    let group = surface.backdrop_group(
+        filtrate::filters::GaussianBlur::new(3.0f32),
+        cherenkov::CaptureScale::FULL,
+    );
+    let fade = surface.layer();
+    let first = surface.layer();
+    let second = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(red_and_blue));
+        if hidden {
+            tx[surface.root()].push(&fade);
+            tx[&fade].opacity(0.0_f32).push(&first);
+            tx[&first]
+                .clip(Rect::new(4.0, 4.0, 60.0, 20.0))
+                .backdrop(group.sample());
+        }
+        tx[surface.root()].push(&second);
+        tx[&second]
+            .clip(Rect::new(8.0, 32.0, 56.0, 56.0))
+            .backdrop(group.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    Ok(wait!(surface.readback())?)
+}
+}
+
+split_test! {
+/// A hidden member that is its group's capture point still captures for
+/// a later member that shows.
+fn a_hidden_capture_point_still_captures_for_a_shown_member() -> Result<(), Box<dyn std::error::Error>> {
+    let shown = wait!(hidden_capture_point(false))?;
+    // The shown member samples the blurred backdrop: the red and blue
+    // halves mix across its middle.
+    let mixed = pixel(&shown, 32, 44);
+    assert!(mixed[0] > 0.2 && mixed[2] > 0.2, "pixel {mixed:?}");
+    let hidden = wait!(hidden_capture_point(true))?;
+    assert_images_match(&crop(&shown, 0..64, 0..64), &crop(&hidden, 0..64, 0..64));
+    Ok(())
+}
+}

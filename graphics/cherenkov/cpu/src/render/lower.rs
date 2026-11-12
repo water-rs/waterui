@@ -3,6 +3,7 @@
 
 mod silhouette;
 
+use cherenkov::lowering::hidden::HiddenLayers;
 use cherenkov::lowering::{Realization, shape_outline};
 use std::sync::Arc;
 
@@ -832,6 +833,8 @@ pub(super) struct AnchorScratch {
     members: Vec<(u64, Option<LayerId>, usize)>,
     /// `(anchor, group)` capture links, sorted for range lookup.
     links: Vec<(LayerId, u64)>,
+    /// The layers that show nothing, and which of them the walk skips.
+    hidden: HiddenLayers,
 }
 
 impl AnchorScratch {
@@ -840,6 +843,7 @@ impl AnchorScratch {
         self.pos.clear();
         self.members.clear();
         self.links.clear();
+        self.hidden.clear();
     }
 
     pub(super) fn heap_bytes(&self) -> u64 {
@@ -848,6 +852,7 @@ impl AnchorScratch {
                 * size_of::<(LayerId, (Option<LayerId>, usize, Option<LayerId>))>()
             + self.members.capacity() * size_of::<(u64, Option<LayerId>, usize)>()
             + self.links.capacity() * size_of::<(LayerId, u64)>()) as u64
+            + self.hidden.heap_bytes()
     }
 }
 
@@ -1537,6 +1542,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
         });
         self.filters = filters;
         planned?;
+        let scratch = &mut *self.anchor_scratch;
+        scratch.hidden.resolve(&scratch.links);
         self.layer(self.start(tree), tree, caches)
     }
 
@@ -1570,15 +1577,23 @@ impl<'a, 'b> Lowering<'a, 'b> {
     ) -> Result<(), RenderError> {
         let node = tree.layer(id);
         if self.projects(id, tree) {
-            // Its members plan in its own local lowering.
+            // Its members plan in its own local lowering; its image composes
+            // here, so the layers around it are walked.
+            self.anchor_scratch.hidden.keep();
             return Ok(());
         }
         self.plan_order += 1;
         let order = self.plan_order;
+        // A local root's opacity and blend apply where its image composes.
+        let local_root = self.local.is_some_and(|(root, _)| root == id);
+        self.anchor_scratch
+            .hidden
+            .enter(id, !local_root && node.shows_nothing());
         if !self.anchor_scratch.refs.is_empty() && self.anchor_scratch.refs.contains(&id) {
             self.anchor_scratch
                 .pos
                 .insert(id, (canvas, order, scopes.last().copied()));
+            self.anchor_scratch.hidden.anchor(id);
         }
         let (transform, children) = self.placement(id, node, parent);
         if let Some(sample) = &node.backdrop {
@@ -1611,9 +1626,12 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 scopes.last().copied(),
                 filters,
             )?;
-            if prepared.spec.anchor_layer().is_some() {
+            let anchored = prepared.spec.anchor_layer().is_some();
+            if anchored {
                 self.anchor_scratch.members.push((g, canvas, order));
             }
+            let captures_here = !anchored && self.backdrops[&g].first == id;
+            self.anchor_scratch.hidden.member(g, captures_here);
         }
         // A semantically isolating layer — filtered or blended — is its
         // children's compositing canvas; other layers share their
@@ -1634,6 +1652,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         if node.filter.is_some() {
             scopes.pop();
         }
+        self.anchor_scratch.hidden.leave(id);
         Ok(())
     }
 
@@ -2258,7 +2277,13 @@ impl<'a, 'b> Lowering<'a, 'b> {
         let start = self.items.len();
         let start_row = self.damage_rows.len();
         let parent_damage = self.content_damage.replace(start_row..start_row);
-        let result = self.layer_inner(id, tree, caches);
+        // A layer that shows nothing draws nothing beneath it, and no
+        // capture point a drawn member reads lies beneath it.
+        let result = if self.anchor_scratch.hidden.skips(id) {
+            Ok(())
+        } else {
+            self.layer_inner(id, tree, caches)
+        };
         let changed_rows = std::mem::replace(&mut self.content_damage, parent_damage);
         if self.local.is_none() {
             self.damage_layers.push(super::damage::Layer {
@@ -2332,7 +2357,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             // transparent source leaves the destination unchanged, so
             // the clip in force before the layer's own clip suffices —
             // the layer clip's coverage is already on the content.
-            let composite_clip = if crate::render::blend::is_destructive(blend) {
+            let composite_clip = if blend.is_destructive() {
                 s.clip.clone()
             } else {
                 outer.clone()
@@ -2440,6 +2465,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
 
     /// Pushes group `gid`'s capture item at the current position.
     fn push_capture(&mut self, gid: u64) {
+        // A group no drawn member samples is not captured.
+        if !self.anchor_scratch.hidden.captures(gid) {
+            return;
+        }
         if let Some(plan) = self.backdrops.get(&gid)
             && plan.region.x0 < plan.region.x1
             && plan.region.y0 < plan.region.y1
@@ -2514,7 +2543,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             })));
             return Ok(());
         }
-        let composite_clip = if crate::render::blend::is_destructive(node.blend) {
+        let composite_clip = if node.blend.is_destructive() {
             let clip = node
                 .clip
                 .as_ref()

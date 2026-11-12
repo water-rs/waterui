@@ -239,6 +239,14 @@ impl std::fmt::Debug for LayerNode {
 }
 
 impl LayerNode {
+    /// Whether the layer, with everything beneath it, changes no pixel of
+    /// its parent: it composites at opacity 0 under an operator that leaves
+    /// the destination as it is for a transparent source.
+    #[must_use]
+    pub const fn shows_nothing(&self) -> bool {
+        self.opacity <= 0.0 && !self.blend.is_destructive()
+    }
+
     /// Version of this layer's own content and sampled properties, including
     /// child membership/order but excluding changes inside descendants.
     #[must_use]

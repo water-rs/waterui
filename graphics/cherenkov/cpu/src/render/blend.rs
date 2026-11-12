@@ -14,22 +14,6 @@
 
 use cherenkov::BlendMode;
 
-/// Operators where a transparent source changes the destination
-/// (`Clear`, `Src`, `SrcIn`, `SrcOut`, `DestIn`, `DestAtop`). Their
-/// composite is bounded by the effective clip instead of the tight
-/// content bounds.
-pub const fn is_destructive(mode: BlendMode) -> bool {
-    matches!(
-        mode,
-        BlendMode::Clear
-            | BlendMode::Src
-            | BlendMode::SrcIn
-            | BlendMode::SrcOut
-            | BlendMode::DestIn
-            | BlendMode::DestAtop
-    )
-}
-
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
