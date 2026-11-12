@@ -143,8 +143,23 @@ struct Capture {
     device_rows: (usize, usize),
     /// The device columns `[x0, x1)` the region's texels cover.
     device_cols: (usize, usize),
-    /// The space the captured rows are stored in.
+    /// The group's working space, which every level's rows are stored
+    /// and averaged in; [`Capture::read`] returns a read in the linear
+    /// working space.
     space: cherenkov::BlendSpace,
+}
+
+impl Capture {
+    /// A read of the capture — `raw`, averaged in the group's working
+    /// space — in the linear working space effects see.
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn read<S: Simd>(&self, simd: S, raw: [f32; 4]) -> [f32; 4] {
+        move_space(simd, raw, self.space, cherenkov::BlendSpace::Linear)
+    }
 }
 
 /// A pyramid level's kept rows: level `k`'s texels, `w` columns wide
@@ -960,7 +975,8 @@ fn color_matrix(m: &[f32; 12], s: [f32; 4]) -> [f32; 4] {
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-fn sdf_sample(
+fn sdf_sample<S: Simd>(
+    simd: S,
     capture: &Capture,
     sdf: &SdfEffect,
     (d, nx, ny): (f32, f32, f32),
@@ -971,12 +987,12 @@ fn sdf_sample(
     match sdf.kind {
         SdfKind::Refraction { depth, strength } => {
             let (qx, qy) = refracted((d, nx, ny), depth, strength, px, py);
-            capture_sample(capture, qx, qy)
+            capture.read(simd, capture_sample(capture, qx, qy))
         }
         SdfKind::Rim { width, color, gain } => {
             let t = d.mul_add(width.recip(), 1.0).clamp(0.0, 1.0);
             let k = color[3] * gain * t * t;
-            let s = pixel_sample(capture, px, py, crow);
+            let s = capture.read(simd, pixel_sample(capture, px, py, crow));
             [
                 color[0].mul_add(k, s[0]),
                 color[1].mul_add(k, s[1]),
@@ -991,7 +1007,10 @@ fn sdf_sample(
         } => {
             let t = d.mul_add(depth.recip(), 1.0).clamp(0.0, 1.0);
             let level = (edge - interior).mul_add(t, interior);
-            capture_sample_level(capture, px as f32 + 0.5, py as f32 + 0.5, level)
+            capture.read(
+                simd,
+                capture_sample_level(capture, px as f32 + 0.5, py as f32 + 0.5, level),
+            )
         }
     }
 }
@@ -1018,9 +1037,9 @@ fn refracted(
     )
 }
 
-/// One member pixel `c` at coverage `cc` blended source-over onto `d` in
-/// the group's member space — the canvas converts into it and the result
-/// back. `spaces` is `(capture, member, canvas)`.
+/// One member pixel `c`, in the linear working space, at coverage `cc`
+/// blended source-over onto `d` in the group's member space — the canvas
+/// converts into it and the result back. `spaces` is `(member, canvas)`.
 #[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
@@ -1031,13 +1050,14 @@ fn member_over<S: Simd>(
     d: &mut [f32; 4],
     c: [f32; 4],
     cc: f32,
-    (from, member_space, space): (
-        cherenkov::BlendSpace,
-        cherenkov::BlendSpace,
-        cherenkov::BlendSpace,
-    ),
+    (member_space, space): (cherenkov::BlendSpace, cherenkov::BlendSpace),
 ) {
-    let src = move_space(simd, c.map(|v| v * cc), from, member_space);
+    let src = move_space(
+        simd,
+        c.map(|v| v * cc),
+        cherenkov::BlendSpace::Linear,
+        member_space,
+    );
     *d = if member_space == space {
         src_over(*d, src)
     } else {
@@ -1071,16 +1091,18 @@ fn shader_field(
 }
 
 /// The capture reads a backdrop shader calls (`render::shader`'s host
-/// functions), against one member's capture and field.
+/// functions), against one member's capture and field. Capture reads
+/// return the linear working space.
 #[cfg(feature = "shaders")]
-struct BackdropHost<'a> {
+struct BackdropHost<'a, S> {
+    simd: S,
     capture: &'a Capture,
     own: &'a BoxClip,
     union: Option<&'a UnionSample>,
 }
 
 #[cfg(feature = "shaders")]
-impl cherenkov_shader::lanes::Host for BackdropHost<'_> {
+impl<S: Simd> cherenkov_shader::lanes::Host for BackdropHost<'_, S> {
     fn call(
         &mut self,
         function: usize,
@@ -1094,10 +1116,14 @@ impl cherenkov_shader::lanes::Host for BackdropHost<'_> {
                 continue;
             }
             let values = match function {
-                SAMPLE => capture_sample(self.capture, args[0][l], args[1][l]),
-                SAMPLE_LEVEL => {
-                    capture_sample_level(self.capture, args[0][l], args[1][l], args[2][l])
-                }
+                SAMPLE => self.capture.read(
+                    self.simd,
+                    capture_sample(self.capture, args[0][l], args[1][l]),
+                ),
+                SAMPLE_LEVEL => self.capture.read(
+                    self.simd,
+                    capture_sample_level(self.capture, args[0][l], args[1][l], args[2][l]),
+                ),
                 FIELD => {
                     let (x, y) = (args[0][l], args[1][l]);
                     if let Some(u) = self.union {
@@ -3167,7 +3193,7 @@ fn run<S: Simd>(
 /// pixels are decoded before it and encoded again after it.
 fn apply_filter<S: Simd>(
     simd: S,
-    (filter, params): &FrameFilter,
+    filter: &FrameFilter,
     pixels: &mut [[f32; 4]],
     space: cherenkov::BlendSpace,
     top: usize,
@@ -3182,21 +3208,7 @@ fn apply_filter<S: Simd>(
             cherenkov::BlendSpace::Linear,
         );
     }
-    filter
-        .apply(
-            params,
-            &WorkingSpace::LINEAR_DISPLAY_P3,
-            &mut CpuImage {
-                pixels: &mut *pixels,
-                top,
-                size,
-            },
-        )
-        .map_err(|error| match error {
-            CpuFilterError::GpuImage { .. } => {
-                cherenkov::RenderError::Unsupported(crate::names::FILTER_GPU_IMAGE)
-            }
-        })?;
+    run_filter(filter, pixels, top, size)?;
     if encoded {
         convert_span(
             simd,
@@ -3206,6 +3218,27 @@ fn apply_filter<S: Simd>(
         );
     }
     Ok(())
+}
+
+/// Runs `filter` over `pixels` as they are stored: the premultiplied
+/// values it averages are those of the pixels' own space.
+fn run_filter(
+    (filter, params): &FrameFilter,
+    pixels: &mut [[f32; 4]],
+    top: usize,
+    size: (usize, usize),
+) -> Result<(), cherenkov::RenderError> {
+    filter
+        .apply(
+            params,
+            &WorkingSpace::LINEAR_DISPLAY_P3,
+            &mut CpuImage { pixels, top, size },
+        )
+        .map_err(|error| match error {
+            CpuFilterError::GpuImage { .. } => {
+                cherenkov::RenderError::Unsupported(crate::names::FILTER_GPU_IMAGE)
+            }
+        })
 }
 
 /// Runs one backdrop group's capture for this band: copies the device
@@ -3274,13 +3307,17 @@ fn capture_band<S: Simd>(
     }
     let cw = c1 - c0;
     let mut flat = buffers.take_color(cw * (d1 - d0));
-    let space = match flatten(band, stack, item.flatten, (d0, d1), (c0, c1), &mut flat) {
+    let stored = match flatten(band, stack, item.flatten, (d0, d1), (c0, c1), &mut flat) {
         Ok(space) => space,
         Err(error) => {
             buffers.give_color(flat);
             return Err(error);
         }
     };
+    // The capture's area mean, chain and pyramid average premultiplied
+    // values in the group's working space.
+    let space = item.space;
+    convert_span(simd, &mut flat, stored, space);
     let mut canvas = if reduced {
         let mut canvas = buffers.take_color(rw * texel_rows);
         let mut across = buffers.take_color(rw * (d1 - d0));
@@ -3302,14 +3339,7 @@ fn capture_band<S: Simd>(
         flat
     };
     if let Some(filter) = &item.filter {
-        apply_filter(
-            simd,
-            filter,
-            &mut canvas,
-            space,
-            win0 - ry0,
-            (rw, ry1 - ry0),
-        )?;
+        run_filter(filter, &mut canvas, win0 - ry0, (rw, ry1 - ry0))?;
     }
     let kept_rows = kept1 - kept0;
     let mut buf = buffers.take_color(rw * kept_rows);
@@ -3959,19 +3989,15 @@ impl Band<'_> {
                     (0.0, 0.0, 0.0)
                 };
                 let c = match effect {
-                    SampleEffect::None => pixel_sample(capture, px, py, crow),
-                    SampleEffect::Color(m) => color_matrix(m, pixel_sample(capture, px, py, crow)),
-                    SampleEffect::Sdf(sdf) => sdf_sample(capture, sdf, field, px, py, crow),
+                    SampleEffect::None => capture.read(simd, pixel_sample(capture, px, py, crow)),
+                    SampleEffect::Color(m) => {
+                        color_matrix(m, capture.read(simd, pixel_sample(capture, px, py, crow)))
+                    }
+                    SampleEffect::Sdf(sdf) => sdf_sample(simd, capture, sdf, field, px, py, crow),
                     #[cfg(feature = "shaders")]
                     SampleEffect::Shader(_) => unreachable!("shader members run `sample_shader`"),
                 };
-                member_over(
-                    simd,
-                    &mut dst[row + px],
-                    c,
-                    cc,
-                    (capture.space, member_space, space),
-                );
+                member_over(simd, &mut dst[row + px], c, cc, (member_space, space));
             }
         }
     }
@@ -4011,6 +4037,7 @@ impl Band<'_> {
             regs.splat(reg, value);
         }
         let mut host = BackdropHost {
+            simd,
             capture,
             own: &shader.clip,
             union,
@@ -4075,13 +4102,7 @@ impl Band<'_> {
                         continue;
                     }
                     let c = std::array::from_fn(|k| regs.get(result[k])[l]);
-                    member_over(
-                        simd,
-                        &mut dst[at[l]],
-                        c,
-                        cover[l],
-                        (capture.space, member_space, space),
-                    );
+                    member_over(simd, &mut dst[at[l]], c, cover[l], (member_space, space));
                 }
             }
         }

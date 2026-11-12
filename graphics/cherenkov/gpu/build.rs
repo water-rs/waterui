@@ -282,7 +282,8 @@ fn main() {
     // The working-space ↔ sRGB conversion every colour-converting module
     // shares: filtrate-core's `space::WGSL`, rendered from the same
     // constants as the CPU conversion. It precedes `shared.wgsl` (and so
-    // every module built on it), `present.wgsl` and `space_convert.wgsl`;
+    // every module built on it), `present.wgsl`, `resolve.wgsl` and
+    // `space_convert.wgsl`;
     // the producer and shader-paint preludes are `cherenkov::wgsl`'s. Every
     // module spec lands in `OUT_DIR` below; the `shared` prelude, which the
     // runtime and the tests compose with their own sources, lands there too,
@@ -290,6 +291,7 @@ fn main() {
     let space = filtrate_core::space::WGSL;
     let shared = format!("{space}\n{shared}");
     let present = format!("{space}\n{present}");
+    let resolve = format!("{space}\n{resolve}");
     let space_convert = format!("{space}\n{space_convert}");
     std::fs::write(out_dir.join("shared.wgsl"), &shared).unwrap();
 

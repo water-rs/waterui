@@ -11057,8 +11057,11 @@ impl GpuRenderer {
                 };
                 // A filter works in the linear working space: over an
                 // sRGB-encoded scope its input is decoded and its output
-                // encoded back.
-                let convert = (pass.space == cherenkov::BlendSpace::SrgbEncoded).then(|| {
+                // encoded back. A backdrop group's chain runs in the
+                // group's working space, the space its capture stores.
+                let scope_encoded = pass.space == cherenkov::BlendSpace::SrgbEncoded
+                    && !matches!(pass.target, Target::Backdrop { .. });
+                let convert = scope_encoded.then(|| {
                     self.space_convert.get_or_insert_with(|| {
                         space_convert::Pipelines::new(
                             &self.device,

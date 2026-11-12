@@ -1699,6 +1699,99 @@ fn sample_level_mixes_the_pyramid_trilinearly() -> Result<(), Box<dyn std::error
 }
 }
 
+/// One readback row from a `Linear` group's member and one from an
+/// `SrgbEncoded` group's.
+type EdgeRows = (Vec<[f32; 4]>, Vec<[f32; 4]>);
+
+split_fn! {
+/// A black | white edge at x = 32 under two groups blurred at capture
+/// `scale`, a `Linear` one sampled by rows 2..14 and an `SrgbEncoded` one
+/// by rows 38..62, far enough below that the first member's sample, which
+/// the second group's capture holds, stays outside its blur: columns
+/// 16..48 of row 8 and row 50 of the readback.
+fn blurred_edge_rows(
+    engine: &Engine<Gpu>,
+    scale: f32,
+) -> Result<EdgeRows, Box<dyn std::error::Error>> {
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    let blur = || filtrate::filters::GaussianBlur::new(2.0f32);
+    let spec = cherenkov::BackdropSpec::from(cherenkov::CaptureScale::new(scale)?);
+    let linear = surface.backdrop_group(blur(), spec);
+    let encoded = surface.backdrop_group(
+        blur(),
+        spec.blend_space(cherenkov::BlendSpace::SrgbEncoded),
+    );
+    let (a, b) = (surface.layer(), surface.layer());
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 32.0, 64.0),
+                WorkingColor::new([0.0, 0.0, 0.0, 1.0]),
+            );
+            r.fill(
+                Rect::new(32.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([1.0, 1.0, 1.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&a);
+        tx[surface.root()].push(&b);
+        tx[&a]
+            .clip(Rect::new(8.0, 2.0, 56.0, 14.0))
+            .backdrop(linear.sample());
+        tx[&b]
+            .clip(Rect::new(8.0, 38.0, 56.0, 62.0))
+            .backdrop(encoded.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let readback = wait!(surface.readback())?;
+    let row = |y: usize| (16..48).map(|x| pixel(&readback, x, y)).collect();
+    Ok((row(8), row(50)))
+}
+}
+
+split_test! {
+/// An `SrgbEncoded` group averages encoded values: its capture resolve,
+/// blur and bilinear read run on encoded texels, so across a blurred
+/// black | white edge each of its pixels is the decoded mean of the
+/// encoded backdrop with the linear group's weights — `decode(L)` for the
+/// linear group's `L` — at full and at reduced capture scale. The linear
+/// group still averages linear light, so pixels mirrored about the edge
+/// sum to white.
+fn an_encoded_group_blurs_in_the_encoded_space() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    for scale in [1.0, 0.5] {
+        let (linear, encoded) = wait!(blurred_edge_rows(&engine, scale))?;
+        // Columns 16..48: the edge lies between indices 15 and 16.
+        for k in 0..16 {
+            let sum = linear[15 - k][0] + linear[16 + k][0];
+            // Two half-float writes, one per pixel of the pair.
+            assert_f16_close(&[sum], &[1.0], 2.0);
+        }
+        let expected: Vec<f32> = linear
+            .iter()
+            .flat_map(|p| {
+                let gray = cherenkov_oracle::color::srgb_decode(f64::from(p[0]));
+                #[expect(clippy::cast_possible_truncation, reason = "a decoded unit value")]
+                let gray = gray as f32;
+                [gray, gray, gray, 1.0]
+            })
+            .collect();
+        let actual: Vec<f32> = encoded.iter().flatten().copied().collect();
+        // The encoded route stores the capture and the blur's
+        // intermediates encoded (2.4 each) and writes the result once; the
+        // linear row it is checked against carries one more write, read
+        // through the decode (2.4).
+        assert_f16_close(&actual, &expected, 4.0f64.mul_add(2.4, 1.0));
+        // Two pixels into the black side the encoded mean is far darker.
+        assert!(
+            encoded[14][0] < linear[14][0] - 0.1,
+            "scale {scale}: {encoded:?}"
+        );
+    }
+    Ok(())
+}
+}
+
 split_test! {
 /// Under `ScratchFormat::Rgba8Unorm` the two staging slots serve
 /// different copy sources in one frame: a staged capture copying a part

@@ -73,12 +73,14 @@ VsOut tile_input(TileInput v, metal::float4 position, constant Globals& globals)
     metal::float2 backdrop_origin = {}, backdrop_size = {}; \
     float backdrop_scale = {}; \
     float backdrop_levels = {}; \
+    uint backdrop_space = {}; \
     uint backdrop_member = {}; \
     metal::float4 source_pixel = metal::float4(src); \
     metal::float4 destination_pixel = metal::float4(dst); \
     return { fs_full(tile_input(v, position, globals), globals, instances, stops, \
         atlas, mask_tex, source, image_tex, TILE_IMAGE_DECODE_ARG backdrop_origin, backdrop_size, \
-        backdrop_scale, backdrop_levels, backdrop_member, source_pixel, destination_pixel) };
+        backdrop_scale, backdrop_levels, backdrop_space, backdrop_member, source_pixel, \
+        destination_pixel) };
 
 #endif
 

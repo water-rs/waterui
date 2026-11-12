@@ -514,13 +514,23 @@ fn paint(i: u32, meta_: vec4<u32>, color: Color, local: vec2<f32>, device: vec2<
 
 // Per-member backdrop effects: a member composite bilinearly samples the
 // bound capture and applies the effect packed in meta_.w's low bits.
-// `backdrop_origin`/`backdrop_size`/`backdrop_scale`/`backdrop_levels`
-// are set per instance by paint_backdrop; registered effect shaders call
-// backdrop_sample and backdrop_sample_level.
+// `backdrop_origin`/`backdrop_size`/`backdrop_scale`/`backdrop_levels`/
+// `backdrop_space` are set per instance by paint_backdrop; registered
+// effect shaders call backdrop_sample and backdrop_sample_level. The
+// capture stores its group's working space (`backdrop_space`, from
+// FLAG_TEX_SRGB): every read interpolates there and returns the linear
+// working space.
 var<private> backdrop_origin: vec2<f32>;
 var<private> backdrop_size: vec2<f32>;
 var<private> backdrop_scale: f32;
 var<private> backdrop_levels: f32;
+var<private> backdrop_space: u32;
+
+// A read of the capture, interpolated in its group's working space, in
+// the linear working space.
+fn backdrop_read(raw: vec4<f32>) -> vec4<f32> {
+    return move_space(raw, backdrop_space, SPACE_LINEAR);
+}
 
 // Bilinear sample of the bound capture's level `k` at device point `q`:
 // on the level-k grid `q` is `q · scale / 2^k`, the four texels around
@@ -551,7 +561,7 @@ fn backdrop_sample_at(q: vec2<f32>, k: u32) -> vec4<f32> {
 // 0.5 (texel centres) are read, clamped to the capture region, values
 // unclamped.
 fn backdrop_sample(q: vec2<f32>) -> vec4<f32> {
-    return backdrop_sample_at(q, 0u);
+    return backdrop_read(backdrop_sample_at(q, 0u));
 }
 
 // Trilinear sample of the capture pyramid at device point `q`: `level`
@@ -563,10 +573,10 @@ fn backdrop_sample_level(q: vec2<f32>, level: f32) -> vec4<f32> {
     let k0 = u32(base);
     let lo = backdrop_sample_at(q, k0);
     let phase = lc - base;
-    if phase == 0.0 { return lo; }
+    if phase == 0.0 { return backdrop_read(lo); }
     let k1 = min(k0 + 1u, u32(backdrop_levels) - 1u);
     let hi = backdrop_sample_at(q, k1);
-    return mix(lo, hi, phase);
+    return backdrop_read(mix(lo, hi, phase));
 }
 
 // The variance, in texels², a bilinear read adds along each axis: the
@@ -702,10 +712,10 @@ fn backdrop_sample_blur(q: vec2<f32>, sigma: f32) -> vec4<f32> {
         if t < 1.0 {
             let below = f32(1u << (2u * (k - 1u)));
             let lower = backdrop_level_read(q, k - 1u, (v - 5.0 * (below - 1.0) / 12.0) / below);
-            return mix(lower, upper, t);
+            return backdrop_read(mix(lower, upper, t));
         }
     }
-    return upper;
+    return backdrop_read(upper);
 }
 
 // The effect entry's pixel input: the device-space sample point, the
@@ -774,6 +784,11 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     backdrop_scale = inst.grad.z;
     backdrop_levels = inst.grad.w;
     backdrop_size = inst.grad2.xy;
+    backdrop_space = select(
+        SPACE_LINEAR,
+        SPACE_SRGB,
+        ((inst.meta_.w >> 24u) & FLAG_TEX_SRGB) != 0u,
+    );
     let kind = inst.meta_.w & 0xffu;
     let first = inst.meta_.z;
     if kind == EFFECT_SAMPLE {
@@ -1267,9 +1282,9 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
         return composite_space(mode, tspace, cb, cs);
     }
     if in.meta_.y == PAINT_BACKDROP {
-        // The bound capture stores its own space (FLAG_TEX_SRGB): the
-        // effect evaluates on it and the result lands in globals.space.
-        let tspace = select(SPACE_LINEAR, SPACE_SRGB, (flags & FLAG_TEX_SRGB) != 0u);
+        // The capture's reads return the linear working space whatever
+        // space it stores: the effect evaluates there and the result
+        // lands in globals.space.
         if (flags & FLAG_BLEND_SRC) != 0u {
             // The member blends in its group's space, unlike the pass's
             // storage (two spaces exist, so it is the other one): the
@@ -1283,11 +1298,11 @@ fn fs_full(fragment: VsOut) -> vec4<f32> {
                 return cb;
             }
             let space = select(SPACE_SRGB, SPACE_LINEAR, globals.space == SPACE_SRGB);
-            let cs = move_space(paint_backdrop(i, in.device) * cov, tspace, space);
+            let cs = move_space(paint_backdrop(i, in.device) * cov, SPACE_LINEAR, space);
             let over = cs + move_space(cb, globals.space, space) * (1.0 - cs.a);
             return move_space(over, space, globals.space);
         }
-        return move_space(paint_backdrop(i, in.device) * cov, tspace, globals.space);
+        return move_space(paint_backdrop(i, in.device) * cov, SPACE_LINEAR, globals.space);
     }
     // generic-composite
     return move_space(color_coverage(paint(i, in.meta_, in.color, in.local, in.device), cov), SPACE_LINEAR, globals.space);

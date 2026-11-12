@@ -1128,6 +1128,67 @@ fn an_encoded_member_edge_blends_with_the_content_beneath() {
     }
 }
 
+/// An `SrgbEncoded` group averages encoded values: across a black | white
+/// edge at x = 32, blurred at full and at half capture scale (columns
+/// 16..48 of a row under each group's member), each of its
+/// pixels is the decoded mean of the encoded backdrop with the linear
+/// group's weights — `decode(L)` for the linear group's `L`. The linear
+/// group still averages linear light, so pixels mirrored about the edge
+/// sum to white.
+#[test]
+fn an_encoded_group_blurs_in_the_encoded_space() {
+    for scale in [1.0, 0.5] {
+        let mut b = Scene::builder(64, 64);
+        let blur = || vec![cherenkov_scene::BackdropFilter::GaussianBlur { sigma: 2.0 }];
+        b.backdrop_group(BackdropGroup::new(1, blur(), scale, 1));
+        b.backdrop_group(BackdropGroup {
+            blend_space: BlendSpace::SrgbEncoded,
+            ..BackdropGroup::new(2, blur(), scale, 1)
+        });
+        b.root().fill(
+            Shape::Rect(Rect::new(0.0, 0.0, 32.0, 64.0)),
+            Paint::Solid(Color::srgb(0.0, 0.0, 0.0)),
+        );
+        b.root().fill(
+            Shape::Rect(Rect::new(32.0, 0.0, 64.0, 64.0)),
+            Paint::Solid(Color::srgb(1.0, 1.0, 1.0)),
+        );
+        // The second member sits far enough below the first that the
+        // first's sample, which the second group's capture holds, stays
+        // outside its blur.
+        for (group, rows) in [(1, (2.0, 14.0)), (2, (38.0, 62.0))] {
+            b.root().layer(|m| {
+                m.clip(Shape::Rect(Rect::new(8.0, rows.0, 56.0, rows.1)));
+                m.backdrop(group);
+            });
+        }
+        let img = Renderer::new(64, 64)
+            .render(&b.build(), &tmp())
+            .expect("oracle render");
+        let row = |y: usize| -> Vec<[f32; 4]> { img.pixels[y * 64 + 16..y * 64 + 48].to_vec() };
+        let (linear, encoded) = (row(8), row(50));
+        // The edge lies between indices 15 and 16.
+        for k in 0..16 {
+            let sum = f64::from(linear[15 - k][0]) + f64::from(linear[16 + k][0]);
+            metrics::assert_close(&[sum], &[1.0]);
+        }
+        let expected: Vec<f64> = linear
+            .iter()
+            .flat_map(|p| {
+                let gray = srgb_decode(f64::from(p[0]));
+                [gray, gray, gray, 1.0]
+            })
+            .collect();
+        let actual: Vec<f64> = encoded.iter().flatten().copied().map(f64::from).collect();
+        metrics::assert_close(&actual, &expected);
+        // Two pixels into the black side the encoded mean is far darker.
+        assert!(
+            encoded[14][0] < linear[14][0] - 0.1,
+            "scale {scale}: {encoded:?}"
+        );
+    }
+}
+
 /// A pass-through level opens no canvas: an opaque `Normal` child layer
 /// and a pass-through linear group leave an sRGB-encoded group, and an
 /// encoded backdrop member, compositing against the content beneath them

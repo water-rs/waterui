@@ -95,14 +95,20 @@ pub struct BackdropGroup {
     /// every member against its own clip only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub union: Option<f64>,
-    /// The space every member composites its sample onto its canvas in:
-    /// the sample at its coverage — antialiased edge and outer extent
+    /// The group's working space. The capture's area mean, `filters`, the
+    /// pyramid reduction (box and Gaussian) and every member read —
+    /// effects' and backdrop shaders' samples alike — average
+    /// premultiplied values in it, and a read returns the linear working
+    /// space. Every member then composites its sample onto its canvas in
+    /// it: the sample at its coverage — antialiased edge and outer extent
     /// included — and the canvas convert into it, blend source-over, and
     /// the result converts back. [`BlendSpace::Linear`] (the default)
-    /// composites in the linear working space; a member's own content
-    /// composites as before either way.
+    /// does all of this in the linear working space;
+    /// [`BlendSpace::SrgbEncoded`] averages and blends sRGB-encoded
+    /// values. A member's own content composites as before either way.
     ///
     /// [`BlendSpace::Linear`]: crate::BlendSpace::Linear
+    /// [`BlendSpace::SrgbEncoded`]: crate::BlendSpace::SrgbEncoded
     #[serde(default, skip_serializing_if = "is_linear")]
     pub blend_space: crate::BlendSpace,
 }
