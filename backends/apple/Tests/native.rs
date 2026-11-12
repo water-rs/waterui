@@ -9850,8 +9850,7 @@ mod navigation {
     /// The bar item's title as a plain string.
     fn bar_item_title(item: &UIBarButtonItem) -> String {
         item.title()
-            .map(|text| text.to_string())
-            .unwrap_or_default()
+            .map_or_default(|text| text.to_string())
     }
 
     /// Toolbar context hides automatic titles without overriding explicit label style.
