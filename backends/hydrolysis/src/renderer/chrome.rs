@@ -1648,7 +1648,19 @@ impl LiveChromeParts {
             })
             .push(renderer, ctx);
         }
-        if chrome.slider.is_some() {
+        if let Some(slider) = &chrome.slider {
+            // The look draws left to right; a right-to-left layout mirrors
+            // it about the row. The mirror is the transform the parts'
+            // items are listed at — their live segments and their
+            // materials' members alike — not a scope inside their
+            // recording, which a backdrop material cannot record in.
+            let mut parts_ctx = ctx;
+            if slider.source.mirrored {
+                let frame = chrome.frame;
+                parts_ctx.set_local(
+                    ctx.local() * Affine::new([-1.0, 0.0, 0.0, 1.0, frame.x0 + frame.x1, 0.0]),
+                );
+            }
             LayeredParts::ensure(&mut layers.slider, scope, || {
                 let chrome = Rc::clone(chrome);
                 Rc::new(move |recorder: &mut Recorder| {
@@ -1656,25 +1668,12 @@ impl LiveChromeParts {
                         .slider
                         .as_ref()
                         .expect("a slider chrome keeps its slider");
-                    let frame = chrome.frame;
-                    let record = |recorder: &mut Recorder| {
-                        for part in &slider.parts {
-                            part.record(recorder, frame);
-                        }
-                    };
-                    if slider.source.mirrored {
-                        // The look draws left to right; a right-to-left
-                        // layout mirrors it about the row.
-                        recorder.transform(
-                            Fixed(Affine::new([-1.0, 0.0, 0.0, 1.0, frame.x0 + frame.x1, 0.0])),
-                            record,
-                        );
-                    } else {
-                        record(recorder);
+                    for part in &slider.parts {
+                        part.record(recorder, chrome.frame);
                     }
                 })
             })
-            .push(renderer, ctx);
+            .push(renderer, parts_ctx);
         }
     }
 

@@ -244,6 +244,26 @@ fn a_value_change_moves_a_lens_knob() {
     );
 }
 
+/// A right-to-left slider mirrors an ordinary part about its row: at 0.2
+/// the knob sits a fifth of the way in from the right.
+#[test]
+fn a_mirrored_slider_mirrors_a_painted_knob() {
+    let mut rig = Rig::new(painted(painted_knob), LayoutDirection::RightToLeft, 0.2);
+    let frame = rig.snapshot();
+    save("slider_painted_knob_rtl", "rest", &frame);
+}
+
+/// A right-to-left slider records a lens part, mirrored about its row: the
+/// material is listed with the parts' mirror rather than recorded inside a
+/// transform scope, where a material cannot record (water-rs/waterui#4504).
+#[test]
+#[cfg(hydrolysis_gpu_painter)]
+fn a_mirrored_slider_records_a_lens_knob() {
+    let mut rig = Rig::new(glass(lens_knob), LayoutDirection::RightToLeft, 0.2);
+    let frame = rig.snapshot();
+    save("slider_lens_knob_rtl", "rest", &frame);
+}
+
 /// A press recolours a button chrome's custom part whose paint is driven
 /// by the pressed state: the chrome's custom parts take the same recording
 /// path as a slider's parts.
