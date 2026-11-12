@@ -244,6 +244,42 @@ pub fn render_date_picker_node<E: crate::text::TextEngine>(
     render_date_picker_parts(ctx, state, env);
 }
 
+/// Places a date picker's label sub-view across the top of the node's bounds
+/// and returns the height it takes (zero for a picker without a label), at
+/// least `min_height` when drawn.
+fn place_date_picker_label<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &mut DatePickerRenderState<E>,
+    env: &Environment,
+    min_height: f64,
+) -> f64 {
+    let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
+    let has_label = label_size.width > 0.0 || label_size.height > 0.0;
+    if !has_label {
+        return 0.0;
+    }
+    let label_height = f64::from(label_size.height).max(min_height);
+    if label_height > 0.0 {
+        let label_bounds = kurbo::Rect::new(
+            ctx.bounds.x0,
+            ctx.bounds.y0,
+            ctx.bounds.x1,
+            (ctx.bounds.y0 + label_height).min(ctx.bounds.y1),
+        );
+        let render_ctx = ctx.render_context();
+        let label_area = ctx.safe_area_for(label_bounds);
+        state.label_view.place(
+            ctx.renderer_mut(),
+            render_ctx,
+            env,
+            ProposalSize::UNSPECIFIED,
+            label_bounds,
+            label_area,
+        );
+    }
+    label_height
+}
+
 pub fn render_date_picker_parts<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<DatePickerRenderState<E>>>,
@@ -275,31 +311,7 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
             date_picker.ty(),
         )
     };
-    let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
-    let has_label = label_size.width > 0.0 || label_size.height > 0.0;
-    let label_height = if has_label {
-        f64::from(label_size.height).max(input_metrics.label_height)
-    } else {
-        0.0
-    };
-    if label_height > 0.0 {
-        let label_bounds = kurbo::Rect::new(
-            ctx.bounds.x0,
-            ctx.bounds.y0,
-            ctx.bounds.x1,
-            (ctx.bounds.y0 + label_height).min(ctx.bounds.y1),
-        );
-        let render_ctx = ctx.render_context();
-        let label_area = ctx.safe_area_for(label_bounds);
-        state.label_view.place(
-            ctx.renderer_mut(),
-            render_ctx,
-            env,
-            ProposalSize::UNSPECIFIED,
-            label_bounds,
-            label_area,
-        );
-    }
+    let label_height = place_date_picker_label(ctx, &mut state, env, input_metrics.label_height);
 
     let field_bounds = kurbo::Rect::new(
         ctx.bounds.x0,
