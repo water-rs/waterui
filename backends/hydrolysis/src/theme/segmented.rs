@@ -266,10 +266,11 @@ const fn segments(count: usize) -> f64 {
 ///
 /// Hydrolysis measures, places, hit-tests, records and animates the picker
 /// from this one value. The parts record in this order: the control parts
-/// added with [`Self::part`], each segment's parts added with
-/// [`Self::segment_part`], the labels, then the control parts added with
-/// [`Self::over_labels`]. A backdrop material recorded over the labels
-/// captures them. Within each kind, the part added later is above.
+/// added with [`Self::part`], then for each segment its chrome set with
+/// [`Self::segment_chrome`] and its parts added with [`Self::segment_part`],
+/// the labels, then the control parts added with [`Self::over_labels`]. A
+/// backdrop material recorded over the labels captures them. Within each
+/// kind, the part added later is above.
 #[derive(Clone)]
 pub struct SegmentedLook {
     layout: SegmentedLayout,
@@ -279,6 +280,7 @@ pub struct SegmentedLook {
     chrome: Chrome,
     drag: Option<SegmentedDrag>,
     below: Vec<Rc<dyn CustomPart<SegmentedValue>>>,
+    segment_chrome: Option<Rc<dyn Fn(Segment) -> Chrome>>,
     segment: Vec<Rc<dyn CustomPart<Segment>>>,
     above: Vec<Rc<dyn CustomPart<SegmentedValue>>>,
     group_opacity: Driven<f32>,
@@ -293,6 +295,7 @@ impl core::fmt::Debug for SegmentedLook {
             .field("hit", self.chrome.get_hit())
             .field("drag", &self.drag)
             .field("below", &self.below.len())
+            .field("segment_chrome", &self.segment_chrome.is_some())
             .field("segment", &self.segment.len())
             .field("above", &self.above.len())
             .field("group_opacity", &self.group_opacity)
@@ -321,6 +324,7 @@ impl SegmentedLook {
             chrome,
             drag: None,
             below: Vec::new(),
+            segment_chrome: None,
             segment: Vec::new(),
             above: Vec::new(),
             group_opacity: Driven::constant(1.0),
@@ -358,8 +362,27 @@ impl SegmentedLook {
         self
     }
 
+    /// Each segment's chrome — surface, state layer, press feedback, focus
+    /// indicator — realized by Hydrolysis on that segment's frame the way a
+    /// button's chrome is (one ripple wave per press, from the press point).
+    /// Evaluated once per segment while the spec holds.
+    ///
+    /// The chrome follows the segment's own hover, press, focus and press
+    /// point, `SELECTED` while it is the selected segment and `DISABLED`,
+    /// and is mirrored with the other parts in a right-to-left layout. It
+    /// records above the control parts added with [`Self::part`] and below
+    /// the segment's parts added with [`Self::segment_part`]. Its hit
+    /// region does not apply: each segment takes touches as [`Self::hit`]
+    /// sets.
+    #[must_use]
+    pub fn segment_chrome(mut self, chrome: impl Fn(Segment) -> Chrome + 'static) -> Self {
+        self.segment_chrome = Some(Rc::new(chrome));
+        self
+    }
+
     /// Records `part` once per segment, below the labels and above the
-    /// control parts added with [`Self::part`]. Its frame is the segment.
+    /// control parts added with [`Self::part`] and the segment's chrome.
+    /// Its frame is the segment.
     #[must_use]
     pub fn segment_part<D: DrivenSet<Segment> + 'static>(mut self, part: Custom<Segment, D>) -> Self
     where
@@ -444,6 +467,19 @@ impl SegmentedLook {
     #[cfg(hydrolysis_runtime)]
     pub(crate) fn below(&self) -> &[Rc<dyn CustomPart<SegmentedValue>>] {
         &self.below
+    }
+
+    /// Each of `count` segments' chrome, leading first; empty without a
+    /// segment chrome.
+    #[cfg(hydrolysis_runtime)]
+    pub(crate) fn segment_chromes(&self, count: usize) -> Vec<Chrome> {
+        self.segment_chrome
+            .as_ref()
+            .map_or_else(Vec::new, |chrome| {
+                (0..count)
+                    .map(|index| chrome(Segment { index, count }))
+                    .collect()
+            })
     }
 
     /// The parts recorded once per segment, in paint order.

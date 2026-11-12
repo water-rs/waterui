@@ -9,7 +9,7 @@ use crate::renderer::{
 };
 use crate::renderer::{InteractionKey, Track, TrackAction, measure_segmented_intrinsic};
 use crate::theme::{
-    Inputs, Segment, SegmentedLayout, SegmentedLook, SegmentedSpec, SpecTint, WidgetTheme,
+    Chrome, Inputs, Segment, SegmentedLayout, SegmentedLook, SegmentedSpec, SpecTint, WidgetTheme,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -65,10 +65,19 @@ pub struct PickerRenderState<E: crate::text::TextEngine> {
     segmented: SegmentedState<E>,
 }
 
+/// The look a theme gave for a segmented picker's spec, held while the spec
+/// is, with each segment's chrome it gives.
+struct HeldSegmentedLook {
+    spec: SegmentedSpec,
+    look: SegmentedLook,
+    /// Each segment's chrome, leading first: evaluated once for the spec.
+    chromes: Rc<[Chrome]>,
+}
+
 /// A segmented picker's retained state: the look the theme gave for its
 /// spec, the parts recorded from it, and each segment's label.
 struct SegmentedState<E: crate::text::TextEngine> {
-    look: Option<(SegmentedSpec, SegmentedLook)>,
+    look: Option<HeldSegmentedLook>,
     parts: Option<LiveSegmentedParts>,
     /// Each segment's label, leading first, built for the held look.
     labels: Vec<RetainedSubview<E>>,
@@ -102,31 +111,40 @@ impl<E: crate::text::TextEngine> PickerRenderState<E> {
         }
     }
 
-    /// The segmented look for `spec` in `env`: the one already held when
-    /// the spec is unchanged, otherwise requested again, which drops the
-    /// parts and the labels built from the previous one.
+    /// The segmented look for `spec` in `env` and each segment's chrome:
+    /// the ones already held when the spec is unchanged, otherwise
+    /// requested again, which drops the parts and the labels built from
+    /// the previous one.
     fn segmented_look(
         &mut self,
         theme: &Rc<dyn WidgetTheme>,
         spec: SegmentedSpec,
         env: &Environment,
-    ) -> SegmentedLook {
-        if let Some(look) = self.held_segmented_look(&spec) {
-            return look.clone();
+    ) -> (SegmentedLook, Rc<[Chrome]>) {
+        if let Some(held) = self.held(&spec) {
+            return (held.look.clone(), Rc::clone(&held.chromes));
         }
         let look = theme.segmented_picker(&spec, env);
-        self.segmented.look = Some((spec, look.clone()));
+        let chromes: Rc<[Chrome]> = look.segment_chromes(spec.segment_count()).into();
+        self.segmented.look = Some(HeldSegmentedLook {
+            spec,
+            look: look.clone(),
+            chromes: Rc::clone(&chromes),
+        });
         self.segmented.parts = None;
         self.segmented.labels.clear();
-        look
+        (look, chromes)
     }
 
-    fn held_segmented_look(&self, spec: &SegmentedSpec) -> Option<&SegmentedLook> {
+    fn held(&self, spec: &SegmentedSpec) -> Option<&HeldSegmentedLook> {
         self.segmented
             .look
             .as_ref()
-            .filter(|(held, _)| held == spec)
-            .map(|(_, look)| look)
+            .filter(|held| held.spec == *spec)
+    }
+
+    fn held_segmented_look(&self, spec: &SegmentedSpec) -> Option<&SegmentedLook> {
+        self.held(spec).map(|held| &held.look)
     }
 
     /// The segmented look for `spec` in `env` without holding it: the held
@@ -1362,7 +1380,7 @@ pub fn render_segmented_picker<E: crate::text::TextEngine>(
     let mut state = owner.borrow_mut();
     let spec = segmented_spec(&state.config, items.len(), env);
     let direction = spec.direction();
-    let look = state.segmented_look(&theme, spec, env);
+    let (look, chromes) = state.segmented_look(&theme, spec, env);
     if state.segmented.watches.is_empty() {
         let frames = ctx.renderer_mut().frame_signals();
         let watches = segmented_watches(&state.config, &state.segmented, frames);
@@ -1422,7 +1440,8 @@ pub fn render_segmented_picker<E: crate::text::TextEngine>(
         .drawn
         .iter()
         .zip(&tags)
-        .map(|(frame, tag)| {
+        .enumerate()
+        .map(|(index, (frame, tag))| {
             let key = option_key(owner, *tag);
             let target = look.target(*frame);
             let (_, press_slot, handles) = ctx.renderer_mut().bind_live_segment_target(
@@ -1431,6 +1450,7 @@ pub fn render_segmented_picker<E: crate::text::TextEngine>(
                 env,
                 disabled,
                 &look,
+                chromes.get(index),
             );
             let flags = ctx.renderer_mut().reported_interaction_state(&key);
             (target, press_slot, handles, flags)
@@ -1439,6 +1459,7 @@ pub fn render_segmented_picker<E: crate::text::TextEngine>(
     let parts = LiveSegmentedParts::ensure(
         &mut state.segmented.parts,
         &look,
+        &chromes,
         placed.frames.clone(),
         &tags,
         selected,

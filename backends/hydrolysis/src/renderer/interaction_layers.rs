@@ -156,32 +156,34 @@ impl Steered {
                 toggle.begin_wave(origin);
                 toggle.set_flag(InteractionState::PRESSED, true);
             }
-            Self::Segment(picker, segment) => picker.begin_press(*segment, origin),
+            Self::Segment(picker, segment) => picker.begin_press(*segment, index, origin),
         }
     }
 
     fn move_press(&self, point: kurbo::Point) {
         match self {
             Self::Chrome(chrome) => chrome.move_press(point),
-            // A toggle's and a segmented picker's parts follow the pressed
-            // flag and their drag.
-            Self::Toggle(_) | Self::Segment(..) => {}
+            Self::Segment(picker, segment) => picker.move_press(*segment, point),
+            // A toggle's parts follow the pressed flag and its drag.
+            Self::Toggle(_) => {}
         }
     }
 
     fn fade_wave(&self, index: usize) {
         match self {
             Self::Chrome(chrome) => chrome.fade_wave(index),
-            // A toggle's and a segmented picker's parts draw their own
-            // press feedback from the pressed flag.
-            Self::Toggle(_) | Self::Segment(..) => {}
+            Self::Segment(picker, segment) => picker.fade_wave(*segment, index),
+            // A toggle's parts draw their own press feedback from the
+            // pressed flag.
+            Self::Toggle(_) => {}
         }
     }
 
     fn clear_waves(&self) {
         match self {
             Self::Chrome(chrome) => chrome.clear_waves(),
-            Self::Toggle(_) | Self::Segment(..) => {}
+            Self::Segment(picker, segment) => picker.clear_waves(*segment),
+            Self::Toggle(_) => {}
         }
     }
 }

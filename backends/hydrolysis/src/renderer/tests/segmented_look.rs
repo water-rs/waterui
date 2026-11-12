@@ -541,6 +541,140 @@ fn a_backdrop_material_over_the_labels_captures_them() {
     );
 }
 
+/// A look whose segments wear a grey chrome, the leading one rounded on its
+/// leading side, with a red ripple that grows from the press point over a
+/// second and fades over two after the release, so a sample shows each
+/// press's wave where it landed.
+fn rippled_look() -> SegmentedLook {
+    use crate::theme::{
+        Chrome, CornerShape, Corners, FocusIndicator, PressFeedback, Ripple, StateLayer, Surface,
+    };
+    crate::testing::plain_segmented_look().segment_chrome(|segment| {
+        let leading = if segment.is_first() { 14.0 } else { 0.0 };
+        Chrome::new(
+            Surface::new(
+                CornerShape::new(Corners::from(kurbo::RoundedRectRadii::new(
+                    leading, 0.0, 0.0, leading,
+                ))),
+                WorkingColor::new([0.85, 0.85, 0.85, 1.0]),
+            ),
+            StateLayer::new(waterui::Color::srgb_f32(1.0, 0.0, 0.0)).opacities(0.0, 0.0, 1.0, 0.0),
+            PressFeedback::new().ripple(Ripple {
+                min_diameter: 0.0,
+                initial_scale: 0.1,
+                drift: 0.0,
+                grow: Animation::linear(Duration::from_millis(1000)),
+                fade_in: Animation::linear(Duration::from_millis(1)),
+                fade_out: Animation::linear(Duration::from_millis(2000)),
+                minimum_duration: Duration::ZERO,
+            }),
+            FocusIndicator::Tint,
+            linear(15),
+        )
+    })
+}
+
+/// Points along each of `targets`' columns but the one at `pressed`: near
+/// both ends and at the centre.
+fn outside(targets: &[Rect], pressed: usize) -> impl Iterator<Item = f64> + '_ {
+    targets
+        .iter()
+        .enumerate()
+        .filter(move |(index, _)| *index != pressed)
+        .flat_map(|(_, target)| [target.x0 + 10.0, target.center().x, target.x1 - 10.0])
+}
+
+/// A segment chrome's ripple starts one wave at the press point, on the
+/// pressed segment alone.
+#[test]
+fn a_segment_chrome_ripples_from_the_press_point_on_the_pressed_segment() {
+    let mut rig = Rig::new(|_, _| rippled_look(), LayoutDirection::LeftToRight, false);
+    let targets = rig.targets();
+    let y = targets[1].center().y;
+    let press = targets[1].x0 + 20.0;
+    rig.down(press, y);
+    rig.begin();
+    let pressed = rig.sample(100);
+    save("segmented_segment_ripple", "pressed", &pressed);
+
+    assert!(
+        is_red(pixel(&pressed, press, y)),
+        "the wave covers the press point"
+    );
+    assert!(
+        !is_red(pixel(&pressed, targets[1].x1 - 10.0, y)),
+        "the wave is small yet and centred on the press point, not the segment"
+    );
+    for x in outside(&targets, 1) {
+        assert!(
+            !is_red(pixel(&pressed, x, y)),
+            "no other segment ripples, at x = {x}"
+        );
+    }
+    rig.up(press, y);
+    rig.settle();
+}
+
+/// Two quick presses on one segment each start a wave of their own: the
+/// first keeps fading where it landed while the second grows from its
+/// press point.
+#[test]
+fn two_quick_presses_on_a_segment_show_two_waves() {
+    let mut rig = Rig::new(|_, _| rippled_look(), LayoutDirection::LeftToRight, false);
+    let targets = rig.targets();
+    let y = targets[0].center().y;
+    let (first, second) = (targets[0].x0 + 20.0, targets[0].x1 - 20.0);
+    rig.down(first, y);
+    rig.begin();
+    rig.pump(rig.now + 40);
+    rig.up(first, y);
+    rig.pump(rig.now + 16);
+    rig.down(second, y);
+    rig.pump(rig.now + 16);
+    let both = rig.sample(150);
+    save("segmented_segment_ripple", "two_presses", &both);
+
+    assert!(is_red(pixel(&both, first, y)), "the first wave still shows");
+    assert!(
+        is_red(pixel(&both, second, y)),
+        "the second wave grows from its own press point"
+    );
+    assert!(
+        !is_red(pixel(&both, targets[0].center().x, y)),
+        "the two waves are apart, each at its press point"
+    );
+    rig.up(second, y);
+    rig.settle();
+}
+
+/// A right-to-left picker mirrors a segment's chrome with the segment: the
+/// wave shows at the press point on the segment drawn there, and the
+/// leading segment's rounded side is its right one.
+#[test]
+fn a_right_to_left_segment_chrome_ripples_where_it_is_pressed() {
+    let mut rig = Rig::new(|_, _| rippled_look(), LayoutDirection::RightToLeft, false);
+    let targets = rig.targets();
+    let y = targets[0].center().y;
+    let press = targets[0].x0 + 20.0;
+    rig.down(press, y);
+    rig.begin();
+    let pressed = rig.sample(100);
+    save("segmented_segment_ripple", "rtl_pressed", &pressed);
+
+    assert!(
+        is_red(pixel(&pressed, press, y)),
+        "the wave shows at the press point in the leftmost, trailing segment"
+    );
+    for x in outside(&targets, 0) {
+        assert!(
+            !is_red(pixel(&pressed, x, y)),
+            "no other segment ripples, at x = {x}"
+        );
+    }
+    rig.up(press, y);
+    rig.settle();
+}
+
 /// The accessibility tree places each segment where its parts draw — the
 /// leading one rightmost in a right-to-left picker — and a selection change
 /// reaches the published tree without the picker rendering again.

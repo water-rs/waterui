@@ -28,7 +28,7 @@ use crate::renderer::chrome::{LayeredParts, LiveChrome, PartsBody, varies_live};
 use crate::renderer::{HydrolysisRenderer, RenderContext};
 use crate::theme::live::Operand;
 use crate::theme::{
-    Change, Inputs, InteractionMotion, LiveDriven, RealizedCustom, Retarget, Segment,
+    Change, Chrome, Inputs, InteractionMotion, LiveDriven, RealizedCustom, Retarget, Segment,
     SegmentedLook, SegmentedValue,
 };
 
@@ -82,6 +82,9 @@ pub struct LiveSegmented {
     /// Each segment's own hover, press and focus.
     states: Vec<Cell<InteractionState>>,
     below: Vec<RealizedCustom<SegmentedValue>>,
+    /// Each segment's chrome, leading segment first; empty when the look
+    /// has no segment chrome.
+    chromes: Vec<Rc<LiveChrome>>,
     /// Each segment's parts, leading segment first.
     segments: Vec<Vec<RealizedCustom<Segment>>>,
     above: Vec<RealizedCustom<SegmentedValue>>,
@@ -127,13 +130,15 @@ fn index_of(tags: &[Id], tag: Id) -> Option<usize> {
 
 impl LiveSegmented {
     /// The look realized on `frames` for the items `tags`, at rest with
-    /// `selected` selected, resolving the label colours in `env`.
+    /// `selected` selected, each segment wearing its chrome of `chromes`
+    /// (none when it is empty), resolving the colours in `env`.
     fn new(
         look: SegmentedLook,
         frames: SegmentedFrames,
         tags: Vec<Id>,
         selected: usize,
         disabled: bool,
+        chromes: &[Chrome],
         env: &Environment,
     ) -> Self {
         let count = tags.len();
@@ -177,6 +182,14 @@ impl LiveSegmented {
                     .collect()
             })
             .collect();
+        let chromes = chromes
+            .iter()
+            .zip(&frames.segments)
+            .enumerate()
+            .map(|(index, (chrome, frame))| {
+                LiveChrome::realize(chrome.clone(), *frame, segment_state(index), env)
+            })
+            .collect();
         let color = {
             let env = env.clone();
             look.label()
@@ -216,6 +229,7 @@ impl LiveSegmented {
             dragged: Cell::new(false),
             press_point: Cell::new(None),
             below,
+            chromes,
             segments,
             above,
             group_opacity,
@@ -383,13 +397,17 @@ impl LiveSegmented {
     }
 
     /// Moves segment `index`'s parts and label colour to its current inputs
-    /// under `change`.
+    /// under `change`, and its chrome to its current state under the
+    /// chrome's own motion.
     fn retarget_segment(&self, index: usize, change: Change<'_>) {
         self.with_segment_inputs(index, |inputs| {
             for driven in self.segment_drivens(index) {
                 driven.retarget(inputs, change);
             }
         });
+        if let Some(chrome) = self.chromes.get(index) {
+            chrome.sync(self.segment_state(index));
+        }
     }
 
     /// Sets segment `index`'s own interaction flags to `state`'s hover,
@@ -444,10 +462,42 @@ impl LiveSegmented {
     }
 
     /// Starts a press of segment `index` at `origin`, in the widget's
-    /// record space (`None` for a keyboard or synthetic press).
-    pub(crate) fn begin_press(&self, index: usize, origin: Option<Point>) {
+    /// record space (`None` for a keyboard or synthetic press): the press
+    /// point the parts read is `origin` in their mirrored space, and the
+    /// segment's chrome starts ripple wave `wave` there.
+    pub(crate) fn begin_press(&self, index: usize, wave: usize, origin: Option<Point>) {
+        if self.disabled {
+            return;
+        }
+        let origin = origin.map(|origin| self.frames.mirror() * origin);
         self.press_point.set(origin);
+        if let Some(chrome) = self.chromes.get(index) {
+            chrome.begin_wave(wave, origin);
+        }
         self.set_flag(index, InteractionState::PRESSED, true);
+    }
+
+    /// Moves segment `index`'s active press point to `point`, in the
+    /// widget's record space: its chrome's values that read it follow the
+    /// pointer.
+    pub(crate) fn move_press(&self, index: usize, point: Point) {
+        if let Some(chrome) = self.chromes.get(index) {
+            chrome.move_press(self.frames.mirror() * point);
+        }
+    }
+
+    /// Fades ripple wave `wave` of segment `index`'s chrome out.
+    pub(crate) fn fade_wave(&self, index: usize, wave: usize) {
+        if let Some(chrome) = self.chromes.get(index) {
+            chrome.fade_wave(wave);
+        }
+    }
+
+    /// Drops every wave of segment `index`'s chrome without animating.
+    pub(crate) fn clear_waves(&self, index: usize) {
+        if let Some(chrome) = self.chromes.get(index) {
+            chrome.clear_waves();
+        }
     }
 
     /// The selection became segment `index` under `change`: the thumb's
@@ -605,10 +655,17 @@ impl LiveSegmented {
             .target(&Inputs::at_rest(self.frames.row, self.base(), &()))
     }
 
-    /// The area the parts draw in: the row and the look's reach.
-    pub(crate) const fn visual_bounds(&self) -> Rect {
+    /// The area the parts draw in: the row and the look's reach, and where
+    /// the segments' chromes draw, mirrored with them.
+    pub(crate) fn visual_bounds(&self) -> Rect {
         let reach = self.look.layout().reach;
-        self.frames.row.inflate(reach, reach)
+        let mirror = self.frames.mirror();
+        self.chromes
+            .iter()
+            .map(|chrome| mirror.transform_rect_bbox(chrome.visual_bounds()))
+            .fold(self.frames.row.inflate(reach, reach), |bounds, chrome| {
+                bounds.union(chrome)
+            })
     }
 
     /// The paint segment `index`'s label draws in, following its colour.
@@ -616,11 +673,22 @@ impl LiveSegmented {
         self.label_paints[index].clone()
     }
 
-    /// The interaction motion the picker's interaction handles run with:
-    /// the engine animates the parts, so the handles' scalars snap and only
-    /// the hit region's press delay matters.
-    pub(crate) fn handle_motion(look: &SegmentedLook) -> InteractionMotion {
-        LiveChrome::handle_motion(look.chrome())
+    /// The interaction motion a segment's interaction handles run with,
+    /// the segment wearing `chrome`: the engine animates the parts and the
+    /// chrome, so the handles' scalars snap and only the look's press delay
+    /// and the chrome's ripple hold and fade-out matter.
+    pub(crate) fn handle_motion(
+        look: &SegmentedLook,
+        chrome: Option<&Chrome>,
+    ) -> InteractionMotion {
+        let control = LiveChrome::handle_motion(look.chrome());
+        match chrome {
+            Some(chrome) => InteractionMotion {
+                touch_delay: control.touch_delay,
+                ..LiveChrome::handle_motion(chrome)
+            },
+            None => control,
+        }
     }
 
     /// Whether this realizes `frames` for `tags` in the disabled state
@@ -635,7 +703,10 @@ impl LiveSegmented {
         for part in &self.below {
             part.record(recorder, self.frames.row);
         }
-        for (parts, frame) in self.segments.iter().zip(&self.frames.segments) {
+        for (index, (parts, frame)) in self.segments.iter().zip(&self.frames.segments).enumerate() {
+            if let Some(chrome) = self.chromes.get(index) {
+                chrome.record_layers(recorder);
+            }
             for part in parts {
                 part.record(recorder, *frame);
             }
@@ -690,17 +761,19 @@ pub struct LiveSegmentedParts {
 }
 
 impl LiveSegmentedParts {
-    /// The look `look` on `frames` for the items `tags`, following
-    /// `selection`: the parts in `slot` when they already realize it,
-    /// otherwise fresh parts at rest, replacing them. `slot` is emptied by
-    /// the caller whenever the look is requested again.
+    /// The look `look` on `frames` for the items `tags`, each segment
+    /// wearing its chrome of `chromes`, following `selection`: the parts in
+    /// `slot` when they already realize it, otherwise fresh parts at rest,
+    /// replacing them. `slot` is emptied by the caller whenever the look is
+    /// requested again, and `chromes` holds with the look.
     #[expect(
         clippy::too_many_arguments,
-        reason = "the realization's independent inputs: the look, its frames, the items, the selection, the disabled state and the environment the colours resolve in"
+        reason = "the realization's independent inputs: the look and its segments' chromes, its frames, the items, the selection, the disabled state and the environment the colours resolve in"
     )]
     pub(crate) fn ensure<'a>(
         slot: &'a mut Option<Self>,
         look: &SegmentedLook,
+        chromes: &[Chrome],
         frames: SegmentedFrames,
         tags: &[Id],
         selected: usize,
@@ -718,6 +791,7 @@ impl LiveSegmentedParts {
                 tags.to_vec(),
                 selected,
                 disabled,
+                chromes,
                 env,
             ));
             LiveSegmented::subscribe(&picker, selection);
@@ -750,7 +824,10 @@ impl LiveSegmentedParts {
         renderer: &mut HydrolysisRenderer<E>,
         ctx: RenderContext,
     ) {
-        if self.picker.below.is_empty() && self.picker.segments.iter().all(Vec::is_empty) {
+        if self.picker.below.is_empty()
+            && self.picker.chromes.is_empty()
+            && self.picker.segments.iter().all(Vec::is_empty)
+        {
             return;
         }
         let scope = renderer.material_scope();
