@@ -2585,7 +2585,7 @@ fn chrome_member_payload<T: LayerTarget<E>, E: crate::text::TextEngine>(
         material.capture(),
         own.rebound().value(),
     );
-    let binding = nami::binding(alone);
+    let binding = crate::theme::live::Operand::new(alone);
     super::backdrop::ChromeMemberPayload {
         shader,
         effect: cherenkov_record::Live::from(binding.clone()).into_shared(),
