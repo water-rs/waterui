@@ -246,6 +246,12 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
         crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
     #[cfg(not(feature = "accessibility"))]
     let _ = label;
+    state.field.apply_label_font(
+        &mut state.label_view,
+        state.config.label(),
+        ctx.renderer_mut(),
+        env,
+    );
     let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
     let label_height = material_input_label_height(label_size, input_metrics.label_height);
     let line_limit = line_limit_raw.map(NonZeroUsize::get);
@@ -628,6 +634,12 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
         crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
     #[cfg(not(feature = "accessibility"))]
     let _ = label;
+    state.field.apply_label_font(
+        &mut state.label_view,
+        state.config.label(),
+        ctx.renderer_mut(),
+        env,
+    );
     let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
     let label_height = material_input_label_height(label_size, input_metrics.label_height);
     #[cfg(feature = "accessibility")]

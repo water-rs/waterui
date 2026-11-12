@@ -22,13 +22,18 @@ use waterui_graphics::color::{Color, signal_color};
 use waterui_text::styled::StyledStr;
 
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
-use crate::renderer::{InteractionKey, InteractionLayerHandles, PressSlot, WidgetRenderContext};
+use crate::renderer::{
+    InteractionKey, InteractionLayerHandles, PressSlot, RetainedSubview, SemanticCore,
+    WidgetRenderContext,
+};
 use crate::theme::live::Operand;
 use crate::theme::{
     Border, Chrome, Custom, Driven, Inputs, SpecTint, TextFieldLook, TextFieldSpec, ValueMotion,
     WidgetInteractionState, WidgetTheme,
 };
 use crate::widgets::controls::button::LIVE_STATES;
+use crate::widgets::controls::button::styled_button_label;
+use waterui_controls::label::Label;
 
 /// The spec of a field in `env`.
 pub fn field_spec(env: &Environment) -> TextFieldSpec {
@@ -92,6 +97,8 @@ pub struct FieldChrome {
     parts: Option<LiveChromeParts>,
     report: Binding<InteractionState>,
     float: Rc<FloatLabel>,
+    /// Whether the inside label view was built with the look's font.
+    font_applied: bool,
     label_color: LabelColor,
     /// The subscription that floats the label with the field's focus.
     _focus: Box<dyn Any>,
@@ -110,6 +117,7 @@ impl FieldChrome {
             parts: None,
             report,
             float,
+            font_applied: false,
             label_color: Rc::default(),
             _focus: Box::new(focus),
         }
@@ -127,6 +135,33 @@ impl FieldChrome {
             )
         }));
         AnyView::new(label.foreground(color))
+    }
+
+    /// Gives the inside label view the look's label font, once. The view is
+    /// built before the theme is reachable, so the first render builds it
+    /// again from `label` with the font when the look names one.
+    pub(crate) fn apply_label_font<E: crate::text::TextEngine>(
+        &mut self,
+        label_view: &mut RetainedSubview<E>,
+        label: &Label,
+        renderer: &mut SemanticCore<E>,
+        env: &Environment,
+    ) {
+        let held = self
+            .held
+            .as_ref()
+            .expect("a field applies the look it requested");
+        if self.font_applied {
+            return;
+        }
+        self.font_applied = true;
+        let Some(font) = held.look.floating_label().label().get_font() else {
+            return;
+        };
+        let font = font.target(&Inputs::at_rest(Rect::ZERO, InteractionState::empty(), &()));
+        *label_view =
+            RetainedSubview::new(self.label_view(styled_button_label(Some(font), label.clone())));
+        label_view.ensure_built(renderer, env);
     }
 
     /// The look for the field's spec in `env`: the one already held when the
@@ -292,7 +327,9 @@ impl FloatLabel {
     /// placement and a move of the floating place snap; a change of whether
     /// the label floats runs the look's motion.
     pub(crate) fn place(&self, focused: bool, filled: bool, floated: Affine) {
-        let snaps = !self.placed.replace(true) || self.floated.replace(floated) != floated;
+        let first = !self.placed.replace(true);
+        let moved = self.floated.replace(floated) != floated;
+        let snaps = first || moved;
         self.focused.set(focused);
         self.filled.set(filled);
         let animation = if snaps { None } else { self.animation() };

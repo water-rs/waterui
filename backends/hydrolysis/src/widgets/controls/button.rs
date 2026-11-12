@@ -1271,7 +1271,7 @@ pub fn styled_with_default_foreground(styled: StyledStr, color: Color) -> Styled
 /// Applies the look's label font to a label that owns its text. A label
 /// built from caller-supplied views carries its own typography, and
 /// `Label::font` rejects it outright.
-fn styled_button_label(font: Option<Font>, label: Label) -> Label {
+pub(crate) fn styled_button_label(font: Option<Font>, label: Label) -> Label {
     if label.has_custom_content() {
         return label;
     }

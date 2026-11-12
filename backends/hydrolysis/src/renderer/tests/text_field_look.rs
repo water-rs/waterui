@@ -25,6 +25,8 @@ use super::{MinimalTestTheme, invisible_chrome, pumped_test_environment};
 use crate::HeadlessRuntime;
 use crate::platform::{InputEvent, PointerKind};
 use crate::renderer::chrome::LiveChrome;
+use crate::renderer::mount::layers::{LayerVisitor, visit};
+use crate::renderer::recording::Recording;
 use crate::testing::plain_text_field_look;
 use crate::theme::{Border, Driven, InputFieldMetrics, TextFieldLook, TextFieldSpec};
 
@@ -37,6 +39,21 @@ const METRICS: InputFieldMetrics = InputFieldMetrics {
     horizontal_inset: 8.0,
     vertical_inset: 6.0,
 };
+
+/// Each run that draws glyphs: the world transform of its first glyph run and
+/// how far its glyphs span along the run.
+#[derive(Default)]
+struct GlyphRuns(Vec<(kurbo::Affine, f64)>);
+
+impl<E: crate::text::TextEngine> LayerVisitor<E> for GlyphRuns {
+    fn run(&mut self, world: kurbo::Affine, recording: &Recording) {
+        if let Some((transform, glyphs)) = recording.glyph_runs().next() {
+            let first = glyphs.first().map_or(0.0, |glyph| f64::from(glyph.x));
+            let last = glyphs.last().map_or(0.0, |glyph| f64::from(glyph.x));
+            self.0.push((world * transform, last - first));
+        }
+    }
+}
 
 /// The plain look with an active indicator that thickens on focus.
 fn look() -> TextFieldLook {
@@ -62,7 +79,13 @@ struct Fixture {
 
 impl Fixture {
     fn new(view: AnyView, direction: LayoutDirection) -> Self {
-        let theme = MinimalTestTheme::default().with_text_field(|_, _| look());
+        Self::mount(view, direction, look(), 4)
+    }
+
+    /// Mounts `view` under a theme whose fields wear `look`, then pumps
+    /// `pumps` frames.
+    fn mount(view: AnyView, direction: LayoutDirection, look: TextFieldLook, pumps: usize) -> Self {
+        let theme = MinimalTestTheme::default().with_text_field(move |_, _| look.clone());
         let specs = Rc::clone(&theme.text_field_specs);
         let view = RefCell::new(Some(view));
         let builder = AnyViewBuilder::<AnyView>::new(move || {
@@ -77,7 +100,7 @@ impl Fixture {
             start: Instant::now(),
             next: 0,
         };
-        for _ in 0..4 {
+        for _ in 0..pumps {
             frames.pump(&mut runtime);
         }
         Self {
@@ -93,6 +116,25 @@ impl Fixture {
             AnyView::new(vstack((TextField::new("Name", &value),))),
             direction,
         )
+    }
+
+    /// A labelled field holding `content`, pumped `pumps` frames.
+    fn filled(content: &str, look: TextFieldLook, pumps: usize) -> Self {
+        let value = Binding::container(Str::from(content.to_owned()));
+        Self::mount(
+            AnyView::new(vstack((TextField::new("Name", &value),))),
+            LayoutDirection::LeftToRight,
+            look,
+            pumps,
+        )
+    }
+
+    /// The glyph runs the mount draws, each with its first glyph run's
+    /// world transform and the pixel width the run's glyphs span.
+    fn glyph_runs(&self) -> Vec<(kurbo::Affine, f64)> {
+        let mut runs = GlyphRuns::default();
+        visit(&self.runtime.renderer().mount_roots(), &mut runs);
+        runs.0
     }
 
     fn secure() -> Self {
@@ -232,5 +274,81 @@ fn a_field_requests_its_look_once_per_spec() {
         fixture.specs.borrow().len(),
         asked,
         "steady frames keep the look the field holds"
+    );
+}
+
+/// The scale a run's world transform draws at.
+fn scale_of(world: kurbo::Affine) -> f64 {
+    world.as_coeffs()[0]
+}
+
+/// A field that holds text when it mounts floats its label on the first
+/// frame, with no focus change: the label draws at the look's floating scale
+/// and the value at full size.
+#[test]
+fn a_field_mounted_with_text_has_its_label_floated() {
+    let fixture = Fixture::filled("Hello", look(), 1);
+    let scales: Vec<f64> = fixture
+        .glyph_runs()
+        .into_iter()
+        .map(|(world, _)| scale_of(world))
+        .collect();
+    let floated = look().floating_label().get_scale();
+    assert!(
+        scales.iter().any(|scale| (scale - floated).abs() < 1e-6),
+        "a label floats at {floated}; the runs draw at {scales:?}"
+    );
+}
+
+/// The label draws with the look's font, at rest and floated: a larger font
+/// spans more than the look's default one, and floating scales it by the
+/// look's scale.
+#[test]
+fn the_label_draws_with_the_looks_font() {
+    use crate::theme::Label as LookLabel;
+    use waterui_text::font::Font;
+
+    let span_of = |fixture: &Fixture| {
+        let [(world, span)] =
+            <[_; 1]>::try_from(fixture.glyph_runs()).expect("an empty field draws only its label");
+        (scale_of(world), span)
+    };
+    let plain = look();
+    let large = {
+        let floating = plain.floating_label().clone();
+        let styled = crate::theme::FloatingLabel::new(
+            LookLabel::new().font(Font::default().size(40.0)),
+            floating.get_float().clone(),
+        )
+        .scale(floating.get_scale())
+        .top(floating.get_top());
+        TextFieldLook::new(
+            invisible_chrome(),
+            METRICS,
+            styled,
+            plain.caret().clone(),
+            plain.selection().clone(),
+        )
+    };
+
+    let (_, plain_span) = span_of(&Fixture::filled("", plain, 4));
+    let mut fixture = Fixture::filled("", large, 4);
+    let (rest_scale, rest_span) = span_of(&fixture);
+    assert!(
+        rest_span > plain_span * 1.5,
+        "the label rests in the look's font: {rest_span} against {plain_span}"
+    );
+    assert!((rest_scale - 1.0).abs() < 1e-6);
+
+    fixture.focus_field();
+    fixture.settle();
+    let (floated_scale, floated_span) = span_of(&fixture);
+    assert!(
+        (floated_scale - 0.75).abs() < 1e-6,
+        "the label floats at the look's scale"
+    );
+    assert!(
+        (floated_span - rest_span).abs() < 1e-3,
+        "the floated label keeps the look's font: {floated_span} against {rest_span}"
     );
 }
