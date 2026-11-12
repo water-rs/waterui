@@ -58,6 +58,7 @@ default = [
     "list",
     "multi_date_picker",
     "navigation",
+    "on_change",
     "on_event",
     "on_key_press",
     "picker",
@@ -122,6 +123,7 @@ offset = []
 opacity = []
 multi_date_picker = []
 navigation = ["menu", "text", "transition_sites"]
+on_change = []
 on_event = []
 on_key_press = []
 picker = []

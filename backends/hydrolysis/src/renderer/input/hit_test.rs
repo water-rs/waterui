@@ -12,6 +12,7 @@ use waterui::Url;
 use waterui::drag_drop::{DragPayload, Files};
 use waterui::gesture::PointerButton as WuiPointerButton;
 use waterui_backend_core::gesture::{GesturePlacement, LONG_PRESS_SLOP};
+use waterui_core::contract_violation;
 use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_graphics::input::{Code, GesturePhase, ScrollPhase, ScrollUnit};
 use waterui_layout::scroll::Axis as ScrollAxis;
@@ -340,8 +341,8 @@ pub enum KeyboardActivation {
     Semantic,
 }
 
-/// The panic a touch press raises when the platform window reported no
-/// [`crate::platform::TouchScrollConfig`].
+/// The contract violation a touch press reports when the platform window
+/// reported no [`crate::platform::TouchScrollConfig`].
 const NO_TOUCH_SCROLL_CONFIG: &str =
     "hydrolysis: a touch press arrived but the platform window reported no touch_scroll_config";
 
@@ -520,7 +521,113 @@ pub struct HitTestState<E: crate::text::TextEngine> {
     pub(crate) window_bounds: kurbo::Rect,
 }
 
+/// A platform view's window-space geometry: its frame through the paint
+/// chain, that frame cut by the chain's clip, and the overscroll stretches
+/// warping it with the region it draws into while they show.
+pub struct PlatformGeometry {
+    frame: kurbo::Rect,
+    clip: kurbo::Rect,
+    stretches: Vec<crate::platform_view::PlacementStretch>,
+    stretch_region: Option<kurbo::Rect>,
+}
+
+impl PlatformGeometry {
+    /// `local` at `placement`, with the chain's motions at `at` — at the
+    /// placement clock's instant with `None`. Platform views place exactly
+    /// as dev's per-frame record did: the paint chain supplies transform
+    /// and clip with no hit or alpha gate, so a view under an unhittable
+    /// scope still lands in its table and `visible` follows the clip.
+    pub(crate) fn resolve(placement: &Placement, local: kurbo::Rect, at: Option<Instant>) -> Self {
+        let (transform, clip, _alpha) = at.map_or_else(
+            || placement.resolved_chain(false),
+            |at| placement.resolved_paint_chain_at(at),
+        );
+        let frame = crate::renderer::transformed_rect(transform, local);
+        let clipped = clip.map_or(frame, |clip| frame.intersect(clip));
+        // The warp moves the view's content past its frame, inside the
+        // stretching viewports: the host lays the view out in the frame
+        // joined with them, cut by the paint chain's clip.
+        let resolved = placement.resolved_stretches(at);
+        let stretch_region = (!resolved.is_empty()).then(|| {
+            let joined = resolved
+                .iter()
+                .fold(frame, |joined, stretch| joined.union(stretch.viewport));
+            clip.map_or(joined, |clip| joined.intersect(clip))
+        });
+        let stretches = resolved
+            .into_iter()
+            .map(|stretch| crate::platform_view::PlacementStretch {
+                params: stretch.params,
+                strength: stretch.strength,
+            })
+            .collect();
+        Self {
+            frame,
+            clip: clipped,
+            stretches,
+            stretch_region,
+        }
+    }
+
+    /// Writes the geometry into the view's sink placement; its paint-order
+    /// rank is the materialization's.
+    pub(crate) fn write(self, placement: &mut crate::platform_view::PlatformViewPlacement) {
+        let (frame, clipped) = (self.frame, self.clip);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "window coordinates fit f32 — same cast dev's placement math used"
+        )]
+        {
+            placement.set_x(frame.x0 as f32);
+            placement.set_y(frame.y0 as f32);
+            placement.set_width(frame.width() as f32);
+            placement.set_height(frame.height() as f32);
+            placement.set_clip((clipped != frame).then(|| {
+                [
+                    clipped.x0 as f32,
+                    clipped.y0 as f32,
+                    clipped.width() as f32,
+                    clipped.height() as f32,
+                ]
+            }));
+            placement.set_stretch(
+                self.stretches,
+                self.stretch_region.map(|region| {
+                    [
+                        region.x0 as f32,
+                        region.y0 as f32,
+                        region.width() as f32,
+                        region.height() as f32,
+                    ]
+                }),
+            );
+        }
+        placement.set_visible(!clipped.is_zero_area());
+    }
+}
+
 impl<E: crate::text::TextEngine> SemanticCore<E> {
+    /// Places every platform view drawn under a running wrapper motion at
+    /// the frame's instant (water-rs/waterui#2203). The engine moves the
+    /// wrapper's layer on its own clock, but the host places a platform
+    /// view, so it follows the track frame by frame — the one consumer
+    /// that evaluates a motion per frame, and only while a track runs over
+    /// a view. A track's end re-materializes the view at rest
+    /// ([`PlacementClock::settle`](mount::PlacementClock::settle)).
+    pub(crate) fn follow_platform_views(&mut self) {
+        let now = self.frame_instant();
+        for view in &mut self.materialized_platform_views {
+            let Some(chain) = &view.following else {
+                continue;
+            };
+            if !chain.runs(now) {
+                continue;
+            }
+            PlatformGeometry::resolve(&chain.placement, chain.local, Some(now))
+                .write(&mut view.placement);
+        }
+    }
+
     /// Drops every retained registration `cell` emitted — run when the
     /// cell enters a new record and when `retire_subtree` sweeps a dead
     /// subtree. Taking the cell's bucket is the whole purge: entries live
@@ -581,12 +688,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             order: mount::PaintOrder,
             table: Rc<RefCell<crate::platform_view::PlatformViewTable>>,
             placement: crate::platform_view::PlatformViewPlacement,
-            frame: kurbo::Rect,
-            clip: kurbo::Rect,
-            /// The overscroll stretches warping the view and the window
-            /// region it draws into while they show.
-            stretches: Vec<crate::platform_view::PlacementStretch>,
-            stretch_region: Option<kurbo::Rect>,
+            geometry: PlatformGeometry,
+            following: Option<crate::renderer::FollowedChain>,
             #[cfg(any(test, hydrolysis_hwui))]
             owner: Weak<mount::NodeCell<E>>,
             #[cfg(any(test, hydrolysis_hwui))]
@@ -871,35 +974,22 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             // alpha gate — a view under an unhittable scope still lands in
             // its table, and `visible` follows the clip.
             for entry in &regs.platform_view_placements {
-                let (transform, clip, _alpha) = entry.region.placement.resolved_chain(false);
-                let frame = crate::renderer::transformed_rect(transform, entry.region.local);
-                let clipped = clip.map_or(frame, |clip| frame.intersect(clip));
-                // The warp moves the view's content past its frame, inside
-                // the stretching viewports: the host lays the view out in
-                // the frame joined with them, cut by the paint chain's clip.
-                let resolved = entry.region.placement.resolved_stretches();
-                let stretch_region = (!resolved.is_empty()).then(|| {
-                    let joined = resolved
-                        .iter()
-                        .fold(frame, |joined, stretch| joined.union(stretch.viewport));
-                    clip.map_or(joined, |clip| joined.intersect(clip))
+                let placement = &entry.region.placement;
+                // A view drawn under a wrapper's motion follows the track
+                // every frame; the chain is kept for that.
+                let motions = placement.paint_chain_motions();
+                let following = (!motions.is_empty()).then(|| crate::renderer::FollowedChain {
+                    placement: Rc::clone(placement),
+                    local: entry.region.local,
+                    motions,
                 });
-                let stretches = resolved
-                    .into_iter()
-                    .map(|stretch| crate::platform_view::PlacementStretch {
-                        params: stretch.params,
-                        strength: stretch.strength,
-                    })
-                    .collect();
                 orders.push(entry.order.clone());
                 staged_platform.push(StagedPlatform {
                     order: entry.order.clone(),
                     table: Rc::clone(&entry.payload.table),
                     placement: entry.payload.placement.clone(),
-                    frame,
-                    clip: clipped,
-                    stretches,
-                    stretch_region,
+                    geometry: PlatformGeometry::resolve(placement, entry.region.local, None),
+                    following,
                     #[cfg(any(test, hydrolysis_hwui))]
                     owner: entry.owner.clone(),
                     #[cfg(any(test, hydrolysis_hwui))]
@@ -1042,46 +1132,17 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.materialized_platform_views.clear();
         self.materialized_platform_views
             .extend(staged_platform.into_iter().map(|staged| {
-                let clipped = staged.clip;
                 let mut placement = staged.placement;
                 #[expect(
                     clippy::cast_possible_truncation,
-                    reason = "window coordinates fit f32 — same cast dev's placement math used"
+                    reason = "a paint-order rank fits u32 — same cast dev's placement math used"
                 )]
-                {
-                    placement.set_x(staged.frame.x0 as f32);
-                    placement.set_y(staged.frame.y0 as f32);
-                    placement.set_width(staged.frame.width() as f32);
-                    placement.set_height(staged.frame.height() as f32);
-                    placement.set_clip((clipped != staged.frame).then(|| {
-                        [
-                            clipped.x0 as f32,
-                            clipped.y0 as f32,
-                            clipped.width() as f32,
-                            clipped.height() as f32,
-                        ]
-                    }));
-                    placement.set_order(rank(&staged.order) as u32);
-                }
-                placement.set_visible(!clipped.is_zero_area());
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "window coordinates fit f32 — same cast as the frame above"
-                )]
-                placement.set_stretch(
-                    staged.stretches,
-                    staged.stretch_region.map(|region| {
-                        [
-                            region.x0 as f32,
-                            region.y0 as f32,
-                            region.width() as f32,
-                            region.height() as f32,
-                        ]
-                    }),
-                );
+                placement.set_order(rank(&staged.order) as u32);
+                staged.geometry.write(&mut placement);
                 crate::renderer::MaterializedPlatformView {
                     table: staged.table,
                     placement,
+                    following: staged.following,
                     #[cfg(any(test, hydrolysis_hwui))]
                     owner: staged.owner,
                     #[cfg(any(test, hydrolysis_hwui))]
@@ -1167,7 +1228,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// (window logical coordinates, the space the placements are in) —
     /// `None` when no view is drawn there. The
     /// GPU band's ordered hit test asks this instead of an encoder record.
-    #[cfg(any(test, hydrolysis_hwui, hydrolysis_gpu_painter))]
+    #[cfg(any(test, hydrolysis_hwui, hydrolysis_cherenkov))]
     // Alive only on Android's GPU painter — HWUI asks its encoder instead.
     #[cfg_attr(
         not(all(target_os = "android", hydrolysis_gpu_painter)),
@@ -1205,20 +1266,23 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// painted above the view covers the point. The same rule hosted planes
     /// publish ([`HitTestState::interactive_regions_above`]).
     ///
-    /// # Panics
-    ///
-    /// When this frame placed no platform view `view`: the caller names a
-    /// view the same frame's placements bound.
-    #[cfg(any(test, hydrolysis_hwui, hydrolysis_gpu_painter))]
+    /// When this frame placed no platform view `view` — the caller must name
+    /// a view the same frame's placements bound — the call is a contract
+    /// violation and reports the point as not occluded, so the platform view
+    /// takes the hit.
+    #[cfg(any(test, hydrolysis_hwui, hydrolysis_cherenkov))]
     #[cfg_attr(all(not(target_os = "android"), not(test)), expect(dead_code))]
     pub(crate) fn platform_view_occluded(&self, view: u64, point: kurbo::Point) -> bool {
-        let placed = self
+        let Some(placed) = self
             .materialized_platform_views
             .iter()
             .find(|placed| placed.placement.id() == view)
-            .unwrap_or_else(|| {
-                panic!("hydrolysis: platform view {view} is not placed in the current frame")
-            });
+        else {
+            contract_violation!(
+                "hydrolysis: platform view {view} is not placed in the current frame; the point is not occluded"
+            );
+            return false;
+        };
         self.hit_test
             .interactive_regions_above(
                 placed.placement.order() as usize,
@@ -1356,7 +1420,7 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
     /// of them covers. Self-drawn content that registered no target never
     /// blocks a native view. Embedded targets answer their transformed
     /// bounding box, as every rect here is axis-aligned.
-    #[cfg(any(hydrolysis_hosted, hydrolysis_gpu_painter, test))]
+    #[cfg(any(hydrolysis_hosted, hydrolysis_cherenkov, test))]
     fn interactive_regions_above<'a>(
         &'a self,
         order: usize,
@@ -2873,7 +2937,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// semantic runtime's keyboard contract. Rendered runtimes keep the
     /// [`KeyboardActivation::PressRelease`] default.
     #[cfg(feature = "accessibility")]
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) const fn use_semantic_keyboard_activation(&mut self) {
         self.hit_test.keyboard_activation = KeyboardActivation::Semantic;
     }
@@ -2884,7 +2948,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// no target is dead even when a frame happens to emit no pointer
     /// targets at all.
     #[cfg(feature = "accessibility")]
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) const fn use_semantic_walk(&mut self) {
         self.semantic_walk = true;
     }
@@ -3492,12 +3556,14 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // types J, while J with nothing editable focused fires its chord —
         // the space bar included — and a bare `Delete` chord does not
         // steal the field's own delete either (water-rs/waterui#2118).
-        let registry = env
-            .get::<MenuShortcutRegistry<E>>()
-            .expect(MISSING_MENU_SHORTCUT_REGISTRY);
+        let registry =
+            menu_shortcut_registry::<E>(env, "menu chords are not dispatched for this key");
         let typing = !(modifiers.control || modifiers.alt || modifiers.super_key)
             && self.text_editing.has_focus();
-        if !typing && registry.dispatch(self.window_id, logical_key, modifiers, env) {
+        if !typing
+            && let Some(registry) = registry
+            && registry.dispatch(self.window_id, logical_key, modifiers, env)
+        {
             return true;
         }
         if matches!(key, KeyCode::Named(value) if value == "Escape")
@@ -4114,21 +4180,31 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.scroll_with_phase(x, y, dx, dy, false, phase)
     }
 
+    /// The platform window's touch-scroll parameters, or `None` after a
+    /// contract violation when it reported none: touch scrolling is then
+    /// off for the touch at hand.
+    fn touch_scroll_config(&self) -> Option<crate::platform::TouchScrollConfig> {
+        let config = self.hit_test.touch_scroll_config;
+        if config.is_none() {
+            contract_violation!("{NO_TOUCH_SCROLL_CONFIG}; the touch does not scroll");
+        }
+        config
+    }
+
     /// Arms the touch-scroll claim for a `PointerKind::Touch` sequence: the
     /// motion of every scroll view under the touch stops where it is —
     /// every other scroll view's keeps running — and the new press watches
     /// for a slop crossing while its press still lands on the content
     /// under it.
     ///
-    /// # Panics
-    /// Panics when the platform window reported no `touch_scroll_config`:
-    /// delivering touch input without the gesture's parameters is a host
-    /// bug, not a scroll-disabled platform.
+    /// When the platform window reported no `touch_scroll_config` the touch
+    /// is a contract violation — delivering touch input without the
+    /// gesture's parameters is a host bug, not a scroll-disabled platform —
+    /// and it arms no scroll: the press lands as a plain press.
     fn arm_touch_scroll(&mut self, point: kurbo::Point, button: PointerButton, at: Instant) {
-        assert!(
-            self.hit_test.touch_scroll_config.is_some(),
-            "{NO_TOUCH_SCROLL_CONFIG}"
-        );
+        if self.touch_scroll_config().is_none() {
+            return;
+        }
         // The touch stops the motions of the scroll views it lands in where
         // they are — their stretches held too, as each `ScrollView` under
         // an `ACTION_DOWN` aborts its scroller and holds its edges; the
@@ -4164,10 +4240,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// otherwise its gesture ends where it stopped. Returns whether that
     /// needs a frame.
     fn let_go_caught_motions(&mut self, caught: Vec<ScrollMotion>, at: Instant) -> bool {
-        let config = self
-            .hit_test
-            .touch_scroll_config
-            .expect(NO_TOUCH_SCROLL_CONFIG);
+        let Some(config) = self.touch_scroll_config() else {
+            return false;
+        };
         caught.into_iter().fold(false, |needs_frame, motion| {
             let key = motion.handle().cache_key();
             let release = motion.let_go(&config, at);
@@ -4228,10 +4303,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         finger_velocity: kurbo::Vec2,
         at: Instant,
     ) -> bool {
-        let config = self
-            .hit_test
-            .touch_scroll_config
-            .expect(NO_TOUCH_SCROLL_CONFIG);
+        let Some(config) = self.touch_scroll_config() else {
+            return false;
+        };
         let key = drag.handle.cache_key();
         let release = ScrollMotion::release(
             &drag.handle,
@@ -4284,10 +4358,10 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 // A `Pending` gesture exists only where the press armed it
                 // — with a config present — so a missing one here is the
                 // host retracting its parameters mid-sequence.
-                let config = self
-                    .hit_test
-                    .touch_scroll_config
-                    .expect(NO_TOUCH_SCROLL_CONFIG);
+                let Some(config) = self.touch_scroll_config() else {
+                    self.hit_test.touch_scroll = TouchScrollGesture::Pending(pending);
+                    return false;
+                };
                 let slop = f64::from(config.touch_slop());
                 if dominant.abs() <= slop {
                     self.hit_test.touch_scroll = TouchScrollGesture::Pending(pending);
@@ -4413,7 +4487,12 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         able(displacement_y, metrics.offset_y, metrics.max_y)
                     }
                     (ScrollAxis::Horizontal, false) | (ScrollAxis::Vertical, true) => false,
-                    _ => panic!("scroll axis variant is not supported by hydrolysis"),
+                    (other, _) => {
+                        contract_violation!(
+                            "scroll axis variant {other:?} is not supported by hydrolysis; the scroll view does not claim the touch"
+                        );
+                        false
+                    }
                 };
                 claims.then(|| (target.handle.clone(), target.owner.clone()))
             })

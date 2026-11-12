@@ -437,11 +437,12 @@ fn wire_prompt(
     field: &Retained<TextField>,
     prompt: &waterui::component::text::TextConfig,
 ) {
+    let content = prompt.content();
     let state = styled_push(
         mtm,
         ctx.env(),
         platform::colors::placeholder_text(),
-        &prompt.content().snapshot(),
+        &content.snapshot(),
         {
             let field = field.clone();
             move |state| {
@@ -450,7 +451,7 @@ fn wire_prompt(
             }
         },
     );
-    leaf.watch(prompt.content(), restyle(&state));
+    leaf.watch(&content, restyle(&state));
     leaf.bind(prompt.paragraph_alignment(), {
         let field = field.clone();
         move |alignment| apply_alignment(&field, alignment)

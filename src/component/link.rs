@@ -15,7 +15,7 @@ use waterui_core::env::with;
 use waterui_core::{Environment, Str, View};
 
 /// Opens a URL in the system's default browser/handler.
-fn open_url(url: &str) {
+pub(crate) fn open_url(url: &str) {
     let url = url.to_owned();
     spawn_local(async move {
         if let Err(e) = waterkit_deeplink::open_url(&url).await {

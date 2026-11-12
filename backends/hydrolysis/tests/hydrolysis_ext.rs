@@ -1,5 +1,6 @@
 //! End-to-end checks for the public `hydrolysis` API surface consumed
 //! through the `waterui` facade: GPU content views, environments, and frames.
+#![cfg(feature = "gpu")]
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -7,8 +8,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use hydrolysis::testing::TestStyle;
 use hydrolysis::{
-    FontFamilyResolution, HydrolysisRenderTarget, HydrolysisRenderer, OffscreenGpuContext,
-    OffscreenWindow, readback_texture_rgba8,
+    FontFamilyResolution, HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow,
+    readback_texture_rgba8,
 };
 use waterui::Color;
 use waterui::View;
@@ -299,7 +300,8 @@ fn render(view: impl View, width: u32, height: u32) -> Snapshot {
     let fonts = hydrolysis::native_collection(&env);
     fonts.clone().install(&mut env);
 
-    let gpu = OffscreenGpuContext::new_blocking();
+    let gpu = OffscreenGpuContext::new_blocking()
+        .unwrap_or_else(|error| panic!("the test host has no usable GPU: {error}"));
     let mut platform =
         OffscreenWindow::on_context(gpu.clone(), width, height, wgpu::TextureFormat::Rgba8Unorm);
     let mut renderer =
@@ -319,19 +321,11 @@ fn render(view: impl View, width: u32, height: u32) -> Snapshot {
     );
     renderer.finish_rebuild_frame();
 
-    let frame = surface.acquire();
+    let frame = surface
+        .acquire()
+        .unwrap_or_else(|error| panic!("offscreen frame acquisition failed: {error}"));
     renderer
-        .render_scene_to_texture(HydrolysisRenderTarget {
-            adapter: surface.adapter(),
-            device: surface.device(),
-            queue: surface.queue(),
-            device_loss: surface.device_loss().clone(),
-            texture: frame.texture(),
-            format: surface.format(),
-            width,
-            height,
-            base_color: WorkingColor::TRANSPARENT,
-        })
+        .render_scene_to_texture(surface, frame.texture(), WorkingColor::TRANSPARENT)
         .unwrap_or_else(|error| panic!("offscreen render failed: {error}"));
     let rgba8 = readback_texture_rgba8(&*surface, frame.texture(), width, height)
         .unwrap_or_else(|error| panic!("frame readback failed: {error}"));
@@ -459,7 +453,10 @@ fn hydrolysis_ext_captures_gpu_surface_inside_applied_filter() {
 fn offscreen_window_scale_factor_scales_the_surface_only() {
     use hydrolysis::PlatformWindow as _;
 
-    let window = hydrolysis::OffscreenWindow::new(320, 200, wgpu::TextureFormat::Rgba8Unorm);
+    let window = hydrolysis::OffscreenWindow::new(
+        hydrolysis::OffscreenSurface::new_blocking(320, 200, wgpu::TextureFormat::Rgba8Unorm)
+            .unwrap_or_else(|error| panic!("the test host has no usable GPU: {error}")),
+    );
     assert_eq!(window.surface_ref().size(), (320, 200));
     assert!((window.scale_factor() - 1.0).abs() < f64::EPSILON);
 

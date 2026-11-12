@@ -1,13 +1,18 @@
 use super::headless::HeadlessPlatformWindow;
 use super::{
-    FrameMode, FrameReader, RenderDiagnosticsConfig, RuntimeWindow, acquire_surface_frame,
-    advance_runtime, axes_whose_limits_changed, clamp_window_size, handle_input_events,
-    pump_window_semantics, render_window, render_window_with_capture, reports_ui_idle,
-    schedule_animation_update, schedule_redraw_or_refresh, surface_error_requires_reconfigure,
+    FrameMode, FrameReader, RenderDiagnosticsConfig, RuntimeWindow, advance_runtime,
+    axes_whose_limits_changed, clamp_window_size, handle_input_events, pump_window_semantics,
+    render_window, render_window_with_capture, reports_ui_idle, schedule_animation_update,
+    schedule_redraw_or_refresh,
 };
+#[cfg(hydrolysis_gpu_painter)]
+use super::{WindowFrame, acquire_surface_frame, surface_error_requires_reconfigure};
 use crate::platform::{
-    GpuSurfaceWindow as _, InputEvent, OffscreenGpuContext, OffscreenSurface, PlatformWindow as _,
-    SurfaceError, SurfaceFrame, SurfaceProvider,
+    InputEvent, OffscreenPainter, OffscreenTarget as _, PaintedWindow as _, PlatformWindow as _,
+};
+#[cfg(hydrolysis_gpu_painter)]
+use crate::platform::{
+    OffscreenGpuContext, OffscreenSurface, SurfaceError, SurfaceFrame, SurfaceProvider,
 };
 use crate::renderer::tests::{MinimalTestTheme, test_environment};
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, InteractionKey};
@@ -94,6 +99,7 @@ fn animation_ticks_schedule_full_frames() {
     );
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 #[test]
 fn only_invalid_swap_chains_require_surface_reconfiguration() {
     assert!(surface_error_requires_reconfigure(SurfaceError::Lost));
@@ -102,6 +108,7 @@ fn only_invalid_swap_chains_require_surface_reconfiguration() {
     assert!(!surface_error_requires_reconfigure(SurfaceError::Occluded));
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 #[test]
 fn invalid_swap_chain_is_reconfigured_and_retried_in_the_same_frame() {
     let mut surface = RecoveringSurface::new(SurfaceError::Outdated);
@@ -185,12 +192,12 @@ fn hidden_window_parks_the_pump_and_restores_exactly_one_frame() {
         "a hidden window reports no wake deadline"
     );
     assert!(
-        !render_window(&mut runtime, &env, &mut || false),
+        !render_window(&mut runtime, &env, &mut || false).presented(),
         "a hidden window presents no frame"
     );
     runtime.platform.request_redraw();
     assert!(
-        !render_window(&mut runtime, &env, &mut || false),
+        !render_window(&mut runtime, &env, &mut || false).presented(),
         "a stale in-flight wake renders nothing either"
     );
     assert_eq!(
@@ -215,11 +222,62 @@ fn hidden_window_parks_the_pump_and_restores_exactly_one_frame() {
         if !wake {
             break;
         }
-        if render_window(&mut runtime, &env, &mut || false) {
+        if render_window(&mut runtime, &env, &mut || false).presented() {
             rendered += 1;
         }
     }
     assert_eq!(rendered, 1, "un-hiding must render exactly one frame");
+}
+
+/// A surface that fails for good — here, a device whose recovery budget ran
+/// out — ends the window's rendering: the frame reports the failure and the
+/// pump asks for no further frame, instead of spinning on redraws that would
+/// fail the same way forever.
+#[test]
+#[cfg(hydrolysis_gpu_painter)]
+fn a_terminal_frame_failure_requests_no_further_frame() {
+    let env = test_environment();
+    let gpu = OffscreenGpuContext::for_tests();
+    let platform = HeadlessPlatformWindow::on_painter(&OffscreenPainter::Gpu(gpu.clone()), 16, 16);
+    let mut runtime = runtime_window_with_platform(
+        Window::new("", binding(WindowState::Normal), || ()),
+        platform,
+        &env,
+    );
+    let mut now = Instant::now();
+    assert!(
+        drive_until_idle(&mut runtime, &env, &mut now, 60) < 60,
+        "the window never went idle"
+    );
+
+    // The device dies and every rebuild fails until the budget runs out.
+    runtime
+        .platform
+        .surface()
+        .gpu()
+        .device_loss()
+        .simulate_loss("gone for good");
+    let unrecoverable = (0..=crate::platform::MAX_UNPRODUCTIVE_LOSSES)
+        .find_map(|_| {
+            gpu.recoverable()
+                .ensure_live(|_| Err("no adapter".to_owned()))
+                .err()
+        })
+        .expect("failed rebuilds exhaust the recovery budget");
+
+    runtime.request_refresh();
+    let _ = runtime.platform.take_redraw_request();
+    match render_window(&mut runtime, &env, &mut || false) {
+        WindowFrame::Failed(crate::renderer::FrameError::DeviceUnrecoverable(error)) => {
+            assert_eq!(error.reason(), unrecoverable.reason());
+        }
+        other => panic!("an unrecoverable device must end the window's rendering, got {other:?}"),
+    }
+    assert!(!runtime.mode.is_pending(), "a failed frame arms no refresh");
+    assert!(
+        !runtime.platform.take_redraw_request(),
+        "a failed frame posts no redraw"
+    );
 }
 
 /// An animation in flight does not wake a hidden pump: no gesture
@@ -257,7 +315,7 @@ fn hidden_window_reports_no_deadline_for_an_armed_animation() {
         "an armed caret animation must not post a redraw while hidden"
     );
     assert!(
-        !render_window(&mut runtime, &env, &mut || false),
+        !render_window(&mut runtime, &env, &mut || false).presented(),
         "a hidden window presents no frame"
     );
 }
@@ -544,25 +602,37 @@ fn an_infinite_max_size_component_leaves_that_axis_unbounded() {
 }
 
 /// A NaN in the app's `frame` binding is a programming error: the runner
-/// panics at the read, naming the field and the value, rather than quietly
-/// repairing it deeper in the geometry path.
+/// reports it at the read, naming the field and the value, and reads the
+/// component as zero rather than quietly repairing it deeper in the geometry
+/// path.
 #[test]
-#[should_panic(expected = "Window::frame.width must be finite, got NaN")]
-fn a_nan_frame_panics_naming_the_field_and_value() {
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "Window::frame.width must be finite, got NaN")
+)]
+fn a_nan_frame_reports_the_field_and_value() {
     use waterui_core::layout::{Point, Rect, Size};
 
     let window = Window::new("", binding(WindowState::Normal), || ().size(100.0, 50.0));
     window
         .frame
         .set(Rect::new(Point::new(0.0, 0.0), Size::new(f32::NAN, 300.0)));
-    let _ = runtime_window_for(window, &test_environment());
+    let mut runtime = runtime_window_for(window, &test_environment());
+    let _ = pump_window_semantics(&mut runtime, &test_environment());
+    let read = crate::platform::validated_window_frame(runtime.window.frame.snapshot());
+    assert!(read.width().abs() < f32::EPSILON);
+    assert!((read.height() - 300.0).abs() < f32::EPSILON);
 }
 
 /// The same trust boundary applies to the explicit size limits: a NaN
-/// `min_size` panics at the read naming the field.
+/// `min_size` is reported at the read naming the field, and the axis has no
+/// minimum.
 #[test]
-#[should_panic(expected = "Window::min_size.width must be finite, got NaN")]
-fn a_nan_min_size_panics_naming_the_field_and_value() {
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "Window::min_size.width must be finite, got NaN")
+)]
+fn a_nan_min_size_reports_the_field_and_value() {
     use waterui_core::layout::Size;
 
     let window = Window::new("", binding(WindowState::Normal), || ().size(100.0, 50.0))
@@ -571,18 +641,36 @@ fn a_nan_min_size_panics_naming_the_field_and_value() {
     let _ = pump_window_semantics(&mut runtime, &test_environment());
 }
 
-/// `max_size` accepts `+∞` per axis but nothing else non-finite.
+/// `max_size` accepts `+∞` per axis but nothing else non-finite: the axis is
+/// reported and unbounded.
 #[test]
-#[should_panic(
-    expected = "Window::max_size.height must be finite or +inf for an unbounded axis, got NaN"
+#[cfg_attr(
+    debug_assertions,
+    should_panic(
+        expected = "Window::max_size.height must be finite or +inf for an unbounded axis, got NaN"
+    )
 )]
-fn a_nan_max_size_panics_naming_the_field_and_value() {
+fn a_nan_max_size_reports_the_field_and_value() {
     use waterui_core::layout::Size;
 
     let window = Window::new("", binding(WindowState::Normal), || ().size(100.0, 50.0))
         .max_size(Size::new(640.0, f32::NAN));
     let mut runtime = runtime_window_for(window, &test_environment());
     let _ = pump_window_semantics(&mut runtime, &test_environment());
+}
+
+/// A platform that reports a scale factor that is not finite and positive is
+/// reported, and the surface is taken at scale 1.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "hydrolysis runner: invalid scale factor 0")
+)]
+fn an_invalid_platform_scale_factor_reports_and_reads_as_one() {
+    assert_eq!(
+        super::window::create_bounds(200, 100, 0.0),
+        kurbo::Rect::new(0.0, 0.0, 200.0, 100.0)
+    );
 }
 
 /// A re-measure on a screen change updates the limits only: a user-set size
@@ -1076,12 +1164,8 @@ fn runtime_window_sized(
     height: u32,
     env: &Environment,
 ) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
-    let platform = HeadlessPlatformWindow::on_context(
-        OffscreenGpuContext::new_blocking(),
-        width,
-        height,
-        wgpu::TextureFormat::Rgba8Unorm,
-    );
+    let platform =
+        HeadlessPlatformWindow::on_painter(&OffscreenPainter::for_tests(), width, height);
     runtime_window_with_platform(window, platform, env)
 }
 
@@ -1095,7 +1179,7 @@ fn runtime_window_with_platform(
         Rc::new(MinimalTestTheme::default()),
         ParleyEngine::system(FontFamilyResolution::Strict),
     );
-    RuntimeWindow::new_gpu(
+    RuntimeWindow::new_painted(
         window,
         platform,
         renderer,
@@ -1110,7 +1194,7 @@ fn runtime_window_with_platform(
 
 /// The host-side construction, input pump and scene pump need only
 /// `PlatformWindow`: these helpers are deliberately generic over it, so an
-/// accidental `GpuSurfaceWindow` bound fails this test's compilation.
+/// accidental `PaintedWindow` bound fails this test's compilation.
 #[test]
 fn host_window_pipeline_requires_no_gpu_surface_trait() {
     fn construct<P: crate::platform::PlatformWindow, E: crate::text::TextEngine>(
@@ -1145,12 +1229,7 @@ fn host_window_pipeline_requires_no_gpu_surface_trait() {
         );
     }
 
-    let platform = HeadlessPlatformWindow::on_context(
-        OffscreenGpuContext::new_blocking(),
-        320,
-        200,
-        wgpu::TextureFormat::Rgba8Unorm,
-    );
+    let platform = HeadlessPlatformWindow::on_painter(&OffscreenPainter::for_tests(), 320, 200);
     let env = test_environment();
     let mut runtime = construct(
         Window::new(
@@ -1303,7 +1382,7 @@ fn an_open_context_menu_presentation_builds_once_through_the_build_path() {
         "the menu must be open before the first build"
     );
 
-    assert!(render_window(&mut runtime, &env, &mut || false));
+    assert!(render_window(&mut runtime, &env, &mut || false).presented());
     assert!(runtime.renderer.has_render_tree());
     assert!(
         runtime
@@ -1319,7 +1398,7 @@ fn an_open_context_menu_presentation_builds_once_through_the_build_path() {
     // build frame registered exactly what it does.
     runtime.renderer.root_cell().mark_layout();
     runtime.request_refresh();
-    assert!(render_window(&mut runtime, &env, &mut || false));
+    assert!(render_window(&mut runtime, &env, &mut || false).presented());
     assert!(
         runtime
             .renderer
@@ -1350,18 +1429,14 @@ fn sized_test_runtime_window(
     env: &Environment,
 ) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
     let window = Window::new("", binding(WindowState::Normal), || ());
-    let mut platform = HeadlessPlatformWindow::on_context(
-        OffscreenGpuContext::new_blocking(),
-        width,
-        height,
-        wgpu::TextureFormat::Rgba8Unorm,
-    );
+    let mut platform =
+        HeadlessPlatformWindow::on_painter(&OffscreenPainter::for_tests(), width, height);
     platform.apply_properties(&window);
     let renderer = HydrolysisRenderer::with_engine(
         Rc::new(MinimalTestTheme::default()),
         ParleyEngine::system(FontFamilyResolution::Strict),
     );
-    RuntimeWindow::new_gpu(
+    RuntimeWindow::new_painted(
         window,
         platform,
         renderer,
@@ -1374,6 +1449,7 @@ fn sized_test_runtime_window(
     )
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 struct RecoveringSurface {
     inner: OffscreenSurface,
     first_error: Option<SurfaceError>,
@@ -1381,10 +1457,16 @@ struct RecoveringSurface {
     resize_count: usize,
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl RecoveringSurface {
     fn new(first_error: SurfaceError) -> Self {
         Self {
-            inner: OffscreenSurface::new_blocking(16, 16, wgpu::TextureFormat::Rgba8Unorm),
+            inner: OffscreenSurface::on_context(
+                OffscreenGpuContext::for_tests(),
+                16,
+                16,
+                wgpu::TextureFormat::Rgba8Unorm,
+            ),
             first_error: Some(first_error),
             acquire_count: 0,
             resize_count: 0,
@@ -1392,11 +1474,8 @@ impl RecoveringSurface {
     }
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl crate::platform::PresentationSurface for RecoveringSurface {
-    fn adapter(&self) -> &wgpu::Adapter {
-        self.inner.adapter()
-    }
-
     fn device(&self) -> &wgpu::Device {
         self.inner.device()
     }
@@ -1405,8 +1484,8 @@ impl crate::platform::PresentationSurface for RecoveringSurface {
         self.inner.queue()
     }
 
-    fn device_loss(&self) -> &crate::platform::DeviceLoss {
-        self.inner.device_loss()
+    fn generation(&self) -> &crate::platform::GpuGeneration {
+        self.inner.generation()
     }
 
     fn size(&self) -> (u32, u32) {
@@ -1415,16 +1494,17 @@ impl crate::platform::PresentationSurface for RecoveringSurface {
 
     fn resize(&mut self, width: u32, height: u32) {
         self.resize_count += 1;
-        self.inner.resize(width, height);
+        crate::platform::PresentationSurface::resize(&mut self.inner, width, height);
     }
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 impl SurfaceProvider for RecoveringSurface {
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
         self.acquire_count += 1;
         self.first_error
             .take()
-            .map_or_else(|| Ok(self.inner.acquire()), Err)
+            .map_or_else(|| SurfaceProvider::acquire(&mut self.inner), Err)
     }
 
     fn present(&mut self, frame: SurfaceFrame) {
@@ -1550,12 +1630,7 @@ fn frame_transaction_gates_wakes_and_renders_the_restore_frame() {
     use super::window::{FrameDemand, FrameTransaction};
 
     let transaction = Rc::new(FrameTransaction::default());
-    let mut platform = HeadlessPlatformWindow::on_context(
-        OffscreenGpuContext::new_blocking(),
-        16,
-        16,
-        wgpu::TextureFormat::Rgba8Unorm,
-    );
+    let mut platform = HeadlessPlatformWindow::on_painter(&OffscreenPainter::for_tests(), 16, 16);
     platform.frame_transaction = Some(Rc::clone(&transaction));
     let env = test_environment();
     let mut runtime = runtime_window_with_platform(
@@ -1786,7 +1861,7 @@ fn a_frame_transaction_serves_redraws_raised_before_its_render() {
         surface_attached,
         HeadlessPlatformWindow::take_redraw_request,
     ));
-    assert!(render_window(&mut runtime, &env, &mut || false));
+    assert!(render_window(&mut runtime, &env, &mut || false).presented());
     runtime.request_redraw();
     assert!(
         transaction.finish(
@@ -1820,7 +1895,7 @@ fn pump_frame_transaction(
         surface_attached,
         HeadlessPlatformWindow::take_redraw_request,
     ) {
-        assert!(render_window(runtime, env, &mut || false));
+        assert!(render_window(runtime, env, &mut || false).presented());
     }
     transaction.finish(
         runtime.platform.is_occluded(),

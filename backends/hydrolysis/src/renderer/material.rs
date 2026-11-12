@@ -30,9 +30,10 @@
 use waterui::background::Material;
 use waterui::theme::ColorScheme;
 use waterui_core::Environment;
+use waterui_core::contract_violation;
 use waterui_graphics::backend::filtrate::Chain;
 use waterui_graphics::backend::filtrate::filters::{GaussianBlur, LumaCurve};
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use waterui_graphics::backend::filtrate::{FilterExt as _, OperatingSpace};
 
 /// The fraction of device resolution a material's backdrop is captured at.
@@ -85,21 +86,23 @@ pub enum WithinWindowLevel {
 impl WithinWindowLevel {
     /// The within-window level `material` names, as a view's background.
     ///
-    /// # Panics
-    ///
-    /// When `material` is a level blended behind the window (`UltraThin`,
-    /// `Thin`): Hydrolysis realizes those as a window's background only. A
+    /// `None` after a contract violation when `material` is a level blended
+    /// behind the window (`UltraThin`, `Thin`): Hydrolysis realizes those as a
+    /// window's background only, so the view is drawn without a material. A
     /// region of the desktop blurred behind an inner view is
     /// water-rs/waterui#1853's decision.
-    pub(crate) fn of(material: Material) -> Self {
+    pub(crate) fn of(material: Material) -> Option<Self> {
         match Blending::of(material) {
-            Blending::WithinWindow(level) => level,
-            Blending::BehindWindow(_) => panic!(
-                "hydrolysis: Material::{material:?} is blended behind the window; Hydrolysis \
-                 realizes it as a window's background (`Window::background`), not as a view's \
-                 — blurring the desktop behind an inner view's region is \
-                 water-rs/waterui#1853's decision"
-            ),
+            Blending::WithinWindow(level) => Some(level),
+            Blending::BehindWindow(_) => {
+                contract_violation!(
+                    "hydrolysis: Material::{material:?} is blended behind the window; Hydrolysis \
+                     realizes it as a window's background (`Window::background`), not as a view's \
+                     — blurring the desktop behind an inner view's region is \
+                     water-rs/waterui#1853's decision; the view is drawn without a material"
+                );
+                None
+            }
         }
     }
 
@@ -340,7 +343,7 @@ impl MaterialRuntime {
     }
 
     /// The colour stage's resolved parameters — a test-facing answer.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn tone_params(&self) -> [f32; 7] {
         use waterui_graphics::backend::filtrate::Filter as _;
         self.tone.params()
@@ -349,7 +352,7 @@ impl MaterialRuntime {
     /// The backdrop chain for a surface at `display_scale` device pixels per
     /// point: the colour stage, then the blur in encoded sRGB with σ
     /// converted from points to capture texels.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn chain(&self, display_scale: f64) -> MaterialChain {
         #[expect(
             clippy::cast_possible_truncation,
@@ -410,9 +413,17 @@ mod tests {
     use waterui_graphics::backend::filtrate::Filter as _;
 
     #[test]
-    #[should_panic(expected = "water-rs/waterui#1853")]
+    #[cfg_attr(debug_assertions, should_panic(expected = "water-rs/waterui#1853"))]
     fn a_behind_window_view_background_names_its_decision() {
-        let _ = WithinWindowLevel::of(Material::Thin);
+        assert_eq!(WithinWindowLevel::of(Material::Thin), None);
+    }
+
+    #[test]
+    fn a_within_window_view_background_keeps_its_level() {
+        assert_eq!(
+            WithinWindowLevel::of(Material::Thick),
+            Some(WithinWindowLevel::Thick)
+        );
     }
 
     /// The colour stage `tone` applies to a uniform `grey` backdrop: on grey

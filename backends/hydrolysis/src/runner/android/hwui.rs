@@ -33,6 +33,10 @@ pub(super) struct HwuiWindow {
     /// Scratch for the frame's platform-view bindings — reused, never
     /// reallocated while the binding count fits.
     bindings: Vec<crate::hwui::PlatformViewBinding>,
+    /// The owner of the window's GPU-content surfaces: the host's JNI
+    /// callbacks address it by placement id.
+    #[cfg(hydrolysis_hwui_gpu)]
+    pub(super) hosted: Rc<super::hosted_gpu::HostedGpu>,
 }
 
 impl HwuiWindow {
@@ -51,6 +55,7 @@ impl HwuiWindow {
         theme: Rc<dyn WidgetTheme>,
         wake: Rc<dyn Fn()>,
         effect_wake: std::sync::Arc<dyn Fn() + Send + Sync>,
+        #[cfg(hydrolysis_hwui_gpu)] hosted: Rc<super::hosted_gpu::HostedGpu>,
     ) -> Result<(Self, HydrolysisRenderer<AndroidTextEngine>), JniError> {
         if peer.is_null() {
             return Err(JniError(
@@ -99,6 +104,8 @@ impl HwuiWindow {
                 mount,
                 painter,
                 bindings: Vec::new(),
+                #[cfg(hydrolysis_hwui_gpu)]
+                hosted,
             },
             renderer,
         ))
@@ -119,11 +126,14 @@ impl HwuiWindow {
     ) -> Result<bool, JniError> {
         runtime.platform.apply_properties(&runtime.window);
         let background = SurfaceBackground::of(&runtime.window, env);
-        assert!(
-            background.behind_level().is_none(),
-            "hydrolysis HWUI: behind-window material is unsupported \
-             (water-rs/waterui#1899)"
-        );
+        if background.behind_level().is_some() {
+            // The frame renders without the blur: the window keeps its
+            // backdrop and clear colour.
+            waterui_core::contract_violation!(
+                "hydrolysis HWUI: behind-window material is unsupported \
+                 (water-rs/waterui#1899); the window renders without it"
+            );
+        }
         runtime.platform.set_transparent(background.transparent());
         runtime.renderer.set_window_backdrop(background.backdrop());
         pump_window_scene(runtime, env, drain);
@@ -132,6 +142,8 @@ impl HwuiWindow {
             .borrow_mut()
             .set_clear(recording::working_color(background.clear(env)));
         let scale = runtime.platform.scale_factor();
+        #[cfg(hydrolysis_hwui_gpu)]
+        self.hosted.set_scale(scale);
         runtime
             .renderer
             .commit_mount(&mut self.mount, &self.host, scale);

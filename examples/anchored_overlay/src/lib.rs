@@ -16,6 +16,7 @@ use waterui::prelude::theme_color::{Border as BorderColor, Surface};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
+use waterui::shape::RoundedRectangle;
 
 /// The small card every demo presents as overlay content. The label names
 /// the edge the placement asked for.
@@ -24,6 +25,7 @@ fn overlay_card(note: &'static str) -> impl View {
         .caption()
         .padding_with(12.0)
         .background(Surface)
+        .clip(RoundedRectangle::new(8.0))
         .border_with(Border::new(BorderColor, 1.0).corner_radius(8.0))
 }
 

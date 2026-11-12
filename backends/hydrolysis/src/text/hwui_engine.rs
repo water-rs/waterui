@@ -60,10 +60,9 @@ impl<P: PlatformText> HwuiTextEngine<P> {
     /// Shapes `input` through the platform — one `shape` call per miss, with
     /// the line limit and ellipsis owned by the platform layout.
     ///
-    /// # Panics
-    /// Panics when the platform refuses the shape or returns a malformed
-    /// reply: a text the platform cannot lay out is a programmer error,
-    /// never a blank fallback.
+    /// When the platform refuses the shape, returns a malformed reply or
+    /// every layout id is live, the failure is logged and the empty layout
+    /// stands in: the text is not drawn and the frame continues.
     fn shape_platform(
         &self,
         input: &ResolvedTextLayoutInput,
@@ -105,8 +104,12 @@ impl<P: PlatformText> HwuiTextEngine<P> {
             literal.set_strict_families(self.family_resolution.is_strict());
             literal
         };
-        HwuiTextLayout::shape(&self.provider, &self.ids, &request)
-            .unwrap_or_else(|error: HwuiError| panic!("HWUI text shaping failed: {error}"))
+        HwuiTextLayout::shape(&self.provider, &self.ids, &request).unwrap_or_else(
+            |error: HwuiError| {
+                tracing::error!(%error, "HWUI text shaping failed; the text is not drawn");
+                HwuiTextLayout::empty()
+            },
+        )
     }
 }
 

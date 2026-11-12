@@ -15,9 +15,9 @@
 //! reactive parameter subscriptions alive exactly as long as the filter can
 //! write them.
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 use std::time::Duration;
 
 use super::mount::target::FilterHandle;
@@ -35,7 +35,7 @@ use waterui_graphics::backend::{AnyEffect, ParamGuards};
 /// is no separate capture number to measure: this cell counts the encodes it
 /// can see and their CPU time only.
 #[derive(Debug, Default)]
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub struct AppliedFilterMetrics {
     /// `encode_render` calls observed this frame.
     encoded: AtomicU32,
@@ -43,7 +43,7 @@ pub struct AppliedFilterMetrics {
     effect_nanos: AtomicU64,
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 impl AppliedFilterMetrics {
     /// Zeroes the frame counters before the engine renders.
     pub(crate) fn reset(&self) {
@@ -60,6 +60,13 @@ impl AppliedFilterMetrics {
     }
 
     /// Records one completed effect encode.
+    #[cfg_attr(
+        not(hydrolysis_gpu_painter),
+        expect(
+            dead_code,
+            reason = "only the GPU target encodes filters; the CPU target refuses them (water-rs/waterui#4065)"
+        )
+    )]
     fn record(&self, elapsed: Duration) {
         self.encoded.fetch_add(1, Ordering::Relaxed);
         self.effect_nanos.fetch_add(
@@ -82,7 +89,21 @@ pub use gpu::EngineEffect;
 /// the nami subscriptions feeding the filter's parameter slots alive for as
 /// long as the layer can draw, and tears them down when the node is dropped.
 pub struct FilteredRuntime {
+    #[cfg_attr(
+        not(any(test, hydrolysis_gpu_painter, hydrolysis_hwui)),
+        expect(
+            dead_code,
+            reason = "the CPU target refuses filters before registering one (water-rs/waterui#4065)"
+        )
+    )]
     source: Option<AnyEffect>,
+    #[cfg_attr(
+        not(any(test, hydrolysis_gpu_painter, hydrolysis_hwui)),
+        expect(
+            dead_code,
+            reason = "the CPU target refuses filters before registering one (water-rs/waterui#4065)"
+        )
+    )]
     filter: Option<FilterHandle>,
     _guards: ParamGuards,
 }
@@ -106,22 +127,25 @@ impl FilteredRuntime {
     /// The filter handle this mount installs on its wrapper layer.
     ///
     /// Registers the effect on first call and returns its id — the runtime
-    /// retains the registration until the mount drops it.
+    /// retains the registration until the mount drops it. `None` when the
+    /// registration was rejected; the source is consumed by that attempt,
+    /// so later calls stay `None` without retrying.
+    #[cfg_attr(
+        not(any(test, hydrolysis_gpu_painter, hydrolysis_hwui)),
+        expect(
+            dead_code,
+            reason = "the CPU target refuses filters before registering one (water-rs/waterui#4065)"
+        )
+    )]
     pub(crate) fn filter(
         &mut self,
-        register: impl FnOnce(AnyEffect) -> FilterHandle,
-    ) -> cherenkov_record::FilterId {
+        register: impl FnOnce(AnyEffect) -> Option<FilterHandle>,
+    ) -> Option<cherenkov_record::FilterId> {
         if self.filter.is_none() {
-            let source = self
-                .source
-                .take()
-                .expect("hydrolysis filtered mount without an effect source");
-            self.filter = Some(register(source));
+            let source = self.source.take()?;
+            self.filter = register(source);
         }
-        self.filter
-            .as_ref()
-            .expect("hydrolysis filtered mount lost its filter handle")
-            .id()
+        self.filter.as_ref().map(FilterHandle::id)
     }
 }
 
@@ -132,7 +156,7 @@ impl<E: crate::text::TextEngine> crate::renderer::HydrolysisRenderer<E> {
     /// The capture leg is `0`: the engine captures a filtered subtree inside
     /// the same render pass as the effect encode and reports no per-phase
     /// split, so only the encode leg remains measurable.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn applied_filter_stats(&self) -> (u32, u64, u64) {
         (
             self.frame_applied_filter_count,

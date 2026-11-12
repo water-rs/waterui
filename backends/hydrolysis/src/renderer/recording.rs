@@ -26,6 +26,7 @@ use cherenkov_record::{
     GlyphStyle, Group, ImageId, ImagePattern, Interpolation, LayoutSize, LinearGradient, Paint,
     RadialGradient, Recorder, Sampling, Shadow, ShapeData, SweepGradient, WorkingColor,
 };
+use waterui_core::contract_violation;
 use waterui_graphics::backend::{
     FontSource, HeldResources, ImageColorSpace, ImageData, PlainId, RecordingResources, Registered,
     ResourceError, Rgba8,
@@ -165,31 +166,34 @@ enum Op {
     PopLayer,
 }
 
-/// Panics unless `image`'s blob is exactly `format.size_in_bytes(width,
+/// Checks that `image`'s blob is exactly `format.size_in_bytes(width,
 /// height)` — the `width * height * bytes_per_pixel` contract the upload
 /// enforces. Checked at this boundary — the first hydrolysis-owned point —
-/// so a malformed `peniko::ImageData` fails fast with the expected and
+/// so a malformed `peniko::ImageData` is refused with the expected and
 /// actual byte counts instead of surfacing deep inside the engine.
-pub fn assert_well_formed_image(image: &peniko::ImageData) {
+///
+/// # Errors
+///
+/// [`ResourceError::Image`] naming the format, the dimensions and the byte
+/// counts when the blob does not match them.
+pub fn check_well_formed_image(image: &peniko::ImageData) -> Result<(), ResourceError> {
     let actual = image.data.len();
     let Some(expected) = image.format.size_in_bytes(image.width, image.height) else {
-        panic!(
+        return Err(ResourceError::Image(format!(
             "hydrolysis scene ingest: malformed peniko::ImageData — format {:?} at {}x{} \
              overflows the byte-size calculation",
             image.format, image.width, image.height,
-        );
+        )));
     };
-    assert!(
-        actual == expected,
-        "hydrolysis scene ingest: malformed peniko::ImageData — format {:?} at {}x{} needs \
-         width*height*bytes_per_pixel = {} bytes, but the blob holds {} bytes; re-encode the \
-         image or fix its declared format and dimensions",
-        image.format,
-        image.width,
-        image.height,
-        expected,
-        actual,
-    );
+    if actual != expected {
+        return Err(ResourceError::Image(format!(
+            "hydrolysis scene ingest: malformed peniko::ImageData — format {:?} at {}x{} needs \
+             width*height*bytes_per_pixel = {} bytes, but the blob holds {} bytes; re-encode the \
+             image or fix its declared format and dimensions",
+            image.format, image.width, image.height, expected, actual,
+        )));
+    }
+    Ok(())
 }
 
 /// `image`'s RGBA8 bytes fitted to `limits`: an admitted source passes
@@ -198,27 +202,32 @@ pub fn assert_well_formed_image(image: &peniko::ImageData) {
 /// Lanczos3-resampled to the largest admitted size at the same aspect
 /// ratio, so the registration below still holds the engine's contract
 /// rather than panicking on it. Returns `(width, height, bytes)`.
+///
+/// # Errors
+///
+/// [`ResourceError::Image`] when the engine's limits admit no image at all.
 fn fit_image_to_limits(
     image: &peniko::ImageData,
     limits: cherenkov_record::ImageLimits,
-) -> (u32, u32, Arc<[u8]>) {
+) -> Result<(u32, u32, Arc<[u8]>), ResourceError> {
     let (width, height) = limits.fit::<cherenkov_record::Rgba8>(image.width, image.height);
-    assert!(
-        (width, height) != (0, 0),
-        "hydrolysis renderer: engine image limits admit no image at all"
-    );
+    if (width, height) == (0, 0) {
+        return Err(ResourceError::Image(
+            "hydrolysis renderer: engine image limits admit no image at all".to_owned(),
+        ));
+    }
     if (width, height) == (image.width, image.height) {
-        return (width, height, Arc::from(image.data.data()));
+        return Ok((width, height, Arc::from(image.data.data())));
     }
     let source = image::RgbaImage::from_raw(image.width, image.height, image.data.data().to_vec())
-        .expect("hydrolysis renderer: a well-formed image fits RgbaImage::from_raw");
+        .expect("a well-formed Rgba8 image (checked at ingest) fits RgbaImage::from_raw");
     let resized = image::imageops::resize(
         &source,
         width,
         height,
         image::imageops::FilterType::Lanczos3,
     );
-    (width, height, Arc::from(resized.into_raw()))
+    Ok((width, height, Arc::from(resized.into_raw())))
 }
 
 /// Engine-facing caches shared by every lowered scene: registered fonts and
@@ -397,13 +406,17 @@ impl fmt::Debug for SceneResources {
 }
 
 impl SceneResources {
-    /// Creates caches served by `engine`.
-    #[cfg(hydrolysis_gpu_painter)]
-    pub(crate) fn new(engine: &Rc<crate::engine::GpuEngine>) -> Self {
-        Self::over(waterui_graphics::backend::SceneResources::with_shaders(
-            engine.clone(),
-            engine.clone(),
-        ))
+    /// Creates caches served by `engine`, with the registries its backend
+    /// offers (`SceneCaps`): the GPU backend registers shader paints, the
+    /// CPU backend reports them unsupported at registration.
+    #[cfg(hydrolysis_cherenkov)]
+    pub(crate) fn new<B>(engine: &Rc<cherenkov::Engine<B>>) -> Self
+    where
+        B: waterui_graphics::backend::SceneCaps
+            + cherenkov::Uploads<cherenkov::Rgba8>
+            + cherenkov::Uploads<cherenkov::Rgba16F>,
+    {
+        Self::over(B::resources(Rc::clone(engine)))
     }
 
     /// Creates caches over the registration table `inner`.
@@ -471,28 +484,36 @@ impl SceneResources {
 
     /// The registered font id for `font`, uploading the face on first use and
     /// holding the registration for `names`' recording.
-    pub(crate) fn font(&self, names: &mut LoweringNames<'_>, font: &FontData) -> FontId {
+    ///
+    /// # Errors
+    ///
+    /// The engine's [`ResourceError::Font`] when the font bytes are not a
+    /// font it registers; nothing is cached for them.
+    pub(crate) fn font(
+        &self,
+        names: &mut LoweringNames<'_>,
+        font: &FontData,
+    ) -> Result<FontId, ResourceError> {
         let key = FontKey {
             blob: font.data.id(),
             index: font.index,
         };
         if let Some(cached) = names.fonts.get(&key) {
-            return names.table.name(&cached.registered);
+            return Ok(names.table.name(&cached.registered));
         }
-        let cached = self.fonts.get(key).unwrap_or_else(|| {
+        let cached = if let Some(cached) = self.fonts.get(key) {
+            cached
+        } else {
             let source =
                 FontSource::bytes(Arc::<[u8]>::from(font.data.data())).with_index(font.index);
-            let registered = self
-                .inner
-                .font(source)
-                .expect("hydrolysis renderer: engine rejected a font source it must accept");
+            let registered = self.inner.font(source)?;
             self.font_registrations
                 .set(self.font_registrations.get() + 1);
             self.fonts.insert(key, registered)
-        });
+        };
         let id = names.table.name(&cached.registered);
         names.fonts.insert(key, cached);
-        id
+        Ok(id)
     }
 
     /// The registered image id for `image`, uploading the pixels on first use
@@ -521,18 +542,18 @@ impl SceneResources {
         let cached = if let Some(cached) = self.images.get(key) {
             cached
         } else {
-            assert_eq!(
-                image.format,
-                peniko::ImageFormat::Rgba8,
-                "hydrolysis renderer: unsupported image format {:?}; only Rgba8 uploads reach the engine",
-                image.format
-            );
-            assert_well_formed_image(image);
+            if image.format != peniko::ImageFormat::Rgba8 {
+                return Err(ResourceError::Image(format!(
+                    "hydrolysis renderer: unsupported image format {:?}; only Rgba8 uploads reach the engine",
+                    image.format
+                )));
+            }
+            check_well_formed_image(image)?;
             // A decoded image can exceed what the engine holds: resample to
             // the limits' fit so the registration is the contract it asserts.
-            let (width, height, bytes) = fit_image_to_limits(image, self.inner.image_limits());
+            let (width, height, bytes) = fit_image_to_limits(image, self.inner.image_limits())?;
             let data = ImageData::<Rgba8>::new(width, height, bytes)
-                .expect("hydrolysis renderer: well-formed Rgba8 image rejected")
+                .map_err(|error| ResourceError::Image(error.to_string()))?
                 .color_space(ImageColorSpace::Srgb);
             let data = if image.alpha_type == peniko::ImageAlphaType::AlphaPremultiplied {
                 data.premultiplied()
@@ -608,7 +629,7 @@ impl Recording {
     }
 
     /// Clears all recorded commands.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn reset(&mut self) {
         self.ops.clear();
         self.open_layers = 0;
@@ -837,7 +858,7 @@ impl Recording {
     /// under, in op order — `transform` maps the clip's own rect into scene
     /// space, so `transform * clip` is the rect the scope clips to. For
     /// tests asserting clip geometry.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn clip_scopes(&self) -> impl Iterator<Item = (Affine, Rect)> {
         self.ops.iter().filter_map(|op| match op {
             Op::PushGroup {
@@ -863,7 +884,7 @@ impl Recording {
     /// Each fill op's shape bounds with the transform it was drawn under,
     /// in op order — `transform * shape` is the rect the fill paints. For
     /// tests asserting paint geometry.
-    #[cfg(test)]
+    #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn fill_bounds(&self) -> impl Iterator<Item = (Affine, Rect)> {
         self.ops.iter().filter_map(|op| match op {
             Op::LiveRect {
@@ -1156,7 +1177,15 @@ fn lower(
                 glyphs,
                 paint: live,
             } => {
-                let font = resources.font(names, font);
+                let Some(font) = resources
+                    .font(names, font)
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "hydrolysis renderer: the engine did not register a font; the glyph run that uses it is not drawn");
+                    })
+                    .ok()
+                else {
+                    continue;
+                };
                 let style = match style {
                     peniko::Style::Fill(_) => GlyphStyle::Fill,
                     peniko::Style::Stroke(stroke) => GlyphStyle::Stroke(stroke.clone()),
@@ -1356,14 +1385,18 @@ fn dynamic_working_color(color: peniko::color::DynamicColor) -> WorkingColor {
 }
 
 /// The gradient interpolation space the engine supports; any other space is
-/// a programmer error on the waterui side, not something to approximate.
+/// a contract violation of the view that built the gradient, which then
+/// interpolates in encoded sRGB.
 fn interpolation(cs: peniko::color::ColorSpaceTag) -> Interpolation {
     match cs {
         peniko::color::ColorSpaceTag::Srgb => Interpolation::SrgbEncoded,
         peniko::color::ColorSpaceTag::LinearSrgb => Interpolation::Working,
-        other => panic!(
-            "hydrolysis renderer: gradient interpolation space {other:?} has no engine mapping"
-        ),
+        other => {
+            contract_violation!(
+                "hydrolysis renderer: gradient interpolation space {other:?} has no engine mapping; the gradient interpolates in encoded sRGB"
+            );
+            Interpolation::SrgbEncoded
+        }
     }
 }
 
@@ -1417,9 +1450,12 @@ fn blend_mode(mode: BlendMode) -> cherenkov_record::BlendMode {
         (Mix::Normal, Compose::DestAtop) => cherenkov_record::BlendMode::DestAtop,
         (Mix::Normal, Compose::Xor) => cherenkov_record::BlendMode::Xor,
         (Mix::Normal, Compose::PlusLighter) => cherenkov_record::BlendMode::PlusLighter,
-        (mix, compose) => panic!(
-            "hydrolysis renderer: blend mode ({mix:?}, {compose:?}) has no engine equivalent"
-        ),
+        (mix, compose) => {
+            contract_violation!(
+                "hydrolysis renderer: blend mode ({mix:?}, {compose:?}) has no engine equivalent; the content draws with normal source-over blending"
+            );
+            cherenkov_record::BlendMode::Normal
+        }
     }
 }
 
@@ -1843,12 +1879,21 @@ mod tests {
             max_bytes: 64 * 4,
             ..cherenkov_record::ImageLimits::UNLIMITED
         };
-        let (width, height, bytes) = fit_image_to_limits(&source, limits);
+        let (width, height, bytes) = fit_image_to_limits(&source, limits).expect("fits");
         assert_eq!((width, height), (8, 2));
         assert_eq!(bytes.len(), 8 * 2 * 4);
         let (width, height, bytes) =
-            fit_image_to_limits(&source, cherenkov_record::ImageLimits::UNLIMITED);
+            fit_image_to_limits(&source, cherenkov_record::ImageLimits::UNLIMITED)
+                .expect("unlimited");
         assert_eq!((width, height), (16, 4));
+        let none = cherenkov_record::ImageLimits {
+            max_dimension: 0,
+            ..cherenkov_record::ImageLimits::UNLIMITED
+        };
+        assert!(matches!(
+            fit_image_to_limits(&source, none),
+            Err(ResourceError::Image(_))
+        ));
         assert_eq!(&*bytes, &[255u8; 16 * 4 * 4][..]);
     }
 }

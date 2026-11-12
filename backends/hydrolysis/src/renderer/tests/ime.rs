@@ -207,7 +207,7 @@ fn key_event(key: Key, code: Code, state: KeyState, modifiers: Modifiers) -> Inp
 /// Mounts a single-line field plus a Submit button — the form proves which
 /// keys reached ordinary handling.
 fn form_runtime() -> (HeadlessRuntime, Binding<Str>, Binding<bool>) {
-    form_runtime_on(crate::platform::OffscreenGpuContext::new_blocking())
+    form_runtime_on(crate::platform::OffscreenGpuContext::for_tests())
 }
 
 fn form_runtime_on(
@@ -241,7 +241,7 @@ fn form_runtime_on(
 
 #[test]
 fn caret_blink_reuses_recording_without_layout() {
-    let (gpu, diagnostics, _state) = super::diagnostic_gpu();
+    let (gpu, diagnostics) = super::diagnostic_gpu();
     let (mut runtime, _value, _submitted) = form_runtime_on(gpu);
     let start = runtime.renderer().frame_instant() + Duration::from_millis(16);
     let initial = runtime
@@ -293,7 +293,7 @@ fn caret_blink_reuses_recording_without_layout() {
 }
 
 fn runtime_with(view: AnyView) -> HeadlessRuntime {
-    runtime_with_on(view, crate::platform::OffscreenGpuContext::new_blocking())
+    runtime_with_on(view, crate::platform::OffscreenGpuContext::for_tests())
 }
 
 fn runtime_with_on(view: AnyView, gpu: crate::platform::OffscreenGpuContext) -> HeadlessRuntime {

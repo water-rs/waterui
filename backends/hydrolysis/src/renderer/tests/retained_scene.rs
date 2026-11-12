@@ -40,10 +40,13 @@ use waterui_layout::container::LazyContainer;
 use waterui_layout::frame::Frame;
 use waterui_layout::stack::ZStackLayout;
 
-use super::{MinimalTestTheme, pumped_test_environment, test_environment};
+#[cfg(hydrolysis_gpu_painter)]
+use super::pumped_test_environment;
+use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
 
 /// Aggregated frame-economy metrics over a run of parametric (post-trigger) frames.
+#[cfg(hydrolysis_gpu_painter)]
 #[derive(Debug, Clone, Copy, Default)]
 struct ScenarioMetrics {
     /// Number of frames pumped while the animation was active.
@@ -63,6 +66,7 @@ fn padding_list() -> impl waterui::View {
 
 /// Case A — animated **opacity at the window root** (no scroll frame at all).
 /// Legacy: rebuilds the whole scene every animation frame.
+#[cfg(hydrolysis_gpu_painter)]
 fn opacity_at_root(value: &Binding<f32>) -> AnyView {
     let animated = value
         .clone()
@@ -76,6 +80,7 @@ fn opacity_at_root(value: &Binding<f32>) -> AnyView {
 /// Case B — animated **opacity inside a scroll view**. The opacity is baked into
 /// the captured scroll content, so a capture cache is `animation_dependent` and
 /// bails to a full rebuild every frame.
+#[cfg(hydrolysis_gpu_painter)]
 fn opacity_in_scroll(value: &Binding<f32>) -> AnyView {
     let animated = value
         .clone()
@@ -87,6 +92,7 @@ fn opacity_in_scroll(value: &Binding<f32>) -> AnyView {
 /// Case A' — animated **transform (scale) at the window root** (no scroll frame).
 /// Legacy bakes root transforms and rebuilds every frame; the window retained frame
 /// must replay it without a rebuild.
+#[cfg(hydrolysis_gpu_painter)]
 fn transform_at_root(value: &Binding<f32>) -> AnyView {
     let animated = value
         .clone()
@@ -102,6 +108,7 @@ fn transform_at_root(value: &Binding<f32>) -> AnyView {
 /// Case C — animated **transform (scale) inside a scroll view**. This is the one
 /// case a captured-scroll path can already replay without a rebuild; it
 /// exists here as a no-regression guard for the refactor.
+#[cfg(hydrolysis_gpu_painter)]
 fn transform_in_scroll(value: &Binding<f32>) -> AnyView {
     let animated = value
         .clone()
@@ -150,6 +157,7 @@ impl Layout for CountingLayout {
 /// Pumps one initial structural frame, triggers an animation by moving `value`,
 /// then pumps `parametric_frames` further frames while the animation is active and
 /// records the frame economy.
+#[cfg(hydrolysis_gpu_painter)]
 fn run_scenario(
     case: &str,
     make_view: fn(&Binding<f32>) -> AnyView,
@@ -160,7 +168,7 @@ fn run_scenario(
         let value = value.clone();
         AnyViewBuilder::<AnyView>::new(move || make_view(&value))
     };
-    let (gpu, diagnostics, _state) = super::diagnostic_gpu();
+    let (gpu, diagnostics) = super::diagnostic_gpu();
     let mut runtime = HeadlessRuntime::new_for_tests_on_context(
         gpu,
         pumped_test_environment(),
@@ -478,6 +486,7 @@ const PARAMETRIC_FRAMES: u32 = 20;
 /// dynamic opacity layer and replays through the window frame without a rebuild or
 /// re-measure. Baking the opacity into the capture instead forces a rebuild every frame.
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn opacity_at_root_never_rebuilds() {
     let metrics = run_scenario("opacity_at_root", opacity_at_root, PARAMETRIC_FRAMES);
     assert_eq!(metrics.parametric_frames, PARAMETRIC_FRAMES);
@@ -495,6 +504,7 @@ fn opacity_at_root_never_rebuilds() {
 /// scroll cache without a rebuild — the case that previously forced a full rebuild
 /// (and the flashing) on every animation/scroll frame.
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn opacity_in_scroll_never_rebuilds() {
     let metrics = run_scenario("opacity_in_scroll", opacity_in_scroll, PARAMETRIC_FRAMES);
     assert_eq!(metrics.parametric_frames, PARAMETRIC_FRAMES);
@@ -511,6 +521,7 @@ fn opacity_in_scroll_never_rebuilds() {
 /// Phase 2A: an animated transform at the window root replays through the retained
 /// window frame without any structural rebuild or re-measure.
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn transform_at_root_never_rebuilds() {
     let metrics = run_scenario("transform_at_root", transform_at_root, PARAMETRIC_FRAMES);
     assert_eq!(metrics.parametric_frames, PARAMETRIC_FRAMES);
@@ -527,6 +538,7 @@ fn transform_at_root_never_rebuilds() {
 /// NO-REGRESSION GUARD: an animated transform inside a window-filling scroll already
 /// replays without a rebuild today. The refactor must keep it at zero rebuilds.
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn transform_in_scroll_never_rebuilds() {
     let metrics = run_scenario(
         "transform_in_scroll",
@@ -1103,10 +1115,15 @@ fn collection_membership_enter_reversal_holds_the_allocated_slot() {
     );
 }
 
+// The applied-filter and blur-transition tests below, with their helpers, run
+// on the GPU painter only: the CPU backend realizes no shader effects until
+// water-rs/waterui#4065, which lifts these gates.
+
 /// Pump frames until every filter of `content` has been set up and run once,
 /// then return the frame that rendered them all. Filter setup is asynchronous
 /// (`AppliedFilterRuntime::ensure_setup` spawns it), so the first frames draw
 /// nothing for the filter.
+#[cfg(hydrolysis_gpu_painter)]
 fn pump_until_filters_render(
     runtime: &mut HeadlessRuntime,
     expected_filters: u32,
@@ -1123,6 +1140,7 @@ fn pump_until_filters_render(
     panic!("{expected_filters} applied filter(s) never ran within eight frames");
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 fn pixel(snapshot: &crate::runner::HeadlessSnapshot, x: u32, y: u32) -> [u8; 4] {
     let index = ((y * snapshot.width() + x) * 4) as usize;
     snapshot.rgba8()[index..index + 4]
@@ -1130,6 +1148,7 @@ fn pixel(snapshot: &crate::runner::HeadlessSnapshot, x: u32, y: u32) -> [u8; 4] 
         .expect("four channels per pixel")
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 fn assert_red(snapshot: &crate::runner::HeadlessSnapshot, col: u32, row: u32) {
     let [red, green, blue, _] = pixel(snapshot, col, row);
     assert!(
@@ -1138,6 +1157,7 @@ fn assert_red(snapshot: &crate::runner::HeadlessSnapshot, col: u32, row: u32) {
     );
 }
 
+#[cfg(hydrolysis_gpu_painter)]
 fn assert_blue(snapshot: &crate::runner::HeadlessSnapshot, col: u32, row: u32) {
     let [red, green, blue, _] = pixel(snapshot, col, row);
     assert!(
@@ -1149,6 +1169,7 @@ fn assert_blue(snapshot: &crate::runner::HeadlessSnapshot, col: u32, row: u32) {
 /// Sibling filtered subtrees mount as separate engine filter layers, and each
 /// filter still receives its own subtree's pixels: the two mounts must not
 /// overlap or swap.
+#[cfg(hydrolysis_gpu_painter)]
 #[test]
 fn sibling_applied_filters_each_render_their_own_subtree() {
     fn filtered_boxes() -> AnyView {
@@ -1180,6 +1201,7 @@ fn sibling_applied_filters_each_render_their_own_subtree() {
 /// A filter inside a filtered subtree is captured one level deeper, and that
 /// level is rendered first, so the outer filter sees the inner filter's output
 /// rather than an empty slot.
+#[cfg(hydrolysis_gpu_painter)]
 #[test]
 fn nested_applied_filters_capture_inner_before_outer() {
     fn nested_boxes() -> AnyView {
@@ -1427,10 +1449,14 @@ fn pixel_at(snapshot: &crate::runner::HeadlessSnapshot, x: usize, y: usize) -> [
 }
 
 /// A `.transition(...)` no structural site swaps — here the window root —
-/// fails fast instead of drawing through: it has no clock to run on.
+/// is reported: it has no clock to run on, so the content is drawn without
+/// the transition.
 #[test]
-#[should_panic(expected = "structural transition owner")]
-fn transition_outside_a_structural_site_panics() {
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "structural transition owner")
+)]
+fn transition_outside_a_structural_site_is_reported_and_drawn_without_it() {
     let builder = AnyViewBuilder::<AnyView>::new(|| {
         AnyView::new(
             ().size(80.0, 40.0)
@@ -1458,12 +1484,12 @@ impl waterui_core::transition::Transition for CaptureOnlyTransition {
     }
 }
 
-/// The removal event on a capture-requiring spec panics where the ghost
-/// starts — the capture overlay is water-rs/waterui#1388, never a silent
-/// fallback.
+/// The removal event on a capture-requiring spec is reported where the
+/// ghost starts — the capture overlay is water-rs/waterui#1388 — and the
+/// removal runs without it.
 #[test]
-#[should_panic(expected = "pixel-capture transitions")]
-fn pixel_transition_on_a_collection_item_panics() {
+#[cfg_attr(debug_assertions, should_panic(expected = "pixel-capture transitions"))]
+fn pixel_transition_on_a_collection_item_is_reported_and_runs_without_the_overlay() {
     let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
     let builder = {
         let list = list.clone();
@@ -1560,7 +1586,9 @@ fn reduced_pixel_transition_runs_as_opacity() {
 /// A blur transition on a row is realized as a property: halfway through the
 /// removal the ghost still holds its slot and draws blurred — different from
 /// both the rest frame and the settled frame — and the removal then settles
-/// exactly like any other.
+/// exactly like any other. GPU painter only until water-rs/waterui#4065: the
+/// blur is a shader effect.
+#[cfg(hydrolysis_gpu_painter)]
 #[test]
 fn blur_transition_on_a_collection_item_blurs_the_ghost() {
     let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);

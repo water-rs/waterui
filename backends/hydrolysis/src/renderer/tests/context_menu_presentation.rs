@@ -130,22 +130,32 @@ fn runtime_sized(
 
 /// Pumps until the runtime settles (with a cap), then returns the merged
 /// tree as of that settle — `None` when no window has ever produced one.
+///
+/// Each pump advances the frame clock one 16 ms frame, so an animation
+/// started inside the loop finishes within it however fast a pump runs:
+/// wall-clock stamps leave the loop's cap racing the animation's real
+/// duration (the race `popup_windows`'s settle loop fixed,
+/// water-rs/waterui#1969).
 fn pump_until_settled(runtime: &mut HeadlessRuntime) -> Option<TreeUpdate> {
-    for _ in 0..64 {
-        let _ = runtime.pump_at(false, Instant::now());
+    let start = Instant::now();
+    for frame in 0..64u32 {
+        let _ = runtime.pump_at(false, start + Duration::from_millis(16) * frame);
         if runtime.is_settled() {
             break;
         }
     }
+    assert!(runtime.is_settled(), "the headless runtime never settled");
     runtime.accessibility_tree()
 }
 
 /// Same, capturing the composited frame on every pump — the pixel assertions
-/// read the last one.
+/// read the last one. The frame clock advances as [`pump_until_settled`]'s
+/// does.
 fn capture_until_settled(runtime: &mut HeadlessRuntime) -> HeadlessSnapshot {
+    let start = Instant::now();
     let mut snapshot = None;
-    for _ in 0..64 {
-        let result = runtime.pump_at(true, Instant::now());
+    for frame in 0..64u32 {
+        let result = runtime.pump_at(true, start + Duration::from_millis(16) * frame);
         if let Some(frame) = result.into_snapshot() {
             snapshot = Some(frame);
         }
@@ -153,6 +163,7 @@ fn capture_until_settled(runtime: &mut HeadlessRuntime) -> HeadlessSnapshot {
             break;
         }
     }
+    assert!(runtime.is_settled(), "the headless runtime never settled");
     snapshot.expect("a settled runtime must capture a frame")
 }
 

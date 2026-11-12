@@ -2,7 +2,7 @@
 //!
 //! Mirrors `WuiBorder`: a transparent `HostView` container that strokes its
 //! own layer. A border covering every edge uses the layer's `borderWidth`,
-//! `cornerRadius` and `masksToBounds`; a partial edge set draws through a
+//! `cornerRadius` and never clips its content; a partial edge set draws through a
 //! `CAShapeLayer` sublayer stroked along only the selected edges. The color
 //! resolves through the environment, so every change lands as an imperative
 //! setter inside a watcher, then `invalidateCapturedRendering` fires so a
@@ -167,7 +167,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
                     &host_layer,
                     f64::from(width),
                     f64::from(corner_radius),
-                    corner_radius > 0.0,
+                    false,
                 );
             }
             None

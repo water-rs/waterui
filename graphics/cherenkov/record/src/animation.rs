@@ -617,6 +617,25 @@ impl<T> Keyframes<T> {
     pub const fn first(&self) -> &T {
         &self.first
     }
+
+    /// The same track over `f` of every value: same cycle, same times,
+    /// same easings. Easing progress does not depend on the values, so a
+    /// lane of `self` and the matching lane of the map evaluate alike.
+    pub(crate) fn map<U>(&self, f: impl Fn(&T) -> U) -> Keyframes<U> {
+        Keyframes {
+            duration: self.duration,
+            first: f(&self.first),
+            segments: self
+                .segments
+                .iter()
+                .map(|segment| Segment {
+                    at: segment.at,
+                    easing: segment.easing,
+                    value: f(&segment.value),
+                })
+                .collect(),
+        }
+    }
 }
 
 impl<T: AnimLanes + Clone> Keyframes<T> {

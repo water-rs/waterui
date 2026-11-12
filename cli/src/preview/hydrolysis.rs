@@ -239,6 +239,7 @@ async fn build_preview_session(
         build_options,
         &[],
         &[feature],
+        true,
     )
     .await?;
     Ok((project, built))

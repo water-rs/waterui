@@ -43,6 +43,7 @@ fn text_node<E: crate::text::TextEngine>(content: &'static str) -> RenderNode<E>
 }
 
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn render_node_container_lays_out_and_flushes_text() {
     let env = test_environment();
     let mut renderer = test_renderer();
@@ -165,6 +166,7 @@ fn geometry_static_flush_reuses_cached_placement() {
 }
 
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn opacity_wrapper_builds_and_flushes_via_dsl() {
     let env = test_environment();
     let mut renderer = test_renderer();
@@ -199,6 +201,7 @@ fn opacity_wrapper_builds_and_flushes_via_dsl() {
 }
 
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn capture_window_tree_renders_mixed_widgets() {
     let env = test_environment();
     let mut renderer = test_renderer();
@@ -221,6 +224,7 @@ fn capture_window_tree_renders_mixed_widgets() {
 }
 
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn flush_window_tree_reuses_retained_tree() {
     let env = test_environment();
     let mut renderer = test_renderer();
@@ -1126,7 +1130,7 @@ fn lifecycle_appear_updates_animate_after_initial_signal_binding() {
         0.0
     );
     assert!(
-        !renderer.animations_active(),
+        !renderer.motions_active(),
         "building alone must not start an entrance animation"
     );
 
@@ -1147,8 +1151,10 @@ fn lifecycle_appear_updates_animate_after_initial_signal_binding() {
         opacity.snapshot(),
         1.0
     );
+    // The opacity is an engine-run motion (water-rs/waterui#2203): its
+    // track runs on the engine's clock, not as a host animation slot.
     assert!(
-        renderer.animations_active(),
+        renderer.motions_active(),
         "the post-bind target update must leave the entrance animation active"
     );
 }
@@ -1159,6 +1165,7 @@ fn lifecycle_appear_updates_animate_after_initial_signal_binding() {
 /// same runtime alive (it is pruned only when its node is dropped), so the filter
 /// mount survives across frames without a cursor-bound effect slot.
 #[test]
+#[cfg(hydrolysis_gpu_painter)]
 fn applied_filter_renders_through_retained_tree() {
     fn blurred_box() -> AnyView {
         use waterui::prelude::*;

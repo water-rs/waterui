@@ -34,7 +34,9 @@ use waterui_form::picker::{PickerStyle, picker};
 use waterui_form::secure::secure;
 use waterui_graphics::Color;
 use waterui_graphics::backend::{RecordingResources, SceneContent, SceneView};
+#[cfg(hydrolysis_gpu)]
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
+#[cfg(hydrolysis_gpu)]
 use waterui_graphics::{GpuContent, GpuContentView};
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::{VStackLayout, hstack, vstack};
@@ -1722,15 +1724,19 @@ fn scene_view_emits_an_image_leaf_with_its_content_label() {
 
 /// A GPU surface whose view names itself and reports its own semantic content —
 /// the pair of answers its `Image` node has to publish, since a surface reaches
-/// the tree as bare pixels.
+/// the tree as bare pixels. Only a build with the `gpu` feature realizes the
+/// leaf; without it the leaf is refused by name (`cpu_refusals`).
+#[cfg(hydrolysis_gpu)]
 struct GpuChart;
 
+#[cfg(hydrolysis_gpu)]
 impl GpuContent for GpuChart {
     fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
     fn render(&mut self, _frame: &mut GpuFrame<'_>) {}
 }
 
+#[cfg(hydrolysis_gpu)]
 #[test]
 fn gpu_surface_emits_an_image_leaf_with_its_label_and_value() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {

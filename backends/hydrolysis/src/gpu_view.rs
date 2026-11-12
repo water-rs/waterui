@@ -32,6 +32,10 @@ pub struct GpuContentRuntime {
     pub(crate) producer: Option<cherenkov::GpuProducer<cherenkov_gpu::Gpu>>,
     /// The engine layer and pixel size the producer is currently bound at.
     pub(crate) binding: Option<(cherenkov::LayerId, (u32, u32))>,
+    /// The HWUI painter's realization: the view's own platform surface and
+    /// the pump that renders into it.
+    #[cfg(hydrolysis_hwui_gpu)]
+    pub(crate) hosted: crate::runner::android::hosted_gpu::HostedLayer,
 }
 
 impl std::fmt::Debug for GpuContentRuntime {
@@ -49,6 +53,16 @@ pub trait HostedGpuView {
     /// The accessibility label, the accessibility value, and whether the
     /// view takes input events.
     fn semantics(&self) -> (Option<String>, Option<String>, bool);
+
+    /// The platform-view table and placement the HWUI painter mounts the
+    /// view's surface through.
+    #[cfg(hydrolysis_hwui_gpu)]
+    fn placement(
+        &self,
+    ) -> (
+        std::rc::Rc<std::cell::RefCell<crate::platform_view::PlatformViewTable>>,
+        crate::platform_view::PlatformViewPlacement,
+    );
 }
 
 impl HostedGpuView for GpuContentRuntime {
@@ -57,6 +71,19 @@ impl HostedGpuView for GpuContentRuntime {
             self.view.accessibility_label().map(str::to_owned),
             self.view.accessibility_value().map(str::to_owned),
             self.view.wants_input_events(),
+        )
+    }
+
+    #[cfg(hydrolysis_hwui_gpu)]
+    fn placement(
+        &self,
+    ) -> (
+        std::rc::Rc<std::cell::RefCell<crate::platform_view::PlatformViewTable>>,
+        crate::platform_view::PlatformViewPlacement,
+    ) {
+        (
+            std::rc::Rc::clone(self.hosted.table()),
+            self.hosted.placement(),
         )
     }
 }
@@ -69,15 +96,33 @@ impl HostedGpuView for ExternalFrameRuntime {
             self.view.wants_input_events(),
         )
     }
+
+    #[cfg(hydrolysis_hwui_gpu)]
+    fn placement(
+        &self,
+    ) -> (
+        std::rc::Rc<std::cell::RefCell<crate::platform_view::PlatformViewTable>>,
+        crate::platform_view::PlatformViewPlacement,
+    ) {
+        (
+            std::rc::Rc::clone(self.hosted.table()),
+            self.hosted.placement(),
+        )
+    }
 }
 
 impl GpuContentRuntime {
-    pub(crate) const fn new(view: GpuContentView) -> Self {
+    pub(crate) const fn new(
+        view: GpuContentView,
+        #[cfg(hydrolysis_hwui_gpu)] hosted: crate::runner::android::hosted_gpu::HostedLayer,
+    ) -> Self {
         Self {
             view,
             resize: crate::renderer::ResizeTracker::new(),
             producer: None,
             binding: None,
+            #[cfg(hydrolysis_hwui_gpu)]
+            hosted,
         }
     }
 }
@@ -109,6 +154,10 @@ pub struct ExternalFrameRuntime {
     pub(crate) frame_pixels: Option<(u32, u32)>,
     /// The engine layer and plane size the producer is currently bound at.
     pub(crate) binding: Option<(cherenkov::LayerId, (u32, u32))>,
+    /// The HWUI painter's realization: the view's own platform surface and
+    /// the pump that renders into it.
+    #[cfg(hydrolysis_hwui_gpu)]
+    pub(crate) hosted: crate::runner::android::hosted_gpu::HostedLayer,
 }
 
 impl std::fmt::Debug for ExternalFrameRuntime {
@@ -119,7 +168,10 @@ impl std::fmt::Debug for ExternalFrameRuntime {
 }
 
 impl ExternalFrameRuntime {
-    pub(crate) const fn new(view: ExternalFrameView) -> Self {
+    pub(crate) const fn new(
+        view: ExternalFrameView,
+        #[cfg(hydrolysis_hwui_gpu)] hosted: crate::runner::android::hosted_gpu::HostedLayer,
+    ) -> Self {
         Self {
             view,
             resize: crate::renderer::ResizeTracker::new(),
@@ -128,6 +180,8 @@ impl ExternalFrameRuntime {
             sink: None,
             frame_pixels: None,
             binding: None,
+            #[cfg(hydrolysis_hwui_gpu)]
+            hosted,
         }
     }
 }

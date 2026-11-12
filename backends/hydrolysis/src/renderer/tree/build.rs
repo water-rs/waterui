@@ -3,12 +3,14 @@
 //! env scope, collection, lazy stack, scene/GPU/effect, `Dynamic` host).
 
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+use super::collection::{item_id, item_view_or_empty};
 #[allow(clippy::wildcard_imports)]
 use super::*;
 #[cfg(hydrolysis_gpu)]
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::platform_view::PlatformView;
 use core::any::Any;
+use waterui_core::contract_violation;
 use waterui_core::views::ViewSnapshot;
 use waterui_layout::BackgroundLayout;
 
@@ -66,17 +68,16 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         };
         let view = match view.downcast::<Native<TextConfig>>() {
             Ok(text) => {
-                let config = (*text).into_inner();
+                let (content, alignment, line_limit) = (*text).into_inner().into_parts();
                 let core = renderer.new_core();
                 let (layout_dirty, invalidate) = layout_invalidation(&core.cell);
                 let guards = [
-                    config.content().watch({
+                    content.watch({
                         let invalidate = Rc::clone(&invalidate);
                         move |_| invalidate()
                     }),
-                    config.paragraph_alignment().watch(move |_| invalidate()),
+                    alignment.watch(move |_| invalidate()),
                 ];
-                let (content, alignment, line_limit) = config.into_parts();
                 return Self::Text(Box::new(TextNode {
                     memo_gate: Cell::default(),
                     memo_slots: RefCell::default(),
@@ -166,44 +167,36 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let view = match view.downcast::<Metadata<Opacity>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
-                return Self::Opacity(Box::new(OpacityNode {
-                    core: renderer.new_core(),
-                    value,
-                    child: Self::build_view(content, env, renderer),
-                }));
+                return Self::Opacity(Box::new(OpacityNode::new(&value, renderer, |renderer| {
+                    Self::build_view(content, env, renderer)
+                })));
             }
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<Scale>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
-                return Self::Scale(Box::new(ScaleNode {
-                    core: renderer.new_core(),
-                    value,
-                    child: Self::build_view(content, env, renderer),
-                }));
+                return Self::Scale(Box::new(ScaleNode::new(&value, renderer, |renderer| {
+                    Self::build_view(content, env, renderer)
+                })));
             }
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<Rotation>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
-                return Self::Rotation(Box::new(RotationNode {
-                    core: renderer.new_core(),
-                    value,
-                    child: Self::build_view(content, env, renderer),
-                }));
+                return Self::Rotation(Box::new(RotationNode::new(&value, renderer, |renderer| {
+                    Self::build_view(content, env, renderer)
+                })));
             }
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<Offset>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
-                return Self::Offset(Box::new(OffsetNode {
-                    core: renderer.new_core(),
-                    value,
-                    child: Self::build_view(content, env, renderer),
-                }));
+                return Self::Offset(Box::new(OffsetNode::new(&value, renderer, |renderer| {
+                    Self::build_view(content, env, renderer)
+                })));
             }
             Err(view) => view,
         };
@@ -235,6 +228,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     core: renderer.new_core(),
                     _retain: value,
                     child: Self::build_view(content, env, renderer),
+                    #[cfg(hydrolysis_video_plane)]
+                    plane: None,
                 }));
             }
             Err(view) => view,
@@ -377,14 +372,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     content,
                     value: MaterialBackground(material),
                 } = *meta;
-                return Self::build_wrapper(
-                    WrapperEffect::Material(crate::renderer::material::WithinWindowLevel::of(
-                        material,
-                    )),
-                    content,
-                    env,
-                    renderer,
-                );
+                let Some(level) = crate::renderer::material::WithinWindowLevel::of(material) else {
+                    return Self::build_view(content, env, renderer);
+                };
+                return Self::build_wrapper(WrapperEffect::Material(level), content, env, renderer);
             }
             Err(view) => view,
         };
@@ -567,6 +558,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
+        let view = match view.downcast::<Metadata<OnChange>>() {
+            Ok(meta) => {
+                let Metadata { content, value } = *meta;
+                return Self::build_on_change(value, content, env, renderer);
+            }
+            Err(view) => view,
+        };
         let view = match view.downcast::<Metadata<OnKeyPress>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
@@ -674,17 +672,55 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         #[cfg(hydrolysis_gpu)]
         let view = match view.downcast::<Native<GpuContentView>>() {
             Ok(view) => {
-                return Self::build_gpu_content((*view).into_inner(), renderer);
+                return Self::build_gpu_content((*view).into_inner(), renderer, env);
             }
             Err(view) => view,
         };
         #[cfg(hydrolysis_gpu)]
         let view = match view.downcast::<Native<ExternalFrameView>>() {
             Ok(view) => {
-                return Self::build_external_frame((*view).into_inner(), renderer);
+                return Self::build_external_frame((*view).into_inner(), renderer, env);
             }
             Err(view) => view,
         };
+        // The GPU video player's host, built straight from a view no
+        // normalization unwrapped.
+        #[cfg(hydrolysis_video_plane)]
+        let view = match view.downcast::<Native<waterui_video_gpu::AndroidVideoSurfaceHost>>() {
+            Ok(host) => {
+                return Self::build_view(
+                    crate::runner::android::video_plane::unwrap_host(*host),
+                    env,
+                    renderer,
+                );
+            }
+            Err(view) => view,
+        };
+        // The picture of the GPU video player with the decoder plane the
+        // Android backend places below it.
+        #[cfg(hydrolysis_video_plane)]
+        let view = match view
+            .downcast::<Metadata<crate::runner::android::video_plane::VideoPlaneHost>>()
+        {
+            Ok(meta) => {
+                let Metadata { content, value } = *meta;
+                let planes = crate::runner::android::video_plane::VideoPlanes::in_environment(env);
+                return Self::Retain(Box::new(RetainNode {
+                    core: renderer.new_core(),
+                    _retain: Retain::new(()),
+                    child: Self::build_view(content, env, renderer),
+                    plane: Some(crate::runner::android::video_plane::VideoPlane::new(
+                        &planes,
+                        value.into_bridge(),
+                    )),
+                }));
+            }
+            Err(view) => view,
+        };
+        #[cfg(not(hydrolysis_gpu))]
+        if refuse_gpu_device_view(&view) {
+            return Self::build_empty(renderer, env);
+        }
         // A platform-view embedding leaf: it records its frame onto the host's
         // `PlatformViewSink` each flush; mounting the real native child is the
         // host's work. No sink means this runner cannot embed — the leaf
@@ -784,7 +820,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Err(view) => view,
         };
         let view = match view.downcast::<Native<SystemIcon>>() {
-            Ok(icon) => unsupported_system_icon(icon.as_inner()),
+            Ok(icon) => {
+                unsupported_system_icon(icon.as_inner());
+                return Self::build_empty(renderer, env);
+            }
             Err(view) => view,
         };
         let view = match view.downcast::<Native<waterui_graphics::Gradient>>() {
@@ -796,7 +835,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Err(view) => view,
         };
         let Err(view) = view.downcast::<Native<MapConfig>>() else {
-            unsupported_map()
+            unsupported_map();
+            return Self::build_empty(renderer, env);
         };
         // This backend bridges the platform's own web engine, and it only wins
         // by default: an application that linked a browser engine of its own
@@ -934,6 +974,32 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         }
     }
 
+    /// Build an `.on_change(..)` wrapper. The handler subscribes once, at
+    /// build, against the environment the content resolves in — the same
+    /// resolution `build_wrapper` applies to the other handler effects — so a
+    /// `.state(&s)` between the view and `.on_change` reaches the handler. The
+    /// node owns the subscription: it ends when the node leaves the retained
+    /// tree.
+    fn build_on_change(
+        on_change: OnChange,
+        content: AnyView,
+        env: &Environment,
+        renderer: &mut SemanticCore<E>,
+    ) -> Self {
+        let child = Self::build_view(content, env, renderer);
+        let env = Self::resolved_handler_env(&child, env).clone();
+        Self::Wrapper(Box::new(WrapperNode {
+            accessibility_identity: Rc::new(()),
+            core: renderer.new_core(),
+            effect: WrapperEffect::OnChange {
+                _subscription: on_change.subscribe(&env),
+            },
+            env,
+            released_offsets: Cell::default(),
+            child,
+        }))
+    }
+
     /// Build a node-owned lifecycle hook wrapper. An appear hook is retained until
     /// the child's first flush, so the child has installed its reactive subscriptions
     /// before the callback can update them. A disappear hook is retained in the
@@ -960,7 +1026,15 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 appear: Cell::new(None),
                 disappear: Some(DeferredLifeCycleHook::new(hook, env.clone())),
             },
-            _ => panic!("hydrolysis lifecycle variant is not supported"),
+            other => {
+                contract_violation!(
+                    "hydrolysis lifecycle variant {other:?} is not supported; its hook never fires"
+                );
+                LifeCycleEffect {
+                    appear: Cell::new(None),
+                    disappear: None,
+                }
+            }
         };
         Self::Wrapper(Box::new(WrapperNode {
             accessibility_identity: Rc::new(()),
@@ -1034,18 +1108,14 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let snapshot = applied.borrow().clone();
         let entries = snapshot
             .range()
-            .map(|index| {
-                let id = snapshot
-                    .get_id(index)
-                    .unwrap_or_else(|| panic!("hydrolysis collection: item {index} has no id"));
-                let view = snapshot
-                    .get_view(index)
-                    .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
+            .filter_map(|index| {
+                let id = item_id(&snapshot, index)?;
+                let view = item_view_or_empty(&snapshot, index);
                 let entry_core = renderer.new_core();
                 entry_core.cell.set_parent(&core.cell);
                 let node = Self::build_view(normalize_layout_view(view, env), env, renderer);
                 node.core().cell.set_parent(&entry_core.cell);
-                CollectionEntry::new(id, node, entry_core)
+                Some(CollectionEntry::new(id, node, entry_core))
             })
             .collect();
         Self::Collection(Box::new(CollectionNode {
@@ -1211,11 +1281,19 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// producer inside is taken exactly once, when the node's install layer
     /// first commits it on the window's engine.
     #[cfg(hydrolysis_gpu)]
-    fn build_gpu_content(view: GpuContentView, renderer: &SemanticCore<E>) -> Self {
+    fn build_gpu_content(
+        view: GpuContentView,
+        renderer: &SemanticCore<E>,
+        #[cfg_attr(not(hydrolysis_hwui_gpu), expect(unused_variables))] env: &Environment,
+    ) -> Self {
         Self::GpuContent(Box::new(GpuContentNode {
             accessibility_identity: Rc::new(()),
             core: renderer.new_core(),
-            runtime: Rc::new(RefCell::new(GpuContentRuntime::new(view))),
+            runtime: Rc::new(RefCell::new(GpuContentRuntime::new(
+                view,
+                #[cfg(hydrolysis_hwui_gpu)]
+                crate::runner::android::hosted_gpu::HostedLayer::in_environment(env),
+            ))),
             measured: Cell::new(None),
         }))
     }
@@ -1224,11 +1302,19 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// the view keeps its UI-side hooks (measure, a11y); the compositor starts
     /// the stream's source the first time a persistent mount installs it.
     #[cfg(hydrolysis_gpu)]
-    fn build_external_frame(view: ExternalFrameView, renderer: &SemanticCore<E>) -> Self {
+    fn build_external_frame(
+        view: ExternalFrameView,
+        renderer: &SemanticCore<E>,
+        #[cfg_attr(not(hydrolysis_hwui_gpu), expect(unused_variables))] env: &Environment,
+    ) -> Self {
         Self::ExternalFrame(Box::new(ExternalFrameNode {
             accessibility_identity: Rc::new(()),
             core: renderer.new_core(),
-            runtime: Rc::new(RefCell::new(ExternalFrameRuntime::new(view))),
+            runtime: Rc::new(RefCell::new(ExternalFrameRuntime::new(
+                view,
+                #[cfg(hydrolysis_hwui_gpu)]
+                crate::runner::android::hosted_gpu::HostedLayer::in_environment(env),
+            ))),
             measured: Cell::new(None),
         }))
     }
@@ -1404,6 +1490,7 @@ fn is_background_fill_leaf<E: crate::text::TextEngine>(node: &RenderNode<E>) -> 
                 node.effect,
                 WrapperEffect::LayoutPriority(_)
                     | WrapperEffect::LifeCycle(_)
+                    | WrapperEffect::OnChange { .. }
                     | WrapperEffect::Focused(_)
                     | WrapperEffect::OnKeyPress(_)
                     | WrapperEffect::MaterialGroup

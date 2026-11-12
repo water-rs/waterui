@@ -11,13 +11,13 @@
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, mpsc};
 
 use executor_core::LocalExecutor;
 use executor_core::async_task::{AsyncTask, Runnable};
 
 #[derive(Clone, Debug)]
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub struct HeadlessMainThreadExecutor {
     runnable_tx: mpsc::Sender<Runnable>,
     runnable_rx: Rc<mpsc::Receiver<Runnable>>,
@@ -62,11 +62,11 @@ thread_local! {
     /// queue — never drained, and dropped only during thread-local teardown,
     /// where dropping a future whose destructor touches other thread-locals
     /// aborts the process.
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
     static THREAD_EXECUTOR: HeadlessMainThreadExecutor = HeadlessMainThreadExecutor::new();
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 impl HeadlessMainThreadExecutor {
     fn new() -> Self {
         let (runnable_tx, runnable_rx) = mpsc::channel();
@@ -131,10 +131,12 @@ impl HeadlessMainThreadExecutor {
         // is dropped before the next turn re-locks. A producer that signals
         // between turns bumps `queued_count` under its own hold, which the
         // next turn's check still observes — the counter is the edge.
-        let baseline = *lock.lock().unwrap();
+        // The counter is a plain integer bumped in one statement, so a lock
+        // poisoned by some other thread's panic still guards a valid value.
+        let baseline = *lock.lock().unwrap_or_else(PoisonError::into_inner);
         loop {
             let (guard, result) = {
-                let queued_count = lock.lock().unwrap();
+                let queued_count = lock.lock().unwrap_or_else(PoisonError::into_inner);
                 if *queued_count > baseline || self.has_pending() {
                     return true;
                 }
@@ -145,7 +147,9 @@ impl HeadlessMainThreadExecutor {
                 // `wait_timeout` consumes the guard and hands back the
                 // post-wait hold, so the pre-wait lock is held for exactly the
                 // check-then-enqueue window.
-                queued.wait_timeout(queued_count, remaining).unwrap()
+                queued
+                    .wait_timeout(queued_count, remaining)
+                    .unwrap_or_else(PoisonError::into_inner)
             };
             if result.timed_out() {
                 return self.has_pending();
@@ -155,7 +159,7 @@ impl HeadlessMainThreadExecutor {
     }
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 impl LocalExecutor for HeadlessMainThreadExecutor {
     type Task<T: 'static> = AsyncTask<T>;
 
@@ -177,7 +181,7 @@ impl LocalExecutor for HeadlessMainThreadExecutor {
             match delivery {
                 Ok(()) => {
                     let (lock, queued) = &*queued;
-                    *lock.lock().unwrap() += 1;
+                    *lock.lock().unwrap_or_else(PoisonError::into_inner) += 1;
                     queued.notify_all();
                 }
                 Err(unsent) => {
@@ -207,10 +211,10 @@ impl LocalExecutor for HeadlessMainThreadExecutor {
 /// runtime's drop therefore closes the queue and drains it to quiescence
 /// while this thread's locals are still alive.
 #[derive(Debug)]
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub(super) struct DrainExecutorOnDrop(HeadlessMainThreadExecutor);
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 impl DrainExecutorOnDrop {
     pub(super) fn new(executor: HeadlessMainThreadExecutor) -> Self {
         executor.owners.set(executor.owners.get() + 1);
@@ -222,7 +226,7 @@ impl DrainExecutorOnDrop {
     }
 }
 
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 impl Drop for DrainExecutorOnDrop {
     fn drop(&mut self) {
         let remaining = self.0.owners.get() - 1;

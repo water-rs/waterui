@@ -104,7 +104,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_view::<Metadata<OnEvent>>(|metadata, ctx| {
         let mtm = ctx.mtm();
         let host = HostView::new(mtm, Rect::ZERO);
-        let mounted = ctx.render(metadata.content).mount(&host);
+        let child = ctx.render(metadata.content);
+        // The handler resolves in the environment its content's modifier
+        // chain resolves in (water-rs/waterui#1292).
+        let env = child.handler_env(ctx.env());
+        let mounted = child.mount(&host);
         crate::primary_content::forward(&host, mounted.view());
         view::set_translates_autoresizing(mounted.view(), true);
 
@@ -112,7 +116,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             child: mounted,
             event: metadata.value.event(),
             handler: RefCell::new(metadata.value),
-            env: ctx.env().clone(),
+            env: env.clone(),
         }));
 
         // All three pointer channels: `fire` filters by the subscribed
@@ -168,6 +172,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 state: Rc::clone(&state),
             },
         );
+        leaf.set_handler_env(env);
         leaf.keep(sink_guard);
         leaf.keep(state);
         leaf

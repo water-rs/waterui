@@ -17,8 +17,14 @@ fn slide(source: &Binding<i32>, index: i32) -> impl Signal<Output = f32> {
         .with(Animation::linear(Duration::from_millis(100)))
 }
 
+/// An opacity fade is an engine-run motion (water-rs/waterui#2203): the
+/// host asks for no refresh of its own, and the engine's sample of the
+/// fade's layer track reports the slow rate until the fade finishes — a
+/// fade moves no geometry, so 30–60 Hz reads smooth. The sample is the GPU
+/// mirror's.
+#[cfg(hydrolysis_gpu_painter)]
 #[test]
-fn opacity_requests_normal_refresh_until_the_fade_finishes() {
+fn opacity_fade_refreshes_at_the_slow_rate_until_the_fade_finishes() {
     let mut renderer = test_renderer();
     let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 200.0, 200.0);
@@ -32,20 +38,24 @@ fn opacity_requests_normal_refresh_until_the_fade_finishes() {
         )
     };
     capture_root_window(&mut renderer, view(), &env, bounds);
-    assert_eq!(renderer.animation_refresh_range(), None);
-
+    renderer.commit_mirror();
     let started = renderer.frame_instant();
+    assert_eq!(renderer.animation_refresh_range(), None);
+    assert_eq!(renderer.mirror().sample(started).rate, None);
+
     source.set(true);
-    renderer.set_frame_instant(started + Duration::from_millis(50));
-    capture_root_window(&mut renderer, view(), &env, bounds);
+    renderer.commit_mirror();
+    let mid = started + Duration::from_millis(50);
+    renderer.set_frame_instant(mid);
+    assert_eq!(renderer.animation_refresh_range(), None);
     assert_eq!(
-        renderer.animation_refresh_range(),
+        renderer.mirror().sample(mid).rate,
         Some(cherenkov_record::tree::RATE_SLOW)
     );
 
-    renderer.set_frame_instant(started + Duration::from_secs(2));
-    capture_root_window(&mut renderer, view(), &env, bounds);
-    assert_eq!(renderer.animation_refresh_range(), None);
+    let settled = started + Duration::from_secs(2);
+    renderer.set_frame_instant(settled);
+    assert_eq!(renderer.mirror().sample(settled).rate, None);
 }
 
 /// Picker `index`'s selection out of the pair in `source`. Every call mints
@@ -58,10 +68,13 @@ fn selection(source: &Binding<[i32; 2]>, index: usize) -> Binding<i32> {
     )
 }
 
-/// The leading edge of every interactive target, top to bottom.
-fn target_leading_edges<E: crate::text::TextEngine>(renderer: &HydrolysisRenderer<E>) -> Vec<f64> {
+/// The leading edge of every interactive target, top to bottom, as an
+/// event at the frame clock's instant resolves them.
+fn target_leading_edges<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
+) -> Vec<f64> {
     let mut targets = renderer
-        .hit_test
+        .registries()
         .pointer_targets
         .iter()
         .filter(|target| target.interaction.is_some())
@@ -93,18 +106,15 @@ fn offsets_sharing_a_signal_identity_slide_independently() {
     };
 
     capture_root_window(&mut renderer, view(), &env, bounds);
-    let rest = target_leading_edges(&renderer);
+    let rest = target_leading_edges(&mut renderer);
     assert_eq!(rest.len(), 2, "both buttons must register a target");
 
     let started = renderer.frame_instant();
     source.set(2);
     renderer.set_frame_instant(started + Duration::from_millis(50));
     capture_root_window(&mut renderer, view(), &env, bounds);
-    let mid = target_leading_edges(&renderer);
-    assert_eq!(
-        renderer.animation_refresh_range(),
-        Some(cherenkov_record::tree::RATE_FAST)
-    );
+    let mid = target_leading_edges(&mut renderer);
+    assert!(renderer.motions_active(), "B's slide must still run");
     approx::assert_relative_eq!(mid[0], rest[0]);
     assert!(
         mid[1] > rest[1] && mid[1] < rest[1] + 48.0,
@@ -116,7 +126,7 @@ fn offsets_sharing_a_signal_identity_slide_independently() {
 
     renderer.set_frame_instant(started + Duration::from_millis(200));
     capture_root_window(&mut renderer, view(), &env, bounds);
-    let settled = target_leading_edges(&renderer);
+    let settled = target_leading_edges(&mut renderer);
     approx::assert_relative_eq!(settled[0], rest[0]);
     approx::assert_relative_eq!(settled[1], rest[1] + 48.0);
 }

@@ -341,6 +341,8 @@ fn trials() -> Vec<Trial> {
         tests.extend(gesture_events::trials());
         #[cfg(all(feature = "scale", feature = "rotation"))]
         tests.extend(transform_modifiers::trials());
+        #[cfg(all(target_os = "macos", feature = "border"))]
+        tests.extend(border_modifier::trials());
         #[cfg(feature = "gpu_surface")]
         {
             tests.extend(gpu_surface::trials());
@@ -4377,7 +4379,7 @@ mod gpu_surface {
 /// generation publishes instead of retrying the failed one forever.
 #[cfg(all(target_os = "macos", feature = "native-test", feature = "gpu_surface"))]
 mod filtered {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
@@ -4386,7 +4388,7 @@ mod filtered {
     use cocoa_ui::objc2::rc::autoreleasepool;
     use libtest_mimic::Trial;
     use waterui_apple::native_test_support::ErrorLog;
-    use waterui_apple::native_test_support::filtered::MountedFilteredSurface;
+    use waterui_apple::native_test_support::filtered::{MountedFilteredSurface, ParentCapture};
     use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
     use waterui_graphics::gpu::runtime::HostedLayerError;
 
@@ -4513,6 +4515,46 @@ mod filtered {
         Ok(())
     }
 
+    /// Runs parent captures to the first outcome that is not `Deferred`,
+    /// following the deferral protocol a production owner follows: a
+    /// deferred capture stays owed until the redraw contract wakes
+    /// `woken` — a wake that arrived before the answer counts, as the
+    /// filtered leaf's own `finish_captured_frame` treats it — and the
+    /// retry starts then. One deadline bounds the whole exchange, so a
+    /// deferral that is never woken, or that recurs forever, answers
+    /// `None`.
+    fn capture_through_deferrals(
+        parent: &ParentCapture,
+        woken: &Cell<bool>,
+    ) -> Option<Result<(), CaptureError>> {
+        woken.set(false);
+        let attempt = RefCell::new(parent.start());
+        let deferred = Cell::new(false);
+        let settled = RefCell::new(None);
+        pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            if settled.borrow().is_some() {
+                return true;
+            }
+            if !deferred.get() {
+                let outcome = attempt.borrow().take();
+                match outcome {
+                    None => return false,
+                    Some(Err(CaptureError::Deferred)) => deferred.set(true),
+                    Some(outcome) => {
+                        *settled.borrow_mut() = Some(outcome);
+                        return true;
+                    }
+                }
+            }
+            if woken.replace(false) {
+                deferred.set(false);
+                *attempt.borrow_mut() = parent.start();
+            }
+            false
+        });
+        settled.into_inner()
+    }
+
     /// A parent capture that snapshots a filtered view while it has area,
     /// then submits after a layout pass collapsed it, completes with the
     /// view's region transparent — what the screen shows for a collapsed
@@ -4526,14 +4568,17 @@ mod filtered {
             pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.frame_presented()),
             "the filtered view presents its first frame"
         );
-        let parent = filtered.parent_capture(|| {});
+        let woken = Rc::new(Cell::new(false));
+        let parent = filtered.parent_capture({
+            let woken = Rc::clone(&woken);
+            move || woken.set(true)
+        });
 
-        let control = parent.start();
-        assert!(
-            pump_main_until(MAIN_QUEUE_DEADLINE, || control.landed()),
-            "the control capture completes"
-        );
-        let outcome = control.take();
+        // The leaf renders its hidden GPU child afresh for each external
+        // render, so the control capture may legitimately defer until the
+        // child's frame lands; the collapsed capture below answers
+        // without the child and must land on its first attempt.
+        let outcome = capture_through_deferrals(&parent, &woken);
         assert!(
             matches!(outcome, Some(Ok(()))),
             "the control capture lands, got {outcome:?}"
@@ -16726,5 +16771,51 @@ mod transform_modifiers {
             Point::new(0.25, 0.75),
             Rect::new(0.0, 0.0, 400.0, 300.0),
         );
+    }
+}
+
+/// A `Border` strokes its edge and never clips what it wraps: a rounded
+/// border leaves its host layer unmasked, as Hydrolysis does, so content
+/// that extends past the rounded outline stays visible (#4277).
+#[cfg(all(target_os = "macos", feature = "border"))]
+mod border_modifier {
+    use cocoa_ui::objc2::rc::autoreleasepool;
+    use cocoa_ui::{layer, view};
+    use libtest_mimic::Trial;
+    use waterui::ViewExt as _;
+    use waterui::border::Border;
+    use waterui::component::label::label;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "border_modifier::a_rounded_border_does_not_clip_its_content",
+            || {
+                a_rounded_border_does_not_clip_its_content();
+                Ok(())
+            },
+        )]
+    }
+
+    fn a_rounded_border_does_not_clip_its_content() {
+        let leaf = autoreleasepool(|_| {
+            super::resolve::render(label("content").border_with(
+                Border::new(waterui::graphics::color::Color::red(), 2.0).corner_radius(8.0),
+            ))
+        });
+        let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
+        let _window = autoreleasepool(|_| super::mount_and_order_front(&wrapper));
+        autoreleasepool(|_| {
+            let host_layer = layer::layer_of(&wrapper).expect("a border's host is layer-backed");
+            assert_eq!(host_layer.borderWidth(), 2.0, "the border strokes its edge");
+            assert_eq!(
+                host_layer.cornerRadius(),
+                8.0,
+                "the stroke follows the corner radius"
+            );
+            assert!(
+                !host_layer.masksToBounds(),
+                "a border strokes only and never clips its content"
+            );
+        });
     }
 }

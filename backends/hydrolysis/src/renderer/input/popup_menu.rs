@@ -13,6 +13,7 @@ use waterui_controls::button::ButtonStyle;
 use waterui_controls::label::LabelDisplayMode;
 use waterui_controls::menu::Shortcut;
 use waterui_controls::{Stepper, button, stepper::stepper};
+use waterui_core::contract_violation;
 use waterui_core::metadata::{Metadata, MetadataKey};
 use waterui_core::{SignalExt as _, id::Id};
 use waterui_form::picker::date::{Date, DatePickerType, DateTime};
@@ -211,12 +212,35 @@ impl PopupMenuStateGroup {
 
 impl_extractor!(PopupMenuStateGroup);
 
-pub fn popup_window_origin(origin: LayoutPoint, env: &Environment) -> LayoutPoint {
-    let window_origin = env
-        .get::<HydrolysisWindowOrigin>()
-        .copied()
-        .expect("hydrolysis popup windows require HydrolysisWindowOrigin in environment");
-    LayoutPoint::new(window_origin.x + origin.x, window_origin.y + origin.y)
+/// `origin` shifted by the window's own origin, or `None` after a contract
+/// violation when the runner seeded no [`HydrolysisWindowOrigin`]: the popup
+/// then does not open.
+pub fn popup_window_origin(origin: LayoutPoint, env: &Environment) -> Option<LayoutPoint> {
+    let Some(window_origin) = env.get::<HydrolysisWindowOrigin>().copied() else {
+        contract_violation!(
+            "hydrolysis popup windows require HydrolysisWindowOrigin in environment; the popup does not open"
+        );
+        return None;
+    };
+    Some(LayoutPoint::new(
+        window_origin.x + origin.x,
+        window_origin.y + origin.y,
+    ))
+}
+
+/// The [`PopupWindowManager`] the runner seeded into `env`, or `None` after a
+/// contract violation when it seeded none: the `opening` popup does not open.
+pub fn popup_window_manager<'env>(
+    env: &'env Environment,
+    opening: &str,
+) -> Option<&'env PopupWindowManager> {
+    let manager = env.get::<PopupWindowManager>();
+    if manager.is_none() {
+        contract_violation!(
+            "hydrolysis {opening} require PopupWindowManager in environment; the popup does not open"
+        );
+    }
+    manager
 }
 
 const fn popup_enter_animation() -> Animation {
@@ -473,6 +497,9 @@ pub fn popup_menu_content(
                         if items.is_empty() {
                             return;
                         }
+                        let Some(manager) = popup_window_manager(&env, "popup menus") else {
+                            return;
+                        };
                         group.truncate(next_depth);
                         let (window, child_state) = popup_menu_window(
                             items.clone(),
@@ -484,11 +511,7 @@ pub fn popup_menu_content(
                             &theme,
                         );
                         group.push(child_state);
-                        env.get::<PopupWindowManager>()
-                            .expect(
-                                "hydrolysis popup menus require PopupWindowManager in environment",
-                            )
-                            .show(window, &env);
+                        manager.show(window, &env);
                     }
                 });
                 // The button sizes to its label: a leading-aligned frame puts
@@ -620,15 +643,17 @@ pub fn semantic_popup_menu_window(
                             if items.is_empty() {
                                 return;
                             }
+                            let Some(manager) = popup_window_manager(&env, "popup menus") else {
+                                return;
+                            };
                             group.truncate(next_depth);
-                            let (window, child_state) =
-                                semantic_popup_menu_window(items.clone(), group.clone(), next_depth);
+                            let (window, child_state) = semantic_popup_menu_window(
+                                items.clone(),
+                                group.clone(),
+                                next_depth,
+                            );
                             group.push(child_state);
-                            env.get::<PopupWindowManager>()
-                                .expect(
-                                    "hydrolysis popup menus require PopupWindowManager in environment",
-                                )
-                                .show(window, &env);
+                            manager.show(window, &env);
                         },
                     );
                     rows.push(AnyView::new(button));
@@ -1359,16 +1384,19 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // The menu's rows carry this window's identity, so a Close Window
         // row they fire targets its owner window, not the popup.
         let env = &env.extending(self.window_id);
+        let Some(manager) = popup_window_manager(env, "popup menus") else {
+            return false;
+        };
+        let Some(popup_origin) = popup_window_origin(origin, env) else {
+            return false;
+        };
         self.dismiss_active_popup_menu();
         let group = PopupMenuStateGroup::new();
-        let popup_origin = popup_window_origin(origin, env);
         let text = self.popup_menu_text_metrics(&nodes, metrics, env, theme);
         let (window, state) =
             popup_menu_window(nodes, popup_origin, group.clone(), 0, metrics, text, theme);
         group.push(state);
-        env.get::<PopupWindowManager>()
-            .expect("hydrolysis popup menus require PopupWindowManager in environment")
-            .show(window, env);
+        manager.show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
         true
     }
@@ -1390,13 +1418,14 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // The menu's rows carry this window's identity, so a Close Window
         // row they fire targets its owner window, not the popup.
         let env = &env.extending(self.window_id);
+        let Some(manager) = popup_window_manager(env, "popup menus") else {
+            return false;
+        };
         self.dismiss_active_popup_menu();
         let group = PopupMenuStateGroup::new();
         let (window, state) = semantic_popup_menu_window(nodes, group.clone(), 0);
         group.push(state);
-        env.get::<PopupWindowManager>()
-            .expect("hydrolysis popup menus require PopupWindowManager in environment")
-            .show(window, env);
+        manager.show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
         self.context_mark_layout();
         true
@@ -1415,15 +1444,16 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         if entries.is_empty() {
             return false;
         }
+        let Some(manager) = popup_window_manager(env, "picker menus") else {
+            return false;
+        };
         self.dismiss_active_popup_menu();
         open.set(true);
         let group = PopupMenuStateGroup::new();
         let (window, state) =
             semantic_picker_menu_window(entries, selection, Rc::clone(open), group.clone());
         group.push(state);
-        env.get::<PopupWindowManager>()
-            .expect("hydrolysis picker menus require PopupWindowManager in environment")
-            .show(window, env);
+        manager.show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
         self.context_mark_layout();
         true
@@ -1438,10 +1468,15 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         if request.entries.is_empty() {
             return false;
         }
+        let Some(manager) = popup_window_manager(env, "picker menus") else {
+            return false;
+        };
+        let Some(popup_origin) = popup_window_origin(request.origin, env) else {
+            return false;
+        };
         self.dismiss_active_popup_menu();
         request.open.set(true);
         let group = PopupMenuStateGroup::new();
-        let popup_origin = popup_window_origin(request.origin, env);
         let (window, state) = picker_menu_window(
             request.entries,
             request.selection,
@@ -1454,9 +1489,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             metrics,
         );
         group.push(state);
-        env.get::<PopupWindowManager>()
-            .expect("hydrolysis picker menus require PopupWindowManager in environment")
-            .show(window, env);
+        manager.show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
         self.context_mark_layout();
         true
@@ -1470,9 +1503,14 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         origin: LayoutPoint,
         env: &Environment,
     ) -> bool {
+        let Some(manager) = popup_window_manager(env, "color pickers") else {
+            return false;
+        };
+        let Some(popup_origin) = popup_window_origin(origin, env) else {
+            return false;
+        };
         self.dismiss_active_popup_menu();
         let group = PopupMenuStateGroup::new();
-        let popup_origin = popup_window_origin(origin, env);
         let (window, state) = color_picker_window(
             value,
             support_alpha,
@@ -1482,9 +1520,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             env,
         );
         group.push(state);
-        env.get::<PopupWindowManager>()
-            .expect("hydrolysis color picker requires PopupWindowManager in environment")
-            .show(window, env);
+        manager.show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
         true
     }
@@ -1497,15 +1533,18 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         origin: LayoutPoint,
         env: &Environment,
     ) -> bool {
+        let Some(manager) = popup_window_manager(env, "date pickers") else {
+            return false;
+        };
+        let Some(popup_origin) = popup_window_origin(origin, env) else {
+            return false;
+        };
         self.dismiss_active_popup_menu();
         let group = PopupMenuStateGroup::new();
-        let popup_origin = popup_window_origin(origin, env);
         let (window, state) =
             date_picker_window(value, range, ty, popup_origin, group.clone(), env);
         group.push(state);
-        env.get::<PopupWindowManager>()
-            .expect("hydrolysis date picker requires PopupWindowManager in environment")
-            .show(window, env);
+        manager.show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
         true
     }
@@ -1521,14 +1560,15 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         support_hdr: bool,
         env: &Environment,
     ) -> bool {
+        let Some(manager) = popup_window_manager(env, "color pickers") else {
+            return false;
+        };
         self.dismiss_active_popup_menu();
         let group = PopupMenuStateGroup::new();
         let (window, state) =
             color_picker_window_base(value, support_alpha, support_hdr, group.clone(), env);
         group.push(state);
-        env.get::<PopupWindowManager>()
-            .expect("hydrolysis color picker requires PopupWindowManager in environment")
-            .show(window, env);
+        manager.show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
         self.context_mark_layout();
         true
@@ -1544,13 +1584,14 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         ty: DatePickerType,
         env: &Environment,
     ) -> bool {
+        let Some(manager) = popup_window_manager(env, "date pickers") else {
+            return false;
+        };
         self.dismiss_active_popup_menu();
         let group = PopupMenuStateGroup::new();
         let (window, state) = date_picker_window_base(value, range, ty, group.clone(), env);
         group.push(state);
-        env.get::<PopupWindowManager>()
-            .expect("hydrolysis date picker requires PopupWindowManager in environment")
-            .show(window, env);
+        manager.show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);
         self.context_mark_layout();
         true

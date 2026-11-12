@@ -6,6 +6,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::platform::{WindowKeyboardArea, WindowSafeArea};
+use waterui_core::contract_violation;
 use waterui_layout::padding::EdgeInsets;
 
 /// The window's container-region insets in logical units, read through the
@@ -333,7 +334,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// state — so each walk re-registers exactly what is live. The rendered
     /// pump runs this after the structural patch, so state the patch orphaned
     /// drops in the renderer's teardown order rather than ahead of it.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     fn reset_semantic_scene(&mut self) {
         self.gesture_engine.clear_targets();
         self.text_editing.text_input_targets.clear();
@@ -347,7 +348,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// plus the input, lazy and navigation registries' begins. The scene
     /// clears stay in `reset_semantic_scene`, which the pump runs after the
     /// patch like the rendered path.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     fn begin_semantic_emit_frame(&mut self) {
         self.hit_test.begin_rebuild_frame();
         self.lazy.begin_rebuild_frame();
@@ -359,7 +360,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// opens, including the animation and accessibility registries the pump
     /// path leaves to `reset_semantic_scene`.
     /// `signals.begin_rebuild` stays with the caller — only a build enters one.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     fn begin_semantic_rebuild_frame(&mut self) {
         self.state.measurement.begin_frame();
         self.hit_test.begin_rebuild_frame();
@@ -378,7 +379,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// focus validation, and the accessibility tree's publication.
     /// `signals.finish_rebuild` stays with the caller — only a build entered
     /// one.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     fn finish_semantic_rebuild_frame(&mut self, live_dynamics: &FxHashSet<usize>) {
         self.prune_dynamic_measurements(live_dynamics);
         self.validate_focused_text_input_after_flush();
@@ -399,9 +400,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// focus validation/relocation and the accessibility tree's publication.
     /// Releasing in the renderer's order is what exposes same-manager watcher
     /// re-entrancy (water-rs/waterui#1213) to `#[waterui::test]`.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     fn finish_semantic_emit_frame(&mut self, tree: &RenderNode<E>, structural_change: bool) {
-        self.registries();
+        self.frame_registries();
         self.hit_test
             .finish_rebuild_frame(&self.text_editing.text_input_targets);
         self.navigation.finish_rebuild_frame();
@@ -426,7 +427,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     ///
     /// Like the rendered path, a call made with a tree already built applies
     /// the pending patch and re-emits instead of re-dispatching.
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn capture_window_semantics(&mut self, content: AnyView, env: &Environment) {
         if self.render_tree.is_some() {
             assert!(
@@ -476,7 +477,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     // `_env` is consumed only by the accessibility emit path; the signature must
     // match `capture_window_semantics` regardless of feature selection.
     #[allow(clippy::used_underscore_binding)]
-    #[cfg(hydrolysis_gpu_painter)]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn flush_window_semantics(&mut self, _env: &Environment) -> bool {
         let Some(mut tree) = self.render_tree.take() else {
             return false;
@@ -519,7 +520,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     ) {
         let host = self.core.presentation_hosts.text_overlay.clone();
         self.record_host(&host, |renderer| {
-            renderer.registries();
+            renderer.frame_registries();
             renderer.render_active_text_context_menu_overlay(env, transform);
             renderer.prepare_transient_text_input_overlay(env, transform);
         });
@@ -786,7 +787,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             self.frame_stage_times
                 .set_encode(self.frame_stage_times.encode() + encode_started_at.elapsed());
         }
-        self.core.registries();
+        self.core.frame_registries();
         // The materialized platform-view placements write into their tables
         // once, here at frame end — never mid-materialization.
         self.core.record_platform_views();
@@ -854,10 +855,33 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     }
 }
 
+/// `value` when it is a finite non-negative minimum, else `0.0` after a
+/// contract violation: the window then has no minimum on that axis.
 fn validated_minimum_axis(value: f32, axis: &str) -> f32 {
-    assert!(
-        value.is_finite() && value >= 0.0,
-        "hydrolysis window layout reported invalid minimum {axis}: {value}"
+    if value.is_finite() && value >= 0.0 {
+        return value;
+    }
+    contract_violation!(
+        "hydrolysis window layout reported invalid minimum {axis}: {value}; the window has no minimum {axis}"
     );
-    value
+    0.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validated_minimum_axis;
+
+    #[test]
+    fn a_valid_minimum_axis_is_kept() {
+        assert!((validated_minimum_axis(120.0, "width") - 120.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "reported invalid minimum height")
+    )]
+    fn an_invalid_minimum_axis_leaves_the_window_without_a_minimum() {
+        assert!(validated_minimum_axis(f32::NAN, "height").abs() < f32::EPSILON);
+    }
 }

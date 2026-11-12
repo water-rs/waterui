@@ -30,12 +30,18 @@ mod accessibility;
 #[cfg(hydrolysis_gpu_painter)]
 mod gpu;
 mod host;
+#[cfg(hydrolysis_hwui_gpu)]
+pub(crate) mod hosted_gpu;
 #[cfg(hydrolysis_hwui)]
 mod hwui;
 mod ime;
 pub(crate) mod jni;
+#[cfg(hydrolysis_gpu)]
+mod native_window;
 mod platform_views;
 mod preview;
+#[cfg(hydrolysis_video_plane)]
+pub(crate) mod video_plane;
 
 use std::rc::Rc;
 use std::sync::OnceLock;
@@ -43,6 +49,7 @@ use std::sync::OnceLock;
 use tracing::level_filters::LevelFilter;
 use tracing_log::AsLog;
 use waterui::app::App;
+use waterui_core::contract_violation;
 
 pub use preview::register_preview;
 
@@ -68,16 +75,18 @@ static APP_FACTORY: OnceLock<AppFactory> = OnceLock::new();
 /// cdylib's `JNI_OnLoad` — before that, `nativeCreateSession` fails with an
 /// explicit error rather than mounting an empty window.
 ///
-/// # Panics
-/// Panics when called a second time: the factory is a singleton.
+/// Calling it a second time breaks the contract: the factory is a singleton,
+/// so a debug build panics and a release build logs the violation and keeps
+/// the first factory.
 pub fn register_app(factory: impl Fn() -> (App, Rc<dyn crate::Style>) + Send + Sync + 'static) {
     let factory: AppFactory = Box::new(factory);
     // `register_app` may run on a non-UI JNI thread; the factory moves to
     // the UI thread on the first create.
-    assert!(
-        APP_FACTORY.set(factory).is_ok(),
-        "hydrolysis android: register_app was called twice"
-    );
+    if APP_FACTORY.set(factory).is_err() {
+        contract_violation!(
+            "hydrolysis android: register_app was called twice; the first factory is kept"
+        );
+    }
 }
 
 /// Installs Android logging once: `log` records (wgpu, ndk) and `tracing`
@@ -166,12 +175,17 @@ fn android_log(message: &[u8]) {
 
 /// The registered factory's next `(App, Style)` pair — the entry point the
 /// session-create path calls on the UI thread.
-pub(crate) fn instantiate_app() -> (App, Rc<dyn crate::Style>) {
-    let factory = APP_FACTORY.get().unwrap_or_else(|| {
-        panic!(
+///
+/// `None` after a [`contract_violation!`] when no app was registered: the
+/// app cdylib must call `hydrolysis::android::register_app` from
+/// `JNI_OnLoad`.
+pub(crate) fn instantiate_app() -> Option<(App, Rc<dyn crate::Style>)> {
+    let Some(factory) = APP_FACTORY.get() else {
+        contract_violation!(
             "hydrolysis android: no app registered — the app cdylib must call \
-             hydrolysis::android::register_app from JNI_OnLoad"
-        )
-    });
-    factory()
+             hydrolysis::android::register_app from JNI_OnLoad; no session is created"
+        );
+        return None;
+    };
+    Some(factory())
 }

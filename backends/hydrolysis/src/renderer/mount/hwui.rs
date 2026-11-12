@@ -3,11 +3,13 @@
 //! supported, and `FilteredView` and the overscroll stretch lower to native
 //! `RenderEffect` chains; GPU-content and material capabilities are named
 //! refusals at install, matching `Encoder::refuse`'s policy — the issues
-//! that carry each capability are named in the panic.
+//! that carry each capability are named in the contract violation.
 
 use std::convert::Infallible;
 use std::rc::Rc;
 use std::sync::Arc;
+
+use waterui_core::contract_violation;
 
 use cherenkov_record::{
     FilterId, Layer, MaterialRegistry, ResourceError, TextLayoutId, Transaction,
@@ -25,7 +27,7 @@ use crate::hwui::text::TextLayoutResource;
 use crate::renderer::ProducerWake;
 use crate::renderer::effects::FilteredRuntime;
 use crate::renderer::mount::backdrop::{
-    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload,
+    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload, ChromeParams,
     MaterialBackdropGroups, MaterialMembership, MemberBind,
 };
 use crate::renderer::mount::target::{FilterHandle, LayerTarget, MaterialTerms};
@@ -111,7 +113,8 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
     type Group = Infallible;
     type Shader = Infallible;
 
-    const BACKDROP_SHADERS: bool = false;
+    const BACKDROP_SHADER_REFUSAL: Option<&'static str> =
+        Some("the HWUI render target has no backdrop shaders");
 
     fn resources(host: &Self::Host) -> &Rc<SceneResources> {
         &host.resources
@@ -125,7 +128,38 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
         });
     }
 
-    #[cfg(hydrolysis_gpu)]
+    #[cfg(hydrolysis_hwui_gpu)]
+    fn mount_gpu_content(
+        _host: &Self::Host,
+        _tx: &mut Transaction<'_, Self>,
+        _layer: &Layer,
+        runtime: &mut GpuContentRuntime,
+        _pixels: (u32, u32),
+        wake: ProducerWake,
+    ) {
+        // The view renders into its own surface at the size the host laid
+        // it out at, so the layer's pixel size does not apply.
+        runtime.hosted.pump(&mut runtime.view, &wake);
+    }
+
+    #[cfg(hydrolysis_hwui_gpu)]
+    fn mount_external_frame(
+        _host: &Self::Host,
+        _tx: &mut Transaction<'_, Self>,
+        _layer: &Layer,
+        runtime: &mut ExternalFrameRuntime,
+        _presented: waterui_graphics::gpu::PresentedSize,
+        wake: ProducerWake,
+    ) -> Option<(u32, u32)> {
+        runtime.hosted.pump(&mut runtime.view, &wake);
+        // The surface stretches the frame itself: the install layer keeps
+        // its identity transform.
+        None
+    }
+
+    /// Host builds compile the HWUI target for tests only; GPU content is
+    /// hosted by the Android runner.
+    #[cfg(all(hydrolysis_gpu, not(hydrolysis_hwui_gpu)))]
     fn mount_gpu_content(
         _host: &Self::Host,
         _tx: &mut Transaction<'_, Self>,
@@ -134,13 +168,13 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
         _pixels: (u32, u32),
         _wake: ProducerWake,
     ) {
-        panic!(
-            "hydrolysis HWUI: GpuContentView requires the hosted GPU-content realization \
-             (water-rs/waterui#1812)"
+        contract_violation!(
+            "hydrolysis HWUI: GpuContentView is hosted by the Android runner built with the \
+             `gpu` feature; the content is not drawn"
         );
     }
 
-    #[cfg(hydrolysis_gpu)]
+    #[cfg(all(hydrolysis_gpu, not(hydrolysis_hwui_gpu)))]
     fn mount_external_frame(
         _host: &Self::Host,
         _tx: &mut Transaction<'_, Self>,
@@ -149,28 +183,48 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
         _presented: waterui_graphics::gpu::PresentedSize,
         _wake: ProducerWake,
     ) -> Option<(u32, u32)> {
-        panic!(
-            "hydrolysis HWUI: ExternalFrameView requires the hosted GPU-content realization \
-             (water-rs/waterui#1812)"
+        contract_violation!(
+            "hydrolysis HWUI: ExternalFrameView is hosted by the Android runner built with the \
+             `gpu` feature; no frame is bound"
         );
+        None
     }
 
-    fn filter(host: &Self::Host, runtime: &mut FilteredRuntime) -> FilterId {
+    fn filter(host: &Self::Host, runtime: &mut FilteredRuntime) -> Option<FilterId> {
         runtime.filter(|source| {
-            FilterHandle::new(
-                host.backend
-                    .register_filter(source, host.effect_wake.clone())
-                    .unwrap_or_else(|error| panic!("{error}")),
-            )
+            match host
+                .backend
+                .register_filter(source, host.effect_wake.clone())
+            {
+                Ok(registration) => Some(FilterHandle::new(registration)),
+                Err(error) => {
+                    contract_violation!(
+                        "hydrolysis HWUI: the filter cannot be registered ({error}); \
+                         the layer draws without it"
+                    );
+                    None
+                }
+            }
         })
     }
 
-    fn stretch_filter(host: &Self::Host, filter: OverscrollStretch<Reactive>) -> FilterHandle {
-        FilterHandle::new(
-            host.backend
-                .register_filter(AnyEffect::filter(filter), host.effect_wake.clone())
-                .unwrap_or_else(|error| panic!("{error}")),
-        )
+    fn stretch_filter(
+        host: &Self::Host,
+        filter: OverscrollStretch<Reactive>,
+    ) -> Option<FilterHandle> {
+        match host
+            .backend
+            .register_filter(AnyEffect::filter(filter), host.effect_wake.clone())
+        {
+            Ok(registration) => Some(FilterHandle::new(registration)),
+            Err(error) => {
+                contract_violation!(
+                    "hydrolysis HWUI: the overscroll stretch filter cannot be registered \
+                     ({error}); the layer draws without it"
+                );
+                None
+            }
+        }
     }
 
     fn mount_material(
@@ -183,8 +237,9 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
         _membership: &MaterialMembership<E>,
         _bind: MemberBind,
     ) {
-        panic!(
-            "hydrolysis HWUI: Material requires the HWUI backdrop realization (water-rs/waterui#1899)"
+        contract_violation!(
+            "hydrolysis HWUI: Material requires the HWUI backdrop realization \
+             (water-rs/waterui#1899); the layer joins no backdrop group"
         );
     }
 
@@ -198,14 +253,15 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
         _groups: &mut ChromeBackdropGroups<Self::Group, Self::Shader, E>,
         _layer: &Layer,
         _key: ChromeGroupKey,
-        _params: cherenkov_record::MaterialCapture,
+        _params: ChromeParams,
         _display_scale: f64,
         _membership: &MaterialMembership<E>,
         _payload: impl FnOnce() -> ChromeMemberPayload<Self::Shader>,
         _bind: MemberBind,
     ) {
-        panic!(
-            "hydrolysis HWUI: material chrome requires HWUI backdrop shaders (water-rs/waterui#1899)"
+        contract_violation!(
+            "hydrolysis HWUI: material chrome requires HWUI backdrop shaders \
+             (water-rs/waterui#1899); the layer joins no chrome group"
         );
     }
 }
@@ -215,7 +271,7 @@ use crate::renderer::HydrolysisRenderer;
 use crate::renderer::mount::Mount;
 
 #[cfg_attr(
-    hydrolysis_gpu_painter,
+    hydrolysis_cherenkov,
     expect(
         dead_code,
         reason = "the Android HWUI runner is the only caller; test builds keep the methods alongside the mount's contract surface"

@@ -15,7 +15,7 @@ use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::ProducerWake;
 use crate::renderer::effects::FilteredRuntime;
 use crate::renderer::mount::backdrop::{
-    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload,
+    BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeMemberPayload, ChromeParams,
     MaterialBackdropGroups, MaterialMembership, MemberBind,
 };
 use crate::renderer::recording::SceneResources;
@@ -36,11 +36,12 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
     /// GPU target.
     type Shader: Clone + 'static;
 
-    /// Whether the target's engine realizes backdrop shaders at all.
-    /// `false` — a CPU engine — makes a [`Mount`](super::Mount::new)
-    /// attach panic when the theme's material registry is not empty
+    /// Why the target's engine cannot realize backdrop shaders, or `None`
+    /// when it can. A refusal makes a [`Mount`](super::Mount::new) attach
+    /// report it as a contract violation when the theme's material registry
+    /// is not empty, and the material chrome is not drawn
     /// (water-rs/waterui#1788).
-    const BACKDROP_SHADERS: bool;
+    const BACKDROP_SHADER_REFUSAL: Option<&'static str>;
 
     fn resources(host: &Self::Host) -> &Rc<SceneResources>;
 
@@ -92,11 +93,18 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
         wake: ProducerWake,
     ) -> Option<(u32, u32)>;
 
-    fn filter(host: &Self::Host, runtime: &mut FilteredRuntime) -> FilterId;
+    /// The filter `runtime`'s layer draws with, registering it on first
+    /// call; `None` when the backend rejected the effect (a contract
+    /// violation it has reported), leaving the layer without a filter.
+    fn filter(host: &Self::Host, runtime: &mut FilteredRuntime) -> Option<FilterId>;
 
     /// Registers the overscroll stretch a scroll node's inner layer draws
-    /// with; the returned handle's drop unregisters it.
-    fn stretch_filter(host: &Self::Host, filter: OverscrollStretch<Reactive>) -> FilterHandle;
+    /// with; the returned handle's drop unregisters it. `None` when the
+    /// backend rejected the filter (a contract violation it has reported).
+    fn stretch_filter(
+        host: &Self::Host,
+        filter: OverscrollStretch<Reactive>,
+    ) -> Option<FilterHandle>;
 
     /// Joins `layer` to the backdrop group `key` names, sharing the
     /// group's filtered capture with every member under the same key,
@@ -133,9 +141,12 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
 
     /// Joins `layer` — a `ChromeMaterial` member — to the chrome group
     /// `key` names, sharing the group's unfiltered capture with every
-    /// member under the same `(scope, class, canvas)` key, rebuilding it
+    /// member under the same `(scope, class, canvas)` key — or, for a
+    /// container member, `(scope, shader, canvas)` — rebuilding it
     /// when `display_scale` changes. `params` is the class's registered
-    /// capture terms; `payload` builds the member's own shader handle and
+    /// capture terms (the member's own, until the commit's
+    /// [`settle_chrome`](Self::settle_chrome) resolves a container's);
+    /// `payload` builds the member's own shader handle and
     /// live effect — the terms the member binds and a group rebuild
     /// rebinds — and runs only when `bind` binds the member
     /// (water-rs/waterui#1788).
@@ -149,7 +160,7 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
         groups: &mut ChromeBackdropGroups<Self::Group, Self::Shader, E>,
         layer: &Layer,
         key: ChromeGroupKey,
-        params: cherenkov_record::MaterialCapture,
+        params: ChromeParams,
         display_scale: f64,
         membership: &MaterialMembership<E>,
         payload: impl FnOnce() -> ChromeMemberPayload<Self::Shader>,
@@ -161,6 +172,20 @@ pub trait LayerTarget<E: crate::text::TextEngine>: cherenkov_record::Target {
     /// default no-op.
     fn clear_chrome(tx: &mut Transaction<'_, Self>, layer: &Layer) {
         let _ = (tx, layer);
+    }
+
+    /// Resolves the container groups whose membership or member
+    /// recordings changed in this commit, through
+    /// [`BackdropGroups::settle`](super::backdrop::BackdropGroups::settle),
+    /// at the commit's end before the sweeps (water-rs/waterui#2834).
+    /// Targets that never join a chrome group leave the default no-op.
+    fn settle_chrome(
+        host: &Self::Host,
+        tx: &mut Transaction<'_, Self>,
+        groups: &mut ChromeBackdropGroups<Self::Group, Self::Shader, E>,
+        display_scale: f64,
+    ) {
+        let _ = (host, tx, groups, display_scale);
     }
 }
 
@@ -223,11 +248,23 @@ impl std::fmt::Debug for FilterHandle {
             .finish_non_exhaustive()
     }
 }
+#[cfg(hydrolysis_cherenkov)]
+#[path = "engine_target.rs"]
+mod engine_target;
+
 #[cfg(hydrolysis_gpu_painter)]
 #[path = "gpu_target.rs"]
 mod gpu;
 
+#[cfg(hydrolysis_cpu_painter)]
+#[path = "cpu_target.rs"]
+mod cpu;
+
+#[cfg(hydrolysis_cpu_painter)]
+pub use cpu::RasterHost;
+#[cfg(all(test, hydrolysis_gpu_painter))]
+pub use engine_target::install_engine_text;
 #[cfg(hydrolysis_gpu_painter)]
 pub use gpu::CherenkovHost;
 #[cfg(all(test, hydrolysis_gpu_painter))]
-pub use gpu::{attach_material_shaders, chrome_sample, chrome_spec, install_gpu_text};
+pub use gpu::{attach_material_shaders, chrome_sample, chrome_spec, recording_scale_of};

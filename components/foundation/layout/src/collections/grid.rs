@@ -4,6 +4,7 @@ use alloc::{vec, vec::Vec};
 use core::num::NonZeroUsize;
 use nami::{Computed, Signal, SignalExt};
 use num_traits::ToPrimitive;
+use waterui_contract::contract_violation;
 use waterui_core::{
     AnyView, Environment, IntoSignalF32, View, layout::LayoutInvalidationCallback, view::TupleViews,
 };
@@ -318,6 +319,9 @@ fn usize_to_f32(value: usize) -> f32 {
 
 /// A data-carrying struct that represents a single row in a `Grid`.
 /// It does not implement `View` itself; it is consumed by the `Grid`.
+///
+/// A row holds at most as many views as the grid has columns; a shorter row
+/// leaves its trailing cells empty.
 #[derive(Debug)]
 pub struct GridRow {
     pub(crate) contents: Vec<AnyView>,
@@ -416,15 +420,31 @@ impl Grid {
 
 impl View for Grid {
     fn body(self, _env: &Environment) -> impl View {
-        // Flatten the children from all GridRows into a single Vec<AnyView>.
-        // This is the list that the GridLayout engine will operate on.
-        let flattened_children = self
-            .rows
-            .into_iter()
-            .flat_map(|row| row.contents)
-            .collect::<Vec<AnyView>>();
+        // `GridLayout` assigns cells to rows by position, so each row's
+        // children are followed by empty cells up to the next row boundary:
+        // a short row leaves its trailing cells empty and the next row still
+        // starts in column 0 (docs/layout-spec.md §5). The last row needs no
+        // padding, since no row follows it.
+        let columns = self.layout.columns.get();
+        let row_count = self.rows.len();
+        let mut cells = Vec::with_capacity(row_count * columns);
+        for (index, row) in self.rows.into_iter().enumerate() {
+            let len = row.contents.len();
+            if len > columns {
+                // The overflow wraps onto further rows of its own, which the
+                // padding below closes, so later rows keep their cells.
+                contract_violation!(
+                    "GridRow {index} has {len} cells but the grid has {columns} columns"
+                );
+            }
+            cells.extend(row.contents);
+            if index + 1 < row_count {
+                let padding = len.next_multiple_of(columns) - len;
+                cells.extend(core::iter::repeat_with(AnyView::default).take(padding));
+            }
+        }
 
-        FixedContainer::new(self.layout, flattened_children)
+        FixedContainer::new(self.layout, cells)
     }
 
     /// Resolves to `FixedContainer` over the same layout and the flattened

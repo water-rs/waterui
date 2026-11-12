@@ -268,15 +268,23 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     renderer.pop_accessibility_owner();
                 }
             }
+            // The four wrappers hand their layer engine-run motion: the
+            // engine samples it on the render thread, the children record
+            // at rest, and placement evaluates the same tracks at event
+            // time (water-rs/waterui#2203).
             Self::Opacity(node) => {
-                let alpha = renderer.resolve_owned_scalar(
-                    node.value.value(),
-                    &node.core.cell,
-                    OPACITY_ANIMATION_KEY,
-                    cherenkov_record::tree::RATE_SLOW,
-                );
+                renderer.bind_motion(&node.motion, &node.core.cell, OPACITY_ANIMATION_KEY);
+                let reach = node.motion.reach(renderer.frame_instant());
                 let program = renderer.program().program_mut();
+                // What the record can show over the whole track; the layer
+                // itself follows the motion.
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "an opacity's f64 lane holds an f32 value"
+                )]
+                let alpha = reach as f32;
                 program.opacity = alpha;
+                program.opacity_motion = Some(node.motion.clone());
                 program.clip = Some(cherenkov_record::ShapeData::of(&ctx.bounds()));
                 renderer.push_placement_scope(
                     crate::renderer::ScopeDelta::RECORD_SPACE,
@@ -287,57 +295,40 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 renderer.pop_placement_scope();
             }
             Self::Scale(node) => {
-                let center = anchor_point(ctx.bounds(), node.value.anchor());
-                let scale_x = renderer.resolve_owned_scalar(
-                    node.value.x(),
-                    &node.core.cell,
-                    SCALE_X_ANIMATION_KEY,
-                    cherenkov_record::tree::RATE_FAST,
+                flush_transform_wrapper(
+                    renderer,
+                    ctx,
+                    env,
+                    &node.core,
+                    &node.motion,
+                    Some(node.anchor),
+                    &node.child,
+                    [SCALE_X_ANIMATION_KEY, SCALE_Y_ANIMATION_KEY],
                 );
-                let scale_y = renderer.resolve_owned_scalar(
-                    node.value.y(),
-                    &node.core.cell,
-                    SCALE_Y_ANIMATION_KEY,
-                    cherenkov_record::tree::RATE_FAST,
-                );
-                let transform = kurbo::Affine::translate((center.x, center.y))
-                    * kurbo::Affine::scale_non_uniform(f64::from(scale_x), f64::from(scale_y))
-                    * kurbo::Affine::translate((-center.x, -center.y));
-                node.child
-                    .flush(renderer, ctx.child(transform, ctx.bounds()), env, transform);
             }
             Self::Rotation(node) => {
-                let center = anchor_point(ctx.bounds(), node.value.anchor());
-                let radians = f64::from(renderer.resolve_owned_scalar(
-                    node.value.angle(),
-                    &node.core.cell,
-                    ROTATION_ANIMATION_KEY,
-                    cherenkov_record::tree::RATE_FAST,
-                ))
-                .to_radians();
-                let transform = kurbo::Affine::translate((center.x, center.y))
-                    * kurbo::Affine::rotate(radians)
-                    * kurbo::Affine::translate((-center.x, -center.y));
-                node.child
-                    .flush(renderer, ctx.child(transform, ctx.bounds()), env, transform);
+                flush_transform_wrapper(
+                    renderer,
+                    ctx,
+                    env,
+                    &node.core,
+                    &node.motion,
+                    Some(node.anchor),
+                    &node.child,
+                    [ROTATION_ANIMATION_KEY],
+                );
             }
             Self::Offset(node) => {
-                let offset_x = renderer.resolve_owned_scalar(
-                    &node.value.x,
-                    &node.core.cell,
-                    OFFSET_X_ANIMATION_KEY,
-                    cherenkov_record::tree::RATE_FAST,
+                flush_transform_wrapper(
+                    renderer,
+                    ctx,
+                    env,
+                    &node.core,
+                    &node.motion,
+                    None,
+                    &node.child,
+                    [OFFSET_X_ANIMATION_KEY, OFFSET_Y_ANIMATION_KEY],
                 );
-                let offset_y = renderer.resolve_owned_scalar(
-                    &node.value.y,
-                    &node.core.cell,
-                    OFFSET_Y_ANIMATION_KEY,
-                    cherenkov_record::tree::RATE_FAST,
-                );
-                let transform =
-                    kurbo::Affine::translate((f64::from(offset_x), f64::from(offset_y)));
-                node.child
-                    .flush(renderer, ctx.child(transform, ctx.bounds()), env, transform);
             }
             Self::Dynamic(node) => {
                 if node.apply_pending_mid_pass(renderer) {
@@ -358,9 +349,15 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 }
                 node.flush_content(renderer, ctx, env);
             }
-            Self::Retain(node) => node
-                .child
-                .flush(renderer, ctx, env, kurbo::Affine::IDENTITY),
+            Self::Retain(node) => {
+                #[cfg(hydrolysis_video_plane)]
+                if let Some(plane) = &node.plane {
+                    let (table, placement) = plane.placement();
+                    renderer.register_platform_view_placement(ctx.bounds(), table, placement);
+                }
+                node.child
+                    .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
+            }
             Self::Env(node) => {
                 renderer.register_modal_scope(&node.env);
                 node.child
@@ -483,15 +480,16 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                         });
                     }
-                    WrapperEffect::LayoutPriority(_) => {
-                        // Layout-only: nothing to apply while drawing.
+                    WrapperEffect::LayoutPriority(_) | WrapperEffect::OnChange { .. } => {
+                        // Layout-only or a held subscription: nothing to
+                        // apply while drawing.
                         node.child
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                     }
                     WrapperEffect::Transition(declaration) => {
                         // The owning site paints the transition around its
                         // whole instance; the declaration itself draws through.
-                        declaration.assert_owned();
+                        declaration.report_unowned();
                         node.child
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                     }
@@ -1033,7 +1031,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         }
                     }
                     WrapperEffect::Transition(declaration) => {
-                        declaration.assert_owned();
+                        declaration.report_unowned();
                         node.child.emit_accessibility(renderer, child_env);
                     }
                     _ => node.child.emit_accessibility(renderer, child_env),
@@ -1175,6 +1173,36 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     }
 }
 
+/// Records a transform wrapper: its frame layer follows `motion` — about
+/// `anchor`'s point in the wrapper's bounds, when the motion turns or
+/// scales — and the child records at rest in the frame. `slots` names each
+/// of the motion's axes for the animation controller, in
+/// [`LayerMotion::motions`] order.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a wrapper's context, environment, core, motion, anchor, child and slots are independent inputs"
+)]
+fn flush_transform_wrapper<E: crate::text::TextEngine, const SLOTS: usize>(
+    renderer: &mut HydrolysisRenderer<E>,
+    ctx: RenderContext,
+    env: &Environment,
+    core: &NodeCore<E>,
+    motion: &Rc<mount::motion::LayerMotion>,
+    anchor: Option<waterui::style::Anchor>,
+    child: &RenderNode<E>,
+    slots: [usize; SLOTS],
+) {
+    if let Some(anchor) = anchor {
+        let pivot = anchor_point(ctx.bounds(), anchor);
+        motion.set_pivot(kurbo::Vec2::new(pivot.x, pivot.y));
+    }
+    for (axis, slot) in motion.motions().zip(slots) {
+        renderer.bind_motion(axis, &core.cell, slot);
+    }
+    renderer.program().program_mut().motion = Some(Rc::clone(motion));
+    child.flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
+}
+
 fn flush_navigation_transition_element<E: crate::text::TextEngine>(
     renderer: &mut HydrolysisRenderer<E>,
     ctx: RenderContext,
@@ -1211,6 +1239,13 @@ fn record_hosted_gpu<E, R>(
     #[cfg(not(feature = "accessibility"))]
     emit_graphics_image_accessibility(renderer, Some(ctx), env, label, value, wants_input);
     renderer.pop_render_owner();
+    // The HWUI painter hosts the view in a platform surface of its own,
+    // placed like any other platform view.
+    #[cfg(hydrolysis_hwui_gpu)]
+    {
+        let (table, placement) = runtime.borrow().placement();
+        renderer.register_platform_view_placement(ctx.bounds(), table, placement);
+    }
     if wants_input {
         renderer.register_surface_input_target(
             ctx.bounds(),

@@ -484,7 +484,7 @@ impl ScrollView {
     }
 
     /// The insets the surface applies around its content — the safe-area
-    /// bands [`layout_with_safe_area_insets`] set as `contentInsets`, the
+    /// bands `layout_with_safe_area_insets` set as `contentInsets`, the
     /// `AppKit` counterpart of `UIKit`'s adjusted content inset. At rest
     /// at its top the clip's bounds origin is the negated inset.
     #[must_use]
