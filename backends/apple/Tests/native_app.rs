@@ -1590,12 +1590,6 @@ mod navigation {
         item: &cocoa_ui::objc2_ui_kit::UINavigationItem,
         page: &UIViewController,
     ) {
-        let hosted = item
-            .rightBarButtonItems()
-            .expect("the page retains its actions")
-            .iter()
-            .find_map(|item| item.customView())
-            .expect("arbitrary button content remains hosted");
         // The SVG icon is a canvas: a host view whose layer carries the
         // drawn layer tree.
         fn drawn_canvas(view: &PlatformView) -> Option<Retained<PlatformView>> {
@@ -1608,6 +1602,12 @@ mod navigation {
                 if drawn { Some(sub) } else { drawn_canvas(&sub) }
             })
         }
+        let hosted = item
+            .rightBarButtonItems()
+            .expect("the page retains its actions")
+            .iter()
+            .find_map(|item| item.customView())
+            .expect("arbitrary button content remains hosted");
         let icon = pump_main_until(MAIN_QUEUE_DEADLINE, || drawn_canvas(&hosted).is_some())
             .then(|| drawn_canvas(&hosted))
             .flatten()
