@@ -139,7 +139,13 @@ impl ExternalRender {
 pub struct FilteredState {
     /// The host view.
     view: Retained<HostView>,
-    /// The output presentation view.
+    /// The output presentation view. Hidden only while a stand-in shows
+    /// in its place ([`FilteredInput::has_stand_in`]) — never as a "no
+    /// frame presented yet" marker: an enclosing `ViewCapture` renders
+    /// only the surfaces the native tree draws, and a filter it renders
+    /// externally never presents on its own, so such a marker would drop
+    /// the filter from that capture for good. A `CAMetalLayer` with no
+    /// presented drawable shows nothing on screen.
     output_view: Retained<PlatformView>,
     /// Where the pipeline reads its input — a `ViewCapture` over a
     /// content view, or an already-realized frame.
@@ -306,6 +312,23 @@ enum FilteredInput {
         /// The private texture the first effect reads.
         texture: Retained<MetalTexture>,
     },
+}
+
+impl FilteredInput {
+    /// Whether something else shows in the output's place until its
+    /// first frame presents — a transition effect's live content or the
+    /// ghost's retired root, which the `first_present` hook hides. A
+    /// mounted leaf's content is hidden at build, so nothing stands in
+    /// for its output.
+    const fn has_stand_in(&self) -> bool {
+        !matches!(
+            self,
+            Self::Captured {
+                owner: ContentOwner::Leaf(_),
+                ..
+            }
+        )
+    }
 }
 
 /// Who owns a captured content view's geometry.
@@ -1561,9 +1584,14 @@ fn reveal_output(state: &FilteredState) {
     }
 }
 
+/// Re-arms the first-paint reveal. Only an output with a stand-in hides
+/// until that frame lands; a mounted leaf keeps its last frame on screen
+/// until the next one presents, as across a detach.
 fn hide_output(state: &FilteredState) {
     state.output_revealed.set(false);
-    cocoa_ui::view::set_hidden(&state.output_view, true);
+    if state.input.has_stand_in() {
+        cocoa_ui::view::set_hidden(&state.output_view, true);
+    }
 }
 
 /// `completeReady` — wakes every waiter queued since the last frame.
@@ -2632,7 +2660,7 @@ fn wire_filtered_state(
     let output_view = cocoa_ui::PlatformView::new(mtm);
     #[cfg(target_os = "macos")]
     cocoa_ui::view::ensure_layer_backed(&output_view);
-    cocoa_ui::view::set_hidden(&output_view, true);
+    cocoa_ui::view::set_hidden(&output_view, input.has_stand_in());
     if let Some(layer) = cocoa_ui::view::layer(&output_view) {
         layer.setOpaque(false);
         cocoa_ui::core_animation::set_contents_gravity_resize(&layer);
