@@ -15,7 +15,9 @@ use std::num::NonZeroU64;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cherenkov_record::{Axis, FilterId, Fixed, Layer, LayerId, ShapeData, Shared, Transaction};
+use cherenkov_record::{
+    Axis, BlendSpace, FilterId, Fixed, Layer, LayerId, ShapeData, Shared, Transaction,
+};
 
 use waterui_core::contract_violation;
 use waterui_graphics::backend::{HeldResources, NextFrame, SceneUpdate};
@@ -75,6 +77,9 @@ type Committed<E> = Vec<(LayerId, Weak<LayerToken<E>>)>;
 struct LayerProps {
     transform: kurbo::Affine,
     opacity: f32,
+    /// The space the layer's subtree composites in and the layer fades
+    /// onto its parent in.
+    blend_space: BlendSpace,
     clip: Option<ShapeData>,
     filter: Option<FilterId>,
     scroll: kurbo::Vec2,
@@ -142,6 +147,7 @@ impl LayerProps {
     const DEFAULT: Self = Self {
         transform: kurbo::Affine::IDENTITY,
         opacity: 1.0,
+        blend_space: BlendSpace::Linear,
         clip: None,
         filter: None,
         scroll: kurbo::Vec2::ZERO,
@@ -258,6 +264,9 @@ fn write_props<T: LayerTarget<E>, E: crate::text::TextEngine>(
         }
     }
     let edit = &mut tx[layer];
+    if written.blend_space != props.blend_space {
+        edit.blend_space(props.blend_space);
+    }
     if written.clip != props.clip {
         match &props.clip {
             Some(clip) => edit.clip(clip.clone()),
@@ -1309,6 +1318,7 @@ fn lower_program<T: LayerTarget<E>, E: crate::text::TextEngine>(
             scroll: kurbo::Vec2::ZERO,
             live: ScopeLive::NONE,
             motion,
+            ..LayerProps::DEFAULT
         },
     );
     // A platform-view leaf's frame marks where its external host window
@@ -2196,6 +2206,7 @@ fn lower_scope<T: LayerTarget<E>, E: crate::text::TextEngine>(
         LayerProps {
             transform: props.transform,
             opacity: props.alpha,
+            blend_space: props.blend_space,
             clip: props.clip.clone(),
             live: props.live.clone(),
             ..LayerProps::DEFAULT

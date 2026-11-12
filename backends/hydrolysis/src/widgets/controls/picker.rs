@@ -3,9 +3,9 @@ use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::chrome::LabelPaint;
 use crate::renderer::live_segmented::{LiveSegmented, LiveSegmentedParts, SegmentedFrames};
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, PickerMenuEntry, PickerMenuRequest,
-    RenderContext, RetainedSubview, WidgetRenderContext, measure_picker_intrinsic,
-    measure_picker_intrinsic_with_label_size,
+    GroupOpacity, HydroNativeView, HydroState, HydrolysisRenderer, PickerMenuEntry,
+    PickerMenuRequest, RenderContext, RetainedSubview, WidgetRenderContext,
+    measure_picker_intrinsic, measure_picker_intrinsic_with_label_size,
 };
 use crate::renderer::{InteractionKey, Track, TrackAction, measure_segmented_intrinsic};
 use crate::theme::{
@@ -1526,16 +1526,11 @@ pub fn render_segmented_picker<E: crate::text::TextEngine>(
         role: "segmented-group",
         item: 0,
     };
-    if let Some(opacity) = picker.live_group_opacity() {
-        let operands = crate::renderer::ScopeOperands {
-            opacity: Some(opacity),
-            transform: None,
-        };
-        ctx.with_live_scope(key, operands, reach, body);
-    } else {
-        let opacity = picker.fixed_group_opacity();
-        ctx.with_scope_if(opacity < 1.0, key, opacity, reach, body);
-    }
+    let opacity = picker.live_group_opacity().map_or_else(
+        || GroupOpacity::Fixed(picker.fixed_group_opacity()),
+        GroupOpacity::Live,
+    );
+    ctx.with_group_scope(key, opacity, picker.group_blend_space(), reach, body);
 
     // A disabled segmented picker registers no touch target: the pointer
     // neither presses nor selects a segment. Targets are re-registered

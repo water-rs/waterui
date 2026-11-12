@@ -202,6 +202,11 @@ impl LiveToggle {
         ))
     }
 
+    /// The space the control's group composites in.
+    pub(crate) fn group_blend_space(&self) -> cherenkov_record::BlendSpace {
+        self.control.get_group_blend_space()
+    }
+
     /// The area the control's parts draw in: its frame and its reach.
     pub(crate) fn visual_bounds(&self) -> Rect {
         let reach = self.control.get_reach();

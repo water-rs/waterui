@@ -2884,6 +2884,8 @@ pub struct MinimalTestTheme {
     button_label: Option<Label>,
     /// The button look's group opacity; `None` draws it opaque.
     button_group_opacity: Option<crate::theme::Driven<f32>>,
+    /// The space the button look's group composites in.
+    button_group_blend_space: cherenkov_record::BlendSpace,
 }
 
 /// A chrome that draws nothing at rest and tints nothing on interaction —
@@ -2992,6 +2994,16 @@ impl MinimalTestTheme {
     #[must_use]
     pub fn with_button_group_opacity(mut self, opacity: crate::theme::Driven<f32>) -> Self {
         self.button_group_opacity = Some(opacity);
+        self
+    }
+
+    /// Composites the button look's group in `space`.
+    #[must_use]
+    pub const fn with_button_group_blend_space(
+        mut self,
+        space: cherenkov_record::BlendSpace,
+    ) -> Self {
+        self.button_group_blend_space = space;
         self
     }
 }
@@ -3115,7 +3127,8 @@ impl WidgetTheme for MinimalTestTheme {
 
     fn button(&self, spec: &ButtonSpec, _env: &Environment) -> ButtonLook {
         let chrome = self.button_chrome.clone().unwrap_or_else(invisible_chrome);
-        let mut look = ButtonLook::new(chrome, self.button_label.clone().unwrap_or_default());
+        let mut look = ButtonLook::new(chrome, self.button_label.clone().unwrap_or_default())
+            .group_blend_space(self.button_group_blend_space);
         if let Some(opacity) = &self.button_group_opacity {
             look = look.group_opacity(opacity.clone());
         }

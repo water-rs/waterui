@@ -23,7 +23,7 @@ use core::time::Duration;
 use std::any::Any;
 use std::rc::Rc;
 
-use cherenkov_record::{KeyframeAnimation, Keyframes, Live, Paint, Recorder, Repeat};
+use cherenkov_record::{BlendSpace, KeyframeAnimation, Keyframes, Live, Paint, Recorder, Repeat};
 use kurbo::{Point, Rect, Size, Vec2};
 use nami::Signal;
 use nami::signal::IntoComputed;
@@ -1149,6 +1149,7 @@ pub struct ButtonLook {
     padding: Vec2,
     minimum: Size,
     group_opacity: Driven<f32>,
+    group_blend_space: BlendSpace,
 }
 
 impl ButtonLook {
@@ -1162,6 +1163,7 @@ impl ButtonLook {
             padding: Vec2::ZERO,
             minimum: Size::ZERO,
             group_opacity: Driven::constant(1.0),
+            group_blend_space: BlendSpace::Linear,
         }
     }
 
@@ -1187,6 +1189,15 @@ impl ButtonLook {
     #[must_use]
     pub fn group_opacity(mut self, opacity: impl Into<Driven<f32>>) -> Self {
         self.group_opacity = opacity.into();
+        self
+    }
+
+    /// The space the group of [`Self::group_opacity`] composites in:
+    /// its parts composite with each other in it, and the group fades onto
+    /// what lies beneath in it. [`BlendSpace::Linear`] by default.
+    #[must_use]
+    pub const fn group_blend_space(mut self, space: BlendSpace) -> Self {
+        self.group_blend_space = space;
         self
     }
 
@@ -1218,6 +1229,12 @@ impl ButtonLook {
     #[must_use]
     pub const fn get_group_opacity(&self) -> &Driven<f32> {
         &self.group_opacity
+    }
+
+    /// The space the group composites in.
+    #[must_use]
+    pub const fn get_group_blend_space(&self) -> BlendSpace {
+        self.group_blend_space
     }
 
     /// Replaces the chrome, keeping the label styling and the metrics.
@@ -1551,6 +1568,7 @@ pub struct SliderLook {
     parts: Vec<Rc<dyn CustomPart<f64>>>,
     indicator: Option<ValueIndicator>,
     group_opacity: Driven<f32>,
+    group_blend_space: BlendSpace,
 }
 
 impl core::fmt::Debug for SliderLook {
@@ -1562,6 +1580,7 @@ impl core::fmt::Debug for SliderLook {
             .field("parts", &self.parts.len())
             .field("indicator", &self.indicator)
             .field("group_opacity", &self.group_opacity)
+            .field("group_blend_space", &self.group_blend_space)
             .field("motion", self.chrome.motion())
             .finish()
     }
@@ -1592,6 +1611,7 @@ impl SliderLook {
             parts: Vec::new(),
             indicator: None,
             group_opacity: Driven::constant(1.0),
+            group_blend_space: BlendSpace::Linear,
         }
     }
 
@@ -1618,6 +1638,15 @@ impl SliderLook {
     #[must_use]
     pub fn group_opacity(mut self, opacity: impl Into<Driven<f32>>) -> Self {
         self.group_opacity = opacity.into();
+        self
+    }
+
+    /// The space the group of [`Self::group_opacity`] composites in:
+    /// its parts composite with each other in it, and the group fades onto
+    /// what lies beneath in it. [`BlendSpace::Linear`] by default.
+    #[must_use]
+    pub const fn group_blend_space(mut self, space: BlendSpace) -> Self {
+        self.group_blend_space = space;
         self
     }
 
@@ -1655,6 +1684,12 @@ impl SliderLook {
     #[must_use]
     pub const fn get_group_opacity(&self) -> &Driven<f32> {
         &self.group_opacity
+    }
+
+    /// The space the group composites in.
+    #[must_use]
+    pub const fn get_group_blend_space(&self) -> BlendSpace {
+        self.group_blend_space
     }
 
     /// The number of parts the look draws.
