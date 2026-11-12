@@ -5004,7 +5004,36 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         Rc<InteractionLayerHandles>,
     ) {
         let motion = crate::renderer::chrome::LiveChrome::handle_motion(chrome);
-        self.bind_live_target(key, target, env, disabled, motion, chrome.get_hit())
+        self.bind_live_target(key, target, env, disabled, motion, chrome.get_hit(), None)
+    }
+
+    /// [`Self::bind_live_chrome_target`] for the chrome of a text input,
+    /// whose focus is the text caret's: `focused` shows focus on the chrome
+    /// whether or not keyboard focus is visible, as a field draws it for a
+    /// click as much as for a key.
+    pub(crate) fn bind_live_field_target(
+        &mut self,
+        key: InteractionKey,
+        target: kurbo::Rect,
+        env: &Environment,
+        disabled: bool,
+        chrome: &crate::theme::Chrome,
+        focused: bool,
+    ) -> (
+        WidgetInteractionState,
+        PressSlot,
+        Rc<InteractionLayerHandles>,
+    ) {
+        let motion = crate::renderer::chrome::LiveChrome::handle_motion(chrome);
+        self.bind_live_target(
+            key,
+            target,
+            env,
+            disabled,
+            motion,
+            chrome.get_hit(),
+            Some(InteractionFocus::visible(focused)),
+        )
     }
 
     /// Binds the interaction target of a toggle whose parts are
@@ -5024,9 +5053,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         Rc<InteractionLayerHandles>,
     ) {
         let motion = crate::renderer::live_toggle::LiveToggle::handle_motion(control);
-        self.bind_live_target(key, target, env, disabled, motion, control.get_hit())
+        self.bind_live_target(key, target, env, disabled, motion, control.get_hit(), None)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the live bindings differ only in the motion, the hit region and the focus they pass"
+    )]
     fn bind_live_target(
         &mut self,
         key: InteractionKey,
@@ -5035,18 +5068,26 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         disabled: bool,
         motion: InteractionMotion,
         hit: &crate::theme::HitRegion,
+        focus: Option<InteractionFocus>,
     ) -> (
         WidgetInteractionState,
         PressSlot,
         Rc<InteractionLayerHandles>,
     ) {
-        let (state, mut slot, handles) =
-            self.bind_interaction_target_with_focus(key, target, env, None, disabled, Some(motion));
+        let (state, mut slot, handles) = self.bind_interaction_target_with_focus(
+            key,
+            target,
+            env,
+            focus,
+            disabled,
+            Some(motion),
+        );
         slot.slop = hit.get_slop();
         slot.cancel_distance = hit.get_cancel_distance();
         (state, slot, handles)
     }
 
+    #[cfg(test)]
     pub(crate) fn bind_focused_control_interaction_target(
         &mut self,
         key: InteractionKey,

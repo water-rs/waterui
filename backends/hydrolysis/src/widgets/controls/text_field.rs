@@ -1,4 +1,5 @@
 use crate::platform::TextInputPurpose;
+use crate::renderer::text_editing::CaretPaints;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RetainedSubview, TailMark, TextInputModel,
     TextInputTargetRegistration, TextSelectionSlot, WidgetRenderContext, clamp_to_char_boundary,
@@ -7,24 +8,28 @@ use crate::renderer::{
     measure_text_field_size_with_label_size, transformed_rect,
 };
 use crate::text::{TextLayout as _, TextPosition};
-use crate::theme::ModalInteraction;
+use crate::theme::{ModalInteraction, TextFieldLook};
+use crate::widgets::controls::field_look::{FieldChrome, FloatLabel, field_look, placeholder_text};
 use core::num::NonZeroUsize;
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::cursor::CursorStyle;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::{AnyView, Environment, Native, Str};
+use waterui_core::{Environment, Native, Str};
 use waterui_form::secure::SecureFieldConfig;
 use waterui_text::styled::{Style, StyledStr};
 
 /// The retained render state of a text field: the cloneable [`ResolvedTextFieldConfig`]
 /// drives the input model + accessibility, and its floating label is held as a
-/// [`RetainedSubview`] built once and re-flushed each frame under the animated
-/// label transform so reactive label content stays live.
+/// [`RetainedSubview`] built once and placed each frame at its resting place,
+/// riding the look's float operands, so reactive label content stays live.
 pub struct TextFieldRenderState<E: crate::text::TextEngine> {
     config: ResolvedTextFieldConfig,
     label_view: RetainedSubview<E>,
+    /// The look the field was requested for, its container's live chrome and
+    /// the operands its label floats on.
+    field: FieldChrome,
     /// The caret/selection anchor+focus for this field, owned by the node so it
     /// persists across frames without a renderer-global, flush-order-indexed slot
     /// pool. Node-owned control state is reset only when this node is dropped.
@@ -33,9 +38,11 @@ pub struct TextFieldRenderState<E: crate::text::TextEngine> {
 
 impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
     pub(crate) fn from_config(config: ResolvedTextFieldConfig) -> Self {
+        let field = FieldChrome::new();
         Self {
-            label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
+            label_view: RetainedSubview::new(field.label_view(config.label().clone())),
             config,
+            field,
             selection_slot: Rc::new(RefCell::new(TextSelectionSlot::default())),
         }
     }
@@ -65,15 +72,19 @@ impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
 pub struct SecureFieldRenderState<E: crate::text::TextEngine> {
     config: SecureFieldConfig,
     label_view: RetainedSubview<E>,
+    /// The look and live parts the field realizes; see [`TextFieldRenderState::field`].
+    field: FieldChrome,
     /// Node-owned caret/selection state; see [`TextFieldRenderState::selection_slot`].
     selection_slot: Rc<RefCell<TextSelectionSlot>>,
 }
 
 impl<E: crate::text::TextEngine> SecureFieldRenderState<E> {
     pub(crate) fn from_config(config: SecureFieldConfig) -> Self {
+        let field = FieldChrome::new();
         Self {
-            label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
+            label_view: RetainedSubview::new(field.label_view(config.label().clone())),
             config,
+            field,
             selection_slot: Rc::new(RefCell::new(TextSelectionSlot::default())),
         }
     }
@@ -103,14 +114,7 @@ use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
 
-use crate::renderer::local_interaction_state;
 use crate::widgets::util::widget_disabled;
-
-const FLOATING_LABEL_SCALE: f64 = 0.75;
-const CONTENT_VISIBLE_PORTION: f32 = 5.0 / 9.0;
-const CONTENT_ENTER_DELAY_PORTION: f32 = 1.0 - CONTENT_VISIBLE_PORTION;
-const TEXT_FIELD_LABEL_ANIMATION_KEY: usize = 1;
-const SECURE_FIELD_LABEL_ANIMATION_KEY: usize = 2;
 
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedTextFieldConfig> {
     fn intrinsic(
@@ -132,7 +136,12 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedTextField
         let text_field = view.as_inner();
         let label_size = measure_label_intrinsic(text_field.label(), state, env, theme);
         ViewDimensions::new(measure_text_field_size_with_label_size(
-            text_field, label_size, state, env, theme, proposal,
+            text_field,
+            label_size,
+            state,
+            env,
+            &field_look(theme, env),
+            proposal,
         ))
     }
 }
@@ -161,7 +170,7 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SecureFieldConfig
             label_size,
             state,
             env,
-            theme,
+            &field_look(theme, env),
             proposal,
         ))
     }
@@ -201,12 +210,13 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
     env: &Environment,
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
-    let owner = state;
     let theme = ctx.theme();
-    let input_metrics = theme.input_field_metrics();
-    ctx.renderer_mut()
-        .set_text_caret_motion(theme.text_caret_motion());
     let mut state = state.borrow_mut();
+    let state = &mut *state;
+    let look = state.field.look(&theme, env).clone();
+    let input_metrics = look.metrics();
+    ctx.renderer_mut()
+        .set_text_caret_motion(look.caret().blink());
     // The config's `disabled` already OR-combines the explicit
     // `TextField::disabled` signal with any enclosing `.disabled(...)` scope
     // (`TextFieldConfig` resolves it through `Disabled::resolve`). Reading it
@@ -307,22 +317,12 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
         }
     }
     let field_rect = ctx.bounds;
-    let hit_transform = ctx.renderer_mut().current_hit_transform();
     let is_focused = ctx.renderer_mut().is_text_input_focused(&interaction_key);
-    let (mut field_interaction, _, _) = ctx.renderer_mut().bind_focused_control_interaction_target(
-        interaction_key.clone(),
-        field_rect,
-        env,
-        is_focused,
-        disabled,
-    );
-    field_interaction = local_interaction_state(field_interaction, hit_transform);
-    {
-        ctx.draw_context(|draw| {
-            theme.draw_input_field(&mut *draw, field_rect, field_interaction);
-            theme.draw_input_field_state_layer(&mut *draw, field_rect, field_interaction);
-        });
-    }
+    let (field_interaction, _, _) =
+        state
+            .field
+            .bind(ctx, &interaction_key, field_rect, env, disabled, is_focused);
+    let field_flags = field_interaction.state;
     let selection_slot = Rc::clone(&state.selection_slot);
     let input_model = TextInputModel::TextField {
         value: value_binding.clone(),
@@ -374,28 +374,12 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
     // it rests centred in the container and floats to the top on focus or
     // content under the same Material transition a label view rides.
     let prompt_as_label = label_height == 0.0 && !prompt.is_empty();
-    let label_target = if is_focused || !committed_with_preedit.is_empty() {
-        1.0
-    } else {
-        0.0
-    };
-    let interaction_motion = theme.interaction_motion();
-    let label_progress = ctx.renderer_mut().sample_owned_scalar_target(
-        owner,
-        TEXT_FIELD_LABEL_ANIMATION_KEY,
-        label_target,
-        if label_target > 0.0 {
-            interaction_motion.focus_enter
-        } else {
-            interaction_motion.focus_exit
-        },
-    );
     // The prompt-as-label reserves the same band a label view does, but its
     // resting rect and laid-out box are still the prompt's own line box —
     // the band's smaller height would drop the resting prompt below centre
     // (#1705).
     let prompt_label = prompt_as_label.then(|| {
-        let styled = StyledStr::plain(prompt.clone()).foreground(theme.input_placeholder_color());
+        let styled = placeholder_text(&look, prompt.clone(), field_rect, field_flags);
         let size = HydrolysisRenderer::measure_text_dimensions(
             ctx.state_mut(),
             styled.clone(),
@@ -410,38 +394,48 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
     let prompt_label_height = prompt_label.as_ref().map_or(0.0, |(_, size)| {
         material_input_label_height(*size, input_metrics.label_height)
     });
-    if label_height > 0.0 {
-        flush_material_label(
-            ctx,
-            env,
-            &mut state.label_view,
-            field_rect,
-            input_metrics.horizontal_inset,
-            label_height,
-            f64::from(label_size.height),
-            label_progress,
-        );
-    } else if let Some((prompt_styled, prompt_size)) = prompt_label {
-        flush_material_prompt_label(
-            ctx,
-            env,
-            prompt_styled,
-            field_rect,
-            input_metrics.horizontal_inset,
-            prompt_label_height,
-            f64::from(prompt_size.height),
-            label_progress,
+    let has_label = label_height > 0.0 || prompt_as_label;
+    // The label floats while the field is focused or holds content. Its
+    // operands move under the look's float motion, so a focus change or a
+    // typed character records nothing.
+    let float = state.field.float();
+    let (band_height, measured_height) = if label_height > 0.0 {
+        (label_height, f64::from(label_size.height))
+    } else {
+        prompt_label.as_ref().map_or((0.0, 0.0), |(_, size)| {
+            (prompt_label_height, f64::from(size.height))
+        })
+    };
+    let place = LabelPlace::new(field_rect, &look, band_height, measured_height);
+    if has_label {
+        float.place(
+            is_focused,
+            !committed_with_preedit.is_empty(),
+            place.floated,
         );
     }
-    let content_alpha =
-        material_input_content_alpha(label_height > 0.0 || prompt_as_label, label_progress);
+    if label_height > 0.0 {
+        float_label(ctx, float, field_rect, |ctx| {
+            place_label_view(ctx, env, &mut state.label_view, &place);
+        });
+    } else if let Some((prompt_styled, _)) = prompt_label {
+        float_label(ctx, float, field_rect, |ctx| {
+            place_prompt_label(ctx, env, prompt_styled, &place);
+        });
+    }
+    let content_alpha = if has_label && !float.is_floated() {
+        0.0
+    } else {
+        1.0
+    };
+    let content_visible = !has_label || float.text_visible();
     let display = if use_placeholder && !prompt_as_label {
         prompt
     } else {
         committed_with_preedit.clone()
     };
     let display_styled = if use_placeholder && !prompt_as_label {
-        StyledStr::plain(display).foreground(theme.input_placeholder_color())
+        placeholder_text(&look, display, field_rect, field_flags)
     } else if preedit.is_empty() {
         StyledStr::plain(display)
     } else {
@@ -510,24 +504,17 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
         slot.focus = input_model.plain_index_from_layout_index(selection.focus.index);
         selection
     };
-    if content_alpha > 0.0 {
-        ctx.with_scope(
-            crate::renderer::mount::ScopeKey {
-                role: "text-clip",
-                item: 0,
-            },
-            content_alpha,
-            text_clip_bounds,
-            |ctx| {
-                ctx.render_styled_text_limited(
-                    display_styled,
-                    HorizontalAlignment::Leading,
-                    env,
-                    text_bounds,
-                    line_limit,
-                );
-            },
-        );
+    if content_visible {
+        let text = |ctx: &mut WidgetRenderContext<'_, E>| {
+            ctx.render_styled_text_limited(
+                display_styled,
+                HorizontalAlignment::Leading,
+                env,
+                text_bounds,
+                line_limit,
+            );
+        };
+        text_scope(ctx, has_label.then_some(float), text_clip_bounds, text);
     }
     // While composing, the caret the platform cares about is the live
     // composition caret inside the marked text, mapped through the display
@@ -571,6 +558,7 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
                 text_bounds,
                 text_clip_bounds,
                 content_alpha,
+                paints: Some(CaretPaints::of(&look)),
                 layout: committed_layout,
                 display_text: committed_with_preedit,
                 display_layout,
@@ -616,16 +604,17 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
     env: &Environment,
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
-    let owner = state;
     let theme = ctx.theme();
-    let input_metrics = theme.input_field_metrics();
     let disabled = {
         let signal = widget_disabled(env);
         ctx.renderer_mut().read_signal(&signal)
     };
-    ctx.renderer_mut()
-        .set_text_caret_motion(theme.text_caret_motion());
     let mut state = state.borrow_mut();
+    let state = &mut *state;
+    let look = state.field.look(&theme, env).clone();
+    let input_metrics = look.metrics();
+    ctx.renderer_mut()
+        .set_text_caret_motion(look.caret().blink());
     // Read the retained label/value from the retained config each frame (the value
     // is a cloneable `Binding<Secure>`; it is read through `read_signal` below so a
     // binding change schedules a frame). The label is a retained node sub-view
@@ -689,22 +678,10 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
         }
     }
     let field_rect = ctx.bounds;
-    let hit_transform = ctx.renderer_mut().current_hit_transform();
     let is_focused = ctx.renderer_mut().is_text_input_focused(&interaction_key);
-    let (mut field_interaction, _, _) = ctx.renderer_mut().bind_focused_control_interaction_target(
-        interaction_key.clone(),
-        field_rect,
-        env,
-        is_focused,
-        disabled,
-    );
-    field_interaction = local_interaction_state(field_interaction, hit_transform);
-    {
-        ctx.draw_context(|draw| {
-            theme.draw_input_field(&mut *draw, field_rect, field_interaction);
-            theme.draw_input_field_state_layer(&mut *draw, field_rect, field_interaction);
-        });
-    }
+    let _ = state
+        .field
+        .bind(ctx, &interaction_key, field_rect, env, disabled, is_focused);
     let selection_slot = Rc::clone(&state.selection_slot);
     let input_model = TextInputModel::SecureField {
         value: value_binding.clone(),
@@ -726,35 +703,28 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
         let count = plain_value.chars().count() + preedit_count;
         ("*".repeat(count), plain_value)
     };
-    let label_target = if is_focused || !plain_value.is_empty() {
-        1.0
-    } else {
-        0.0
-    };
-    let interaction_motion = theme.interaction_motion();
-    let label_progress = ctx.renderer_mut().sample_owned_scalar_target(
-        owner,
-        SECURE_FIELD_LABEL_ANIMATION_KEY,
-        label_target,
-        if label_target > 0.0 {
-            interaction_motion.focus_enter
-        } else {
-            interaction_motion.focus_exit
-        },
-    );
-    if label_height > 0.0 {
-        flush_material_label(
-            ctx,
-            env,
-            &mut state.label_view,
+    let has_label = label_height > 0.0;
+    // The label floats while the field is focused or holds content; see
+    // the text field.
+    let float = state.field.float();
+    if has_label {
+        let place = LabelPlace::new(
             field_rect,
-            input_metrics.horizontal_inset,
+            &look,
             label_height,
             f64::from(label_size.height),
-            label_progress,
         );
+        float.place(is_focused, !plain_value.is_empty(), place.floated);
+        float_label(ctx, float, field_rect, |ctx| {
+            place_label_view(ctx, env, &mut state.label_view, &place);
+        });
     }
-    let content_alpha = material_input_content_alpha(label_height > 0.0, label_progress);
+    let content_alpha = if has_label && !float.is_floated() {
+        0.0
+    } else {
+        1.0
+    };
+    let content_visible = !has_label || float.text_visible();
     let text_bounds = material_input_text_rect(
         field_rect,
         input_metrics.horizontal_inset,
@@ -802,24 +772,17 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
         slot.focus = input_model.plain_index_from_layout_index(selection.focus.index);
         selection
     };
-    if content_alpha > 0.0 {
-        ctx.with_scope(
-            crate::renderer::mount::ScopeKey {
-                role: "text-clip",
-                item: 0,
-            },
-            content_alpha,
-            text_clip_bounds,
-            |ctx| {
-                ctx.render_styled_text_limited(
-                    masked_display,
-                    HorizontalAlignment::Leading,
-                    env,
-                    text_bounds,
-                    Some(1),
-                );
-            },
-        );
+    if content_visible {
+        let text = |ctx: &mut WidgetRenderContext<'_, E>| {
+            ctx.render_styled_text_limited(
+                masked_display,
+                HorizontalAlignment::Leading,
+                env,
+                text_bounds,
+                Some(1),
+            );
+        };
+        text_scope(ctx, has_label.then_some(float), text_clip_bounds, text);
     }
     let cursor_geometry = committed_layout.caret_rect(selection.focus);
     let cursor_area = material_input_cursor_rect(field_rect, text_bounds, cursor_geometry);
@@ -848,6 +811,7 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
                 text_bounds,
                 text_clip_bounds,
                 content_alpha,
+                paints: Some(CaretPaints::of(&look)),
                 layout: committed_layout.clone(),
                 display_text: masked.into(),
                 display_layout: committed_layout,
@@ -875,7 +839,7 @@ pub fn measure_text_field_node<E: crate::text::TextEngine>(
         label_size,
         state,
         env,
-        theme,
+        &render_state.field.peek(theme, env),
         proposal,
     ))
 }
@@ -896,7 +860,7 @@ pub fn measure_secure_field_node<E: crate::text::TextEngine>(
         label_size,
         state,
         env,
-        theme,
+        &render_state.field.peek(theme, env),
         proposal,
     ))
 }
@@ -918,9 +882,10 @@ fn material_input_label_height(label_size: LayoutSize, label_height: f64) -> f64
 fn material_input_label_rect(
     field_rect: kurbo::Rect,
     horizontal_inset: f64,
+    top: f64,
     label_height: f64,
 ) -> kurbo::Rect {
-    let y0 = field_rect.y0 + 4.0;
+    let y0 = field_rect.y0 + top;
     kurbo::Rect::new(
         field_rect.x0 + horizontal_inset,
         y0,
@@ -943,46 +908,121 @@ fn material_input_resting_label_rect(
     )
 }
 
-/// Flushes the floating label sub-view under the Material animated transform
-/// (translate from resting to floating position + scale). The label is a retained
-/// node sub-view re-laid-out and re-flushed each frame, so reactive label content
-/// stays live without re-dispatch.
+/// Where a field's inside label rests, and the transform that carries it
+/// from there to the band along the container's top edge, scaled by the
+/// look's floating label.
 ///
-/// `label_height` is the reserved band (the theme's `label_height` exactly);
-/// `measured_label_height` is the label's own unscaled height — it centres the
-/// resting box and gives the label its natural layout box, which the transform
-/// scales down into the band.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "threads the full flush context; grouping into a struct would not improve clarity"
-)]
-fn flush_material_label<E: crate::text::TextEngine>(
+/// `label_height` is the reserved band (the look's `label_height` exactly);
+/// `measured_label_height` is the label's own unscaled height — it centres
+/// the resting box and gives the label its natural layout box, which the
+/// transform scales down into the band.
+struct LabelPlace {
+    resting: kurbo::Rect,
+    floated: kurbo::Affine,
+    measured_height: f64,
+}
+
+impl LabelPlace {
+    fn new(
+        field_rect: kurbo::Rect,
+        look: &TextFieldLook,
+        label_height: f64,
+        measured_label_height: f64,
+    ) -> Self {
+        let inset = look.metrics().horizontal_inset;
+        let floating = look.floating_label();
+        let resting = material_input_resting_label_rect(field_rect, inset, measured_label_height);
+        let band = material_input_label_rect(field_rect, inset, floating.get_top(), label_height);
+        let floated = kurbo::Affine::translate((band.x0, band.y0))
+            * kurbo::Affine::scale(floating.get_scale())
+            * kurbo::Affine::translate((-resting.x0, -resting.y0));
+        Self {
+            resting,
+            floated,
+            measured_height: measured_label_height,
+        }
+    }
+
+    /// The label's box at rest, in its own space.
+    fn rest(&self) -> kurbo::Affine {
+        kurbo::Affine::translate((self.resting.x0, self.resting.y0))
+    }
+
+    /// The box the label lays out in: as wide as the band it floats into.
+    const fn extent(&self) -> kurbo::Rect {
+        kurbo::Rect::new(0.0, 0.0, self.resting.width(), self.measured_height)
+    }
+}
+
+/// Lists the inside label in a layer that rides `float`'s transform: `place`
+/// records the label at its resting place, and the layer carries it to the
+/// top as the label floats, with nothing recorded again.
+fn float_label<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    float: &FloatLabel,
+    field_rect: kurbo::Rect,
+    place: impl FnOnce(&mut WidgetRenderContext<'_, E>),
+) {
+    ctx.with_live_scope(
+        crate::renderer::mount::ScopeKey {
+            role: "field-label",
+            item: 0,
+        },
+        crate::renderer::ScopeOperands {
+            opacity: None,
+            transform: Some(float.transform()),
+        },
+        field_rect,
+        place,
+    );
+}
+
+/// Lists the field's text clipped to `clip`, in a layer whose opacity follows
+/// `float` when the field has an inside label — the text makes way for the
+/// label at rest and shows as it floats.
+fn text_scope<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    float: Option<&FloatLabel>,
+    clip: kurbo::Rect,
+    text: impl FnOnce(&mut WidgetRenderContext<'_, E>),
+) {
+    let key = crate::renderer::mount::ScopeKey {
+        role: "text-clip",
+        item: 0,
+    };
+    match float {
+        Some(float) => ctx.with_live_scope(
+            key,
+            crate::renderer::ScopeOperands {
+                opacity: Some(float.opacity()),
+                transform: None,
+            },
+            clip,
+            text,
+        ),
+        None => ctx.with_scope(key, 1.0, clip, text),
+    }
+}
+
+/// Places the floating label sub-view at its resting place. The label is a
+/// retained node sub-view re-laid-out and re-flushed each frame, so reactive
+/// label content stays live without re-dispatch.
+fn place_label_view<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     env: &Environment,
     label_view: &mut RetainedSubview<E>,
-    field_rect: kurbo::Rect,
-    horizontal_inset: f64,
-    label_height: f64,
-    measured_label_height: f64,
-    progress: f32,
+    place: &LabelPlace,
 ) {
-    let progress = f64::from(progress.clamp(0.0, 1.0));
-    let resting =
-        material_input_resting_label_rect(field_rect, horizontal_inset, measured_label_height);
-    let floating = material_input_label_rect(field_rect, horizontal_inset, label_height);
-    let scale = (FLOATING_LABEL_SCALE - 1.0).mul_add(progress, 1.0);
-    let x = (floating.x0 - resting.x0).mul_add(progress, resting.x0);
-    let y = (floating.y0 - resting.y0).mul_add(progress, resting.y0);
-    let width = floating.width() / scale;
-    let height = measured_label_height;
-    let transform = kurbo::Affine::translate((x, y)) * kurbo::Affine::scale(scale);
-    let child = ctx.child(transform, kurbo::Rect::new(0.0, 0.0, width, height));
-    #[allow(clippy::cast_possible_truncation)]
-    let size = LayoutSize::new(width as f32, height as f32);
+    let extent = place.extent();
+    let rest = place.rest();
+    let child = ctx.child(rest, extent);
+    let size = LayoutSize::new(
+        crate::num_cast::f64_as_f32(extent.width()),
+        crate::num_cast::f64_as_f32(extent.height()),
+    );
     // The label's semantics are merged into the field's own text-input node, so
     // the floating label sub-view flushes visual-only.
-    let label_area =
-        ctx.safe_area_for(transform.transform_rect_bbox(kurbo::Rect::new(0.0, 0.0, width, height)));
+    let label_area = ctx.safe_area_for(place.resting);
     ctx.renderer_mut()
         .with_suppressed_accessibility(|renderer| {
             label_view.place_in_ctx(
@@ -992,51 +1032,21 @@ fn flush_material_label<E: crate::text::TextEngine>(
                 ProposalSize::UNSPECIFIED,
                 size,
                 label_area,
-                transform,
+                rest,
             );
         });
 }
 
-fn material_input_content_alpha(has_label: bool, progress: f32) -> f32 {
-    if !has_label {
-        return 1.0;
-    }
-    let progress = progress.clamp(0.0, 1.0);
-    ((progress - CONTENT_ENTER_DELAY_PORTION) / CONTENT_VISIBLE_PORTION).clamp(0.0, 1.0)
-}
-
-/// Draws the prompt text under the Material floating-label transform —
-/// the resting spot centred in the container, floating to the top scaled
-/// down — used when the field has no label view so the prompt stands in as
-/// the label (#85). `label_height` is the reserved band while
-/// `measured_label_height` is the prompt's own line-box height — the same
-/// split [`flush_material_label`] makes between band and content.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "threads the full flush context; grouping into a struct would not improve clarity"
-)]
-fn flush_material_prompt_label<E: crate::text::TextEngine>(
+/// Draws the prompt text at the inside label's resting place — centred in
+/// the container — used when the field has no label view so the prompt
+/// stands in as the label (#85).
+fn place_prompt_label<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     env: &Environment,
     prompt_styled: StyledStr,
-    field_rect: kurbo::Rect,
-    horizontal_inset: f64,
-    label_height: f64,
-    measured_label_height: f64,
-    progress: f32,
+    place: &LabelPlace,
 ) {
-    let progress = f64::from(progress.clamp(0.0, 1.0));
-    let resting =
-        material_input_resting_label_rect(field_rect, horizontal_inset, measured_label_height);
-    let floating = material_input_label_rect(field_rect, horizontal_inset, label_height);
-    let scale = (FLOATING_LABEL_SCALE - 1.0).mul_add(progress, 1.0);
-    let x = (floating.x0 - resting.x0).mul_add(progress, resting.x0);
-    let y = (floating.y0 - resting.y0).mul_add(progress, resting.y0);
-    let width = floating.width() / scale;
-    let child = ctx.child(
-        kurbo::Affine::translate((x, y)) * kurbo::Affine::scale(scale),
-        kurbo::Rect::new(0.0, 0.0, width, measured_label_height),
-    );
+    let child = ctx.child(place.rest(), place.extent());
     let renderer = ctx.renderer_mut();
     renderer.render_styled_text_limited(
         child,
@@ -1222,6 +1232,7 @@ pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
                 text_bounds: kurbo::Rect::ZERO,
                 text_clip_bounds: kurbo::Rect::ZERO,
                 content_alpha: 1.0,
+                paints: None,
                 layout: layout.clone(),
                 display_text: value.into(),
                 display_layout: layout,
@@ -1321,6 +1332,7 @@ pub fn emit_secure_field_accessibility<E: crate::text::TextEngine>(
                 text_bounds: kurbo::Rect::ZERO,
                 text_clip_bounds: kurbo::Rect::ZERO,
                 content_alpha: 1.0,
+                paints: None,
                 layout: layout.clone(),
                 display_text: masked.into(),
                 display_layout: layout,
@@ -1338,42 +1350,7 @@ pub fn emit_secure_field_accessibility<E: crate::text::TextEngine>(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CONTENT_ENTER_DELAY_PORTION, CONTENT_VISIBLE_PORTION, material_input_content_alpha,
-        material_input_cursor_rect, material_input_text_clip_rect,
-    };
-
-    #[test]
-    fn material_input_content_enter_matches_material_web_delay() {
-        approx::assert_relative_eq!(material_input_content_alpha(true, 0.0), 0.0);
-        approx::assert_relative_eq!(
-            material_input_content_alpha(true, CONTENT_ENTER_DELAY_PORTION),
-            0.0
-        );
-        approx::assert_relative_eq!(material_input_content_alpha(true, 1.0), 1.0);
-    }
-
-    #[test]
-    fn material_input_content_exit_matches_material_web_visible_window() {
-        approx::assert_relative_eq!(material_input_content_alpha(true, 1.0), 1.0);
-        approx::assert_relative_eq!(
-            material_input_content_alpha(
-                true,
-                CONTENT_VISIBLE_PORTION.mul_add(0.5, CONTENT_ENTER_DELAY_PORTION),
-            ),
-            0.5
-        );
-        approx::assert_relative_eq!(
-            material_input_content_alpha(true, CONTENT_ENTER_DELAY_PORTION),
-            0.0
-        );
-        approx::assert_relative_eq!(material_input_content_alpha(true, 0.0), 0.0);
-    }
-
-    #[test]
-    fn material_input_without_label_keeps_content_visible() {
-        approx::assert_relative_eq!(material_input_content_alpha(false, 0.0), 1.0);
-    }
+    use super::{material_input_cursor_rect, material_input_text_clip_rect};
 
     #[test]
     fn material_input_text_clip_expands_for_tall_fallback_glyphs() {

@@ -18,6 +18,7 @@ use waterui_text::styled::StyledStr;
 
 use crate::renderer::RetainedSubview;
 use crate::renderer::local_interaction_state;
+use crate::widgets::controls::field_look::FieldChrome;
 use crate::widgets::util::inset_rect;
 #[cfg(feature = "accessibility")]
 use crate::widgets::util::widget_disabled;
@@ -29,6 +30,8 @@ use crate::widgets::util::widget_disabled;
 pub struct DatePickerRenderState<E: crate::text::TextEngine> {
     config: DatePickerConfig,
     label_view: RetainedSubview<E>,
+    /// The field container the picker wears: its look and live chrome.
+    field: FieldChrome,
 }
 
 impl<E: crate::text::TextEngine> DatePickerRenderState<E> {
@@ -36,6 +39,7 @@ impl<E: crate::text::TextEngine> DatePickerRenderState<E> {
         Self {
             label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
             config,
+            field: FieldChrome::new(),
         }
     }
 
@@ -151,7 +155,7 @@ pub fn measure_date_picker_node<E: crate::text::TextEngine>(
 ) -> ViewDimensions {
     let config = &render_state.config;
     let metrics = theme.picker_metrics(PickerStyle::Menu);
-    let input_metrics = theme.input_field_metrics();
+    let input_metrics = render_state.field.peek(theme, env).metrics();
     let label_size = render_state.label_view.measure_built(state, env, theme);
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
     let label_height = if has_label {
@@ -226,8 +230,8 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let theme = ctx.theme();
     let metrics = theme.picker_metrics(PickerStyle::Menu);
-    let input_metrics = theme.input_field_metrics();
     let mut state = state.borrow_mut();
+    let input_metrics = state.field.look(&theme, env).metrics();
     // The value/range/ty are read from the retained config; the label is a retained
     // node sub-view re-flushed at its rect (reactive content stays live).
     let (value_binding, range, ty) = {
@@ -284,14 +288,17 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
     );
 
     let hit_bounds = field_bounds;
-    let (interaction, press_slot, _) =
-        ctx.renderer_mut()
-            .bind_interaction_target(interaction_key, hit_bounds, env);
+    let (interaction, press_slot, handles) =
+        state
+            .field
+            .bind(ctx, &interaction_key, hit_bounds, env, false, false);
+    // The picker's own indicator and state layer still sample the
+    // interaction, so a change re-renders the picker.
+    handles.mark_chrome_state_dependent();
     {
         let interaction =
             local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
         ctx.draw_context(|draw| {
-            theme.draw_input_field(&mut *draw, field_bounds, interaction);
             theme.draw_picker_indicator(&mut *draw, field_bounds);
             theme.draw_picker_state_layer(&mut *draw, field_bounds, interaction);
         });

@@ -56,6 +56,7 @@ pub(crate) mod live;
 mod look;
 mod progress;
 mod stepper;
+mod text_field;
 mod toggle;
 mod widget;
 
@@ -75,6 +76,7 @@ pub use progress::{
     IndicatorLook, LinearLayout, LinearProgressLook, ProgressControl, ProgressSpec,
 };
 pub use stepper::{StepperLook, StepperSpec};
+pub use text_field::{Caret, FloatingLabel, TextFieldLook, TextFieldSpec};
 pub use toggle::{CheckboxLook, SwitchDrag, SwitchLook, ToggleBackdrop, ToggleControl, ToggleSpec};
 pub use widget::{
     BadgeMetrics, DividerMetrics, InputFieldMetrics, InteractionFocusBinding, InteractionMotion,

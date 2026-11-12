@@ -27,6 +27,36 @@ pub enum KeyPressOutcome {
     ForwardedToSurface,
 }
 
+/// The paints a field's look gives the caret and the selection, evaluated
+/// each frame the overlay draws so a token they follow shows in place.
+#[derive(Clone)]
+pub struct CaretPaints {
+    caret: crate::theme::Driven<cherenkov_record::Paint>,
+    selection: crate::theme::Driven<cherenkov_record::Paint>,
+}
+
+impl CaretPaints {
+    /// The caret and selection paints of `look`.
+    pub fn of(look: &crate::theme::TextFieldLook) -> Self {
+        Self {
+            caret: look.caret().paint().clone(),
+            selection: look.selection().clone(),
+        }
+    }
+
+    /// The paint `paint` gives a focused field over `frame`.
+    fn resolve(
+        paint: &crate::theme::Driven<cherenkov_record::Paint>,
+        frame: kurbo::Rect,
+    ) -> cherenkov_record::Paint {
+        paint.target(&crate::theme::Inputs::at_rest(
+            frame,
+            waterui_core::interaction::InteractionState::FOCUSED,
+            &(),
+        ))
+    }
+}
+
 #[derive(Clone)]
 pub enum TextInputModel {
     TextField {
@@ -199,6 +229,10 @@ pub struct TextInputTarget<E: crate::text::TextEngine> {
     pub(crate) text_bounds: kurbo::Rect,
     pub(crate) text_clip_bounds: kurbo::Rect,
     pub(crate) content_alpha: f32,
+    /// The paints the focused field's caret and selection draw with. A
+    /// target the semantic walk emits has none: it has no theme and draws
+    /// nothing.
+    pub(crate) paints: Option<CaretPaints>,
     pub(crate) layout: E::Layout,
     /// The string the IME-visible layout was typeset from — the committed
     /// text with the live pre-edit spliced in (a text field) or the mask
@@ -362,6 +396,8 @@ pub struct TextInputTargetRegistration<E: crate::text::TextEngine> {
     pub(crate) text_bounds: kurbo::Rect,
     pub(crate) text_clip_bounds: kurbo::Rect,
     pub(crate) content_alpha: f32,
+    /// See [`TextInputTarget::paints`].
+    pub(crate) paints: Option<CaretPaints>,
     pub(crate) layout: E::Layout,
     /// See [`TextInputTarget::display_text`].
     #[cfg_attr(
@@ -1076,27 +1112,27 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     ) {
         let focused = self.text_editing.focused_index();
         let menu_target = self.active_text_context_menu_target();
-        let theme = self.theme();
         for index in 0..self.text_editing.text_input_targets.len() {
             let target = &self.text_editing.text_input_targets[index];
             if target.content_alpha <= 0.0 || (focused != Some(index) && menu_target != Some(index))
             {
                 continue;
             }
+            // A target the semantic walk emitted has no look and is never
+            // drawn.
+            let Some(paints) = &target.paints else {
+                continue;
+            };
             let selection = refreshed_target_selection(target);
             if selection.is_collapsed() {
                 if focused != Some(index) {
                     continue;
                 }
                 let opacity = self.text_caret_opacity(self.frame_instant());
-                let paint = theme.input_caret_paint(opacity);
-                // Preserve the theme's paint semantics, including paints whose
-                // alpha is not the requested opacity. Zero still hides the caret.
-                let alpha = if opacity > 0.0 {
-                    target.content_alpha
-                } else {
-                    0.0
-                };
+                let paint = CaretPaints::resolve(&paints.caret, target.bounds);
+                // The look's paint blinks as a group: the blink's opacity
+                // over the text's own, so zero hides the caret.
+                let alpha = target.content_alpha * opacity;
                 let rect = target.cursor_area;
                 let clip = target.text_clip_bounds;
                 let caret = self.live_caret.get_or_insert_with(|| {
@@ -1111,7 +1147,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 let source: Rc<dyn crate::renderer::chrome::LiveSource> = caret.clone();
                 self.program().push_live(source, transform);
             } else {
-                let selection_paint = theme.input_selection_paint();
+                let selection_paint = CaretPaints::resolve(&paints.selection, target.bounds);
                 let mut scene = Recording::new();
                 scene.record_picture(transform, |draw| {
                     draw.clip(target.text_clip_bounds, |draw| {
@@ -2628,6 +2664,7 @@ impl<E: crate::text::TextEngine> Clone for TextInputTarget<E> {
             text_bounds: self.text_bounds,
             text_clip_bounds: self.text_clip_bounds,
             content_alpha: self.content_alpha,
+            paints: self.paints.clone(),
             layout: self.layout.clone(),
             #[cfg_attr(
                 not(any(target_os = "android", test)),

@@ -729,8 +729,6 @@ pub struct TableMetrics {
 pub trait WidgetTheme {
     /// Return motion policy for interactive widget chrome.
     fn interaction_motion(&self) -> InteractionMotion;
-    /// Return motion policy for text input carets.
-    fn text_caret_motion(&self) -> TextCaretMotion;
     /// Return motion policy for navigation transitions.
     fn navigation_motion(&self) -> NavigationMotion;
 
@@ -852,29 +850,15 @@ pub trait WidgetTheme {
     /// of the stepper's range is disabled.
     fn stepper(&self, spec: &super::StepperSpec, env: &Environment) -> super::StepperLook;
 
-    /// Return text input metrics.
-    fn input_field_metrics(&self) -> InputFieldMetrics;
-    /// Return the placeholder text color.
-    fn input_placeholder_color(&self) -> Color;
-    /// Return the text selection fill brush.
-    fn input_selection_paint(&self) -> Paint;
-    /// Return the caret brush for the current caret opacity.
-    fn input_caret_paint(&self, opacity: f32) -> Paint;
-    /// Draw text input chrome.
-    fn draw_input_field(
-        &self,
-        recorder: &mut Recorder,
-        bounds: Rect,
-        state: WidgetInteractionState,
-    );
-    /// Draw text input state layer.
-    fn draw_input_field_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _state: WidgetInteractionState,
-    ) {
-    }
+    /// The look of a text field, and of a secure field.
+    ///
+    /// Hydrolysis measures, places and records the field from the returned
+    /// look, and requests it again only when `spec` changes; everything else
+    /// reaches the look through its [`Chrome`](super::Chrome) and
+    /// [`Driven`](super::Driven) values, so a hover, a focus change or the
+    /// label floating moves live operands and records nothing.
+    fn text_field(&self, spec: &super::TextFieldSpec, env: &Environment) -> super::TextFieldLook;
+
     /// Return text context menu metrics.
     fn text_context_menu_metrics(&self) -> TextContextMenuMetrics;
     /// Draw text context menu panel.

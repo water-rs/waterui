@@ -121,6 +121,7 @@ mod structural_transitions;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod tab_item_layout;
 mod teardown_order;
+mod text_field_look;
 mod text_ink;
 mod text_measure_direction;
 mod text_wrap_width;
@@ -169,8 +170,8 @@ use crate::theme::{
     NavigationMetrics, NavigationMotion, PickerMetrics, PressFeedback, ProgressControl,
     ProgressSpec, RadioIndicatorState, RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec,
     StateLayer, StepperLook, StepperSpec, Surface, TabItemGeometry, TabItemLayout, TableMetrics,
-    TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleSpec, ValueIndicator,
-    WidgetInteractionState,
+    TabsMetrics, TextCaretMotion, TextContextMenuMetrics, TextFieldLook, TextFieldSpec, ToggleSpec,
+    ValueIndicator, WidgetInteractionState,
 };
 use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
 use cherenkov_record::{
@@ -731,6 +732,7 @@ fn text_input_target(
         text_bounds: Rect::ZERO,
         text_clip_bounds: Rect::ZERO,
         content_alpha: 1.0,
+        paints: None,
         layout: ParleyEngine::system(FontFamilyResolution::Strict).empty_layout(),
         display_text: waterui_core::Str::default(),
         display_layout: ParleyEngine::system(FontFamilyResolution::Strict).empty_layout(),
@@ -2772,6 +2774,8 @@ type SliderLookFor = Rc<dyn Fn(&SliderSpec, &Environment) -> SliderLook>;
 
 /// The stepper look a test theme hands out for a stepper spec.
 type StepperLookFor = Rc<dyn Fn(&StepperSpec, &Environment) -> StepperLook>;
+/// The text field look a test theme hands out for a field spec.
+type TextFieldLookFor = Rc<dyn Fn(&TextFieldSpec, &Environment) -> TextFieldLook>;
 
 /// The glass look a test theme hands out for a glass background.
 type GlassLookFor =
@@ -2865,8 +2869,14 @@ pub struct MinimalTestTheme {
     indeterminate_progress: IndeterminateProgress,
     /// Every `draw_radio_indicator` call.
     radio_indicator_draws: Rc<RefCell<Vec<RadioIndicatorDraw>>>,
-    /// The `InputFieldMetrics` this theme reports; `None` answers the fixture
-    /// defaults `input_field_metrics` carries below.
+    /// The text field look the theme hands out for a spec and environment;
+    /// `None` answers [`crate::testing::plain_text_field_look`] over
+    /// `input_metrics`.
+    text_field_look: Option<TextFieldLookFor>,
+    /// Every spec the theme was asked for a text field look.
+    text_field_specs: Rc<RefCell<Vec<TextFieldSpec>>>,
+    /// The `InputFieldMetrics` the plain text field look lays out by; `None`
+    /// answers [`crate::testing::plain_input_metrics`].
     input_metrics: Option<InputFieldMetrics>,
     /// The chrome the button look carries; `None` answers
     /// [`invisible_chrome`].
@@ -2876,6 +2886,13 @@ pub struct MinimalTestTheme {
     button_label: Option<Label>,
     /// The button look's group opacity; `None` draws it opaque.
     button_group_opacity: Option<crate::theme::Driven<f32>>,
+}
+
+/// The caret blink the test themes' text field looks carry.
+pub fn test_caret_motion() -> TextCaretMotion {
+    crate::testing::plain_text_field_look(invisible_chrome(), crate::testing::plain_input_metrics())
+        .caret()
+        .blink()
 }
 
 /// A chrome that draws nothing at rest and tints nothing on interaction —
@@ -2895,8 +2912,18 @@ pub fn invisible_chrome() -> Chrome {
 }
 
 impl MinimalTestTheme {
-    /// Reports `metrics` from `input_field_metrics` instead of the fixture
-    /// defaults.
+    /// Hands out the look `look` makes for each text field's spec.
+    #[must_use]
+    pub fn with_text_field(
+        mut self,
+        look: impl Fn(&TextFieldSpec, &Environment) -> TextFieldLook + 'static,
+    ) -> Self {
+        self.text_field_look = Some(Rc::new(look));
+        self
+    }
+
+    /// Lays the plain text field look out by `metrics` instead of the
+    /// fixture defaults.
     #[must_use]
     pub fn with_input_metrics(mut self, metrics: InputFieldMetrics) -> Self {
         self.input_metrics = Some(metrics);
@@ -3077,14 +3104,6 @@ impl WidgetTheme for MinimalTestTheme {
         }
     }
 
-    fn text_caret_motion(&self) -> TextCaretMotion {
-        TextCaretMotion {
-            fade_cycle_duration: Duration::from_millis(1_060),
-            frame_interval: Duration::from_millis(530),
-            min_opacity: 0.2,
-        }
-    }
-
     fn navigation_motion(&self) -> NavigationMotion {
         NavigationMotion {
             transition_duration: Duration::from_millis(450),
@@ -3152,42 +3171,18 @@ impl WidgetTheme for MinimalTestTheme {
         self.glass_look.as_ref().and_then(|look| look(glass, env))
     }
 
-    fn input_field_metrics(&self) -> InputFieldMetrics {
-        self.input_metrics.unwrap_or(InputFieldMetrics {
-            label_height: 14.0,
-            min_width: 100.0,
-            min_height: 32.0,
-            horizontal_inset: 8.0,
-            vertical_inset: 6.0,
-        })
-    }
-
-    fn input_placeholder_color(&self) -> waterui_graphics::color::Color {
-        waterui_graphics::color::Color::srgb(0, 0, 0)
-    }
-
-    fn input_selection_paint(&self) -> Paint {
-        Paint::Solid(
-            waterui::color::Srgb::new(0.20, 0.45, 0.90)
-                .resolve()
-                .with_alpha(0.28),
+    fn text_field(&self, spec: &TextFieldSpec, env: &Environment) -> TextFieldLook {
+        self.text_field_specs.borrow_mut().push(spec.clone());
+        self.text_field_look.as_ref().map_or_else(
+            || {
+                crate::testing::plain_text_field_look(
+                    invisible_chrome(),
+                    self.input_metrics
+                        .unwrap_or_else(crate::testing::plain_input_metrics),
+                )
+            },
+            |look| look(spec, env),
         )
-    }
-
-    fn input_caret_paint(&self, opacity: f32) -> Paint {
-        Paint::Solid(
-            waterui::color::Srgb::new(0.12, 0.14, 0.18)
-                .resolve()
-                .with_alpha(opacity),
-        )
-    }
-
-    fn draw_input_field(
-        &self,
-        _draw: &mut Recorder,
-        _bounds: Rect,
-        _state: WidgetInteractionState,
-    ) {
     }
 
     fn text_context_menu_metrics(&self) -> TextContextMenuMetrics {
@@ -3548,7 +3543,7 @@ impl WidgetTheme for MinimalTestTheme {
 #[test]
 fn ime_preedit_commit_and_disable_update_focused_text_target() {
     let mut renderer = test_renderer();
-    renderer.set_text_caret_motion(MinimalTestTheme::default().text_caret_motion());
+    renderer.set_text_caret_motion(test_caret_motion());
     let selection = Rc::new(RefCell::new(TextSelectionSlot {
         anchor: 0,
         focus: 0,
@@ -3606,7 +3601,7 @@ fn ime_preedit_commit_and_disable_update_focused_text_target() {
 #[test]
 fn text_input_focus_stays_on_its_field_when_a_row_is_inserted_above_it() {
     let mut renderer = test_renderer();
-    renderer.set_text_caret_motion(MinimalTestTheme::default().text_caret_motion());
+    renderer.set_text_caret_motion(test_caret_motion());
     let first = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let focused = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let emit = |renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
@@ -3667,7 +3662,7 @@ fn text_input_focus_stays_on_its_field_when_a_row_is_inserted_above_it() {
 #[test]
 fn text_input_focus_is_dropped_when_its_field_stops_being_emitted() {
     let mut renderer = test_renderer();
-    renderer.set_text_caret_motion(MinimalTestTheme::default().text_caret_motion());
+    renderer.set_text_caret_motion(test_caret_motion());
     let survivor = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let removed = Rc::new(RefCell::new(TextSelectionSlot::default()));
     seed_text_input_targets(
@@ -3804,7 +3799,7 @@ fn caret_point_in_target<E: crate::text::TextEngine>(
 #[test]
 fn double_click_word_selection_survives_pointer_release() {
     let mut renderer = test_renderer();
-    renderer.set_text_caret_motion(MinimalTestTheme::default().text_caret_motion());
+    renderer.set_text_caret_motion(test_caret_motion());
     let env = test_environment();
     let selection = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let target = shaped_text_input_target("hello world", &selection, &env);
@@ -3854,7 +3849,7 @@ fn double_click_word_selection_survives_pointer_release() {
 #[test]
 fn double_click_drag_extends_selection_by_words() {
     let mut renderer = test_renderer();
-    renderer.set_text_caret_motion(MinimalTestTheme::default().text_caret_motion());
+    renderer.set_text_caret_motion(test_caret_motion());
     let env = test_environment();
     let selection = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let target = shaped_text_input_target("hello world", &selection, &env);

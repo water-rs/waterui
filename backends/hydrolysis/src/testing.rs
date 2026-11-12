@@ -85,17 +85,82 @@ pub fn plain_stepper_look() -> crate::theme::StepperLook {
         .label_spacing(8.0)
 }
 
+/// A text field look over `container` and `metrics`.
+///
+/// Its floating label moves by a 15 ms linear motion, and its caret, selection
+/// and placeholder are plain: what a test style's fields measure, place and
+/// hit-test as.
+#[must_use]
+pub fn plain_text_field_look(
+    container: crate::theme::Chrome,
+    metrics: crate::theme::InputFieldMetrics,
+) -> crate::theme::TextFieldLook {
+    use crate::theme::{Caret, FloatingLabel, Label, TextCaretMotion, TextFieldLook, ValueMotion};
+    use cherenkov_record::Paint;
+    use std::time::Duration;
+    use waterui::animation::Animation;
+    use waterui::graphics::color::Srgb;
+    let label = FloatingLabel::new(
+        Label::new(),
+        ValueMotion::Follow(Animation::linear(Duration::from_millis(15))),
+    )
+    .scale(0.75)
+    .top(4.0);
+    let caret = Caret::new(
+        Paint::Solid(Srgb::new(0.12, 0.14, 0.18).resolve()),
+        TextCaretMotion {
+            fade_cycle_duration: Duration::from_millis(1_060),
+            frame_interval: Duration::from_millis(530),
+            min_opacity: 0.2,
+        },
+    );
+    let selection = Paint::Solid(Srgb::new(0.20, 0.45, 0.90).resolve().with_alpha(0.28));
+    TextFieldLook::new(container, metrics, label, caret, selection)
+        .placeholder(Label::new().color(waterui::graphics::Color::srgb(0, 0, 0)))
+}
+
+/// The container a test style's fields wear: a clear surface and a state
+/// layer with no opacity in any state.
+#[must_use]
+pub fn plain_field_container() -> crate::theme::Chrome {
+    use crate::theme::Surface;
+    use crate::theme::{Chrome, CornerShape, FocusIndicator, Motion, PressFeedback, StateLayer};
+    Chrome::new(
+        Surface::clear(CornerShape::radius(0.0)),
+        StateLayer::new(waterui::graphics::Color::new(
+            waterui::theme::color::Foreground,
+        )),
+        PressFeedback::new(),
+        FocusIndicator::Tint,
+        Motion::uniform(waterui::animation::Animation::linear(
+            std::time::Duration::from_millis(15),
+        )),
+    )
+}
+
+/// The metrics a test style's fields lay out by.
+#[must_use]
+pub const fn plain_input_metrics() -> crate::theme::InputFieldMetrics {
+    crate::theme::InputFieldMetrics {
+        label_height: 14.0,
+        min_width: 100.0,
+        min_height: 32.0,
+        horizontal_inset: 8.0,
+        vertical_inset: 6.0,
+    }
+}
+
 mod test_style {
     use std::time::Duration;
 
     use crate::theme::{
         BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, DividerMetrics, DragMapping,
-        FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionMotion, Knob,
-        Label, LinearProgressLook, ListMetrics, Motion, NavigationMetrics, NavigationMotion,
+        FocusIndicator, HitRegion, IndicatorLook, InteractionMotion, Knob, Label,
+        LinearProgressLook, ListMetrics, Motion, NavigationMetrics, NavigationMotion,
         PickerMetrics, PressFeedback, ProgressControl, ProgressSpec, RadioIndicatorState,
         RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook,
         StepperSpec, Surface, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics,
-        TextCaretMotion, TextContextMenuMetrics, ToggleSpec, WidgetInteractionState, WidgetTheme,
+        TextContextMenuMetrics, TextFieldLook, TextFieldSpec, ToggleSpec, WidgetTheme,
     };
     use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
     use cherenkov_record::{Paint, Recorder};
@@ -103,7 +168,6 @@ mod test_style {
     use waterui::animation::Animation;
     use waterui::{Color, EasingCurve, Environment};
     use waterui_form::picker::PickerStyle;
-    use waterui_graphics::color::Srgb;
     use waterui_text::font::Font;
 
     type TokenInstaller = std::sync::Arc<dyn Fn(&mut Environment) + Send + Sync>;
@@ -186,14 +250,6 @@ mod test_style {
             }
         }
 
-        fn text_caret_motion(&self) -> TextCaretMotion {
-            TextCaretMotion {
-                fade_cycle_duration: Duration::from_millis(1_060),
-                frame_interval: Duration::from_millis(530),
-                min_opacity: 0.2,
-            }
-        }
-
         fn navigation_motion(&self) -> NavigationMotion {
             NavigationMotion {
                 transition_duration: Duration::from_millis(450),
@@ -236,34 +292,11 @@ mod test_style {
             super::plain_stepper_look()
         }
 
-        fn input_field_metrics(&self) -> InputFieldMetrics {
-            InputFieldMetrics {
-                label_height: 14.0,
-                min_width: 100.0,
-                min_height: 32.0,
-                horizontal_inset: 8.0,
-                vertical_inset: 6.0,
-            }
-        }
-
-        fn input_placeholder_color(&self) -> Color {
-            Color::srgb(0, 0, 0)
-        }
-
-        fn input_selection_paint(&self) -> Paint {
-            Paint::Solid(Srgb::new(0.20, 0.45, 0.90).resolve().with_alpha(0.28))
-        }
-
-        fn input_caret_paint(&self, opacity: f32) -> Paint {
-            Paint::Solid(Srgb::new(0.12, 0.14, 0.18).resolve().with_alpha(opacity))
-        }
-
-        fn draw_input_field(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _state: WidgetInteractionState,
-        ) {
+        fn text_field(&self, _spec: &TextFieldSpec, _env: &Environment) -> TextFieldLook {
+            super::plain_text_field_look(
+                super::plain_field_container(),
+                super::plain_input_metrics(),
+            )
         }
 
         fn text_context_menu_metrics(&self) -> TextContextMenuMetrics {

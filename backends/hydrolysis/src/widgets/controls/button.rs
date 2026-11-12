@@ -37,7 +37,7 @@ use crate::widgets::util::{centered_label_rect, inset_rect, widget_disabled};
 
 /// The interaction states that change without a render: their changes move
 /// live operands.
-const LIVE_STATES: InteractionState = InteractionState::HOVERED
+pub const LIVE_STATES: InteractionState = InteractionState::HOVERED
     .union(InteractionState::PRESSED)
     .union(InteractionState::FOCUSED)
     .union(InteractionState::DRAGGED);

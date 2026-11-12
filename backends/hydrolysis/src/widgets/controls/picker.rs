@@ -5,6 +5,7 @@ use crate::renderer::{
     RenderContext, RetainedSubview, WidgetRenderContext, measure_picker_intrinsic,
     measure_picker_intrinsic_with_label_size,
 };
+use crate::widgets::controls::field_look::FieldChrome;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -51,6 +52,8 @@ pub struct PickerRenderState<E: crate::text::TextEngine> {
     pub(crate) config: PickerConfig,
     label_view: RetainedSubview<E>,
     menu_open: Rc<Cell<bool>>,
+    /// The field container a menu picker wears: its look and live chrome.
+    field: FieldChrome,
 }
 
 impl<E: crate::text::TextEngine> PickerRenderState<E> {
@@ -59,6 +62,7 @@ impl<E: crate::text::TextEngine> PickerRenderState<E> {
             label_view: RetainedSubview::new(menu_picker_label_view(config.label())),
             config,
             menu_open: Rc::new(Cell::new(false)),
+            field: FieldChrome::new(),
         }
     }
 
@@ -669,14 +673,20 @@ pub fn render_menu_picker<E: crate::text::TextEngine>(
     {
         let bounds = ctx.bounds;
         let hit_bounds = bounds;
-        let (interaction, press_slot, _) =
-            ctx.renderer_mut()
-                .bind_interaction_target(interaction_key, hit_bounds, env);
+        let (interaction, press_slot, handles) = {
+            let mut state = owner.borrow_mut();
+            state.field.look(&theme, env);
+            state
+                .field
+                .bind(ctx, &interaction_key, hit_bounds, env, false, false)
+        };
+        // The picker's own indicator and state layer still sample the
+        // interaction, so a change re-renders the picker.
+        handles.mark_chrome_state_dependent();
         {
             let interaction =
                 local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
             ctx.draw_context(|draw| {
-                theme.draw_input_field(&mut *draw, bounds, interaction);
                 theme.draw_picker_indicator(&mut *draw, bounds);
                 theme.draw_picker_state_layer(&mut *draw, bounds, interaction);
             });

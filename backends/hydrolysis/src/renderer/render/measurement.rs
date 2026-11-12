@@ -4,13 +4,15 @@ use super::*;
 use crate::num_cast::f64_as_f32;
 use crate::text::TextEngine;
 use crate::text::TextLayout as _;
-use crate::theme::{ListMetrics, WidgetTheme};
+use crate::theme::{ListMetrics, TextFieldLook, WidgetTheme};
+use crate::widgets::controls::field_look::{field_look, placeholder_text};
 use crate::widgets::layout::container::resolve_lazy_container_extent;
 use crate::widgets::nav::tabs::{tabs_decide_layout, tabs_item_natural_width};
 use std::rc::Rc;
 use waterui::navigation::tab::TabIcon;
 use waterui_core::contract_violation;
 use waterui_core::handler::BoxedAction;
+use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{LayoutError, ResolvedExtent, layout_direction, resolve_layout_extent};
 use waterui_core::views::ViewSnapshot;
 use waterui_form::picker::PickerStyle;
@@ -1273,47 +1275,45 @@ pub fn measure_text_field_intrinsic<E: crate::text::TextEngine>(
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
     let label_size = measure_label_intrinsic(text_field.label(), state, env, theme);
-    measure_text_field_intrinsic_with_label_size(text_field, label_size, state, env, theme)
-}
-
-/// Measures a text field's intrinsic size from a precomputed label size. The
-/// dispatch path passes the label measured via `measure_label_intrinsic`; the
-/// retained-node path passes the label measured from its built `RetainedSubview`,
-/// so layout and the floating-label render agree on the label height.
-pub fn measure_text_field_intrinsic_with_label_size<E: crate::text::TextEngine>(
-    text_field: &ResolvedTextFieldConfig,
-    label_size: LayoutSize,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> LayoutSize {
     measure_text_field_size_with_label_size(
         text_field,
         label_size,
         state,
         env,
-        theme,
+        &field_look(theme, env),
         ProposalSize::UNSPECIFIED,
     )
 }
 
 /// Measures a text field's size under a concrete proposal, from a precomputed
-/// label size. The field is a `Horizontal` leaf: it answers the proposal
-/// width floored at the label's extent, so the reported width never depends
-/// on the field's text — text scrolls inside the dealt width. `None` answers
-/// the ideal, the theme's `min_width` floored at the label. Height is the
-/// intrinsic height, whose text line an empty field measures too.
+/// label size and the field's look. The dispatch path passes the label
+/// measured via `measure_label_intrinsic`; the retained-node path passes the
+/// label measured from its built `RetainedSubview`, so layout and the
+/// floating-label render agree on the label height.
+///
+/// The field is a `Horizontal` leaf: it answers the proposal width floored at
+/// the label's extent, so the reported width never depends on the field's
+/// text — text scrolls inside the dealt width. `None` answers the ideal, the
+/// look's `min_width` floored at the label. Height is the intrinsic height,
+/// whose text line an empty field measures too.
 pub fn measure_text_field_size_with_label_size<E: crate::text::TextEngine>(
     text_field: &ResolvedTextFieldConfig,
     label_size: LayoutSize,
     state: &mut HydroState<E>,
     env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
+    look: &TextFieldLook,
     proposal: ProposalSize,
 ) -> LayoutSize {
-    let metrics = theme.input_field_metrics();
+    let metrics = look.metrics();
     let line_limit = text_field.line_limit().map(NonZeroUsize::get);
-    let prompt = state.measure_signal(&text_field.prompt().content());
+    let prompt = placeholder_text(
+        look,
+        state
+            .measure_signal(&text_field.prompt().content())
+            .to_plain(),
+        kurbo::Rect::ZERO,
+        InteractionState::empty(),
+    );
     let value = state.measure_signal(text_field.value());
     let prompt_size = HydrolysisRenderer::measure_text_intrinsic_size_with_line_limit(
         state, prompt, env, line_limit,
@@ -1352,43 +1352,33 @@ pub fn measure_secure_field_intrinsic<E: crate::text::TextEngine>(
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
     let label_size = measure_label_intrinsic(secure_field.label(), state, env, theme);
-    measure_secure_field_intrinsic_with_label_size(secure_field, label_size, state, env, theme)
-}
-
-/// Measures a secure field's intrinsic size from a precomputed label size. The
-/// dispatch path passes the label measured via `measure_label_intrinsic`; the
-/// retained-node path passes the label measured from its built `RetainedSubview`,
-/// so layout and the floating-label render agree on the label height.
-pub fn measure_secure_field_intrinsic_with_label_size<E: crate::text::TextEngine>(
-    secure_field: &SecureFieldConfig,
-    label_size: LayoutSize,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-) -> LayoutSize {
     measure_secure_field_size_with_label_size(
         secure_field,
         label_size,
         state,
         env,
-        theme,
+        &field_look(theme, env),
         ProposalSize::UNSPECIFIED,
     )
 }
 
 /// Measures a secure field's size under a concrete proposal, from a
-/// precomputed label size. Same `Horizontal`-leaf contract as the text field:
-/// the width answers the proposal floored at the label's extent and never
-/// the masked text; `None` answers the theme's `min_width` ideal.
+/// precomputed label size and the field's look. The dispatch path passes the
+/// label measured via `measure_label_intrinsic`; the retained-node path
+/// passes the label measured from its built `RetainedSubview`, so layout and
+/// the floating-label render agree on the label height. Same
+/// `Horizontal`-leaf contract as the text field: the width answers the
+/// proposal floored at the label's extent and never the masked text; `None`
+/// answers the look's `min_width` ideal.
 pub fn measure_secure_field_size_with_label_size<E: crate::text::TextEngine>(
     secure_field: &SecureFieldConfig,
     label_size: LayoutSize,
     state: &mut HydroState<E>,
     env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
+    look: &TextFieldLook,
     proposal: ProposalSize,
 ) -> LayoutSize {
-    let metrics = theme.input_field_metrics();
+    let metrics = look.metrics();
     let secure_len = state
         .measure_signal(secure_field.value())
         .expose()
@@ -1539,7 +1529,7 @@ pub fn measure_date_picker_intrinsic<E: crate::text::TextEngine>(
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
     let metrics = theme.picker_metrics(PickerStyle::Menu);
-    let input_metrics = theme.input_field_metrics();
+    let input_metrics = field_look(theme, env).metrics();
     let label_size = measure_label_intrinsic(date_picker.label(), state, env, theme);
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
     let label_height = if has_label {

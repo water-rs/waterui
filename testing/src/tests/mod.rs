@@ -299,12 +299,13 @@ mod token_probe {
 
     use hydrolysis::theme::{
         BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, DividerMetrics, DragMapping,
-        FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionMotion, Knob,
-        Label, LinearProgressLook, ListMetrics, Motion, NavigationMetrics, NavigationMotion,
+        FocusIndicator, HitRegion, IndicatorLook, InteractionMotion, Knob, Label,
+        LinearProgressLook, ListMetrics, Motion, NavigationMetrics, NavigationMotion,
         PickerMetrics, PressFeedback, ProgressControl, ProgressSpec, RadioIndicatorState,
         RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook,
         StepperSpec, Surface, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics,
-        TextCaretMotion, TextContextMenuMetrics, ToggleSpec, WidgetInteractionState, WidgetTheme,
+        TextContextMenuMetrics, TextFieldLook, TextFieldSpec, ToggleSpec, WidgetInteractionState,
+        WidgetTheme,
     };
     use hydrolysis::theme::{CheckboxLook, SwitchDrag, SwitchLook};
     use kurbo::{Point, Rect};
@@ -376,14 +377,6 @@ mod token_probe {
             }
         }
 
-        fn text_caret_motion(&self) -> TextCaretMotion {
-            TextCaretMotion {
-                fade_cycle_duration: Duration::from_millis(1_060),
-                frame_interval: Duration::from_millis(530),
-                min_opacity: 0.2,
-            }
-        }
-
         fn navigation_motion(&self) -> NavigationMotion {
             NavigationMotion {
                 transition_duration: Duration::from_millis(450),
@@ -423,34 +416,11 @@ mod token_probe {
             hydrolysis::testing::plain_stepper_look()
         }
 
-        fn input_field_metrics(&self) -> InputFieldMetrics {
-            InputFieldMetrics {
-                label_height: 14.0,
-                min_width: 100.0,
-                min_height: 32.0,
-                horizontal_inset: 8.0,
-                vertical_inset: 6.0,
-            }
-        }
-
-        fn input_placeholder_color(&self) -> Color {
-            Color::srgb(0, 0, 0)
-        }
-
-        fn input_selection_paint(&self) -> Paint {
-            Paint::Solid(Srgb::new(0.20, 0.45, 0.90).resolve().with_alpha(0.28))
-        }
-
-        fn input_caret_paint(&self, opacity: f32) -> Paint {
-            Paint::Solid(Srgb::new(0.12, 0.14, 0.18).resolve().with_alpha(opacity))
-        }
-
-        fn draw_input_field(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _state: WidgetInteractionState,
-        ) {
+        fn text_field(&self, _spec: &TextFieldSpec, _env: &Environment) -> TextFieldLook {
+            hydrolysis::testing::plain_text_field_look(
+                hydrolysis::testing::plain_field_container(),
+                hydrolysis::testing::plain_input_metrics(),
+            )
         }
 
         fn text_context_menu_metrics(&self) -> TextContextMenuMetrics {
