@@ -546,12 +546,19 @@ pub fn ensure_layer_backed(view: &PlatformView) {
 
 /// Prepares `view` for an off-screen layer capture: everything
 /// layer-backed, laid out, and displayed.
+///
+/// The window's display pass is what attaches a layer-backed subview's
+/// layer to its superview's layer; without it a freshly mounted subtree is
+/// absent from the model tree `renderInContext` draws.
 #[cfg(target_os = "macos")]
 pub fn prepare_for_capture(view: &PlatformView) {
     ensure_layer_backed(view);
     layout_immediately(view);
     layout_layer_immediately(view);
     display_immediately(view);
+    if let Some(window) = view.window() {
+        window.displayIfNeeded();
+    }
 }
 
 /// Prepares `view` for an off-screen layer capture: pending layout and
