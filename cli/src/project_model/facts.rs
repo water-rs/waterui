@@ -1168,8 +1168,7 @@ impl Files<'_> {
 /// nothing.
 fn glob_matches(pattern: &Path) -> BTreeSet<PathBuf> {
     glob::glob(&pattern.to_string_lossy())
-        .map(|paths| paths.filter_map(Result::ok).collect())
-        .unwrap_or_default()
+        .map_or_default(|paths| paths.filter_map(Result::ok).collect())
 }
 
 /// Every path Cargo looks for configuration at from `root`: `config` and

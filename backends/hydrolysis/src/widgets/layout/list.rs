@@ -1643,7 +1643,7 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                     }
                 }
             }
-            if let Some(footer) = chrome.footer.clone() {
+            if let Some(footer) = chrome.footer {
                 let footer_rect = kurbo::Rect::new(
                     slot_rect.x0 + list_metrics.map_or(0.0, |m| m.horizontal_inset),
                     slot_rect.y1 - footer_height,
@@ -2220,7 +2220,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
             );
             draw_section_label(ctx, header, header_rect, true, &row_env);
         }
-        if let Some(footer) = chrome.footer.clone() {
+        if let Some(footer) = chrome.footer {
             let footer_rect = kurbo::Rect::new(
                 slot_rect.x0 + list_metrics.horizontal_inset,
                 slot_rect.y1 - footer_height,

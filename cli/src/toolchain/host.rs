@@ -249,13 +249,11 @@ impl Host {
     /// [`Host::cwd`] masquerade as installed on a declared host.
     #[must_use]
     pub fn path_entries(&self) -> Vec<PathBuf> {
-        self.env("PATH")
-            .map(|paths| {
-                env::split_paths(paths)
-                    .filter(|entry| !entry.as_os_str().is_empty())
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.env("PATH").map_or_default(|paths| {
+            env::split_paths(paths)
+                .filter(|entry| !entry.as_os_str().is_empty())
+                .collect()
+        })
     }
 
     /// Working directory for spawned processes and relative-path lookups.

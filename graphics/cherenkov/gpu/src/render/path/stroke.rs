@@ -1961,7 +1961,7 @@ mod tests {
             let k_cap = gpu.stroke.k_cap;
             let mut next = 0usize;
             for range in subpaths(records) {
-                let subpath = &records[range.clone()];
+                let subpath = &records[range];
                 let closed = subpath.last().is_some_and(|r| r.head[0] & CLOSE_FLAG != 0);
                 for (k, r) in subpath.iter().enumerate() {
                     let start = !closed && k == 0;
