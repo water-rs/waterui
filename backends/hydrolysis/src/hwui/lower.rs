@@ -28,7 +28,9 @@ use super::buffer::{CommandBuffer, Field, Fields};
 use super::color::{
     MAX_SWEEP_STOPS, color_long, gradient_stops, premultiplied_linear_srgb, sweep_turn,
 };
-use super::geometry::{Matrix, affine_matrix, ceil_i32, floor_i32, intersect, is_identity, union};
+use super::geometry::{
+    Matrix, affine_matrix, ceil_i32, floor_i32, intersect, is_identity, narrow, union,
+};
 use super::ids::IdPool;
 use super::protocol::{
     MESH_BAND_PATCHES, MESH_PATCH_FLOATS, Op, blend, cap, fill_type, glyph_style, join,
@@ -66,10 +68,14 @@ pub struct Owned {
     paths: Vec<u32>,
     shaders: Vec<u32>,
     cached_paths: Vec<PathKey>,
-    pictures: Vec<usize>,
+    pictures: Vec<PictureKey>,
 }
 
 type PathKey = (usize, bool);
+
+/// A shared picture's identity and the density its filtered groups' nodes
+/// were recorded at.
+type PictureKey = (usize, u64);
 
 #[derive(Debug)]
 struct CachedPath {
@@ -92,7 +98,7 @@ struct SharedPicture {
 #[derive(Debug, Default)]
 pub struct Caches {
     paths: HashMap<PathKey, CachedPath>,
-    pictures: BTreeMap<usize, SharedPicture>,
+    pictures: BTreeMap<PictureKey, SharedPicture>,
 }
 
 /// Reused arrays for variable-length records.
@@ -249,8 +255,8 @@ fn list_key(list: &DisplayList) -> usize {
     std::ptr::from_ref(list).addr()
 }
 
-fn picture_key(picture: &Picture) -> usize {
-    list_key(picture.display_list())
+fn picture_key(picture: &Picture, density: f64) -> PictureKey {
+    (list_key(picture.display_list()), density.to_bits())
 }
 
 /// The android `BlendMode` code of `blend`.
@@ -299,6 +305,9 @@ pub struct Lower<'a> {
     pub scratch: &'a mut Scratch,
     /// The layer being lowered, for errors.
     pub layer: u64,
+    /// Device pixels per point: a node that carries an effect is recorded
+    /// at this many pixels per unit (see [`Lower::open_scaled`]).
+    pub density: f64,
 }
 
 impl Lower<'_> {
@@ -337,6 +346,19 @@ impl Lower<'_> {
         origin: [i32; 2],
         size: [i32; 2],
     ) -> Result<(), HwuiError> {
+        self.open_scaled(node, origin, size, 1.0)
+    }
+
+    /// Opens `node`'s recording of `size` pixels, whose content is drawn in
+    /// the layer's own units: translated by `-origin`, then scaled by
+    /// `scale` pixels per unit.
+    pub fn open_scaled(
+        &mut self,
+        node: u32,
+        origin: [i32; 2],
+        size: [i32; 2],
+        scale: f64,
+    ) -> Result<(), HwuiError> {
         self.buffer.op(
             Op::Record,
             &[
@@ -345,11 +367,11 @@ impl Lower<'_> {
                 Field::I("height", size[1]),
             ],
         )?;
-        if origin != [0, 0] {
-            self.concat(&affine_matrix(Affine::translate(Vec2::new(
-                -f64::from(origin[0]),
-                -f64::from(origin[1]),
-            ))))?;
+        if origin != [0, 0] || scale.to_bits() != 1.0f64.to_bits() {
+            self.concat(&affine_matrix(
+                Affine::scale(scale)
+                    * Affine::translate(Vec2::new(-f64::from(origin[0]), -f64::from(origin[1]))),
+            ))?;
         }
         Ok(())
     }
@@ -507,12 +529,29 @@ impl Lower<'_> {
                             &self.registry.lock(),
                         );
                         let (origin, size) = extent(ink);
+                        // A node that carries an effect is rasterized into
+                        // a layer of its own size: it spans device pixels
+                        // and scales back by the inverse.
+                        let scale = if group.filter.is_some() {
+                            self.density
+                        } else {
+                            1.0
+                        };
+                        let pixels = size.map(|side| ceil_i32(f64::from(side) * scale));
                         set_position(
                             self.buffer,
                             node,
-                            bounds(origin, size),
+                            bounds(origin, pixels),
                             group.filter.is_none(),
                         )?;
+                        if scale.to_bits() != 1.0f64.to_bits() {
+                            let inverse = narrow(1.0 / scale);
+                            set_transform(
+                                self.buffer,
+                                node,
+                                &[0.0, 0.0, inverse, inverse, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                            )?;
+                        }
                         if let Some(filter) = group.filter {
                             let effect = self.registry.lock().resolve(
                                 Kind::Effect,
@@ -536,7 +575,7 @@ impl Lower<'_> {
                                 Field::U("layer", 1),
                             ],
                         )?;
-                        self.open(node, ink)?;
+                        self.open_scaled(node, origin, pixels, scale)?;
                         self.emit(list, inner, groups, owned)?;
                         self.close()?;
                         groups.insert((list_key(list), index), node);
@@ -665,7 +704,7 @@ impl Lower<'_> {
     /// The node of the shared `picture`, recorded once and reused by
     /// identity; `owned` takes a reference.
     pub fn share(&mut self, picture: &Picture, owned: &mut Owned) -> Result<u32, HwuiError> {
-        let key = picture_key(picture);
+        let key = picture_key(picture, self.density);
         if let Some(entry) = self.caches.pictures.get_mut(&key) {
             entry.refs += 1;
             owned.pictures.push(key);
@@ -713,7 +752,7 @@ impl Lower<'_> {
         let node = self
             .caches
             .pictures
-            .get(&picture_key(picture))
+            .get(&picture_key(picture, self.density))
             .ok_or_else(|| HwuiError::Encoding {
                 op: "DrawNode",
                 reason: "a shared picture was not prepared".to_owned(),
@@ -1772,6 +1811,32 @@ pub fn content_ink(
 #[must_use]
 pub fn clear_color(color: WorkingColor) -> u64 {
     color_long(color, 1.0)
+}
+
+/// `SetTransform` with the ten node properties in wire order.
+pub fn set_transform(
+    buffer: &mut CommandBuffer,
+    node: u32,
+    values: &[f32; 10],
+) -> Result<(), HwuiError> {
+    let names = [
+        "translation_x",
+        "translation_y",
+        "scale_x",
+        "scale_y",
+        "rotation",
+        "pivot_x",
+        "pivot_y",
+        "rotation_x",
+        "rotation_y",
+        "camera_distance",
+    ];
+    let mut fields = Fields::new();
+    fields.push(Field::U("node", node));
+    for (name, value) in names.into_iter().zip(values) {
+        fields.push(Field::F(name, *value));
+    }
+    buffer.op(Op::SetTransform, fields.as_slice())
 }
 
 /// `SetPosition`.
