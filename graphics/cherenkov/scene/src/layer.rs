@@ -86,6 +86,12 @@ pub struct Layer {
     /// The blend mode used when compositing onto the parent.
     #[serde(default)]
     pub blend: BlendMode,
+    /// The space the layer's content and children composite with each
+    /// other in, and the layer composites onto its parent in, as a
+    /// [`Group`]'s `blend_space`: `linear` (the default) or
+    /// `srgb-encoded`.
+    #[serde(default, skip_serializing_if = "crate::backdrop::is_linear")]
+    pub blend_space: BlendSpace,
     /// An optional identifier a [`crate::BackdropGroup::anchor`] names:
     /// the group's capture is taken beneath the layer carrying it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -448,6 +454,7 @@ impl Default for Layer {
             clip: None,
             opacity: 1.0,
             blend: BlendMode::Normal,
+            blend_space: BlendSpace::Linear,
             id: None,
             backdrop: None,
             filter: None,

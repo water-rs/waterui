@@ -137,7 +137,8 @@ pub const fn vello_missing_api(f: &Feature) -> Option<&'static str> {
 /// than silently quantizing them.
 ///
 /// [`Feature::BlendSpace`] is claimed for encoded sRGB only: a group maps
-/// to an isolated layer, which vello composites in encoded sRGB.
+/// to an isolated layer, which vello composites in encoded sRGB, and a
+/// scene layer in that space composites in it already.
 ///
 /// Gradient interpolation is honest too: every space `peniko`'s
 /// `ColorSpaceTag` names is claimed; `linear-p3` is not among them and is

@@ -1652,3 +1652,109 @@ fn a_member_inside_the_anchors_blended_child_is_unsupported() {
         Ok(_) => panic!("a member inside a blended descendant must fail"),
     }
 }
+
+/// The members of the corpus's `blend-space-srgb-layer`: an opaque rect
+/// and a half-transparent circle over it.
+fn encoded_members() -> Vec<Draw> {
+    vec![
+        Draw::Fill {
+            shape: Shape::Rect(Rect::new(2.0, 2.0, 11.0, 11.0)),
+            rule: FillRule::NonZero,
+            paint: Paint::Solid(Color::srgb(0.85, 0.15, 0.2)),
+        },
+        Draw::Fill {
+            shape: Shape::Rect(Rect::new(6.0, 6.0, 15.0, 15.0)),
+            rule: FillRule::NonZero,
+            paint: Paint::Solid(Color::srgb(0.15, 0.3, 0.85).with_alpha(0.5)),
+        },
+    ]
+}
+
+/// A layer in `SrgbEncoded` space at opacity 0.5 composites like the
+/// group of the same space and opacity: its members composite with each
+/// other in encoded values, and the layer fades onto its backdrop in them.
+#[test]
+fn an_encoded_layer_composites_like_an_encoded_group() {
+    let backdrop = || {
+        let mut b = Scene::builder(W, H);
+        b.root().fill(
+            Shape::Rect(Rect::new(0.0, 0.0, 16.0, 16.0)),
+            Paint::Solid(Color::srgb(0.1, 0.1, 0.12)),
+        );
+        b
+    };
+    let mut layered = backdrop();
+    layered.root().layer(|l| {
+        l.opacity(0.5).blend_space(BlendSpace::SrgbEncoded);
+        for draw in encoded_members() {
+            if let Draw::Fill { shape, paint, .. } = draw {
+                l.fill(shape, paint);
+            }
+        }
+    });
+    let layered = layered.build();
+    assert!(
+        layered
+            .features
+            .contains(&cherenkov_scene::Feature::BlendSpace(
+                BlendSpace::SrgbEncoded
+            )),
+        "{:?}",
+        layered.features
+    );
+    let mut grouped = backdrop();
+    grouped.root().group(Group {
+        items: encoded_members().into_iter().map(GroupItem::Draw).collect(),
+        opacity: 0.5,
+        blend: BlendMode::Normal,
+        blend_space: BlendSpace::SrgbEncoded,
+        filter: None,
+    });
+    let layer_img = render(&layered, &tmp());
+    let group_img = render(&grouped.build(), &tmp());
+    for (layer, group) in layer_img.pixels.iter().zip(&group_img.pixels) {
+        metrics::assert_close(layer, group);
+    }
+    // White over black at 0.5 in encoded values is encoded 0.5 (128 of
+    // 255), not the linear mix's encoded 0.735 (188).
+    let mut b = Scene::builder(W, H);
+    b.root().fill(
+        Shape::Rect(Rect::new(0.0, 0.0, 16.0, 16.0)),
+        Paint::Solid(Color::srgb(0.0, 0.0, 0.0)),
+    );
+    b.root().layer(|l| {
+        l.opacity(0.5).blend_space(BlendSpace::SrgbEncoded);
+        l.fill(
+            Shape::Rect(Rect::new(0.0, 0.0, 16.0, 16.0)),
+            Paint::Solid(Color::srgb(1.0, 1.0, 1.0)),
+        );
+    });
+    let px = render(&b.build(), &tmp()).pixels[8 * W as usize + 8];
+    let want = srgb_decode(0.5);
+    for ch in &px[..3] {
+        assert!((f64::from(*ch) - want).abs() < 1e-6, "{px:?}");
+    }
+}
+
+/// A projective layer's local image is reconstructed in linear values, so
+/// a non-linear blend space on it is unsupported rather than ignored.
+#[test]
+fn a_projective_encoded_layer_is_unsupported() {
+    use cherenkov_scene::Projection;
+    let mut b = Scene::builder(W, H);
+    b.root().layer(|p| {
+        p.clip(Shape::Rect(Rect::new(0.0, 0.0, f64::from(W), f64::from(H))));
+        p.projection(Projection {
+            matrix: Projection::perspective(100.0),
+            ..Projection::default()
+        });
+        p.blend_space(BlendSpace::SrgbEncoded);
+    });
+    match Renderer::new(W as usize, H as usize).render(&b.build(), &tmp()) {
+        Err(e) => assert!(
+            e.to_string().contains("projective-blend-space"),
+            "unexpected error {e}"
+        ),
+        Ok(_) => panic!("an encoded projective layer must fail"),
+    }
+}

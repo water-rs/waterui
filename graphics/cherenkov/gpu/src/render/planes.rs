@@ -28,7 +28,9 @@
 use kurbo::{Affine, Rect, Vec2};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use cherenkov::{BlendMode, Display, LayerId, RenderError, ShapeData, SurfaceError, SurfaceTree};
+use cherenkov::{
+    BlendMode, BlendSpace, Display, LayerId, RenderError, ShapeData, SurfaceError, SurfaceTree,
+};
 
 use crate::interop::ExternalFrame;
 use crate::render::lower::axis_aligned;
@@ -150,7 +152,8 @@ pub trait Compositor {
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Ineligible {
     /// An ancestor composites its subtree through an offscreen (opacity
-    /// below one, a filter, or a blend), so the layer never reaches the
+    /// below one, a filter, a blend or a non-linear blend space), so the
+    /// layer never reaches the
     /// surface level a plane sits at.
     #[error("ancestor layer {0:?} isolates its subtree into an offscreen")]
     Isolated(LayerId),
@@ -161,6 +164,11 @@ pub enum Ineligible {
     /// onto its content.
     #[error("it uses a non-default blend mode")]
     Blend,
+    /// The layer composites in a non-linear blend space, which its subtree
+    /// composites in too: a plane composites in the system compositor's
+    /// space, and its image would hold the subtree composited in linear.
+    #[error("it composites in a non-linear blend space")]
+    BlendSpace,
     /// A layer painted above it blends with a non-default mode onto the
     /// surface, which would need the layer's pixels.
     #[error("layer {0:?} painted above it blends with a non-default mode")]
@@ -317,6 +325,7 @@ fn isolates(tree: &SurfaceTree, id: LayerId) -> bool {
     node.filter.is_some()
         || node.opacity < 1.0
         || node.blend != BlendMode::Normal
+        || node.blend_space != BlendSpace::Linear
         || tree.projective_pose(id).is_some()
         || (id != tree.root() && node.blends_within())
 }
@@ -324,7 +333,8 @@ fn isolates(tree: &SurfaceTree, id: LayerId) -> bool {
 /// Whether the lowering splits the layer's isolation at a host-window
 /// mark: the layer filters its subtree by a pure coordinate remap
 /// ([`cherenkov::FilterId::is_coordinate_remap`]) and composites it at
-/// full opacity with the `Normal` blend, unprojected, and no descendant
+/// full opacity with the `Normal` blend in linear space, unprojected, and
+/// no descendant
 /// blends within it (a blended child would read only its own region's
 /// content). Each region of the subtree then renders into its own
 /// offscreen under the same device-space filter and composes in paint
@@ -336,6 +346,7 @@ fn splits(tree: &SurfaceTree, id: LayerId) -> bool {
         .is_some_and(cherenkov::FilterId::is_coordinate_remap)
         && node.opacity >= 1.0
         && node.blend == BlendMode::Normal
+        && node.blend_space == BlendSpace::Linear
         && tree.projective_pose(id).is_none()
         && (id == tree.root() || !node.blends_within())
 }
@@ -801,6 +812,9 @@ fn mandatory_plane<C: Compositor>(
     }
     if node.blend != BlendMode::Normal || node.blends_within() {
         return Err(Ineligible::Blend);
+    }
+    if node.blend_space != BlendSpace::Linear {
+        return Err(Ineligible::BlendSpace);
     }
     if node.backdrop.is_some() {
         return Err(Ineligible::Backdrop);
