@@ -243,6 +243,21 @@ platform = 'cfg(target_os = "ios")'
 filter = 'binary(native_app)'
 test-group = 'apple-app-launch'
 
+# The general pasteboard is one per machine, shared by every process: a test
+# that writes it and then pastes reads whatever a concurrently running paste
+# test wrote or cleared in between (#4520). The cocoa-ui input-view paste
+# tests therefore run one at a time.
+[test-groups.system-pasteboard]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'package(cocoa-ui) and test(/input_view::.*paste/)'
+test-group = 'system-pasteboard'
+
+[[profile.ci.overrides]]
+filter = 'package(cocoa-ui) and test(/input_view::.*paste/)'
+test-group = 'system-pasteboard'
+
 # The pinned, hash-verified generators, one per uncommitted asset a suite
 # needs. `uv run` reads each script's inline metadata the same way CI does.
 [scripts.setup.test-fonts]
