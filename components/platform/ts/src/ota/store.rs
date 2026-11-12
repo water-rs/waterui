@@ -352,7 +352,9 @@ impl BundleStore {
             .take(declared + 1)
             .read_to_end(&mut bytes)
             .map_err(StoreError::io(path.clone()))?;
-        let read = u64::try_from(read).expect("a byte count fits a u64");
+        let read = u64::try_from(read).expect(
+            "`usize` is at most 64 bits on every supported target, so a byte count fits a u64",
+        );
         if read > declared {
             return Err(StoreError::BundleSize {
                 path,

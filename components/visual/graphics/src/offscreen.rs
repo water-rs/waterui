@@ -24,6 +24,8 @@ use cherenkov_cpu::{Raster, RasterConfig};
 use cherenkov_gpu::{Gpu, GpuConfig};
 use image::ImageEncoder as _;
 
+use waterui_core::contract_violation;
+
 use crate::canvas::{Drawing, lower_drawing};
 use crate::scene::picture::PictureRecording;
 use crate::scene::resources::{HeldResources, SceneCaps, SceneResources};
@@ -157,15 +159,21 @@ impl OffscreenImage {
 
     /// The pixel at `(x, y)`.
     ///
-    /// # Panics
-    /// When `(x, y)` lies outside the image.
+    /// A `(x, y)` outside the image is a contract violation: the pixel is
+    /// transparent black.
     #[must_use]
     pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
-        assert!(x < self.width && y < self.height, "pixel outside the image");
+        if x >= self.width || y >= self.height {
+            contract_violation!(
+                "pixel ({x}, {y}) outside the {}x{} image; transparent black is returned",
+                self.width,
+                self.height
+            );
+            return [0; 4];
+        }
         let offset = ((y * self.width + x) * 4) as usize;
-        self.rgba8[offset..offset + 4]
-            .try_into()
-            .expect("a pixel is four bytes")
+        let pixel = &self.rgba8[offset..offset + 4];
+        [pixel[0], pixel[1], pixel[2], pixel[3]]
     }
 
     /// Writes the image as a PNG.
@@ -626,6 +634,18 @@ mod tests {
         assert_eq!(image.pixel(1, 0), [0, 0, 0, 0]);
     }
 
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "outside the 2x1 image"))]
+    fn a_pixel_outside_the_image_is_transparent_black() {
+        let readback = Readback {
+            width: 2,
+            height: 1,
+            pixels: vec![[1.0, 1.0, 1.0, 1.0]; 2],
+        };
+        let image = OffscreenImage::from_readback(&readback);
+        assert_eq!(image.pixel(2, 0), [0, 0, 0, 0]);
+    }
+
     #[cfg(all(feature = "cpu", not(target_arch = "wasm32")))]
     mod cpu {
         use alloc::sync::Arc;
@@ -658,7 +678,7 @@ mod tests {
                     )
                     .expect("image registration");
                 recorder.image(
-                    resources.name(&image),
+                    resources.name(&image).expect("registered on this target"),
                     Rect::new(0.0, 0.0, 8.0, 8.0),
                     Sampling::Nearest,
                 );

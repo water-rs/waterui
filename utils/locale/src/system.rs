@@ -6,7 +6,7 @@ use std::mem::ManuallyDrop;
 
 use nami::{Binding, Container};
 
-use crate::locale::Locale;
+use crate::locale::{Locale, locales};
 use crate::regional::{self, ListenerHandle};
 
 thread_local! {
@@ -102,8 +102,13 @@ pub fn start_system_listener() {
 }
 
 fn locale_from_tag(tag: &str) -> Locale {
-    Locale::from_str(tag)
-        .unwrap_or_else(|error| panic!("runtime locale tag '{tag}' is invalid: {error}"))
+    Locale::from_str(tag).unwrap_or_else(|error| {
+        // The tag comes from the host's regional settings, not from app code.
+        tracing::error!(
+            "runtime locale tag '{tag}' is invalid: {error}; the default locale is used"
+        );
+        locales::EN_US
+    })
 }
 
 fn ensure_listener_registered(state: &mut RuntimeLocaleState) {
@@ -139,4 +144,19 @@ pub fn reset_runtime_locale_state_for_tests() {
 /// Clears the current thread's runtime locale cache during controlled executor shutdown.
 pub fn shutdown_current_thread_runtime_locale_state() {
     reset_runtime_locale_state();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unparseable_host_tag_selects_the_default_locale() {
+        assert_eq!(locale_from_tag("not a locale!"), locales::EN_US);
+    }
+
+    #[test]
+    fn a_valid_host_tag_is_parsed() {
+        assert_eq!(locale_from_tag("de-DE").id().to_string(), "de-DE");
+    }
 }

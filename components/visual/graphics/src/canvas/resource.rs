@@ -238,7 +238,9 @@ impl ImageSource {
     /// status watchers registered on this thread.
     pub(crate) fn set_status(&self, status: &ImageStatus) {
         let watchers: Vec<Rc<dyn Fn(Context<ImageStatus>)>> = {
-            let mut state = self.0.state.lock().expect("image status lock poisoned");
+            let mut state = self.0.state.lock().expect(
+                "the image status lock is held only for plain field updates, which cannot panic",
+            );
             if state.status == *status {
                 return;
             }
@@ -271,12 +273,9 @@ struct StatusGuard {
 impl Drop for StatusGuard {
     fn drop(&mut self) {
         let removed = {
-            let mut state = self
-                .image
-                .0
-                .state
-                .lock()
-                .expect("image status lock poisoned");
+            let mut state = self.image.0.state.lock().expect(
+                "the image status lock is held only for plain field updates, which cannot panic",
+            );
             state
                 .watchers
                 .iter()
@@ -298,7 +297,9 @@ impl Signal for StatusSignal {
             .0
             .state
             .lock()
-            .expect("image status lock poisoned")
+            .expect(
+                "the image status lock is held only for plain field updates, which cannot panic",
+            )
             .status
             .clone()
     }
@@ -306,7 +307,9 @@ impl Signal for StatusSignal {
     fn watch(&self, watcher: impl Fn(Context<ImageStatus>) + 'static) -> StatusGuard {
         let watcher: Rc<dyn Fn(Context<ImageStatus>)> = Rc::new(watcher);
         let id = {
-            let mut state = self.0.0.state.lock().expect("image status lock poisoned");
+            let mut state = self.0.0.state.lock().expect(
+                "the image status lock is held only for plain field updates, which cannot panic",
+            );
             let id = state.next;
             state.next += 1;
             state.watchers.push((id, SendWrapper::new(watcher)));

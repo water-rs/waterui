@@ -28,7 +28,7 @@ pub use runtime::{
     HostedLayerError, SharedGpuContext, preferred_surface_format,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use runtime::{HostedFrame, RebuildHold, RenderedFrame};
+pub use runtime::{HostedFrame, RebuildHold, RenderedFrame, Unrecoverable};
 
 /// The rectangle an IME caret query ([`CaretQuery`]) answers with.
 pub use crate::draw::kurbo::Rect;
@@ -66,7 +66,7 @@ use cherenkov::Instant;
 use std::sync::Mutex;
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
-use waterui_core::{Environment, Native, NativeView, View};
+use waterui_core::{Environment, Native, NativeView, View, contract_violation};
 use wgpu::{Adapter, Device, Instance, Queue, Texture, TextureFormat, TextureView};
 
 use crate::draw::kurbo;
@@ -573,8 +573,8 @@ impl GpuContentView {
     /// engine surface that draws the layer. The UI hooks and input handlers
     /// stay in this view.
     ///
-    /// # Panics
-    /// Panics if the content has already been transferred.
+    /// Content already taken with [`take_content`](Self::take_content) is a
+    /// contract violation: the layer draws nothing.
     #[must_use]
     pub fn take_engine_content(&mut self) -> cherenkov_gpu::interop::GpuContentBox {
         cherenkov_gpu::interop::GpuContentBox::new(self.engine_content())
@@ -587,34 +587,42 @@ impl GpuContentView {
     /// so the engine's setup runs the one content on the new device, keeping
     /// the state the content had accumulated.
     ///
-    /// # Panics
-    /// Panics if the content was already taken with [`take_content`].
+    /// Content already taken with [`take_content`] is a contract violation:
+    /// the handle is to content that draws nothing.
     ///
     /// [`take_content`]: Self::take_content
     pub fn engine_content(&mut self) -> GpuContentHandle {
-        if self.content_handle.is_none() {
-            let content = self
-                .content
-                .take()
-                .expect("GpuContentView content installed twice");
-            self.content_handle = Some(GpuContentHandle::new(content));
-        }
+        let content = &mut self.content;
         self.content_handle
-            .as_ref()
-            .expect("GpuContentView content installed twice")
+            .get_or_insert_with(|| GpuContentHandle::new(take_once(content)))
             .clone()
     }
 
     /// Takes the content out for installation on a layer.
     ///
-    /// # Panics
-    /// When the content was already taken: a view is installed once.
+    /// Taking it twice is a contract violation, a view being installed once:
+    /// the second call answers content that draws nothing.
     #[must_use]
     pub fn take_content(&mut self) -> Box<dyn GpuContent> {
-        self.content
-            .take()
-            .expect("GpuContentView content installed twice")
+        take_once(&mut self.content)
     }
+}
+
+/// The content in `slot`, or [`Vacant`] when it was already taken.
+fn take_once(slot: &mut Option<Box<dyn GpuContent>>) -> Box<dyn GpuContent> {
+    slot.take().unwrap_or_else(|| {
+        contract_violation!("GpuContentView content installed twice; the layer draws nothing");
+        Box::new(Vacant)
+    })
+}
+
+/// Content that draws nothing: what a view's second installation gets.
+struct Vacant;
+
+impl GpuContent for Vacant {
+    fn setup(&mut self, _gpu: &Context<'_>) {}
+
+    fn render(&mut self, _frame: &mut Frame<'_>) {}
 }
 
 impl NativeView for GpuContentView {
@@ -715,5 +723,46 @@ impl cherenkov_gpu::interop::GpuContent for GpuContentHandle {
         if frame.redraw_requested() {
             gpu.request_redraw();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Content that reports an intrinsic size, so it differs from [`Vacant`].
+    struct Sized;
+
+    impl GpuContent for Sized {
+        fn setup(&mut self, _gpu: &Context<'_>) {}
+
+        fn render(&mut self, _frame: &mut Frame<'_>) {}
+
+        fn intrinsic_size(&self) -> Option<Size> {
+            Some(Size::new(4.0, 4.0))
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "GpuContentView content installed twice")
+    )]
+    fn content_taken_twice_draws_nothing() {
+        let mut view = GpuContentView::new(Sized);
+        assert!(view.take_content().intrinsic_size().is_some());
+        assert!(view.take_content().intrinsic_size().is_none());
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "GpuContentView content installed twice")
+    )]
+    fn an_engine_handle_after_taking_the_content_draws_nothing() {
+        let mut view = GpuContentView::new(Sized);
+        let _ = view.take_content();
+        let handle = view.engine_content();
+        assert!(handle.lock().intrinsic_size().is_none());
     }
 }

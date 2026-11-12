@@ -20,7 +20,7 @@ use std::rc::Rc;
 use nami::{Binding, Computed};
 use waterui::ts::{Components, Mount, NoProps, RuntimeHandle, TsError, TsRuntime};
 use waterui::tsx;
-use waterui_core::{AnyView, Environment};
+use waterui_core::{AnyView, Environment, View as _};
 use waterui_graphics::color::ColorScheme;
 use waterui_testing::{SemanticApp, ui};
 use waterui_ts::engine::{JsRuntime as _, JsValue};
@@ -297,4 +297,15 @@ fn ts_the_mount_metadata_reaches_the_test_executable() {
         "the props name comes from the type's resolved schema"
     );
     assert_eq!(mount.contract_hash(), PromoProps::CONTRACT_HASH);
+}
+
+/// `View::body` has no error channel: a module that cannot mount is a contract
+/// violation, and a release build renders nothing for it.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "the module renders nothing")
+)]
+fn ts_a_module_that_cannot_mount_renders_nothing() {
+    let _view = Mount::new::<NoProps>(MODULE, NoProps {}).body(&Environment::new());
 }

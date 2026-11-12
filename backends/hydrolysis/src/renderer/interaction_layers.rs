@@ -150,6 +150,14 @@ impl Steered {
         self.set_flag(InteractionState::PRESSED, true);
     }
 
+    fn move_press(&self, point: kurbo::Point) {
+        match self {
+            Self::Chrome(chrome) => chrome.move_press(point),
+            // A toggle's parts follow the pressed flag and its drag.
+            Self::Toggle(_) => {}
+        }
+    }
+
     fn fade_wave(&self, index: usize) {
         match self {
             Self::Chrome(chrome) => chrome.fade_wave(index),
@@ -376,6 +384,12 @@ impl InteractionLayerHandles {
         self.press_progress
             .apply_target(1.0, self.scalar(&self.motion.press_shape), now);
         self.with_live(|live| live.begin_press(index, local_origin));
+    }
+
+    /// Moves the press point of the active press to `local`, in the widget's
+    /// own space, so the look's values that read it follow the pointer.
+    pub(crate) fn move_press(&self, local: kurbo::Point) {
+        self.with_live(|live| live.move_press(local));
     }
 
     /// The slot a new press claims: the first invisible wave, or the oldest

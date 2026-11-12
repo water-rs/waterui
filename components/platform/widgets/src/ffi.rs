@@ -56,8 +56,10 @@ impl Buffer {
     /// Serializes `timeline` and leaks the bytes for the extension to read.
     #[must_use]
     pub fn from_timeline(timeline: &Timeline) -> Self {
-        let bytes =
-            serde_json::to_vec(timeline).expect("a widget timeline always serializes to JSON");
+        let bytes = serde_json::to_vec(timeline).expect(
+            "a timeline holds only strings, numbers and derived enums, \
+             which always serialize to JSON",
+        );
         Self::from_vec(bytes)
     }
 
@@ -82,7 +84,11 @@ pub unsafe fn decode_context(ptr: *const u8, len: usize) -> WidgetContext {
     // SAFETY: the caller contract above requires `ptr`/`len` to name a
     // valid byte slice.
     let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
-    serde_json::from_slice(bytes).expect("the extension's widget context JSON must decode")
+    serde_json::from_slice(bytes).expect(
+        "the generated extension writes the widget context from the same schema, \
+         mapping an unknown `WidgetKit` family to a fatal error on its own side \
+         before Rust is called, so the JSON always decodes",
+    )
 }
 
 /// Frees the allocation a `waterui_widget_*` export's [`Buffer`] owns.

@@ -6,7 +6,7 @@ use core::fmt;
 
 use waterui_core::layout::{Affine2, Rect, Size};
 
-use crate::canvas::geometry::{Shape, lower_rect};
+use crate::canvas::geometry::{Shape, lower_rect, positive_extent};
 use crate::canvas::names::Names;
 use crate::canvas::paint::{Layer, Paint, Sampling, Shadow, StrokeStyle, affine};
 use crate::canvas::resource::{Font, GlyphRun, ImageSource};
@@ -106,20 +106,11 @@ impl PartialEq for Drawing {
 impl Drawing {
     /// Records `body` into a drawing whose content occupies `size` points.
     ///
-    /// # Panics
-    ///
-    /// When `size` is not finite and positive.
+    /// A `size` that is not finite and positive is a contract violation: each
+    /// side that is not finite and positive is one point.
     #[must_use]
     pub fn record(size: Size, body: impl FnOnce(&mut DrawingCx)) -> Self {
-        assert!(
-            size.width.is_finite()
-                && size.height.is_finite()
-                && size.width > 0.0
-                && size.height > 0.0,
-            "a Drawing needs a finite, positive size, got {}x{}",
-            size.width,
-            size.height
-        );
+        let size = positive_extent(size, "a Drawing");
         let mut cx = DrawingCx::default();
         body(&mut cx);
         Self(Arc::new(Inner {
@@ -161,11 +152,12 @@ impl Drawing {
     /// Records the drawing for a target that registered its resources under
     /// `names`, drawing each nested drawing through `nested`. A command whose
     /// resource the target refused is not recorded: the refusal is reported
-    /// through [`ImageSource::status`].
+    /// through [`ImageSource::status`]. A nested drawing `nested` has no
+    /// picture for is not drawn.
     pub(crate) fn lower(
         &self,
         names: &Names,
-        nested: &mut dyn FnMut(&Self) -> draw::Picture,
+        nested: &mut dyn FnMut(&Self) -> Option<draw::Picture>,
     ) -> draw::Picture {
         draw::Picture::record(|recorder| lower_nodes(&self.0.nodes, recorder, names, nested))
     }
@@ -175,7 +167,7 @@ fn lower_nodes(
     nodes: &[Node],
     recorder: &mut StaticRecorder,
     names: &Names,
-    nested: &mut dyn FnMut(&Drawing) -> draw::Picture,
+    nested: &mut dyn FnMut(&Drawing) -> Option<draw::Picture>,
 ) {
     for node in nodes {
         match node {
@@ -215,8 +207,9 @@ fn lower_nodes(
                 }
             }
             Node::Draw { drawing, transform } => {
-                let picture = nested(drawing);
-                recorder.picture(&picture, Fixed(*transform));
+                if let Some(picture) = nested(drawing) {
+                    recorder.picture(&picture, Fixed(*transform));
+                }
             }
             Node::Clip { shape, body } => {
                 recorder.clip::<ShapeData>(Fixed(shape.clone()), |recorder| {

@@ -293,7 +293,9 @@ fn extend_submenu(mut submenu: Submenu, items: &[ResolvedMenuItem], ctx: &mut Bu
         match item {
             ResolvedMenuItem::Command(command) => {
                 #[cfg(target_os = "macos")]
-                command.assert_allowed_in_macos_menu_bar();
+                if !command.allowed_in_macos_menu_bar() {
+                    continue;
+                }
                 submenu = submenu.entry(declared_command(&command_title(command), command, ctx));
             }
             ResolvedMenuItem::Quit => {
