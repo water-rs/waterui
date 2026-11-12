@@ -28,12 +28,13 @@
 //! ```
 
 use nami::signal::IntoComputed;
+use std::sync::Arc;
 use suiteki::Str;
 use waterui_core::{AnyView, Computed, IgnorableMetadata, View, metadata::MetadataKey};
 use waterui_graphics::color::{Color, Srgb};
 use waterui_graphics::gradient::Gradient;
 use waterui_layout::BackgroundView;
-use waterui_shape::{Capsule, Shape, ShapeKind};
+use waterui_shape::{Capsule, ClipShape, Shape, ShapeKind};
 
 /// A material background metadata: the [`Material`] a backend realizes
 /// behind the wrapped content, following the contract [`Material`] states.
@@ -289,7 +290,7 @@ pub struct Glass {
     style: GlassStyle,
     interactive: bool,
     tint: Option<Color>,
-    shape: ShapeKind,
+    shape: Arc<ClipShape>,
 }
 
 impl Default for Glass {
@@ -307,7 +308,7 @@ impl Glass {
             style,
             interactive: false,
             tint: None,
-            shape: Capsule.shape_kind(),
+            shape: Arc::new(ClipShape::new(Capsule)),
         }
     }
 
@@ -338,14 +339,15 @@ impl Glass {
         self
     }
 
-    /// The outline of the glass surface.
+    /// The outline of the glass surface: the rectangle family, a capsule, a
+    /// circle, an ellipse or a custom path.
+    ///
+    /// Apple's system glass takes its outline from a corner configuration, so
+    /// an ellipse and a custom path are unsupported there, and on macOS so
+    /// are per-corner radii.
     #[must_use]
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "shapes are unit values passed by value everywhere else (`.clip(Capsule)`); a reference here would read as a different API"
-    )]
     pub fn shape(mut self, shape: impl Shape) -> Self {
-        self.shape = shape.shape_kind();
+        self.shape = Arc::new(ClipShape::new(shape));
         self
     }
 
@@ -367,10 +369,17 @@ impl Glass {
         self.tint.as_ref()
     }
 
-    /// The outline of the glass surface.
+    /// The kind of the glass surface's outline.
     #[must_use]
-    pub const fn shape_kind(&self) -> ShapeKind {
-        self.shape
+    pub fn shape_kind(&self) -> ShapeKind {
+        self.shape.kind()
+    }
+
+    /// The glass surface's outline: its kind and, for a custom path, the
+    /// unit-space path commands.
+    #[must_use]
+    pub fn outline(&self) -> &ClipShape {
+        &self.shape
     }
 }
 
