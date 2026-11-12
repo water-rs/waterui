@@ -572,6 +572,10 @@ struct RecoverableGpuInner {
     /// Losses and failed rebuilds since the last generation that
     /// presented — the record the exhaustion error reports.
     unproductive_losses: Vec<String>,
+    /// Whether the live generation's loss is already recorded in
+    /// `unproductive_losses`: a failed rebuild leaves the dead generation
+    /// live, and each retry of it counts only its own rebuild failure.
+    loss_recorded: bool,
 }
 
 #[cfg(hydrolysis_gpu_painter)]
@@ -583,6 +587,7 @@ impl RecoverableGpu {
             inner: std::cell::RefCell::new(RecoverableGpuInner {
                 generation,
                 unproductive_losses: Vec::new(),
+                loss_recorded: false,
             }),
         }
     }
@@ -596,7 +601,7 @@ impl RecoverableGpu {
     ///
     /// No-op while the live generation is. When the driver reported it
     /// lost, the dead generation is recorded against the recovery budget
-    /// — cleared when it had presented, counted otherwise — `rebuild`
+    /// once — cleared when it had presented, counted otherwise — `rebuild`
     /// re-runs the host's adapter pick, device open and engine creation on
     /// the context's instance, and its result becomes the live generation.
     /// A failed rebuild joins the budget and leaves the dead generation in
@@ -644,11 +649,12 @@ impl RecoverableGpu {
     }
 
     /// Completes the recovery `take_lost` started: records `dead` against
-    /// the budget — cleared when it had presented, counted otherwise —
+    /// the budget once — cleared when it had presented, counted otherwise —
     /// installs `rebuilt` as the live generation, and returns whatever is
     /// live (another surface may already have rebuilt past `dead`). A
     /// failed rebuild joins the budget and leaves the dead generation in
-    /// place.
+    /// place; the retries that follow count only their own rebuilds, so a
+    /// generation that presented before it died still runs the budget out.
     ///
     /// # Errors
     /// The terminal [`DeviceLostError`] naming every recorded loss once
@@ -664,20 +670,26 @@ impl RecoverableGpu {
             // Another surface already recovered past this generation.
             return Ok(inner.generation.clone());
         }
-        if dead
-            .gpu_context()
-            .presented
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            inner.unproductive_losses.clear();
-        } else {
-            inner.unproductive_losses.push(dead.loss.describe_loss());
-        }
-        if let Some(unrecoverable) = recovery_budget_exhausted(&inner.unproductive_losses) {
-            return Err(unrecoverable);
+        if !inner.loss_recorded {
+            inner.loss_recorded = true;
+            if dead
+                .gpu_context()
+                .presented
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                inner.unproductive_losses.clear();
+            } else {
+                inner.unproductive_losses.push(dead.loss.describe_loss());
+            }
+            if let Some(unrecoverable) = recovery_budget_exhausted(&inner.unproductive_losses) {
+                return Err(unrecoverable);
+            }
         }
         match rebuilt {
-            Ok(generation) => inner.generation = generation,
+            Ok(generation) => {
+                inner.generation = generation;
+                inner.loss_recorded = false;
+            }
             Err(error) => {
                 inner
                     .unproductive_losses
@@ -7942,5 +7954,32 @@ mod recovery_tests {
                 .expect("a productive generation's loss never exhausts the budget");
             assert!(!surface.device_loss().is_lost());
         }
+    }
+
+    #[test]
+    fn failed_rebuilds_after_a_presented_frame_exhaust_the_budget() {
+        let context = OffscreenGpuContext::for_tests();
+        let recoverable = context.recoverable();
+        // The generation got a frame through, then its device died for good:
+        // its loss starts a fresh streak once, and every failed rebuild that
+        // retries it counts against that streak.
+        let dead = recoverable.generation();
+        dead.gpu_context()
+            .presented
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        dead.loss.simulate_loss("gone after presenting");
+        for _ in 0..MAX_UNPRODUCTIVE_LOSSES {
+            recoverable
+                .ensure_live(|_| Err("no adapter".to_owned()))
+                .expect("the budget still holds");
+        }
+        let exhausted = recoverable
+            .ensure_live(|_| Err("no adapter".to_owned()))
+            .expect_err("the failed rebuild past the budget is terminal");
+        assert!(
+            exhausted.reason().contains("no adapter"),
+            "{}",
+            exhausted.reason()
+        );
     }
 }
