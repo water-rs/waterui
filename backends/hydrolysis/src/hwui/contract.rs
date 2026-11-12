@@ -493,6 +493,7 @@ fn direct_scene() -> Result<Scene, HwuiError> {
         text_layouts: &text_layouts,
         scratch: &mut scratch,
         layer: 0,
+        density: 1.0,
     };
     let mut define = vec![Field::U("effect", 0), Field::U("stages", 2)];
     define.extend_from_slice(&stages);
@@ -680,12 +681,119 @@ fn a_stretched_layer_defines_its_frame_in_the_nodes_space() {
         .frame(Instant::now(), 2.0)
         .expect("the stretched frame encodes");
     let log = surface.take_log();
-    // The child's extent starts at (10, 20), so its node's pixel `p` lands
-    // at device (5, 7) + 2·((10, 20) + p) = (25, 47) + 2p. The frame puts
-    // the viewport position `u` at (50, 70) + 2u, which is the node's pixel
-    // (12.5, 11.5) + u: the platform filters the node at its own scale, so
-    // the ancestor's doubling leaves the frame.
-    assert_frame(defined_frame(&log), [1.0, 0.0, 0.0, 1.0, 12.5, 11.5]);
+    // The child's extent starts at (10, 20), and the node spans the
+    // density's two pixels per unit, so its pixel `p` lands at device
+    // (5, 7) + 2·(10, 20) + p = (25, 47) + p. The frame puts the viewport
+    // position `u` at (50, 70) + 2u, which is the node's pixel
+    // (25, 23) + 2u: the platform filters the node in device pixels, so
+    // the frame keeps the density and nothing else.
+    assert_frame(defined_frame(&log), [2.0, 0.0, 0.0, 2.0, 25.0, 23.0]);
+}
+
+/// The value of float field `name` of the first line starting with `op`.
+fn float_field(log: &[String], op: &str, name: &str) -> f32 {
+    let line = log
+        .iter()
+        .find(|line| line.starts_with(op))
+        .unwrap_or_else(|| panic!("no {op}: {log:?}"));
+    let field = format!(" {name}=");
+    let at = line.find(&field).unwrap_or_else(|| panic!("{line}")) + field.len();
+    f32::from_bits(u32::from_str_radix(&line[at..at + 8], 16).expect("hex bits"))
+}
+
+/// The value of integer field `name` of the first line starting with `op`.
+fn int_field(log: &[String], op: &str, name: &str) -> i32 {
+    let line = log
+        .iter()
+        .find(|line| line.starts_with(op))
+        .unwrap_or_else(|| panic!("no {op}: {log:?}"));
+    let field = format!(" {name}=");
+    let at = line.find(&field).unwrap_or_else(|| panic!("{line}")) + field.len();
+    line[at..]
+        .split_whitespace()
+        .next()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| panic!("{line}"))
+}
+
+/// A node that carries an effect is rasterized by the platform into a layer
+/// of the node's own width by height, so under a density-scaled ancestor it
+/// spans the density's pixels per point and scales by the inverse, which
+/// leaves where it lands unchanged; a node without an effect stays in
+/// points under the ancestor's scale.
+#[test]
+fn an_effect_node_spans_device_pixels_under_the_density() {
+    use crate::renderer::mount::target::FilterRegistration;
+    use waterui_graphics::backend::AnyEffect;
+    use waterui_graphics::backend::filtrate::filters;
+
+    const DENSITY: f64 = 2.625;
+    let mut surface = HwuiSurface::new(SurfaceId::new(17), || {}).expect("an empty root");
+    let shared = surface.shared().clone();
+    let root = Shared::root(&shared);
+    let window = Shared::layer(&shared);
+    let filtered = Shared::layer(&shared);
+    let plain = Shared::layer(&shared);
+    let mut guards = waterui_graphics::backend::ParamGuards::default();
+    let registration = surface
+        .encoder()
+        .effects()
+        .register(
+            AnyEffect::filter(filters::Brightness(
+                guards.bind(nami::binding::<f32>(0.5_f32)),
+            )),
+            std::sync::Arc::new(|| {}),
+        )
+        .expect("a brightness chain registers on API 34");
+    Shared::run_transaction(&shared, None, None, |tx| {
+        tx[&root].push(&window);
+        tx[&window].transform(Affine::scale(DENSITY));
+        tx[&window].push(&filtered);
+        tx[&window].push(&plain);
+        for layer in [&filtered, &plain] {
+            tx[layer]
+                .layout_size(kurbo::Size::new(40.0, 24.0))
+                .record(|c| {
+                    c.fill(
+                        kurbo::Rect::new(0.0, 0.0, 40.0, 24.0),
+                        color(1.0, 0.0, 0.0, 1.0),
+                    );
+                });
+        }
+        tx[&filtered].filter(registration.filter_id());
+    });
+    let _ = surface
+        .frame(Instant::now(), DENSITY)
+        .expect("the frame encodes");
+    let log = surface.take_log();
+
+    let node_of = |layer: &cherenkov_record::Layer| {
+        surface.encoder().node(layer.id()).expect("a mounted node")
+    };
+    let (filtered, plain) = (node_of(&filtered), node_of(&plain));
+    let line = |op: &str, node: u32| format!("{op} node={node} ");
+
+    // 40 × 24 points at 2.625 pixels per point.
+    let position = line("SetPosition", filtered);
+    assert_eq!(int_field(&log, &position, "right"), 105, "{log:?}");
+    assert_eq!(int_field(&log, &position, "bottom"), 63, "{log:?}");
+    let record = line("Record", filtered);
+    assert_eq!(int_field(&log, &record, "width"), 105, "{log:?}");
+    assert_eq!(int_field(&log, &record, "height"), 63, "{log:?}");
+    let transform = line("SetTransform", filtered);
+    #[expect(clippy::cast_possible_truncation, reason = "the wire carries f32")]
+    let inverse = (1.0 / DENSITY) as f32;
+    assert_eq!(float_field(&log, &transform, "scale_x"), inverse);
+    assert_eq!(float_field(&log, &transform, "scale_y"), inverse);
+
+    let position = line("SetPosition", plain);
+    assert_eq!(int_field(&log, &position, "right"), 40, "{log:?}");
+    assert_eq!(int_field(&log, &position, "bottom"), 24, "{log:?}");
+    assert_eq!(
+        int_field(&log, &line("Record", plain), "width"),
+        40,
+        "{log:?}"
+    );
 }
 
 /// A stretched scroll-like layer under a transformed ancestor: `parent`
@@ -893,8 +1001,10 @@ fn stretched_scroll_log(viewport: kurbo::Rect) -> Vec<String> {
 fn a_stretched_scroll_layer_frames_exactly_its_clip_under_a_scaled_rotated_ancestor() {
     // A viewport off the layer's origin, over content with a top inset, so
     // the node's extent starts neither at the layer's origin nor at the
-    // viewport's.
-    let viewport = kurbo::Rect::new(8.0, 12.0, 342.0, 232.0);
+    // viewport's. A node clip is whole node pixels, so the viewport's edges
+    // relative to the node's origin, (8, 30), are multiples of eight
+    // points: whole pixels at 2.625 pixels per point.
+    let viewport = kurbo::Rect::new(8.0, 14.0, 344.0, 238.0);
     let log = stretched_scroll_log(viewport);
 
     let node_of = |op: &str| {
@@ -940,10 +1050,10 @@ fn a_stretched_scroll_layer_frames_exactly_its_clip_under_a_scaled_rotated_ances
             "the frame's {edge} edge {framed} is not the clip's {clip}: {defined:?} {set_clip}"
         );
     }
-    // The node's pixels are where the platform filters it: the frame keeps
-    // neither the density nor the ancestor's rotation and scale.
-    for (actual, expected) in defined[..4].iter().zip([1.0, 0.0, 0.0, 1.0]) {
-        assert!((actual - expected).abs() < 1e-6, "{defined:?}");
+    // The node's pixels are where the platform filters it, device pixels:
+    // the frame keeps the density, not the ancestor's rotation and scale.
+    for (actual, expected) in defined[..4].iter().zip([2.625, 0.0, 0.0, 2.625]) {
+        assert!((actual - expected).abs() < 1e-5, "{defined:?}");
     }
 }
 
@@ -1068,6 +1178,67 @@ fn a_filtered_recording_group_keeps_its_effect_node() {
             "{op}: {log:?}"
         );
     }
+}
+
+/// A filtered group's node is an effect node like a layer's: it spans the
+/// density's pixels per point, and a density change records it again.
+#[test]
+fn a_filtered_recording_group_spans_device_pixels_and_follows_the_density() {
+    use crate::renderer::mount::target::FilterRegistration;
+    use waterui_graphics::backend::AnyEffect;
+    use waterui_graphics::backend::filtrate::filters;
+
+    let mut surface = HwuiSurface::new(SurfaceId::new(18), || {}).unwrap();
+    let shared = surface.shared().clone();
+    let root = Shared::root(&shared);
+    let child = Shared::layer(&shared);
+    let registration = surface
+        .encoder()
+        .effects()
+        .register(
+            AnyEffect::filter(filters::Blur(2.0f32)),
+            std::sync::Arc::new(|| {}),
+        )
+        .unwrap();
+    Shared::run_transaction(&shared, None, None, |tx| {
+        tx[&root].push(&child);
+        tx[&child]
+            .layout_size(kurbo::Size::new(10.0, 10.0))
+            .record(|context| {
+                context.group(Group::new().filter(registration.filter_id()), |context| {
+                    context.fill(
+                        kurbo::Rect::new(0.0, 0.0, 10.0, 10.0),
+                        color(1.0, 0.0, 0.0, 1.0),
+                    );
+                });
+            });
+    });
+    let time = Instant::now();
+    let _ = surface.frame(time, 2.0).unwrap();
+    let log = surface.take_log();
+    let effect = log
+        .iter()
+        .find(|line| line.starts_with("SetEffect "))
+        .unwrap();
+    let node = effect
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("node="))
+        .unwrap();
+    let record = format!("Record node={node} ");
+    assert_eq!(int_field(&log, &record, "width"), 20, "{log:?}");
+    assert_eq!(int_field(&log, &record, "height"), 20, "{log:?}");
+    let transform = format!("SetTransform node={node} ");
+    assert_eq!(float_field(&log, &transform, "scale_x"), 0.5, "{log:?}");
+
+    let _ = surface
+        .frame(time + std::time::Duration::from_millis(16), 4.0)
+        .unwrap();
+    let log = surface.take_log();
+    let record = log
+        .iter()
+        .find(|line| line.contains(" width=40 height=40"))
+        .unwrap_or_else(|| panic!("the group records again at the new density: {log:?}"));
+    assert!(record.starts_with("Record "), "{record}");
 }
 
 #[test]
