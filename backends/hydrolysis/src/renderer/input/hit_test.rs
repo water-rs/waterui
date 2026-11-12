@@ -4620,19 +4620,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         chain
     }
 
-    pub(crate) fn register_pointer_target<F>(&mut self, bounds: kurbo::Rect, action: F)
-    where
-        F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
-    {
-        self.register_pointer_target_action(
-            bounds,
-            false,
-            None,
-            Rc::new(RefCell::new(action)),
-            self.render_depth,
-        );
-    }
-
     pub(crate) fn register_pointer_drag_target<F>(&mut self, bounds: kurbo::Rect, action: F)
     where
         F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,

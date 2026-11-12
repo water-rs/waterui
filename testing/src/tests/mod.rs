@@ -301,10 +301,10 @@ mod token_probe {
         BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, DividerMetrics, DragMapping,
         FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionMotion, Knob,
         Label, LinearProgressLook, ListMetrics, MenuLook, MenuPickerLook, MenuSpec, Motion,
-        NavigationMetrics, NavigationMotion, PickerSpec, PressFeedback, ProgressControl,
+        NavigationBarLook, NavigationSpec, PickerSpec, PressFeedback, ProgressControl,
         ProgressSpec, RadioGroupLook, SliderLayout, SliderLook, SliderSpec, StateLayer,
-        StepperLook, StepperSpec, Surface, TabItemGeometry, TabItemLayout, TableMetrics,
-        TabsMetrics, TextCaretMotion, ToggleSpec, WidgetInteractionState, WidgetTheme,
+        StepperLook, StepperSpec, Surface, TableMetrics, TabsLook, TabsSpec, TextCaretMotion,
+        ToggleSpec, WidgetInteractionState, WidgetTheme,
     };
     use hydrolysis::theme::{CheckboxLook, SwitchDrag, SwitchLook};
     use kurbo::{Point, Rect};
@@ -316,7 +316,7 @@ mod token_probe {
     use waterui::reactive::constant;
     use waterui::text::font::Font;
     use waterui::theme::{color as theme_color, install_color_signal, installed_color_signal};
-    use waterui::{Color, EasingCurve, Environment, Signal as _, SignalExt as _, View};
+    use waterui::{Color, Environment, Signal as _, SignalExt as _, View};
 
     use crate::Style;
 
@@ -380,15 +380,6 @@ mod token_probe {
                 fade_cycle_duration: Duration::from_millis(1_060),
                 frame_interval: Duration::from_millis(530),
                 min_opacity: 0.2,
-            }
-        }
-
-        fn navigation_motion(&self) -> NavigationMotion {
-            NavigationMotion {
-                transition_duration: Duration::from_millis(450),
-                transition_easing: EasingCurve::bezier(0.2, 0.0, 0.0, 1.0),
-                shared_axis_slide_distance: 30.0,
-                fade_through_threshold: 0.35,
             }
         }
 
@@ -517,49 +508,14 @@ mod token_probe {
             ))
         }
 
-        fn navigation_metrics(&self) -> NavigationMetrics {
-            NavigationMetrics {
-                automatic_bar_height: 64.0,
-                inline_bar_height: 64.0,
-                medium_bar_height: 112.0,
-                large_bar_height: 152.0,
-                inline_title_height: 28.0,
-                medium_title_height: 36.0,
-                large_title_height: 36.0,
-                title_leading_inset: 16.0,
-                title_trailing_inset: 16.0,
-                large_title_bottom_inset: 28.0,
-                horizontal_inset: 4.0,
-                item_spacing: 0.0,
-                search_height: 56.0,
-                search_vertical_inset: 4.0,
-                back_button_size: 40.0,
-                back_button_leading_inset: 4.0,
-                back_button_top_inset: 12.0,
-            }
+        fn navigation_bar(&self, _spec: &NavigationSpec, _env: &Environment) -> NavigationBarLook {
+            hydrolysis::testing::plain_navigation_look()
         }
 
-        fn draw_navigation_bar(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _background: &Paint,
-        ) {
+        fn tabs(&self, _spec: &TabsSpec, _env: &Environment) -> TabsLook {
+            hydrolysis::testing::plain_tabs_look()
         }
 
-        fn draw_navigation_bar_separator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_navigation_back_button(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn tabs_metrics(&self, _layout: TabItemLayout) -> TabsMetrics {
-            TabsMetrics {
-                bar_height: 48.0,
-                button_min_width: 48.0,
-                button_horizontal_inset: 16.0,
-                icon_label_spacing: 4.0,
-            }
-        }
-        fn draw_tabs_bar(&self, _recorder: &mut Recorder, _surface: Rect) {}
-        fn draw_tabs_bar_divider(&self, _recorder: &mut Recorder, _divider: Rect) {}
-        fn draw_tabs_highlight(&self, _recorder: &mut Recorder, _item: TabItemGeometry) {}
         fn draw_scroll_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
 
         fn divider_metrics(&self) -> DividerMetrics {

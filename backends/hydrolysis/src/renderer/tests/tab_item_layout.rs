@@ -1,9 +1,10 @@
-//! Tab item layout tests: the renderer asks the theme's `tabs_item_layout`
-//! hook with the bar's width and item count, and the highlight covers the
-//! whole item when the theme answers `Horizontal`.
+//! Tab item layout tests: the renderer lays the items out as the theme's
+//! tabs look says for the bar's extent, and the highlight covers the whole
+//! item when the look lays them out horizontally.
 
 use super::*;
 use crate::theme::TabItemLayout;
+use waterui::navigation::tab::NativeTabStyle;
 use waterui_core::views::{SharedAnyViews, ViewSnapshot as _};
 use waterui_navigation::tab::{Tab, TabsLayout, tab_style};
 
@@ -73,28 +74,6 @@ fn theme_with_layout(layout: Option<TabItemLayout>) -> MinimalTestTheme {
         forced_tab_item_layout: layout,
         ..Default::default()
     }
-}
-
-#[test]
-fn renderer_asks_the_layout_hook_with_bar_width_and_item_count() {
-    let env = test_environment();
-    let queries = Rc::new(RefCell::new(Vec::new()));
-    let mut theme = theme_with_layout(None);
-    theme.tabs_layout_queries = Rc::clone(&queries);
-    let mut renderer = test_renderer_with_theme(theme);
-
-    capture_root_window(
-        &mut renderer,
-        tabs_view(3),
-        &env,
-        Rect::new(0.0, 0.0, 480.0, 320.0),
-    );
-
-    let queries = queries.borrow();
-    assert!(
-        queries.contains(&(480.0, 3)),
-        "tabs_item_layout must see the bar width and item count, got {queries:?}"
-    );
 }
 
 #[test]
@@ -183,7 +162,9 @@ fn horizontal_highlight_hugs_icon_spacing_label_not_the_button() {
     // Button share: 1400/4 = 350 wide; the highlight must instead be the
     // content — icon + icon_label_spacing + label — grown by
     // button_horizontal_inset on each side.
-    let metrics = MinimalTestTheme::default().tabs_metrics(TabItemLayout::Horizontal);
+    let metrics = MinimalTestTheme::default()
+        .tabs(&TabsSpec::new(NativeTabStyle::TabBar), &env)
+        .metrics(TabItemLayout::Horizontal);
     let icon_width = measure_plain(&mut renderer, &env, ICON_TEXT);
     let label_width = measure_plain(&mut renderer, &env, "Tab 1");
     let expected = f64::mul_add(
@@ -212,14 +193,12 @@ fn horizontal_highlight_hugs_icon_spacing_label_not_the_button() {
     clippy::float_cmp,
     reason = "the comparison is exact by design — the value originates from a literal fixture, not accumulated arithmetic"
 )]
-fn sidebar_tabs_query_the_layout_hook_with_their_strip_extent() {
+fn sidebar_tabs_lay_out_by_their_strip_extent() {
     let env = test_environment();
-    let queries = Rc::new(RefCell::new(Vec::new()));
     let draws = Rc::new(RefCell::new(Vec::new()));
     let mut theme = theme_with_layout(None);
     // A width-class theme like M3's: horizontal items from 600 up.
     theme.horizontal_from_width = Some(600.0);
-    theme.tabs_layout_queries = Rc::clone(&queries);
     theme.tabs_highlight_draws = Rc::clone(&draws);
     let mut renderer = test_renderer_with_theme(theme);
 
@@ -230,13 +209,9 @@ fn sidebar_tabs_query_the_layout_hook_with_their_strip_extent() {
         Rect::new(0.0, 0.0, 800.0, 320.0),
     );
 
-    let queries = queries.borrow();
-    assert!(
-        !queries.is_empty() && queries.iter().all(|(width, _)| *width == 48.0),
-        "the sidebar must report its strip width, got {queries:?}"
-    );
-    // The strip (0,0)-(48,320) keeps vertical items, so the highlight hugs
-    // the item's trailing edge rather than spanning it.
+    // The strip (0,0)-(48,320) is narrower than the width class, though the
+    // window is not, so its items stay vertical: the highlight hugs the
+    // item's trailing edge rather than spanning it.
     let draws = draws.borrow();
     let [(bounds, layout)] = draws.as_slice() else {
         panic!("expected one highlight draw, got {draws:?}");

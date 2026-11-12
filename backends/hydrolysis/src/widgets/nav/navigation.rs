@@ -3,13 +3,16 @@ use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::ROOT_NAVIGATION_IDENTITY;
 use crate::renderer::SafeAreaLayout;
 use crate::renderer::bounded_proposal;
+use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
+use crate::renderer::live_bar::{BarFrames, LiveBarParts};
 use crate::renderer::{
     Edge, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
     WidgetRenderContext, measure_navigation_view_intrinsic,
     measure_owned_navigation_view_with_proposal, measure_transient_view_with_proposal,
-    navigation_back_button_rect, navigation_base_bar_height_for_display_mode,
+    navigation_back_button_rect, navigation_base_bar_height, navigation_look,
     normalize_layout_view, split_compact_threshold,
 };
+use crate::theme::{NavigationBarLook, NavigationSpec, WidgetTheme};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -17,6 +20,7 @@ use accesskit::{
 use cherenkov_record::{Paint, WorkingColor};
 use nami::{Computed, Signal};
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use waterui::navigation::split::NavigationSplitDetailBuilder;
 use waterui::navigation::{
@@ -30,6 +34,7 @@ use waterui_controls::label::LabelDisplayMode;
 use waterui_controls::text_field::TextField;
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
+use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Metadata, Native};
 use waterui_graphics::color::Color;
@@ -42,9 +47,77 @@ fn navigation_leading_reserve(env: &Environment) -> f64 {
         .map_or(0.0, |reserve| reserve.0)
 }
 
-fn back_button_title_reserve(theme: &Rc<dyn crate::theme::WidgetTheme>) -> f64 {
-    let metrics = theme.navigation_metrics();
+fn back_button_title_reserve(metrics: &crate::theme::NavigationMetrics) -> f64 {
     metrics.back_button_size + metrics.title_leading_inset
+}
+
+/// What a navigation chrome keeps of one back button across renders: its
+/// live chrome, and the reported-state binding the chrome keeps current.
+struct BackButton {
+    parts: Option<LiveChromeParts>,
+    report: nami::Binding<InteractionState>,
+}
+
+impl BackButton {
+    fn new() -> Self {
+        Self {
+            parts: None,
+            report: nami::Binding::container(InteractionState::empty()),
+        }
+    }
+
+    /// The button's live chrome of `look` on `rect`, moved to the state its
+    /// interaction `key` reported.
+    fn ensure<E: crate::text::TextEngine>(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<E>,
+        look: &NavigationBarLook,
+        rect: kurbo::Rect,
+        key: &crate::renderer::InteractionKey,
+        env: &Environment,
+    ) -> &LiveChromeParts {
+        let flags = renderer.reported_interaction_state(key);
+        LiveChromeParts::ensure(
+            &mut self.parts,
+            look.back(),
+            &ChromeContent::default(),
+            rect,
+            flags,
+            env,
+            &self.report,
+        )
+    }
+}
+
+/// Binds the interaction target of the back button of `look` on `rect`, the
+/// chrome's live operands following it. Returns the touch target and the
+/// press slot its tap registers on.
+fn bind_back_button<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
+    look: &NavigationBarLook,
+    rect: kurbo::Rect,
+    key: crate::renderer::InteractionKey,
+    env: &Environment,
+    parts: Option<&LiveChromeParts>,
+) -> (kurbo::Rect, crate::renderer::PressSlot) {
+    let target = look.back().target(rect);
+    let (_, press_slot, handles) =
+        renderer.bind_live_chrome_target(key, target, env, false, look.back());
+    if let Some(parts) = parts {
+        handles.attach_live(Rc::clone(parts.chrome()));
+    }
+    (target, press_slot)
+}
+
+/// Lists the back button `parts` in `ctx`: the chrome's surface and icon
+/// beneath its interaction layers.
+fn push_back_button<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
+    ctx: RenderContext,
+    parts: &LiveChromeParts,
+) {
+    parts.push_below(renderer, ctx);
+    parts.push_above(renderer, ctx);
 }
 
 /// The x the bar's leading toolbar group starts at. A pushed page's back
@@ -97,7 +170,10 @@ fn presented_page_env(
 ) -> Environment {
     let mut env = base.clone();
     if identity != 0 {
-        env.insert(NavigationLeadingReserve(back_button_title_reserve(theme)));
+        let metrics = navigation_look(theme, base).metrics();
+        env.insert(NavigationLeadingReserve(back_button_title_reserve(
+            &metrics,
+        )));
     }
     env
 }
@@ -126,6 +202,29 @@ pub struct NavigationViewRenderState<E: crate::text::TextEngine> {
     hidden: Computed<bool>,
     display_mode: NavigationTitleDisplayMode,
     subtitle_present: bool,
+    /// The look the theme gave for the chrome's spec, held while the spec
+    /// stays the same.
+    look: Option<(NavigationSpec, NavigationBarLook)>,
+    /// The top bar's and the bottom bar's parts recorded from the look.
+    top_bar: Option<LiveBarParts>,
+    bottom_bar: Option<LiveBarParts>,
+}
+
+/// The look for the chrome's spec in `env`: the one in `held` when the spec
+/// is unchanged, otherwise requested again, which drops the parts recorded
+/// from the old one.
+fn held_navigation_look(
+    held: &mut Option<(NavigationSpec, NavigationBarLook)>,
+    theme: &Rc<dyn WidgetTheme>,
+    env: &Environment,
+) -> (NavigationBarLook, bool) {
+    let spec = NavigationSpec::new(waterui_core::layout::layout_direction(env).snapshot());
+    let requested = !held.as_ref().is_some_and(|(held, _)| *held == spec);
+    if requested {
+        *held = Some((spec, theme.navigation_bar(&spec, env)));
+    }
+    let (_, look) = held.as_ref().expect("the look was just ensured");
+    (look.clone(), requested)
 }
 
 /// Whether a bar slot is bound. An unbound slot is `()`, which resolves to
@@ -230,7 +329,25 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
             hidden,
             display_mode,
             subtitle_present,
+            look: None,
+            top_bar: None,
+            bottom_bar: None,
         }
+    }
+
+    /// The navigation look for `env`, requested again — and the bars' parts
+    /// dropped — when its spec changed.
+    fn navigation_look(
+        &mut self,
+        theme: &Rc<dyn WidgetTheme>,
+        env: &Environment,
+    ) -> NavigationBarLook {
+        let (look, requested) = held_navigation_look(&mut self.look, theme, env);
+        if requested {
+            self.top_bar = None;
+            self.bottom_bar = None;
+        }
+        look
     }
 
     /// Eagerly build the bar/content sub-views (the measure path has no renderer to
@@ -350,9 +467,8 @@ pub fn navigation_view_accessibility<E: crate::text::TextEngine>(
             ctx.as_ref()
                 .zip(theme)
                 .map_or((None, None, None), |(ctx, theme)| {
-                    let metrics = theme.navigation_metrics();
-                    let bar_height =
-                        navigation_base_bar_height_for_display_mode(display_mode, theme);
+                    let metrics = navigation_look(theme, env).metrics();
+                    let bar_height = navigation_base_bar_height(display_mode, metrics);
                     let bar_rect = kurbo::Rect::new(
                         ctx.bounds().x0,
                         ctx.bounds().y0,
@@ -380,6 +496,7 @@ pub fn navigation_view_accessibility<E: crate::text::TextEngine>(
                             renderer.state_mut(),
                             env,
                             theme,
+                            &metrics,
                         )
                         .width,
                     );
@@ -503,11 +620,11 @@ pub fn measure_navigation_view_node<E: crate::text::TextEngine>(
         return ViewDimensions::new(LayoutSize::new(width, height));
     }
     let bar_hidden = hydro.measure_signal(&state.hidden);
-    let metrics = theme.navigation_metrics();
+    let metrics = navigation_look(theme, env).metrics();
     let bar_height = if bar_hidden {
         0.0
     } else {
-        let base = navigation_base_bar_height_for_display_mode(state.display_mode, theme);
+        let base = navigation_base_bar_height(state.display_mode, metrics);
         let search_extra = if state.search.is_some() {
             metrics
                 .search_vertical_inset
@@ -529,13 +646,14 @@ pub fn measure_navigation_view_node<E: crate::text::TextEngine>(
             title.height + subtitle.height,
         )
     } else if bar_height > 0.0 {
-        measure_retained_toolbar_group(&state.principal, hydro, env, theme)
+        measure_retained_toolbar_group(&state.principal, hydro, env, theme, &metrics)
     } else {
         LayoutSize::zero()
     };
-    let leading_size = measure_retained_toolbar_group(&state.leading, hydro, env, theme);
-    let trailing_size = measure_retained_toolbar_group(&state.trailing, hydro, env, theme);
-    let bottom_size = measure_retained_toolbar_group(&state.bottom, hydro, env, theme);
+    let leading_size = measure_retained_toolbar_group(&state.leading, hydro, env, theme, &metrics);
+    let trailing_size =
+        measure_retained_toolbar_group(&state.trailing, hydro, env, theme, &metrics);
+    let bottom_size = measure_retained_toolbar_group(&state.bottom, hydro, env, theme, &metrics);
     // Measure the retained field itself: a throwaway TextField would allocate on
     // every measure and shape its text in a cache the rendered field never sees.
     let search_size = state
@@ -582,8 +700,8 @@ fn measure_retained_toolbar_group<E: crate::text::TextEngine>(
     hydro: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
+    metrics: &crate::theme::NavigationMetrics,
 ) -> LayoutSize {
-    let metrics = theme.navigation_metrics();
     let mut width = 0.0_f64;
     let mut height = 0.0_f64;
     for (index, item) in group.iter().enumerate() {
@@ -654,11 +772,12 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
         )
     };
     let theme = ctx.theme();
-    let metrics = theme.navigation_metrics();
+    let look = state.borrow_mut().navigation_look(&theme, env);
+    let metrics = look.metrics();
     let top_bar_height = if ctx.renderer_mut().read_signal(&hidden_signal) {
         0.0
     } else {
-        let base = navigation_base_bar_height_for_display_mode(display_mode, &theme);
+        let base = navigation_base_bar_height(display_mode, metrics);
         let search_extra = if search.is_some() {
             metrics
                 .search_vertical_inset
@@ -690,26 +809,31 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
     let (bar_rect, bottom_rect) = (top.band, bottom.band);
 
     if top_bar_height > 0.0 {
-        let base_bar_height = navigation_base_bar_height_for_display_mode(display_mode, &theme);
-        let bar_color = Paint::Solid(ctx.renderer_mut().read_signal(&color_signal));
+        let base_bar_height = navigation_base_bar_height(display_mode, metrics);
+        let bar_color = ctx.renderer_mut().read_signal(&color_signal);
         // §7.1 "Chrome": the bar's surface extends through the regions of
         // the edges a top bar can touch — top, leading, trailing — to the
         // window edge; the separator stays at the bar's inner edge and
         // everything else keeps `bar_rect`.
         let bar_surface = top.surface(Edge::Top);
-        {
-            let theme = ctx.theme();
-            ctx.draw_context(|draw| {
-                theme.draw_navigation_bar(&mut *draw, bar_surface, &bar_color);
-                let separator = kurbo::Rect::new(
-                    bar_surface.x0,
-                    (bar_rect.y1 - 1.0).max(bar_rect.y0),
-                    bar_surface.x1,
-                    bar_rect.y1,
-                );
-                theme.draw_navigation_bar_separator(&mut *draw, separator);
-            });
-        }
+        let separator = kurbo::Rect::new(
+            bar_surface.x0,
+            (bar_rect.y1 - 1.0).max(bar_rect.y0),
+            bar_surface.x1,
+            bar_rect.y1,
+        );
+        let render_ctx = ctx.render_context();
+        let parts = LiveBarParts::ensure(
+            &mut state.borrow_mut().top_bar,
+            &look,
+            BarFrames {
+                surface: bar_surface,
+                separator: Some(separator),
+            },
+            bar_color,
+        )
+        .clone();
+        parts.push(ctx.renderer_mut(), render_ctx);
 
         let (leading_size, trailing_size) = {
             let mut state = state.borrow_mut();
@@ -717,13 +841,13 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
                 &mut state.leading,
                 ctx.renderer_mut(),
                 env,
-                &theme,
+                &metrics,
             );
             let trailing = measure_toolbar_group_intrinsic(
                 &mut state.trailing,
                 ctx.renderer_mut(),
                 env,
-                &theme,
+                &metrics,
             );
             (leading, trailing)
         };
@@ -752,6 +876,7 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
                 leading_rect,
                 ToolbarAlignment::Leading,
                 top,
+                metrics.item_spacing,
             );
             flush_toolbar_group(
                 ctx,
@@ -760,6 +885,7 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
                 trailing_rect,
                 ToolbarAlignment::Trailing,
                 top,
+                metrics.item_spacing,
             );
         }
 
@@ -807,6 +933,7 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
                     title_rect,
                     ToolbarAlignment::Center,
                     top,
+                    metrics.item_spacing,
                 );
             }
         }
@@ -858,17 +985,23 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
     }
 
     if bottom_bar_height > 0.0 {
-        let bar_color = Paint::Solid(ctx.renderer_mut().read_signal(&color_signal));
+        let bar_color = ctx.renderer_mut().read_signal(&color_signal);
         // §7.1 "Chrome": the bottom bar's surface extends through the
         // regions of the edges a bottom bar can touch — bottom, leading,
         // trailing — to the window edge.
         let bottom_surface = bottom.surface(Edge::Bottom);
-        {
-            let theme = ctx.theme();
-            ctx.draw_context(|draw| {
-                theme.draw_navigation_bar(&mut *draw, bottom_surface, &bar_color);
-            });
-        }
+        let render_ctx = ctx.render_context();
+        let parts = LiveBarParts::ensure(
+            &mut state.borrow_mut().bottom_bar,
+            &look,
+            BarFrames {
+                surface: bottom_surface,
+                separator: None,
+            },
+            bar_color,
+        )
+        .clone();
+        parts.push(ctx.renderer_mut(), render_ctx);
         flush_toolbar_group(
             ctx,
             &mut state.borrow_mut().bottom,
@@ -876,6 +1009,7 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
             bottom_rect,
             ToolbarAlignment::Center,
             bottom,
+            metrics.item_spacing,
         );
     }
 }
@@ -891,9 +1025,8 @@ fn measure_toolbar_group_intrinsic<E: crate::text::TextEngine>(
     group: &mut [RetainedSubview<E>],
     renderer: &mut HydrolysisRenderer<E>,
     env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
+    metrics: &crate::theme::NavigationMetrics,
 ) -> LayoutSize {
-    let metrics = theme.navigation_metrics();
     let mut width = 0.0_f64;
     let mut height = 0.0_f64;
     for (index, item) in group.iter_mut().enumerate() {
@@ -917,16 +1050,16 @@ fn flush_toolbar_group<E: crate::text::TextEngine>(
     bounds: kurbo::Rect,
     alignment: ToolbarAlignment,
     bar: &crate::renderer::ChromeBar,
+    item_spacing: f64,
 ) {
     if group.is_empty() || bounds.width() <= 0.0 || bounds.height() <= 0.0 {
         return;
     }
-    let metrics = ctx.theme().navigation_metrics();
     let sizes: Vec<LayoutSize> = group
         .iter_mut()
         .map(|item| item.measure_intrinsic(ctx.renderer_mut(), env))
         .collect();
-    let total_width = metrics.item_spacing.mul_add(
+    let total_width = item_spacing.mul_add(
         crate::num_cast::usize_as_f64(sizes.len().saturating_sub(1)),
         sizes.iter().map(|size| f64::from(size.width)).sum::<f64>(),
     );
@@ -953,7 +1086,7 @@ fn flush_toolbar_group<E: crate::text::TextEngine>(
                 item_area,
             );
         }
-        x += width + metrics.item_spacing;
+        x += width + item_spacing;
     }
 }
 
@@ -1029,9 +1162,28 @@ pub struct NavigationSplitRenderState<E: crate::text::TextEngine> {
     placeholder: RetainedSubview<E>,
     content: Option<(Id, bool, RetainedSubview<E>)>,
     detail: Option<(Id, bool, RetainedSubview<E>)>,
+    /// The look the theme gave for the chrome's spec, held while the spec
+    /// stays the same.
+    look: Option<(NavigationSpec, NavigationBarLook)>,
+    /// The collapsed split's back button.
+    back: BackButton,
 }
 
 impl<E: crate::text::TextEngine> NavigationSplitRenderState<E> {
+    /// The navigation look for `env`, requested again — and the back
+    /// button's parts dropped — when its spec changed.
+    fn navigation_look(
+        &mut self,
+        theme: &Rc<dyn WidgetTheme>,
+        env: &Environment,
+    ) -> NavigationBarLook {
+        let (look, requested) = held_navigation_look(&mut self.look, theme, env);
+        if requested {
+            self.back.parts = None;
+        }
+        look
+    }
+
     pub(crate) fn from_layout(split: NavigationSplitLayout) -> Self {
         let (
             primary,
@@ -1056,6 +1208,8 @@ impl<E: crate::text::TextEngine> NavigationSplitRenderState<E> {
             placeholder: RetainedSubview::new(placeholder.build()),
             content: None,
             detail: None,
+            look: None,
+            back: BackButton::new(),
         }
     }
 
@@ -1733,12 +1887,17 @@ fn render_compact_split<E: crate::text::TextEngine>(
     selection: &CompactSplitSelection,
 ) {
     let bounds = ctx.bounds;
+    let look = {
+        let theme = ctx.theme();
+        state.borrow_mut().navigation_look(&theme, env)
+    };
+    let metrics = look.metrics();
     let mut compact_env = env.clone();
     compact_env.insert(NavigationLeadingReserve(back_button_title_reserve(
-        &ctx.theme(),
+        &metrics,
     )));
     let (front, back_selection) = compact_split_front(selection);
-    let back_rect = navigation_back_button_rect(bounds, ctx.theme().navigation_metrics());
+    let back_rect = navigation_back_button_rect(bounds, metrics);
     #[cfg(feature = "accessibility")]
     if let Some(back_binding) = back_selection.clone() {
         // The back node precedes the front pane's nodes in the tree, the
@@ -1772,17 +1931,24 @@ fn render_compact_split<E: crate::text::TextEngine>(
     }
 
     if let Some(selection) = back_selection {
-        {
-            let theme = ctx.theme();
-            ctx.draw_context(|draw| {
-                theme.draw_navigation_back_button(&mut *draw, back_rect);
-            });
-        }
-        ctx.renderer_mut()
-            .register_pointer_target(back_rect, move |_renderer, _point, _| {
+        let key = crate::renderer::InteractionKey::for_rc(state, 0);
+        let parts = state
+            .borrow_mut()
+            .back
+            .ensure(ctx.renderer_mut(), &look, back_rect, &key, env)
+            .clone();
+        let (target, press_slot) =
+            bind_back_button(ctx.renderer_mut(), &look, back_rect, key, env, Some(&parts));
+        let render_ctx = ctx.render_context();
+        push_back_button(ctx.renderer_mut(), render_ctx, &parts);
+        ctx.renderer_mut().register_interactive_pointer_target(
+            target,
+            press_slot,
+            move |_renderer, _point, _| {
                 selection.set(None);
                 true
-            });
+            },
+        );
     }
 }
 
@@ -1874,6 +2040,11 @@ pub struct NavigationStackRenderState<E: crate::text::TextEngine> {
     root: Option<crate::renderer::navigation_state::StackPage<E>>,
     background: Option<Computed<WorkingColor>>,
     transition_style: AnyNavigationTransition,
+    /// The look the theme gave for the chrome's spec, held while the spec
+    /// stays the same.
+    look: Option<(NavigationSpec, NavigationBarLook)>,
+    /// The back button of each pushed page, by page identity.
+    back_buttons: BTreeMap<u64, BackButton>,
 }
 
 impl<E: crate::text::TextEngine> NavigationStackRenderState<E> {
@@ -1884,7 +2055,23 @@ impl<E: crate::text::TextEngine> NavigationStackRenderState<E> {
             root: None,
             background: None,
             transition_style,
+            look: None,
+            back_buttons: BTreeMap::new(),
         }
+    }
+
+    /// The navigation look for `env`, requested again — and the back
+    /// buttons' parts dropped — when its spec changed.
+    fn navigation_look(
+        &mut self,
+        theme: &Rc<dyn WidgetTheme>,
+        env: &Environment,
+    ) -> NavigationBarLook {
+        let (look, requested) = held_navigation_look(&mut self.look, theme, env);
+        if requested {
+            self.back_buttons.clear();
+        }
+        look
     }
 
     fn resolve_root(&mut self, env: &Environment) -> Option<NavigationDestinationState> {
@@ -2136,14 +2323,41 @@ fn record_page_body<E: crate::text::TextEngine>(
         entry
             .content
             .record_built_page(renderer, env, size, safe_area);
+        drop((entries, pending_removed));
         let theme = renderer.theme();
-        renderer.draw_context(page_ctx, |draw| {
-            theme.draw_navigation_back_button(
-                draw,
-                navigation_back_button_rect(bounds, theme.navigation_metrics()),
-            );
-        });
+        let look = state.borrow_mut().navigation_look(&theme, env);
+        let parts = page_back_button(
+            renderer,
+            state,
+            identity,
+            &look,
+            navigation_back_button_rect(bounds, look.metrics()),
+            env,
+        );
+        push_back_button(renderer, page_ctx, &parts);
     }
+}
+
+/// The back button parts of the pushed page `identity`, ensured on `rect`.
+/// Each page keeps its own chrome, since one live object is listed in one
+/// page scope; all pages share one interaction key, as only the active page
+/// takes input.
+fn page_back_button<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
+    state: &Rc<RefCell<NavigationStackRenderState<E>>>,
+    identity: u64,
+    look: &NavigationBarLook,
+    rect: kurbo::Rect,
+    env: &Environment,
+) -> LiveChromeParts {
+    let key = crate::renderer::InteractionKey::for_rc(state, 0);
+    state
+        .borrow_mut()
+        .back_buttons
+        .entry(identity)
+        .or_insert_with(BackButton::new)
+        .ensure(renderer, look, rect, &key, env)
+        .clone()
 }
 
 /// The stack inputs every page record of one frame shares.
@@ -2584,7 +2798,7 @@ pub fn navigation_stack_accessibility<E: crate::text::TextEngine>(
                     );
                     return;
                 };
-                let metrics = theme.navigation_metrics();
+                let metrics = navigation_look(theme, env).metrics();
                 let back_bounds = navigation_back_button_rect(ctx.bounds(), metrics);
                 let _ = renderer.register_accessibility_node(
                     back_node,
@@ -2663,7 +2877,10 @@ pub fn render_navigation_stack_parts<E: crate::text::TextEngine>(
     env: &Environment,
 ) {
     let transition_style = state.borrow().transition_style.clone();
-    let transition_motion = ctx.theme().navigation_motion();
+    let theme = ctx.theme();
+    let look = state.borrow_mut().navigation_look(&theme, env);
+    let transition_motion = look.motion();
+    let metrics = look.metrics();
     let slot_key = crate::renderer::NavigationKey::for_rc(state);
     let entries = ctx.renderer_mut().bind_navigation_entries(&slot_key);
 
@@ -2924,6 +3141,27 @@ pub fn render_navigation_stack_parts<E: crate::text::TextEngine>(
         transition_motion,
         presentation,
     );
+    {
+        let retained: std::collections::BTreeSet<u64> = {
+            let renderer = ctx.renderer_mut();
+            let slot = renderer
+                .navigation
+                .slots
+                .get(&slot_key)
+                .expect("Hydrolysis navigation slot missing");
+            let entries = slot.entries.borrow();
+            let pending_removed = slot.pending_removed.borrow();
+            entries
+                .iter()
+                .chain(pending_removed.iter())
+                .map(|entry| entry.identity)
+                .collect()
+        };
+        state
+            .borrow_mut()
+            .back_buttons
+            .retain(|identity, _| retained.contains(identity));
+    }
     if let Some((completed, cancelled)) = interactive_end {
         if completed || cancelled {
             let slot = ctx
@@ -2963,7 +3201,6 @@ pub fn render_navigation_stack_parts<E: crate::text::TextEngine>(
         identity: previous_identity,
     };
 
-    let metrics = ctx.theme().navigation_metrics();
     let edge_rect = kurbo::Rect::new(
         ctx.bounds.x0,
         ctx.bounds.y0,
@@ -3049,13 +3286,20 @@ pub fn render_navigation_stack_parts<E: crate::text::TextEngine>(
     );
 
     let back_button_rect = navigation_back_button_rect(ctx.bounds, metrics);
-    let back_hit_rect = back_button_rect;
-    let back_interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
-    let (_, back_press_slot, _) = ctx.renderer_mut().bind_control_interaction_target(
-        back_interaction_key,
-        back_hit_rect,
+    // The page's own record built the chrome in its page space; the hit
+    // target lies in this node's space.
+    let back_parts = state
+        .borrow()
+        .back_buttons
+        .get(&active_identity)
+        .and_then(|button| button.parts.clone());
+    let (back_hit_rect, back_press_slot) = bind_back_button(
+        ctx.renderer_mut(),
+        &look,
+        back_button_rect,
+        crate::renderer::InteractionKey::for_rc(state, 0),
         env,
-        false,
+        back_parts.as_ref(),
     );
     let back_slot_key = slot_key;
     ctx.renderer_mut().register_interactive_pointer_target(
