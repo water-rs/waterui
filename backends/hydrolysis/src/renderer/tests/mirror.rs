@@ -695,6 +695,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             .mirror
             .get_or_insert_with(|| MirrorWindow::new(&registry));
         let redraw = self.host_redraw_handle.clone();
+        let mut scene_frames = std::mem::take(&mut self.core.scene_frames);
         let core = &mut self.core;
         let window_material = core.window_material;
         let mut wakes = |cell: &Rc<
@@ -705,9 +706,13 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             kurbo::Affine::IDENTITY,
             scale,
             &roots,
-            &mut wakes,
+            crate::renderer::mount::CommitReports {
+                wakes: &mut wakes,
+                scene_frames: &mut scene_frames,
+            },
             window_material.as_ref(),
         );
+        self.core.scene_frames = scene_frames;
         let stats = window.mount.take_stats();
         self.core.clear_commit_marks();
         crate::renderer::mount::layers::census(&roots, stats)

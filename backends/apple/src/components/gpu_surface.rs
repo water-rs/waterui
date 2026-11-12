@@ -2981,7 +2981,7 @@ pub mod native_test {
     use waterui_graphics::backend::cherenkov::{
         Display, Draw, Recorder, SurfaceError, WorkingColor,
     };
-    use waterui_graphics::backend::{RecordingResources, SceneContent, SceneView};
+    use waterui_graphics::backend::{NextFrame, RecordingResources, SceneContent, SceneView};
     use waterui_graphics::gpu::runtime::HostedLayerError;
 
     use super::{
@@ -3009,12 +3009,12 @@ pub mod native_test {
             _resources: &mut RecordingResources<'_>,
             width: f32,
             height: f32,
-        ) -> bool {
+        ) -> NextFrame {
             recorder.fill(
                 kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
                 WorkingColor::WHITE,
             );
-            false
+            NextFrame::Idle
         }
 
         fn rebuild_for_engine(&mut self) {}
@@ -3033,12 +3033,12 @@ pub mod native_test {
             _resources: &mut RecordingResources<'_>,
             width: f32,
             height: f32,
-        ) -> bool {
+        ) -> NextFrame {
             recorder.fill(
                 kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
                 WorkingColor::WHITE,
             );
-            false
+            NextFrame::Idle
         }
 
         fn wants_input_events(&self) -> bool {
@@ -3053,8 +3053,8 @@ pub mod native_test {
     }
 
     /// Self-animating fixture content: `build_scene` always answers
-    /// `true`, exercising the `again` path that schedules the next frame
-    /// without un-producing this one.
+    /// `NextFrame::Perpetual`, exercising the path that schedules the next
+    /// frame without un-producing this one.
     struct AnimatingFixtureContent;
 
     impl SceneContent for AnimatingFixtureContent {
@@ -3064,12 +3064,12 @@ pub mod native_test {
             _resources: &mut RecordingResources<'_>,
             width: f32,
             height: f32,
-        ) -> bool {
+        ) -> NextFrame {
             recorder.fill(
                 kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
                 WorkingColor::WHITE,
             );
-            true
+            NextFrame::Perpetual
         }
 
         fn rebuild_for_engine(&mut self) {}

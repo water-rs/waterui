@@ -8,7 +8,7 @@ use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use waterui_graphics::backend::cherenkov::{Display, FrameScope, FrameTime, Surface, SurfaceId};
 use waterui_graphics::backend::draw::{Content, Draw};
 use waterui_graphics::backend::{
-    HeldResources, SceneFrame, SceneInvalidator, SceneResources, SceneUpdate, SceneView,
+    HeldResources, NextFrame, SceneFrame, SceneInvalidator, SceneResources, SceneUpdate, SceneView,
     resolve_scene_proposal, scene_stretch_axis,
 };
 use waterui_graphics::gpu::{
@@ -28,7 +28,7 @@ pub struct Scene {
     dirty: Rc<Cell<bool>>,
     /// The batch timestamp this scene's content was last produced into,
     /// shared with its participant like `dirty`. A content that asks for
-    /// another frame keeps it — `again` re-dirties the scene to schedule
+    /// another frame keeps it — a `NextFrame` request re-dirties the scene to schedule
     /// the next frame without un-producing the one just written; only a
     /// real invalidation clears it, through `mount`'s invalidator.
     produced_for: Rc<Cell<Option<FrameTime>>>,
@@ -242,7 +242,7 @@ pub struct ScenePart {
     pending: Cell<bool>,
     /// The batch timestamp this scene last produced into — the `Scene`'s
     /// shared cell, so the mounted invalidator un-produces the frame a
-    /// content change invalidates, while an `again` request for the next
+    /// content change invalidates, while a `NextFrame` request for the next
     /// frame leaves this frame's production standing.
     produced_for: Rc<Cell<Option<FrameTime>>>,
     /// The owner's routed-failure channel: a batch failure the shared
@@ -374,15 +374,15 @@ impl ScenePart {
                     time: time.instant(),
                 },
             );
-            let again = match update {
-                SceneUpdate::Retained { again }
+            let next = match update {
+                SceneUpdate::Retained { next }
                     if recorded
                         .is_some_and(|recorded| recorded.2.total_cmp(&display.scale).is_eq()) =>
                 {
-                    again
+                    next
                 }
                 SceneUpdate::Retained { .. } | SceneUpdate::Record => {
-                    let (recording, held, again) =
+                    let (recording, held, next) =
                         self.record_content(size.0, size.1, display.scale);
                     self.surface.update(|tx| {
                         tx[self.surface.root()].content(recording);
@@ -390,11 +390,11 @@ impl ScenePart {
                     // Replacing the installed layer precedes releasing the
                     // old registrations.
                     *self.installed.borrow_mut() = held;
-                    again
+                    next
                 }
             };
             self.recorded_geometry.set(Some(geometry));
-            if again {
+            if next.wants_frame() {
                 self.dirty.set(true);
                 self.redraw.request_redraw();
             }
@@ -420,12 +420,12 @@ impl ScenePart {
         width: f32,
         height: f32,
         scale: f64,
-    ) -> (Content, HeldResources, bool) {
+    ) -> (Content, HeldResources, NextFrame) {
         let mut resources = self.resources.recording();
-        let mut again = false;
+        let mut next = NextFrame::Idle;
         let recording = self.surface.record(|recorder| {
             recorder.transform(kurbo::Affine::scale(scale), |recorder| {
-                again = self.view.borrow_mut().content_mut().build_scene(
+                next = self.view.borrow_mut().content_mut().build_scene(
                     recorder,
                     &mut resources,
                     width,
@@ -433,7 +433,7 @@ impl ScenePart {
                 );
             });
         });
-        (recording, resources.finish(), again)
+        (recording, resources.finish(), next)
     }
 }
 
@@ -463,7 +463,7 @@ impl SceneParticipant for ScenePart {
 
     fn produced_at(&self, time: FrameTime) -> bool {
         // `dirty` is deliberately not in the predicate: content that
-        // asks for another frame (`again`) re-dirties the scene to
+        // asks for another frame (a `NextFrame` request) re-dirties the scene to
         // schedule it while this frame's production stands — only a real
         // invalidation un-produces it, through `produced_for`.
         self.produced_for.get() == Some(time) && !self.pending.get()
@@ -587,7 +587,7 @@ mod tests {
         Command, Draw, FontId, ImageId, ImageLimits, Paint, Recorder, WorkingColor,
     };
     use waterui_graphics::backend::{
-        FontSource, Handle, ImageData, Picture, PictureRecording, RecordingResources,
+        FontSource, Handle, ImageData, NextFrame, Picture, PictureRecording, RecordingResources,
         ResourceError, Rgba8, Rgba16F, SceneBackend, SceneContent, SceneViewMergeToParent,
     };
 
@@ -605,20 +605,20 @@ mod tests {
             _resources: &mut RecordingResources<'_>,
             width: f32,
             height: f32,
-        ) -> bool {
+        ) -> NextFrame {
             self.draws.set(self.draws.get() + 1);
             recorder.fill(
                 kurbo::Rect::new(0.0, 0.0, f64::from(width) / 2.0, f64::from(height) / 2.0),
                 WorkingColor::WHITE,
             );
-            false
+            NextFrame::Idle
         }
 
         fn rebuild_for_engine(&mut self) {}
     }
 
     /// Content that asks for another frame on every record — the
-    /// split-component self-animation contract: `again` schedules the
+    /// split-component self-animation contract: a `NextFrame` request schedules the
     /// next frame and must not un-produce the one just written.
     struct AnimatingContent;
 
@@ -629,12 +629,12 @@ mod tests {
             _resources: &mut RecordingResources<'_>,
             width: f32,
             height: f32,
-        ) -> bool {
+        ) -> NextFrame {
             recorder.fill(
                 kurbo::Rect::new(0.0, 0.0, f64::from(width) / 2.0, f64::from(height) / 2.0),
                 WorkingColor::WHITE,
             );
-            true
+            NextFrame::Perpetual
         }
 
         fn rebuild_for_engine(&mut self) {}
@@ -675,7 +675,7 @@ mod tests {
     }
 
     /// A scene whose content returns `true` from `build_scene` is
-    /// produced at the batch timestamp anyway: `again` only re-dirties
+    /// produced at the batch timestamp anyway: a `NextFrame` request only re-dirties
     /// the scene to schedule the next frame — it is not an invalidation —
     /// so `produced_at` stays true for the frame just written and the
     /// redraw request still fires.
@@ -705,7 +705,7 @@ mod tests {
         drop(part.prepare(time).expect("the staged contract applies"));
         assert!(
             part.produced_at(time),
-            "`again` schedules the next frame; it does not un-produce this one"
+            "a `NextFrame` request schedules the next frame; it does not un-produce this one"
         );
         assert!(
             redraws.load(Ordering::Relaxed) > 0,
@@ -718,7 +718,7 @@ mod tests {
     }
 
     /// A real invalidation after `prepare(t)` un-produces the frame: the
-    /// mounted invalidator clears `produced_for` while the `again` path
+    /// mounted invalidator clears `produced_for` while the `NextFrame` path
     /// never touches it, so `produced_at(t)` flips false — the frame
     /// must re-render before it composites again.
     #[test]
@@ -856,8 +856,8 @@ mod tests {
             _resources: &mut RecordingResources<'_>,
             _width: f32,
             _height: f32,
-        ) -> bool {
-            false
+        ) -> NextFrame {
+            NextFrame::Idle
         }
 
         fn intrinsic_size(&self) -> Option<Size> {
@@ -925,7 +925,7 @@ mod tests {
     fn scene_recording_wraps_logical_content_in_the_display_scale() {
         let (_context, part, _) = part();
         for scale in [1.0f64, 2.0, 3.0] {
-            let (mut content, _held, _again) = part.record_content(512.0, 512.0, scale);
+            let (mut content, _held, _next) = part.record_content(512.0, 512.0, scale);
             let commands = content.snapshot().commands();
             let transforms = commands
                 .iter()
@@ -1005,7 +1005,7 @@ mod tests {
     /// picture's own display list — the observable output a reactive
     /// `Picture` changes when its recording signal lands.
     fn recorded_color(part: &ScenePart) -> WorkingColor {
-        let (mut content, _held, _again) = part.record_content(10.0, 10.0, 1.0);
+        let (mut content, _held, _next) = part.record_content(10.0, 10.0, 1.0);
         let picture_command = content
             .snapshot()
             .commands()

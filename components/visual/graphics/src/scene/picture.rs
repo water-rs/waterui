@@ -16,7 +16,8 @@ use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
 use crate::scene::resources::{HeldResources, RecordingResources, SceneResources};
 use crate::scene_view::{
-    SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent, invalidate_on_change,
+    NextFrame, SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent,
+    invalidate_on_change,
 };
 
 /// Source-owned recording instructions for a resource-bearing [`Picture`].
@@ -324,7 +325,7 @@ impl SceneContent for RecordedScene {
         resources: &mut RecordingResources<'_>,
         width: f32,
         height: f32,
-    ) -> bool {
+    ) -> NextFrame {
         let snapshot = self.picture.recording.snapshot();
         let changed = self
             .current
@@ -346,7 +347,7 @@ impl SceneContent for RecordedScene {
             recording.picture(),
             Fixed(self.picture.transform_to(width, height)),
         );
-        false
+        NextFrame::Idle
     }
 
     fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
@@ -517,12 +518,12 @@ mod tests {
             _resources: &mut RecordingResources<'_>,
             width: f32,
             height: f32,
-        ) -> bool {
+        ) -> NextFrame {
             recorder.fill(
                 Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
                 WorkingColor::BLACK,
             );
-            false
+            NextFrame::Idle
         }
 
         fn rebuild_for_engine(&mut self) {}

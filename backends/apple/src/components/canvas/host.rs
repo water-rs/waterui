@@ -26,7 +26,7 @@ use waterui_graphics::backend::draw::{
     Content, ContentChange, Instant, LayoutSize, LiveOwner, SampleFlag,
 };
 use waterui_graphics::backend::{
-    HeldResources, SceneFrame, SceneInvalidator, SceneResources, SceneUpdate,
+    HeldResources, NextFrame, SceneFrame, SceneInvalidator, SceneResources, SceneUpdate,
     resolve_scene_proposal, scene_stretch_axis,
 };
 use waterui_graphics::canvas::CanvasView;
@@ -152,8 +152,8 @@ impl Host {
         } else {
             SceneUpdate::Record
         };
-        let again = match update {
-            SceneUpdate::Retained { again } => again,
+        let next = match update {
+            SceneUpdate::Retained { next } => next,
             SceneUpdate::Record => self.record(width, height),
         };
         if scale.to_bits() != self.scale.get().to_bits() {
@@ -178,16 +178,16 @@ impl Host {
             }
             animating
         };
-        self.drive(again || animating || self.sample.get());
+        self.drive(next.wants_frame() || animating || self.sample.get());
         self.publish_attributes();
     }
 
-    /// Records the content afresh; whether it asks for another frame.
-    fn record(&self, width: f32, height: f32) -> bool {
+    /// Records the content afresh; the frames it asks for next.
+    fn record(&self, width: f32, height: f32) -> NextFrame {
         let mut names = self.resources.recording();
-        let mut again = false;
+        let mut next = NextFrame::Idle;
         let mut content = Content::record(&self.layout, |recorder| {
-            again = self
+            next = self
                 .scene
                 .borrow_mut()
                 .build_scene(recorder, &mut names, width, height);
@@ -201,7 +201,7 @@ impl Host {
             old.root().removeFromSuperlayer();
         }
         drop(previous);
-        again
+        next
     }
 
     fn install(&self, tree: Tree) {

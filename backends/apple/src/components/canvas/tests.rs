@@ -2044,7 +2044,7 @@ mod render {
         use core::time::Duration;
         use waterui_graphics::backend::SceneResources;
         use waterui_graphics::backend::draw::{Instant, LayoutSize};
-        use waterui_graphics::backend::{SceneFrame, SceneUpdate};
+        use waterui_graphics::backend::{NextFrame, SceneFrame, SceneUpdate};
         use waterui_graphics::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig};
 
         const WIDTH: usize = 360;
@@ -2058,8 +2058,12 @@ mod render {
         let resources = SceneResources::new(Rc::new(Backend::new(Rc::clone(&registry), u64::MAX)));
         let mut names = resources.recording();
         let mut content = Content::record(&LayoutSize::new(), |recorder| {
-            let again = scene.build_scene(recorder, &mut names, WIDTH_PT, HEIGHT_PT);
-            assert!(again, "a gradient bound to the clock asks for frames");
+            let next = scene.build_scene(recorder, &mut names, WIDTH_PT, HEIGHT_PT);
+            assert_eq!(
+                next,
+                NextFrame::Perpetual,
+                "a gradient bound to the clock asks for every frame, with no end"
+            );
         });
         let _held = names.finish();
         let fixture = Fixture::new(registry);
@@ -2084,7 +2088,12 @@ mod render {
                     time,
                 },
             );
-            assert!(matches!(update, SceneUpdate::Retained { again: true }));
+            assert_eq!(
+                update,
+                SceneUpdate::Retained {
+                    next: NextFrame::Perpetual
+                }
+            );
             let _ = content.sample(time);
         }
         let Some(ContentChange::Update(updates)) = content.take_change() else {

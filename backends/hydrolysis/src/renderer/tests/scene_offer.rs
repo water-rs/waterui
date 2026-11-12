@@ -27,7 +27,8 @@ use waterui_core::id::SelfId;
 use waterui_core::layout::{LayoutError, Rect, ResolvedExtent, StretchAxis, ViewDimensions};
 use waterui_core::views::ForEach;
 use waterui_graphics::backend::{
-    RecordingResources, SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent,
+    NextFrame, RecordingResources, SceneContent, SceneInvalidator, SceneView,
+    SceneViewMergeToParent,
 };
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
@@ -71,8 +72,8 @@ impl SceneContent for ScenePane {
         _resources: &mut RecordingResources<'_>,
         _width: f32,
         _height: f32,
-    ) -> bool {
-        false
+    ) -> NextFrame {
+        NextFrame::Idle
     }
 
     fn set_invalidator(&mut self, _invalidator: Option<SceneInvalidator>) {}
@@ -97,8 +98,8 @@ impl SceneContent for IntrinsicScenePane {
         _resources: &mut RecordingResources<'_>,
         _width: f32,
         _height: f32,
-    ) -> bool {
-        false
+    ) -> NextFrame {
+        NextFrame::Idle
     }
 
     fn intrinsic_size(&self) -> Option<Size> {

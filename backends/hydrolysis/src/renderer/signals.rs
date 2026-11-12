@@ -587,7 +587,19 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.animation_controller.settle_motions(now);
         let pending_releases = self.flush_interaction_releases(now);
         let ticked = self.animation_controller.tick(now);
-        ticked || pending_releases || self.navigation_animating(now)
+        // Scene content that asked for this frame presents in it.
+        let scenes = self.scene_frames.mark_owners();
+        ticked || pending_releases || scenes || self.navigation_animating(now)
+    }
+
+    /// Whether scene content asked for the next frame at the last commit,
+    /// perpetual content counting only when `perpetual` says it does.
+    ///
+    /// Like the animation tick, the request schedules its frame as
+    /// continuation work rather than an unapplied change.
+    pub(crate) fn scene_frames_requested(&self, perpetual: PerpetualAnimation) -> bool {
+        self.scene_frames.has_finite()
+            || (perpetual == PerpetualAnimation::Counts && self.scene_frames.has_perpetual())
     }
 
     /// Whether an animation the engine runs — a layer track or an operand of

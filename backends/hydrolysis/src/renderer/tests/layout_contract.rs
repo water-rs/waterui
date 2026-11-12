@@ -5,6 +5,7 @@ use std::rc::Rc;
 use waterui::{AnyView, Color, Environment, View, ViewExt};
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::backend::FilteredView;
+use waterui_graphics::backend::NextFrame;
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::backend::filtrate::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
@@ -410,8 +411,8 @@ impl waterui_graphics::backend::SceneContent for Drifting {
         _resources: &mut waterui_graphics::backend::RecordingResources<'_>,
         _width: f32,
         _height: f32,
-    ) -> bool {
-        false
+    ) -> NextFrame {
+        NextFrame::Idle
     }
 
     fn intrinsic_size(&self) -> Option<Size> {

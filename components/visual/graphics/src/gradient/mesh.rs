@@ -15,7 +15,7 @@ use waterui_core::{Environment, View, contract_violation};
 
 use super::paint::{Gradient, mesh_paint};
 use crate::scene::resources::RecordingResources;
-use crate::scene_view::{SceneContent, SceneView};
+use crate::scene_view::{NextFrame, SceneContent, SceneView};
 
 /// A mesh gradient over a `columns` × `rows` grid of vertices whose colours,
 /// control points and interpolation follow signals.
@@ -184,12 +184,12 @@ impl SceneContent for MeshContent {
         _resources: &mut RecordingResources<'_>,
         width: f32,
         height: f32,
-    ) -> bool {
+    ) -> NextFrame {
         let paint = self.paint.clone();
         recorder.transform(Gradient::transform_to(width, height), |recorder| {
             recorder.fill(Rect::new(0.0, 0.0, 1.0, 1.0), paint);
         });
-        false
+        NextFrame::Idle
     }
 
     fn rebuild_for_engine(&mut self) {}

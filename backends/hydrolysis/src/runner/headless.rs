@@ -1645,7 +1645,7 @@ mod generation_tests {
     use std::rc::Rc;
     use std::time::Instant;
     use waterui_graphics::backend::{
-        FontSource, ImageData, RecordingResources, Registered, Rgba8, SceneContent,
+        FontSource, ImageData, NextFrame, RecordingResources, Registered, Rgba8, SceneContent,
         SceneInvalidator, SceneView,
     };
 
@@ -1702,7 +1702,7 @@ mod generation_tests {
             resources: &mut RecordingResources<'_>,
             width: f32,
             height: f32,
-        ) -> bool {
+        ) -> NextFrame {
             let _ = (width, height);
             self.builds.set(self.builds.get() + 1);
             if self.font.is_none() {
@@ -1769,7 +1769,7 @@ mod generation_tests {
                 kurbo::Rect::new(8.0, 48.0, 16.0, 56.0),
                 Sampling::Nearest,
             );
-            false
+            NextFrame::Idle
         }
 
         fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {

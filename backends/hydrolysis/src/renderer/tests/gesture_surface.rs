@@ -15,7 +15,9 @@ use waterui::gesture::{DragEvent, DragGesture, GesturePhase};
 use waterui::{AnyView, Color, ViewExt as _};
 use waterui_core::extract::Use;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_graphics::backend::{RecordingResources, SceneContent, SceneInvalidator, SceneView};
+use waterui_graphics::backend::{
+    NextFrame, RecordingResources, SceneContent, SceneInvalidator, SceneView,
+};
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_layout::stack::hstack;
 
@@ -42,8 +44,8 @@ impl SceneContent for RecorderPane {
         _resources: &mut RecordingResources<'_>,
         _width: f32,
         _height: f32,
-    ) -> bool {
-        false
+    ) -> NextFrame {
+        NextFrame::Idle
     }
 
     fn set_invalidator(&mut self, _invalidator: Option<SceneInvalidator>) {}

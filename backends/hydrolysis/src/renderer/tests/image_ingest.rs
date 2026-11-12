@@ -20,7 +20,9 @@ use peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
 use waterui::{AnyView, View};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_graphics::backend::Rgba8;
-use waterui_graphics::backend::{RecordingResources, SceneContent, SceneInvalidator, SceneView};
+use waterui_graphics::backend::{
+    NextFrame, RecordingResources, SceneContent, SceneInvalidator, SceneView,
+};
 
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
@@ -100,9 +102,9 @@ impl SceneContent for ImagePane {
         resources: &mut RecordingResources<'_>,
         _width: f32,
         _height: f32,
-    ) -> bool {
+    ) -> NextFrame {
         (self.draw)(recorder, resources, &mut self.image);
-        false
+        NextFrame::Idle
     }
 
     fn set_invalidator(&mut self, _invalidator: Option<SceneInvalidator>) {}

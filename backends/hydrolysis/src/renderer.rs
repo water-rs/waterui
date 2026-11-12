@@ -665,6 +665,10 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// Owner cell address to its producer key: an owner re-binds the same
     /// key across re-installs so the map does not grow per frame.
     producer_keys_by_owner: rustc_hash::FxHashMap<usize, ProducerKey>,
+    /// The scene nodes whose content asked for the next frame at the last
+    /// commit, finite and perpetual apart: the animation tick re-marks
+    /// them, and the settle queries count them like the engine's tracks.
+    scene_frames: mount::SceneFrames<E>,
     /// The retained registries every record emits into, owned per node
     /// and resolved through placements; `hit_test`'s flat lists are the
     /// materialized view consumers read.
@@ -955,6 +959,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             next_producer_key: Cell::new(1),
             producer_owners: rustc_hash::FxHashMap::default(),
             producer_keys_by_owner: rustc_hash::FxHashMap::default(),
+            scene_frames: mount::SceneFrames::default(),
             retained: mount::RetainedRegistry::new(),
             placement_scope_stack: Vec::new(),
             saved_scope_stacks: Vec::new(),

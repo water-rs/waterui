@@ -11,7 +11,7 @@ use super::scene::CanvasScene;
 use crate::draw::Recorder;
 use crate::scene::resources::{RecordingResources, SceneResources};
 use crate::scene_view::{
-    SceneContent, SceneFrame, SceneInvalidator, SceneUpdate, scene_stretch_axis,
+    NextFrame, SceneContent, SceneFrame, SceneInvalidator, SceneUpdate, scene_stretch_axis,
 };
 
 /// A mounted canvas, as a backend receives it: the raw leaf
@@ -44,14 +44,14 @@ impl CanvasView {
 
     /// Records the canvas afresh into `recorder` for a `width` by `height`
     /// box in logical points, registering its resources through
-    /// `resources`. Returns whether another frame is wanted.
+    /// `resources`. Returns the frames it needs next.
     pub fn build_scene(
         &mut self,
         recorder: &mut Recorder,
         resources: &mut RecordingResources<'_>,
         width: f32,
         height: f32,
-    ) -> bool {
+    ) -> NextFrame {
         self.scene.build_scene(recorder, resources, width, height)
     }
 
@@ -99,7 +99,7 @@ impl SceneContent for CanvasView {
         resources: &mut RecordingResources<'_>,
         width: f32,
         height: f32,
-    ) -> bool {
+    ) -> NextFrame {
         Self::build_scene(self, recorder, resources, width, height)
     }
 
