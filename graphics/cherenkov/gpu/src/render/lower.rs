@@ -8656,7 +8656,10 @@ mod tests {
         // `holder` isolates against `gp`; `mid` merges into `holder`'s
         // rect in place; `inner` isolates against the merged rect.
         tree.apply(clip(gp, rounded(0.0)));
-        tree.apply(clip(holder, ShapeData::Rect(Rect::new(0.0, 0.0, 32.0, 32.0))));
+        tree.apply(clip(
+            holder,
+            ShapeData::Rect(Rect::new(0.0, 0.0, 32.0, 32.0)),
+        ));
         tree.apply(clip(mid, ShapeData::Rect(Rect::new(2.0, 2.0, 30.0, 30.0))));
         tree.apply(clip(inner, rounded(4.0)));
         let Some(frame) = lower_promoted(
