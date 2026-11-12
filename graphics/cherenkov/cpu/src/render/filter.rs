@@ -573,18 +573,14 @@ impl Registry {
         groups: &FxHashMap<(u64, u64), CompletionWaker>,
     ) {
         for (id, entry) in &self.entries {
-            entry.wakes.set(
-                uses.get(id).map(Vec::as_slice).unwrap_or_default(),
-                &entry.dirty,
-            );
+            entry
+                .wakes
+                .set(uses.get(id).map_or_default(Vec::as_slice), &entry.dirty);
         }
         for (key, group) in &self.backdrops {
             if let Some(entry) = &group.chain {
                 entry.wakes.set(
-                    groups
-                        .get(key)
-                        .map(std::slice::from_ref)
-                        .unwrap_or_default(),
+                    groups.get(key).map_or_default(std::slice::from_ref),
                     &entry.dirty,
                 );
             }

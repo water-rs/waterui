@@ -82,8 +82,7 @@ const PUSH_STAGING_PREFIX: &str = "/data/local/tmp/waterui-preview";
 fn push_staging_dir() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
+        .map_or_default(|duration| duration.as_nanos());
     format!("{PUSH_STAGING_PREFIX}-{}-{nanos}", std::process::id())
 }
 

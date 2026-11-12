@@ -214,8 +214,7 @@ pub async fn run_bench_suite(
             options
                 .filter
                 .as_deref()
-                .map(|filter| format!(" matching `{filter}`"))
-                .unwrap_or_default()
+                .map_or_default(|filter| format!(" matching `{filter}`"))
         );
     }
 
