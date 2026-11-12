@@ -599,9 +599,12 @@ fn a_touch_hold_past_the_threshold_mounts_the_menu_at_the_press_point() {
     }
 
     // At the threshold the hold fires: the menu mounts through the drawn
-    // presentation — the host fills the window and the menu is taller than
-    // it, so it clamps to the window's top edge — and its items merge into
-    // the tree.
+    // presentation and its items merge into the tree. The host fills the
+    // window and the lift (the source itself, no preview) cannot move, so the
+    // menu packs below it and clamps inside the window: flush with the bottom
+    // edge while it fits, pinned to the top edge once it is taller. Its height
+    // is build-dependent — a debug build appends the "Inspect element" entry
+    // (`append_inspect_element_item`) — so the expected edge derives from it.
     let update = runtime
         .pump_at(false, start + HOLD)
         .into_tree_update()
@@ -613,8 +616,9 @@ fn a_touch_hold_past_the_threshold_mounts_the_menu_at_the_press_point() {
     let (menu, _) = runtime
         .context_menu_presentation_frames()
         .expect("the drawn menu mounts");
+    let clamped_y0 = (f64::from(WINDOW_SIZE) - menu.height()).max(0.0);
     assert!(
-        menu.x0.abs() < 1.0 && menu.y0.abs() < 1.0,
+        menu.x0.abs() < 1.0 && (menu.y0 - clamped_y0).abs() < 1.0,
         "the menu sits beside the lifted source, clamped inside the window, got {menu:?}"
     );
 
