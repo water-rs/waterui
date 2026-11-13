@@ -64,6 +64,7 @@ mod progress;
 mod segmented;
 mod stepper;
 mod tabs;
+mod text_field;
 mod toggle;
 mod widget;
 
@@ -93,6 +94,7 @@ pub use segmented::{
 };
 pub use stepper::{StepperLook, StepperSpec};
 pub use tabs::{TabItem, TabItemGeometry, TabItemLayout, TabsLook, TabsMetrics, TabsSpec};
+pub use text_field::{Caret, FloatingLabel, TextFieldLook, TextFieldSpec};
 pub use toggle::{CheckboxLook, SwitchDrag, SwitchLook, ToggleBackdrop, ToggleControl, ToggleSpec};
 pub use widget::{
     BadgeMetrics, DividerMetrics, InputFieldMetrics, InteractionFocusBinding, InteractionMotion,

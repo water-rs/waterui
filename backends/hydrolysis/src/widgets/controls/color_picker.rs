@@ -16,10 +16,10 @@ use waterui_graphics::color::Color;
 use waterui_text::styled::StyledStr;
 
 use crate::renderer::RetainedSubview;
-use crate::renderer::local_interaction_state;
 use crate::renderer::{
     HydroNativeView, HydroState, RenderContext, WidgetRenderContext, measure_label_intrinsic,
 };
+use crate::widgets::controls::field_look::{FieldChrome, field_look};
 use crate::widgets::util::inset_rect;
 #[cfg(feature = "accessibility")]
 use crate::widgets::util::widget_disabled;
@@ -35,6 +35,8 @@ const COLOR_PICKER_MIN_WIDTH: f32 = 160.0;
 pub struct ColorPickerRenderState<E: crate::text::TextEngine> {
     config: ColorPickerConfig,
     label_view: RetainedSubview<E>,
+    /// The field container the picker wears: its look and live chrome.
+    field: FieldChrome,
 }
 
 impl<E: crate::text::TextEngine> ColorPickerRenderState<E> {
@@ -42,6 +44,7 @@ impl<E: crate::text::TextEngine> ColorPickerRenderState<E> {
         Self {
             label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
             config,
+            field: FieldChrome::new(),
         }
     }
 
@@ -187,7 +190,7 @@ pub fn measure_color_picker_node<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
-    let input_metrics = theme.input_field_metrics();
+    let input_metrics = render_state.field.peek(theme, env).metrics();
     let label_size = render_state.label_view.measure_built(state, env, theme);
     let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
         f64::from(label_size.height).max(input_metrics.label_height)
@@ -230,7 +233,7 @@ fn measure_color_picker_intrinsic<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
-    let input_metrics = theme.input_field_metrics();
+    let input_metrics = field_look(theme, env).metrics();
     let label_size = measure_label_intrinsic(color_picker.label(), state, env, theme);
     let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
         f64::from(label_size.height).max(input_metrics.label_height)
@@ -254,8 +257,8 @@ pub fn render_color_picker_parts<E: crate::text::TextEngine>(
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let theme = ctx.theme();
-    let input_metrics = theme.input_field_metrics();
     let mut state = state.borrow_mut();
+    let input_metrics = state.field.look(&theme, env).metrics();
     // The value/options are read from the retained config; the label is a retained
     // node sub-view re-flushed at its rect (reactive content stays live).
     let (value_binding, support_alpha, support_hdr) = {
@@ -309,17 +312,9 @@ pub fn render_color_picker_parts<E: crate::text::TextEngine>(
     }
 
     let hit_bounds = field_bounds;
-    let (interaction, press_slot, _) =
-        ctx.renderer_mut()
-            .bind_interaction_target(interaction_key, hit_bounds, env);
-    {
-        let interaction =
-            local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
-        ctx.draw_context(|draw| {
-            theme.draw_input_field(&mut *draw, field_bounds, interaction);
-            theme.draw_input_field_state_layer(&mut *draw, field_bounds, interaction);
-        });
-    }
+    let (_, press_slot, _) = state
+        .field
+        .bind(ctx, &interaction_key, hit_bounds, env, false, false);
     let content_bounds = inset_rect(
         field_bounds,
         input_metrics.horizontal_inset,

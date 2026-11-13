@@ -436,6 +436,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 text_bounds: data.target.text_bounds,
                 text_clip_bounds: data.target.text_clip_bounds,
                 content_alpha: data.target.content_alpha,
+                paints: data.target.paints,
                 layout: data.target.layout,
                 display_text: data.target.display_text,
                 display_layout: data.target.display_layout,

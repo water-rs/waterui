@@ -23,6 +23,7 @@ use waterui_form::picker::date::DatePickerConfig;
 use waterui_text::styled::StyledStr;
 
 use crate::renderer::RetainedSubview;
+use crate::widgets::controls::field_look::field_look;
 use crate::widgets::controls::picker::label_styled;
 #[cfg(feature = "accessibility")]
 use crate::widgets::util::widget_disabled;
@@ -177,11 +178,11 @@ pub fn measure_date_picker_node<E: crate::text::TextEngine>(
 ) -> ViewDimensions {
     let config = &render_state.config;
     let metrics = theme.menu_picker(&date_picker_spec(env), env).layout();
-    let input_metrics = theme.input_field_metrics();
+    let label_floor = field_look(theme, env).metrics().label_height;
     let label_size = render_state.label_view.measure_built(state, env, theme);
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
     let label_height = if has_label {
-        f64::from(label_size.height).max(input_metrics.label_height)
+        f64::from(label_size.height).max(label_floor)
     } else {
         0.0
     };
@@ -204,15 +205,13 @@ pub fn measure_date_picker_node<E: crate::text::TextEngine>(
         field_text_width = field_text_width.max(f64::from(size.width));
         field_text_height = field_text_height.max(f64::from(size.height));
     }
-    let field_width = (input_metrics
-        .horizontal_inset
-        .mul_add(2.0, field_text_width)
+    let field_width = (metrics.horizontal_inset.mul_add(2.0, field_text_width)
         + metrics.indicator_space)
-        .max(input_metrics.min_width);
-    let field_height = input_metrics
+        .max(metrics.min_width);
+    let field_height = metrics
         .vertical_inset
         .mul_add(2.0, field_text_height)
-        .max(input_metrics.min_height);
+        .max(metrics.min_height);
     let width = f64::from(label_size.width).max(field_width);
     let height = label_height + field_height;
     ViewDimensions::new(LayoutSize::new(
@@ -313,7 +312,6 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let theme = ctx.theme();
     let spec = date_picker_spec(env);
-    let input_metrics = theme.input_field_metrics();
     let mut state = state.borrow_mut();
     if state.look.as_ref().is_none_or(|(held, _)| *held != spec) {
         let look = theme.menu_picker(&spec, env);
@@ -336,7 +334,12 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
             date_picker.ty(),
         )
     };
-    let label_height = place_date_picker_label(ctx, &mut state, env, input_metrics.label_height);
+    let label_height = place_date_picker_label(
+        ctx,
+        &mut state,
+        env,
+        field_look(&theme, env).metrics().label_height,
+    );
 
     let field_bounds = kurbo::Rect::new(
         ctx.bounds.x0,
@@ -388,8 +391,8 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
     parts.push_below(ctx.renderer_mut(), render_ctx);
     let text_bounds = date_picker_value_bounds(
         field_bounds,
-        input_metrics.horizontal_inset,
-        input_metrics.vertical_inset,
+        metrics.horizontal_inset,
+        metrics.vertical_inset,
         metrics.indicator_space,
         env,
     );

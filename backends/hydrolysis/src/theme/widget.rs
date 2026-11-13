@@ -1,7 +1,7 @@
 //! The widget chrome half of the theme contract: [`WidgetTheme`] and the
 //! token tables, state snapshots and presentation plugins it names.
 
-use cherenkov_record::{MaterialRegistry, Paint, Recorder};
+use cherenkov_record::{MaterialRegistry, Recorder};
 use core::time::Duration;
 use kurbo::{Point, Rect};
 use nami::signal::IntoComputed;
@@ -526,8 +526,6 @@ pub struct TableMetrics {
 pub trait WidgetTheme {
     /// Return motion policy for interactive widget chrome.
     fn interaction_motion(&self) -> InteractionMotion;
-    /// Return motion policy for text input carets.
-    fn text_caret_motion(&self) -> TextCaretMotion;
 
     /// Declare the theme's backdrop materials in `registry`: both the
     /// backdrop shaders ([`MaterialShader`] keys, each with its
@@ -647,29 +645,14 @@ pub trait WidgetTheme {
     /// of the stepper's range is disabled.
     fn stepper(&self, spec: &super::StepperSpec, env: &Environment) -> super::StepperLook;
 
-    /// Return text input metrics.
-    fn input_field_metrics(&self) -> InputFieldMetrics;
-    /// Return the placeholder text color.
-    fn input_placeholder_color(&self) -> Color;
-    /// Return the text selection fill brush.
-    fn input_selection_paint(&self) -> Paint;
-    /// Return the caret brush for the current caret opacity.
-    fn input_caret_paint(&self, opacity: f32) -> Paint;
-    /// Draw text input chrome.
-    fn draw_input_field(
-        &self,
-        recorder: &mut Recorder,
-        bounds: Rect,
-        state: WidgetInteractionState,
-    );
-    /// Draw text input state layer.
-    fn draw_input_field_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _state: WidgetInteractionState,
-    ) {
-    }
+    /// The look of a text field, and of a secure field.
+    ///
+    /// Hydrolysis measures, places and records the field from the returned
+    /// look, and requests it again only when `spec` changes; everything else
+    /// reaches the look through its [`Chrome`](super::Chrome) and
+    /// [`Driven`](super::Driven) values, so a hover, a focus change or the
+    /// label floating moves live operands and records nothing.
+    fn text_field(&self, spec: &super::TextFieldSpec, env: &Environment) -> super::TextFieldLook;
 
     /// The look of every menu presentation: the picker popup, the text
     /// context menu and the popup window a menu button opens.
