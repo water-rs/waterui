@@ -1,7 +1,7 @@
 //! The widget chrome half of the theme contract: [`WidgetTheme`] and the
 //! token tables, state snapshots and presentation plugins it names.
 
-use cherenkov_record::MaterialRegistry;
+use cherenkov_record::{BlendSpace, MaterialRegistry};
 use core::time::Duration;
 use kurbo::Point;
 use nami::signal::IntoComputed;
@@ -539,6 +539,20 @@ pub trait WidgetTheme {
     /// holds no engine handles. The default registers nothing, which is
     /// right for a theme that records no backdrop material.
     fn register_backdrop_shaders(&self, _registry: &mut MaterialRegistry) {}
+
+    /// The space the window surface stores and composites in: every level
+    /// that declares no space of its own blends in it. A theme whose
+    /// design tokens are specified as blends of encoded sRGB values, as
+    /// Material's translucent state layers and disabled containers are,
+    /// returns [`BlendSpace::SrgbEncoded`] so a 4% overlay lands where the
+    /// specification puts it. Content that must blend linearly — images,
+    /// video, GPU content — records as a linear island inside it.
+    ///
+    /// Hydrolysis applies it to the window surface once, when it mounts the
+    /// theme. The default is [`BlendSpace::Linear`].
+    fn blend_space(&self) -> BlendSpace {
+        BlendSpace::Linear
+    }
 
     /// The look of `glass` behind content; `None` draws no glass (the
     /// default).

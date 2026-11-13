@@ -1653,6 +1653,14 @@ fn mount_scene<T: LayerTarget<E>, E: crate::text::TextEngine>(
     Some(names.finish())
 }
 
+/// The space a GPU producer's or external source's install layer
+/// composites in: their frames are linear content, so on a surface storing
+/// another space they composite as a linear island — the way a system
+/// compositor plane shows them — and on a linear surface the declaration
+/// isolates nothing.
+#[cfg(hydrolysis_gpu)]
+const INSTALL_SPACE: Option<BlendSpace> = Some(BlendSpace::Linear);
+
 /// Ensures the node's install layer; returns whether it was just created.
 #[cfg_attr(not(hydrolysis_gpu), expect(dead_code))]
 fn ensure_install<T: LayerTarget<E>, E: crate::text::TextEngine>(
@@ -1732,6 +1740,7 @@ fn mount_gpu<T: LayerTarget<E>, E: crate::text::TextEngine>(
         props,
         LayerProps {
             transform: install_transform(bounds, pixels),
+            blend_space: INSTALL_SPACE,
             ..LayerProps::DEFAULT
         },
     );
@@ -1784,6 +1793,7 @@ fn mount_external<T: LayerTarget<E>, E: crate::text::TextEngine>(
             props,
             LayerProps {
                 transform: install_transform(bounds, pixels),
+                blend_space: INSTALL_SPACE,
                 ..LayerProps::DEFAULT
             },
         );
