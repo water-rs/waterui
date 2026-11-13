@@ -44,6 +44,7 @@ impl RuntimeDriver for NoopDriver {
             tree_update: None,
             content_types: hydrolysis::AccessibilityContentTypes::new(),
             snapshot: None,
+            device_lost: false,
             ui_focus: None,
         }
     }
@@ -200,6 +201,7 @@ impl RuntimeDriver for EmitThenSettleDriver {
             tree_update: (self.pumps == self.emit_at).then(|| self.update.clone()),
             content_types: hydrolysis::AccessibilityContentTypes::new(),
             snapshot: None,
+            device_lost: false,
             ui_focus: None,
         }
     }
@@ -231,6 +233,127 @@ impl RuntimeDriver for EmitThenSettleDriver {
     fn wait_for_local_work(&self, _timeout: Duration) -> bool {
         false
     }
+}
+
+/// One scripted capture frame: a snapshot, or a frame its device loss
+/// skipped, or neither.
+#[derive(Clone, Copy)]
+enum CaptureFrame {
+    Captured,
+    DeviceLost,
+    Empty,
+}
+
+/// A driver that answers each capture pump with the next scripted
+/// [`CaptureFrame`] and records the instant and capture flag every pump got.
+/// The headless runtime's own device-loss reporting is covered against a
+/// real device in Hydrolysis (`generation_tests`); this checks what the
+/// capture does with the report.
+struct CaptureDriver {
+    frames: std::collections::VecDeque<CaptureFrame>,
+    pumps: Vec<(std::time::Instant, bool)>,
+}
+
+impl CaptureDriver {
+    fn new(frames: impl IntoIterator<Item = CaptureFrame>) -> Self {
+        Self {
+            frames: frames.into_iter().collect(),
+            pumps: Vec::new(),
+        }
+    }
+}
+
+impl RuntimeDriver for CaptureDriver {
+    fn pump_at(&mut self, at: std::time::Instant, capture_snapshot: bool) -> DriverPumpResult {
+        self.pumps.push((at, capture_snapshot));
+        let frame = self
+            .frames
+            .pop_front()
+            .expect("the capture pumped past its scripted frames");
+        DriverPumpResult {
+            rebuilt: false,
+            profile: hydrolysis::FrameProfile::default(),
+            tree_update: None,
+            content_types: hydrolysis::AccessibilityContentTypes::new(),
+            snapshot: matches!(frame, CaptureFrame::Captured)
+                .then(|| Snapshot::new(1, 1, vec![255, 0, 0, 255])),
+            device_lost: matches!(frame, CaptureFrame::DeviceLost),
+            ui_focus: None,
+        }
+    }
+
+    fn is_settled(&self) -> bool {
+        true
+    }
+
+    fn is_settled_except_perpetual(&self) -> bool {
+        true
+    }
+
+    fn has_pending_semantic_update(&self) -> bool {
+        false
+    }
+
+    fn perform_accessibility_action(&mut self, _request: AccessibilityActionRequest) -> bool {
+        false
+    }
+
+    fn push_input_event(&mut self, _event: InputEvent) {}
+
+    fn request_redraw(&mut self) {}
+
+    fn clear_ui_focus(&mut self) -> bool {
+        false
+    }
+
+    fn wait_for_local_work(&self, _timeout: Duration) -> bool {
+        false
+    }
+}
+
+/// A capture whose frames lose their device re-renders at the same frame
+/// instant until one carries a snapshot, so the capture neither fails on a
+/// recoverable loss nor lands a frame later than it asked for.
+#[test]
+fn capture_rerenders_a_device_lost_frame_at_the_same_instant() {
+    let mut app = mounted_on(
+        CaptureDriver::new([
+            CaptureFrame::DeviceLost,
+            CaptureFrame::DeviceLost,
+            CaptureFrame::Captured,
+        ]),
+        tree(vec![node(1, Role::GROUP, Some("root"), None, true)]),
+    );
+    let snapshot = app.capture_frame();
+    assert_eq!((snapshot.width(), snapshot.height()), (1, 1));
+
+    let pumps = &app.runtime.pumps;
+    assert_eq!(pumps.len(), 3, "two lost frames, then the captured one");
+    assert!(
+        pumps
+            .iter()
+            .all(|&(at, capture)| at == pumps[0].0 && capture),
+        "every attempt captures at the one frame instant"
+    );
+}
+
+/// A capture frame that carries no snapshot without a device loss to
+/// explain it fails at once, naming why.
+#[test]
+fn capture_without_a_snapshot_or_device_loss_fails_fast() {
+    let mut app = mounted_on(
+        CaptureDriver::new([CaptureFrame::Empty]),
+        tree(vec![node(1, Role::GROUP, Some("root"), None, true)]),
+    );
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = app.capture_frame();
+    }));
+    let message = panic_message(&*outcome.expect_err("an empty capture frame must fail"));
+    assert!(
+        message.contains("did not produce a snapshot") && message.contains("no device loss"),
+        "the failure names the missing snapshot and that no loss explains it: {message}"
+    );
+    assert_eq!(app.runtime.pumps.len(), 1, "no retry without a device loss");
 }
 
 /// A full-tree update carrying a `role`/`label` node under the root.

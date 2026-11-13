@@ -70,8 +70,9 @@ pub trait RuntimeDriver {
 
 /// What one pump produced: whether it rebuilt, the phase timings, the
 /// accessibility tree update plus the content types its nodes declared, the
-/// captured snapshot when one was requested, and the UI focus target when
-/// the runtime tracks one.
+/// captured snapshot when one was requested, whether the runtime's GPU
+/// device was lost during the pump, and the UI focus target when the runtime
+/// tracks one.
 #[derive(Debug)]
 pub struct DriverPumpResult {
     pub(crate) rebuilt: bool,
@@ -79,6 +80,9 @@ pub struct DriverPumpResult {
     pub(crate) tree_update: Option<AccessibilityTreeUpdate>,
     pub(crate) content_types: AccessibilityContentTypes,
     pub(crate) snapshot: Option<Snapshot>,
+    /// A recoverable loss: the next pump recreates the device, and a device
+    /// that keeps dying ends in the terminal failure the driver panics with.
+    pub(crate) device_lost: bool,
     pub(crate) ui_focus: Option<NodeId>,
 }
 
@@ -95,6 +99,7 @@ impl RuntimeDriver for SemanticRuntime {
             tree_update: result.take_tree_update(),
             content_types: result.take_content_types(),
             snapshot: None,
+            device_lost: false,
             ui_focus: result.ui_focus().map(NodeId::from),
         }
     }
@@ -152,6 +157,7 @@ impl RuntimeDriver for HeadlessRuntime {
                 let (width, height, rgba8, _) = snapshot.into_parts();
                 Snapshot::new(width, height, rgba8)
             }),
+            device_lost: result.device_lost(),
             ui_focus: result.ui_focus().map(NodeId::from),
         }
     }

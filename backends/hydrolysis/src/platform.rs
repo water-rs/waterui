@@ -443,11 +443,22 @@ impl DeviceLoss {
     /// dying device.
     #[cfg(test)]
     pub(crate) fn simulate_loss(&self, message: &str) {
-        *self
-            .reason
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some(format!("simulated: {message}"));
+        self.loss_reporter(message)();
+    }
+
+    /// Test-only: [`Self::simulate_loss`] as a `Send` callback, so a test
+    /// can deliver the loss from a wgpu callback — the way a driver
+    /// reports a device that hung mid-frame, from inside a queue poll.
+    #[cfg(test)]
+    pub(crate) fn loss_reporter(&self, message: &str) -> impl FnOnce() + Send + 'static {
+        let reason = std::sync::Arc::clone(&self.reason);
+        let message = message.to_owned();
+        move || {
+            *reason
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(format!("simulated: {message}"));
+        }
     }
 
     /// The reason the driver gave for the loss, once it reported one.
