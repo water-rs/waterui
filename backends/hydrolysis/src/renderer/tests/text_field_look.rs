@@ -607,7 +607,7 @@ fn value_paints(fixture: &Fixture) -> Vec<cherenkov_record::Paint> {
 }
 
 /// `color` as the paint the value draws in.
-fn paint_of(color: waterui::Color) -> cherenkov_record::Paint {
+fn paint_of(color: &waterui::Color) -> cherenkov_record::Paint {
     cherenkov_record::Paint::from(nami::Signal::snapshot(
         &color.resolve(&pumped_test_environment()),
     ))
@@ -638,7 +638,7 @@ fn a_field_mounted_disabled_draws_its_value_disabled_from_its_first_frame() {
     );
     assert_eq!(
         value_paints(&fixture),
-        [paint_of(waterui::Color::srgb(0, 200, 0))],
+        [paint_of(&waterui::Color::srgb(0, 200, 0))],
         "the value draws in the look's disabled green, not its resting red"
     );
 
@@ -651,7 +651,7 @@ fn a_field_mounted_disabled_draws_its_value_disabled_from_its_first_frame() {
     );
     assert_eq!(
         value_paints(&fixture),
-        [paint_of(waterui::Color::srgb(0, 200, 0))],
+        [paint_of(&waterui::Color::srgb(0, 200, 0))],
         "the masked text draws in the look's disabled green"
     );
 }
@@ -676,7 +676,7 @@ fn the_value_colour_follows_the_fields_state() {
     );
     assert_eq!(
         value_paints(&fixture),
-        [paint_of(waterui::Color::srgb(200, 0, 0))],
+        [paint_of(&waterui::Color::srgb(200, 0, 0))],
         "the value rests in red"
     );
 
@@ -684,14 +684,14 @@ fn the_value_colour_follows_the_fields_state() {
     fixture.settle();
     assert_eq!(
         value_paints(&fixture),
-        [paint_of(waterui::Color::srgb(0, 0, 200))],
+        [paint_of(&waterui::Color::srgb(0, 0, 200))],
         "the focus recolours the value live"
     );
     disabled.set(true);
     fixture.settle();
     assert_eq!(
         value_paints(&fixture),
-        [paint_of(waterui::Color::srgb(0, 200, 0))],
+        [paint_of(&waterui::Color::srgb(0, 200, 0))],
         "disabling the field recolours the value"
     );
 }
