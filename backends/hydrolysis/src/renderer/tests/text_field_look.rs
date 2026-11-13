@@ -589,3 +589,143 @@ fn a_label_view_sits_at_the_leading_inset() {
         }
     }
 }
+
+/// The plain look, its value styled by `value`.
+fn valued_look(value: crate::theme::Label) -> TextFieldLook {
+    look().value(value)
+}
+
+/// The live paint of every glyph run that draws in one, in mount order: the
+/// field's value, for a look that styles its colour.
+fn value_paints(fixture: &Fixture) -> Vec<cherenkov_record::Paint> {
+    let mut runs = GlyphColours::default();
+    visit(&fixture.runtime.renderer().mount_roots(), &mut runs);
+    runs.0
+        .into_iter()
+        .flat_map(|(paints, _)| paints.into_iter().flatten())
+        .collect()
+}
+
+/// `color` as the paint the value draws in.
+fn paint_of(color: &waterui::Color) -> cherenkov_record::Paint {
+    cherenkov_record::Paint::from(nami::Signal::snapshot(
+        &color.resolve(&pumped_test_environment()),
+    ))
+}
+
+/// Red at rest, green disabled and blue focused.
+fn value_colours() -> StateValue<waterui::Color> {
+    StateValue::new(waterui::Color::srgb(200, 0, 0))
+        .when(InteractionState::DISABLED, waterui::Color::srgb(0, 200, 0))
+        .when(InteractionState::FOCUSED, waterui::Color::srgb(0, 0, 200))
+}
+
+/// A field mounted disabled draws its value in the look's disabled colour
+/// from its first frame (water-rs/waterui#4570), and a secure field's
+/// masked text wears the same colour.
+#[test]
+fn a_field_mounted_disabled_draws_its_value_disabled_from_its_first_frame() {
+    use crate::theme::Label as LookLabel;
+    use waterui::ViewExt as _;
+
+    let look = valued_look(LookLabel::new().color(value_colours()));
+    let value = Binding::container(Str::from("hello"));
+    let fixture = Fixture::mount(
+        AnyView::new(vstack((TextField::new("Name", &value).disabled(true),))),
+        LayoutDirection::LeftToRight,
+        look.clone(),
+        1,
+    );
+    assert_eq!(
+        value_paints(&fixture),
+        [paint_of(&waterui::Color::srgb(0, 200, 0))],
+        "the value draws in the look's disabled green, not its resting red"
+    );
+
+    let secret = Binding::container(Secure::new("hunter2".to_owned()));
+    let fixture = Fixture::mount(
+        AnyView::new(vstack((secure("Password", &secret).disabled(true),))),
+        LayoutDirection::LeftToRight,
+        look,
+        1,
+    );
+    assert_eq!(
+        value_paints(&fixture),
+        [paint_of(&waterui::Color::srgb(0, 200, 0))],
+        "the masked text draws in the look's disabled green"
+    );
+}
+
+/// The value follows the field's state: focusing the field and disabling it
+/// each recolour the value, through the paint the field reports its state to.
+#[test]
+fn the_value_colour_follows_the_fields_state() {
+    use crate::theme::Label as LookLabel;
+    use waterui::ViewExt as _;
+
+    let look = valued_look(LookLabel::new().color(value_colours()));
+    let value = Binding::container(Str::from("hello"));
+    let disabled = Binding::container(false);
+    let mut fixture = Fixture::mount(
+        AnyView::new(vstack((
+            TextField::new("Name", &value).disabled(disabled.clone()),
+        ))),
+        LayoutDirection::LeftToRight,
+        look,
+        4,
+    );
+    assert_eq!(
+        value_paints(&fixture),
+        [paint_of(&waterui::Color::srgb(200, 0, 0))],
+        "the value rests in red"
+    );
+
+    fixture.focus_field();
+    fixture.settle();
+    assert_eq!(
+        value_paints(&fixture),
+        [paint_of(&waterui::Color::srgb(0, 0, 200))],
+        "the focus recolours the value live"
+    );
+    disabled.set(true);
+    fixture.settle();
+    assert_eq!(
+        value_paints(&fixture),
+        [paint_of(&waterui::Color::srgb(0, 200, 0))],
+        "disabling the field recolours the value"
+    );
+}
+
+/// The value lays out in the look's font: a larger one widens the run it
+/// draws and the field's measured height grows to hold it.
+#[test]
+fn the_value_lays_out_with_the_looks_font() {
+    use crate::theme::Label as LookLabel;
+    use waterui_text::font::Font;
+
+    let widest = |fixture: &Fixture| {
+        fixture
+            .glyph_runs()
+            .into_iter()
+            .map(|(_, span)| span)
+            .fold(0.0, f64::max)
+    };
+    let plain = Fixture::filled("hello", look(), 4);
+    let large = Fixture::filled(
+        "hello",
+        valued_look(LookLabel::new().font(Font::default().size(40.0))),
+        4,
+    );
+    assert!(
+        widest(&large) > widest(&plain) * 1.5,
+        "the value draws in the look's font: {} against {}",
+        widest(&large),
+        widest(&plain)
+    );
+    assert!(
+        large.rect().height() > plain.rect().height(),
+        "the field measures the value in the look's font: {} against {}",
+        large.rect().height(),
+        plain.rect().height()
+    );
+}

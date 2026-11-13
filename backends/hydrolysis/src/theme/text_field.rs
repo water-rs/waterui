@@ -169,6 +169,7 @@ pub struct TextFieldLook {
     metrics: InputFieldMetrics,
     active_indicator: Option<Driven<Border>>,
     placeholder: Label,
+    value: Option<Label>,
     label: FloatingLabel,
     caret: Caret,
     selection: Driven<Paint>,
@@ -192,6 +193,7 @@ impl TextFieldLook {
             metrics,
             active_indicator: None,
             placeholder: Label::new(),
+            value: None,
             label,
             caret,
             selection: selection.into(),
@@ -210,6 +212,16 @@ impl TextFieldLook {
     #[must_use]
     pub fn placeholder(mut self, placeholder: Label) -> Self {
         self.placeholder = placeholder;
+        self
+    }
+
+    /// Styles the value the user typed, a secure field's masked text
+    /// included, with `value`: its font and its colour for each interaction
+    /// state. A look without it draws the value as plain text in the default
+    /// foreground.
+    #[must_use]
+    pub fn value(mut self, value: Label) -> Self {
+        self.value = Some(value);
         self
     }
 
@@ -235,6 +247,12 @@ impl TextFieldLook {
     #[must_use]
     pub const fn get_placeholder(&self) -> &Label {
         &self.placeholder
+    }
+
+    /// How the value is styled, when the look styles it.
+    #[must_use]
+    pub const fn get_value(&self) -> Option<&Label> {
+        self.value.as_ref()
     }
 
     /// The inside label.

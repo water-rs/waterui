@@ -8,7 +8,7 @@ use crate::theme::{
     ListMetrics, NavigationBarLook, NavigationMetrics, NavigationSpec, TabsSpec, TextFieldLook,
     WidgetTheme,
 };
-use crate::widgets::controls::field_look::{field_look, placeholder_text};
+use crate::widgets::controls::field_look::{field_look, placeholder_text, value_text};
 use crate::widgets::layout::container::resolve_lazy_container_extent;
 use crate::widgets::nav::tabs::{tabs_decide_layout, tabs_item_natural_width};
 use std::rc::Rc;
@@ -1337,7 +1337,12 @@ pub fn measure_text_field_size_with_label_size<E: crate::text::TextEngine>(
         kurbo::Rect::ZERO,
         InteractionState::empty(),
     );
-    let value = state.measure_signal(text_field.value());
+    let value = value_text(
+        look,
+        state.measure_signal(text_field.value()),
+        kurbo::Rect::ZERO,
+        InteractionState::empty(),
+    );
     let prompt_size = HydrolysisRenderer::measure_text_intrinsic_size_with_line_limit(
         state, prompt, env, line_limit,
     );
@@ -1407,7 +1412,12 @@ pub fn measure_secure_field_size_with_label_size<E: crate::text::TextEngine>(
         .expose()
         .chars()
         .count();
-    let masked = StyledStr::plain("*".repeat(secure_len));
+    let masked = value_text(
+        look,
+        StyledStr::plain("*".repeat(secure_len)),
+        kurbo::Rect::ZERO,
+        InteractionState::empty(),
+    );
     let value_size = HydrolysisRenderer::measure_editable_text_size(state, &masked, env, None);
     let label_height = measured_input_label_height(label_size, metrics.label_height);
     let label_width = metrics
