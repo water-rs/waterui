@@ -2075,11 +2075,6 @@ impl<'a> Lowering<'a> {
     /// `cluster` cost model into one or more regions. A group that ends up
     /// with one region produces exactly the union rect this planning
     /// always made.
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "region coordinates are finite, non-negative and below the surface size"
-    )]
     fn plan_backdrops(
         &mut self,
         tree: &SurfaceTree,
@@ -2089,8 +2084,15 @@ impl<'a> Lowering<'a> {
         self.anchor_scratch.prepare(groups);
         self.anchor_scratch.hidden.begin(tree.has_hidden_layers());
         self.plan_order = 0;
-        let (start, root) = (self.start(tree), (None, self.root_space));
-        self.plan_layer(start, (tree, bindings), groups, Affine::IDENTITY, root)?;
+        let start = self.start(tree);
+        self.plan_layer(
+            start,
+            (tree, bindings),
+            groups,
+            Affine::IDENTITY,
+            None,
+            self.root_space,
+        )?;
         // Union-field members need the group's full membership before
         // their footprints and bounds inflate: the union fold's `r(n)`
         // depends on the member count. Rebuild each touched plan's
@@ -2101,120 +2103,135 @@ impl<'a> Lowering<'a> {
         }
         let (width, height) = (f64::from(self.width), f64::from(self.height));
         for (gid, plan) in &mut self.backdrops {
-            let s = f64::from(plan.spec.scale().get());
-            let levels = plan.spec.levels().get();
-            // The capture grid's extent in texels: `⌈len · s⌉`.
-            let (w, h) = ((width * s).ceil(), (height * s).ceil());
-            // A reduced capture is sampled bilinearly at `p · s`: an edge
-            // pixel's second tap lies one texel past the member's rect on
-            // the grid, so level 0's footprint covers that texel too.
-            let taps = if plan.spec.scale().is_full() {
-                0.0
-            } else {
-                1.0
-            };
-            // A member's device rect aproned on the capture grid in whole
-            // texels, `None` when it is empty or clipped fully off it:
-            // every level's read footprint, in level-0 texels, inflated
-            // by the filter's `apron` so each filtered texel any level
-            // reads is computed from uncut filter input — a member's
-            // result never depends on the other members.
-            let aproned = |r: Rect, apron: f64| -> Option<[u32; 4]> {
-                // Level 0: the member rect plus the bilinear taps.
-                let a = apron + taps;
-                let mut x0 = r.x0.mul_add(s, -a).floor().max(0.0);
-                let mut y0 = r.y0.mul_add(s, -a).floor().max(0.0);
-                let mut x1 = r.x1.mul_add(s, a).ceil().min(w);
-                let mut y1 = r.y1.mul_add(s, a).ceil().min(h);
-                // Levels 1..n: a bilinear read at level `k` taps level-k
-                // texels `floor(q·s/2^k − 0.5)` through `+1`, and level-k
-                // texel `t` reduces capture texels `[2^k·t, 2^k·(t+1))`.
-                for k in 1..levels {
-                    let div = f64::from(1u32 << k);
-                    x0 = x0
-                        .min((r.x0 * s / div - 0.5).floor().mul_add(div, -apron))
-                        .max(0.0);
-                    y0 = y0
-                        .min((r.y0 * s / div - 0.5).floor().mul_add(div, -apron))
-                        .max(0.0);
-                    x1 = x1
-                        .max(((r.x1 * s / div - 0.5).floor() + 2.0).mul_add(div, apron))
-                        .min(w);
-                    y1 = y1
-                        .max(((r.y1 * s / div - 0.5).floor() + 2.0).mul_add(div, apron))
-                        .min(h);
-                }
-                // The region's origin sits on the deepest level's grid so
-                // level `k` texel `(i, j)` covers capture texels
-                // `[2^k·i, 2^k·(i+1))`; its far edge stays grid-clipped.
-                let grid = f64::from(1u32 << (levels - 1));
-                x0 = (x0 / grid).floor() * grid;
-                y0 = (y0 / grid).floor() * grid;
-                x1 = ((x1 / grid).ceil() * grid).min(w);
-                y1 = ((y1 / grid).ceil() * grid).min(h);
-                (x1 > x0 && y1 > y0).then_some([
-                    x0 as u32,
-                    y0 as u32,
-                    (x1 - x0) as u32,
-                    (y1 - y0) as u32,
-                ])
-            };
             let footprint = groups
                 .get(gid)
                 .and_then(|info| info.footprint)
                 .ok_or_else(|| {
                     RenderError::Render(format!("backdrop group {gid} has no footprint bound"))
                 })?;
-            if footprint.extent.partial_cmp(&0.5) != Some(std::cmp::Ordering::Less) {
-                return Err(RenderError::Unsupported(names::BACKDROP_FOOTPRINT));
-            }
-            let (uw, uh) = (plan.union.width(), plan.union.height());
-            if uw.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater)
-                || uh.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater)
-            {
-                plan.regions = Vec::new();
-                continue;
-            }
-            // The footprint resolves against the capture's size in texels;
-            // the filter's apron, in capture texels.
-            let extent = uw.max(uh) * s;
-            let a = (f64::from(footprint.extent).mul_add(extent, f64::from(footprint.pixels))
-                / 2.0f64.mul_add(-f64::from(footprint.extent), 1.0))
-            .ceil();
-            // Relative-extent filters make the apron depend on the region
-            // size, so per-cluster regions are not guaranteed identical:
-            // they stay a single union region (a rule, not an error).
-            if footprint.extent > 0.0 {
-                plan.regions = aproned(plan.union, a).into_iter().collect();
-                for (i, _) in &plan.aproned {
-                    plan.members.entry(*i).and_modify(|e| e.region = 0);
-                }
-                continue;
-            }
-            // Integer aproned rects per member, in paint order. Members
-            // fully outside the surface take no region index.
-            let rects: Vec<(LayerId, Option<[u32; 4]>)> = plan
-                .aproned
-                .iter()
-                .map(|(id, r)| (*id, aproned(*r, a)))
-                .collect();
-            let have: Vec<usize> = (0..rects.len()).filter(|&i| rects[i].1.is_some()).collect();
-            let clusters = cluster(
-                &have
-                    .iter()
-                    .map(|&i| rects[i].1.unwrap())
-                    .collect::<Vec<_>>(),
-                OVERHEAD_PX,
-            );
-            plan.regions = clusters.iter().map(|c| c.bbox).collect();
-            for (r, c) in clusters.iter().enumerate() {
-                for &m in &c.members {
-                    let id = rects[have[m as usize]].0;
-                    plan.members.entry(id).and_modify(|e| e.region = r as u32);
-                }
-            }
+            Self::plan_backdrop_regions(plan, footprint, width, height)?;
         }
         self.plan_anchors(tree)
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "region coordinates are finite, non-negative and below the surface size"
+    )]
+    fn plan_backdrop_regions(
+        plan: &mut BackdropPlan,
+        footprint: filtrate_core::Footprint,
+        width: f64,
+        height: f64,
+    ) -> Result<(), RenderError> {
+        let s = f64::from(plan.spec.scale().get());
+        let levels = plan.spec.levels().get();
+        // The capture grid's extent in texels: `⌈len · s⌉`.
+        let (w, h) = ((width * s).ceil(), (height * s).ceil());
+        // A reduced capture is sampled bilinearly at `p · s`: an edge
+        // pixel's second tap lies one texel past the member's rect on
+        // the grid, so level 0's footprint covers that texel too.
+        let taps = if plan.spec.scale().is_full() {
+            0.0
+        } else {
+            1.0
+        };
+        // A member's device rect aproned on the capture grid in whole
+        // texels, `None` when it is empty or clipped fully off it:
+        // every level's read footprint, in level-0 texels, inflated
+        // by the filter's `apron` so each filtered texel any level
+        // reads is computed from uncut filter input — a member's
+        // result never depends on the other members.
+        let aproned = |r: Rect, apron: f64| -> Option<[u32; 4]> {
+            // Level 0: the member rect plus the bilinear taps.
+            let a = apron + taps;
+            let mut x0 = r.x0.mul_add(s, -a).floor().max(0.0);
+            let mut y0 = r.y0.mul_add(s, -a).floor().max(0.0);
+            let mut x1 = r.x1.mul_add(s, a).ceil().min(w);
+            let mut y1 = r.y1.mul_add(s, a).ceil().min(h);
+            // Levels 1..n: a bilinear read at level `k` taps level-k
+            // texels `floor(q·s/2^k − 0.5)` through `+1`, and level-k
+            // texel `t` reduces capture texels `[2^k·t, 2^k·(t+1))`.
+            for k in 1..levels {
+                let div = f64::from(1u32 << k);
+                x0 = x0
+                    .min((r.x0 * s / div - 0.5).floor().mul_add(div, -apron))
+                    .max(0.0);
+                y0 = y0
+                    .min((r.y0 * s / div - 0.5).floor().mul_add(div, -apron))
+                    .max(0.0);
+                x1 = x1
+                    .max(((r.x1 * s / div - 0.5).floor() + 2.0).mul_add(div, apron))
+                    .min(w);
+                y1 = y1
+                    .max(((r.y1 * s / div - 0.5).floor() + 2.0).mul_add(div, apron))
+                    .min(h);
+            }
+            // The region's origin sits on the deepest level's grid so
+            // level `k` texel `(i, j)` covers capture texels
+            // `[2^k·i, 2^k·(i+1))`; its far edge stays grid-clipped.
+            let grid = f64::from(1u32 << (levels - 1));
+            x0 = (x0 / grid).floor() * grid;
+            y0 = (y0 / grid).floor() * grid;
+            x1 = ((x1 / grid).ceil() * grid).min(w);
+            y1 = ((y1 / grid).ceil() * grid).min(h);
+            (x1 > x0 && y1 > y0).then_some([
+                x0 as u32,
+                y0 as u32,
+                (x1 - x0) as u32,
+                (y1 - y0) as u32,
+            ])
+        };
+        if footprint.extent.partial_cmp(&0.5) != Some(std::cmp::Ordering::Less) {
+            return Err(RenderError::Unsupported(names::BACKDROP_FOOTPRINT));
+        }
+        let (uw, uh) = (plan.union.width(), plan.union.height());
+        if uw.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater)
+            || uh.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater)
+        {
+            plan.regions = Vec::new();
+            return Ok(());
+        }
+        // The footprint resolves against the capture's size in texels;
+        // the filter's apron, in capture texels.
+        let extent = uw.max(uh) * s;
+        let a = (f64::from(footprint.extent).mul_add(extent, f64::from(footprint.pixels))
+            / 2.0f64.mul_add(-f64::from(footprint.extent), 1.0))
+        .ceil();
+        // Relative-extent filters make the apron depend on the region
+        // size, so per-cluster regions are not guaranteed identical:
+        // they stay a single union region (a rule, not an error).
+        if footprint.extent > 0.0 {
+            plan.regions = aproned(plan.union, a).into_iter().collect();
+            for (i, _) in &plan.aproned {
+                plan.members.entry(*i).and_modify(|e| e.region = 0);
+            }
+            return Ok(());
+        }
+        // Integer aproned rects per member, in paint order. Members
+        // fully outside the surface take no region index.
+        let rects: Vec<(LayerId, Option<[u32; 4]>)> = plan
+            .aproned
+            .iter()
+            .map(|(id, r)| (*id, aproned(*r, a)))
+            .collect();
+        let have: Vec<usize> = (0..rects.len()).filter(|&i| rects[i].1.is_some()).collect();
+        let clusters = cluster(
+            &have
+                .iter()
+                .map(|&i| rects[i].1.unwrap())
+                .collect::<Vec<_>>(),
+            OVERHEAD_PX,
+        );
+        plan.regions = clusters.iter().map(|c| c.bbox).collect();
+        for (r, c) in clusters.iter().enumerate() {
+            for &m in &c.members {
+                let id = rects[have[m as usize]].0;
+                plan.members.entry(id).and_modify(|e| e.region = r as u32);
+            }
+        }
+        Ok(())
     }
 
     /// Validates every anchored group's member range. A member can be any
@@ -2310,7 +2327,8 @@ impl<'a> Lowering<'a> {
         (tree, bindings): (&SurfaceTree, &Bindings),
         groups: &FxHashMap<u64, BackdropGroupInfo>,
         parent: Affine,
-        (canvas, space): (Option<LayerId>, cherenkov::BlendSpace),
+        canvas: Option<LayerId>,
+        space: cherenkov::BlendSpace,
     ) -> Result<(), RenderError> {
         if self.projects(id, tree) {
             self.anchor_scratch.hidden.keep();
@@ -2353,7 +2371,8 @@ impl<'a> Lowering<'a> {
                 (tree, bindings),
                 groups,
                 children,
-                (canvas, own_space),
+                canvas,
+                own_space,
             )?;
         }
         if hiding {
@@ -4147,15 +4166,10 @@ impl<'a> Lowering<'a> {
         // A local root's opacity, blend and space apply when its image
         // composes. Every other layer composites in its declared space,
         // else in the space of the level it composites into.
-        let parent_space = self.current_space();
-        let (opacity, blend, space, space_isolates) = if local_root {
-            (1.0, cherenkov::BlendMode::Normal, parent_space, false)
+        let (opacity, blend, declared_space) = if local_root {
+            (1.0, cherenkov::BlendMode::Normal, None)
         } else {
-            let (space, space_isolates) = match node.blend_space {
-                Some(declared) if declared != parent_space => (declared, true),
-                _ => (parent_space, false),
-            };
-            (node.opacity, node.blend, space, space_isolates)
+            (node.opacity, node.blend, node.blend_space)
         };
         let backdrop = &node.backdrop;
         let saved = self.transform;
@@ -4174,7 +4188,7 @@ impl<'a> Lowering<'a> {
             // system plane (`Placement::opacity`), never in an isolation.
             || (opacity < 1.0 && !self.promoted.contains(&id))
             || blend != cherenkov::BlendMode::Normal
-            || space_isolates
+            || declared_space.is_some_and(|space| space != self.current_space())
             // The root already renders into the surface target, and a
             // local root into its image.
             || (id != self.start(tree) && node.blends_within());
@@ -4201,7 +4215,7 @@ impl<'a> Lowering<'a> {
             glyphs,
             clip,
             content_space,
-            (opacity, blend, space),
+            (opacity, blend, declared_space),
             isolates,
         );
         self.member_outer_clip = member_outer;
@@ -4221,6 +4235,11 @@ impl<'a> Lowering<'a> {
     /// beside a nested filter scope over the items; the member's blend
     /// applies to the sample either way. The
     /// filter covers the member's items, never its sample.
+    #[inline]
+    fn resolve_space(&self, declared: Option<cherenkov::BlendSpace>) -> cherenkov::BlendSpace {
+        declared.unwrap_or_else(|| self.current_space())
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "the layer walk's fixed context, not real complexity"
@@ -4234,14 +4253,20 @@ impl<'a> Lowering<'a> {
         glyphs: &GlyphContext<'_>,
         clip: Option<&ShapeData>,
         content_space: Affine,
-        (opacity, blend, space): (f32, cherenkov::BlendMode, cherenkov::BlendSpace),
+        (opacity, blend, declared_space): (
+            f32,
+            cherenkov::BlendMode,
+            Option<cherenkov::BlendSpace>,
+        ),
         isolates: bool,
     ) -> Result<(), RenderError> {
         // A filtered member whose opacity, blend or space is not a no-op
         // composites in two nested member scopes; the scope carries the
         // member's sample and filter by type.
         let member_scope = node.backdrop.as_ref().zip(node.filter).filter(|_| {
-            opacity < 1.0 || blend != cherenkov::BlendMode::Normal || space != self.current_space()
+            opacity < 1.0
+                || blend != cherenkov::BlendMode::Normal
+                || declared_space.is_some_and(|space| space != self.current_space())
         });
         match member_scope {
             Some((sample, filter)) => self.filtered_member_scope(
@@ -4252,7 +4277,7 @@ impl<'a> Lowering<'a> {
                 glyphs,
                 clip,
                 content_space,
-                (opacity, blend, space),
+                (opacity, blend, self.resolve_space(declared_space)),
                 sample,
                 filter,
             ),
@@ -4267,7 +4292,7 @@ impl<'a> Lowering<'a> {
                     None,
                     opacity,
                     blend,
-                    space,
+                    self.resolve_space(declared_space),
                     |s, glyphs| {
                         // As in the `None` arm below: a union member's
                         // sample composites under the ancestors only, so
@@ -4336,7 +4361,7 @@ impl<'a> Lowering<'a> {
                                 node.filter,
                                 opacity,
                                 blend,
-                                space,
+                                s.resolve_space(declared_space),
                                 |s, glyphs| {
                                     if let Some(sample) = &node.backdrop
                                         && node.filter.is_none()
