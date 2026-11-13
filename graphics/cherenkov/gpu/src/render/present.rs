@@ -1218,13 +1218,14 @@ impl Presenter {
         self.blit(device, queue, (source, space), output, None);
     }
 
-    /// Derive source headroom in the caller's native submission.
+    /// Derive source headroom in the caller's native submission from
+    /// `source`: a texture and the space it stores.
     #[cfg(target_os = "android")]
     pub(crate) fn source_headroom(
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
-        source: &wgpu::TextureView,
+        source: (&wgpu::TextureView, cherenkov::BlendSpace),
         size: (u32, u32),
     ) -> Result<super::headroom::Readback, cherenkov::RenderError> {
         self.headroom
@@ -1277,7 +1278,7 @@ impl Presenter {
         let staging = reducer.encode(
             device,
             &mut encoder,
-            source,
+            (source, cherenkov::BlendSpace::Linear),
             (target.width(), target.height()),
         )?;
         queue.submit([encoder.finish()]);

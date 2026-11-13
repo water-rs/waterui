@@ -75,6 +75,10 @@ pub const PROJECTIVE: &[Program] = &[render("vs_main", "fs_projective")];
 /// The silhouette convolution module.
 pub const SHADOW: &[Program] = &[render("vs", "fs")];
 
+/// The capture headroom module: working-space texels, then texels
+/// decoded from encoded sRGB.
+pub const HEADROOM: &[Program] = &[render("vs_main", "fs_main"), render("vs_main", "fs_decode")];
+
 /// The space conversion module: decode, then encode.
 pub const SPACE_CONVERT: &[Program] = &[
     render("vs_main", "fs_decode"),

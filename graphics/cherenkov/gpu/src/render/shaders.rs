@@ -630,13 +630,13 @@ const REDUCE: Fixed = Fixed {
 /// Source headroom reduction for immutable captures.
 #[cfg(any(target_vendor = "apple", target_os = "android"))]
 const HEADROOM: Fixed = Fixed {
-    wgsl: include_str!("headroom.wgsl"),
+    wgsl: include_str!(concat!(env!("OUT_DIR"), "/headroom.wgsl")),
     #[cfg(cherenkov_spirv)]
     spirv: spirv::HEADROOM,
     metallib: HEADROOM_METALLIB,
     #[cfg(cherenkov_dxil)]
     dxil: dxil::HEADROOM,
-    programs: programs::MAIN,
+    programs: programs::HEADROOM,
     entries: entries::HEADROOM,
 };
 
@@ -798,11 +798,14 @@ impl ShaderDelivery {
         self.render_program(device, "cherenkov reduce", &REDUCE)
     }
 
-    /// Source headroom reduction for immutable captures.
+    /// Source headroom reduction for immutable captures: over
+    /// working-space texels, then over texels decoded from encoded sRGB.
     #[cfg(any(target_vendor = "apple", target_os = "android"))]
     #[must_use]
-    pub fn headroom_program(self, device: &wgpu::Device) -> RenderProgram {
-        self.render_program(device, "capture headroom", &HEADROOM)
+    pub fn headroom_programs(self, device: &wgpu::Device) -> [RenderProgram; 2] {
+        self.render_programs(device, "capture headroom", &HEADROOM)
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("programs::HEADROOM has two programs"))
     }
 
     /// The general silhouette convolution program.

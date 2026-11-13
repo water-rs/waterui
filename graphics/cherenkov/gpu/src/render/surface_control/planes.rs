@@ -1237,7 +1237,12 @@ impl Planes {
                 uniform[..4].copy_from_slice(&10_u32.to_ne_bytes());
                 headrooms.push((
                     part,
-                    presenter.source_headroom(device, &mut blits, source, self.parts[part].size)?,
+                    presenter.source_headroom(
+                        device,
+                        &mut blits,
+                        (source, space),
+                        self.parts[part].size,
+                    )?,
                 ));
             }
             queue.write_buffer(&self.parts[part].uniform, 0, &uniform);
