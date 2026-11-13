@@ -1,10 +1,10 @@
-//! Map Example - Demonstrates WaterUI's Map component
+//! Map Example - Demonstrates `WaterUI`'s Map component
 //!
 //! This example showcases:
 //! - Displaying a vector map centered on Manhattan
 //! - Zoom controls with reactive updates
 //! - Native-first map configuration with a GPU provider for self-drawn backends
-//! - WaterKit location permission and reactive user-location display
+//! - `WaterKit` location permission and reactive user-location display
 
 use lucide::locate_fixed;
 use lucide::minus;
@@ -182,6 +182,7 @@ pub fn demo() -> impl View {
 /// it. Apple platforms bridge `MapKit`, so nothing is installed there and the
 /// same `Map` view above draws through the native bridge. Every other platform
 /// draws the map itself, and the tile source below is what it draws from.
+#[must_use]
 pub fn app(mut env: Environment) -> App {
     env.insert(MapGpuOptions::new(Url::new(
         "https://tiles.openfreemap.org/styles/positron",

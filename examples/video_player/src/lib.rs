@@ -8,7 +8,7 @@
 //! ## Native vs self-rendered playback
 //!
 //! The same SDR and HDR10 sources exercise either the platform-native player or
-//! WaterUI's self-rendered pipeline (`GpuContentView` + `waterkit-codec`), depending
+//! `WaterUI`'s self-rendered pipeline (`GpuContentView` + `waterkit-codec`), depending
 //! on the selected backend/runtime policy.
 
 use std::cell::RefCell;
@@ -74,7 +74,10 @@ pub fn demo() -> impl View {
         .iter()
         .map(|sample| MediaItem::from(Url::parse(sample.url).expect("sample URL should be valid")))
         .collect::<Vec<_>>();
-    let item_ids = items.iter().map(|item| item.get_id()).collect::<Vec<_>>();
+    let item_ids = items
+        .iter()
+        .map(waterui::component::MediaItem::get_id)
+        .collect::<Vec<_>>();
     let session = PlaybackSession::new(Playlist::new(items[0].clone(), items.into_iter().skip(1)));
     let controller = session.controller();
     let selected = controller.current_item_index();
@@ -239,12 +242,12 @@ fn player_shell(
     is_buffering: Binding<bool>,
     playlist: Option<(PlayerController, Vec<MediaItemId>)>,
 ) -> impl View {
-    let title = selected.clone().map(|index| SAMPLES[index].title);
-    let profile = selected.clone().map(|index| SAMPLES[index].profile);
+    let title = selected.map(|index| SAMPLES[index].title);
+    let profile = selected.map(|index| SAMPLES[index].profile);
 
     // Mount the indicator only while buffering. `.visible(false)` would keep
     // the indeterminate animation running, and a capture cannot settle on it.
-    let buffering_overlay = when(is_buffering.clone(), || {
+    let buffering_overlay = when(is_buffering, || {
         vstack((loading(), text("Buffering...").foreground(Srgb::WHITE)))
             .spacing(12.0)
             .background(Srgb::BLACK.with_opacity(0.8))
@@ -292,7 +295,7 @@ fn pill_button(
 ) -> impl View {
     let is_selected = selected.clone().equal_to(index);
     let controller = controller.clone();
-    let selected_bg_opacity = is_selected.clone().select(1.0, 0.0);
+    let selected_bg_opacity = is_selected.select(1.0, 0.0);
     let idle_bg_opacity = is_selected.select(0.0, 1.0);
 
     zstack((

@@ -1,12 +1,12 @@
-//! Picker Gallery Example - Demonstrates WaterUI's picker components
+//! Picker Gallery Example - Demonstrates `WaterUI`'s picker components
 //!
 //! This example showcases:
 //! - Picker with different styles (Automatic, Menu, Radio)
-//! - DatePicker with typed `jiff` date/time bindings
+//! - `DatePicker` with typed `jiff` date/time bindings
 //! - Calendar for single-date month-grid selection
-//! - MultiDatePicker for selecting multiple dates
-//! - ColorPicker with alpha and HDR support
-//! - FilePicker for file selection and import
+//! - `MultiDatePicker` for selecting multiple dates
+//! - `ColorPicker` with alpha and HDR support
+//! - `FilePicker` for file selection and import
 
 use std::collections::BTreeSet;
 
@@ -129,7 +129,7 @@ pub fn demo() -> impl View {
                 picker_selection_text(&menu_selection),
                 spacer(),
                 text("Radio Style").bold(),
-                Picker::new("Radio Style", picker_items.clone(), &radio_selection)
+                Picker::new("Radio Style", picker_items, &radio_selection)
                     .style(PickerStyle::Radio),
                 picker_selection_text(&radio_selection),
             ))

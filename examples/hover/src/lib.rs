@@ -1,4 +1,4 @@
-//! Hover Example - Demonstrates WaterUI's hover and cursor capabilities
+//! Hover Example - Demonstrates `WaterUI`'s hover and cursor capabilities
 //!
 //! This example showcases:
 //! - Hover enter/exit events with `on_hover_enter` and `on_hover_exit`

@@ -1,4 +1,4 @@
-//! Layout twins — WaterUI side of the audit fixture trees (water-rs/waterui#1229,
+//! Layout twins — `WaterUI` side of the audit fixture trees (water-rs/waterui#1229,
 //! fixture specs in the audit comment on water-rs/waterui#1227: sections A2, A3,
 //! A11, A12, A13 and D1–D5).
 //!
@@ -527,6 +527,7 @@ fn root_case(case: String) -> impl View {
     }
 }
 
+#[must_use]
 pub fn app(env: Environment) -> App {
     let case = std::env::var("TWINS_CASE").unwrap_or_else(|_| "all".to_string());
     App::new(move || root_case(case.clone()), env)

@@ -1,4 +1,4 @@
-//! Markdown example for WaterUI.
+//! Markdown example for `WaterUI`.
 //!
 //! The document sits under a search panel — opened by the Find control above
 //! it — that demonstrates key bubbling: `on_key_press` on the bar owns Escape

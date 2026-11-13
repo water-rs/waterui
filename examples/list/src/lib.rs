@@ -141,6 +141,7 @@ pub fn demo() -> impl View {
     content(DemoState::new())
 }
 
+#[must_use]
 pub fn app(env: Environment) -> App {
     let state = DemoState::new();
     App::new(move || content(state.clone()), env)

@@ -232,20 +232,17 @@ pub fn demo() -> impl View {
         document_index: document_index.clone(),
         char_progress: char_progress.clone(),
         streaming: streaming.clone(),
-        stream_revision: stream_revision.clone(),
+        stream_revision,
         stream_cps: stream_cps.clone(),
     };
-    let document_title = document_index.clone().map(current_document_title);
+    let document_title = document_index.map(current_document_title);
     let document_number = document_index
-        .clone()
         .map(normalized_document_index)
         .map(|index| index + 1);
-    let document_char_count = document_index.clone().map(current_document_char_count);
+    let document_char_count = document_index.map(current_document_char_count);
     let document_total = MARKDOWN_DOCUMENTS.len() as i32;
-    let stream_speed = stream_cps
-        .clone()
-        .map(|cps| cps.clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
-    let stream_status = streaming.clone().select("running", "idle");
+    let stream_speed = stream_cps.map(|cps| cps.clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
+    let stream_status = streaming.select("running", "idle");
     let flow_summary = animation_preset
         .zip(&animation_cps)
         .zip(&stream_cps)
@@ -269,14 +266,12 @@ pub fn demo() -> impl View {
             configured_flow_config(preset, cps, stream_cps, token_fade_enabled)
         })
         .computed();
-    let token_fade_label = token_fade_enabled
-        .clone()
-        .select("Token fade on", "Token fade off");
+    let token_fade_label = token_fade_enabled.select("Token fade on", "Token fade off");
     let document_title_text = document_title.clone();
-    let document_number_text = document_number.clone();
-    let char_progress_text = char_progress.clone();
-    let document_char_count_text = document_char_count.clone();
-    let stream_speed_text = stream_speed.clone();
+    let document_number_text = document_number;
+    let char_progress_text = char_progress;
+    let document_char_count_text = document_char_count;
+    let stream_speed_text = stream_speed;
     let stream_status_text = stream_status.clone();
     let flow_preset_text = flow_preset.clone();
     let flow_cps_text = flow_cps.clone();
@@ -332,7 +327,7 @@ pub fn demo() -> impl View {
                         c.stream_revision.clone(),
                         c.streaming.clone(),
                         c.document_index.clone(),
-                        c.stream_cps.clone(),
+                        c.stream_cps,
                     );
                 })
                 .state(&control)

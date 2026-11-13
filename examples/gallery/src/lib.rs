@@ -1,4 +1,4 @@
-//! WaterUI Control Catalog — a Material Design 3 component gallery.
+//! `WaterUI` Control Catalog — a Material Design 3 component gallery.
 //!
 //! The layout is a navigation drawer beside a detail pane (a [`NavigationSplitView`],
 //! which collapses the drawer to a rail on narrow windows). The drawer lists the
@@ -300,15 +300,10 @@ where
 {
     let indicator: Color = SurfaceVariant.into();
     let clear: Color = Srgb::WHITE.with_opacity(0.0).into();
-    let pill = signal_color(active.clone().select(indicator, clear).computed());
+    let pill = signal_color(active.select(indicator, clear).computed());
     let active_content: Color = Foreground.into();
     let resting_content: Color = MutedForeground.into();
-    let content = signal_color(
-        active
-            .clone()
-            .select(active_content, resting_content)
-            .computed(),
-    );
+    let content = signal_color(active.select(active_content, resting_content).computed());
     let state = active.map(|active| AccessibilityState::new().selected(active));
     // The row is one accessibility node carrying the title, so its own label
     // stays out of the tree rather than repeating it.
@@ -452,7 +447,7 @@ fn group_header(group: usize, open: Binding<bool>, rows: ReactiveList<Row>) -> i
 /// a single accessibility node that survives the reactive collection.
 fn item_row(index: usize, selected: Binding<Option<usize>>) -> impl View {
     let control = &controls()[index];
-    let is_selected = selected.clone().equal_to(Some(index)).computed();
+    let is_selected = selected.equal_to(Some(index)).computed();
     drawer_item(
         control.title,
         control.icon,
@@ -656,6 +651,7 @@ pub fn demo() -> impl View {
     catalog(selected, groups_open, rows, state)
 }
 
+#[must_use]
 pub fn app(env: Environment) -> App {
     // Own all mutable state at the window scope so it persists across rebuilds.
     let (selected, groups_open, rows, state) = new_state();

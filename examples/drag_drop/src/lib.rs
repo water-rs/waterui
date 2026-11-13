@@ -1,4 +1,4 @@
-//! Drag and Drop Example - Demonstrates WaterUI's drag and drop system
+//! Drag and Drop Example - Demonstrates `WaterUI`'s drag and drop system
 //!
 //! This example shows:
 //! - Making views draggable with `.draggable()`, carrying an app-defined

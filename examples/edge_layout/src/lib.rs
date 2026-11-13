@@ -12,7 +12,7 @@ use waterui::preview;
 use waterui::shape::{RoundedRectangle, ShapeExt};
 use waterui::widget::condition::when;
 
-/// 8 levels of alternating hstack/vstack nesting. Recursion through AnyView
+/// 8 levels of alternating hstack/vstack nesting. Recursion through `AnyView`
 /// keeps the concrete type finite while stressing deep layout passes.
 fn deep_nest(depth: u32) -> AnyView {
     if depth == 0 {
@@ -61,7 +61,7 @@ fn dense_grid() -> impl View {
 }
 
 fn hsl(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let c = (1.0 - 2.0f32.mul_add(l, -1.0).abs()) * s;
     let hp = h * 6.0;
     let x = c * (1.0 - ((hp % 2.0) - 1.0).abs());
     let (r1, g1, b1) = match hp as u32 {

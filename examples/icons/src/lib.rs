@@ -1,4 +1,4 @@
-//! Icons Example - Demonstrates WaterUI's Icon System
+//! Icons Example - Demonstrates `WaterUI`'s Icon System
 //!
 //! This example showcases 3 icon packs:
 //! - SF Symbols (Apple platforms only, native rendering)

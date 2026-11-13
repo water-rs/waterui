@@ -321,10 +321,7 @@ fn inbox_stack(mail: Mail) -> impl View {
 
 fn inbox_root(mail: Mail) -> NavigationView {
     let unread = mail.unread_count();
-    let edit_title = mail
-        .editing
-        .clone()
-        .select(Str::from("Done"), Str::from("Edit"));
+    let edit_title = mail.editing.select(Str::from("Done"), Str::from("Edit"));
 
     message_list(mail.clone())
         .title("Inbox")
@@ -382,7 +379,7 @@ fn message_list(mail: Mail) -> impl View {
         let mail = mail.clone();
         move |message| message_row(&mail, message)
     })
-    .editing(mail.editing.clone())
+    .editing(mail.editing)
     .on_delete(delete_message)
     .on_move(move_message)
 }
@@ -479,15 +476,10 @@ fn visible_id(mail: &Mail, index: usize) -> Option<u64> {
 
 fn message_detail(mail: Mail, id: u64) -> NavigationView {
     let message = mail.message(id);
-    let subject = message
-        .clone()
-        .map(|message| message.map_or_else(Str::default, |message| message.subject));
-    let sender = message
-        .clone()
-        .map(|message| message.map_or_else(Str::default, |message| message.sender));
-    let body = message
-        .clone()
-        .map(|message| message.map_or_else(Str::default, |message| message.preview));
+    let subject =
+        message.map(|message| message.map_or_else(Str::default, |message| message.subject));
+    let sender = message.map(|message| message.map_or_else(Str::default, |message| message.sender));
+    let body = message.map(|message| message.map_or_else(Str::default, |message| message.preview));
     let flagged = message.map(|message| message.is_some_and(|message| message.flagged));
     let flag_title = flagged.select(Str::from("Unflag"), Str::from("Flag"));
 
@@ -801,9 +793,7 @@ fn settings_link(title: &'static str, route: SettingsRoute) -> ListItem {
 }
 
 fn appearance_page(compact: Binding<bool>) -> NavigationView {
-    let density = compact
-        .clone()
-        .select(Str::from("Compact"), Str::from("Comfortable"));
+    let density = compact.select(Str::from("Compact"), Str::from("Comfortable"));
 
     List::content((Section::new("Density")
         .footer("The row height the message list uses.")

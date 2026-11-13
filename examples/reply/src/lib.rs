@@ -1,4 +1,4 @@
-//! Reply — a list-detail mail client built only from standard WaterUI
+//! Reply — a list-detail mail client built only from standard `WaterUI`
 //! components.
 //!
 //! `Tabs` carries the destinations, a `NavigationSplitView` pairs the inbox
@@ -326,6 +326,7 @@ pub fn demo() -> impl View {
     reply(binding(Some(2u64)), binding(0usize))
 }
 
+#[must_use]
 pub fn app(env: Environment) -> App {
     let selected = binding(Some(2u64));
     let destination = binding(0usize);

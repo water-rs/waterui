@@ -1,8 +1,8 @@
-//! Multi-Window Example - Demonstrates WaterUI's multi-window capabilities
+//! Multi-Window Example - Demonstrates `WaterUI`'s multi-window capabilities
 //!
 //! This example showcases:
 //! - Creating and managing multiple windows
-//! - Different window styles (Titled, Borderless, FullSizeContentView)
+//! - Different window styles (Titled, Borderless, `FullSizeContentView`)
 //! - Window backgrounds with Color and Material blur effects
 //! - Window state management and control
 //! - Reactive window handles

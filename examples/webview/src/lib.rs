@@ -1,4 +1,4 @@
-//! WebView example.
+//! `WebView` example.
 //!
 //! The whole web view is described before it exists: `WebView::open` returns a
 //! builder that records the URL it follows, its redirect policy, the user agent,
@@ -159,7 +159,7 @@ fn toolbar(
             text!("{status}").body().foreground(theme_color::Foreground),
         ))
         .spacing(8.0),
-        progress(progress_value.clone()).label(text("Load progress").caption()),
+        progress(progress_value).label(text("Load progress").caption()),
     ))
     .spacing(5.0)
     .max_width(420.0)
@@ -249,7 +249,7 @@ fn webview_playground() -> impl View {
         let address = address.clone();
         let allow_redirects = allow_redirects.clone();
         move |event| {
-            handle_webview_event(event, &status, &progress_value, &address, &allow_redirects)
+            handle_webview_event(event, &status, &progress_value, &address, &allow_redirects);
         }
     });
 

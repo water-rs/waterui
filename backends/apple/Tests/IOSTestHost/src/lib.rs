@@ -1,4 +1,4 @@
-//! Fixture application for the device-hosted WaterUITests cases: a `List`
+//! Fixture application for the device-hosted `WaterUITests` cases: a `List`
 //! whose rows carry the reported nested-stack shape — `hstack(icon,
 //! vstack(hstack(text, spacer, flag), text, text))` behind a `Label` — so a
 //! linked test bundle can assert every nested text view lands with a real

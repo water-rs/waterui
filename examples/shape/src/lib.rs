@@ -1,12 +1,12 @@
-//! Shape Example - Demonstrates WaterUI's Shape system
+//! Shape Example - Demonstrates `WaterUI`'s Shape system
 //!
 //! This example showcases:
-//! - FilledShape: Shapes filled with color using `.fill()` method
-//! - ClipShape: Clipping views to shapes using `.clip()` method
-//! - Built-in shapes: Circle, Ellipse, Capsule, Rectangle, RoundedRectangle
+//! - `FilledShape`: Shapes filled with color using `.fill()` method
+//! - `ClipShape`: Clipping views to shapes using `.clip()` method
+//! - Built-in shapes: Circle, Ellipse, Capsule, Rectangle, `RoundedRectangle`
 //! - Custom paths: Using Path builder for arbitrary shapes
 //!
-//! Shapes in WaterUI have the same layout behavior as SwiftUI:
+//! Shapes in `WaterUI` have the same layout behavior as `SwiftUI`:
 //! - They fill all available space (like Color)
 //! - Use `.frame()` or container constraints to size them
 
@@ -227,8 +227,8 @@ fn hdr_shapes() -> impl View {
 /// Demo: HDR shapes
 fn hdr_shape_demo(show_hdr: &Binding<bool>) -> impl View {
     let show_hdr = show_hdr.clone();
-    let hdr_opacity = show_hdr.clone().select(1.0, 0.0);
-    let sdr_opacity = show_hdr.clone().select(0.0, 1.0);
+    let hdr_opacity = show_hdr.select(1.0, 0.0);
+    let sdr_opacity = show_hdr.select(0.0, 1.0);
 
     vstack((
         text("HDR Shapes").size(18.0),
@@ -261,8 +261,8 @@ fn create_star(points: usize, inner_ratio: f32) -> Path {
         } else {
             inner_radius
         };
-        let x = center + radius * angle.cos();
-        let y = center + radius * angle.sin();
+        let x = f32::mul_add(radius, angle.cos(), center);
+        let y = f32::mul_add(radius, angle.sin(), center);
 
         if i == 0 {
             path = path.move_to(x, y);
@@ -323,8 +323,8 @@ fn create_hexagon() -> Path {
 
     for i in 0..6 {
         let angle = (i as f32) * PI / 3.0 - FRAC_PI_2;
-        let x = center + radius * angle.cos();
-        let y = center + radius * angle.sin();
+        let x = f32::mul_add(radius, angle.cos(), center);
+        let y = f32::mul_add(radius, angle.sin(), center);
 
         if i == 0 {
             path = path.move_to(x, y);

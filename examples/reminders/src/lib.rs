@@ -102,7 +102,7 @@ impl SidebarDestination {
 
 /// Static user lists shown under "My Lists", mirroring the official app's
 /// colored-badge rows.
-fn user_lists() -> [(&'static str, i32, Srgb); 3] {
+const fn user_lists() -> [(&'static str, i32, Srgb); 3] {
     [
         ("Reminders", 37, Srgb::from_hex("#F28A34")),
         ("Best Shot", 2, Srgb::from_hex("#4A84F6")),
@@ -110,7 +110,9 @@ fn user_lists() -> [(&'static str, i32, Srgb); 3] {
     ]
 }
 
-fn reminders_for(dest: SidebarDestination) -> (&'static [ReminderRow], &'static [ReminderRow]) {
+const fn reminders_for(
+    dest: SidebarDestination,
+) -> (&'static [ReminderRow], &'static [ReminderRow]) {
     match dest {
         SidebarDestination::Today => (
             &[
@@ -240,7 +242,7 @@ pub fn demo() -> impl View {
             move || sidebar(selection.clone(), search.clone())
         },
         {
-            let search = search.clone();
+            let search = search;
             move |dest| detail_view(dest, search.clone())
         },
     )
@@ -252,7 +254,6 @@ fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>)
     use waterui::layout::grid::{grid, row};
 
     let query = search
-        .clone()
         .map(|value| normalized_search_query(&value))
         .computed();
     let tile = |dest: SidebarDestination| destination_tile(dest, selection.clone(), query.clone());
@@ -302,7 +303,7 @@ fn destination_tile(
     selection: Binding<Option<SidebarDestination>>,
     query: Computed<Option<String>>,
 ) -> impl View {
-    let is_selected = selection.clone().equal_to(Some(dest));
+    let is_selected = selection.equal_to(Some(dest));
     let count = query.map(move |query| {
         if let Some(query) = query.as_deref() {
             let (today_rows, upcoming_rows) = reminders_for(dest);

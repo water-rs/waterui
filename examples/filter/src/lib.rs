@@ -1,4 +1,4 @@
-//! Filter Example - Demonstrates WaterUI's visual filter system
+//! Filter Example - Demonstrates `WaterUI`'s visual filter system
 //!
 //! This example showcases visual filters that can be applied to any view:
 //! - Blur - Gaussian blur effect

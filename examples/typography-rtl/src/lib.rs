@@ -1,4 +1,4 @@
-//! Typography and bidirectional-layout showcase for WaterUI.
+//! Typography and bidirectional-layout showcase for `WaterUI`.
 
 use waterui::app::App;
 use waterui::env::with;

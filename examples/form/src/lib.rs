@@ -1,4 +1,4 @@
-//! Form Example - Demonstrates WaterUI's form building capabilities
+//! Form Example - Demonstrates `WaterUI`'s form building capabilities
 //!
 //! This example showcases:
 //! - The `#[form]` derive macro for automatic form generation
@@ -136,6 +136,7 @@ fn scene(
     )
 }
 
+#[must_use]
 pub fn app(mut env: Environment) -> App {
     let settings = AppSettings::binding();
     let registration = RegistrationForm::binding();
@@ -146,19 +147,18 @@ pub fn app(mut env: Environment) -> App {
     let custom_slider = binding(0.5);
 
     // Install theme before creating App
-    let theme =
-        Theme::new()
-            .color_scheme(
-                settings
-                    .project()
-                    .dark_mode
-                    .select(ColorScheme::Dark, ColorScheme::Light),
-            )
-            .fonts(FontSettings::new().body(
-                settings.project().font_scale.map(|scale| {
-                    ResolvedFont::new(16.0 + (1.0 + scale * 10.0), FontWeight::Normal)
-                }),
-            ));
+    let theme = Theme::new()
+        .color_scheme(
+            settings
+                .project()
+                .dark_mode
+                .select(ColorScheme::Dark, ColorScheme::Light),
+        )
+        .fonts(
+            FontSettings::new().body(settings.project().font_scale.map(|scale| {
+                ResolvedFont::new(16.0 + f32::mul_add(scale, 10.0, 1.0), FontWeight::Normal)
+            })),
+        );
 
     env.install(theme);
 

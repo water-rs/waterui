@@ -1,9 +1,9 @@
 //! Media Picker Example - Demonstrates media selection and loading
 //!
 //! This example showcases:
-//! - MediaPicker component for selecting photos, videos, and live photos
-//! - Selected::load() for retrieving selected media content
-//! - Displaying loaded media (Photo, Video, LivePhoto)
+//! - `MediaPicker` component for selecting photos, videos, and live photos
+//! - `Selected::load()` for retrieving selected media content
+//! - Displaying loaded media (Photo, Video, `LivePhoto`)
 //! - Filter options for different media types
 
 use waterui::AnyView;
@@ -143,7 +143,7 @@ fn media_view(media: Media) -> AnyView {
 fn image_view(url: Url) -> impl View {
     tracing::debug!("Displaying image from: {}", url);
     vstack((
-        Photo::new(url.clone()).on_event(move |event| {
+        Photo::new(url).on_event(move |event| {
             tracing::debug!("Photo event: {:?}", event);
         }),
         text("Image").body().muted().padding_with(8.0),
