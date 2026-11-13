@@ -77,6 +77,7 @@ pub const SHADOW: &[Program] = &[render("vs", "fs")];
 
 /// The capture headroom module: working-space texels, then texels
 /// decoded from encoded sRGB.
+#[allow(dead_code)]
 pub const HEADROOM: &[Program] = &[render("vs_main", "fs_main"), render("vs_main", "fs_decode")];
 
 /// The space conversion module: decode, then encode.
