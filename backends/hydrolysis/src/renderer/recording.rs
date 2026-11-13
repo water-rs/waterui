@@ -22,7 +22,7 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
 use cherenkov_record::{
-    BlendSpace, ColorStop, Content, Draw, EvenOdd, Extend, FontId, Glyph as EngineGlyph,
+    ColorStop, Content, Draw, EvenOdd, Extend, FontId, Glyph as EngineGlyph,
     GlyphStyle, Group, ImageId, ImagePattern, Interpolation, LayoutSize, LinearGradient, Paint,
     RadialGradient, Recorder, Sampling, Shadow, ShapeData, SweepGradient, WorkingColor,
 };
@@ -1318,7 +1318,7 @@ fn lower(
                                 let group = Group {
                                     opacity: alpha,
                                     blend,
-                                    blend_space: BlendSpace::Linear,
+                                    blend_space: None,
                                     filter: None,
                                 };
                                 r.group(group, |r| lower(ops, index, r, resources, names));

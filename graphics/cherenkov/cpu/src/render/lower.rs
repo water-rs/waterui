@@ -784,6 +784,10 @@ pub struct Lowering<'a, 'b> {
     /// The storage space of each open isolation level, in emission
     /// order, parallel to [`Lowering::iso_kinds`].
     iso_spaces: Vec<cherenkov::BlendSpace>,
+    /// The storage space of the raster the walk lowers onto: the
+    /// surface's storage space, or the linear space of a projective
+    /// layer's local image.
+    root_space: cherenkov::BlendSpace,
     /// Backdrop groups planned before lowering, by group id.
     backdrops: FxHashMap<u64, BackdropPlan>,
     /// The apron rows each filtered layer's scope needs beyond its own
@@ -1458,6 +1462,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             clip: None,
             iso_kinds: Vec::new(),
             iso_spaces: Vec::new(),
+            root_space: cherenkov::BlendSpace::Linear,
             backdrops: FxHashMap::default(),
             scope_aprons: FxHashMap::default(),
             anchor_scratch,
@@ -1486,6 +1491,18 @@ impl<'a, 'b> Lowering<'a, 'b> {
     ) {
         self.local = local;
         self.projected = projected;
+    }
+
+    /// Lowers the surface onto a raster storing `space` (the surface's
+    /// storage space); a lowering not given one stores the linear space,
+    /// as a projective layer's local image does.
+    pub const fn storage_space(&mut self, space: cherenkov::BlendSpace) {
+        self.root_space = space;
+    }
+
+    /// The storage space of the level currently being lowered into.
+    fn current_space(&self) -> cherenkov::BlendSpace {
+        self.iso_spaces.last().copied().unwrap_or(self.root_space)
     }
 
     /// The layer the walk starts at.
@@ -1573,7 +1590,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         surface: SurfaceId,
         parent: Affine,
         scopes: &mut Vec<LayerId>,
-        canvas: Option<LayerId>,
+        (canvas, space): (Option<LayerId>, cherenkov::BlendSpace),
     ) -> Result<(), RenderError> {
         let node = tree.layer(id);
         if self.projects(id, tree) {
@@ -1638,22 +1655,28 @@ impl<'a, 'b> Lowering<'a, 'b> {
             self.anchor_scratch.hidden.member(g, captures_here);
         }
         // A semantically isolating layer — filtered, blended or in a
-        // non-linear space — is its children's compositing canvas; other
-        // layers share their parent's.
-        let canvas = if node.filter.is_some()
-            || node.blend != BlendMode::Normal
-            || node.blend_space != cherenkov::BlendSpace::Linear
-        {
-            Some(id)
-        } else {
-            canvas
-        };
+        // space unlike its parent level's — is its children's compositing
+        // canvas; other layers share their parent's.
+        let own_space = node.blend_space.unwrap_or(space);
+        let canvas =
+            if node.filter.is_some() || node.blend != BlendMode::Normal || own_space != space {
+                Some(id)
+            } else {
+                canvas
+            };
         if node.filter.is_some() {
             scopes.push(id);
         }
         for child in &node.children {
             self.plan_layer(
-                *child, tree, groups, filters, surface, children, scopes, canvas,
+                *child,
+                tree,
+                groups,
+                filters,
+                surface,
+                children,
+                scopes,
+                (canvas, own_space),
             )?;
         }
         if node.filter.is_some() {
@@ -1801,7 +1824,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             surface,
             Affine::IDENTITY,
             &mut Vec::new(),
-            None,
+            (None, self.root_space),
         )?;
         if self.backdrops.is_empty() {
             return Ok(());
@@ -2175,23 +2198,13 @@ impl<'a, 'b> Lowering<'a, 'b> {
     ) -> Result<(), RenderError> {
         let saved = std::mem::replace(&mut self.clip, inner_clip);
         // A backdrop capture looks through a level exactly when it is
-        // `Normal`-blended in the linear space: pass-through and
-        // `opacity < 1` levels alike. A non-linear-space isolate changes
+        // `Normal`-blended in the space it composites into: pass-through
+        // and `opacity < 1` levels alike. A cross-space isolate changes
         // pixels even when fully transparent and normally blended: it
-        // stays semantic.
-        let looked_through =
-            blend.0 == BlendMode::Normal && blend.1 == cherenkov::BlendSpace::Linear;
-        // A level that composites in isolation — semantic or translucent —
-        // keeps its declared space for members to composite in; a
-        // pass-through level shares the space it merges back into.
-        let space = if opacity >= 1.0 && looked_through {
-            self.iso_spaces
-                .last()
-                .copied()
-                .unwrap_or(cherenkov::BlendSpace::Linear)
-        } else {
-            blend.1
-        };
+        // stays semantic. Every level stores the space its members
+        // composite in, `blend.1` — the caller's resolved space.
+        let looked_through = blend.0 == BlendMode::Normal && blend.1 == self.current_space();
+        let space = blend.1;
         self.iso_kinds.push(looked_through);
         self.iso_spaces.push(space);
         self.items.push(Item::PushIsolate { space });
@@ -2327,11 +2340,17 @@ impl<'a, 'b> Lowering<'a, 'b> {
             return self.projected_layer(id, node);
         }
         let local_root = self.local.is_some_and(|(root, _)| root == id);
+        // The space the layer's subtree composites in: its declared one,
+        // else the enclosing level's.
+        let parent_space = self.current_space();
         let (opacity, blend) = if local_root {
             // Outer opacity and blend apply when the image composes.
-            (1.0, (BlendMode::Normal, cherenkov::BlendSpace::Linear))
+            (1.0, (BlendMode::Normal, parent_space))
         } else {
-            (node.opacity, (node.blend, node.blend_space))
+            (
+                node.opacity,
+                (node.blend, node.blend_space.unwrap_or(parent_space)),
+            )
         };
         let backdrop = node.backdrop.as_ref().map(|sample| sample.group().raw());
         let saved = self.transform;
@@ -2359,9 +2378,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
         // sample draws into it at full strength under the member clip,
         // outside the filter, beside a nested filter scope at opacity 1,
         // `Normal` blend over the items in the member's space.
-        let isolates_composite = opacity < 1.0
-            || blend.0 != BlendMode::Normal
-            || blend.1 != cherenkov::BlendSpace::Linear;
+        let isolates_composite =
+            opacity < 1.0 || blend.0 != BlendMode::Normal || blend.1 != parent_space;
         let member_scope = backdrop.zip(node.filter).filter(|_| isolates_composite);
         let result = self.with_clip(node.clip.as_ref(), |s| {
             s.transform = content_space;
@@ -2534,7 +2552,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
     ) -> Result<(), RenderError> {
         // The local image is reconstructed in the linear working space;
         // a projective layer composites in no other.
-        if node.blend_space != cherenkov::BlendSpace::Linear {
+        if node.blend_space == Some(cherenkov::BlendSpace::SrgbEncoded) {
             return Err(RenderError::Unsupported(names::PROJECTIVE_BLEND_SPACE));
         }
         let Some(placed) = self.projected.get(&id).cloned() else {
@@ -2543,7 +2561,11 @@ impl<'a, 'b> Lowering<'a, 'b> {
             return Ok(());
         };
         let outer = self.clip.clone();
-        if node.blend == BlendMode::Normal {
+        // Over a linear level the image composites straight into it;
+        // over an encoded one it is a linear island, isolated and
+        // composited across the spaces below.
+        if node.blend == BlendMode::Normal && self.current_space() == cherenkov::BlendSpace::Linear
+        {
             self.items.push(Item::Project(Box::new(ProjectItem {
                 placed,
                 opacity: node.opacity,
@@ -2656,11 +2678,12 @@ impl<'a, 'b> Lowering<'a, 'b> {
                     }
                     emissions[i].valid = true;
                     let clip = self.clip.clone();
+                    let space = space.unwrap_or(self.current_space());
                     if let Some(filter) = filter {
                         self.filter_isolate(
                             *filter,
                             *opacity,
-                            (*blend, *space),
+                            (*blend, space),
                             clip,
                             |s| {
                                 changed |= s.ops(ops, emissions, i + 1, *end as usize)?;
@@ -2669,7 +2692,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                             None,
                         )?;
                     } else {
-                        self.isolate(*opacity, (*blend, *space), clip.clone(), clip, |s| {
+                        self.isolate(*opacity, (*blend, space), clip.clone(), clip, |s| {
                             changed |= s.ops(ops, emissions, i + 1, *end as usize)?;
                             Ok(())
                         })?;

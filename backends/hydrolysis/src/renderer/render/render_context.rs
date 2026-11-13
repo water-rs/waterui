@@ -298,14 +298,15 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
     }
 
     /// Runs `f` inside a control's group `key`, clipped to `clip`: its
-    /// layer fades at `opacity` and composites in `blend_space`. A live
-    /// opacity always groups, following the operand between renders; a
-    /// fixed one groups only when it fades.
+    /// layer fades at `opacity` and composites in `blend_space`, or with
+    /// none in the space of the level beneath it. A live opacity always
+    /// groups, following the operand between renders; a fixed one groups
+    /// only when it fades.
     pub(crate) fn with_group_scope(
         &mut self,
         key: crate::renderer::mount::ScopeKey,
         opacity: crate::renderer::GroupOpacity,
-        blend_space: cherenkov_record::BlendSpace,
+        blend_space: Option<cherenkov_record::BlendSpace>,
         clip: kurbo::Rect,
         f: impl FnOnce(&mut Self),
     ) {

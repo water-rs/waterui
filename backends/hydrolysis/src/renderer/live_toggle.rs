@@ -208,7 +208,7 @@ impl LiveToggle {
     }
 
     /// The space the control's group composites in.
-    pub(crate) fn group_blend_space(&self) -> cherenkov_record::BlendSpace {
+    pub(crate) fn group_blend_space(&self) -> Option<cherenkov_record::BlendSpace> {
         self.control.get_group_blend_space()
     }
 

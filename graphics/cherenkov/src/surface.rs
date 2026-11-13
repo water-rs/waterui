@@ -342,6 +342,24 @@ impl<B: Backend> Surface<B> {
         self.shared.borrow_mut().set_clear(color);
     }
 
+    /// The space the surface's root canvas stores premultiplied pixels
+    /// in, queued into the pending change set; [`BlendSpace::Linear`]
+    /// until set.
+    ///
+    /// Every layer and group that declares no blend space composites in
+    /// it, so a surface storing [`BlendSpace::SrgbEncoded`] blends plain
+    /// translucent paints as sRGB-space alpha blends — Material, CSS and
+    /// Core Animation compositing — with no isolation per paint. A layer
+    /// or group declaring [`BlendSpace::Linear`] composites as a linear
+    /// island. Presentation and readback return the linear working space
+    /// whatever the surface stores.
+    ///
+    /// [`BlendSpace::Linear`]: crate::BlendSpace::Linear
+    /// [`BlendSpace::SrgbEncoded`]: crate::BlendSpace::SrgbEncoded
+    pub fn storage_space(&self, space: crate::BlendSpace) {
+        self.shared.borrow_mut().set_storage_space(space);
+    }
+
     /// Records live content for this surface. The recording reads the root
     /// layer's [`layout_size`](crate::LayerEdit::layout_size); content for another
     /// layer that reads its size is recorded with

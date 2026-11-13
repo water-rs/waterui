@@ -133,6 +133,7 @@ pub fn convert(capture: &Capture) -> Result<(Scene, Vec<Resource>), CaptureError
         working_space: WorkingSpace::LinearDisplayP3,
         clear: capture.clear,
         present_headroom: 1.0,
+        storage_space: BlendSpace::Linear,
         features: BTreeSet::default(),
         backdrop_groups: Vec::new(),
         root: Layer {
@@ -270,23 +271,20 @@ impl State<'_> {
                             items: draws,
                             opacity: f64::from(group.opacity),
                             blend: blend(group.blend),
-                            blend_space: blend_space(group.blend_space),
+                            blend_space: group.blend_space.map(blend_space),
                             filter: None,
                         }));
-                    } else if group.blend_space == EngineBlendSpace::Linear {
+                    } else {
                         // A group carrying layers cannot sit in `GroupItem`;
-                        // a layer composites identically — same isolation,
-                        // opacity and blend — at the default blend space.
+                        // a layer composites identically — same opacity,
+                        // blend and blend space.
                         items.push(Item::Layer(Layer {
                             opacity: f64::from(group.opacity),
                             blend: blend(group.blend),
+                            blend_space: group.blend_space.map(blend_space),
                             items: body,
                             ..Default::default()
                         }));
-                    } else {
-                        return Err(CaptureError::Unsupported(
-                            "a group with layers in a non-linear blend space",
-                        ));
                     }
                     i = *end + 1;
                 }

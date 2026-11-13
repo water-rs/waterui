@@ -67,6 +67,8 @@ struct SurfaceState {
     size: (u32, u32),
     display: Display,
     clear: WorkingColor,
+    /// The space the root canvas stores its pixels in.
+    storage_space: crate::BlendSpace,
     /// Whether a property op, a content op or an animation step touched the
     /// surface since the last render — and whether only installs did.
     commits: Commits,
@@ -551,6 +553,7 @@ fn create_surface<B: Backend>(
             size: info.size,
             display: Display::default(),
             clear: WorkingColor::TRANSPARENT,
+            storage_space: crate::BlendSpace::Linear,
             commits: Commits::Other,
             plane_frames: FxHashSet::default(),
             presentation: if info.presents {
@@ -760,12 +763,17 @@ fn commit<B: Backend>(
 ) {
     let ChangeSet {
         clear,
+        storage_space,
         ops,
         recycled,
         animating,
     } = changes;
     if let Some(clear) = clear.take() {
         state.clear = clear;
+        state.commits = Commits::Other;
+    }
+    if let Some(space) = storage_space.take() {
+        state.storage_space = space;
         state.commits = Commits::Other;
     }
     state.content_animating = *animating;
@@ -852,6 +860,7 @@ fn apply_commits<B: Backend>(
             // A dropped surface may still have queued ops: legal, ignore.
             tracing::trace!(surface = surface.raw(), "commit for unknown surface");
             changes.clear = None;
+            changes.storage_space = None;
             changes.ops.clear();
         }
     }
@@ -908,6 +917,7 @@ fn sample_frames<'a>(
             size: state.size,
             display: state.display,
             clear: state.clear,
+            storage_space: state.storage_space,
             changed,
             // A stepped animation changed the sampled tree: the frame is
             // never plane-only, however it was committed.
@@ -1112,6 +1122,7 @@ mod tests {
             size: (1, 1),
             display: Display::default(),
             clear: WorkingColor::TRANSPARENT,
+            storage_space: crate::BlendSpace::Linear,
             commits: Commits::Clean,
             plane_frames: rustc_hash::FxHashSet::default(),
             presentation: Presentation::Retained,
@@ -1124,6 +1135,7 @@ mod tests {
 
         let mut first = ChangeSet::<Null> {
             clear: None,
+            storage_space: None,
             ops: vec![Op::Layer(LayerOp::Content(
                 layer,
                 Some(ContentOp::Picture(caller_picture.clone())),
@@ -1134,6 +1146,7 @@ mod tests {
         commit(&mut renderer, &mut state, surface, &mut first);
         let mut second = ChangeSet::<Null> {
             clear: None,
+            storage_space: None,
             ops: vec![Op::Layer(LayerOp::Content(
                 layer,
                 Some(ContentOp::Picture(Picture::from_list(

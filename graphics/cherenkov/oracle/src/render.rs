@@ -276,37 +276,45 @@ fn blends_within(layer: &Layer) -> bool {
     })
 }
 
-/// Whether a non-projective `layer` is a pass-through: opaque,
-/// `Normal`-blended, linear, unfiltered and holding no non-`Normal`
-/// blend. Its content and children draw straight into the canvas it
-/// composites into, as the engines open no isolation for it.
-fn layer_passes_through(layer: &Layer) -> bool {
+/// The space a layer or group declaring `declared` composites in, inside
+/// a level storing `parent`: its own when declared, the parent's
+/// otherwise.
+fn resolve_space(declared: Option<BlendSpace>, parent: BlendSpace) -> BlendSpace {
+    declared.unwrap_or(parent)
+}
+
+/// Whether a non-projective `layer`, inside a level storing `parent`, is
+/// a pass-through: opaque, `Normal`-blended, in the parent's space,
+/// unfiltered and holding no non-`Normal` blend. Its content and children
+/// draw straight into the canvas it composites into, as the engines open
+/// no isolation for it.
+fn layer_passes_through(layer: &Layer, parent: BlendSpace) -> bool {
     layer.filter.is_none()
         && layer.opacity >= 1.0
         && layer.blend == BlendMode::Normal
-        && layer.blend_space == BlendSpace::Linear
+        && resolve_space(layer.blend_space, parent) == parent
         && !blends_within(layer)
 }
 
-/// Whether a non-projective `layer`'s level is a semantic isolation —
-/// filtered, blended or in a non-linear space — whose canvas a backdrop
-/// capture inside it reads, matching `open_isolation` in
-/// gpu/src/render/lower.rs.
-fn layer_is_semantic(layer: &Layer) -> bool {
+/// Whether a non-projective `layer`'s level, inside a level storing
+/// `parent`, is a semantic isolation — filtered, blended or in a space
+/// unlike the parent's — whose canvas a backdrop capture inside it reads,
+/// matching `open_isolation` in gpu/src/render/lower.rs.
+fn layer_is_semantic(layer: &Layer, parent: BlendSpace) -> bool {
     layer.filter.is_some()
         || layer.blend != BlendMode::Normal
-        || layer.blend_space != BlendSpace::Linear
+        || resolve_space(layer.blend_space, parent) != parent
 }
 
-/// Whether `group` is a pass-through: opaque, `Normal`-blended, linear,
-/// unfiltered and holding no non-`Normal` blend. Its members draw
-/// straight into the canvas it composites into, as the engines open no
-/// isolation for it.
-fn group_passes_through(group: &Group) -> bool {
+/// Whether `group`, inside a level storing `parent`, is a pass-through:
+/// opaque, `Normal`-blended, in the parent's space, unfiltered and
+/// holding no non-`Normal` blend. Its members draw straight into the
+/// canvas it composites into, as the engines open no isolation for it.
+fn group_passes_through(group: &Group, parent: BlendSpace) -> bool {
     group.filter.is_none()
         && group.opacity >= 1.0
         && group.blend == BlendMode::Normal
-        && group.blend_space == BlendSpace::Linear
+        && resolve_space(group.blend_space, parent) == parent
         && !group_items_blend(&group.items)
 }
 
@@ -354,10 +362,13 @@ fn flattened(chain: &[Level]) -> Canvas {
 /// (`blend_space`): the area mean, the filters and the pyramid average
 /// premultiplied values in that space.
 fn backdrop_capture(chain: &[Level], group: &BackdropGroup) -> Capture {
-    let stored = chain
+    // The flattened image stores the nearest semantic level's space — the
+    // surface's own storage space at the root.
+    let stored = chain[chain
         .iter()
         .rposition(|level| level.semantic)
-        .map_or(BlendSpace::Linear, |i| chain[i].space);
+        .expect("the root level is semantic")]
+    .space;
     let space = group.blend_space;
     let scale = group.scale;
     let mut flat = flattened(chain);
@@ -415,10 +426,11 @@ type MemberPositions = HashMap<u32, Vec<(Option<usize>, usize)>>;
 
 /// The paint-order walk behind [`Renderer::plan_anchors`]: records each
 /// `id`'d layer's canvas and index, and each anchored member's
-/// `(canvas, index)`.
+/// `(canvas, index)`. `space` is the storage space of the level `layer`'s
+/// children composite into.
 fn walk_anchor_positions(
     layer: &Layer,
-    canvas: Option<usize>,
+    (canvas, space): (Option<usize>, BlendSpace),
     anchor_of: &HashMap<u32, u32>,
     anchor_pos: &mut HashMap<u32, (Option<usize>, usize)>,
     projective: &mut HashSet<u32>,
@@ -442,16 +454,27 @@ fn walk_anchor_positions(
         {
             member_pos.entry(gid).or_default().push((canvas, idx));
         }
-        // A filtered, blended, non-linear or projective layer is its
+        // A filtered, blended, cross-space or projective layer is its
         // children's compositing canvas; other layers share their
         // parent's.
-        let canvas = if layer_is_semantic(child) || child.projection.is_some() {
+        let canvas = if layer_is_semantic(child, space) || child.projection.is_some() {
             Some(idx)
         } else {
             canvas
         };
+        let child_space = if child.projection.is_some() {
+            BlendSpace::Linear
+        } else {
+            resolve_space(child.blend_space, space)
+        };
         walk_anchor_positions(
-            child, canvas, anchor_of, anchor_pos, projective, member_pos, order,
+            child,
+            (canvas, child_space),
+            anchor_of,
+            anchor_pos,
+            projective,
+            member_pos,
+            order,
         );
     }
 }
@@ -558,12 +581,15 @@ impl Renderer {
         scene_dir: &std::path::Path,
     ) -> Result<Image, RenderError> {
         let mut resources = Resources::new(scene_dir.to_path_buf());
-        let clear = to_working(&scene.clear);
+        // The surface canvas stores the scene's storage space; the image
+        // returns to the linear working space at the end.
+        let storage = scene.storage_space;
+        let clear = move_space(to_working(&scene.clear), BlendSpace::Linear, storage);
         let mut chain = vec![Level {
             canvas: Canvas::new(self.width, self.height, clear),
             opacity: 1.0,
             blend: BlendMode::Normal,
-            space: BlendSpace::Linear,
+            space: storage,
             semantic: true,
         }];
         Self::plan_anchors(scene)?;
@@ -597,7 +623,8 @@ impl Renderer {
             &mut resources,
             &mut backdrops,
         )?;
-        let Level { canvas, .. } = chain.pop().expect("the root canvas is always pushed");
+        let Level { mut canvas, .. } = chain.pop().expect("the root canvas is always pushed");
+        move_canvas(&mut canvas, storage, BlendSpace::Linear);
         Ok(Image {
             width: self.width,
             height: self.height,
@@ -630,7 +657,7 @@ impl Renderer {
         let mut member_pos: MemberPositions = HashMap::new();
         walk_anchor_positions(
             &scene.root,
-            None,
+            (None, scene.storage_space),
             &anchor_of,
             &mut anchor_pos,
             &mut projective,
@@ -866,8 +893,11 @@ impl Renderer {
         // the clip; `motion` is ignored — the oracle renders the settled
         // scene.
         let content_tf = tf * Affine::translate((-child.scroll_offset.x, -child.scroll_offset.y));
-        let enclosing = chain.last().map_or(BlendSpace::Linear, |l| l.space);
-        if layer_passes_through(child) {
+        let enclosing = chain.last().expect("a canvas is always pushed").space;
+        // The space the child's content composites in: its declared one,
+        // else the enclosing level's.
+        let space = resolve_space(child.blend_space, enclosing);
+        if layer_passes_through(child, enclosing) {
             // No level: a member's sample is the bottom-most content drawn
             // into the enclosing canvas, so it blends in the member space
             // against what lies beneath.
@@ -892,7 +922,9 @@ impl Renderer {
         // items and composites the whole at the member's opacity and
         // blend; or the bottom of the member's own level. The filter never
         // covers the sample.
-        let sample = child.backdrop.map(|_| Self::sample_canvas(child));
+        let sample = child
+            .backdrop
+            .map(|_| Self::sample_canvas(child, enclosing));
         if sample == Some(SampleCanvas::Enclosing) {
             self.backdrop_sample(child, tf, clips, top(chain), enclosing, backdrops)?;
         }
@@ -902,22 +934,21 @@ impl Renderer {
                 canvas: Canvas::new(w, h, [0.0; 4]),
                 opacity: child.opacity,
                 blend: child.blend,
-                space: child.blend_space,
-                semantic: child.blend != BlendMode::Normal
-                    || child.blend_space != BlendSpace::Linear,
+                space,
+                semantic: child.blend != BlendMode::Normal || space != enclosing,
             });
-            self.backdrop_sample(child, tf, clips, top(chain), child.blend_space, backdrops)?;
+            self.backdrop_sample(child, tf, clips, top(chain), space, backdrops)?;
         }
-        // A filtered or non-linear layer is a semantic isolation too: a
+        // A filtered or cross-space layer is a semantic isolation too: a
         // backdrop capture inside it reads this canvas, matching `isolate`
         // in gpu/src/render/lower.rs. Translucency is not an isolation:
         // `opacity < 1` levels are looked through.
-        let semantic = layer_is_semantic(child);
-        // A level that composites in isolation — isolated or translucent —
-        // stores its declared space; an opaque `Normal` linear level that
-        // isolates only for a blend within shares the space it composites
-        // into, and a member inside it composites in that space too.
-        let parent_space = chain.last().map_or(BlendSpace::Linear, |l| l.space);
+        let semantic = layer_is_semantic(child, enclosing);
+        // Every level stores the space its members composite in: the
+        // declared space, or the enclosing level's for a layer declaring
+        // none — so an opaque `Normal` level that isolates only for a
+        // blend within shares the space it composites into, and a member
+        // inside it composites in that space too.
         chain.push(Level {
             canvas: Canvas::new(w, h, [0.0; 4]),
             opacity: if member_scope { 1.0 } else { child.opacity },
@@ -926,17 +957,12 @@ impl Renderer {
             } else {
                 child.blend
             },
-            space: if semantic || child.opacity < 1.0 {
-                child.blend_space
-            } else {
-                parent_space
-            },
+            space,
             semantic,
         });
         if sample == Some(SampleCanvas::Own) {
             // The sample is the level's bottom-most content: the level's
             // opacity and blend attenuate it at composite.
-            let space = chain.last().map_or(BlendSpace::Linear, |l| l.space);
             self.backdrop_sample(child, tf, clips, top(chain), space, backdrops)?;
         }
         self.render_items(
@@ -1086,8 +1112,9 @@ impl Renderer {
             .as_ref()
             .ok_or_else(|| RenderError::Projective("projective-unclipped".into()))?;
         // The local image is reconstructed in the linear working space;
-        // a projective layer composites in no other.
-        if child.blend_space != BlendSpace::Linear {
+        // a projective layer composites in no other, so it composites as
+        // a linear island over an encoded canvas.
+        if child.blend_space == Some(BlendSpace::SrgbEncoded) {
             return Err(RenderError::Projective("projective-blend-space".into()));
         }
         let pose = pose(projection, child.transform).map_err(RenderError::Projective)?;
@@ -1245,21 +1272,15 @@ impl Renderer {
         resources: &mut Resources,
         backdrops: &mut Backdrops<'_>,
     ) -> Result<(), RenderError> {
-        if group_passes_through(group) {
+        let parent_space = chain.last().expect("a canvas is always pushed").space;
+        if group_passes_through(group, parent_space) {
             return self.render_group_items(&group.items, tf, clips, chain, resources, backdrops);
         }
-        let parent_space = chain.last().map_or(BlendSpace::Linear, |l| l.space);
-        let semantic = group.blend != BlendMode::Normal
-            || group.blend_space != BlendSpace::Linear
-            || group.filter.is_some();
-        // A translucent or isolated group keeps its declared `blend_space`;
-        // a group isolated only for a blend within shares the space it
-        // composites into.
-        let space = if semantic || group.opacity < 1.0 {
-            group.blend_space
-        } else {
-            parent_space
-        };
+        // The group's level stores the space its members composite in:
+        // its declared `blend_space`, else the space it composites into.
+        let space = resolve_space(group.blend_space, parent_space);
+        let semantic =
+            group.blend != BlendMode::Normal || space != parent_space || group.filter.is_some();
         let (w, h) = (top(chain).width, top(chain).height);
         chain.push(Level {
             canvas: Canvas::new(w, h, [0.0; 4]),
@@ -1335,12 +1356,12 @@ impl Renderer {
     /// opacity, blend and blend space — is a no-op, otherwise in its
     /// member scope. Any other member's sample is its own level's
     /// bottom-most content.
-    fn sample_canvas(child: &Layer) -> SampleCanvas {
+    fn sample_canvas(child: &Layer, enclosing: BlendSpace) -> SampleCanvas {
         if child.filter.is_none() {
             SampleCanvas::Own
         } else if child.opacity >= 1.0
             && child.blend == BlendMode::Normal
-            && child.blend_space == BlendSpace::Linear
+            && resolve_space(child.blend_space, enclosing) == enclosing
         {
             SampleCanvas::Enclosing
         } else {

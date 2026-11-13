@@ -2843,9 +2843,13 @@ impl SystemPlanes for LayerPlanes {
             target
                 .content(c.device, part.range)
                 .map_err(|error| RenderError::Render(error.to_string()))?;
-            let Some(frame) =
-                c.presenter
-                    .prepare(c.device, c.queue, target, part.view, c.display.headroom)?
+            let Some(frame) = c.presenter.prepare(
+                c.device,
+                c.queue,
+                target,
+                (part.view, c.storage_space),
+                c.display.headroom,
+            )?
             else {
                 return Ok((super::Presentation::Retry, None));
             };

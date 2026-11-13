@@ -23,9 +23,8 @@ use skrifa::{
 };
 
 use cherenkov::{
-    BlendMode, BlendSpace, Color, ColorStop as FrontStop, Draw, Extend, Group, Interpolation,
-    LinearGradient, Paint, Picture, RadialGradient, Srgb, StaticRecorder, SweepGradient,
-    WorkingColor,
+    BlendMode, Color, ColorStop as FrontStop, Draw, Extend, Group, Interpolation, LinearGradient,
+    Paint, Picture, RadialGradient, Srgb, StaticRecorder, SweepGradient, WorkingColor,
 };
 
 use cherenkov::RenderError;
@@ -629,7 +628,7 @@ fn record_node(node: &Node, fg: &Foreground<'_>, c: &mut StaticRecorder) {
                 let group = Group {
                     opacity: *alpha,
                     blend: BlendMode::Normal,
-                    blend_space: BlendSpace::Linear,
+                    blend_space: None,
                     filter: None,
                 };
                 c.group(group, |c| c.fill(shape, fg.paint.clone()));
@@ -645,7 +644,7 @@ fn record_node(node: &Node, fg: &Foreground<'_>, c: &mut StaticRecorder) {
             let group = Group {
                 opacity: 1.0,
                 blend: *blend,
-                blend_space: BlendSpace::Linear,
+                blend_space: None,
                 filter: None,
             };
             let body = |c: &mut StaticRecorder| {

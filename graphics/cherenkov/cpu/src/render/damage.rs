@@ -67,8 +67,11 @@ pub struct Damage {
     bands: Region,
     filter_aprons: Vec<usize>,
     captures: Vec<Dependency>,
-    baseline: Option<([u32; 4], u64)>,
-    pending: ([u32; 4], u64),
+    /// The clear colour, the surface's storage space and the image
+    /// replacement count the retained output was rendered with: any
+    /// change repaints the whole surface.
+    baseline: Option<([u32; 4], cherenkov::BlendSpace, u64)>,
+    pending: ([u32; 4], cherenkov::BlendSpace, u64),
 }
 
 impl Default for Damage {
@@ -83,7 +86,7 @@ impl Default for Damage {
             filter_aprons: Vec::new(),
             captures: Vec::new(),
             baseline: None,
-            pending: ([0; 4], 0),
+            pending: ([0; 4], cherenkov::BlendSpace::Linear, 0),
         }
     }
 }
@@ -107,11 +110,11 @@ impl Damage {
         &mut self,
         items: &[Item],
         h: usize,
-        clear: [f32; 4],
+        (clear, storage): ([f32; 4], cherenkov::BlendSpace),
         images: u64,
         animated: bool,
     ) {
-        self.pending = (clear.map(f32::to_bits), images);
+        self.pending = (clear.map(f32::to_bits), storage, images);
         // Footprints update in place. Until rasterization commits, neither
         // this metadata nor a partially written output is a valid baseline.
         let full = self.baseline.take() != Some(self.pending) || animated;

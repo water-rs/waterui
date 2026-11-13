@@ -123,7 +123,14 @@ impl BlendMode {
     }
 }
 
-/// The space in which a group blends.
+/// The space in which a group blends, or in which a surface stores its
+/// pixels ([`Shared::set_storage_space`](crate::surface::Shared::set_storage_space)).
+///
+/// A layer or group that declares no space composites in the space of
+/// the level it composites into, so a surface storing
+/// [`BlendSpace::SrgbEncoded`] blends its plain translucent paints as
+/// sRGB-space alpha blends without isolating them. One that declares a
+/// space unlike that level's isolates and composites across the spaces.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BlendSpace {
@@ -187,20 +194,22 @@ pub struct Group {
     pub opacity: f32,
     /// Blend mode of the group onto its parent.
     pub blend: BlendMode,
-    /// The space in which the group blends.
-    pub blend_space: BlendSpace,
+    /// The space in which the group blends; `None` blends in the space of
+    /// the level the group composites into.
+    pub blend_space: Option<BlendSpace>,
     /// Filter applied to the group.
     pub filter: Option<FilterId>,
 }
 
 impl Group {
-    /// An opaque, normally blended group with no filter.
+    /// An opaque, normally blended group with no filter, blending in the
+    /// space it composites into.
     #[must_use]
     pub const fn new() -> Self {
         Self {
             opacity: 1.,
             blend: BlendMode::Normal,
-            blend_space: BlendSpace::Linear,
+            blend_space: None,
             filter: None,
         }
     }
@@ -218,11 +227,12 @@ impl Group {
     }
 
     /// Sets the blend space: members composite with each other in this
-    /// space, and the group composites onto its backdrop in it.
+    /// space, and the group composites onto its backdrop in it. A space
+    /// unlike the enclosing level's isolates the group.
     #[must_use]
     pub const fn blend_space(self, blend_space: BlendSpace) -> Self {
         Self {
-            blend_space,
+            blend_space: Some(blend_space),
             ..self
         }
     }

@@ -165,7 +165,7 @@ fn draw_run(l: &mut LayerBuilder, fill: GlyphRun, embolden: bool) {
             ],
             opacity: 1.0,
             blend: BlendMode::Normal,
-            blend_space: BlendSpace::Linear,
+            blend_space: None,
             filter: None,
         });
     }

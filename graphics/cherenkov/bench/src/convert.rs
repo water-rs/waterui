@@ -1601,10 +1601,12 @@ mod front {
                 }
             });
         }
-        let mut engine_group = cherenkov::Group::new()
-            .opacity(group.opacity as f32)
-            .blend(engine_blend(group.blend))
-            .blend_space(engine_blend_space(group.blend_space));
+        let mut engine_group = cherenkov::Group {
+            blend_space: group.blend_space.map(engine_blend_space),
+            ..cherenkov::Group::new()
+                .opacity(group.opacity as f32)
+                .blend(engine_blend(group.blend))
+        };
         if let Some(scene_filter) = group.filter.as_deref() {
             engine_group = engine_group.filter(filter(scene_filter)?);
         }

@@ -488,7 +488,7 @@ struct PrepLayer {
     /// Blend onto the parent.
     blend: cherenkov::BlendMode,
     /// The space the layer composites in.
-    blend_space: cherenkov::BlendSpace,
+    blend_space: Option<cherenkov::BlendSpace>,
     /// Registered layer filter.
     filter: Option<cherenkov::Filter>,
     /// Scroll offset applied to content and children.
@@ -599,6 +599,9 @@ struct Present {
     destination: Option<wgpu::Texture>,
     /// The scene's declared display headroom for `read`'s present pass.
     headroom: f32,
+    /// The space the prepared surface stores, which the present pass
+    /// decodes from.
+    storage: cherenkov::BlendSpace,
 }
 
 /// The destination texture format of a `--present` kind.
@@ -824,10 +827,13 @@ impl Present {
             .as_ref()
             .ok_or_else(|| BenchError::Engine("present before prepare".into()))?;
         let destination = self.destination.as_ref().expect("set at prepare");
-        self.presenter.texture(
+        self.presenter.texture_in(
             &shared.device,
             &shared.queue,
-            &source.create_view(&wgpu::TextureViewDescriptor::default()),
+            (
+                &source.create_view(&wgpu::TextureViewDescriptor::default()),
+                self.storage,
+            ),
             TextureOutput {
                 texture: destination,
                 color: present_color(self.kind),
@@ -1329,7 +1335,7 @@ fn prep_layer(
             .map(|shape| shape_kind(shape, cherenkov::FillRule::NonZero)),
         opacity: layer.opacity,
         blend: engine_blend(layer.blend),
-        blend_space: engine_blend_space(layer.blend_space),
+        blend_space: layer.blend_space.map(engine_blend_space),
         filter: layer
             .filter
             .as_deref()
@@ -1554,7 +1560,11 @@ fn build_layer(
         edit.scroll_offset(prep.scroll_offset);
         edit.opacity(prep.opacity as f32);
         edit.blend(prep.blend);
-        edit.blend_space(prep.blend_space);
+        if let Some(space) = prep.blend_space {
+            edit.blend_space(space);
+        } else {
+            edit.clear_blend_space();
+        }
         if let Some(filter) = &prep.filter {
             edit.filter(filter.id());
         }
@@ -1847,6 +1857,7 @@ impl Engine for Cherenkov {
             source: None,
             destination: None,
             headroom: 1.0,
+            storage: cherenkov::BlendSpace::Linear,
         }));
         Ok(())
     }
@@ -1890,12 +1901,14 @@ impl Engine for Cherenkov {
             // Announce the scene's declared headroom as a host display
             // would; the present pass reads it every frame (#97).
             present.headroom = input.scene.present_headroom as f32;
+            present.storage = engine_blend_space(input.scene.storage_space);
             let _ = surface.display(cherenkov::Display {
                 headroom: input.scene.present_headroom as f32,
                 ..cherenkov::Display::default()
             });
         }
         surface.clear_color(working(&input.scene.clear));
+        surface.storage_space(engine_blend_space(input.scene.storage_space));
         register_fonts(
             &mut self.fonts,
             &self.engine,

@@ -794,3 +794,92 @@ fn encoded_layer_composites_like_an_encoded_group() -> Result<(), Box<dyn std::e
     Ok(())
 }
 }
+
+/// How the translucent paint of [`render_m3_field`] is recorded.
+#[derive(Clone, Copy, Debug)]
+enum Field {
+    /// A plain fill in the root's content.
+    Fill,
+    /// A fill in a child layer declaring no space.
+    Layer,
+    /// A fill in a group declaring the linear space.
+    LinearGroup,
+    /// A fill in a child layer declaring the linear space.
+    LinearLayer,
+}
+
+/// The 8-bit sRGB encoding of a premultiplied linear-P3 pixel.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "an in-gamut channel rounds to an 8-bit code"
+)]
+fn srgb8(px: [f32; 4]) -> [u8; 3] {
+    use cherenkov_oracle::color::{linear_p3_to_linear_srgb, srgb_encode};
+    let a = f64::from(px[3]);
+    let straight = [px[0], px[1], px[2]].map(|c| f64::from(c) / a);
+    linear_p3_to_linear_srgb(straight).map(|c| (srgb_encode(c) * 255.0).round() as u8)
+}
+
+split_fn! {
+/// Material 3's dark disabled filled text field — on-surface
+/// `(230, 224, 233)` at 4 % over surface `(20, 18, 24)` — on a surface
+/// storing `storage`, read back as 8-bit sRGB.
+fn render_m3_field(
+    engine: &Engine<Gpu>,
+    storage: BlendSpace,
+    field: Field,
+) -> Result<[u8; 3], Box<dyn std::error::Error>> {
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32), || {}))?;
+    surface.clear_color(Color::<Srgb>::new([20.0 / 255.0, 18.0 / 255.0, 24.0 / 255.0, 1.0]).to_working());
+    surface.storage_space(storage);
+    let on_surface =
+        Color::<Srgb>::new([230.0 / 255.0, 224.0 / 255.0, 233.0 / 255.0, 0.04]).to_working();
+    let rect = Rect::new(0.0, 0.0, 8.0, 8.0);
+    let layer = surface.layer();
+    surface.update(|tx| match field {
+        Field::Fill => {
+            tx[surface.root()].content(surface.record(|c| c.fill(rect, on_surface)));
+        }
+        Field::LinearGroup => {
+            tx[surface.root()].content(surface.record(|c| {
+                c.group(Group::new().blend_space(BlendSpace::Linear), |c| {
+                    c.fill(rect, on_surface);
+                });
+            }));
+        }
+        Field::Layer | Field::LinearLayer => {
+            tx[surface.root()].push(&layer);
+            tx[&layer].content(surface.record(|c| c.fill(rect, on_surface)));
+            if matches!(field, Field::LinearLayer) {
+                tx[&layer].blend_space(BlendSpace::Linear);
+            }
+        }
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    Ok(srgb8(wait!(surface.readback())?.pixels[3 * 8 + 3]))
+}
+}
+
+split_test! {
+/// A surface storing sRGB-encoded values blends plain translucent paint
+/// as an sRGB-space alpha blend — Material's `(28, 26, 32)` — in its own
+/// content and in a child layer declaring no space; a linear island
+/// composites as on a linear surface, `(55, 53, 57)`.
+fn an_encoded_surface_blends_translucent_paint_in_srgb() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    for field in [Field::Fill, Field::Layer] {
+        let encoded = wait!(render_m3_field(&engine, BlendSpace::SrgbEncoded, field))?;
+        assert_eq!(encoded, [28, 26, 32], "{field:?}");
+        let linear = wait!(render_m3_field(&engine, BlendSpace::Linear, field))?;
+        assert_eq!(linear, [55, 53, 57], "{field:?}");
+    }
+    for field in [Field::LinearGroup, Field::LinearLayer] {
+        let island = wait!(render_m3_field(&engine, BlendSpace::SrgbEncoded, field))?;
+        assert_eq!(island, [55, 53, 57], "{field:?}");
+    }
+    Ok(())
+}
+}

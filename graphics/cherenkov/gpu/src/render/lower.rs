@@ -1914,8 +1914,14 @@ pub struct Lowering<'a> {
     /// The nearest semantic isolation's target the capture copies from.
     semantic_target: Target,
     /// The storage space of the enclosing level, innermost last; the
-    /// surface renders in `Linear` (the implicit base).
+    /// walk's root target's space is the implicit base.
     space_stack: Vec<cherenkov::BlendSpace>,
+    /// The space the surface's engine parts store: the surface's storage
+    /// space, set by [`Lowering::run`].
+    surface_space: cherenkov::BlendSpace,
+    /// The space of the retained picture image being realized: the space
+    /// of the pass it composites into, set when its realization opens.
+    picture_space: cherenkov::BlendSpace,
     /// The open isolations, outermost first: each entry carries the
     /// scope's declared composite and the walk state its tail restores,
     /// so a part boundary can close and reopen them
@@ -2010,6 +2016,8 @@ impl<'a> Lowering<'a> {
             promoted: Vec::new(),
             opens: Vec::new(),
             space_stack: Vec::new(),
+            surface_space: cherenkov::BlendSpace::Linear,
+            picture_space: cherenkov::BlendSpace::Linear,
             isolations: Vec::new(),
             scratch_space: Vec::new(),
             capture_space: FxHashMap::default(),
@@ -2074,8 +2082,8 @@ impl<'a> Lowering<'a> {
         self.anchor_scratch.prepare(groups);
         self.anchor_scratch.hidden.begin(tree.has_hidden_layers());
         self.plan_order = 0;
-        let start = self.start(tree);
-        self.plan_layer(start, (tree, bindings), groups, Affine::IDENTITY, None)?;
+        let (start, root) = (self.start(tree), (None, self.current_space()));
+        self.plan_layer(start, (tree, bindings), groups, Affine::IDENTITY, root)?;
         // Union-field members need the group's full membership before
         // their footprints and bounds inflate: the union fold's `r(n)`
         // depends on the member count. Rebuild each touched plan's
@@ -2295,7 +2303,7 @@ impl<'a> Lowering<'a> {
         (tree, bindings): (&SurfaceTree, &Bindings),
         groups: &FxHashMap<u64, BackdropGroupInfo>,
         parent: Affine,
-        canvas: Option<LayerId>,
+        (canvas, space): (Option<LayerId>, cherenkov::BlendSpace),
     ) -> Result<(), RenderError> {
         if self.projects(id, tree) {
             self.anchor_scratch.hidden.keep();
@@ -2318,18 +2326,25 @@ impl<'a> Lowering<'a> {
             self.plan_backdrop_member(id, node, sample, groups, transform, (canvas, order))?;
         }
         // A semantically isolating layer — filtered, blended or in a
-        // non-linear space — is its children's compositing canvas; other
-        // layers share their parent's.
+        // space unlike its parent level's — is its children's compositing
+        // canvas; other layers share their parent's.
+        let own_space = node.blend_space.unwrap_or(space);
         let canvas = if node.filter.is_some()
             || node.blend != cherenkov::BlendMode::Normal
-            || node.blend_space != cherenkov::BlendSpace::Linear
+            || own_space != space
         {
             Some(id)
         } else {
             canvas
         };
         for child in &node.children {
-            self.plan_layer(*child, (tree, bindings), groups, children, canvas)?;
+            self.plan_layer(
+                *child,
+                (tree, bindings),
+                groups,
+                children,
+                (canvas, own_space),
+            )?;
         }
         if hiding {
             self.anchor_scratch.hidden.leave(id);
@@ -2470,20 +2485,26 @@ impl<'a> Lowering<'a> {
         &mut self,
         tree: &SurfaceTree,
         caches: &mut FxHashMap<LayerId, ContentData>,
-        clear: WorkingColor,
+        (clear, storage): (WorkingColor, cherenkov::BlendSpace),
         glyphs: &GlyphContext<'_>,
         groups: &FxHashMap<u64, BackdropGroupInfo>,
         projected: FxHashMap<LayerId, Placement>,
         plan: &super::planes::Plan,
     ) -> Result<(), RenderError> {
         let [r, g, b, a] = clear.components;
+        // The parts store the surface's storage space, their clear too.
+        self.surface_space = storage;
+        let mut clear = [[r * a, g * a, b * a, a]];
+        if storage == cherenkov::BlendSpace::SrgbEncoded {
+            filtrate_core::space::to_srgb(&mut clear);
+        }
         self.raster(self.surface);
         self.walk(
             tree,
             caches,
             glyphs,
             groups,
-            (None, Target::Part(0), Some([r * a, g * a, b * a, a])),
+            (None, Target::Part(0), Some(clear[0])),
             projected,
             plan,
         )
@@ -2679,11 +2700,12 @@ impl<'a> Lowering<'a> {
     /// the space recorded when their level or group opened.
     fn target_space(&self, target: Target) -> cherenkov::BlendSpace {
         match target {
-            // A local image stores its layer's linear isolation; a part is
-            // the surface's own working space.
-            Target::Part(_) | Target::Projected(_) | Target::Plane(_) => {
-                cherenkov::BlendSpace::Linear
-            }
+            // A part stores the surface's storage space; a retained
+            // picture the space of the pass it composites into; a local
+            // image its layer's linear isolation.
+            Target::Part(_) => self.surface_space,
+            Target::Projected(key) if key.picture.is_some() => self.picture_space,
+            Target::Projected(_) | Target::Plane(_) => cherenkov::BlendSpace::Linear,
             Target::Scratch(k) => self
                 .scratch_space
                 .get(k)
@@ -2774,7 +2796,7 @@ impl<'a> Lowering<'a> {
         self.space_stack
             .last()
             .copied()
-            .unwrap_or(cherenkov::BlendSpace::Linear)
+            .unwrap_or_else(|| self.target_space(self.root_target))
     }
 
     fn begin_pass(&mut self, target: Target, clear: Option<[f32; 4]>) {
@@ -3106,15 +3128,12 @@ impl<'a> Lowering<'a> {
         // member sees; translucent and pass-through ones do not.
         let semantic = filter.is_some()
             || blend != cherenkov::BlendMode::Normal
-            || space != cherenkov::BlendSpace::Linear;
-        // Members composite in the declared space when the level
-        // composites onto it in isolation — isolated or translucent;
-        // a pass-through level shares the space it merges back into.
-        let storage = if semantic || opacity < 1.0 {
-            space
-        } else {
-            self.current_space()
-        };
+            || space != self.current_space();
+        // Members composite in the level's resolved space: the declared
+        // one, or the space it merges back into for a level declaring
+        // none — the caller resolves it, so a pass-through level shares
+        // the enclosing space.
+        let storage = space;
         if self.scratch_space.len() <= scratch {
             self.scratch_space
                 .resize(scratch + 1, cherenkov::BlendSpace::Linear);
@@ -3516,12 +3535,12 @@ impl<'a> Lowering<'a> {
         let levels = plan.spec.levels().get();
         let space = plan.spec.member_blend_space();
         let current = self.current_target();
-        // The capture pass draws in the semantic target's space, and
-        // every looked-through scratch shares it — layers never sit
-        // inside an encoded group scope, so each is stored in the root's
-        // linear space and composites over the copy source-over at full
-        // opacity. The capture itself stores the group's working space:
-        // a capture in another space resolves into it, at any scale.
+        // The capture pass draws in the semantic target's space — the
+        // surface's storage space at the root — and every looked-through
+        // scratch shares it: a level in another space is semantic, so
+        // each composites over the copy source-over at full opacity. The
+        // capture itself stores the group's working space: a capture in
+        // another space resolves into it, at any scale.
         let copy_space = self.target_space(copy_from);
         self.capture_space.insert(gid, copy_space);
         // Only a looked-through level that painted something before the
@@ -3573,8 +3592,7 @@ impl<'a> Lowering<'a> {
                 let k = self.painted_scratches[i];
                 // Looked-through scratches cover the full surface (see
                 // `isolate`), so their texel origin is (0, 0), and each
-                // is stored in the copy's space — the root's linear
-                // space.
+                // is stored in the copy's space.
                 self.emit_composite(
                     Source::Scratch(k),
                     [0.0, 0.0],
@@ -4120,15 +4138,17 @@ impl<'a> Lowering<'a> {
             node.clip.as_ref()
         };
         // A local root's opacity, blend and space apply when its image
-        // composes.
+        // composes. Every other layer composites in its declared space,
+        // else in the space of the level it composites into.
+        let parent_space = self.current_space();
         let (opacity, blend, space) = if local_root {
-            (
-                1.0,
-                cherenkov::BlendMode::Normal,
-                cherenkov::BlendSpace::Linear,
-            )
+            (1.0, cherenkov::BlendMode::Normal, parent_space)
         } else {
-            (node.opacity, node.blend, node.blend_space)
+            (
+                node.opacity,
+                node.blend,
+                node.blend_space.unwrap_or(parent_space),
+            )
         };
         let backdrop = &node.backdrop;
         let saved = self.transform;
@@ -4147,7 +4167,7 @@ impl<'a> Lowering<'a> {
             // system plane (`Placement::opacity`), never in an isolation.
             || (opacity < 1.0 && !self.promoted.contains(&id))
             || blend != cherenkov::BlendMode::Normal
-            || space != cherenkov::BlendSpace::Linear
+            || space != parent_space
             // The root already renders into the surface target, and a
             // local root into its image.
             || (id != self.start(tree) && node.blends_within());
@@ -4213,10 +4233,9 @@ impl<'a> Lowering<'a> {
         // A filtered member whose opacity, blend or space is not a no-op
         // composites in two nested member scopes; the scope carries the
         // member's sample and filter by type.
+        let parent_space = self.current_space();
         let member_scope = node.backdrop.as_ref().zip(node.filter).filter(|_| {
-            opacity < 1.0
-                || blend != cherenkov::BlendMode::Normal
-                || space != cherenkov::BlendSpace::Linear
+            opacity < 1.0 || blend != cherenkov::BlendMode::Normal || space != parent_space
         });
         match member_scope {
             Some((sample, filter)) => self.filtered_member_scope(
@@ -4425,7 +4444,7 @@ impl<'a> Lowering<'a> {
     ) -> Result<(), RenderError> {
         // The local image is reconstructed in the linear working space;
         // a projective layer composites in no other.
-        if node.blend_space != cherenkov::BlendSpace::Linear {
+        if node.blend_space == Some(cherenkov::BlendSpace::SrgbEncoded) {
             return Err(RenderError::Unsupported(names::PROJECTIVE_BLEND_SPACE));
         }
         let Some(placement) = self.projected.get(&id).copied() else {
@@ -4434,9 +4453,41 @@ impl<'a> Lowering<'a> {
             return Ok(());
         };
         self.projective_draws += 1;
+        // Over a level storing another space the image is a linear
+        // island: it composites into a linear isolation, which composites
+        // across the spaces with the layer's opacity and blend.
+        let island = self.current_space() != cherenkov::BlendSpace::Linear;
+        let emit = |s: &mut Self, glyphs: &GlyphContext<'_>| {
+            if island {
+                s.isolate_direct(
+                    None,
+                    None,
+                    node.opacity,
+                    node.blend,
+                    cherenkov::BlendSpace::Linear,
+                    |s, _| {
+                        s.emit_projected(
+                            &placement,
+                            1.0,
+                            cherenkov::BlendMode::Normal,
+                            cherenkov::BlendSpace::Linear,
+                        );
+                        Ok(())
+                    },
+                    glyphs,
+                )
+            } else {
+                s.emit_projected(
+                    &placement,
+                    node.opacity,
+                    node.blend,
+                    cherenkov::BlendSpace::Linear,
+                );
+                Ok(())
+            }
+        };
         if !node.blend.is_destructive() {
-            self.emit_projected(&placement, node.opacity, node.blend);
-            return Ok(());
+            return emit(self, glyphs);
         }
         let clip = node
             .clip
@@ -4454,15 +4505,7 @@ impl<'a> Lowering<'a> {
             return Ok(());
         };
         let saved = std::mem::replace(&mut self.transform, Affine::IDENTITY);
-        let result = self.with_path_clip(
-            outline.elements(),
-            rule,
-            |s, _| {
-                s.emit_projected(&placement, node.opacity, node.blend);
-                Ok(())
-            },
-            glyphs,
-        );
+        let result = self.with_path_clip(outline.elements(), rule, emit, glyphs);
         self.transform = saved;
         result
     }
@@ -4475,7 +4518,13 @@ impl<'a> Lowering<'a> {
         clippy::cast_possible_truncation,
         reason = "regions fit the f32 raster space and stop counts fit u32"
     )]
-    fn emit_projected(&mut self, placement: &Placement, opacity: f32, blend: cherenkov::BlendMode) {
+    fn emit_projected(
+        &mut self,
+        placement: &Placement,
+        opacity: f32,
+        blend: cherenkov::BlendMode,
+        source_space: cherenkov::BlendSpace,
+    ) {
         let [x0, y0, x1, y1] = placement.bounds;
         let code = blend_code(blend);
         if code != 0 {
@@ -4495,6 +4544,11 @@ impl<'a> Lowering<'a> {
         inst.meta[2] = self.frame.stops.len() as u32;
         self.frame.stops.extend(placement.record());
         inst.meta[3] |= code << BLEND_CODE_SHIFT;
+        // An image storing encoded values samples in that space: a
+        // retained picture realized in an encoded pass.
+        if source_space == cherenkov::BlendSpace::SrgbEncoded {
+            inst.meta[3] |= FLAG_TEX_SRGB << 24;
+        }
         self.set_pipeline(PipelineKind::Projective { replace: code != 0 });
         self.set_source(Some(Source::Projected(placement.key)));
         self.push_instance(&inst);
@@ -4632,12 +4686,13 @@ impl<'a> Lowering<'a> {
                     filter,
                     end,
                 } => {
+                    let space = space.unwrap_or(self.current_space());
                     self.isolate(
                         None,
                         *filter,
                         *opacity,
                         *blend,
-                        *space,
+                        space,
                         |s, g| {
                             changed |= s.ops(
                                 source,
@@ -7248,7 +7303,7 @@ mod tests {
                 .run(
                     &tree,
                     caches,
-                    WorkingColor::BLACK,
+                    (WorkingColor::BLACK, cherenkov::BlendSpace::Linear),
                     &glyphs,
                     &FxHashMap::default(),
                     FxHashMap::default(),
@@ -8418,7 +8473,7 @@ mod tests {
                 .run(
                     &tree,
                     &mut caches,
-                    WorkingColor::BLACK,
+                    (WorkingColor::BLACK, cherenkov::BlendSpace::Linear),
                     &glyphs,
                     &FxHashMap::default(),
                     FxHashMap::default(),
@@ -8555,7 +8610,7 @@ mod tests {
                 .run(
                     &tree,
                     &mut caches,
-                    WorkingColor::BLACK,
+                    (WorkingColor::BLACK, cherenkov::BlendSpace::Linear),
                     &glyphs,
                     &FxHashMap::default(),
                     FxHashMap::default(),
@@ -8617,7 +8672,7 @@ mod tests {
             .run(
                 tree,
                 &mut caches,
-                WorkingColor::BLACK,
+                (WorkingColor::BLACK, cherenkov::BlendSpace::Linear),
                 &glyphs,
                 &FxHashMap::default(),
                 FxHashMap::default(),
@@ -8837,7 +8892,12 @@ mod tests {
         ))
         .collect();
         let ready = candidates.keys().copied().collect();
-        let plan = planes::plan::<planes::Platform>(&tree, &candidates, &ready);
+        let plan = planes::plan::<planes::Platform>(
+            &tree,
+            cherenkov::BlendSpace::Linear,
+            &candidates,
+            &ready,
+        );
         assert!(plan.planes.is_empty(), "promoted: {:?}", plan.planes);
         assert_eq!(plan.parts(), 1);
         let mut caches: FxHashMap<LayerId, ContentData> = std::iter::once((
@@ -8875,7 +8935,7 @@ mod tests {
             .run(
                 &tree,
                 &mut caches,
-                WorkingColor::BLACK,
+                (WorkingColor::BLACK, cherenkov::BlendSpace::Linear),
                 &glyphs,
                 &FxHashMap::default(),
                 FxHashMap::default(),

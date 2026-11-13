@@ -308,7 +308,7 @@ const fn supports_compute(flags: wgpu::DownlevelFlags, limits: &wgpu::Limits) ->
         && limits.max_compute_workgroups_per_dimension > 0
 }
 
-/// A surface whose engine-owned linear P3 texture is handed to a native host.
+/// A surface whose engine-owned texture is handed to a native host.
 ///
 /// The host receives a new texture only on creation and resize, then samples
 /// the retained texture after `Engine::render` completes. Presentation must
@@ -349,7 +349,10 @@ impl TextureTarget {
     }
 
     /// Creates a target and its resize notification channel.
-    /// Textures contain premultiplied linear Display P3, in `Rgba16Float`.
+    /// Textures contain premultiplied pixels in the surface's
+    /// [storage space](cherenkov::Surface::storage_space), linear Display P3
+    /// unless set otherwise, in `Rgba16Float`; [`Presenter::texture_in`]
+    /// presents them from that space.
     #[must_use]
     pub fn new(size: (u32, u32)) -> (Self, std::sync::mpsc::Receiver<wgpu::Texture>) {
         let (textures, receiver) = std::sync::mpsc::channel();

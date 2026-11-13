@@ -328,9 +328,10 @@ pub enum LayerOp {
     Clip(LayerId, Option<Retarget<ShapeData>>),
     /// Set the blend mode.
     Blend(LayerId, BlendMode),
-    /// Set the blend space: the layer's subtree composites with itself in
-    /// this space, and the layer composites onto its parent in it.
-    BlendSpace(LayerId, BlendSpace),
+    /// Set or clear the blend space: the layer's subtree composites with
+    /// itself in this space, and the layer composites onto its parent in
+    /// it; cleared, the layer composites in its parent's space.
+    BlendSpace(LayerId, Option<BlendSpace>),
     /// Set or clear the filter.
     Filter(LayerId, Option<FilterId>),
     /// Set or clear the backdrop sample (group and optional per-member
@@ -509,6 +510,9 @@ impl<T: Target> Op<T> {
 pub struct ChangeSet<T: Target> {
     /// New clear colour, when set this commit.
     pub clear: Option<WorkingColor>,
+    /// New storage space of the surface's root canvas, when set this
+    /// commit.
+    pub storage_space: Option<BlendSpace>,
     /// The ops, in order.
     pub ops: Vec<Op<T>>,
     /// Replaced pictures, cleared on the consumer's side, whose storage

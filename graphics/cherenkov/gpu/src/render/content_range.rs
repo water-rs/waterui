@@ -94,7 +94,7 @@ pub(super) fn of_op(op: &Op, images: &FxHashMap<u64, GpuImage>) -> ColorRange {
             ..
         } if filters_range(*filter)
             || *blend == BlendMode::PlusLighter
-            || *space == BlendSpace::SrgbEncoded =>
+            || *space == Some(BlendSpace::SrgbEncoded) =>
         {
             ColorRange::HighDynamicRange
         }

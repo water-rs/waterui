@@ -3961,7 +3961,10 @@ mod tests {
             .run(
                 &tree,
                 &mut caches,
-                cherenkov::WorkingColor::BLACK,
+                (
+                    cherenkov::WorkingColor::BLACK,
+                    cherenkov::BlendSpace::Linear,
+                ),
                 &glyphs,
                 &FxHashMap::default(),
                 FxHashMap::default(),

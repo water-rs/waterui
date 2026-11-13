@@ -202,8 +202,9 @@ pub struct LayerNode {
     /// The blend mode the layer composites onto its parent with.
     pub blend: BlendMode,
     /// The space the layer's subtree composites in and the layer
-    /// composites onto its parent in, as a group's `blend_space`.
-    pub blend_space: BlendSpace,
+    /// composites onto its parent in, as a group's `blend_space`: `None`
+    /// composites in the space of the level the layer composites into.
+    pub blend_space: Option<BlendSpace>,
     /// The filter applied to this layer's subtree.
     pub filter: Option<FilterId>,
     /// The backdrop group (and optional per-member effect) this layer
@@ -364,7 +365,7 @@ impl LayerNode {
             scroll_offset: Vec2::ZERO,
             clip: None,
             blend: BlendMode::default(),
-            blend_space: BlendSpace::Linear,
+            blend_space: None,
             filter: None,
             backdrop: None,
             children: Vec::new(),
@@ -2040,10 +2041,10 @@ mod hierarchy_tests {
             parent: tree.root(),
             child,
         });
-        assert_eq!(tree.layer(child).blend_space, BlendSpace::Linear);
+        assert_eq!(tree.layer(child).blend_space, None);
         let before = tree.layer(child).property_revision();
-        tree.apply(LayerOp::BlendSpace(child, BlendSpace::SrgbEncoded));
-        assert_eq!(tree.layer(child).blend_space, BlendSpace::SrgbEncoded);
+        tree.apply(LayerOp::BlendSpace(child, Some(BlendSpace::SrgbEncoded)));
+        assert_eq!(tree.layer(child).blend_space, Some(BlendSpace::SrgbEncoded));
         assert!(tree.layer(child).property_revision() > before);
         // A `Normal` composite in another space is not a blend the parent
         // isolates for, as for a group.

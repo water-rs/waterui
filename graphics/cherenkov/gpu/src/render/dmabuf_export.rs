@@ -549,7 +549,7 @@ impl Pool {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         presenter: &mut present::Presenter,
-        source: &wgpu::TextureView,
+        source: (&wgpu::TextureView, cherenkov::BlendSpace),
         headroom: f32,
     ) -> Result<planes::Presentation, RenderError> {
         if let Some(error) = &self.broken {
@@ -584,7 +584,7 @@ impl Pool {
             }
             // The present submission signals the frame's acquire fence.
             hal_queue.add_signal_semaphore(acquire_sem, None);
-            presenter.texture(
+            presenter.texture_in(
                 device,
                 queue,
                 source,
