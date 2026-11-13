@@ -49,6 +49,18 @@ impl HeadlessSurface {
             )),
         }
     }
+
+    /// Whether the driver reported the device generation this target
+    /// renders on lost — the next frame recovers it under its context's
+    /// recovery budget. The CPU painter has no device to lose.
+    fn device_lost(&self) -> bool {
+        match self {
+            #[cfg(hydrolysis_gpu_painter)]
+            Self::Gpu(surface) => surface.device_loss().is_lost(),
+            #[cfg(hydrolysis_cpu_painter)]
+            Self::Cpu(_) => false,
+        }
+    }
 }
 
 #[cfg(all(test, hydrolysis_gpu_painter))]
@@ -207,6 +219,11 @@ impl HeadlessPlatformWindow {
     pub(super) fn take_redraw_request(&self) -> bool {
         self.redraw_requested.swap(false, Ordering::AcqRel)
     }
+
+    /// Whether the device this window renders on was reported lost.
+    fn device_lost(&self) -> bool {
+        self.inner.surface_ref().device_lost()
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -358,6 +375,8 @@ pub struct HeadlessPumpResult {
     snapshot: Option<HeadlessSnapshot>,
     /// The terminal failure that ended a window's rendering in this pump.
     failure: Option<crate::renderer::FrameError>,
+    /// Whether a window this pump rendered lost its device during it.
+    device_lost: bool,
     #[cfg(feature = "accessibility")]
     /// The accessibility node holding UI focus.
     ui_focus: Option<accesskit::NodeId>,
@@ -435,6 +454,16 @@ impl HeadlessPumpResult {
     /// Takes the terminal frame failure out of the result, leaving none.
     pub const fn take_failure(&mut self) -> Option<crate::renderer::FrameError> {
         self.failure.take()
+    }
+
+    /// Whether a window this pump rendered lost its GPU device during the
+    /// pump — the reason a requested snapshot is missing when no
+    /// [`Self::failure`] names one. The loss is recoverable: the next pump
+    /// recreates the device, and a device that keeps dying runs out the
+    /// recovery budget, which that pump reports as its [`Self::failure`].
+    #[must_use]
+    pub const fn device_lost(&self) -> bool {
+        self.device_lost
     }
 
     /// The accessibility node holding UI focus.
@@ -1374,6 +1403,9 @@ impl HeadlessRuntime {
         let mut failure = render_result
             .as_mut()
             .and_then(|result| result.failed.take());
+        // A device lost under the frame skipped it — or, lost after its
+        // readback, left a complete snapshot — and the next pump recovers it.
+        let mut device_lost = render_result.is_some() && self.runtime.platform.device_lost();
         // A popup window pumps its scene the way the main window does: the
         // scene pump is where its retained tree — and with it the window's
         // accessibility update — is built. A popup that only ever rendered on
@@ -1401,12 +1433,21 @@ impl HeadlessRuntime {
             if failure.is_none() {
                 failure = popup_result.failed;
             }
+            let popup_lost = popup.platform.device_lost();
+            device_lost |= popup_lost;
             if let Some(popup_snapshot) = popup_result.snapshot {
                 popup_snapshots.push((
                     popup_index,
                     crate::platform::validated_window_frame(popup.window.frame.snapshot()),
                     popup_snapshot,
                 ));
+            } else if composite && popup_lost {
+                // The popup's frame was skipped with its device: a main
+                // snapshot without it is not this frame, so the capture
+                // carries none and the next pump captures again.
+                if let Some(result) = render_result.as_mut() {
+                    result.snapshot = None;
+                }
             }
         }
         if let Some(snapshot) = render_result
@@ -1471,6 +1512,7 @@ impl HeadlessRuntime {
             content_types,
             snapshot: render_result.and_then(|result| result.snapshot),
             failure,
+            device_lost,
             #[cfg(feature = "accessibility")]
             ui_focus: self.runtime.renderer.focused_ui_node(),
         }
@@ -1789,6 +1831,93 @@ mod generation_tests {
             self.font = None;
             self.image = None;
         }
+    }
+
+    /// Where in the capture frame the driver reports the device lost: the
+    /// loss is delivered from the frame's `poll`th queue poll, the way a
+    /// driver reports a command buffer that hung.
+    #[derive(Clone, Copy)]
+    enum LossPoll {
+        /// The engine render's poll, so the surface acquire sees the loss.
+        First,
+        /// The snapshot readback's poll, after the frame has rendered.
+        Second,
+    }
+
+    /// A capture frame whose device dies under it reports the loss with no
+    /// snapshot and no terminal failure, and the next pump at the same frame
+    /// instant recovers the device and captures.
+    fn capture_survives_a_device_lost_mid_frame(poll: LossPoll) {
+        let mut runtime = HeadlessRuntime::new_for_tests_on_context(
+            OffscreenGpuContext::for_tests(),
+            test_environment(),
+            AnyViewBuilder::<AnyView>::new(|| AnyView::new(waterui::text!("Device loss"))),
+            96,
+            32,
+            MinimalTestTheme::default(),
+        );
+        let t0 = Instant::now();
+        assert!(
+            runtime.pump_at(true, t0).snapshot.is_some(),
+            "the first capture renders on the live device"
+        );
+
+        // Every submission so far has completed, so a work-done callback
+        // registered now runs on the capture frame's first queue poll; one
+        // it registers in turn runs on the poll after that.
+        let surface = runtime.runtime.platform.surface().gpu();
+        let dying = surface.device_loss().clone();
+        let report = dying.loss_reporter("hung mid-capture");
+        match poll {
+            LossPoll::First => surface.queue().on_submitted_work_done(report),
+            LossPoll::Second => {
+                let queue = surface.queue().clone();
+                surface
+                    .queue()
+                    .on_submitted_work_done(move || queue.on_submitted_work_done(report));
+            }
+        }
+
+        let at = t0 + Duration::from_millis(16);
+        let mut lost = runtime.pump_at(true, at);
+        assert!(dying.is_lost(), "the loss landed during the capture frame");
+        assert!(
+            lost.take_failure().is_none(),
+            "one loss is inside the recovery budget"
+        );
+        assert!(lost.device_lost(), "the pump reports the device loss");
+        assert!(
+            lost.snapshot.is_none(),
+            "a frame whose device died carries no snapshot"
+        );
+        assert!(
+            !lost.profile.counters().rendered(),
+            "the frame the loss ended is skipped"
+        );
+
+        let mut recovered = runtime.pump_at(true, at);
+        assert!(
+            recovered.take_failure().is_none(),
+            "the recovery pump renders"
+        );
+        assert!(
+            !recovered.device_lost(),
+            "the recovery pump renders on a live device"
+        );
+        let snapshot = recovered
+            .take_snapshot()
+            .expect("the pump after the loss captures on the recovered device");
+        assert_eq!((snapshot.width(), snapshot.height()), (96, 32));
+    }
+
+    #[test]
+    fn a_device_lost_before_the_capture_acquires_skips_the_frame() {
+        capture_survives_a_device_lost_mid_frame(LossPoll::First);
+    }
+
+    #[test]
+    fn a_device_lost_during_the_capture_readback_skips_the_frame() {
+        capture_survives_a_device_lost_mid_frame(LossPoll::Second);
     }
 
     /// Mounts a resource-registering `SceneView` on a real GPU context,

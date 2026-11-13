@@ -87,6 +87,8 @@ mod menu_shortcuts;
 mod mid_flush_subview;
 #[cfg(hydrolysis_gpu_painter)]
 pub mod mirror;
+#[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+mod nav_tabs_look;
 mod navigation_back;
 #[cfg(hydrolysis_gpu_painter)]
 mod navigation_layers;
@@ -123,6 +125,7 @@ mod structural_transitions;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod tab_item_layout;
 mod teardown_order;
+mod text_field_look;
 mod text_ink;
 mod text_measure_direction;
 mod text_wrap_width;
@@ -168,19 +171,18 @@ use crate::theme::{
     BadgeLook, ButtonLook, ButtonSpec, Chrome, CornerShape, Custom, DragMapping, Driven,
     FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionFocusBinding,
     InteractionMotion, Knob, Label, LinearProgressLook, ListLook, ListSpec, MenuLayout, MenuLook,
-    MenuPickerLook, MenuSpec, ModalInteraction, Motion, NavigationMetrics, NavigationMotion,
+    MenuPickerLook, MenuSpec, ModalInteraction, Motion, NavigationBarLook, NavigationSpec,
     PickerSpec, PressFeedback, ProgressControl, ProgressSpec, RadioGroupLook, ScrollIndicatorLook,
     SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook, StepperSpec, Surface,
-    TabItemGeometry, TabItemLayout, TableLook, TabsMetrics, TextCaretMotion, ToggleSpec,
-    ValueIndicator, WidgetInteractionState,
+    TabItemGeometry, TabItemLayout, TableLook, TabsLook, TabsSpec, TextCaretMotion, TextFieldLook,
+    TextFieldSpec, ToggleSpec, ValueIndicator,
 };
 use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
 use cherenkov_record::{
     BackdropShaderSource, CaptureClass, ContainerRecipe, Draw, GroupMember, MaterialCapture,
-    MaterialEffect, MaterialRegistry, MaterialShader, Paint, Recorder, Shadow, SharedLive,
+    MaterialEffect, MaterialRegistry, MaterialShader, Paint, Shadow, SharedLive,
     WorkingColor,
 };
-use waterui_core::EasingCurve;
 use waterui_core::handler::SharedAction;
 
 fn test_renderer() -> HydrolysisRenderer<crate::text::ParleyEngine> {
@@ -733,6 +735,7 @@ fn text_input_target(
         text_bounds: Rect::ZERO,
         text_clip_bounds: Rect::ZERO,
         content_alpha: 1.0,
+        paints: None,
         layout: ParleyEngine::system(FontFamilyResolution::Strict).empty_layout(),
         display_text: waterui_core::Str::default(),
         display_layout: ParleyEngine::system(FontFamilyResolution::Strict).empty_layout(),
@@ -2281,34 +2284,6 @@ fn disabled_picker_family_and_tabs_expose_no_mutating_actions() {
 }
 
 #[test]
-#[allow(
-    clippy::float_cmp,
-    reason = "the local-space mapping must carry the wave's progress and opacity through untouched, so the values stay bit-identical"
-)]
-fn interaction_press_origin_is_converted_to_widget_local_space() {
-    let mut press_waves = crate::theme::PressWaves::EMPTY;
-    press_waves.push(crate::theme::PressWave {
-        origin: Some(Point::new(125.0, 84.0)),
-        progress: 0.5,
-        opacity: 0.12,
-    });
-    let state = WidgetInteractionState {
-        press_waves,
-        ..WidgetInteractionState::NONE
-    };
-
-    let local = crate::renderer::local_interaction_state(state, Affine::translate((100.0, 80.0)));
-
-    let wave = local
-        .press_waves
-        .latest()
-        .expect("wave must survive the local-space mapping");
-    assert_eq!(wave.origin, Some(Point::new(25.0, 4.0)));
-    assert_eq!(wave.progress, 0.5);
-    assert_eq!(wave.opacity, 0.12);
-}
-
-#[test]
 fn interaction_state_does_not_migrate_between_semantic_identities() {
     let mut renderer = test_renderer();
     let env = test_environment();
@@ -2774,6 +2749,8 @@ type SliderLookFor = Rc<dyn Fn(&SliderSpec, &Environment) -> SliderLook>;
 
 /// The stepper look a test theme hands out for a stepper spec.
 type StepperLookFor = Rc<dyn Fn(&StepperSpec, &Environment) -> StepperLook>;
+/// The text field look a test theme hands out for a field spec.
+type TextFieldLookFor = Rc<dyn Fn(&TextFieldSpec, &Environment) -> TextFieldLook>;
 
 /// The segmented look a test theme hands out for a segmented picker spec.
 type SegmentedLookFor =
@@ -2822,15 +2799,13 @@ pub struct MinimalTestTheme {
     tabs_bar_draws: Rc<RefCell<Vec<Rect>>>,
     /// Every tabs-bar divider bounds the theme was asked to draw.
     tabs_bar_divider_draws: Rc<RefCell<Vec<Rect>>>,
-    /// Forces the tab item layout the theme reports; `None` defaults to
-    /// `Vertical` like [`WidgetTheme::tabs_item_layout`]'s default.
+    /// Forces the tab item layout the theme's look reports; `None` is
+    /// `Vertical`, the look's layout when it names no horizontal width.
     forced_tab_item_layout: Option<TabItemLayout>,
-    /// `(bar_width, item_count)` arguments the theme was asked for its layout.
-    tabs_layout_queries: Rc<RefCell<Vec<(f64, usize)>>>,
-    /// `(bounds, layout)` for every `draw_tabs_highlight` call.
+    /// `(bounds, layout)` for every highlight the selected tab item records.
     tabs_highlight_draws: Rc<RefCell<Vec<(Rect, TabItemLayout)>>>,
-    /// When set, `tabs_item_layout` answers `Horizontal` from this bar extent
-    /// up — a width-class theme like M3's medium-width boundary.
+    /// When set, the tabs look lays its items out horizontally from this bar
+    /// extent up — a width-class theme like M3's medium-width boundary.
     horizontal_from_width: Option<f64>,
     /// Every frame the slider's value-indicator bubble records on.
     slider_indicator_draws: Rc<RefCell<Vec<Rect>>>,
@@ -2874,8 +2849,14 @@ pub struct MinimalTestTheme {
     indeterminate_progress: IndeterminateProgress,
     /// Every radio indicator the theme realized.
     radio_indicator_realizations: Rc<RefCell<Vec<RadioIndicatorRealization>>>,
-    /// The `InputFieldMetrics` this theme reports; `None` answers the fixture
-    /// defaults `input_field_metrics` carries below.
+    /// The text field look the theme hands out for a spec and environment;
+    /// `None` answers [`crate::testing::plain_text_field_look`] over
+    /// `input_metrics`.
+    text_field_look: Option<TextFieldLookFor>,
+    /// Every spec the theme was asked for a text field look.
+    text_field_specs: Rc<RefCell<Vec<TextFieldSpec>>>,
+    /// The `InputFieldMetrics` the plain text field look lays out by; `None`
+    /// answers [`crate::testing::plain_input_metrics`].
     input_metrics: Option<InputFieldMetrics>,
     /// The chrome the button look carries; `None` answers
     /// [`invisible_chrome`].
@@ -2885,6 +2866,13 @@ pub struct MinimalTestTheme {
     button_label: Option<Label>,
     /// The button look's group opacity; `None` draws it opaque.
     button_group_opacity: Option<crate::theme::Driven<f32>>,
+}
+
+/// The caret blink the test themes' text field looks carry.
+pub fn test_caret_motion() -> TextCaretMotion {
+    crate::testing::plain_text_field_look(invisible_chrome(), crate::testing::plain_input_metrics())
+        .caret()
+        .blink()
 }
 
 /// A chrome that draws nothing at rest and tints nothing on interaction —
@@ -2904,8 +2892,18 @@ pub fn invisible_chrome() -> Chrome {
 }
 
 impl MinimalTestTheme {
-    /// Reports `metrics` from `input_field_metrics` instead of the fixture
-    /// defaults.
+    /// Hands out the look `look` makes for each text field's spec.
+    #[must_use]
+    pub fn with_text_field(
+        mut self,
+        look: impl Fn(&TextFieldSpec, &Environment) -> TextFieldLook + 'static,
+    ) -> Self {
+        self.text_field_look = Some(Rc::new(look));
+        self
+    }
+
+    /// Lays the plain text field look out by `metrics` instead of the
+    /// fixture defaults.
     #[must_use]
     pub fn with_input_metrics(mut self, metrics: InputFieldMetrics) -> Self {
         self.input_metrics = Some(metrics);
@@ -3094,6 +3092,37 @@ impl MinimalTestTheme {
     }
 }
 
+/// This theme's tab indicator is a strip: 40 thick and the item's whole
+/// extent, centered, for horizontal items; otherwise 3 thick along the bar
+/// item's top (the sidebar item's trailing edge), as wide (tall) as the
+/// title.
+fn tab_highlight_strip(item: TabItemGeometry) -> Rect {
+    let thickness: f64 = match item.layout {
+        TabItemLayout::Vertical => 3.0,
+        TabItemLayout::Horizontal => 40.0,
+    };
+    let bounds = item.bounds;
+    if matches!(item.layout, TabItemLayout::Horizontal) {
+        let height = thickness.min(bounds.height());
+        let y0 = (bounds.height() - height).mul_add(0.5, bounds.y0);
+        Rect::new(bounds.x0, y0, bounds.x1, y0 + height)
+    } else if matches!(item.placement, NativeTabStyle::Sidebar) {
+        Rect::new(
+            (bounds.x1 - thickness).max(bounds.x0),
+            item.title.y0,
+            bounds.x1,
+            item.title.y1,
+        )
+    } else {
+        Rect::new(
+            item.title.x0,
+            bounds.y0,
+            item.title.x1,
+            (bounds.y0 + thickness).min(bounds.y1),
+        )
+    }
+}
+
 impl WidgetTheme for MinimalTestTheme {
     fn interaction_motion(&self) -> InteractionMotion {
         InteractionMotion {
@@ -3111,23 +3140,6 @@ impl WidgetTheme for MinimalTestTheme {
             press_shape: Animation::linear(Duration::from_millis(15)),
             minimum_press_duration: Duration::from_millis(225),
             touch_delay: Duration::from_millis(150),
-        }
-    }
-
-    fn text_caret_motion(&self) -> TextCaretMotion {
-        TextCaretMotion {
-            fade_cycle_duration: Duration::from_millis(1_060),
-            frame_interval: Duration::from_millis(530),
-            min_opacity: 0.2,
-        }
-    }
-
-    fn navigation_motion(&self) -> NavigationMotion {
-        NavigationMotion {
-            transition_duration: Duration::from_millis(450),
-            transition_easing: EasingCurve::bezier(0.2, 0.0, 0.0, 1.0),
-            shared_axis_slide_distance: 30.0,
-            fade_through_threshold: 0.35,
         }
     }
 
@@ -3199,42 +3211,18 @@ impl WidgetTheme for MinimalTestTheme {
         self.glass_look.as_ref().and_then(|look| look(glass, env))
     }
 
-    fn input_field_metrics(&self) -> InputFieldMetrics {
-        self.input_metrics.unwrap_or(InputFieldMetrics {
-            label_height: 14.0,
-            min_width: 100.0,
-            min_height: 32.0,
-            horizontal_inset: 8.0,
-            vertical_inset: 6.0,
-        })
-    }
-
-    fn input_placeholder_color(&self) -> waterui_graphics::color::Color {
-        waterui_graphics::color::Color::srgb(0, 0, 0)
-    }
-
-    fn input_selection_paint(&self) -> Paint {
-        Paint::Solid(
-            waterui::color::Srgb::new(0.20, 0.45, 0.90)
-                .resolve()
-                .with_alpha(0.28),
+    fn text_field(&self, spec: &TextFieldSpec, env: &Environment) -> TextFieldLook {
+        self.text_field_specs.borrow_mut().push(spec.clone());
+        self.text_field_look.as_ref().map_or_else(
+            || {
+                crate::testing::plain_text_field_look(
+                    invisible_chrome(),
+                    self.input_metrics
+                        .unwrap_or_else(crate::testing::plain_input_metrics),
+                )
+            },
+            |look| look(spec, env),
         )
-    }
-
-    fn input_caret_paint(&self, opacity: f32) -> Paint {
-        Paint::Solid(
-            waterui::color::Srgb::new(0.12, 0.14, 0.18)
-                .resolve()
-                .with_alpha(opacity),
-        )
-    }
-
-    fn draw_input_field(
-        &self,
-        _draw: &mut Recorder,
-        _bounds: Rect,
-        _state: WidgetInteractionState,
-    ) {
     }
 
     fn menu(&self, _spec: &MenuSpec, _env: &Environment) -> MenuLook {
@@ -3386,96 +3374,58 @@ impl WidgetTheme for MinimalTestTheme {
         })
     }
 
-    fn navigation_metrics(&self) -> NavigationMetrics {
-        NavigationMetrics {
-            automatic_bar_height: 64.0,
-            inline_bar_height: 64.0,
-            medium_bar_height: 112.0,
-            large_bar_height: 152.0,
-            inline_title_height: 28.0,
-            medium_title_height: 36.0,
-            large_title_height: 36.0,
-            title_leading_inset: 16.0,
-            title_trailing_inset: 16.0,
-            large_title_bottom_inset: 28.0,
-            horizontal_inset: 4.0,
-            item_spacing: 0.0,
-            search_height: 56.0,
-            search_vertical_inset: 4.0,
-            back_button_size: 40.0,
-            back_button_leading_inset: 4.0,
-            back_button_top_inset: 12.0,
-        }
+    fn navigation_bar(&self, _spec: &NavigationSpec, _env: &Environment) -> NavigationBarLook {
+        let bar_draws = Rc::clone(&self.navigation_bar_draws);
+        let separator_draws = Rc::clone(&self.navigation_bar_separator_draws);
+        NavigationBarLook::new(
+            crate::testing::plain_navigation_metrics(),
+            crate::testing::plain_navigation_motion(),
+            invisible_chrome(),
+            Custom::new((), move |_recorder, frame, ()| {
+                bar_draws.borrow_mut().push(frame);
+            }),
+        )
+        .separator(Custom::new((), move |_recorder, frame, ()| {
+            separator_draws.borrow_mut().push(frame);
+        }))
     }
 
-    fn draw_navigation_bar(&self, _draw: &mut Recorder, bounds: Rect, _background: &Paint) {
-        self.navigation_bar_draws.borrow_mut().push(bounds);
-    }
-
-    fn draw_navigation_bar_separator(&self, _draw: &mut Recorder, bounds: Rect) {
-        self.navigation_bar_separator_draws
-            .borrow_mut()
-            .push(bounds);
-    }
-    fn draw_navigation_back_button(&self, _draw: &mut Recorder, _bounds: Rect) {}
-    fn tabs_item_layout(&self, bar_width: f64, item_count: usize) -> TabItemLayout {
-        self.tabs_layout_queries
-            .borrow_mut()
-            .push((bar_width, item_count));
-        if let Some(threshold) = self.horizontal_from_width
-            && bar_width >= threshold
-        {
-            return TabItemLayout::Horizontal;
+    fn tabs(&self, _spec: &TabsSpec, _env: &Environment) -> TabsLook {
+        let bar_draws = Rc::clone(&self.tabs_bar_draws);
+        let divider_draws = Rc::clone(&self.tabs_bar_divider_draws);
+        let highlight_draws = Rc::clone(&self.tabs_highlight_draws);
+        let metrics = crate::testing::plain_tabs_metrics();
+        let mut look = TabsLook::new(
+            metrics,
+            Custom::new((), move |_recorder, frame, ()| {
+                bar_draws.borrow_mut().push(frame);
+            }),
+            Custom::new((), move |_recorder, frame, ()| {
+                divider_draws.borrow_mut().push(frame);
+            }),
+            crate::testing::plain_tabs_motion(),
+            |_item, _selected| invisible_chrome(),
+        )
+        .highlight(move |item| {
+            let item = *item;
+            let highlight_draws = Rc::clone(&highlight_draws);
+            Custom::new((), move |_recorder, _frame, ()| {
+                // The selected item's indicator alone is observed: the other
+                // items' highlights are parts at rest.
+                if item.selected {
+                    highlight_draws
+                        .borrow_mut()
+                        .push((tab_highlight_strip(item.geometry), item.geometry.layout));
+                }
+            })
+        });
+        // The layout the theme reports: forced, or by width class.
+        if let Some(threshold) = self.horizontal_from_width {
+            look = look.horizontal(threshold, metrics);
+        } else if self.forced_tab_item_layout == Some(TabItemLayout::Horizontal) {
+            look = look.horizontal(0.0, metrics);
         }
-        self.forced_tab_item_layout
-            .unwrap_or(TabItemLayout::Vertical)
-    }
-    fn tabs_metrics(&self, _layout: TabItemLayout) -> TabsMetrics {
-        TabsMetrics {
-            bar_height: 48.0,
-            button_min_width: 48.0,
-            button_horizontal_inset: 16.0,
-            icon_label_spacing: 4.0,
-        }
-    }
-    fn draw_tabs_bar(&self, _draw: &mut Recorder, surface: Rect) {
-        self.tabs_bar_draws.borrow_mut().push(surface);
-    }
-    fn draw_tabs_bar_divider(&self, _draw: &mut Recorder, divider: Rect) {
-        self.tabs_bar_divider_draws.borrow_mut().push(divider);
-    }
-    fn draw_tabs_highlight(&self, _draw: &mut Recorder, item: TabItemGeometry) {
-        // This theme's indicator is a strip: 40 thick and the item's whole
-        // extent, centered, for horizontal items; otherwise 3 thick along the
-        // bar item's top (the sidebar item's trailing edge), as wide (tall) as
-        // the title.
-        let thickness: f64 = match item.layout {
-            TabItemLayout::Vertical => 3.0,
-            TabItemLayout::Horizontal => 40.0,
-        };
-        let bounds = item.bounds;
-        let strip = if matches!(item.layout, TabItemLayout::Horizontal) {
-            let height = thickness.min(bounds.height());
-            let y0 = (bounds.height() - height).mul_add(0.5, bounds.y0);
-            Rect::new(bounds.x0, y0, bounds.x1, y0 + height)
-        } else if matches!(item.placement, NativeTabStyle::Sidebar) {
-            Rect::new(
-                (bounds.x1 - thickness).max(bounds.x0),
-                item.title.y0,
-                bounds.x1,
-                item.title.y1,
-            )
-        } else {
-            Rect::new(
-                item.title.x0,
-                bounds.y0,
-                item.title.x1,
-                (bounds.y0 + thickness).min(bounds.y1),
-            )
-        };
-        self.tabs_highlight_draws
-            .borrow_mut()
-            .push((strip, item.layout));
+        look
     }
     fn scroll_indicator(&self, _env: &Environment) -> ScrollIndicatorLook {
         crate::testing::plain_scroll_indicator_look()
@@ -3512,7 +3462,7 @@ impl WidgetTheme for MinimalTestTheme {
 #[test]
 fn ime_preedit_commit_and_disable_update_focused_text_target() {
     let mut renderer = test_renderer();
-    renderer.set_text_caret_motion(MinimalTestTheme::default().text_caret_motion());
+    renderer.set_text_caret_motion(test_caret_motion());
     let selection = Rc::new(RefCell::new(TextSelectionSlot {
         anchor: 0,
         focus: 0,
@@ -3570,7 +3520,7 @@ fn ime_preedit_commit_and_disable_update_focused_text_target() {
 #[test]
 fn text_input_focus_stays_on_its_field_when_a_row_is_inserted_above_it() {
     let mut renderer = test_renderer();
-    renderer.set_text_caret_motion(MinimalTestTheme::default().text_caret_motion());
+    renderer.set_text_caret_motion(test_caret_motion());
     let first = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let focused = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let emit = |renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
@@ -3631,7 +3581,7 @@ fn text_input_focus_stays_on_its_field_when_a_row_is_inserted_above_it() {
 #[test]
 fn text_input_focus_is_dropped_when_its_field_stops_being_emitted() {
     let mut renderer = test_renderer();
-    renderer.set_text_caret_motion(MinimalTestTheme::default().text_caret_motion());
+    renderer.set_text_caret_motion(test_caret_motion());
     let survivor = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let removed = Rc::new(RefCell::new(TextSelectionSlot::default()));
     seed_text_input_targets(
@@ -3768,7 +3718,7 @@ fn caret_point_in_target<E: crate::text::TextEngine>(
 #[test]
 fn double_click_word_selection_survives_pointer_release() {
     let mut renderer = test_renderer();
-    renderer.set_text_caret_motion(MinimalTestTheme::default().text_caret_motion());
+    renderer.set_text_caret_motion(test_caret_motion());
     let env = test_environment();
     let selection = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let target = shaped_text_input_target("hello world", &selection, &env);
@@ -3818,7 +3768,7 @@ fn double_click_word_selection_survives_pointer_release() {
 #[test]
 fn double_click_drag_extends_selection_by_words() {
     let mut renderer = test_renderer();
-    renderer.set_text_caret_motion(MinimalTestTheme::default().text_caret_motion());
+    renderer.set_text_caret_motion(test_caret_motion());
     let env = test_environment();
     let selection = Rc::new(RefCell::new(TextSelectionSlot::default()));
     let target = shaped_text_input_target("hello world", &selection, &env);

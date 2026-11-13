@@ -133,29 +133,23 @@ pub fn list_windows_by_pid(pid: i32) -> eyre::Result<Vec<WindowInfo>> {
 
         // Get window name (may be empty)
         let name_key = CFString::new("kCGWindowName");
-        let name = window_dict
-            .find(&name_key)
-            .map(|v| {
-                // SAFETY: the value came out of the window-info dictionary, which owns it
-                // for as long as the array is alive; the *get* rule borrows without
-                // taking a reference, matching that ownership.
-                let cf_str = unsafe { CFString::wrap_under_get_rule(v.as_CFTypeRef().cast()) };
-                cf_str.to_string()
-            })
-            .unwrap_or_default();
+        let name = window_dict.find(&name_key).map_or_default(|v| {
+            // SAFETY: the value came out of the window-info dictionary, which owns it
+            // for as long as the array is alive; the *get* rule borrows without
+            // taking a reference, matching that ownership.
+            let cf_str = unsafe { CFString::wrap_under_get_rule(v.as_CFTypeRef().cast()) };
+            cf_str.to_string()
+        });
 
         // Get owner name
         let owner_name_key = CFString::new("kCGWindowOwnerName");
-        let owner_name = window_dict
-            .find(&owner_name_key)
-            .map(|v| {
-                // SAFETY: the value came out of the window-info dictionary, which owns it
-                // for as long as the array is alive; the *get* rule borrows without
-                // taking a reference, matching that ownership.
-                let cf_str = unsafe { CFString::wrap_under_get_rule(v.as_CFTypeRef().cast()) };
-                cf_str.to_string()
-            })
-            .unwrap_or_default();
+        let owner_name = window_dict.find(&owner_name_key).map_or_default(|v| {
+            // SAFETY: the value came out of the window-info dictionary, which owns it
+            // for as long as the array is alive; the *get* rule borrows without
+            // taking a reference, matching that ownership.
+            let cf_str = unsafe { CFString::wrap_under_get_rule(v.as_CFTypeRef().cast()) };
+            cf_str.to_string()
+        });
 
         // Get window layer
         let layer_key = CFString::new("kCGWindowLayer");

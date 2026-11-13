@@ -312,6 +312,15 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
             .collect()
     }
 
+    /// Every bound tab item's live tab container, one per item.
+    #[cfg(test)]
+    pub(crate) fn live_tabs(&self) -> Vec<Rc<crate::renderer::live_tabs::LiveTabs>> {
+        self.states
+            .values()
+            .filter_map(|state| state.handles.as_ref()?.live_tabs())
+            .collect()
+    }
+
     pub(crate) fn handles_for_key(
         &self,
         key: &InteractionKey,
@@ -533,15 +542,6 @@ pub struct PressClear {
 #[derive(Debug, Clone)]
 pub struct HoverSlot {
     pub key: InteractionKey,
-}
-
-pub fn local_interaction_state(
-    mut state: WidgetInteractionState,
-    hit_transform: kurbo::Affine,
-) -> WidgetInteractionState {
-    let inverse = hit_transform.inverse();
-    state.press_waves.map_origins(|origin| inverse * origin);
-    state
 }
 
 fn state_layer_animation(target_opacity: f32, motion: &InteractionMotion) -> Animation {

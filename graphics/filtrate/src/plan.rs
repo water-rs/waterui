@@ -418,7 +418,7 @@ fn passes(
 
     let mut pass_of_stage = alloc::vec![0; expanded.len()];
     for (pass, (segment, _)) in selected.iter().enumerate() {
-        for stage in segment.stages().clone() {
+        for stage in segment.stages() {
             pass_of_stage[stage] = pass;
         }
     }

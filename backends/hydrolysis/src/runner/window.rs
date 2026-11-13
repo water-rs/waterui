@@ -1634,26 +1634,37 @@ crate::engine::cfg_async_fn! {
     let snapshot = {
         #[cfg(feature = "frame-profile")]
         let readback_started_at = Instant::now();
-        let snapshot = capture_snapshot
-            .then(|| {
-                renderer.frame_work_counters_mut().gpu_submissions += 1;
-                match readback_surface_texture_rgba8(&*surface, frame.texture(), width, height) {
-                    Ok(rgba8) => Some(HeadlessSnapshot {
-                        width,
-                        height,
-                        rgba8,
-                        output_alpha,
-                    }),
-                    Err(error) => {
-                        tracing::error!(
-                            "hydrolysis headless snapshot readback failed: {:#}; the frame carries no snapshot",
-                            waterui_core::Error::from(error)
-                        );
-                        None
-                    }
+        let snapshot = if capture_snapshot {
+            renderer.frame_work_counters_mut().gpu_submissions += 1;
+            match readback_surface_texture_rgba8(&*surface, frame.texture(), width, height) {
+                Ok(rgba8) => Some(HeadlessSnapshot {
+                    width,
+                    height,
+                    rgba8,
+                    output_alpha,
+                }),
+                // The device died under the frame: its texture holds no
+                // rendered pixels. The frame is skipped, unpresented, like
+                // every frame a lost device ends, so the next one recovers
+                // the device under the recovery budget and captures again.
+                Err(crate::readback::ReadbackError::DeviceLost(error)) => {
+                    tracing::error!(
+                        "hydrolysis headless snapshot readback failed: {:#}; the frame is skipped",
+                        waterui_core::Error::from(error)
+                    );
+                    return Err(FrameFailure::Skipped(crate::platform::SurfaceError::Lost));
                 }
-            })
-            .flatten();
+                Err(error) => {
+                    tracing::error!(
+                        "hydrolysis headless snapshot readback failed: {:#}; the frame carries no snapshot",
+                        waterui_core::Error::from(error)
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
         #[cfg(feature = "frame-profile")]
         {
             renderer.frame_stage_times.set_readback(renderer.frame_stage_times.readback() + readback_started_at.elapsed());

@@ -12,6 +12,7 @@
 use super::*;
 use crate::renderer::chrome::LiveChrome;
 use crate::renderer::live_segmented::LiveSegmented;
+use crate::renderer::live_tabs::LiveTabs;
 use crate::renderer::live_toggle::LiveToggle;
 use crate::theme::{InteractionMotion, MAX_PRESS_WAVES, PressWave, PressWaves};
 use waterui_core::interaction::InteractionState;
@@ -24,8 +25,8 @@ pub struct WaveLayer {
     progress: AnimatedScalarHandle,
     /// Origin of this wave's press in WINDOW coordinates (the raw pointer-down
     /// point). Widgets map it into their own local frame at draw time via
-    /// `local_interaction_state` and the live hit transform, so it stays
-    /// correct under arbitrary nesting and scroll offsets.
+    /// the live hit transform, so it stays correct under arbitrary nesting
+    /// and scroll offsets.
     origin: Cell<Option<kurbo::Point>>,
     pressing: Cell<bool>,
     pressed_at: Cell<Option<Instant>>,
@@ -135,6 +136,8 @@ enum Steered {
     Toggle(Rc<LiveToggle>),
     /// One segment of a segmented picker, by its index.
     Segment(Rc<LiveSegmented>, usize),
+    /// One item of a tab container, by its index.
+    Tab(Rc<LiveTabs>, usize),
 }
 
 impl Steered {
@@ -143,6 +146,7 @@ impl Steered {
             Self::Chrome(chrome) => chrome.set_flag(flag, on),
             Self::Toggle(toggle) => toggle.set_flag(flag, on),
             Self::Segment(picker, index) => picker.set_flag(*index, flag, on),
+            Self::Tab(tabs, index) => tabs.set_flag(*index, flag, on),
         }
     }
 
@@ -157,6 +161,7 @@ impl Steered {
                 toggle.set_flag(InteractionState::PRESSED, true);
             }
             Self::Segment(picker, segment) => picker.begin_press(*segment, index, origin),
+            Self::Tab(tabs, item) => tabs.begin_press(*item, index, origin),
         }
     }
 
@@ -164,6 +169,7 @@ impl Steered {
         match self {
             Self::Chrome(chrome) => chrome.move_press(point),
             Self::Segment(picker, segment) => picker.move_press(*segment, point),
+            Self::Tab(tabs, item) => tabs.move_press(*item, point),
             // A toggle's parts follow the pressed flag and its drag.
             Self::Toggle(_) => {}
         }
@@ -173,6 +179,7 @@ impl Steered {
         match self {
             Self::Chrome(chrome) => chrome.fade_wave(index),
             Self::Segment(picker, segment) => picker.fade_wave(*segment, index),
+            Self::Tab(tabs, item) => tabs.fade_wave(*item, index),
             // A toggle's parts draw their own press feedback from the
             // pressed flag.
             Self::Toggle(_) => {}
@@ -183,6 +190,7 @@ impl Steered {
         match self {
             Self::Chrome(chrome) => chrome.clear_waves(),
             Self::Segment(picker, segment) => picker.clear_waves(*segment),
+            Self::Tab(tabs, item) => tabs.clear_waves(*item),
             Self::Toggle(_) => {}
         }
     }
@@ -234,6 +242,12 @@ impl InteractionLayerHandles {
         *self.live.borrow_mut() = Some(Steered::Segment(picker, index));
     }
 
+    /// Steers item `index` of the tab container `tabs` from this widget's
+    /// interaction changes.
+    pub(crate) fn attach_live_tab(&self, tabs: Rc<LiveTabs>, index: usize) {
+        *self.live.borrow_mut() = Some(Steered::Tab(tabs, index));
+    }
+
     /// What an interaction change of this widget marks its owner with:
     /// a re-render when its chrome samples interaction state, nothing when
     /// its chrome is engine-realized (the change moved live operands),
@@ -253,7 +267,7 @@ impl InteractionLayerHandles {
     pub(crate) fn live_chrome(&self) -> Option<Rc<LiveChrome>> {
         match self.live.borrow().as_ref()? {
             Steered::Chrome(chrome) => Some(Rc::clone(chrome)),
-            Steered::Toggle(_) | Steered::Segment(..) => None,
+            Steered::Toggle(_) | Steered::Segment(..) | Steered::Tab(..) => None,
         }
     }
 
@@ -262,7 +276,7 @@ impl InteractionLayerHandles {
     pub(crate) fn live_toggle(&self) -> Option<Rc<LiveToggle>> {
         match self.live.borrow().as_ref()? {
             Steered::Toggle(toggle) => Some(Rc::clone(toggle)),
-            Steered::Chrome(_) | Steered::Segment(..) => None,
+            Steered::Chrome(_) | Steered::Segment(..) | Steered::Tab(..) => None,
         }
     }
 
@@ -271,7 +285,16 @@ impl InteractionLayerHandles {
     pub(crate) fn live_segmented(&self) -> Option<Rc<LiveSegmented>> {
         match self.live.borrow().as_ref()? {
             Steered::Segment(picker, _) => Some(Rc::clone(picker)),
-            Steered::Chrome(_) | Steered::Toggle(_) => None,
+            Steered::Chrome(_) | Steered::Toggle(_) | Steered::Tab(..) => None,
+        }
+    }
+
+    /// The attached live tab container, if any.
+    #[cfg(test)]
+    pub(crate) fn live_tabs(&self) -> Option<Rc<LiveTabs>> {
+        match self.live.borrow().as_ref()? {
+            Steered::Tab(tabs, _) => Some(Rc::clone(tabs)),
+            Steered::Chrome(_) | Steered::Toggle(_) | Steered::Segment(..) => None,
         }
     }
 

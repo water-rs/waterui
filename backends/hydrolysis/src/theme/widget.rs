@@ -1,18 +1,15 @@
 //! The widget chrome half of the theme contract: [`WidgetTheme`] and the
 //! token tables, state snapshots and presentation plugins it names.
 
-use cherenkov_record::{MaterialRegistry, Paint, Recorder};
+use cherenkov_record::MaterialRegistry;
 use core::time::Duration;
-use kurbo::{Point, Rect};
+use kurbo::Point;
 use nami::signal::IntoComputed;
-use waterui::navigation::tab::NativeTabStyle;
-use waterui_core::EasingCurve;
 use waterui_core::animation::Animation;
 use waterui_core::handler::SharedAction;
 use waterui_core::interaction::InteractionState;
 use waterui_core::plugin::Plugin;
 use waterui_core::{Binding, Computed, Environment, Signal};
-use waterui_graphics::color::Color;
 
 /// Publishes whether an interactive subtree owns keyboard focus.
 #[derive(Debug, Clone)]
@@ -252,20 +249,6 @@ pub struct TextCaretMotion {
     pub min_opacity: f32,
 }
 
-/// Motion policy for backend-rendered navigation transitions.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct NavigationMotion {
-    /// Duration for a complete navigation transition.
-    pub transition_duration: Duration,
-    /// Easing applied to programmatic navigation progress.
-    pub transition_easing: EasingCurve,
-    /// Absolute travel distance for the Material shared-axis X pattern.
-    pub shared_axis_slide_distance: f64,
-    /// Progress at which the outgoing layer has faded out and the incoming
-    /// layer begins fading in.
-    pub fade_through_threshold: f32,
-}
-
 /// Text input layout metrics.
 #[derive(Debug, Clone, Copy)]
 pub struct InputFieldMetrics {
@@ -297,72 +280,6 @@ impl InputFieldMetrics {
             min_height,
             horizontal_inset,
             vertical_inset,
-        }
-    }
-}
-
-/// How a tab bar lays out each item's icon and label.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "backends realize each tab item arrangement variant by variant; a new tab item arrangement must fail their build instead of falling into a wildcard arm"
-)]
-pub enum TabItemLayout {
-    /// The icon above the label, the indicator behind the icon: the compact
-    /// bar of a narrow window.
-    Vertical,
-    /// The icon beside the label, the indicator behind both: the bar of a
-    /// medium-width window, where items have room to spread.
-    Horizontal,
-}
-
-/// The geometry of one tab item, in the coordinate space of the bar that
-/// holds it: what a style needs to draw the selection indicator wherever and
-/// in whatever shape it wants.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TabItemGeometry {
-    /// The item's chrome bounds: the whole button for vertical items, the
-    /// icon and title grown by the button inset for horizontal ones.
-    pub bounds: Rect,
-    /// The icon's rect, `None` for a title-only item.
-    pub icon: Option<Rect>,
-    /// The title's rect.
-    pub title: Rect,
-    /// How the item arranges its icon and title.
-    pub layout: TabItemLayout,
-    /// Whether the item sits in a bar or a sidebar strip; `Automatic` and
-    /// `TabBar` are both a bar.
-    pub placement: NativeTabStyle,
-}
-
-/// Layout metrics for tab containers.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TabsMetrics {
-    /// Tab bar height.
-    pub bar_height: f64,
-    /// Minimum width for one tab button.
-    pub button_min_width: f64,
-    /// Horizontal label inset inside one tab button.
-    pub button_horizontal_inset: f64,
-    /// Gap between a tab item's icon and its label: vertical space when the
-    /// icon sits above the label, horizontal space when it sits beside it.
-    pub icon_label_spacing: f64,
-}
-
-impl TabsMetrics {
-    /// Create tab layout metrics.
-    #[must_use]
-    pub const fn new(
-        bar_height: f64,
-        button_min_width: f64,
-        button_horizontal_inset: f64,
-        icon_label_spacing: f64,
-    ) -> Self {
-        Self {
-            bar_height,
-            button_min_width,
-            button_horizontal_inset,
-            icon_label_spacing,
         }
     }
 }
@@ -562,45 +479,6 @@ impl BadgeMetrics {
     }
 }
 
-/// Layout metrics for navigation bars.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct NavigationMetrics {
-    /// Automatic title-mode bar height.
-    pub automatic_bar_height: f64,
-    /// Inline title-mode bar height.
-    pub inline_bar_height: f64,
-    /// Medium title-mode bar height.
-    pub medium_bar_height: f64,
-    /// Large title-mode bar height.
-    pub large_bar_height: f64,
-    /// Navigation title slot height for inline bars.
-    pub inline_title_height: f64,
-    /// Navigation title slot height for medium bars.
-    pub medium_title_height: f64,
-    /// Navigation title slot height for large bars.
-    pub large_title_height: f64,
-    /// Title leading inset when no leading bar item is present.
-    pub title_leading_inset: f64,
-    /// Title trailing inset when no trailing bar item is present.
-    pub title_trailing_inset: f64,
-    /// Bottom inset for large navigation titles.
-    pub large_title_bottom_inset: f64,
-    /// Horizontal leading/trailing bar inset.
-    pub horizontal_inset: f64,
-    /// Gap between title and adjacent items.
-    pub item_spacing: f64,
-    /// Search field height.
-    pub search_height: f64,
-    /// Vertical search inset.
-    pub search_vertical_inset: f64,
-    /// Navigation back button size.
-    pub back_button_size: f64,
-    /// Navigation back button leading inset.
-    pub back_button_leading_inset: f64,
-    /// Navigation back button top inset.
-    pub back_button_top_inset: f64,
-}
-
 /// Layout metrics for backend-rendered tables.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TableMetrics {
@@ -631,10 +509,6 @@ pub struct TableMetrics {
 pub trait WidgetTheme {
     /// Return motion policy for interactive widget chrome.
     fn interaction_motion(&self) -> InteractionMotion;
-    /// Return motion policy for text input carets.
-    fn text_caret_motion(&self) -> TextCaretMotion;
-    /// Return motion policy for navigation transitions.
-    fn navigation_motion(&self) -> NavigationMotion;
 
     /// Declare the theme's backdrop materials in `registry`: both the
     /// backdrop shaders ([`MaterialShader`] keys, each with its
@@ -754,29 +628,14 @@ pub trait WidgetTheme {
     /// of the stepper's range is disabled.
     fn stepper(&self, spec: &super::StepperSpec, env: &Environment) -> super::StepperLook;
 
-    /// Return text input metrics.
-    fn input_field_metrics(&self) -> InputFieldMetrics;
-    /// Return the placeholder text color.
-    fn input_placeholder_color(&self) -> Color;
-    /// Return the text selection fill brush.
-    fn input_selection_paint(&self) -> Paint;
-    /// Return the caret brush for the current caret opacity.
-    fn input_caret_paint(&self, opacity: f32) -> Paint;
-    /// Draw text input chrome.
-    fn draw_input_field(
-        &self,
-        recorder: &mut Recorder,
-        bounds: Rect,
-        state: WidgetInteractionState,
-    );
-    /// Draw text input state layer.
-    fn draw_input_field_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _state: WidgetInteractionState,
-    ) {
-    }
+    /// The look of a text field, and of a secure field.
+    ///
+    /// Hydrolysis measures, places and records the field from the returned
+    /// look, and requests it again only when `spec` changes; everything else
+    /// reaches the look through its [`Chrome`](super::Chrome) and
+    /// [`Driven`](super::Driven) values, so a hover, a focus change or the
+    /// label floating moves live operands and records nothing.
+    fn text_field(&self, spec: &super::TextFieldSpec, env: &Environment) -> super::TextFieldLook;
 
     /// The look of every menu presentation: the picker popup, the text
     /// context menu and the popup window a menu button opens.
@@ -851,48 +710,28 @@ pub trait WidgetTheme {
         env: &Environment,
     ) -> super::IndicatorLook;
 
-    /// Return navigation bar layout metrics.
-    fn navigation_metrics(&self) -> NavigationMetrics;
-    /// Draw a navigation bar background.
-    fn draw_navigation_bar(&self, recorder: &mut Recorder, bounds: Rect, background: &Paint);
-    /// Draw a navigation bar separator.
-    fn draw_navigation_bar_separator(&self, recorder: &mut Recorder, bounds: Rect);
-    /// Draw a navigation back button.
-    fn draw_navigation_back_button(&self, recorder: &mut Recorder, bounds: Rect);
-
-    /// How the tab bar lays out its items when the bar itself is
-    /// `bar_width` wide and holds `item_count` items. `bar_width` is the
-    /// bar's own extent, not the tab container's: a sidebar strip passes its
-    /// strip width. Themes without a horizontal layout keep the default.
-    fn tabs_item_layout(&self, bar_width: f64, item_count: usize) -> TabItemLayout {
-        let _ = (bar_width, item_count);
-        TabItemLayout::Vertical
-    }
-    /// Return tabs layout metrics for items laid out as `layout`.
-    fn tabs_metrics(&self, layout: TabItemLayout) -> TabsMetrics;
-    /// Draw a tabs bar.
+    /// The look of the navigation chrome: every navigation bar, the back
+    /// button of a pushed page and of a collapsed split, and the page
+    /// transition's motion.
     ///
-    /// `surface` is the bar's surface already extended through the safe-area
-    /// regions of every edge it touches.
-    fn draw_tabs_bar(&self, recorder: &mut Recorder, surface: Rect);
-    /// Draw a tabs bar divider.
-    ///
-    /// `divider` is the bar's inner edge: the top row of a bottom bar, the
-    /// trailing column of a sidebar strip.
-    fn draw_tabs_bar_divider(&self, recorder: &mut Recorder, divider: Rect);
-    /// Draw the selected tab's indicator. The style decides its shape and
-    /// placement from the item's geometry.
-    fn draw_tabs_highlight(&self, recorder: &mut Recorder, item: TabItemGeometry);
-    /// Draw the state layer of a tab button. The style decides its shape and
-    /// placement from the item's geometry, like the selection indicator.
-    fn draw_tabs_button_state_layer(
+    /// Hydrolysis measures, places and hit-tests the chrome from the
+    /// returned look and requests it again only when `spec` changes; the
+    /// back button's chrome moves live operands on a press, a hover or a
+    /// focus change and records nothing.
+    fn navigation_bar(
         &self,
-        _recorder: &mut Recorder,
-        _item: TabItemGeometry,
-        _selected: bool,
-        _state: WidgetInteractionState,
-    ) {
-    }
+        spec: &super::NavigationSpec,
+        env: &Environment,
+    ) -> super::NavigationBarLook;
+
+    /// The look of a tab container: its bar's surface and divider, the
+    /// item layout and measures, the highlight of the selected item and
+    /// each item's chrome.
+    ///
+    /// Hydrolysis measures, places, hit-tests and records the bar from the
+    /// returned look and requests it again only when `spec` changes; a
+    /// selection change moves the highlight's operands and records nothing.
+    fn tabs(&self, spec: &super::TabsSpec, env: &Environment) -> super::TabsLook;
 
     /// The look of the thumb a scrolling surface draws.
     ///
