@@ -544,15 +544,6 @@ pub struct HoverSlot {
     pub key: InteractionKey,
 }
 
-pub fn local_interaction_state(
-    mut state: WidgetInteractionState,
-    hit_transform: kurbo::Affine,
-) -> WidgetInteractionState {
-    let inverse = hit_transform.inverse();
-    state.press_waves.map_origins(|origin| inverse * origin);
-    state
-}
-
 fn state_layer_animation(target_opacity: f32, motion: &InteractionMotion) -> Animation {
     if target_opacity > 0.0 {
         motion.hover_enter.clone()

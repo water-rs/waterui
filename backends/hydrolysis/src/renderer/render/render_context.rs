@@ -273,6 +273,21 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         clip: kurbo::Rect,
         f: impl FnOnce(&mut Self),
     ) {
+        self.open_live_scope(key, operands, clip);
+        f(self);
+        self.close_scope();
+    }
+
+    /// Opens the named scope `key` clipped to `clip` whose layer follows
+    /// `operands`, through this context's transform; [`Self::close_scope`]
+    /// closes it. For a scope a body too long to wrap in a closure records
+    /// through.
+    pub(crate) fn open_live_scope(
+        &mut self,
+        key: crate::renderer::mount::ScopeKey,
+        operands: crate::renderer::frame::ScopeOperands,
+        clip: kurbo::Rect,
+    ) {
         self.renderer.open_live_scope(
             key,
             operands,
@@ -280,8 +295,6 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
             Some(&crate::renderer::frame::ScopeClip::Rect(clip)),
             crate::renderer::ScopeDelta::RECORD_SPACE,
         );
-        f(self);
-        self.close_scope();
     }
 
     /// Runs `f` inside a control's group `key`, clipped to `clip`: its

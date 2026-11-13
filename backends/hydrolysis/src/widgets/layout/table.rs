@@ -11,11 +11,12 @@ use crate::renderer::lazy::{
 #[cfg(feature = "accessibility")]
 use crate::renderer::lazy::{VisibleColumnWindow, VisibleIndexWindow};
 use crate::renderer::{
-    HydroNativeView, HydroState, MeasuredTableMetrics, RenderContext, VisibleSubviewCache,
-    WidgetRenderContext, measure_table_metrics, refresh_table_slot_baseline, table_data_cell_rect,
-    table_header_cell_rect, update_table_slot_visible_cell_widths,
+    HydroNativeView, HydroState, MeasuredTableMetrics, RenderContext, VisibleCells,
+    VisibleSubviewCache, WidgetRenderContext, measure_table_metrics, refresh_table_slot_baseline,
+    table_data_cell_rect, table_header_cell_rect, update_table_slot_visible_cell_widths,
 };
 use crate::scroll::ScrollHandle;
+use crate::theme::TableLook;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -64,6 +65,9 @@ pub struct TableRenderState<E: crate::text::TextEngine> {
     /// them inside [`Self::bind_scroll`]), plus the focused-field state
     /// the flush drives.
     pub(crate) surface: std::rc::Rc<crate::renderer::ScrollSurfaceArea>,
+    /// The look the theme gave the table, requested once: nothing structural
+    /// about a table changes it.
+    look: RefCell<Option<TableLook>>,
 }
 
 impl<E: crate::text::TextEngine> TableRenderState<E> {
@@ -74,7 +78,17 @@ impl<E: crate::text::TextEngine> TableRenderState<E> {
             scroll: RefCell::new(None),
             item_cache: RefCell::new(VisibleSubviewCache::new()),
             surface: std::rc::Rc::default(),
+            look: RefCell::new(None),
         }
+    }
+
+    /// The table's look: the one already held, otherwise requested from
+    /// `theme`.
+    fn look(&self, theme: &Rc<dyn crate::theme::WidgetTheme>, env: &Environment) -> TableLook {
+        self.look
+            .borrow_mut()
+            .get_or_insert_with(|| theme.table(env))
+            .clone()
     }
 
     /// §7.1's scroll-surface rule: [`ScrollSurfaceArea::extended`] grows the
@@ -144,7 +158,7 @@ fn measure_table_intrinsic<E: crate::text::TextEngine>(
     if columns.is_empty() {
         return LayoutSize::zero();
     }
-    let metrics = measure_table_metrics(&columns, state, env, theme);
+    let metrics = measure_table_metrics(&columns, state, env, theme, theme.table(env).metrics());
     LayoutSize::new(
         crate::num_cast::f64_as_f32(metrics.table_width),
         crate::num_cast::f64_as_f32(metrics.table_height),
@@ -176,11 +190,19 @@ pub fn table_accessibility<E: crate::text::TextEngine>(
     if columns.is_empty() {
         return;
     }
+    let layout_metrics = theme.map(|theme| state.borrow().look(theme, env).metrics());
     {
         let state_ref = state.borrow();
         let mut slot = state_ref.slot.borrow_mut();
-        if let Some(theme) = theme {
-            refresh_table_slot_baseline(&columns, &mut slot, renderer.state_mut(), env, theme);
+        if let Some((theme, metrics)) = theme.zip(layout_metrics) {
+            refresh_table_slot_baseline(
+                &columns,
+                &mut slot,
+                renderer.state_mut(),
+                env,
+                theme,
+                metrics,
+            );
         } else {
             // The semantic walk has no theme to measure against: it keeps the
             // row count current so the scroll handle and cell emission cover
@@ -193,7 +215,6 @@ pub fn table_accessibility<E: crate::text::TextEngine>(
         }
     }
     let viewport = ctx.map_or(kurbo::Rect::ZERO, |ctx| ctx.bounds());
-    let layout_metrics = theme.map(|theme| theme.table_metrics());
     let table_metrics = {
         let state_ref = state.borrow();
         match layout_metrics {
@@ -267,18 +288,21 @@ pub fn table_accessibility<E: crate::text::TextEngine>(
                 "hydrolysis rendered table accessibility requires a theme; the visible cell widths are not refreshed"
             );
         }
-        if let Some((_, theme)) = layout_metrics.zip(theme) {
+        if let Some((metrics, theme)) = layout_metrics.zip(theme) {
             {
                 let state_ref = state.borrow();
                 let mut slot = state_ref.slot.borrow_mut();
                 update_table_slot_visible_cell_widths(
                     &columns,
                     &mut slot,
-                    row_window,
-                    column_window,
+                    VisibleCells {
+                        rows: row_window,
+                        columns: column_window,
+                    },
                     renderer.state_mut(),
                     env,
                     theme,
+                    metrics,
                 );
             }
             let state_ref = state.borrow();
@@ -494,11 +518,19 @@ pub fn render_table_parts<E: crate::text::TextEngine>(
     let extension = state.borrow().surface.extension();
     let surface_viewport = crate::renderer::grow_rect(viewport, extension);
     let theme = ctx.theme();
-    let layout_metrics = theme.table_metrics();
+    let look = state.borrow().look(&theme, env);
+    let layout_metrics = look.metrics();
     {
         let state_ref = state.borrow();
         let mut slot = state_ref.slot.borrow_mut();
-        refresh_table_slot_baseline(&columns, &mut slot, ctx.state_mut(), env, &theme);
+        refresh_table_slot_baseline(
+            &columns,
+            &mut slot,
+            ctx.state_mut(),
+            env,
+            &theme,
+            layout_metrics,
+        );
     }
     let initial_table_metrics = {
         let state_ref = state.borrow();
@@ -547,11 +579,14 @@ pub fn render_table_parts<E: crate::text::TextEngine>(
         update_table_slot_visible_cell_widths(
             &columns,
             &mut slot,
-            row_window,
-            column_window,
+            VisibleCells {
+                rows: row_window,
+                columns: column_window,
+            },
             ctx.state_mut(),
             env,
             &theme,
+            layout_metrics,
         );
     }
     let table_metrics = {
@@ -650,10 +685,9 @@ pub fn render_table_parts<E: crate::text::TextEngine>(
             origin_x + table_metrics.table_width,
             origin_y + layout_metrics.header_height,
         );
-        let theme = ctx.theme();
         ctx.draw_context(|draw| {
-            theme.draw_table_background(&mut *draw, table_rect);
-            theme.draw_table_header_background(&mut *draw, header_rect);
+            look.record_background(&mut *draw, table_rect);
+            look.record_header_background(&mut *draw, header_rect);
         });
     }
 
@@ -716,20 +750,20 @@ pub fn render_table_parts<E: crate::text::TextEngine>(
                     inset,
                 );
             }
-            let theme = ctx.theme();
             ctx.draw_context(|draw| {
-                theme.draw_table_cell_border(&mut *draw, cell_rect);
+                look.record_cell_border(&mut *draw, cell_rect);
             });
         }
 
-        let separator_from = kurbo::Point::new(origin_x + x_offset + width, origin_y);
-        let separator_to = kurbo::Point::new(
+        // The separator draws over the zero-width rect between its two ends.
+        let separator = kurbo::Rect::new(
+            origin_x + x_offset + width,
+            origin_y,
             origin_x + x_offset + width,
             origin_y + table_metrics.table_height,
         );
-        let theme = ctx.theme();
         ctx.draw_context(|draw| {
-            theme.draw_table_column_separator(&mut *draw, separator_from, separator_to);
+            look.record_column_separator(&mut *draw, separator);
             x_offset += width;
         });
     }

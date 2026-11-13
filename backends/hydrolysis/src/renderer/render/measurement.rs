@@ -1133,6 +1133,12 @@ pub fn list_row_horizontal_insets(
     }
 }
 
+/// The spec of a list in `env`.
+#[must_use]
+pub fn list_spec(env: &Environment) -> crate::theme::ListSpec {
+    crate::theme::ListSpec::new(layout_direction(env).snapshot())
+}
+
 /// Measures a list row's content at the width the row lays it out at: the row
 /// width less the row's horizontal insets, with the height open. A row's
 /// height comes from this answer, so content that wraps is held at the lines it
@@ -1145,8 +1151,9 @@ pub fn measure_list_row_content<E: TextEngine>(
     state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
+    metrics: ListMetrics,
 ) -> LayoutSize {
-    let (left, right) = list_row_horizontal_insets(insets, theme.list_metrics(), env);
+    let (left, right) = list_row_horizontal_insets(insets, metrics, env);
     let content_width = (row_width - left - right).max(0.0);
     measure_transient_view_with_proposal(
         content,
@@ -1177,7 +1184,7 @@ pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
     }
     let editing = state.measure_signal(list.editing());
     let first_item = materialize_list_item(&contents, 0, env);
-    let metrics = theme.list_metrics();
+    let metrics = theme.list(&list_spec(env), env).metrics();
     let content_size = match width {
         Some(width) => measure_list_row_content(
             first_item.content(),
@@ -1186,6 +1193,7 @@ pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
             state,
             env,
             theme,
+            metrics,
         ),
         None => measure_transient_view_intrinsic(first_item.content(), state, env, theme),
     };
@@ -1466,8 +1474,8 @@ pub fn measure_table_metrics<E: crate::text::TextEngine>(
     state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
+    metrics: crate::theme::TableMetrics,
 ) -> MeasuredTableMetrics {
-    let metrics = theme.table_metrics();
     let mut column_widths = Vec::with_capacity(columns.len());
     let mut max_rows = 0usize;
     for column in columns {
@@ -1499,8 +1507,8 @@ pub fn refresh_table_slot_baseline<E: crate::text::TextEngine>(
     state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
+    metrics: crate::theme::TableMetrics,
 ) {
-    let metrics = theme.table_metrics();
     slot.prepare_columns(columns.len(), metrics);
     slot.max_rows = 0;
     for (index, column) in columns.iter().enumerate() {
@@ -1515,16 +1523,26 @@ pub fn refresh_table_slot_baseline<E: crate::text::TextEngine>(
     }
 }
 
+/// The cells of a table a frame shows: the rows and columns in view.
+#[derive(Debug, Clone, Copy)]
+pub struct VisibleCells {
+    pub rows: VisibleIndexWindow,
+    pub columns: VisibleColumnWindow,
+}
+
 pub fn update_table_slot_visible_cell_widths<E: crate::text::TextEngine>(
     columns: &[TableColumn],
     slot: &mut LazyTableSlot,
-    row_window: VisibleIndexWindow,
-    col_window: VisibleColumnWindow,
+    visible: VisibleCells,
     state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
+    metrics: crate::theme::TableMetrics,
 ) {
-    let metrics = theme.table_metrics();
+    let VisibleCells {
+        rows: row_window,
+        columns: col_window,
+    } = visible;
     for (column_index, column) in columns
         .iter()
         .enumerate()

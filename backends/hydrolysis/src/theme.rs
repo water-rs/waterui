@@ -52,8 +52,10 @@
 //! type scale. A `Style` may overwrite any of them, and the application
 //! overwrites both.
 
+mod badge;
 mod chrome;
 mod glass;
+mod list;
 #[cfg(hydrolysis_runtime)]
 pub(crate) mod live;
 mod look;
@@ -61,18 +63,22 @@ mod menu;
 mod navigation;
 mod picker;
 mod progress;
+mod scroll_indicator;
 mod segmented;
 mod stepper;
+mod table;
 mod tabs;
 mod text_field;
 mod toggle;
 mod widget;
 
+pub use badge::BadgeLook;
 pub use chrome::{
     Backdrop, Border, Chrome, CornerShape, Corners, Elevation, Fill, FocusIndicator, PressFeedback,
     Ripple, StateLayer, Surface, Wash,
 };
 pub use glass::GlassLook;
+pub use list::{ListControls, ListGestures, ListLook, ListSpec};
 pub use look::{
     ButtonLook, ButtonSpec, Custom, DragMapping, Driven, DrivenSet, HitRegion, Inputs, Knob, Label,
     Motion, SliderLayout, SliderLook, SliderSpec, SpecTint, Transition, ValueIndicator,
@@ -88,16 +94,18 @@ pub use picker::{MenuPickerLayout, MenuPickerLook, PickerSpec, RadioGroupLook, R
 pub use progress::{
     IndicatorLook, LinearLayout, LinearProgressLook, ProgressControl, ProgressSpec,
 };
+pub use scroll_indicator::ScrollIndicatorLook;
 pub use segmented::{
     Segment, SegmentLabel, SegmentedDrag, SegmentedLayout, SegmentedLook, SegmentedSpec,
     SegmentedValue,
 };
 pub use stepper::{StepperLook, StepperSpec};
+pub use table::TableLook;
 pub use tabs::{TabItem, TabItemGeometry, TabItemLayout, TabsLook, TabsMetrics, TabsSpec};
 pub use text_field::{Caret, FloatingLabel, TextFieldLook, TextFieldSpec};
 pub use toggle::{CheckboxLook, SwitchDrag, SwitchLook, ToggleBackdrop, ToggleControl, ToggleSpec};
 pub use widget::{
-    BadgeMetrics, DividerMetrics, InputFieldMetrics, InteractionFocusBinding, InteractionMotion,
+    BadgeMetrics, InputFieldMetrics, InteractionFocusBinding, InteractionMotion,
     ListDividerMetrics, ListMetrics, ListRowMetrics, ListSectionMetrics,
     ListTrailingControlMetrics, MAX_PRESS_WAVES, ModalInteraction, PressWave, PressWaves,
     TableMetrics, TextCaretMotion, WidgetInteractionState, WidgetTheme,

@@ -909,6 +909,15 @@ where
     }
 }
 
+/// Records `part` over `frame` with every value at rest: the way a look's
+/// parts that have no live state of their own draw into a widget's own
+/// recording.
+#[cfg(hydrolysis_runtime)]
+pub fn record_at_rest(part: &dyn CustomPart<()>, recorder: &mut Recorder, frame: Rect) {
+    part.realize(&Inputs::at_rest(frame, InteractionState::empty(), &()))
+        .record(recorder, frame);
+}
+
 /// How a look styles the label content the renderer lays out: its font, its
 /// colour and whether it follows the chrome's press scale.
 ///

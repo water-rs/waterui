@@ -421,23 +421,20 @@ mod token_probe {
     use std::time::Duration;
 
     use hydrolysis::theme::{
-        BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, DividerMetrics, DragMapping,
-        FocusIndicator, HitRegion, IndicatorLook, InteractionMotion, Knob, Label,
-        LinearProgressLook, ListMetrics, MenuLook, MenuPickerLook, MenuSpec, Motion,
-        NavigationBarLook, NavigationSpec, PickerSpec, PressFeedback, ProgressControl,
-        ProgressSpec, RadioGroupLook, SliderLayout, SliderLook, SliderSpec, StateLayer,
-        StepperLook, StepperSpec, Surface, TableMetrics, TabsLook, TabsSpec, TextFieldLook,
-        TextFieldSpec, ToggleSpec, WidgetTheme,
+        BadgeLook, ButtonLook, ButtonSpec, Chrome, CornerShape, DragMapping, FocusIndicator,
+        HitRegion, IndicatorLook, InteractionMotion, Knob, Label, LinearProgressLook, ListLook,
+        ListSpec, MenuLook, MenuPickerLook, MenuSpec, Motion, NavigationBarLook, NavigationSpec,
+        PickerSpec, PressFeedback, ProgressControl, ProgressSpec, RadioGroupLook,
+        ScrollIndicatorLook, SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook,
+        StepperSpec, Surface, TableLook, TabsLook, TabsSpec, TextFieldLook, TextFieldSpec,
+        ToggleSpec, WidgetTheme,
     };
     use hydrolysis::theme::{CheckboxLook, SwitchDrag, SwitchLook};
-    use kurbo::{Point, Rect};
     use waterui::animation::Animation;
     use waterui::color::Srgb;
     use waterui::component::text;
     use waterui::env::use_env;
-    use waterui::graphics::backend::draw::Recorder;
     use waterui::reactive::constant;
-    use waterui::text::font::Font;
     use waterui::theme::{color as theme_color, install_color_signal, installed_color_signal};
     use waterui::{Color, Environment, Signal as _, SignalExt as _, View};
 
@@ -608,79 +605,21 @@ mod token_probe {
             hydrolysis::testing::plain_tabs_look()
         }
 
-        fn draw_scroll_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn divider_metrics(&self) -> DividerMetrics {
-            DividerMetrics { thickness: 1.0 }
+        fn scroll_indicator(&self, _env: &Environment) -> ScrollIndicatorLook {
+            hydrolysis::testing::plain_scroll_indicator_look()
         }
 
-        fn draw_divider(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn badge_metrics(&self) -> BadgeMetrics {
-            BadgeMetrics {
-                small_size: 6.0,
-                large_size: 16.0,
-                large_horizontal_padding: 4.0,
-                small_offset_x: 6.0,
-                small_offset_y: 6.0,
-                large_offset_x: 12.0,
-                large_offset_y: 14.0,
-            }
+        fn badge(&self, _env: &Environment) -> BadgeLook {
+            hydrolysis::testing::plain_badge_look()
         }
 
-        fn badge_label_color(&self) -> Color {
-            Color::srgb(255, 255, 255)
+        fn list(&self, _spec: &ListSpec, _env: &Environment) -> ListLook {
+            hydrolysis::testing::plain_list_look()
         }
 
-        fn badge_label_font(&self) -> Font {
-            Font::default()
+        fn table(&self, _env: &Environment) -> TableLook {
+            hydrolysis::testing::plain_table_look()
         }
-
-        fn draw_badge_small(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_badge_large(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn list_metrics(&self) -> ListMetrics {
-            ListMetrics {
-                one_line_row_height: 56.0,
-                horizontal_inset: 16.0,
-                vertical_inset: 10.0,
-                divider_leading_inset: 16.0,
-                divider_trailing_inset: 16.0,
-                move_control_width: 20.0,
-                delete_control_width: 26.0,
-                trailing_control_spacing: 6.0,
-                trailing_control_vertical_inset: 6.0,
-                section_header_height: 48.0,
-                section_footer_height: 40.0,
-            }
-        }
-
-        fn draw_list_row_background(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _alternate: bool,
-        ) {
-        }
-        fn draw_list_move_control(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_list_delete_control(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_list_separator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn table_metrics(&self) -> TableMetrics {
-            TableMetrics {
-                min_column_width: 72.0,
-                cell_horizontal_padding: 32.0,
-                cell_vertical_inset: 16.0,
-                header_height: 56.0,
-                row_height: 52.0,
-                outline_width: 1.0,
-            }
-        }
-
-        fn draw_table_background(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_table_header_background(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_table_cell_border(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_table_column_separator(&self, _recorder: &mut Recorder, _from: Point, _to: Point) {}
     }
 }
 

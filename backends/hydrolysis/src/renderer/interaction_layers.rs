@@ -25,8 +25,8 @@ pub struct WaveLayer {
     progress: AnimatedScalarHandle,
     /// Origin of this wave's press in WINDOW coordinates (the raw pointer-down
     /// point). Widgets map it into their own local frame at draw time via
-    /// `local_interaction_state` and the live hit transform, so it stays
-    /// correct under arbitrary nesting and scroll offsets.
+    /// the live hit transform, so it stays correct under arbitrary nesting
+    /// and scroll offsets.
     origin: Cell<Option<kurbo::Point>>,
     pressing: Cell<bool>,
     pressed_at: Cell<Option<Instant>>,
