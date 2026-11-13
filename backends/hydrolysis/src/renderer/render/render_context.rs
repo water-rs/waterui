@@ -337,9 +337,11 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         env: &Environment,
         bounds: kurbo::Rect,
     ) {
-        self.render_styled_text_limited(styled, alignment, env, bounds, None);
+        self.render_styled_text_limited(styled, alignment, env, bounds, None, None);
     }
 
+    /// `styled` limited to `max_lines`, its default-coloured runs drawn in
+    /// `paint`, live, when given.
     pub(crate) fn render_styled_text_limited(
         &mut self,
         styled: StyledStr,
@@ -347,6 +349,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         env: &Environment,
         bounds: kurbo::Rect,
         max_lines: Option<usize>,
+        paint: Option<&nami::Computed<cherenkov_record::Paint>>,
     ) {
         let child_ctx = self.child(
             kurbo::Affine::translate((bounds.x0, bounds.y0)),
@@ -360,7 +363,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
             alignment,
             env,
             max_lines.map_or(TailMark::None, TailMark::Clip),
-            None,
+            paint,
         );
     }
 

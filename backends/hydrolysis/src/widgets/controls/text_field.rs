@@ -9,13 +9,16 @@ use crate::renderer::{
 };
 use crate::text::{TextLayout as _, TextPosition};
 use crate::theme::{ModalInteraction, TextFieldLook};
-use crate::widgets::controls::field_look::{FieldChrome, FloatLabel, field_look, placeholder_text};
+use crate::widgets::controls::field_look::{
+    FieldChrome, FloatLabel, field_look, placeholder_text, value_text,
+};
 use core::num::NonZeroUsize;
 use nami::Signal as _;
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::cursor::CursorStyle;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
+use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{
     HorizontalAlignment, LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions,
 };
@@ -443,10 +446,14 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
     } else {
         committed_with_preedit.clone()
     };
+    // The placeholder keeps the look's placeholder styling, never the value's.
+    let value_paint = (!use_placeholder || prompt_as_label)
+        .then(|| state.field.value_paint())
+        .flatten();
     let display_styled = if use_placeholder && !prompt_as_label {
         placeholder_text(&look, display, field_rect, field_flags)
     } else if preedit.is_empty() {
-        StyledStr::plain(display)
+        value_text(&look, StyledStr::plain(display), field_rect, field_flags)
     } else {
         // The pre-edit run carries the composing underline a native text
         // field draws under the IME's composing span; the committed text
@@ -455,7 +462,7 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
         styled.push_str(value[..selection_start].to_string());
         styled.push(preedit.clone(), Style::new().underline());
         styled.push_str(value[selection_end..].to_string());
-        styled
+        value_text(&look, styled, field_rect, field_flags)
     };
     let effective_label_height = if prompt_as_label {
         prompt_label_height
@@ -470,7 +477,12 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
     );
     let committed_layout = HydrolysisRenderer::build_text_layout(
         ctx.state_mut(),
-        StyledStr::plain(value.clone()),
+        value_text(
+            &look,
+            StyledStr::plain(value.clone()),
+            field_rect,
+            field_flags,
+        ),
         HorizontalAlignment::Leading,
         env,
         Some(crate::num_cast::f64_as_f32(text_bounds.width())),
@@ -521,6 +533,7 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
                 env,
                 text_bounds,
                 line_limit,
+                value_paint.as_ref(),
             );
         };
         text_scope(ctx, has_label.then_some(float), text_clip_bounds, text);
@@ -694,9 +707,12 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
     }
     let field_rect = ctx.bounds;
     let is_focused = ctx.renderer_mut().is_text_input_focused(&interaction_key);
-    let _ = state
-        .field
-        .bind(ctx, &interaction_key, field_rect, env, disabled, is_focused);
+    let (field_interaction, _, _) =
+        state
+            .field
+            .bind(ctx, &interaction_key, field_rect, env, disabled, is_focused);
+    let field_flags = field_interaction.state;
+    let value_paint = state.field.value_paint();
     let selection_slot = Rc::clone(&state.selection_slot);
     let input_model = TextInputModel::SecureField {
         value: value_binding.clone(),
@@ -747,10 +763,15 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
         input_metrics.vertical_inset,
         label_height,
     );
-    let masked_display = StyledStr::plain(masked.clone());
+    let masked_display = value_text(
+        &look,
+        StyledStr::plain(masked.clone()),
+        field_rect,
+        field_flags,
+    );
     let committed_layout = HydrolysisRenderer::build_text_layout(
         ctx.state_mut(),
-        StyledStr::plain(masked.clone()),
+        masked_display.clone(),
         HorizontalAlignment::Leading,
         env,
         Some(crate::num_cast::f64_as_f32(text_bounds.width())),
@@ -796,6 +817,7 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
                 env,
                 text_bounds,
                 Some(1),
+                value_paint.as_ref(),
             );
         };
         text_scope(ctx, has_label.then_some(float), text_clip_bounds, text);
@@ -1267,7 +1289,11 @@ pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
         if !disabled {
             let layout = HydrolysisRenderer::build_text_layout(
                 renderer.state_mut(),
-                StyledStr::plain(value.clone()),
+                state.field.value_styled(
+                    StyledStr::plain(value.clone()),
+                    kurbo::Rect::ZERO,
+                    InteractionState::empty(),
+                ),
                 HorizontalAlignment::Leading,
                 env,
                 None,
@@ -1367,7 +1393,11 @@ pub fn emit_secure_field_accessibility<E: crate::text::TextEngine>(
             let masked = "*".repeat(secure_len);
             let layout = HydrolysisRenderer::build_text_layout(
                 renderer.state_mut(),
-                StyledStr::plain(masked.clone()),
+                state.field.value_styled(
+                    StyledStr::plain(masked.clone()),
+                    kurbo::Rect::ZERO,
+                    InteractionState::empty(),
+                ),
                 HorizontalAlignment::Leading,
                 env,
                 None,

@@ -11,9 +11,9 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use cherenkov_record::Paint;
+use cherenkov_record::{Paint, WorkingColor};
 use kurbo::{Affine, Rect};
-use nami::{Binding, Signal as _, SignalExt as _};
+use nami::{Binding, Computed, Signal as _, SignalExt as _};
 use waterui::ViewExt as _;
 use waterui_core::animation::{Animation, ChangeAnimation};
 use waterui_core::interaction::InteractionState;
@@ -88,6 +88,10 @@ struct Held {
 /// reported state: the look's, when it has one.
 type LabelColor = Rc<RefCell<Option<Driven<Color>>>>;
 
+/// The colour the field's value is drawn in, resolved in the field's
+/// environment: the look's, when it styles the value.
+type ValueColor = Rc<RefCell<Option<Driven<WorkingColor>>>>;
+
 /// What a field keeps across renders to realize its look: the look for the
 /// spec it was requested for, the container's live chrome and the
 /// reported-state binding that keeps the floating label's operands and
@@ -104,6 +108,9 @@ pub struct FieldChrome {
     /// label's own.
     label_font_set: bool,
     label_color: LabelColor,
+    value_color: ValueColor,
+    /// The paint the value is drawn in, following the reported state.
+    value_paint: Computed<Paint>,
     /// The subscription that floats the label with the field's focus.
     _focus: Box<dyn Any>,
 }
@@ -116,6 +123,18 @@ impl FieldChrome {
             let (float, state) = (Rc::clone(&float), report.clone());
             report.watch(move |_| float.focus(state.snapshot().contains(InteractionState::FOCUSED)))
         };
+        let value_color = ValueColor::default();
+        let value_paint = {
+            let color = Rc::clone(&value_color);
+            Computed::new(report.clone().map(move |state| {
+                color
+                    .borrow()
+                    .as_ref()
+                    .map_or_else(Paint::default, |color| {
+                        Paint::from(color.target(&Inputs::at_rest(Rect::ZERO, state, &())))
+                    })
+            }))
+        };
         Self {
             held: None,
             parts: None,
@@ -124,6 +143,8 @@ impl FieldChrome {
             label_font_stale: true,
             label_font_set: false,
             label_color: Rc::default(),
+            value_color,
+            value_paint,
             _focus: Box::new(focus),
         }
     }
@@ -200,7 +221,40 @@ impl FieldChrome {
         self.float
             .set_motion(held.look.floating_label().get_float().clone());
         *self.label_color.borrow_mut() = held.look.floating_label().label().get_color().cloned();
+        *self.value_color.borrow_mut() = held
+            .look
+            .get_value()
+            .and_then(|value| value.get_color())
+            .map(|color| {
+                let env = env.clone();
+                color.map(move |color| color.resolve(&env).snapshot())
+            });
         &held.look
+    }
+
+    /// `styled` in the value font of the look the field took last, the
+    /// ordinary font when it has taken none: for the accessibility walk,
+    /// which holds no theme.
+    pub(crate) fn value_styled(
+        &self,
+        styled: StyledStr,
+        frame: Rect,
+        state: InteractionState,
+    ) -> StyledStr {
+        match &self.held {
+            Some(held) => value_text(&held.look, styled, frame, state),
+            None => styled,
+        }
+    }
+
+    /// The paint the field's value is drawn in, live over the field's
+    /// reported state; `None` when the look leaves the value's colour to the
+    /// default foreground. [`Self::look`] ran first.
+    pub(crate) fn value_paint(&self) -> Option<Computed<Paint>> {
+        self.value_color
+            .borrow()
+            .is_some()
+            .then(|| self.value_paint.clone())
     }
 
     /// The look for the field's spec in `env` without holding it: the held
@@ -392,4 +446,21 @@ pub fn placeholder_text(
         styled = styled.foreground(color.target(&Inputs::at_rest(frame, state, &())));
     }
     styled
+}
+
+/// `styled` as the look styles the field's value for a field in `state` over
+/// `frame`: the look's value font, which follows the spec and the disabled
+/// state. The colour is not set here: it follows the state live, through
+/// [`FieldChrome::value_paint`].
+pub fn value_text(
+    look: &TextFieldLook,
+    styled: StyledStr,
+    frame: Rect,
+    state: InteractionState,
+) -> StyledStr {
+    let Some(font) = look.get_value().and_then(|value| value.get_font()) else {
+        return styled;
+    };
+    let state = state.difference(LIVE_STATES);
+    styled.font(font.target(&Inputs::at_rest(frame, state, &())))
 }
