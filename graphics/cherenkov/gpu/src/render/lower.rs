@@ -1737,8 +1737,9 @@ impl AnchorScratch {
         self.hidden.clear();
     }
 
+    /// Collects `groups`' anchor layers into the scratch `clear` emptied.
     fn prepare(&mut self, groups: &FxHashMap<u64, BackdropGroupInfo>) {
-        self.clear();
+        debug_assert!(self.refs.is_empty(), "the walk clears the scratch first");
         self.refs
             .extend(groups.values().filter_map(|info| info.spec.anchor_layer()));
     }
@@ -2264,14 +2265,18 @@ impl<'a> Lowering<'a> {
     /// shows nothing and is not the local root, whose opacity and blend
     /// apply where its image composes. A promoted plane, a layer opening a
     /// part and a producer's frame are drawn outside the walk's raster, so
-    /// the hidden layers around them are walked.
+    /// the hidden layers around them are walked; outside every hidden layer
+    /// there is none to walk, and nothing is looked up.
     fn plan_hidden(&mut self, id: LayerId, node: &cherenkov::LayerNode, bindings: &Bindings) {
         let local_root = self.local.is_some_and(|(root, _)| root == id);
-        self.anchor_scratch
-            .hidden
-            .enter(id, !local_root && node.shows_nothing());
-        if self.promoted.contains(&id) || self.opens.contains(&id) || bindings.contains_key(&id) {
-            self.anchor_scratch.hidden.keep();
+        let hidden = &mut self.anchor_scratch.hidden;
+        hidden.enter(id, !local_root && node.shows_nothing());
+        if hidden.in_hidden()
+            && (self.promoted.contains(&id)
+                || self.opens.contains(&id)
+                || bindings.contains_key(&id))
+        {
+            hidden.keep();
         }
     }
 

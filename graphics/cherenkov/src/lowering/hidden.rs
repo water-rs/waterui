@@ -93,6 +93,13 @@ impl HiddenLayers {
         }
     }
 
+    /// Whether a hidden layer is open at this point of the planning walk:
+    /// only then can [`Self::keep`] change what the drawing walk skips.
+    #[must_use]
+    pub const fn in_hidden(&self) -> bool {
+        !self.open.is_empty()
+    }
+
     /// What the walk plans at this point is needed whether or not it shows:
     /// every hidden layer around it is walked.
     pub fn keep(&mut self) {
@@ -117,13 +124,15 @@ impl HiddenLayers {
     }
 
     /// Decides which hidden layers the drawing walk skips and which groups
-    /// it captures, once the planning walk has ended. `links` lists every
-    /// anchor with each group it anchors.
+    /// it captures, once the planning walk has ended; a walk resolves once,
+    /// after [`Self::clear`]. `links` lists every anchor with each group it
+    /// anchors.
     pub fn resolve(&mut self, links: &[(LayerId, u64)]) {
         debug_assert!(self.open.is_empty(), "the planning walk left every layer");
-        self.needed.clear();
-        self.skipped.clear();
-        self.captured.clear();
+        debug_assert!(
+            self.needed.is_empty() && self.skipped.is_empty() && self.captured.is_empty(),
+            "a walk resolves once, after `clear`"
+        );
         if self.hidden.is_empty() {
             return;
         }
