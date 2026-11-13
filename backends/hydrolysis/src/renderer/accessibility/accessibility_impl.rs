@@ -460,6 +460,10 @@ pub struct AccessibilityBuilder<E: crate::text::TextEngine> {
     /// (water-rs/waterui#1874). Cleared and republished with the tree.
     pub(crate) content_types: AccessibilityContentTypes,
     pub(crate) pending_tree_update: Option<AccessibilityTreeUpdate>,
+    /// The placement clock's epoch the published bounds were resolved at.
+    /// A transform wrapper's motion moves its placement without re-recording,
+    /// so a later epoch means published bounds may be stale.
+    resolved_epoch: u64,
     /// The numeric values that follow their binding in the published tree
     /// without their widget re-rendering, by the widget's interaction
     /// identity. Kept across flushes.
@@ -526,6 +530,7 @@ impl<E: crate::text::TextEngine> Default for AccessibilityBuilder<E> {
             suppressed_leaf_parents: BTreeSet::new(),
             content_types: BTreeMap::new(),
             pending_tree_update: None,
+            resolved_epoch: 0,
             live_numeric: BTreeMap::new(),
             live_selection: BTreeMap::new(),
         }
@@ -1153,6 +1158,60 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
             );
             changed.push((id, node.clone()));
         }
+        self.queue_changed_nodes(changed);
+    }
+
+    /// Re-resolves every emitted node's bounds when a placement moved since
+    /// they were last resolved — a transform wrapper's motion moves its
+    /// placement as a live operand, with no re-record — and queues the
+    /// nodes whose bounds changed as an incremental tree update.
+    pub(crate) fn apply_live_placements(&mut self, epoch: u64) {
+        if self.resolved_epoch == epoch {
+            return;
+        }
+        let mut changed = Vec::new();
+        self.resolve_regions(epoch, |id, node| changed.push((id, node.clone())));
+        self.queue_changed_nodes(changed);
+    }
+
+    /// Resolves each emitted node's region to window space through its
+    /// placement at `epoch`, calling `moved` for each node whose bounds
+    /// changed. Bounds are the paint-chain transform of the node's local
+    /// rect with no clip fold and no hit gate: `hittable = false` and
+    /// zero-alpha scopes still publish their logical rectangle, and the clip
+    /// stays out of the reported bounds (water-rs/waterui#1323 §4).
+    fn resolve_regions(
+        &mut self,
+        epoch: u64,
+        mut moved: impl FnMut(AccessibilityNodeId, &AccessibilityNode),
+    ) {
+        self.resolved_epoch = epoch;
+        for (id, region) in &self.node_regions {
+            let (transform, clip, _) = region.placement.resolved_chain(false);
+            let bounds = kurbo_rect_to_accesskit_rect(transformed_rect(transform, region.local));
+            if let Some(index) = self.node_index.get(id).copied()
+                && let Some((_, node)) = self.nodes.get_mut(index)
+                && node.bounds() != Some(bounds)
+            {
+                node.set_bounds(bounds);
+                moved(*id, node);
+            }
+            // The clip is the raw chain clip, not folded into `rect`: the
+            // activation-point query projects the logical rect through it.
+            match clip {
+                Some(clip) => {
+                    self.node_clips.insert(*id, clip);
+                }
+                None => {
+                    self.node_clips.remove(id);
+                }
+            }
+        }
+    }
+
+    /// Queues `changed` nodes as an incremental tree update, merged into
+    /// the pending update when one is held.
+    fn queue_changed_nodes(&mut self, changed: Vec<(AccessibilityNodeId, AccessibilityNode)>) {
         if changed.is_empty() {
             return;
         }
@@ -1176,27 +1235,12 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         }
     }
 
-    pub(crate) fn finalize_tree_update(&mut self) {
+    /// Publishes the emitted tree, its bounds resolved at the placement
+    /// clock's `epoch`.
+    pub(crate) fn finalize_tree_update(&mut self, epoch: u64) {
         // §B.4: regions resolve now — a placement moved since the record
         // re-publishes bounds through the same chain the registrations use.
-        // Bounds are the paint-chain transform of the node's local rect with
-        // no clip fold and no hit gate: `hittable = false` and zero-alpha
-        // scopes still publish their logical rectangle, and the clip stays
-        // out of the reported bounds (water-rs/waterui#1323 §4).
-        for (id, region) in &self.node_regions {
-            let (transform, clip, _) = region.placement.resolved_chain(false);
-            let bounds = transformed_rect(transform, region.local);
-            if let Some(index) = self.node_index.get(id).copied()
-                && let Some((_, node)) = self.nodes.get_mut(index)
-            {
-                node.set_bounds(kurbo_rect_to_accesskit_rect(bounds));
-            }
-            // The clip is the raw chain clip, not folded into `rect`: the
-            // activation-point query projects the logical rect through it.
-            if let Some(clip) = clip {
-                self.node_clips.insert(*id, clip);
-            }
-        }
+        self.resolve_regions(epoch, |_, _| {});
         self.node_ids
             .retain(|key, _| self.active_node_keys.contains(key));
         if !self.nodes.iter().any(|(id, _)| *id == self.focus) {
@@ -1408,12 +1452,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
         const ROOT: AccessibilityNodeId = AccessibilityNodeId(0);
 
-        self.accessibility.apply_live_values();
+        self.apply_live_accessibility();
         let main_pending = pending(self);
         let popups: Vec<(&mut Self, Option<AccessibilityTreeUpdate>)> = popups
             .into_iter()
             .map(|popup| {
-                popup.accessibility.apply_live_values();
+                popup.apply_live_accessibility();
                 let update = pending(popup);
                 (popup, update)
             })
@@ -2761,7 +2805,18 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
     #[cfg(feature = "accessibility")]
     pub(crate) fn finalize_accessibility_tree_update(&mut self) {
-        self.accessibility.finalize_tree_update();
+        self.accessibility
+            .finalize_tree_update(self.placement_clock.epoch());
+    }
+
+    /// Queues what changed in the published tree without a re-record: live
+    /// numeric and selection values, and the bounds of nodes whose
+    /// placement a transform motion moved.
+    #[cfg(feature = "accessibility")]
+    fn apply_live_accessibility(&mut self) {
+        self.accessibility.apply_live_values();
+        self.accessibility
+            .apply_live_placements(self.placement_clock.epoch());
     }
 }
 
