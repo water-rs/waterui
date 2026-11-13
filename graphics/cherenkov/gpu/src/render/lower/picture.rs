@@ -421,6 +421,7 @@ impl Lowering<'_> {
                 self.clip,
                 self.member_outer_clip,
                 self.root_target,
+                self.root_space,
                 self.semantic_target,
                 self.animating,
             );
@@ -429,7 +430,7 @@ impl Lowering<'_> {
             self.set_clip(None);
             self.member_outer_clip = None;
             self.root_target = Target::Projected(key);
-            self.picture_space = cache.space;
+            self.root_space = cache.space;
             self.semantic_target = self.root_target;
             self.transform = image.local_to_texel * local.inverse();
             self.animating = false;
@@ -450,6 +451,7 @@ impl Lowering<'_> {
                 _,
                 self.member_outer_clip,
                 self.root_target,
+                self.root_space,
                 self.semantic_target,
                 self.animating,
             ) = saved;
