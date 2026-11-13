@@ -12,9 +12,9 @@
 
 use cherenkov_scene::kurbo::{Affine, Point, Rect};
 use cherenkov_scene::{
-    BlendMode, BlendSpace, Color, ColorSpace, Draw, Glyph, GlyphRun, Group, GroupItem,
-    LayerBuilder, LinearGradient, NormalizedCoord, Paint, SceneError, Shape, StrokeStyle,
-    TextDecoration, TextSource, TextSpan,
+    BlendMode, Color, ColorSpace, Draw, Glyph, GlyphRun, Group, GroupItem, LayerBuilder,
+    LinearGradient, NormalizedCoord, Paint, SceneError, Shape, StrokeStyle, TextDecoration,
+    TextSource, TextSpan,
 };
 use parley::PositionedLayoutItem;
 use skrifa::MetadataProvider;
