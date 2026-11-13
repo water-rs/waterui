@@ -72,11 +72,11 @@ mod text_field;
 mod toggle;
 mod widget;
 
+pub use badge::BadgeLook;
 pub use chrome::{
     Backdrop, Border, Chrome, CornerShape, Corners, Elevation, Fill, FocusIndicator, PressFeedback,
     Ripple, StateLayer, Surface, Wash,
 };
-pub use badge::BadgeLook;
 pub use glass::GlassLook;
 pub use list::{ListControls, ListGestures, ListLook, ListSpec};
 pub use look::{

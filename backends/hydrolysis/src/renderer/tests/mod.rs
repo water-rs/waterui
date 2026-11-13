@@ -180,8 +180,7 @@ use crate::theme::{
 use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
 use cherenkov_record::{
     BackdropShaderSource, CaptureClass, ContainerRecipe, Draw, GroupMember, MaterialCapture,
-    MaterialEffect, MaterialRegistry, MaterialShader, Paint, Shadow, SharedLive,
-    WorkingColor,
+    MaterialEffect, MaterialRegistry, MaterialShader, Paint, Shadow, SharedLive, WorkingColor,
 };
 use waterui_core::handler::SharedAction;
 
