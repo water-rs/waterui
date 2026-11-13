@@ -655,6 +655,11 @@ impl LiveSegmented {
             .target(&Inputs::at_rest(self.frames.row, self.base(), &()))
     }
 
+    /// The space the picker's group composites in.
+    pub(crate) const fn group_blend_space(&self) -> cherenkov_record::BlendSpace {
+        self.look.get_group_blend_space()
+    }
+
     /// The area the parts draw in: the row and the look's reach, and where
     /// the segments' chromes draw, mirrored with them.
     pub(crate) fn visual_bounds(&self) -> Rect {

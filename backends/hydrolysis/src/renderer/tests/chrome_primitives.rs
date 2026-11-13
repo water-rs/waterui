@@ -704,3 +704,107 @@ fn live_operands_sample_the_pumped_frame_instant() {
         "the fill shows the hovered end state: {red} red and {blue} blue pixels"
     );
 }
+
+/// A white, square chrome with no interaction tint: the surface a
+/// group-space test reads its fade off.
+fn white_chrome() -> Chrome {
+    Chrome::new(
+        Surface::new(
+            CornerShape::new(Corners::from(0.0)),
+            StateValue::new(Paint::from(color(1.0, 1.0, 1.0))),
+        ),
+        StateLayer::new(waterui::Color::srgb_f32(1.0, 1.0, 1.0)).opacities(0.0, 0.0, 0.0, 0.0),
+        PressFeedback::new().tint(),
+        FocusIndicator::Tint,
+        Motion::uniform(Animation::linear(Duration::from_millis(15))),
+    )
+}
+
+/// The red channel of the white surface, left of the label, after `button`
+/// over a black window under a test theme whose button group fades at
+/// `opacity` in `space` — and the frame, saved as `case`/`stage`.
+fn white_over_black(
+    button: impl View,
+    opacity: crate::theme::Driven<f32>,
+    space: cherenkov_record::BlendSpace,
+    hovered: bool,
+    (case, stage): (&str, &str),
+) -> u8 {
+    let mut runtime = runtime_with(
+        waterui_layout::stack::zstack((waterui::graphics::Color::srgb(0, 0, 0), button)),
+        MinimalTestTheme::default()
+            .with_button_chrome(white_chrome())
+            .with_button_group_opacity(opacity)
+            .with_button_group_blend_space(space),
+    );
+    let mut frames = Frames {
+        start: Instant::now(),
+        next: 0,
+    };
+    for _ in 0..4 {
+        frames.pump(&mut runtime);
+    }
+    if hovered {
+        hover(&mut runtime, CENTER);
+        for _ in 0..8 {
+            frames.pump(&mut runtime);
+        }
+    }
+    let snapshot = frames.snapshot(&mut runtime);
+    super::segmented_look::save(case, stage, &snapshot);
+    // The button is at least 123 points wide about the window's centre:
+    // 50 points left of the centre is surface, clear of the label.
+    let (column, row) = (WINDOW as usize / 2 - 50, WINDOW as usize / 2);
+    let offset = (row * snapshot.width() as usize + column) * 4;
+    let pixel: [u8; 4] = snapshot.rgba8()[offset..offset + 4]
+        .try_into()
+        .expect("a pixel is four bytes");
+    assert_eq!(
+        [pixel[1], pixel[2], pixel[3]],
+        [pixel[0], pixel[0], 255],
+        "an opaque grey: {pixel:?}"
+    );
+    pixel[0]
+}
+
+/// A disabled button whose look fades its group at 0.5 in `SrgbEncoded`
+/// space composites in encoded values: its white surface over the black
+/// window reads `0.5 · 255 ≈ 128`, where the linear fade reads the encoded
+/// `0.5` linear, ≈ 188. A hover-driven opacity — the group's live operand —
+/// composites in the same space.
+#[test]
+fn a_group_blend_space_fades_the_control_in_that_space() {
+    use cherenkov_record::BlendSpace;
+    let disabled = || -> crate::theme::Driven<f32> {
+        StateValue::new(1.0_f32)
+            .when(InteractionState::DISABLED, 0.5)
+            .into()
+    };
+    let encoded = white_over_black(
+        button("Faded").disabled(true),
+        disabled(),
+        BlendSpace::SrgbEncoded,
+        false,
+        ("group_blend_space", "disabled-encoded"),
+    );
+    let linear = white_over_black(
+        button("Faded").disabled(true),
+        disabled(),
+        BlendSpace::Linear,
+        false,
+        ("group_blend_space", "disabled-linear"),
+    );
+    assert!(encoded.abs_diff(128) <= 2, "encoded fade: {encoded}");
+    assert!(linear.abs_diff(188) <= 2, "linear fade: {linear}");
+
+    let live = white_over_black(
+        button("Faded").action(|| {}),
+        StateValue::new(1.0_f32)
+            .when(InteractionState::HOVERED, 0.5)
+            .into(),
+        BlendSpace::SrgbEncoded,
+        true,
+        ("group_blend_space", "hovered-encoded"),
+    );
+    assert!(live.abs_diff(128) <= 2, "live encoded fade: {live}");
+}

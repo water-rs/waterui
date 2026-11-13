@@ -459,3 +459,90 @@ fn srgb_encoded_members_composite_in_the_encoded_space() {
         );
     }
 }
+
+/// Renders a dark backdrop, then an opaque red rect and a 50% blue rect
+/// at opacity 0.5 in `SrgbEncoded` space: as a layer whose content holds
+/// the red rect and whose child layer holds the blue one when `layered`,
+/// otherwise as one encoded group in the root's content.
+fn render_encoded(layered: bool) -> Vec<[f32; 4]> {
+    let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
+    let surface = engine
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    let backdrop = Color::<Srgb>::new([0.1, 0.1, 0.12, 1.0]).to_working();
+    let red = Color::<Srgb>::new([0.85, 0.15, 0.2, 1.0]).to_working();
+    let blue = Color::<Srgb>::new([0.15, 0.3, 0.85, 0.5]).to_working();
+    let (front, back) = (
+        Rect::new(2.0, 2.0, 11.0, 11.0),
+        Rect::new(6.0, 6.0, 15.0, 15.0),
+    );
+    let faded = surface.layer();
+    let child = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| {
+            c.fill(Rect::new(0.0, 0.0, 16.0, 16.0), backdrop);
+            if !layered {
+                c.group(
+                    Group::new()
+                        .blend_space(BlendSpace::SrgbEncoded)
+                        .opacity(0.5),
+                    |c| {
+                        c.fill(front, red);
+                        c.fill(back, blue);
+                    },
+                );
+            }
+        }));
+        if layered {
+            tx[surface.root()].push(&faded);
+            tx[&faded]
+                .blend_space(BlendSpace::SrgbEncoded)
+                .opacity(0.5_f32)
+                .content(surface.record(|c| c.fill(front, red)))
+                .push(&child);
+            tx[&child].content(surface.record(|c| c.fill(back, blue)));
+        }
+    });
+    engine.render(FrameTime::now()).expect("render");
+    surface.readback().expect("pixels").pixels
+}
+
+/// A layer in `SrgbEncoded` space composites like the group of that space:
+/// its content and child layers composite with each other in encoded
+/// values, and its opacity fades it onto the backdrop in them.
+#[test]
+fn encoded_layer_composites_like_an_encoded_group() {
+    let layer = render_encoded(true);
+    let group = render_encoded(false);
+    for (i, (got, want)) in layer.iter().zip(&group).enumerate() {
+        for (g, w) in got.iter().zip(want) {
+            assert!((g - w).abs() < 1e-3, "pixel {i}: {got:?} != {want:?}");
+        }
+    }
+    let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
+    let surface = engine
+        .surface(Offscreen::new((4, 4), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    let faded = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()]
+            .content(surface.record(|c| {
+                c.fill(Rect::new(0.0, 0.0, 4.0, 4.0), WorkingColor::BLACK);
+            }))
+            .push(&faded);
+        tx[&faded]
+            .blend_space(BlendSpace::SrgbEncoded)
+            .opacity(0.5_f32)
+            .content(surface.record(|c| {
+                c.fill(Rect::new(0.0, 0.0, 4.0, 4.0), WorkingColor::WHITE);
+            }));
+    });
+    engine.render(FrameTime::now()).expect("render");
+    // White over black at 0.5 in encoded values decodes from 0.5 (128 of
+    // 255), not 0.5 linear (an encoded 0.735, 188).
+    let pixel = surface.readback().expect("pixels").pixels[5];
+    let want = cherenkov_oracle::color::srgb_decode(0.5);
+    for channel in &pixel[..3] {
+        assert!((f64::from(*channel) - want).abs() < 1e-3, "{pixel:?}");
+    }
+}

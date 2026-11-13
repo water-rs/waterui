@@ -2351,10 +2351,13 @@ impl<'a> Lowering<'a> {
                 self.anchor_scratch.members.push((g, canvas, order));
             }
         }
-        // A semantically isolating layer — filtered or blended — is its
-        // children's compositing canvas; other layers share their
-        // parent's.
-        let canvas = if node.filter.is_some() || node.blend != cherenkov::BlendMode::Normal {
+        // A semantically isolating layer — filtered, blended or in a
+        // non-linear space — is its children's compositing canvas; other
+        // layers share their parent's.
+        let canvas = if node.filter.is_some()
+            || node.blend != cherenkov::BlendMode::Normal
+            || node.blend_space != cherenkov::BlendSpace::Linear
+        {
             Some(id)
         } else {
             canvas
@@ -4042,11 +4045,16 @@ impl<'a> Lowering<'a> {
         } else {
             node.clip.as_ref()
         };
-        // A local root's opacity and blend apply when its image composes.
-        let (opacity, blend) = if local_root {
-            (1.0, cherenkov::BlendMode::Normal)
+        // A local root's opacity, blend and space apply when its image
+        // composes.
+        let (opacity, blend, space) = if local_root {
+            (
+                1.0,
+                cherenkov::BlendMode::Normal,
+                cherenkov::BlendSpace::Linear,
+            )
         } else {
-            (node.opacity, node.blend)
+            (node.opacity, node.blend, node.blend_space)
         };
         let backdrop = &node.backdrop;
         let saved = self.transform;
@@ -4065,6 +4073,7 @@ impl<'a> Lowering<'a> {
             // system plane (`Placement::opacity`), never in an isolation.
             || (opacity < 1.0 && !self.promoted.contains(&id))
             || blend != cherenkov::BlendMode::Normal
+            || space != cherenkov::BlendSpace::Linear
             // The root already renders into the surface target, and a
             // local root into its image.
             || (id != self.start(tree) && node.blends_within());
@@ -4091,8 +4100,7 @@ impl<'a> Lowering<'a> {
             glyphs,
             clip,
             content_space,
-            opacity,
-            blend,
+            (opacity, blend, space),
             isolates,
         );
         self.member_outer_clip = member_outer;
@@ -4125,18 +4133,17 @@ impl<'a> Lowering<'a> {
         glyphs: &GlyphContext<'_>,
         clip: Option<&ShapeData>,
         content_space: Affine,
-        opacity: f32,
-        blend: cherenkov::BlendMode,
+        (opacity, blend, space): (f32, cherenkov::BlendMode, cherenkov::BlendSpace),
         isolates: bool,
     ) -> Result<(), RenderError> {
-        // A filtered member whose opacity or blend is not a no-op
+        // A filtered member whose opacity, blend or space is not a no-op
         // composites in two nested member scopes; the scope carries the
         // member's sample and filter by type.
-        let member_scope = node
-            .backdrop
-            .as_ref()
-            .zip(node.filter)
-            .filter(|_| opacity < 1.0 || blend != cherenkov::BlendMode::Normal);
+        let member_scope = node.backdrop.as_ref().zip(node.filter).filter(|_| {
+            opacity < 1.0
+                || blend != cherenkov::BlendMode::Normal
+                || space != cherenkov::BlendSpace::Linear
+        });
         match member_scope {
             Some((sample, filter)) => self.filtered_member_scope(
                 id,
@@ -4146,8 +4153,7 @@ impl<'a> Lowering<'a> {
                 glyphs,
                 clip,
                 content_space,
-                opacity,
-                blend,
+                (opacity, blend, space),
                 sample,
                 filter,
             ),
@@ -4162,9 +4168,7 @@ impl<'a> Lowering<'a> {
                     None,
                     opacity,
                     blend,
-                    // Layers declare no space; their isolation composites
-                    // in the enclosing level's linear storage.
-                    cherenkov::BlendSpace::Linear,
+                    space,
                     |s, glyphs| {
                         // As in the `None` arm below: a union member's
                         // sample composites under the ancestors only, so
@@ -4233,7 +4237,7 @@ impl<'a> Lowering<'a> {
                                 node.filter,
                                 opacity,
                                 blend,
-                                cherenkov::BlendSpace::Linear,
+                                space,
                                 |s, glyphs| {
                                     if let Some(sample) = &node.backdrop
                                         && node.filter.is_none()
@@ -4280,14 +4284,14 @@ impl<'a> Lowering<'a> {
         glyphs: &GlyphContext<'_>,
         clip: Option<&ShapeData>,
         content_space: Affine,
-        opacity: f32,
-        blend: cherenkov::BlendMode,
+        (opacity, blend, space): (f32, cherenkov::BlendMode, cherenkov::BlendSpace),
         sample: &cherenkov::BackdropSample,
         filter: cherenkov::FilterId,
     ) -> Result<(), RenderError> {
         // The member scope's contents: the sample at full strength —
         // outside the filter — beside a nested filter scope over the
-        // member's items at opacity 1, `Normal` blend.
+        // member's items at opacity 1, `Normal` blend, in the member's
+        // space.
         let mut body = |s: &mut Self, glyphs: &GlyphContext<'_>| {
             s.emit_backdrop_sample(sample, id)?;
             let inner = s.clip;
@@ -4296,7 +4300,7 @@ impl<'a> Lowering<'a> {
                 Some(filter),
                 1.0,
                 cherenkov::BlendMode::Normal,
-                cherenkov::BlendSpace::Linear,
+                space,
                 |s, glyphs| s.layer_items(id, node, tree, caches, glyphs),
                 glyphs,
             )
@@ -4307,15 +4311,7 @@ impl<'a> Lowering<'a> {
                 |s, glyphs| {
                     s.transform = content_space;
                     let inner = s.clip;
-                    s.isolate_direct(
-                        inner,
-                        None,
-                        opacity,
-                        blend,
-                        cherenkov::BlendSpace::Linear,
-                        &mut body,
-                        glyphs,
-                    )
+                    s.isolate_direct(inner, None, opacity, blend, space, &mut body, glyphs)
                 },
                 glyphs,
             )
@@ -4325,7 +4321,7 @@ impl<'a> Lowering<'a> {
                 None,
                 opacity,
                 blend,
-                cherenkov::BlendSpace::Linear,
+                space,
                 |s, glyphs| {
                     s.with_clip(
                         clip,
@@ -4353,6 +4349,11 @@ impl<'a> Lowering<'a> {
         node: &cherenkov::LayerNode,
         glyphs: &GlyphContext<'_>,
     ) -> Result<(), RenderError> {
+        // The local image is reconstructed in the linear working space;
+        // a projective layer composites in no other.
+        if node.blend_space != cherenkov::BlendSpace::Linear {
+            return Err(RenderError::Unsupported(names::PROJECTIVE_BLEND_SPACE));
+        }
         let Some(placement) = self.projected.get(&id).copied() else {
             // No area this frame: behind the viewer, edge-on or off the
             // raster.

@@ -284,7 +284,7 @@ fn near(what: &str, value: f64, want: f64, tolerance: f64) {
     );
 }
 
-fn save(case: &str, stage: &str, snapshot: &HeadlessSnapshot) {
+pub(super) fn save(case: &str, stage: &str, snapshot: &HeadlessSnapshot) {
     let path = crate::testing::artifact_snapshot_path("hydrolysis", case, stage);
     std::fs::create_dir_all(path.parent().expect("the case directory"))
         .expect("the capture directory must be creatable");
