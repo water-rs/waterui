@@ -310,13 +310,25 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
         renderer: &mut HydrolysisRenderer<E>,
         env: &Environment,
     ) -> Size {
+        self.measure(renderer, env, ProposalSize::UNSPECIFIED)
+    }
+
+    /// Measure the sub-view at `proposal` (building it once if needed): the
+    /// size it takes in the room a widget offers it. For the render path,
+    /// which has the renderer to build on first use.
+    pub(crate) fn measure(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<E>,
+        env: &Environment,
+        proposal: ProposalSize,
+    ) -> Size {
         self.ensure_built(renderer, env);
-        let built = self.expect_built_mut("measure_intrinsic");
+        let built = self.expect_built_mut("measure");
         built.node.prepare_for_measure(renderer);
         let theme = renderer.theme();
         built
             .node
-            .measure(&mut renderer.state, env, &theme, ProposalSize::UNSPECIFIED)
+            .measure(&mut renderer.state, env, &theme, proposal)
             .size
     }
 
