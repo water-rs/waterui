@@ -1775,7 +1775,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
         filters: &mut Registry,
     ) -> Result<(), RenderError> {
         let mut groups = FxHashMap::default();
-        self.anchor_scratch.clear();
+        debug_assert!(
+            self.anchor_scratch.refs.is_empty(),
+            "`Lowering::new` clears the scratch"
+        );
         self.anchor_scratch
             .refs
             .extend(filters.backdrop_anchors(surface));
