@@ -55,6 +55,23 @@ impl<E: crate::text::TextEngine> LayerVisitor<E> for GlyphRuns {
     }
 }
 
+/// Each run that draws glyphs: its glyph runs' live paints and the colours
+/// of their fixed brushes, in mount order.
+#[derive(Default)]
+struct GlyphColours(Vec<RunColours>);
+
+/// One run's glyph-run live paints and fixed brush colours.
+type RunColours = (Vec<Option<cherenkov_record::Paint>>, Vec<[u8; 4]>);
+
+impl<E: crate::text::TextEngine> LayerVisitor<E> for GlyphColours {
+    fn run(&mut self, _world: kurbo::Affine, recording: &Recording) {
+        if recording.glyph_runs().next().is_some() {
+            self.0
+                .push((recording.glyph_paints(), recording.glyph_brush_colours()));
+        }
+    }
+}
+
 /// The plain look with an active indicator that thickens on focus.
 fn look() -> TextFieldLook {
     let indicator = StateValue::new(Border::new(
@@ -451,5 +468,64 @@ fn a_spec_change_follows_the_looks_label_font() {
     assert!(
         (restored - own).abs() < 1e-3,
         "a look with no font restores the label's own: {restored} against {own}"
+    );
+}
+
+/// A field disabled when it mounts draws disabled from its first frame
+/// (water-rs/waterui#4553): its container and active indicator realize the
+/// disabled state, and its label takes the look's disabled colour.
+#[test]
+fn a_field_mounted_disabled_draws_disabled_from_its_first_frame() {
+    use crate::theme::{FloatingLabel, Label as LookLabel};
+    use waterui::{Color, ViewExt as _};
+
+    // Red at rest, green while disabled.
+    let colour = StateValue::new(Color::srgb(200, 0, 0))
+        .when(InteractionState::DISABLED, Color::srgb(0, 200, 0));
+    let plain = look();
+    let floating = plain.floating_label();
+    let label = FloatingLabel::new(LookLabel::new().color(colour), floating.get_float().clone())
+        .scale(floating.get_scale())
+        .top(floating.get_top());
+    let look = TextFieldLook::new(
+        invisible_chrome(),
+        METRICS,
+        label,
+        plain.caret().clone(),
+        plain.selection().clone(),
+    )
+    .active_indicator(
+        plain
+            .get_active_indicator()
+            .expect("the plain look has an active indicator")
+            .clone(),
+    );
+    let value = Binding::container(Str::default());
+    let fixture = Fixture::mount(
+        AnyView::new(vstack((TextField::new("Name", &value).disabled(true),))),
+        LayoutDirection::LeftToRight,
+        look,
+        1,
+    );
+
+    assert!(
+        fixture
+            .chrome()
+            .state()
+            .contains(InteractionState::DISABLED),
+        "the container and its active indicator realize the disabled state"
+    );
+    let mut runs = GlyphColours::default();
+    visit(&fixture.runtime.renderer().mount_roots(), &mut runs);
+    let [(paints, brushes)] =
+        <[_; 1]>::try_from(runs.0).expect("an empty field draws only its label");
+    assert!(
+        paints.iter().all(Option::is_none),
+        "the label draws in its recorded brush: {paints:?}"
+    );
+    assert_eq!(
+        brushes,
+        [[0, 200, 0, 255]],
+        "the label draws in the look's disabled green, not its resting red"
     );
 }

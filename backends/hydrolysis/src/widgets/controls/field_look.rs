@@ -248,6 +248,12 @@ impl FieldChrome {
             focused,
         );
         let flags = interaction.state;
+        // Feed the state the field binds in to the floating label's colour
+        // signal: the chrome reports only the changes it syncs, so a state
+        // the field mounts in — disabled above all — reaches the label here.
+        if self.report.snapshot() != flags {
+            self.report.set(flags);
+        }
         let parts = LiveChromeParts::ensure(
             &mut self.parts,
             &container,

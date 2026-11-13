@@ -952,6 +952,23 @@ impl Recording {
             .collect()
     }
 
+    /// The sRGB colour of each glyph run's fixed solid brush, in op order, as
+    /// RGBA bytes; a run whose brush is not solid is skipped. For tests
+    /// asserting the colour text recorded in.
+    #[cfg(test)]
+    pub(crate) fn glyph_brush_colours(&self) -> Vec<[u8; 4]> {
+        self.ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Glyphs {
+                    brush: peniko::Brush::Solid(color),
+                    ..
+                } => Some(color.to_rgba8().to_u8_array()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The premultiplied sRGB colours of every solid fill or stroke op, for
     /// tests asserting a colour reached the recording.
     #[cfg(test)]
