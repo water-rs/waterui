@@ -734,6 +734,8 @@ pub struct Custom<V, D: DrivenSet<V>> {
     /// The rotation stages, innermost first: each track with its first
     /// angle, the layer's rotation at rest.
     rotations: Vec<(KeyframeAnimation, f64)>,
+    /// The part's opacity; `None` draws it whole, with no layer of its own.
+    opacity: Option<Driven<f32, V>>,
     value: PhantomData<fn(&V)>,
 }
 
@@ -742,6 +744,7 @@ impl<V, D: DrivenSet<V> + core::fmt::Debug> core::fmt::Debug for Custom<V, D> {
         f.debug_struct("Custom")
             .field("driven", &self.driven)
             .field("rotations", &self.rotations.len())
+            .field("opacity", &self.opacity)
             .finish_non_exhaustive()
     }
 }
@@ -752,6 +755,7 @@ impl<V, D: DrivenSet<V> + Clone> Clone for Custom<V, D> {
             driven: self.driven.clone(),
             record: Rc::clone(&self.record),
             rotations: self.rotations.clone(),
+            opacity: self.opacity.clone(),
             value: PhantomData,
         }
     }
@@ -765,8 +769,24 @@ impl<V, D: DrivenSet<V>> Custom<V, D> {
             driven,
             record: Rc::new(record),
             rotations: Vec::new(),
+            opacity: None,
             value: PhantomData,
         }
+    }
+
+    /// Draws the whole part at `opacity`, a function of the part's inputs
+    /// animated by the part's motion like its other values. A part given
+    /// none is drawn whole.
+    ///
+    /// Hydrolysis draws a part with an opacity in a layer of its own whose
+    /// opacity follows the value, so a change never records the part again.
+    /// At opacity 0 the part costs nothing: the engine skips the layer, a
+    /// backdrop material it declares included — a lens that exists only
+    /// while the control is pressed is recorded once and shows only then.
+    #[must_use]
+    pub fn opacity(mut self, opacity: impl Into<Driven<f32, V>>) -> Self {
+        self.opacity = Some(opacity.into());
+        self
     }
 
     /// Turns the part's whole layer about the centre of its frame, along
@@ -797,6 +817,8 @@ pub struct RealizedCustom<V> {
     record: RecordRealized,
     pub(crate) drivens: Vec<Rc<dyn Retarget<V>>>,
     rotations: Vec<LayerRotation>,
+    /// The operand the part's layer opacity follows, when it has one.
+    opacity: Option<Operand<f32>>,
 }
 
 #[cfg(hydrolysis_runtime)]
@@ -841,6 +863,12 @@ impl<V> RealizedCustom<V> {
     pub(crate) fn rotations(&self) -> &[LayerRotation] {
         &self.rotations
     }
+
+    /// The operand the part's layer opacity follows; `None` when the part
+    /// is drawn whole, with no layer of its own.
+    pub(crate) const fn opacity(&self) -> Option<&Operand<f32>> {
+        self.opacity.as_ref()
+    }
 }
 
 /// The object-safe face of a [`Custom`] part, so a look stores parts of
@@ -856,10 +884,18 @@ where
 {
     #[cfg(hydrolysis_runtime)]
     fn realize(&self, inputs: &Inputs<'_, V>) -> RealizedCustom<V> {
-        let Realized { live, drivens } = self.driven.realize(inputs);
+        let Realized { live, mut drivens } = self.driven.realize(inputs);
         let record = Rc::clone(&self.record);
+        // The opacity retargets with the part's other values.
+        let opacity = self.opacity.as_ref().map(|opacity| {
+            let opacity = Rc::new(LiveDriven::new(opacity.clone(), inputs));
+            let operand = opacity.operand().clone();
+            drivens.push(opacity);
+            operand
+        });
         RealizedCustom {
             record: Box::new(move |recorder, frame| record(recorder, frame, live())),
+            opacity,
             drivens,
             rotations: self
                 .rotations

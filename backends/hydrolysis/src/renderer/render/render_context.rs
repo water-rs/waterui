@@ -277,7 +277,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
             key,
             operands,
             self.local,
-            &crate::renderer::frame::ScopeClip::Rect(clip),
+            Some(&crate::renderer::frame::ScopeClip::Rect(clip)),
             crate::renderer::ScopeDelta::RECORD_SPACE,
         );
         f(self);

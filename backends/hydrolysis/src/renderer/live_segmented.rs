@@ -16,7 +16,7 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use cherenkov_record::{Paint, Recorder, WorkingColor};
+use cherenkov_record::{Paint, WorkingColor};
 use kurbo::{Affine, Point, Rect, Vec2};
 use nami::{Binding, Computed, Signal};
 use waterui_core::Environment;
@@ -24,7 +24,7 @@ use waterui_core::animation::{Animation, ChangeAnimation};
 use waterui_core::id::Id;
 use waterui_core::interaction::InteractionState;
 
-use crate::renderer::chrome::{LayeredParts, LiveChrome, PartsBody, varies_live};
+use crate::renderer::chrome::{LiveChrome, PartRuns, PartStep, varies_live};
 use crate::renderer::{HydrolysisRenderer, RenderContext};
 use crate::theme::live::Operand;
 use crate::theme::{
@@ -702,28 +702,53 @@ impl LiveSegmented {
         self.frames == *frames && self.tags == tags && self.disabled == disabled
     }
 
-    fn record_below(&self, recorder: &mut Recorder) {
-        #[cfg(test)]
-        self.recordings.set(self.recordings.get() + 1);
-        for part in &self.below {
-            part.record(recorder, self.frames.row);
-        }
-        for (index, (parts, frame)) in self.segments.iter().zip(&self.frames.segments).enumerate() {
-            if let Some(chrome) = self.chromes.get(index) {
-                chrome.record_layers(recorder);
+    /// The steps below the labels: the control parts, then each segment's
+    /// chrome and parts.
+    fn steps_below(picker: &Rc<Self>) -> Vec<PartStep> {
+        let mut steps: Vec<PartStep> = Self::counted(picker).collect();
+        steps.extend(PartStep::parts(
+            picker,
+            |picker: &Self| &picker.below,
+            |picker: &Self| picker.frames.row,
+        ));
+        for index in 0..picker.segments.len() {
+            if let Some(chrome) = picker.chromes.get(index) {
+                steps.extend(LiveChrome::layer_steps(chrome));
             }
-            for part in parts {
-                part.record(recorder, *frame);
-            }
+            steps.extend(PartStep::parts(
+                picker,
+                move |picker: &Self| &picker.segments[index],
+                move |picker: &Self| picker.frames.segments[index],
+            ));
         }
+        steps
     }
 
-    fn record_above(&self, recorder: &mut Recorder) {
-        #[cfg(test)]
-        self.recordings.set(self.recordings.get() + 1);
-        for part in &self.above {
-            part.record(recorder, self.frames.row);
-        }
+    /// The steps over the labels: the control parts added over them.
+    fn steps_above(picker: &Rc<Self>) -> Vec<PartStep> {
+        let mut steps: Vec<PartStep> = Self::counted(picker).collect();
+        steps.extend(PartStep::parts(
+            picker,
+            |picker: &Self| &picker.above,
+            |picker: &Self| picker.frames.row,
+        ));
+        steps
+    }
+
+    /// A step that draws nothing and counts the recordings of the run it
+    /// opens.
+    #[cfg(test)]
+    fn counted(picker: &Rc<Self>) -> impl Iterator<Item = PartStep> {
+        let picker = Rc::clone(picker);
+        core::iter::once(PartStep::content(move |_| {
+            picker.recordings.set(picker.recordings.get() + 1);
+        }))
+    }
+
+    /// No step: only a test build counts recordings.
+    #[cfg(not(test))]
+    fn counted(_picker: &Rc<Self>) -> impl Iterator<Item = PartStep> {
+        core::iter::empty()
     }
 
     /// How many times the mount recorded the parts.
@@ -753,8 +778,8 @@ const fn position(index: usize) -> f64 {
 /// The recordings a segmented picker's program lists.
 #[derive(Default)]
 struct Layers {
-    below: Option<LayeredParts>,
-    above: Option<LayeredParts>,
+    below: Option<PartRuns>,
+    above: Option<PartRuns>,
 }
 
 /// A segmented picker's live parts and the recordings its program lists:
@@ -837,11 +862,10 @@ impl LiveSegmentedParts {
         }
         let scope = renderer.material_scope();
         let mut layers = self.layers.borrow_mut();
-        let picker = Rc::clone(&self.picker);
-        LayeredParts::ensure(&mut layers.below, scope, move || -> PartsBody {
-            Rc::new(move |recorder: &mut Recorder| picker.record_below(recorder))
+        PartRuns::ensure(&mut layers.below, scope, || {
+            LiveSegmented::steps_below(&self.picker)
         })
-        .push(renderer, self.mirrored(ctx));
+        .push(renderer, self.mirrored(ctx), "segmented-below-part");
     }
 
     /// Lists the control parts over the labels in `ctx`.
@@ -855,10 +879,9 @@ impl LiveSegmentedParts {
         }
         let scope = renderer.material_scope();
         let mut layers = self.layers.borrow_mut();
-        let picker = Rc::clone(&self.picker);
-        LayeredParts::ensure(&mut layers.above, scope, move || -> PartsBody {
-            Rc::new(move |recorder: &mut Recorder| picker.record_above(recorder))
+        PartRuns::ensure(&mut layers.above, scope, || {
+            LiveSegmented::steps_above(&self.picker)
         })
-        .push(renderer, self.mirrored(ctx));
+        .push(renderer, self.mirrored(ctx), "segmented-above-part");
     }
 }

@@ -117,6 +117,36 @@ pub struct SurfaceTree {
     projective: FxHashMap<u64, projective::State>,
     /// The last change stamp handed out; stamps only grow.
     clock: u64,
+    /// How many layers, attached or not, [show nothing](LayerNode::shows_nothing).
+    hidden: usize,
+}
+
+/// Layer `id` of `nodes`.
+///
+/// # Panics
+/// Panics when `id` is not in the tree.
+fn node_in(nodes: &mut FxHashMap<u64, LayerNode>, id: LayerId) -> &mut LayerNode {
+    nodes
+        .get_mut(&id.raw())
+        .unwrap_or_else(|| panic!("layer {} is not in the tree", id.raw()))
+}
+
+/// Sets `node`'s opacity, keeping `hidden`, the count of layers that show
+/// nothing.
+const fn set_opacity(hidden: &mut usize, node: &mut LayerNode, opacity: f32) {
+    let was = node.shows_nothing();
+    node.opacity = opacity;
+    count_hidden(hidden, was, node);
+}
+
+/// Keeps `hidden`, the count of layers that show nothing, as `node` goes
+/// from showing nothing when `was` to its current state.
+const fn count_hidden(hidden: &mut usize, was: bool, node: &LayerNode) {
+    match (was, node.shows_nothing()) {
+        (false, true) => *hidden += 1,
+        (true, false) => *hidden -= 1,
+        _ => {}
+    }
 }
 
 /// What applying one [`Op`] asks the consumer to realise — the return of
@@ -244,6 +274,14 @@ impl std::fmt::Debug for LayerNode {
 }
 
 impl LayerNode {
+    /// Whether the layer, with everything beneath it, changes no pixel of
+    /// its parent: it composites at opacity 0 under an operator that leaves
+    /// the destination as it is for a transparent source.
+    #[must_use]
+    pub const fn shows_nothing(&self) -> bool {
+        self.opacity <= 0.0 && !self.blend.is_destructive()
+    }
+
     /// Version of this layer's own content and sampled properties, including
     /// child membership/order but excluding changes inside descendants.
     #[must_use]
@@ -639,7 +677,7 @@ impl SurfaceTree {
             }
             if let Some(track) = &mut node.opacity_track {
                 let (position, _, _) = track.sample(time);
-                node.opacity = f32::from_lanes(position);
+                set_opacity(&mut self.hidden, node, f32::from_lanes(position));
             }
         }
     }
@@ -707,6 +745,7 @@ impl SurfaceTree {
             root: LayerId::new(0),
             projective: FxHashMap::default(),
             clock: 0,
+            hidden: 0,
         }
     }
 
@@ -808,7 +847,7 @@ impl SurfaceTree {
                 *count -= 1;
             }
         }
-        self.node_mut(id).blend = blend;
+        self.write_shown(id, |node| node.blend = blend);
     }
 
     /// Applies a projection, tilt, depth or clear-projection op.
@@ -872,6 +911,14 @@ impl SurfaceTree {
     #[must_use]
     pub const fn root(&self) -> LayerId {
         self.root
+    }
+
+    /// Whether some layer, attached or not, [shows
+    /// nothing](LayerNode::shows_nothing). A walk over a tree with none
+    /// has no layer to skip.
+    #[must_use]
+    pub const fn has_hidden_layers(&self) -> bool {
+        self.hidden > 0
     }
 
     /// The sampled node of layer `id`.
@@ -949,6 +996,9 @@ impl SurfaceTree {
         assert_ne!(id, self.root, "the root layer cannot be removed");
         self.detach(id);
         let node = self.nodes.remove(&id.raw()).expect("checked above");
+        if node.shows_nothing() {
+            self.hidden -= 1;
+        }
         for child in node.children {
             self.node_mut(child).parent = None;
             self.set_attached(child, false);
@@ -1077,8 +1127,9 @@ impl SurfaceTree {
             | LayerOp::ClearProjection(_)) => self.apply_projective(op),
             LayerOp::Opacity(id, prop) => {
                 let prop = without_decay(prop);
-                let node = self.node_mut(id);
-                set_prop(&mut node.opacity_track, &mut node.opacity, &prop);
+                self.write_shown(id, |node| {
+                    set_prop(&mut node.opacity_track, &mut node.opacity, &prop);
+                });
             }
             LayerOp::ScrollOffset(id, prop) => {
                 let node = self.node_mut(id);
@@ -1210,9 +1261,16 @@ impl SurfaceTree {
     }
 
     fn node_mut(&mut self, id: LayerId) -> &mut LayerNode {
-        self.nodes
-            .get_mut(&id.raw())
-            .unwrap_or_else(|| panic!("layer {} is not in the tree", id.raw()))
+        node_in(&mut self.nodes, id)
+    }
+
+    /// Writes `id` through `write`, keeping the count of layers that show
+    /// nothing.
+    fn write_shown(&mut self, id: LayerId, write: impl FnOnce(&mut LayerNode)) {
+        let node = node_in(&mut self.nodes, id);
+        let was = node.shows_nothing();
+        write(node);
+        count_hidden(&mut self.hidden, was, node);
     }
 
     /// Samples the animation tracks of every layer whose parent chain
@@ -1275,11 +1333,14 @@ impl SurfaceTree {
             if let Some(track) = &mut node.opacity_track {
                 stepped = true;
                 let (pos, _vel, done) = track.sample(time);
-                node.opacity = f32::from_lanes(pos);
-                if done {
-                    node.opacity = track.target;
+                let opacity = if done {
+                    let target = track.target;
                     node.opacity_track = None;
-                }
+                    target
+                } else {
+                    f32::from_lanes(pos)
+                };
+                set_opacity(&mut self.hidden, node, opacity);
             }
             if let Some(track) = &mut node.scroll_track {
                 stepped = true;
@@ -2097,6 +2158,45 @@ mod hierarchy_tests {
 
         tree.apply(LayerOp::Push { parent, child });
         assert!(tree.layer(parent).blends_within());
+    }
+
+    /// The tree reports a layer that shows nothing through every write of
+    /// its opacity or blend: a set, an animation's landing, a destructive
+    /// operator and its removal.
+    #[test]
+    fn hidden_layers_track_opacity_blend_and_removal() {
+        let set = |target| Prop {
+            target,
+            animation: None,
+            start: None,
+        };
+        let mut tree = tree();
+        let (a, b) = (LayerId::new(1), LayerId::new(2));
+        assert!(!tree.has_hidden_layers());
+        tree.apply(LayerOp::Opacity(a, set(0.0)));
+        assert!(tree.has_hidden_layers());
+        tree.apply(LayerOp::Blend(a, BlendMode::Src));
+        assert!(!tree.has_hidden_layers(), "a destructive operator shows");
+        tree.apply(LayerOp::Blend(a, BlendMode::Normal));
+        assert!(tree.has_hidden_layers());
+        tree.apply(LayerOp::Opacity(a, set(1.0)));
+        assert!(!tree.has_hidden_layers());
+
+        let start = Instant::now();
+        tree.apply(LayerOp::Opacity(
+            b,
+            Prop {
+                target: 0.0,
+                animation: Some(Curve::linear(Duration::from_secs(1)).into()),
+                start: Some(TrackStart::at(start)),
+            },
+        ));
+        tree.sample(start + Duration::from_millis(500), 1.0);
+        assert!(!tree.has_hidden_layers(), "a fade on its way shows");
+        tree.sample(start + Duration::from_secs(2), 1.0);
+        assert!(tree.has_hidden_layers(), "a fade that landed at 0");
+        tree.remove(b);
+        assert!(!tree.has_hidden_layers());
     }
 
     #[test]

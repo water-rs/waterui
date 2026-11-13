@@ -14,6 +14,7 @@ use crate::{
 };
 
 mod disjoint;
+pub mod hidden;
 pub mod memory;
 pub mod projective;
 pub mod rounded_box;

@@ -414,7 +414,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     ///
     /// The segments are frozen into the node's run: content whose operands
     /// change after it records lists through
-    /// [`LayeredParts`](crate::renderer::chrome::LayeredParts) instead.
+    /// [`PartRuns`](crate::renderer::chrome::PartRuns) instead.
     pub(crate) fn draw_context(
         &mut self,
         ctx: RenderContext,
@@ -626,13 +626,14 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// [`Self::open_scope`] whose layer follows `operands` between renders:
     /// its opacity is the opacity operand's, and the transform operand —
     /// given in the `paint` space, like `clip` — moves the layer over its
-    /// at-rest place. Children record at rest.
+    /// at-rest place. Children record at rest. A scope with no `clip`
+    /// leaves its content unclipped.
     pub(crate) fn open_live_scope(
         &mut self,
         key: mount::ScopeKey,
         operands: ScopeOperands,
         paint: kurbo::Affine,
-        clip: &ScopeClip,
+        clip: Option<&ScopeClip>,
         scope: crate::renderer::ScopeDelta,
     ) {
         self.open_scope_layer(
@@ -643,7 +644,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 blend_space: cherenkov_record::BlendSpace::Linear,
                 operands,
             },
-            Some(clip),
+            clip,
             paint,
             scope,
             true,
@@ -685,6 +686,34 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             scope,
             true,
         );
+    }
+
+    /// Runs `f` inside a live scope `key` whose layer opacity follows
+    /// `opacity`, unclipped, in `ctx`'s record space — a look part with an
+    /// opacity of its own; with no `opacity`, runs `f` in place.
+    pub(crate) fn with_part_opacity(
+        &mut self,
+        key: mount::ScopeKey,
+        opacity: Option<&Operand<f32>>,
+        ctx: RenderContext,
+        f: impl FnOnce(&mut Self),
+    ) {
+        let Some(opacity) = opacity else {
+            f(self);
+            return;
+        };
+        self.open_live_scope(
+            key,
+            ScopeOperands {
+                opacity: Some(opacity.clone()),
+                transform: None,
+            },
+            ctx.local(),
+            None,
+            crate::renderer::ScopeDelta::RECORD_SPACE,
+        );
+        f(self);
+        self.close_scope();
     }
 
     fn open_scope_layer(

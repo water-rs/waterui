@@ -15,7 +15,6 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use cherenkov_record::Recorder;
 use kurbo::{Point, Rect};
 use nami::{Binding, Computed, Signal, SignalExt as _};
 use waterui_core::Environment;
@@ -23,7 +22,7 @@ use waterui_core::animation::{Animation, ChangeAnimation};
 use waterui_core::id::Id;
 use waterui_core::interaction::InteractionState;
 
-use crate::renderer::chrome::{LayeredParts, LiveChrome, PartsBody};
+use crate::renderer::chrome::{LiveChrome, PartRuns, PartStep};
 use crate::renderer::{HydrolysisRenderer, RenderContext};
 use crate::theme::{Change, Chrome, Inputs, RealizedCustom, TabItem, TabItemGeometry, TabsLook};
 
@@ -344,17 +343,47 @@ impl LiveTabs {
         self.frames == *frames && self.tags == tags
     }
 
-    fn record(&self, recorder: &mut Recorder) {
-        #[cfg(test)]
-        self.recordings.set(self.recordings.get() + 1);
-        self.bar.record(recorder, self.frames.surface);
-        self.divider.record(recorder, self.frames.divider);
-        for (index, geometry) in self.frames.items.iter().enumerate() {
-            if let Some(highlight) = &self.highlights[index] {
-                highlight.record(recorder, geometry.bounds);
-            }
-            self.chromes[index].record_layers(recorder);
+    /// The steps beneath the items' icons and labels: the bar, the divider,
+    /// then each item's highlight and chrome.
+    fn steps(tabs: &Rc<Self>) -> Vec<PartStep> {
+        let mut steps: Vec<PartStep> = Self::counted(tabs).collect();
+        steps.push(PartStep::part(
+            tabs,
+            0,
+            |tabs: &Self| core::slice::from_ref(&tabs.bar),
+            |tabs: &Self| tabs.frames.surface,
+        ));
+        steps.push(PartStep::part(
+            tabs,
+            0,
+            |tabs: &Self| core::slice::from_ref(&tabs.divider),
+            |tabs: &Self| tabs.frames.divider,
+        ));
+        for index in 0..tabs.frames.items.len() {
+            steps.extend(PartStep::parts(
+                tabs,
+                move |tabs: &Self| tabs.highlights[index].as_slice(),
+                move |tabs: &Self| tabs.frames.items[index].bounds,
+            ));
+            steps.extend(LiveChrome::layer_steps(&tabs.chromes[index]));
         }
+        steps
+    }
+
+    /// A step that draws nothing and counts the recordings of the run it
+    /// opens.
+    #[cfg(test)]
+    fn counted(tabs: &Rc<Self>) -> impl Iterator<Item = PartStep> {
+        let tabs = Rc::clone(tabs);
+        core::iter::once(PartStep::content(move |_| {
+            tabs.recordings.set(tabs.recordings.get() + 1);
+        }))
+    }
+
+    /// No step: only a test build counts recordings.
+    #[cfg(not(test))]
+    fn counted(_tabs: &Rc<Self>) -> impl Iterator<Item = PartStep> {
+        core::iter::empty()
     }
 
     /// How many times the mount recorded the parts.
@@ -375,7 +404,7 @@ impl LiveTabs {
 #[derive(Clone)]
 pub struct LiveTabsParts {
     tabs: Rc<LiveTabs>,
-    layers: Rc<RefCell<Option<LayeredParts>>>,
+    layers: Rc<RefCell<Option<PartRuns>>>,
 }
 
 impl LiveTabsParts {
@@ -438,10 +467,10 @@ impl LiveTabsParts {
     ) {
         let scope = renderer.material_scope();
         let mut layers = self.layers.borrow_mut();
-        let tabs = Rc::clone(&self.tabs);
-        LayeredParts::ensure(&mut layers, scope, move || -> PartsBody {
-            Rc::new(move |recorder: &mut Recorder| tabs.record(recorder))
-        })
-        .push(renderer, ctx);
+        PartRuns::ensure(&mut layers, scope, || LiveTabs::steps(&self.tabs)).push(
+            renderer,
+            ctx,
+            "tabs-part",
+        );
     }
 }

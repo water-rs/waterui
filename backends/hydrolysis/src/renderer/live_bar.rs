@@ -5,11 +5,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use cherenkov_record::{Recorder, WorkingColor};
+use cherenkov_record::WorkingColor;
 use kurbo::Rect;
 use waterui_core::interaction::InteractionState;
 
-use crate::renderer::chrome::{LayeredParts, PartsBody};
+use crate::renderer::chrome::{PartRuns, PartStep};
 use crate::renderer::{HydrolysisRenderer, RenderContext};
 use crate::theme::{BarSurface, Inputs, NavigationBarLook, RealizedCustom};
 
@@ -47,11 +47,24 @@ impl LiveBar {
         }
     }
 
-    fn record(&self, recorder: &mut Recorder) {
-        self.surface.record(recorder, self.frames.surface);
-        if let Some((separator, line)) = self.separator.as_ref().zip(self.frames.separator) {
-            separator.record(recorder, line);
-        }
+    /// The bar's steps: the surface, then the separator when it has one.
+    fn steps(bar: &Rc<Self>) -> Vec<PartStep> {
+        let mut steps = vec![PartStep::part(
+            bar,
+            0,
+            |bar: &Self| core::slice::from_ref(&bar.surface),
+            |bar: &Self| bar.frames.surface,
+        )];
+        steps.extend(PartStep::parts(
+            bar,
+            |bar: &Self| bar.separator.as_slice(),
+            |bar: &Self| {
+                bar.frames
+                    .separator
+                    .expect("a realized separator lies on the bar's line")
+            },
+        ));
+        steps
     }
 }
 
@@ -60,7 +73,7 @@ impl LiveBar {
 #[derive(Clone)]
 pub struct LiveBarParts {
     bar: Rc<LiveBar>,
-    layers: Rc<RefCell<Option<LayeredParts>>>,
+    layers: Rc<RefCell<Option<PartRuns>>>,
 }
 
 impl LiveBarParts {
@@ -93,10 +106,7 @@ impl LiveBarParts {
     ) {
         let scope = renderer.material_scope();
         let mut layers = self.layers.borrow_mut();
-        let bar = Rc::clone(&self.bar);
-        LayeredParts::ensure(&mut layers, scope, move || -> PartsBody {
-            Rc::new(move |recorder: &mut Recorder| bar.record(recorder))
-        })
-        .push(renderer, ctx);
+        PartRuns::ensure(&mut layers, scope, || LiveBar::steps(&self.bar))
+            .push(renderer, ctx, "bar-part");
     }
 }

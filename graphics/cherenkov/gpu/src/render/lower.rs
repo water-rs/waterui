@@ -2,6 +2,7 @@
 //! instanced-quad passes.
 
 use cherenkov::lowering::Realization;
+use cherenkov::lowering::hidden::HiddenLayers;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroU64;
 use std::ops::Range;
@@ -1505,8 +1506,11 @@ pub struct GlyphContext<'a> {
     pub bitmaps: &'a FxHashMap<super::bitmap::BitmapKey, super::GpuBitmap>,
     /// Producer bindings by layer (`cherenkov::GpuContent`): the quad
     /// each emits samples the producer's current frame.
-    pub content: &'a FxHashMap<LayerId, super::gpu_content::Binding>,
+    pub content: &'a Bindings,
 }
+
+/// Producer bindings by layer.
+type Bindings = FxHashMap<LayerId, super::gpu_content::Binding>;
 
 /// One surface's lowering output: the raster counts plus every deferred
 /// atlas insert and COLR cache update, in lowering order, for the render
@@ -1720,6 +1724,8 @@ pub(super) struct AnchorScratch {
     members: Vec<(u64, Option<LayerId>, usize)>,
     /// `(anchor, group)` capture links, sorted for range lookup.
     links: Vec<(LayerId, u64)>,
+    /// The layers that show nothing, and which of them the walk skips.
+    hidden: HiddenLayers,
 }
 
 impl AnchorScratch {
@@ -1728,10 +1734,12 @@ impl AnchorScratch {
         self.pos.clear();
         self.members.clear();
         self.links.clear();
+        self.hidden.clear();
     }
 
+    /// Collects `groups`' anchor layers into the scratch `clear` emptied.
     fn prepare(&mut self, groups: &FxHashMap<u64, BackdropGroupInfo>) {
-        self.clear();
+        debug_assert!(self.refs.is_empty(), "the walk clears the scratch first");
         self.refs
             .extend(groups.values().filter_map(|info| info.spec.anchor_layer()));
     }
@@ -1741,6 +1749,7 @@ impl AnchorScratch {
             + self.pos.capacity() * size_of::<(LayerId, (Option<LayerId>, usize))>()
             + self.members.capacity() * size_of::<(u64, Option<LayerId>, usize)>()
             + self.links.capacity() * size_of::<(LayerId, u64)>()) as u64
+            + self.hidden.heap_bytes()
     }
 }
 
@@ -1960,7 +1969,7 @@ impl<'a> Lowering<'a> {
         raster_scratch: &'a mut path::EmitScratch,
         compute: Option<CoverageLimit>,
     ) -> Self {
-        anchor_scratch.clear();
+        // Each walk clears `anchor_scratch` before it plans.
         Self {
             pictures: None,
             frame,
@@ -2060,11 +2069,13 @@ impl<'a> Lowering<'a> {
         &mut self,
         tree: &SurfaceTree,
         groups: &FxHashMap<u64, BackdropGroupInfo>,
+        bindings: &Bindings,
     ) -> Result<(), RenderError> {
         self.anchor_scratch.prepare(groups);
+        self.anchor_scratch.hidden.begin(tree.has_hidden_layers());
         self.plan_order = 0;
         let start = self.start(tree);
-        self.plan_layer(start, tree, groups, Affine::IDENTITY, None)?;
+        self.plan_layer(start, (tree, bindings), groups, Affine::IDENTITY, None)?;
         // Union-field members need the group's full membership before
         // their footprints and bounds inflate: the union fold's `r(n)`
         // depends on the member count. Rebuild each touched plan's
@@ -2251,105 +2262,60 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
+    /// Enters layer `id` on the hidden-layer planning: it hides when it
+    /// shows nothing and is not the local root, whose opacity and blend
+    /// apply where its image composes. A promoted plane, a layer opening a
+    /// part and a producer's frame are drawn outside the walk's raster, so
+    /// the hidden layers around them are walked; outside every hidden layer
+    /// there is none to walk, and nothing is looked up.
+    fn plan_hidden(&mut self, id: LayerId, node: &cherenkov::LayerNode, bindings: &Bindings) {
+        let local_root = self.local.is_some_and(|(root, _)| root == id);
+        let hidden = &mut self.anchor_scratch.hidden;
+        hidden.enter(id, !local_root && node.shows_nothing());
+        if hidden.in_hidden()
+            && (self.promoted.contains(&id)
+                || self.opens.contains(&id)
+                || bindings.contains_key(&id))
+        {
+            hidden.keep();
+        }
+    }
+
     /// One layer of the planning walk, mirroring `layer`'s transform
     /// math: the clip sits in `parent * node.transform` space, children in
     /// `parent * node.content_transform()` space. A projective layer's
     /// members plan in its own local walk.
+    ///
+    /// It also finds the layers that show nothing, which the drawing walk
+    /// skips unless something beneath one is needed outside it: a capture
+    /// point, a projected image, a promoted plane or a producer's frame.
     fn plan_layer(
         &mut self,
         id: LayerId,
-        tree: &SurfaceTree,
+        (tree, bindings): (&SurfaceTree, &Bindings),
         groups: &FxHashMap<u64, BackdropGroupInfo>,
         parent: Affine,
         canvas: Option<LayerId>,
     ) -> Result<(), RenderError> {
         if self.projects(id, tree) {
+            self.anchor_scratch.hidden.keep();
             return Ok(());
         }
         let node = tree.layer(id);
         self.plan_order += 1;
         let order = self.plan_order;
+        // A tree with no layer that shows nothing has none to plan.
+        let hiding = self.anchor_scratch.hidden.is_active();
+        if hiding {
+            self.plan_hidden(id, node, bindings);
+        }
         if !self.anchor_scratch.refs.is_empty() && self.anchor_scratch.refs.contains(&id) {
             self.anchor_scratch.pos.insert(id, (canvas, order));
+            self.anchor_scratch.hidden.anchor(id);
         }
         let (transform, children) = self.placement(id, node, parent);
         if let Some(sample) = &node.backdrop {
-            let g = sample.group().raw();
-            if !groups.contains_key(&g) {
-                return Err(RenderError::Render(format!(
-                    "layer {id:?} samples unknown backdrop group {:?}",
-                    sample.group()
-                )));
-            }
-            let clip = node
-                .clip
-                .as_ref()
-                .ok_or(RenderError::Unsupported(names::BACKDROP_UNCLIPPED))?;
-            let member = clip_device_bounds(transform, clip)?;
-            let reach = sample.effect().map(effect_reach).transpose()?;
-            // The capture region covers every member's reach; the member's
-            // own bounds stay uninflated for its composite and size input.
-            let footprint = member.inflate(
-                f64::from(reach.unwrap_or(0.0)),
-                f64::from(reach.unwrap_or(0.0)),
-            );
-            let spec = groups[&g].spec;
-            let outer = sample.outer_extent().get();
-            // A union-field member's own clip is a group datum the
-            // composite reads back through the union records in `stops`:
-            // its analytic shape and inverse must exist — a path clip has
-            // none (`backdrop-effect-sdf-path`), and neither does a
-            // degenerate one (`backdrop-union-degenerate-member`).
-            let record = (spec.union_field().is_some() || outer > 0.0)
-                .then(|| {
-                    box_shape(clip)
-                        .map_err(|e| match e {
-                            RenderError::Unsupported(names::PATH) => {
-                                RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH)
-                            }
-                            other => other,
-                        })?
-                        .ok_or(RenderError::Unsupported(
-                            names::BACKDROP_UNION_DEGENERATE_MEMBER,
-                        ))
-                        .map(|boxed| DeviceClip {
-                            inv: (transform * boxed.extra).inverse(),
-                            shape: boxed.shape,
-                            aligned_rect: None,
-                            mask: None,
-                        })
-                })
-                .transpose()?;
-            let plan = self.backdrops.entry(g).or_insert_with(|| BackdropPlan {
-                first: id,
-                spec,
-                union: footprint,
-                aproned: Vec::new(),
-                regions: Vec::new(),
-                members: FxHashMap::default(),
-                next_ord: 0,
-            });
-            plan.union = plan.union.union(footprint);
-            plan.aproned.push((id, footprint));
-            let ord = plan.next_ord;
-            plan.next_ord += 1;
-            plan.members.insert(
-                id,
-                MemberEntry {
-                    bounds: member,
-                    transform,
-                    draw: member,
-                    region: 0,
-                    ord,
-                    union: None,
-                    record,
-                    outer,
-                    reach: reach.unwrap_or(0.0),
-                },
-            );
-            if spec.anchor_layer().is_some() {
-                self.anchor_scratch.members.push((g, canvas, order));
-            }
+            self.plan_backdrop_member(id, node, sample, groups, transform, (canvas, order))?;
         }
         // A semantically isolating layer — filtered, blended or in a
         // non-linear space — is its children's compositing canvas; other
@@ -2363,8 +2329,105 @@ impl<'a> Lowering<'a> {
             canvas
         };
         for child in &node.children {
-            self.plan_layer(*child, tree, groups, children, canvas)?;
+            self.plan_layer(*child, (tree, bindings), groups, children, canvas)?;
         }
+        if hiding {
+            self.anchor_scratch.hidden.leave(id);
+        }
+        Ok(())
+    }
+
+    /// Plans backdrop member `id`: its capture group's footprint and region
+    /// record, and whether its group anchors it at `canvas` and `order`.
+    fn plan_backdrop_member(
+        &mut self,
+        id: LayerId,
+        node: &cherenkov::LayerNode,
+        sample: &cherenkov::BackdropSample,
+        groups: &FxHashMap<u64, BackdropGroupInfo>,
+        transform: Affine,
+        (canvas, order): (Option<LayerId>, usize),
+    ) -> Result<(), RenderError> {
+        let g = sample.group().raw();
+        if !groups.contains_key(&g) {
+            return Err(RenderError::Render(format!(
+                "layer {id:?} samples unknown backdrop group {:?}",
+                sample.group()
+            )));
+        }
+        let clip = node
+            .clip
+            .as_ref()
+            .ok_or(RenderError::Unsupported(names::BACKDROP_UNCLIPPED))?;
+        let member = clip_device_bounds(transform, clip)?;
+        let reach = sample.effect().map(effect_reach).transpose()?;
+        // The capture region covers every member's reach; the member's
+        // own bounds stay uninflated for its composite and size input.
+        let footprint = member.inflate(
+            f64::from(reach.unwrap_or(0.0)),
+            f64::from(reach.unwrap_or(0.0)),
+        );
+        let spec = groups[&g].spec;
+        let outer = sample.outer_extent().get();
+        // A union-field member's own clip is a group datum the
+        // composite reads back through the union records in `stops`:
+        // its analytic shape and inverse must exist — a path clip has
+        // none (`backdrop-effect-sdf-path`), and neither does a
+        // degenerate one (`backdrop-union-degenerate-member`).
+        let record = (spec.union_field().is_some() || outer > 0.0)
+            .then(|| {
+                box_shape(clip)
+                    .map_err(|e| match e {
+                        RenderError::Unsupported(names::PATH) => {
+                            RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH)
+                        }
+                        other => other,
+                    })?
+                    .ok_or(RenderError::Unsupported(
+                        names::BACKDROP_UNION_DEGENERATE_MEMBER,
+                    ))
+                    .map(|boxed| DeviceClip {
+                        inv: (transform * boxed.extra).inverse(),
+                        shape: boxed.shape,
+                        aligned_rect: None,
+                        mask: None,
+                    })
+            })
+            .transpose()?;
+        let plan = self.backdrops.entry(g).or_insert_with(|| BackdropPlan {
+            first: id,
+            spec,
+            union: footprint,
+            aproned: Vec::new(),
+            regions: Vec::new(),
+            members: FxHashMap::default(),
+            next_ord: 0,
+        });
+        plan.union = plan.union.union(footprint);
+        plan.aproned.push((id, footprint));
+        let plan_first = plan.first;
+        let ord = plan.next_ord;
+        plan.next_ord += 1;
+        plan.members.insert(
+            id,
+            MemberEntry {
+                bounds: member,
+                transform,
+                draw: member,
+                region: 0,
+                ord,
+                union: None,
+                record,
+                outer,
+                reach: reach.unwrap_or(0.0),
+            },
+        );
+        let anchored = spec.anchor_layer().is_some();
+        if anchored {
+            self.anchor_scratch.members.push((g, canvas, order));
+        }
+        let captures_here = !anchored && plan_first == id;
+        self.anchor_scratch.hidden.member(g, captures_here);
         Ok(())
     }
 
@@ -2523,7 +2586,9 @@ impl<'a> Lowering<'a> {
             .iter()
             .filter_map(|(g, info)| info.filter.map(|key| (*g, key)))
             .collect();
-        self.plan_backdrops(tree, groups)?;
+        self.plan_backdrops(tree, groups, glyphs.content)?;
+        let scratch = &mut *self.anchor_scratch;
+        scratch.hidden.resolve(&scratch.links);
         self.begin_pass(root_target, clear);
         self.layer(self.start(tree), tree, caches, glyphs)?;
         self.finish_pass();
@@ -3122,7 +3187,7 @@ impl<'a> Lowering<'a> {
             // A capture inside reads this scratch at texel origin (0, 0):
             // its region must cover the whole surface.
             [0, 0, self.width as u32, self.height as u32]
-        } else if is_destructive(entry.blend) {
+        } else if entry.blend.is_destructive() {
             clip_region(
                 entry.inner_clip.or(entry.outer_clip),
                 self.width as u32,
@@ -3168,7 +3233,7 @@ impl<'a> Lowering<'a> {
         // sampling it with `grad.xy` as the texel origin. A destructive
         // composite carries the effective clip itself: its coverage decides
         // where the operator applies across the whole region.
-        if is_destructive(entry.blend) {
+        if entry.blend.is_destructive() {
             self.set_clip(entry.inner_clip.or(entry.outer_clip));
         }
         #[expect(clippy::cast_precision_loss, reason = "region fits the surface")]
@@ -3181,7 +3246,7 @@ impl<'a> Lowering<'a> {
             entry.blend,
             entry.storage,
         );
-        if is_destructive(entry.blend) {
+        if entry.blend.is_destructive() {
             self.set_clip(entry.outer_clip);
         }
         entry
@@ -3438,6 +3503,10 @@ impl<'a> Lowering<'a> {
     /// the copy. A reduced-scale group composes over the device pixels
     /// under the region and resolves them onto the capture grid.
     fn emit_capture(&mut self, gid: u64, copy_from: Target) {
+        // A group no drawn member samples is not captured.
+        if !self.anchor_scratch.hidden.captures(gid) {
+            return;
+        }
         let plan = &self.backdrops[&gid];
         let regions = plan.regions.clone();
         if regions.is_empty() {
@@ -4018,6 +4087,11 @@ impl<'a> Lowering<'a> {
         caches: &mut FxHashMap<LayerId, ContentData>,
         glyphs: &GlyphContext<'_>,
     ) -> Result<(), RenderError> {
+        // A layer that shows nothing draws nothing beneath it, and no
+        // capture point a drawn member reads lies beneath it.
+        if self.anchor_scratch.hidden.skips(id) {
+            return Ok(());
+        }
         // Groups anchored at this layer each capture the backdrop
         // beneath it, taken at its paint-order position — before the
         // anchor's own content and children — and read the semantic
@@ -4157,7 +4231,7 @@ impl<'a> Lowering<'a> {
                 sample,
                 filter,
             ),
-            None if isolates && node.filter.is_none() && !is_destructive(blend) => {
+            None if isolates && node.filter.is_none() && !blend.is_destructive() => {
                 // The layer clip applies inside the scratch only; the composite
                 // runs under the clip in force outside the layer. A member's
                 // sample is its canvas's bottom-most content: the layer's
@@ -4212,7 +4286,7 @@ impl<'a> Lowering<'a> {
                     .backdrop
                     .as_ref()
                     .is_some_and(|sample| self.union_member(sample.group().raw(), id))
-                    && !is_destructive(blend);
+                    && !blend.is_destructive();
                 if outside && let Some(sample) = &node.backdrop {
                     self.emit_backdrop_sample(sample, id)?;
                 }
@@ -4305,7 +4379,7 @@ impl<'a> Lowering<'a> {
                 glyphs,
             )
         };
-        if is_destructive(blend) {
+        if blend.is_destructive() {
             self.with_clip(
                 clip,
                 |s, glyphs| {
@@ -4360,7 +4434,7 @@ impl<'a> Lowering<'a> {
             return Ok(());
         };
         self.projective_draws += 1;
-        if !is_destructive(node.blend) {
+        if !node.blend.is_destructive() {
             self.emit_projected(&placement, node.opacity, node.blend);
             return Ok(());
         }
@@ -7065,17 +7139,6 @@ fn padded_region(min: [f32; 2], max: [f32; 2], width: u32, height: u32) -> [u32;
     [x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32]
 }
 
-/// Porter-Duff operators where a transparent source writes over the
-/// destination instead of leaving it unchanged. These composite over the
-/// layer's whole clip (or parent), not the tight content region.
-const fn is_destructive(blend: cherenkov::BlendMode) -> bool {
-    use cherenkov::BlendMode as B;
-    matches!(
-        blend,
-        B::Clear | B::Src | B::SrcIn | B::SrcOut | B::DestIn | B::DestAtop
-    )
-}
-
 /// The device region a destructive composite covers: the clip's extent,
 /// or the whole parent when there is no clip. Without an axis-aligned
 /// rect, the conservative bbox is the clip shape's half extents mapped to
@@ -8006,7 +8069,7 @@ mod tests {
             B::Xor,
             B::PlusLighter,
         ];
-        let destructive: Vec<_> = all.into_iter().filter(|b| is_destructive(*b)).collect();
+        let destructive: Vec<_> = all.into_iter().filter(|b| b.is_destructive()).collect();
         assert_eq!(
             destructive,
             [

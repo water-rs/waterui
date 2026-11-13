@@ -4256,7 +4256,7 @@ impl Band<'_> {
     ) {
         let (dst, dst_space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
         let direct = blend.0 == cherenkov::BlendMode::Normal && src_space == dst_space;
-        if !direct && !super::blend::is_destructive(blend.0) {
+        if !direct && !blend.0.is_destructive() {
             // Every other operator leaves the destination unchanged for a
             // transparent source, so the clip coverage scales the source
             // instead of bounding the whole composite. Only the pixels
