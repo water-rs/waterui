@@ -24,6 +24,7 @@
 use std::rc::Rc;
 use std::time::Duration;
 
+use cherenkov_record::BlendSpace;
 use kurbo::{Rect, Vec2};
 use nami::Computed;
 use waterui_controls::ControlSize;
@@ -289,6 +290,7 @@ pub struct SegmentedLook {
     segment: Vec<Rc<dyn CustomPart<Segment>>>,
     above: Vec<Rc<dyn CustomPart<SegmentedValue>>>,
     group_opacity: Driven<f32>,
+    group_blend_space: BlendSpace,
 }
 
 impl core::fmt::Debug for SegmentedLook {
@@ -304,6 +306,7 @@ impl core::fmt::Debug for SegmentedLook {
             .field("segment", &self.segment.len())
             .field("above", &self.above.len())
             .field("group_opacity", &self.group_opacity)
+            .field("group_blend_space", &self.group_blend_space)
             .finish()
     }
 }
@@ -333,6 +336,7 @@ impl SegmentedLook {
             segment: Vec::new(),
             above: Vec::new(),
             group_opacity: Driven::constant(1.0),
+            group_blend_space: BlendSpace::Linear,
         }
     }
 
@@ -429,6 +433,16 @@ impl SegmentedLook {
         self
     }
 
+    /// The space the group of [`Self::group_opacity`] composites in:
+    /// its parts and labels composite with each other in it, and the group
+    /// fades onto what lies beneath in it. [`BlendSpace::Linear`] by
+    /// default.
+    #[must_use]
+    pub const fn group_blend_space(mut self, space: BlendSpace) -> Self {
+        self.group_blend_space = space;
+        self
+    }
+
     /// The measures the picker is laid out by.
     #[must_use]
     pub const fn layout(&self) -> &SegmentedLayout {
@@ -457,6 +471,12 @@ impl SegmentedLook {
     #[must_use]
     pub const fn get_group_opacity(&self) -> &Driven<f32> {
         &self.group_opacity
+    }
+
+    /// The space the group composites in.
+    #[must_use]
+    pub const fn get_group_blend_space(&self) -> BlendSpace {
+        self.group_blend_space
     }
 
     /// Where a segment laid out on `frame` takes touches: the frame grown

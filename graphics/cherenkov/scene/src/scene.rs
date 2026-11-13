@@ -52,7 +52,8 @@ pub enum Feature {
     ShaderPaint,
     /// A non-trivial blend mode (the payload is the mode).
     Blend(BlendMode),
-    /// A group compositing in a non-linear space (the payload is the space).
+    /// A group or layer compositing in a non-linear space (the payload is
+    /// the space).
     BlendSpace(crate::BlendSpace),
     /// Layer clips.
     Clip,
@@ -907,6 +908,9 @@ fn collect_layer_features(layer: &Layer, f: &mut BTreeSet<Feature>) {
     }
     if layer.blend != BlendMode::Normal {
         f.insert(Feature::Blend(layer.blend));
+    }
+    if layer.blend_space != crate::BlendSpace::Linear {
+        f.insert(Feature::BlendSpace(layer.blend_space));
     }
     if layer.scroll_offset != kurbo::Vec2::ZERO {
         f.insert(Feature::Scroll);

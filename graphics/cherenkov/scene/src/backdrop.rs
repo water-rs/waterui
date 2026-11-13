@@ -160,7 +160,7 @@ fn is_box(pyramid: &CapturePyramid) -> bool {
     clippy::trivially_copy_pass_by_ref,
     reason = "serde's skip_serializing_if takes a reference"
 )]
-fn is_linear(space: &crate::BlendSpace) -> bool {
+pub fn is_linear(space: &crate::BlendSpace) -> bool {
     *space == crate::BlendSpace::Linear
 }
 

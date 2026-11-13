@@ -2,7 +2,7 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
+    GroupOpacity, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
     WidgetRenderContext, measure_label_intrinsic, measure_view_intrinsic, popup_menu_nodes,
 };
 use crate::theme::{
@@ -219,6 +219,7 @@ fn lower_floating(look: &ButtonLook, style: &FloatingStyle) -> ButtonLook {
         .padding(style.content_inset_x, style.content_inset_y)
         .minimum_size(kurbo::Size::new(style.minimum_width, style.minimum_height))
         .group_opacity(group_opacity)
+        .group_blend_space(look.get_group_blend_space())
 }
 
 /// The spec of a `style` button of `size` in `env`.
@@ -887,20 +888,18 @@ fn record_button_chrome<E: crate::text::TextEngine>(
     // An opacity that varies between renders draws the button as one
     // group following the chrome's operand; a fixed one groups it only
     // when it fades.
-    if let Some(opacity) = rendered.parts.chrome().group_opacity() {
-        let operands = crate::renderer::ScopeOperands {
-            opacity: Some(opacity),
-            transform: None,
-        };
-        ctx.with_live_scope(key, operands, frame, body);
-        return;
-    }
-    let opacity = rendered.look.get_group_opacity().target(&Inputs::at_rest(
-        rendered.look.chrome().frame(ctx.bounds),
-        rendered.flags,
-        &(),
-    ));
-    ctx.with_scope_if(opacity < 1.0, key, opacity, frame, body);
+    let opacity = rendered.parts.chrome().group_opacity().map_or_else(
+        || {
+            GroupOpacity::Fixed(rendered.look.get_group_opacity().target(&Inputs::at_rest(
+                rendered.look.chrome().frame(ctx.bounds),
+                rendered.flags,
+                &(),
+            )))
+        },
+        GroupOpacity::Live,
+    );
+    let space = rendered.look.get_group_blend_space();
+    ctx.with_group_scope(key, opacity, space, frame, body);
 }
 
 /// Places a retained label sub-view centred in `label_target`. Its

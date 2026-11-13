@@ -16,7 +16,7 @@ use crate::backdrop::BackdropSample;
 use crate::display_list::{Edit, Picture, SlotUpdate};
 use crate::projective::Projective;
 use crate::shape::ShapeData;
-use crate::style::{BlendMode, FilterId};
+use crate::style::{BlendMode, BlendSpace, FilterId};
 
 /// Identifier of a surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -328,6 +328,9 @@ pub enum LayerOp {
     Clip(LayerId, Option<Retarget<ShapeData>>),
     /// Set the blend mode.
     Blend(LayerId, BlendMode),
+    /// Set the blend space: the layer's subtree composites with itself in
+    /// this space, and the layer composites onto its parent in it.
+    BlendSpace(LayerId, BlendSpace),
     /// Set or clear the filter.
     Filter(LayerId, Option<FilterId>),
     /// Set or clear the backdrop sample (group and optional per-member
@@ -391,6 +394,7 @@ impl LayerOp {
             | Self::Keyframes(id, _)
             | Self::Clip(id, _)
             | Self::Blend(id, _)
+            | Self::BlendSpace(id, _)
             | Self::Filter(id, _)
             | Self::Backdrop(id, _)
             | Self::HostWindow(id, _)

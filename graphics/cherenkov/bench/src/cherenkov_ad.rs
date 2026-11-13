@@ -32,7 +32,8 @@ use kurbo::{Affine, BezPath, Circle, Ellipse, Line, Rect, RoundedRect, Vec2};
 
 use crate::convert::AnchorLayer as _;
 use crate::convert::{
-    self, Blobs, Op, ShapeKind, engine_blend, group_op, op, shape_kind, text_op, working,
+    self, Blobs, Op, ShapeKind, engine_blend, engine_blend_space, group_op, op, shape_kind,
+    text_op, working,
 };
 use crate::memory::{
     AdapterMemory, EngineBytes, Reading, wgpu_allocator, wgpu_metal_allocated_bytes,
@@ -486,6 +487,8 @@ struct PrepLayer {
     opacity: f64,
     /// Blend onto the parent.
     blend: cherenkov::BlendMode,
+    /// The space the layer composites in.
+    blend_space: cherenkov::BlendSpace,
     /// Registered layer filter.
     filter: Option<cherenkov::Filter>,
     /// Scroll offset applied to content and children.
@@ -1326,6 +1329,7 @@ fn prep_layer(
             .map(|shape| shape_kind(shape, cherenkov::FillRule::NonZero)),
         opacity: layer.opacity,
         blend: engine_blend(layer.blend),
+        blend_space: engine_blend_space(layer.blend_space),
         filter: layer
             .filter
             .as_deref()
@@ -1550,6 +1554,7 @@ fn build_layer(
         edit.scroll_offset(prep.scroll_offset);
         edit.opacity(prep.opacity as f32);
         edit.blend(prep.blend);
+        edit.blend_space(prep.blend_space);
         if let Some(filter) = &prep.filter {
             edit.filter(filter.id());
         }

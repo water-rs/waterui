@@ -11,6 +11,7 @@ use std::cell::RefCell;
 use std::num::NonZeroU64;
 use std::rc::Rc;
 
+use cherenkov_record::BlendSpace;
 use cherenkov_record::Live;
 use cherenkov_record::ShapeData;
 use nami::Signal as _;
@@ -76,6 +77,9 @@ pub struct ScopeProps {
     pub transform: kurbo::Affine,
     pub clip: Option<ShapeData>,
     pub alpha: f32,
+    /// The space the scope's members composite in and its layer composites
+    /// onto the owning layer in.
+    pub blend_space: BlendSpace,
     pub live: ScopeLive,
 }
 
