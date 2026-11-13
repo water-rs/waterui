@@ -502,7 +502,7 @@ pub struct TableMetrics {
 /// animates it with the theme's motion policies, and records its chrome by
 /// calling the theme's `draw_*` methods with the widget's bounds and the
 /// renderer-resolved [`WidgetInteractionState`]. Every draw method records
-/// into a `cherenkov-record` [`Recorder`], the render-target-neutral
+/// into a `cherenkov-record` [`Recorder`](cherenkov_record::Recorder), the render-target-neutral
 /// vocabulary every Hydrolysis render target consumes, so a theme never
 /// names a render engine. A theme becomes a runnable style by also
 /// implementing [`Style`](crate::Style).
@@ -515,7 +515,7 @@ pub trait WidgetTheme {
     /// [`BackdropShaderSource`]) and the capture classes ([`CaptureClass`]
     /// keys, each with its [`MaterialCapture`] group parameters) that the
     /// theme's chrome names when it records a backdrop material with
-    /// [`Recorder::backdrop_material`].
+    /// [`Recorder::backdrop_material`](cherenkov_record::Recorder::backdrop_material).
     ///
     /// [`MaterialShader`]: cherenkov_record::MaterialShader
     /// [`BackdropShaderSource`]: cherenkov_record::BackdropShaderSource
@@ -569,7 +569,7 @@ pub trait WidgetTheme {
     /// that is not interactive reads the inputs at rest.
     ///
     /// The tint is [`Glass::tint_color`](waterui::background::Glass::tint_color),
-    /// a live [`Color`] the look resolves through `env` (`Color::resolve`);
+    /// a live [`Color`](waterui_graphics::color::Color) the look resolves through `env` (`Color::resolve`);
     /// the backend does nothing with it.
     ///
     /// Material-bearing parts need the theme's shaders and capture classes
