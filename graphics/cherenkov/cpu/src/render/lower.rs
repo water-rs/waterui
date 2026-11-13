@@ -1633,10 +1633,13 @@ impl<'a, 'b> Lowering<'a, 'b> {
             let captures_here = !anchored && self.backdrops[&g].first == id;
             self.anchor_scratch.hidden.member(g, captures_here);
         }
-        // A semantically isolating layer — filtered or blended — is its
-        // children's compositing canvas; other layers share their
-        // parent's.
-        let canvas = if node.filter.is_some() || node.blend != BlendMode::Normal {
+        // A semantically isolating layer — filtered, blended or in a
+        // non-linear space — is its children's compositing canvas; other
+        // layers share their parent's.
+        let canvas = if node.filter.is_some()
+            || node.blend != BlendMode::Normal
+            || node.blend_space != cherenkov::BlendSpace::Linear
+        {
             Some(id)
         } else {
             canvas
@@ -2316,9 +2319,9 @@ impl<'a, 'b> Lowering<'a, 'b> {
         let local_root = self.local.is_some_and(|(root, _)| root == id);
         let (opacity, blend) = if local_root {
             // Outer opacity and blend apply when the image composes.
-            (1.0, BlendMode::Normal)
+            (1.0, (BlendMode::Normal, cherenkov::BlendSpace::Linear))
         } else {
-            (node.opacity, node.blend)
+            (node.opacity, (node.blend, node.blend_space))
         };
         let backdrop = node.backdrop.as_ref().map(|sample| sample.group().raw());
         let saved = self.transform;
@@ -2340,15 +2343,16 @@ impl<'a, 'b> Lowering<'a, 'b> {
         }
         let outer = self.clip.clone();
         // A filtered member composites as a whole — its sample and its
-        // filtered content — with the member's opacity and blend. When
-        // neither is a no-op an outer member scope composites at
-        // (opacity, blend) under `composite_clip` below; the sample draws
-        // into it at full strength under the member clip, outside the
-        // filter, beside a nested filter scope at opacity 1, `Normal`
-        // blend over the items.
-        let member_scope = backdrop
-            .zip(node.filter)
-            .filter(|_| opacity < 1.0 || blend != BlendMode::Normal);
+        // filtered content — with the member's opacity, blend and blend
+        // space. When the composite is not a no-op an outer member scope
+        // composites at (opacity, blend) under `composite_clip` below; the
+        // sample draws into it at full strength under the member clip,
+        // outside the filter, beside a nested filter scope at opacity 1,
+        // `Normal` blend over the items in the member's space.
+        let isolates_composite = opacity < 1.0
+            || blend.0 != BlendMode::Normal
+            || blend.1 != cherenkov::BlendSpace::Linear;
+        let member_scope = backdrop.zip(node.filter).filter(|_| isolates_composite);
         let result = self.with_clip(node.clip.as_ref(), |s| {
             s.transform = content_space;
             // The composite's clip: for destructive operators the
@@ -2357,30 +2361,26 @@ impl<'a, 'b> Lowering<'a, 'b> {
             // transparent source leaves the destination unchanged, so
             // the clip in force before the layer's own clip suffices —
             // the layer clip's coverage is already on the content.
-            let composite_clip = if blend.is_destructive() {
+            let composite_clip = if blend.0.is_destructive() {
                 s.clip.clone()
             } else {
                 outer.clone()
             };
             match member_scope {
-                Some((gid, filter)) => s.isolate(
-                    opacity,
-                    (blend, cherenkov::BlendSpace::Linear),
-                    s.clip.clone(),
-                    composite_clip,
-                    |s| {
+                Some((gid, filter)) => {
+                    s.isolate(opacity, blend, s.clip.clone(), composite_clip, |s| {
                         s.emit_backdrop_sample(gid, id, outer.as_ref());
                         let clip = s.clip.clone();
                         s.filter_isolate(
                             filter,
                             1.0,
-                            (BlendMode::Normal, cherenkov::BlendSpace::Linear),
+                            (BlendMode::Normal, blend.1),
                             clip,
                             |s| s.layer_items(id, node, tree, caches),
                             Some(id),
                         )
-                    },
-                ),
+                    })
+                }
                 None => {
                     if let Some(filter) = node.filter {
                         // Opaque `Normal`-blended member (or no member at all):
@@ -2393,13 +2393,12 @@ impl<'a, 'b> Lowering<'a, 'b> {
                         s.filter_isolate(
                             filter,
                             opacity,
-                            (blend, cherenkov::BlendSpace::Linear),
+                            blend,
                             clip,
                             |s| s.layer_items(id, node, tree, caches),
                             Some(id),
                         )
-                    } else if opacity < 1.0
-                        || blend != BlendMode::Normal
+                    } else if isolates_composite
                         // The root already renders into the surface target, and a
                         // local root into its image.
                         || (id != s.start(tree) && node.blends_within())
@@ -2407,18 +2406,12 @@ impl<'a, 'b> Lowering<'a, 'b> {
                         // An unfiltered member's sample is its plane's
                         // bottom-most content: the level's opacity and blend
                         // apply to it exactly as to the member's items, once.
-                        s.isolate(
-                            opacity,
-                            (blend, cherenkov::BlendSpace::Linear),
-                            s.clip.clone(),
-                            composite_clip,
-                            |s| {
-                                if let Some(gid) = backdrop {
-                                    s.emit_backdrop_sample(gid, id, outer.as_ref());
-                                }
-                                s.layer_items(id, node, tree, caches)
-                            },
-                        )
+                        s.isolate(opacity, blend, s.clip.clone(), composite_clip, |s| {
+                            if let Some(gid) = backdrop {
+                                s.emit_backdrop_sample(gid, id, outer.as_ref());
+                            }
+                            s.layer_items(id, node, tree, caches)
+                        })
                     } else {
                         if let Some(gid) = backdrop {
                             // Nothing isolates: the member's content plane is
@@ -2529,6 +2522,11 @@ impl<'a, 'b> Lowering<'a, 'b> {
         id: LayerId,
         node: &cherenkov::LayerNode,
     ) -> Result<(), RenderError> {
+        // The local image is reconstructed in the linear working space;
+        // a projective layer composites in no other.
+        if node.blend_space != cherenkov::BlendSpace::Linear {
+            return Err(RenderError::Unsupported(names::PROJECTIVE_BLEND_SPACE));
+        }
         let Some(placed) = self.projected.get(&id).cloned() else {
             // No area this frame: behind the viewer, edge-on or off the
             // raster.

@@ -32,7 +32,7 @@ pub fn flatten_environment_metadata_owned(
         let Metadata { content, value } = *view
             .downcast::<Metadata<Environment>>()
             .expect("environment metadata flattening downcast must succeed");
-        scoped_env = value.clone();
+        scoped_env = value;
         view = content;
     }
     (view, scoped_env)

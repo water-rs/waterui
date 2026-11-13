@@ -550,7 +550,7 @@ impl<E: crate::text::TextEngine> MenuShortcutRegistry<E> {
                 for entry in entries {
                     if entry.matches(pressed, modifiers) {
                         if winner.is_some() {
-                            conflicts.push(entry.label.clone());
+                            conflicts.push(entry.label);
                         } else {
                             let (group, env) = match source {
                                 MenuShortcutSource::Mounted { env, .. }

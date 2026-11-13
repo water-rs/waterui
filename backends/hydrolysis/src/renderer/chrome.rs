@@ -1611,7 +1611,7 @@ impl LiveChrome {
     /// the signals its values follow, for an owner that wraps no content in
     /// it and reports the state itself: the owner steers it through
     /// [`Self::sync`], [`Self::begin_wave`] and [`Self::fade_wave`], and
-    /// records it with [`Self::record_layers`].
+    /// records it through [`Self::layer_steps`].
     pub(crate) fn realize(
         spec: Chrome,
         bounds: Rect,

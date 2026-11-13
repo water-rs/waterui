@@ -8,16 +8,18 @@
 //! - [`WidgetTheme`], the widget chrome the renderer lays out and draws from:
 //!   motion policies, per-widget metrics and the `draw_*` methods;
 //! - the state the renderer hands a theme on every draw:
-//!   [`WidgetInteractionState`] with its [`PressWaves`], and
-//!   [`RadioIndicatorState`];
+//!   [`WidgetInteractionState`] with its [`PressWaves`];
 //! - the motion and metric token tables a theme returns, such as
-//!   [`InteractionMotion`] and [`NavigationMotion`];
+//!   [`InteractionMotion`] and [`ListMetrics`];
 //! - the looks a theme returns for the widgets ported to the declarative
 //!   contract (water-rs/waterui#1434), such as [`ButtonLook`] for a
 //!   [`ButtonSpec`], [`SwitchLook`] for a [`ToggleSpec`], [`StepperLook`]
-//!   for a [`StepperSpec`], [`SegmentedLook`] for a [`SegmentedSpec`] and
-//!   [`LinearProgressLook`] for a
-//!   [`ProgressSpec`], and [`GlassLook`] for a `.background(Glass…)`, built from the look vocabulary: [`Driven`] values over
+//!   for a [`StepperSpec`], [`SegmentedLook`] for a [`SegmentedSpec`],
+//!   [`MenuLook`] for a [`MenuSpec`], [`MenuPickerLook`] and
+//!   [`RadioGroupLook`] for a [`PickerSpec`] and [`LinearProgressLook`] for a
+//!   [`ProgressSpec`], [`NavigationBarLook`] for a [`NavigationSpec`],
+//!   [`TabsLook`] for a [`TabsSpec`] and [`GlassLook`] for a
+//!   `.background(Glass…)`, built from the look vocabulary: [`Driven`] values over
 //!   the widget's [`Inputs`] with their [`Motion`], [`Custom`] parts,
 //!   [`Label`] styling and [`HitRegion`]s;
 //! - the engine-provided chrome primitives a theme describes interactive
@@ -55,9 +57,14 @@ mod glass;
 #[cfg(hydrolysis_runtime)]
 pub(crate) mod live;
 mod look;
+mod menu;
+mod navigation;
+mod picker;
 mod progress;
 mod segmented;
 mod stepper;
+mod tabs;
+mod text_field;
 mod toggle;
 mod widget;
 
@@ -73,6 +80,11 @@ pub use look::{
 };
 #[cfg(hydrolysis_runtime)]
 pub(crate) use look::{Change, CustomPart, LayerRotation, LiveDriven, RealizedCustom, Retarget};
+pub use menu::{MenuLayout, MenuLook, MenuSpec};
+pub use navigation::{
+    BarSurface, NavigationBarLook, NavigationMetrics, NavigationMotion, NavigationSpec,
+};
+pub use picker::{MenuPickerLayout, MenuPickerLook, PickerSpec, RadioGroupLook, RadioLayout};
 pub use progress::{
     IndicatorLook, LinearLayout, LinearProgressLook, ProgressControl, ProgressSpec,
 };
@@ -81,14 +93,14 @@ pub use segmented::{
     SegmentedValue,
 };
 pub use stepper::{StepperLook, StepperSpec};
+pub use tabs::{TabItem, TabItemGeometry, TabItemLayout, TabsLook, TabsMetrics, TabsSpec};
+pub use text_field::{Caret, FloatingLabel, TextFieldLook, TextFieldSpec};
 pub use toggle::{CheckboxLook, SwitchDrag, SwitchLook, ToggleBackdrop, ToggleControl, ToggleSpec};
 pub use widget::{
     BadgeMetrics, DividerMetrics, InputFieldMetrics, InteractionFocusBinding, InteractionMotion,
     ListDividerMetrics, ListMetrics, ListRowMetrics, ListSectionMetrics,
-    ListTrailingControlMetrics, MAX_PRESS_WAVES, ModalInteraction, NavigationMetrics,
-    NavigationMotion, PickerMetrics, PressWave, PressWaves, RadioIndicatorState,
-    RadioSelectionMotion, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics,
-    TextCaretMotion, TextContextMenuMetrics, WidgetInteractionState, WidgetTheme,
+    ListTrailingControlMetrics, MAX_PRESS_WAVES, ModalInteraction, PressWave, PressWaves,
+    TableMetrics, TextCaretMotion, WidgetInteractionState, WidgetTheme,
 };
 
 #[cfg(hydrolysis_runtime)]

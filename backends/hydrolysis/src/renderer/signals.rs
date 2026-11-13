@@ -522,36 +522,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         )
     }
 
-    /// Animates slot `slot` of the view retained as `owner` toward `target`
-    /// and samples it this frame.
-    pub(crate) fn sample_owned_scalar_target<T: 'static>(
-        &mut self,
-        owner: &Rc<T>,
-        slot: usize,
-        target: f32,
-        animation: Animation,
-    ) -> f32 {
-        let key = self.owned_scalar_key(owner, slot);
-        let now = self.frame_instant;
-        self.animation_controller
-            .bind_scalar_target(key, target, animation, now)
-            .sample(now)
-    }
-
-    /// Samples the selection choreography of option `option` of the radio
-    /// group retained as `owner`.
-    pub(crate) fn sample_radio_indicator_state<T: 'static>(
-        &mut self,
-        owner: &Rc<T>,
-        option: usize,
-        selected: bool,
-        motion: &RadioSelectionMotion,
-    ) -> RadioIndicatorState {
-        let key = AnimationKey::radio_indicator(self.animation_owner_pins.pin(owner), option);
-        self.animation_controller
-            .bind_radio_indicator(key, selected, motion, self.frame_instant)
-    }
-
     fn navigation_animating(&self, now: Instant) -> bool {
         self.navigation.slots.values().any(|slot| {
             slot.transition

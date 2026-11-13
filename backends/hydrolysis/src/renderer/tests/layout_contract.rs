@@ -329,7 +329,7 @@ fn retained_subview_relayouts_when_a_layout_signal_invalidates() {
 ///
 /// Both styles run on every platform: `Automatic` resolves per target, and the
 /// two place the label differently — a checkbox at its fitted width, a switch
-/// across the row up to the control.
+/// at the width it takes when offered the row up to the control.
 #[test]
 fn retained_subview_relayouts_when_a_widget_leaf_label_invalidates() {
     use crate::renderer::{RenderContext, tree::RetainedSubview};

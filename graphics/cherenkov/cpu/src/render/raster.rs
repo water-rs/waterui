@@ -1282,7 +1282,7 @@ fn union_field_at(
 )]
 #[inline(always)]
 fn length(x: f32, y: f32) -> f32 {
-    x.mul_add(x, y * y).sqrt()
+    x.hypot(y)
 }
 
 /// The signed distance and unit outward normal of device point `(x, y)`
@@ -4506,7 +4506,7 @@ mod tests {
                                 == usize::from(selected[index]))
                     );
                     assert!(output.iter().enumerate().all(|(index, &value)| value
-                        == if selected[index / chunk_len.get()] {
+                        == if selected[index / chunk_len] {
                             index
                         } else {
                             usize::MAX

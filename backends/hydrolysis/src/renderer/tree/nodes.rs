@@ -310,13 +310,25 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
         renderer: &mut HydrolysisRenderer<E>,
         env: &Environment,
     ) -> Size {
+        self.measure(renderer, env, ProposalSize::UNSPECIFIED)
+    }
+
+    /// Measure the sub-view at `proposal` (building it once if needed): the
+    /// size it takes in the room a widget offers it. For the render path,
+    /// which has the renderer to build on first use.
+    pub(crate) fn measure(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<E>,
+        env: &Environment,
+        proposal: ProposalSize,
+    ) -> Size {
         self.ensure_built(renderer, env);
-        let built = self.expect_built_mut("measure_intrinsic");
+        let built = self.expect_built_mut("measure");
         built.node.prepare_for_measure(renderer);
         let theme = renderer.theme();
         built
             .node
-            .measure(&mut renderer.state, env, &theme, ProposalSize::UNSPECIFIED)
+            .measure(&mut renderer.state, env, &theme, proposal)
             .size
     }
 
@@ -1019,9 +1031,10 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     LifeCycle(LifeCycleEffect),
     /// The theme's drawn context-menu surface behind the wrapped menu rows —
     /// the panel a `PopupWindowManager` window shows instead of a view-level
-    /// fill (water-rs/hydrolysis#200). Draws nothing on targets that lack a
-    /// `draw_text_context_menu_panel` implementation.
-    PopupMenuSurface,
+    /// fill (water-rs/hydrolysis#200): the panel of the theme's `MenuLook`,
+    /// and the look's selected-row part over the rect, in the panel's own
+    /// space, of a picker popup's selected row.
+    PopupMenuSurface(Option<kurbo::Rect>),
     /// A within-window `Material` background (water-rs/waterui#1854): every
     /// flush closes the scene segment painted so far — the content behind
     /// the view — and presents a keyed mount that samples a backdrop group

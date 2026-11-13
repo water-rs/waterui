@@ -158,8 +158,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         grow_rect(
             self.bounds,
             self.content_area_for(self.bounds)
-                .map(|area| area.touched_edge_offsets())
-                .unwrap_or_default(),
+                .map_or_default(|area| area.touched_edge_offsets()),
         )
     }
 
@@ -279,6 +278,33 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
             operands,
             self.local,
             Some(&crate::renderer::frame::ScopeClip::Rect(clip)),
+            crate::renderer::ScopeDelta::RECORD_SPACE,
+        );
+        f(self);
+        self.close_scope();
+    }
+
+    /// Runs `f` inside a control's group `key`, clipped to `clip`: its
+    /// layer fades at `opacity` and composites in `blend_space`. A live
+    /// opacity always groups, following the operand between renders; a
+    /// fixed one groups only when it fades.
+    pub(crate) fn with_group_scope(
+        &mut self,
+        key: crate::renderer::mount::ScopeKey,
+        opacity: crate::renderer::GroupOpacity,
+        blend_space: cherenkov_record::BlendSpace,
+        clip: kurbo::Rect,
+        f: impl FnOnce(&mut Self),
+    ) {
+        if matches!(opacity, crate::renderer::GroupOpacity::Fixed(alpha) if alpha >= 1.0) {
+            f(self);
+            return;
+        }
+        self.renderer.open_group_scope(
+            key,
+            (opacity, blend_space),
+            self.local,
+            &crate::renderer::frame::ScopeClip::Rect(clip),
             crate::renderer::ScopeDelta::RECORD_SPACE,
         );
         f(self);

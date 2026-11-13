@@ -27,7 +27,7 @@ use crate::ops::{
 };
 use crate::projective::{Projective, ProjectiveError};
 use crate::shape::ShapeData;
-use crate::style::{BlendMode, FilterId};
+use crate::style::{BlendMode, BlendSpace, FilterId};
 use crate::target::Target;
 
 /// `prop` for a property other than `scroll_offset`, which takes no
@@ -171,6 +171,9 @@ pub struct LayerNode {
     pub clip: Option<ShapeData>,
     /// The blend mode the layer composites onto its parent with.
     pub blend: BlendMode,
+    /// The space the layer's subtree composites in and the layer
+    /// composites onto its parent in, as a group's `blend_space`.
+    pub blend_space: BlendSpace,
     /// The filter applied to this layer's subtree.
     pub filter: Option<FilterId>,
     /// The backdrop group (and optional per-member effect) this layer
@@ -214,7 +217,8 @@ pub struct LayerNode {
     projective: bool,
     animation_rate: Option<RefreshRange>,
     /// The stamp of the last change to what this layer draws in its own
-    /// space: clip, scroll offset, filter, backdrop, content, children.
+    /// space: clip, scroll offset, filter, blend space, backdrop, content,
+    /// children.
     inner_stamp: u64,
     /// Last inner change other than replacing or patching recorded content.
     property_stamp: u64,
@@ -231,6 +235,7 @@ impl std::fmt::Debug for LayerNode {
             .field("scroll_offset", &self.scroll_offset)
             .field("clip", &self.clip)
             .field("blend", &self.blend)
+            .field("blend_space", &self.blend_space)
             .field("filter", &self.filter)
             .field("backdrop", &self.backdrop)
             .field("children", &self.children)
@@ -329,6 +334,7 @@ impl LayerNode {
             scroll_offset: Vec2::ZERO,
             clip: None,
             blend: BlendMode::default(),
+            blend_space: BlendSpace::Linear,
             filter: None,
             backdrop: None,
             children: Vec::new(),
@@ -972,8 +978,11 @@ impl SurfaceTree {
     /// nothing, except that the `Decay` property change lands without
     /// animation.
     pub fn apply(&mut self, op: LayerOp) {
-        let content = matches!(&op, LayerOp::Content(..));
-        let touched = match &op {
+        // Both matches read `op` in place, never through a reference: a
+        // borrowed argument is copied, not moved, into `apply_layer_op`,
+        // which costs a `memcpy` of the whole op on every commit.
+        let content = matches!(op, LayerOp::Content(..));
+        let touched = match op {
             LayerOp::Create(_) | LayerOp::Remove(_) => None,
             LayerOp::Transform(id, _)
             | LayerOp::Translation(id, _)
@@ -989,16 +998,19 @@ impl SurfaceTree {
             | LayerOp::ClearProjection(id)
             | LayerOp::Opacity(id, _)
             | LayerOp::Keyframes(id, _)
-            | LayerOp::Blend(id, _) => Some((*id, false)),
-            LayerOp::ScrollOffset(id, _)
+            | LayerOp::Blend(id, _) => Some((id, false)),
+            // The space changes how the subtree composites within the
+            // layer, like its filter, not only how the layer composes.
+            LayerOp::BlendSpace(id, _)
+            | LayerOp::ScrollOffset(id, _)
             | LayerOp::Clip(id, _)
             | LayerOp::Filter(id, _)
             | LayerOp::Backdrop(id, _)
             | LayerOp::HostWindow(id, _)
-            | LayerOp::Content(id, _) => Some((*id, true)),
+            | LayerOp::Content(id, _) => Some((id, true)),
             LayerOp::Push { parent, .. }
             | LayerOp::Insert { parent, .. }
-            | LayerOp::Detach { parent, .. } => Some((*parent, true)),
+            | LayerOp::Detach { parent, .. } => Some((parent, true)),
         };
         self.apply_layer_op(op);
         if let Some((id, inner)) = touched {
@@ -1086,6 +1098,7 @@ impl SurfaceTree {
                 retarget(&mut node.clip_track, &mut node.clip, clip);
             }
             LayerOp::Blend(id, blend) => self.set_blend(id, blend),
+            LayerOp::BlendSpace(id, space) => self.node_mut(id).blend_space = space,
             LayerOp::Filter(id, filter) => self.node_mut(id).filter = filter,
             LayerOp::Backdrop(id, backdrop) => {
                 let node = self.node_mut(id);
@@ -1962,6 +1975,25 @@ mod hierarchy_tests {
         tree.apply(LayerOp::Blend(child, BlendMode::DestOut));
         assert!(tree.layer(tree.root()).blends_within());
         tree.apply(LayerOp::Blend(child, BlendMode::Normal));
+        assert!(!tree.layer(tree.root()).blends_within());
+    }
+
+    #[test]
+    fn blend_space_lands_on_the_layer_and_restamps_its_subtree() {
+        let mut tree = SurfaceTree::new();
+        let child = LayerId::new(1);
+        tree.apply(LayerOp::Create(child));
+        tree.apply(LayerOp::Push {
+            parent: tree.root(),
+            child,
+        });
+        assert_eq!(tree.layer(child).blend_space, BlendSpace::Linear);
+        let before = tree.layer(child).property_revision();
+        tree.apply(LayerOp::BlendSpace(child, BlendSpace::SrgbEncoded));
+        assert_eq!(tree.layer(child).blend_space, BlendSpace::SrgbEncoded);
+        assert!(tree.layer(child).property_revision() > before);
+        // A `Normal` composite in another space is not a blend the parent
+        // isolates for, as for a group.
         assert!(!tree.layer(tree.root()).blends_within());
     }
 

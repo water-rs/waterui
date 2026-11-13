@@ -2,7 +2,7 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
+    GroupOpacity, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
     WidgetRenderContext, measure_label_intrinsic, measure_view_intrinsic, popup_menu_nodes,
 };
 use crate::theme::{
@@ -37,7 +37,7 @@ use crate::widgets::util::{centered_label_rect, inset_rect, widget_disabled};
 
 /// The interaction states that change without a render: their changes move
 /// live operands.
-const LIVE_STATES: InteractionState = InteractionState::HOVERED
+pub const LIVE_STATES: InteractionState = InteractionState::HOVERED
     .union(InteractionState::PRESSED)
     .union(InteractionState::FOCUSED)
     .union(InteractionState::DRAGGED);
@@ -121,7 +121,12 @@ fn resolve_look(theme: &Rc<dyn WidgetTheme>, spec: &ButtonSpec, env: &Environmen
     }
     let look = theme.button(spec, env);
     if env.get::<MenuRowChrome>().is_some() {
-        return lower_menu_row(&look, theme.text_context_menu_metrics().horizontal_padding);
+        return lower_menu_row(
+            &look,
+            crate::renderer::menu_look(theme, env)
+                .layout()
+                .horizontal_padding,
+        );
     }
     match env.get::<FloatingScope>() {
         Some(FloatingScope(style)) => lower_floating(&look, style),
@@ -214,6 +219,7 @@ fn lower_floating(look: &ButtonLook, style: &FloatingStyle) -> ButtonLook {
         .padding(style.content_inset_x, style.content_inset_y)
         .minimum_size(kurbo::Size::new(style.minimum_width, style.minimum_height))
         .group_opacity(group_opacity)
+        .group_blend_space(look.get_group_blend_space())
 }
 
 /// The spec of a `style` button of `size` in `env`.
@@ -684,7 +690,6 @@ pub fn menu_accessibility<E: crate::text::TextEngine>(
         let request = ctx.as_ref().zip(theme).map(|(ctx, theme)| {
             (
                 crate::widgets::util::popup_anchor(renderer.resolve_window_rect(ctx.bounds())),
-                theme.text_context_menu_metrics(),
                 theme.clone(),
             )
         });
@@ -700,8 +705,8 @@ pub fn menu_accessibility<E: crate::text::TextEngine>(
                     let nodes =
                         popup_menu_nodes(&items.snapshot(), &env, renderer.window_closable());
                     match &request {
-                        Some((anchor, metrics, theme)) => {
-                            renderer.show_popup_menu_nodes(nodes, *anchor, *metrics, &env, theme);
+                        Some((anchor, theme)) => {
+                            renderer.show_popup_menu_nodes(nodes, *anchor, &env, theme);
                         }
                         None => {
                             renderer.activate_popup_menu_nodes(nodes, &env);
@@ -883,20 +888,18 @@ fn record_button_chrome<E: crate::text::TextEngine>(
     // An opacity that varies between renders draws the button as one
     // group following the chrome's operand; a fixed one groups it only
     // when it fades.
-    if let Some(opacity) = rendered.parts.chrome().group_opacity() {
-        let operands = crate::renderer::ScopeOperands {
-            opacity: Some(opacity),
-            transform: None,
-        };
-        ctx.with_live_scope(key, operands, frame, body);
-        return;
-    }
-    let opacity = rendered.look.get_group_opacity().target(&Inputs::at_rest(
-        rendered.look.chrome().frame(ctx.bounds),
-        rendered.flags,
-        &(),
-    ));
-    ctx.with_scope_if(opacity < 1.0, key, opacity, frame, body);
+    let opacity = rendered.parts.chrome().group_opacity().map_or_else(
+        || {
+            GroupOpacity::Fixed(rendered.look.get_group_opacity().target(&Inputs::at_rest(
+                rendered.look.chrome().frame(ctx.bounds),
+                rendered.flags,
+                &(),
+            )))
+        },
+        GroupOpacity::Live,
+    );
+    let space = rendered.look.get_group_blend_space();
+    ctx.with_group_scope(key, opacity, space, frame, body);
 }
 
 /// Places a retained label sub-view centred in `label_target`. Its
@@ -1092,7 +1095,6 @@ pub fn render_menu_parts<E: crate::text::TextEngine>(
     // The popup anchors in window space at the trigger's bottom edge.
     let bounds = ctx.bounds;
     let anchor = crate::widgets::util::popup_anchor(ctx.renderer_mut().resolve_window_rect(bounds));
-    let menu_metrics = theme.text_context_menu_metrics();
     let menu_theme = theme.clone();
     // The popup opens in the trigger node's environment layered over the
     // dispatch's (water-rs/hydrolysis#140).
@@ -1108,7 +1110,6 @@ pub fn render_menu_parts<E: crate::text::TextEngine>(
                 renderer.show_popup_menu_nodes(
                     popup_menu_nodes(&items.snapshot(), &env, renderer.window_closable()),
                     anchor,
-                    menu_metrics,
                     &env,
                     &menu_theme,
                 )
@@ -1254,7 +1255,7 @@ fn watch_button_title<E: crate::text::TextEngine>(
     clippy::needless_pass_by_value,
     reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
 )]
-fn styled_with_default_foreground(styled: StyledStr, color: Color) -> StyledStr {
+pub fn styled_with_default_foreground(styled: StyledStr, color: Color) -> StyledStr {
     let mut out = StyledStr::empty();
     for (chunk, style) in styled.chunks() {
         let mut style = style.clone();
@@ -1269,7 +1270,7 @@ fn styled_with_default_foreground(styled: StyledStr, color: Color) -> StyledStr 
 /// Applies the look's label font to a label that owns its text. A label
 /// built from caller-supplied views carries its own typography, and
 /// `Label::font` rejects it outright.
-fn styled_button_label(font: Option<Font>, label: Label) -> Label {
+pub fn styled_button_label(font: Option<Font>, label: Label) -> Label {
     if label.has_custom_content() {
         return label;
     }

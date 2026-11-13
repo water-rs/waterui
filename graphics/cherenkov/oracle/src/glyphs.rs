@@ -632,6 +632,7 @@ fn node_to_item(node: Node, place: Affine, scene_rect: Rect) -> Item {
             clip: clip.map(|p| Shape::Path { path: place * p }),
             opacity: f64::from(opacity),
             blend,
+            blend_space: cherenkov_scene::BlendSpace::Linear,
             id: None,
             backdrop: None,
             filter: None,
@@ -966,8 +967,7 @@ pub fn items_for_glyph_run(
     let palette: Vec<skrifa::color::Color> = font
         .color_palettes()
         .get(0)
-        .map(|p| p.colors().to_vec())
-        .unwrap_or_default();
+        .map_or_default(|p| p.colors().to_vec());
     let foreground_color = match &run.paint {
         Paint::Solid(c) => *c,
         // Non-solid run paints still act as the foreground brush; inside a
@@ -1097,6 +1097,7 @@ pub fn items_for_glyph_run(
                     clip: None,
                     opacity: 1.0,
                     blend: BlendMode::Normal,
+                    blend_space: cherenkov_scene::BlendSpace::Linear,
                     id: None,
                     backdrop: None,
                     filter: None,

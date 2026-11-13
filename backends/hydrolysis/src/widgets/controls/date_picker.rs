@@ -1,26 +1,44 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
     measure_date_picker_intrinsic,
 };
+use crate::theme::{MenuPickerLook, PickerSpec, SpecTint};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
+use nami::{Binding, Signal as _};
 use std::cell::RefCell;
 use std::rc::Rc;
-use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
+use waterui_controls::ControlSize;
+use waterui_core::interaction::InteractionState;
+use waterui_core::layout::{
+    HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions, layout_direction,
+};
 use waterui_core::{AnyView, Environment, Native};
-use waterui_form::picker::PickerStyle;
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_text::styled::StyledStr;
 
 use crate::renderer::RetainedSubview;
-use crate::renderer::local_interaction_state;
-use crate::widgets::util::inset_rect;
+use crate::widgets::controls::field_look::field_look;
+use crate::widgets::controls::picker::label_styled;
 #[cfg(feature = "accessibility")]
 use crate::widgets::util::widget_disabled;
+use crate::widgets::util::{inset_rect, mirrored_in};
+
+/// The request a date picker's field makes of the theme: a field of the size
+/// pickers default to, in the layout direction and tint of `env`. A date
+/// picker has no size of its own to configure.
+pub fn date_picker_spec(env: &Environment) -> PickerSpec {
+    PickerSpec::new(
+        ControlSize::Small,
+        layout_direction(env).snapshot(),
+        SpecTint::resolve(env),
+    )
+}
 
 /// The retained render state of a date picker: the cloneable [`DatePickerConfig`]
 /// drives the field + accessibility, and its main label is held as a
@@ -29,6 +47,12 @@ use crate::widgets::util::widget_disabled;
 pub struct DatePickerRenderState<E: crate::text::TextEngine> {
     config: DatePickerConfig,
     label_view: RetainedSubview<E>,
+    /// The field's look, held while its spec is.
+    look: Option<(PickerSpec, MenuPickerLook)>,
+    /// The field's live chrome.
+    parts: Option<LiveChromeParts>,
+    /// The state the field last reported, which feeds the chrome.
+    report: Binding<InteractionState>,
 }
 
 impl<E: crate::text::TextEngine> DatePickerRenderState<E> {
@@ -36,6 +60,9 @@ impl<E: crate::text::TextEngine> DatePickerRenderState<E> {
         Self {
             label_view: RetainedSubview::new(AnyView::new(config.label().clone())),
             config,
+            look: None,
+            parts: None,
+            report: Binding::container(InteractionState::empty()),
         }
     }
 
@@ -150,12 +177,12 @@ pub fn measure_date_picker_node<E: crate::text::TextEngine>(
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let config = &render_state.config;
-    let metrics = theme.picker_metrics(PickerStyle::Menu);
-    let input_metrics = theme.input_field_metrics();
+    let metrics = theme.menu_picker(&date_picker_spec(env), env).layout();
+    let label_floor = field_look(theme, env).metrics().label_height;
     let label_size = render_state.label_view.measure_built(state, env, theme);
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
     let label_height = if has_label {
-        f64::from(label_size.height).max(input_metrics.label_height)
+        f64::from(label_size.height).max(label_floor)
     } else {
         0.0
     };
@@ -178,15 +205,13 @@ pub fn measure_date_picker_node<E: crate::text::TextEngine>(
         field_text_width = field_text_width.max(f64::from(size.width));
         field_text_height = field_text_height.max(f64::from(size.height));
     }
-    let field_width = (input_metrics
-        .horizontal_inset
-        .mul_add(2.0, field_text_width)
+    let field_width = (metrics.horizontal_inset.mul_add(2.0, field_text_width)
         + metrics.indicator_space)
-        .max(input_metrics.min_width);
-    let field_height = input_metrics
+        .max(metrics.min_width);
+    let field_height = metrics
         .vertical_inset
         .mul_add(2.0, field_text_height)
-        .max(input_metrics.min_height);
+        .max(metrics.min_height);
     let width = f64::from(label_size.width).max(field_width);
     let height = label_height + field_height;
     ViewDimensions::new(LayoutSize::new(
@@ -218,33 +243,21 @@ pub fn render_date_picker_node<E: crate::text::TextEngine>(
     render_date_picker_parts(ctx, state, env);
 }
 
-pub fn render_date_picker_parts<E: crate::text::TextEngine>(
+/// Places a date picker's label sub-view across the top of the node's bounds
+/// and returns the height it takes (zero for a picker without a label), at
+/// least `min_height` when drawn.
+fn place_date_picker_label<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
-    state: &Rc<RefCell<DatePickerRenderState<E>>>,
+    state: &mut DatePickerRenderState<E>,
     env: &Environment,
-) {
-    let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
-    let theme = ctx.theme();
-    let metrics = theme.picker_metrics(PickerStyle::Menu);
-    let input_metrics = theme.input_field_metrics();
-    let mut state = state.borrow_mut();
-    // The value/range/ty are read from the retained config; the label is a retained
-    // node sub-view re-flushed at its rect (reactive content stays live).
-    let (value_binding, range, ty) = {
-        let date_picker = &state.config;
-        (
-            date_picker.value().clone(),
-            date_picker.range().clone(),
-            date_picker.ty(),
-        )
-    };
+    min_height: f64,
+) -> f64 {
     let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
-    let label_height = if has_label {
-        f64::from(label_size.height).max(input_metrics.label_height)
-    } else {
-        0.0
-    };
+    if !has_label {
+        return 0.0;
+    }
+    let label_height = f64::from(label_size.height).max(min_height);
     if label_height > 0.0 {
         let label_bounds = kurbo::Rect::new(
             ctx.bounds.x0,
@@ -263,6 +276,70 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
             label_area,
         );
     }
+    label_height
+}
+
+/// Where the formatted value draws inside the field: inset by the input
+/// metrics and short of the dropdown indicator. The look draws the field left
+/// to right, with the indicator at its right end; a right-to-left layout
+/// reflects the field's content.
+fn date_picker_value_bounds(
+    field_bounds: kurbo::Rect,
+    horizontal_inset: f64,
+    vertical_inset: f64,
+    indicator_space: f64,
+    env: &Environment,
+) -> kurbo::Rect {
+    let inset = inset_rect(field_bounds, horizontal_inset, vertical_inset);
+    let text_bounds = kurbo::Rect::new(
+        inset.x0,
+        inset.y0,
+        (inset.x1 - indicator_space).max(inset.x0),
+        inset.y1,
+    );
+    if layout_direction(env).snapshot().is_right_to_left() {
+        mirrored_in(text_bounds, field_bounds)
+    } else {
+        text_bounds
+    }
+}
+
+pub fn render_date_picker_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<DatePickerRenderState<E>>>,
+    env: &Environment,
+) {
+    let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
+    let theme = ctx.theme();
+    let spec = date_picker_spec(env);
+    let mut state = state.borrow_mut();
+    if state.look.as_ref().is_none_or(|(held, _)| *held != spec) {
+        let look = theme.menu_picker(&spec, env);
+        state.look = Some((spec, look));
+        state.parts = None;
+    }
+    let look = state
+        .look
+        .as_ref()
+        .map(|(_, look)| look.clone())
+        .expect("the look was just ensured");
+    let metrics = look.layout();
+    // The value/range/ty are read from the retained config; the label is a retained
+    // node sub-view re-flushed at its rect (reactive content stays live).
+    let (value_binding, range, ty) = {
+        let date_picker = &state.config;
+        (
+            date_picker.value().clone(),
+            date_picker.range().clone(),
+            date_picker.ty(),
+        )
+    };
+    let label_height = place_date_picker_label(
+        ctx,
+        &mut state,
+        env,
+        field_look(&theme, env).metrics().label_height,
+    );
 
     let field_bounds = kurbo::Rect::new(
         ctx.bounds.x0,
@@ -283,40 +360,54 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
             .clamp(*range.start(), *range.end()),
     );
 
-    let hit_bounds = field_bounds;
-    let (interaction, press_slot, _) =
-        ctx.renderer_mut()
-            .bind_interaction_target(interaction_key, hit_bounds, env);
-    {
-        let interaction =
-            local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
-        ctx.draw_context(|draw| {
-            theme.draw_input_field(&mut *draw, field_bounds, interaction);
-            theme.draw_picker_indicator(&mut *draw, field_bounds);
-            theme.draw_picker_state_layer(&mut *draw, field_bounds, interaction);
-        });
-    }
-    let text_bounds = inset_rect(
-        field_bounds,
-        input_metrics.horizontal_inset,
-        input_metrics.vertical_inset,
+    let chrome = look.chrome().clone();
+    let hit_bounds = chrome.target(field_bounds);
+    let (_, press_slot, handles) = ctx.renderer_mut().bind_live_chrome_target(
+        interaction_key.clone(),
+        hit_bounds,
+        env,
+        false,
+        &chrome,
     );
-    let text_bounds = kurbo::Rect::new(
-        text_bounds.x0,
-        text_bounds.y0,
-        (text_bounds.x1 - metrics.indicator_space).max(text_bounds.x0),
-        text_bounds.y1,
+    let flags = ctx
+        .renderer_mut()
+        .reported_interaction_state(&interaction_key);
+    if state.report.snapshot() != flags {
+        state.report.set(flags);
+    }
+    let report = state.report.clone();
+    let parts = LiveChromeParts::ensure(
+        &mut state.parts,
+        &chrome,
+        &ChromeContent::default(),
+        field_bounds,
+        flags,
+        env,
+        &report,
+    )
+    .clone();
+    handles.attach_live(Rc::clone(parts.chrome()));
+    let render_ctx = ctx.render_context();
+    parts.push_below(ctx.renderer_mut(), render_ctx);
+    let text_bounds = date_picker_value_bounds(
+        field_bounds,
+        metrics.horizontal_inset,
+        metrics.vertical_inset,
+        metrics.indicator_space,
+        env,
     );
     ctx.render_styled_text(
-        StyledStr::plain(value),
+        label_styled(look.get_value(), StyledStr::plain(value)),
         HorizontalAlignment::Leading,
         env,
         text_bounds,
     );
+    let render_ctx = ctx.render_context();
+    parts.push_above(ctx.renderer_mut(), render_ctx);
 
     // The popup anchors in window space at the field's bottom edge.
     let origin =
-        crate::widgets::util::popup_anchor(ctx.renderer_mut().resolve_window_rect(hit_bounds));
+        crate::widgets::util::popup_anchor(ctx.renderer_mut().resolve_window_rect(field_bounds));
     // The popup opens in the picker's environment layered over the
     // dispatch's (water-rs/hydrolysis#140).
     let picker_env = env.clone();

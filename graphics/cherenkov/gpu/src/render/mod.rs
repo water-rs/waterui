@@ -79,7 +79,7 @@ use shaders::backdrop_effect_text;
 /// Stands in for the dma-buf export pool where dma-buf does not exist: no
 /// value exists, so no surface there has an export pool.
 #[cfg(not(target_os = "linux"))]
-enum ExportPool {}
+struct ExportPool(core::convert::Infallible);
 
 /// The pipeline bound for a pass range: engine pipelines and the external
 /// frame pipeline are mutually exclusive, so an engine range always rebinds

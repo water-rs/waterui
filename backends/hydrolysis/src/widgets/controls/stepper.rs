@@ -369,8 +369,15 @@ pub fn render_stepper_parts<E: crate::text::TextEngine>(
     };
     let look = state.look(&theme, env).clone();
     let direction = waterui_core::layout::layout_direction(env).snapshot();
-    let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
-    let rects = stepper_rects(ctx.bounds, &look, direction, f64::from(label_size.height));
+    // The label is offered the room before the buttons: a label that
+    // stretches fills it, while text keeps its own width at the leading edge.
+    let room = (ctx.bounds.width() - look.controls().width - look.get_label_spacing()).max(0.0);
+    let label_size = state.label_view.measure(
+        ctx.renderer_mut(),
+        env,
+        ProposalSize::new(Some(crate::num_cast::f64_as_f32(room)), None),
+    );
+    let rects = stepper_rects(ctx.bounds, &look, direction, label_size);
     // The label is a retained node sub-view re-flushed at its rect; reactive
     // content stays live through the node's own per-frame re-flush, with no dispatch.
     // Its semantics are merged into the stepper's own node by
@@ -541,14 +548,14 @@ struct StepperRects {
 /// `bounds`: the ends side by side at the trailing edge, each the look's size
 /// and centred in the row — a row shorter than the buttons caps their height
 /// and never their width — and the label on their centre line, keeping its
-/// own height, in the room before them. A right-to-left layout mirrors all
-/// of it about the bounds' centre line, so the decrement end leads the pair
-/// in either direction.
+/// own size, at the leading edge of the room before them. A right-to-left
+/// layout mirrors all of it about the bounds' centre line, so the decrement
+/// end leads the pair in either direction.
 fn stepper_rects(
     bounds: Rect,
     look: &StepperLook,
     direction: LayoutDirection,
-    label_height: f64,
+    label: LayoutSize,
 ) -> StepperRects {
     let controls = look.controls();
     let button = look.button();
@@ -567,7 +574,7 @@ fn stepper_rects(
         (controls_x0 - look.get_label_spacing()).max(bounds.x0),
         bounds,
         decrement.union(increment),
-        label_height,
+        kurbo::Size::new(f64::from(label.width), f64::from(label.height)),
     );
     let rects = StepperRects {
         decrement,
@@ -606,7 +613,7 @@ mod tests {
         assert!((width - (60.0 + 8.0 + 14.0 + 4.0 + 14.0)).abs() < 1e-4);
         for height in [4.0, 10.0, 14.0, 16.0, 17.0, 30.0, 100.0] {
             let bounds = Rect::new(10.0, 20.0, 10.0 + width, 20.0 + height);
-            let rects = stepper_rects(bounds, &look, LayoutDirection::LeftToRight, 16.0);
+            let rects = stepper_rects(bounds, &look, LayoutDirection::LeftToRight, LABEL);
             assert!(
                 (rects.decrement.width() - 14.0).abs() < 1e-9
                     && (rects.increment.width() - 14.0).abs() < 1e-9,
@@ -645,22 +652,25 @@ mod tests {
         }
     }
 
-    /// A right-to-left layout mirrors the row: the label leads on the right
-    /// and the decrement end leads the pair.
+    /// A row wider than the stepper measured keeps the label at its own
+    /// width on the leading edge, and a right-to-left layout mirrors the row:
+    /// the label leads on the right and the decrement end leads the pair.
     #[test]
-    fn right_to_left_mirrors_the_row() {
+    fn the_label_leads_a_wider_row_in_either_direction() {
         let look = plain_stepper_look();
         let measured = stepper_size(&look, LABEL);
         let bounds = Rect::new(
             0.0,
             0.0,
-            f64::from(measured.width),
+            f64::from(measured.width) + 100.0,
             f64::from(measured.height),
         );
-        let ltr = stepper_rects(bounds, &look, LayoutDirection::LeftToRight, 16.0);
-        let rtl = stepper_rects(bounds, &look, LayoutDirection::RightToLeft, 16.0);
+        let ltr = stepper_rects(bounds, &look, LayoutDirection::LeftToRight, LABEL);
+        let rtl = stepper_rects(bounds, &look, LayoutDirection::RightToLeft, LABEL);
         assert!(ltr.decrement.x1 < ltr.increment.x0 && ltr.label.x1 < ltr.decrement.x0);
         assert!(rtl.increment.x1 < rtl.decrement.x0 && rtl.decrement.x1 < rtl.label.x0);
+        assert!(ltr.label.x0.abs() < 1e-9 && (ltr.label.width() - 60.0).abs() < 1e-9);
+        assert!((rtl.label.x1 - bounds.x1).abs() < 1e-9 && (rtl.label.width() - 60.0).abs() < 1e-9);
         assert!((rtl.decrement.x0 - (bounds.x1 - ltr.decrement.x1)).abs() < 1e-9);
         assert!((rtl.label.x1 - (bounds.x1 - ltr.label.x0)).abs() < 1e-9);
     }

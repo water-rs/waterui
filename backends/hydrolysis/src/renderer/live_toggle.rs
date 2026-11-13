@@ -153,7 +153,11 @@ impl LiveToggle {
     /// Subscribes the toggle to `binding` and to every signal its parts'
     /// values follow, so a change retargets the operands under the
     /// animation the change carries.
-    fn subscribe(this: &Rc<Self>, binding: &Binding<bool>) {
+    fn subscribe<S>(this: &Rc<Self>, binding: &S)
+    where
+        S: Signal<Output = bool>,
+        S::Guard: 'static,
+    {
         let mut guards: Vec<Box<dyn Any>> = Vec::new();
         let weak: Weak<Self> = Rc::downgrade(this);
         guards.push(Box::new(binding.watch(move |context| {
@@ -201,6 +205,11 @@ impl LiveToggle {
             state,
             &self.value.get(),
         ))
+    }
+
+    /// The space the control's group composites in.
+    pub(crate) fn group_blend_space(&self) -> cherenkov_record::BlendSpace {
+        self.control.get_group_blend_space()
     }
 
     /// The area the control's parts draw in: its frame and its reach.
@@ -402,7 +411,11 @@ pub struct LiveToggleParts {
 }
 
 impl LiveToggleParts {
-    fn new(toggle: LiveToggle, binding: &Binding<bool>) -> Self {
+    fn new<S>(toggle: LiveToggle, binding: &S) -> Self
+    where
+        S: Signal<Output = bool>,
+        S::Guard: 'static,
+    {
         let toggle = Rc::new(toggle);
         LiveToggle::subscribe(&toggle, binding);
         let runs = |layer, parts: &[RealizedCustom<bool>]| -> Vec<ToggleRun> {
@@ -428,13 +441,17 @@ impl LiveToggleParts {
     /// The control `control` on `frame` showing `binding`: the parts in
     /// `slot` when they already realize it — moved to `state` — otherwise
     /// fresh parts recorded at `state`, replacing them.
-    pub(crate) fn ensure<'a>(
+    pub(crate) fn ensure<'a, S>(
         slot: &'a mut Option<Self>,
         control: &ToggleControl,
         frame: Rect,
         state: InteractionState,
-        binding: &Binding<bool>,
-    ) -> &'a Self {
+        binding: &S,
+    ) -> &'a Self
+    where
+        S: Signal<Output = bool>,
+        S::Guard: 'static,
+    {
         match slot {
             Some(parts) if parts.toggle.realizes(control, frame) => parts.toggle.sync(state),
             _ => {

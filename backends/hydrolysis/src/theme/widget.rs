@@ -1,18 +1,15 @@
 //! The widget chrome half of the theme contract: [`WidgetTheme`] and the
 //! token tables, state snapshots and presentation plugins it names.
 
-use cherenkov_record::{MaterialRegistry, Paint, Recorder};
+use cherenkov_record::{MaterialRegistry, Recorder};
 use core::time::Duration;
 use kurbo::{Point, Rect};
 use nami::signal::IntoComputed;
-use waterui::navigation::tab::NativeTabStyle;
-use waterui_core::EasingCurve;
 use waterui_core::animation::Animation;
 use waterui_core::handler::SharedAction;
 use waterui_core::interaction::InteractionState;
 use waterui_core::plugin::Plugin;
 use waterui_core::{Binding, Computed, Environment, Signal};
-use waterui_form::picker::PickerStyle;
 use waterui_graphics::color::Color;
 use waterui_text::font::Font;
 
@@ -243,31 +240,6 @@ pub struct InteractionMotion {
     pub touch_delay: Duration,
 }
 
-/// Motion policy for radio selection indicators.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RadioSelectionMotion {
-    /// Animation used when the selected inner dot grows.
-    pub inner_grow: Animation,
-    /// Animation used when the inner dot fades in or out.
-    pub inner_opacity: Animation,
-    /// Animation used when the outer ring changes between selected and
-    /// unselected colors.
-    pub outer_color: Animation,
-}
-
-/// Animated visual state for a radio indicator.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct RadioIndicatorState {
-    /// Whether the radio option is currently selected semantically.
-    pub selected: bool,
-    /// Progress from unselected outer-ring color to selected outer-ring color.
-    pub outer_selected_progress: f32,
-    /// Inner dot radius progress in the 0.0..=1.0 range.
-    pub inner_scale: f32,
-    /// Inner dot opacity in the 0.0..=1.0 range.
-    pub inner_opacity: f32,
-}
-
 /// Motion policy for text input carets.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextCaretMotion {
@@ -277,20 +249,6 @@ pub struct TextCaretMotion {
     pub frame_interval: Duration,
     /// Minimum opacity at the dimmest point of the fade cycle.
     pub min_opacity: f32,
-}
-
-/// Motion policy for backend-rendered navigation transitions.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct NavigationMotion {
-    /// Duration for a complete navigation transition.
-    pub transition_duration: Duration,
-    /// Easing applied to programmatic navigation progress.
-    pub transition_easing: EasingCurve,
-    /// Absolute travel distance for the Material shared-axis X pattern.
-    pub shared_axis_slide_distance: f64,
-    /// Progress at which the outgoing layer has faded out and the incoming
-    /// layer begins fading in.
-    pub fade_through_threshold: f32,
 }
 
 /// Text input layout metrics.
@@ -324,124 +282,6 @@ impl InputFieldMetrics {
             min_height,
             horizontal_inset,
             vertical_inset,
-        }
-    }
-}
-
-/// Layout metrics for backend-rendered context menus.
-#[derive(Debug, Clone, Copy)]
-pub struct TextContextMenuMetrics {
-    /// One-line menu row height.
-    pub row_height: f64,
-    /// Horizontal text inset.
-    pub horizontal_padding: f64,
-    /// Vertical text inset.
-    pub vertical_padding: f64,
-    /// Minimum menu width.
-    pub min_width: f64,
-    /// Maximum menu width.
-    pub max_width: f64,
-    /// Estimated width used before text layout is available.
-    pub width_per_char: f64,
-    /// Menu container corner radius.
-    pub corner_radius: f64,
-    /// Horizontal inset for separators.
-    pub separator_horizontal_inset: f64,
-    /// Separator thickness.
-    pub separator_thickness: f64,
-}
-
-/// Picker layout metrics.
-#[derive(Debug, Clone, Copy)]
-pub struct PickerMetrics {
-    /// Minimum picker width.
-    pub min_width: f64,
-    /// Minimum picker height.
-    pub min_height: f64,
-    /// Horizontal picker inset.
-    pub horizontal_inset: f64,
-    /// Vertical picker inset.
-    pub vertical_inset: f64,
-    /// Gap between an external picker label and the picker field.
-    pub label_spacing: f64,
-    /// Space reserved for picker indicators.
-    pub indicator_space: f64,
-    /// Radio indicator diameter.
-    pub radio_indicator_size: f64,
-    /// Gap between a radio indicator and its label.
-    pub radio_label_spacing: f64,
-    /// Gap between radio picker rows.
-    pub radio_row_spacing: f64,
-    /// Vertical gap above popup menu rows.
-    pub popup_top_spacing: f64,
-    /// Popup menu row minimum height.
-    pub popup_row_height: f64,
-    /// Popup menu corner radius.
-    pub popup_corner_radius: f64,
-}
-
-/// How a tab bar lays out each item's icon and label.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "backends realize each tab item arrangement variant by variant; a new tab item arrangement must fail their build instead of falling into a wildcard arm"
-)]
-pub enum TabItemLayout {
-    /// The icon above the label, the indicator behind the icon: the compact
-    /// bar of a narrow window.
-    Vertical,
-    /// The icon beside the label, the indicator behind both: the bar of a
-    /// medium-width window, where items have room to spread.
-    Horizontal,
-}
-
-/// The geometry of one tab item, in the coordinate space of the bar that
-/// holds it: what a style needs to draw the selection indicator wherever and
-/// in whatever shape it wants.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TabItemGeometry {
-    /// The item's chrome bounds: the whole button for vertical items, the
-    /// icon and title grown by the button inset for horizontal ones.
-    pub bounds: Rect,
-    /// The icon's rect, `None` for a title-only item.
-    pub icon: Option<Rect>,
-    /// The title's rect.
-    pub title: Rect,
-    /// How the item arranges its icon and title.
-    pub layout: TabItemLayout,
-    /// Whether the item sits in a bar or a sidebar strip; `Automatic` and
-    /// `TabBar` are both a bar.
-    pub placement: NativeTabStyle,
-}
-
-/// Layout metrics for tab containers.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TabsMetrics {
-    /// Tab bar height.
-    pub bar_height: f64,
-    /// Minimum width for one tab button.
-    pub button_min_width: f64,
-    /// Horizontal label inset inside one tab button.
-    pub button_horizontal_inset: f64,
-    /// Gap between a tab item's icon and its label: vertical space when the
-    /// icon sits above the label, horizontal space when it sits beside it.
-    pub icon_label_spacing: f64,
-}
-
-impl TabsMetrics {
-    /// Create tab layout metrics.
-    #[must_use]
-    pub const fn new(
-        bar_height: f64,
-        button_min_width: f64,
-        button_horizontal_inset: f64,
-        icon_label_spacing: f64,
-    ) -> Self {
-        Self {
-            bar_height,
-            button_min_width,
-            button_horizontal_inset,
-            icon_label_spacing,
         }
     }
 }
@@ -656,45 +496,6 @@ impl BadgeMetrics {
     }
 }
 
-/// Layout metrics for navigation bars.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct NavigationMetrics {
-    /// Automatic title-mode bar height.
-    pub automatic_bar_height: f64,
-    /// Inline title-mode bar height.
-    pub inline_bar_height: f64,
-    /// Medium title-mode bar height.
-    pub medium_bar_height: f64,
-    /// Large title-mode bar height.
-    pub large_bar_height: f64,
-    /// Navigation title slot height for inline bars.
-    pub inline_title_height: f64,
-    /// Navigation title slot height for medium bars.
-    pub medium_title_height: f64,
-    /// Navigation title slot height for large bars.
-    pub large_title_height: f64,
-    /// Title leading inset when no leading bar item is present.
-    pub title_leading_inset: f64,
-    /// Title trailing inset when no trailing bar item is present.
-    pub title_trailing_inset: f64,
-    /// Bottom inset for large navigation titles.
-    pub large_title_bottom_inset: f64,
-    /// Horizontal leading/trailing bar inset.
-    pub horizontal_inset: f64,
-    /// Gap between title and adjacent items.
-    pub item_spacing: f64,
-    /// Search field height.
-    pub search_height: f64,
-    /// Vertical search inset.
-    pub search_vertical_inset: f64,
-    /// Navigation back button size.
-    pub back_button_size: f64,
-    /// Navigation back button leading inset.
-    pub back_button_leading_inset: f64,
-    /// Navigation back button top inset.
-    pub back_button_top_inset: f64,
-}
-
 /// Layout metrics for backend-rendered tables.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TableMetrics {
@@ -725,10 +526,6 @@ pub struct TableMetrics {
 pub trait WidgetTheme {
     /// Return motion policy for interactive widget chrome.
     fn interaction_motion(&self) -> InteractionMotion;
-    /// Return motion policy for text input carets.
-    fn text_caret_motion(&self) -> TextCaretMotion;
-    /// Return motion policy for navigation transitions.
-    fn navigation_motion(&self) -> NavigationMotion;
 
     /// Declare the theme's backdrop materials in `registry`: both the
     /// backdrop shaders ([`MaterialShader`] keys, each with its
@@ -848,88 +645,38 @@ pub trait WidgetTheme {
     /// of the stepper's range is disabled.
     fn stepper(&self, spec: &super::StepperSpec, env: &Environment) -> super::StepperLook;
 
-    /// Return text input metrics.
-    fn input_field_metrics(&self) -> InputFieldMetrics;
-    /// Return the placeholder text color.
-    fn input_placeholder_color(&self) -> Color;
-    /// Return the text selection fill brush.
-    fn input_selection_paint(&self) -> Paint;
-    /// Return the caret brush for the current caret opacity.
-    fn input_caret_paint(&self, opacity: f32) -> Paint;
-    /// Draw text input chrome.
-    fn draw_input_field(
-        &self,
-        recorder: &mut Recorder,
-        bounds: Rect,
-        state: WidgetInteractionState,
-    );
-    /// Draw text input state layer.
-    fn draw_input_field_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _state: WidgetInteractionState,
-    ) {
-    }
-    /// Return text context menu metrics.
-    fn text_context_menu_metrics(&self) -> TextContextMenuMetrics;
-    /// Draw text context menu panel.
-    fn draw_text_context_menu_panel(&self, recorder: &mut Recorder, bounds: Rect);
-    /// Draw text context menu separator.
-    fn draw_text_context_menu_separator(&self, recorder: &mut Recorder, bounds: Rect);
+    /// The look of a text field, and of a secure field.
+    ///
+    /// Hydrolysis measures, places and records the field from the returned
+    /// look, and requests it again only when `spec` changes; everything else
+    /// reaches the look through its [`Chrome`](super::Chrome) and
+    /// [`Driven`](super::Driven) values, so a hover, a focus change or the
+    /// label floating moves live operands and records nothing.
+    fn text_field(&self, spec: &super::TextFieldSpec, env: &Environment) -> super::TextFieldLook;
 
-    /// Return picker metrics for a style.
-    fn picker_metrics(&self, style: PickerStyle) -> PickerMetrics;
-    /// Return the motion policy for radio picker selection changes.
-    fn radio_selection_motion(&self) -> RadioSelectionMotion;
-    /// Draw the picker indicator.
-    fn draw_picker_indicator(&self, recorder: &mut Recorder, bounds: Rect);
-    /// Draw picker field state layer.
-    fn draw_picker_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _state: WidgetInteractionState,
-    ) {
-    }
-    /// Draw the picker popup container.
-    fn draw_picker_popup(&self, recorder: &mut Recorder, popup_rect: Rect);
-    /// Draw one picker popup row background.
-    fn draw_picker_popup_row_background(
-        &self,
-        recorder: &mut Recorder,
-        row_rect: Rect,
-        selected: bool,
-    );
-    /// Draw one picker popup row state layer.
-    fn draw_picker_popup_row_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _row_rect: Rect,
-        _selected: bool,
-        _state: WidgetInteractionState,
-    ) {
-    }
-    /// Draw a picker separator.
-    fn draw_picker_separator(&self, recorder: &mut Recorder, separator: Rect);
-    /// Draw a radio picker indicator.
-    fn draw_radio_indicator(
-        &self,
-        recorder: &mut Recorder,
-        center: Point,
-        radius: f64,
-        state: RadioIndicatorState,
-    );
-    /// Draw radio picker state layer.
-    fn draw_radio_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _center: Point,
-        _radius: f64,
-        _selected: bool,
-        _state: WidgetInteractionState,
-    ) {
-    }
+    /// The look of every menu presentation: the picker popup, the text
+    /// context menu and the popup window a menu button opens.
+    ///
+    /// Hydrolysis measures, places and hit-tests a menu from the returned
+    /// look's layout and records its panel, separators and selected row
+    /// from its parts, and requests it again only when `spec` changes.
+    fn menu(&self, spec: &super::MenuSpec, env: &Environment) -> super::MenuLook;
+
+    /// The look of a menu picker's field.
+    ///
+    /// Hydrolysis measures, places, hit-tests and records the field from
+    /// the returned look, and requests it again only when `spec` changes;
+    /// the popup the field opens is the [`menu`](Self::menu) look.
+    fn menu_picker(&self, spec: &super::PickerSpec, env: &Environment) -> super::MenuPickerLook;
+
+    /// The look of a radio group: the indicator each item draws and the
+    /// measures the group is laid out by.
+    ///
+    /// Each item's indicator is live over whether the item is selected, so
+    /// a selection change moves the operands of the two items it touches
+    /// and records nothing.
+    fn radio_group(&self, spec: &super::PickerSpec, env: &Environment) -> super::RadioGroupLook;
+
     /// The look of a segmented picker.
     ///
     /// Hydrolysis measures, places, hit-tests, records and animates the
@@ -980,48 +727,28 @@ pub trait WidgetTheme {
         env: &Environment,
     ) -> super::IndicatorLook;
 
-    /// Return navigation bar layout metrics.
-    fn navigation_metrics(&self) -> NavigationMetrics;
-    /// Draw a navigation bar background.
-    fn draw_navigation_bar(&self, recorder: &mut Recorder, bounds: Rect, background: &Paint);
-    /// Draw a navigation bar separator.
-    fn draw_navigation_bar_separator(&self, recorder: &mut Recorder, bounds: Rect);
-    /// Draw a navigation back button.
-    fn draw_navigation_back_button(&self, recorder: &mut Recorder, bounds: Rect);
-
-    /// How the tab bar lays out its items when the bar itself is
-    /// `bar_width` wide and holds `item_count` items. `bar_width` is the
-    /// bar's own extent, not the tab container's: a sidebar strip passes its
-    /// strip width. Themes without a horizontal layout keep the default.
-    fn tabs_item_layout(&self, bar_width: f64, item_count: usize) -> TabItemLayout {
-        let _ = (bar_width, item_count);
-        TabItemLayout::Vertical
-    }
-    /// Return tabs layout metrics for items laid out as `layout`.
-    fn tabs_metrics(&self, layout: TabItemLayout) -> TabsMetrics;
-    /// Draw a tabs bar.
+    /// The look of the navigation chrome: every navigation bar, the back
+    /// button of a pushed page and of a collapsed split, and the page
+    /// transition's motion.
     ///
-    /// `surface` is the bar's surface already extended through the safe-area
-    /// regions of every edge it touches.
-    fn draw_tabs_bar(&self, recorder: &mut Recorder, surface: Rect);
-    /// Draw a tabs bar divider.
-    ///
-    /// `divider` is the bar's inner edge: the top row of a bottom bar, the
-    /// trailing column of a sidebar strip.
-    fn draw_tabs_bar_divider(&self, recorder: &mut Recorder, divider: Rect);
-    /// Draw the selected tab's indicator. The style decides its shape and
-    /// placement from the item's geometry.
-    fn draw_tabs_highlight(&self, recorder: &mut Recorder, item: TabItemGeometry);
-    /// Draw the state layer of a tab button. The style decides its shape and
-    /// placement from the item's geometry, like the selection indicator.
-    fn draw_tabs_button_state_layer(
+    /// Hydrolysis measures, places and hit-tests the chrome from the
+    /// returned look and requests it again only when `spec` changes; the
+    /// back button's chrome moves live operands on a press, a hover or a
+    /// focus change and records nothing.
+    fn navigation_bar(
         &self,
-        _recorder: &mut Recorder,
-        _item: TabItemGeometry,
-        _selected: bool,
-        _state: WidgetInteractionState,
-    ) {
-    }
+        spec: &super::NavigationSpec,
+        env: &Environment,
+    ) -> super::NavigationBarLook;
+
+    /// The look of a tab container: its bar's surface and divider, the
+    /// item layout and measures, the highlight of the selected item and
+    /// each item's chrome.
+    ///
+    /// Hydrolysis measures, places, hit-tests and records the bar from the
+    /// returned look and requests it again only when `spec` changes; a
+    /// selection change moves the highlight's operands and records nothing.
+    fn tabs(&self, spec: &super::TabsSpec, env: &Environment) -> super::TabsLook;
 
     /// Draw a scroll indicator.
     fn draw_scroll_indicator(&self, recorder: &mut Recorder, bounds: Rect);

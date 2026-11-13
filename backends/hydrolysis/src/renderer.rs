@@ -35,8 +35,10 @@ mod identity;
 mod input;
 mod interaction_layers;
 mod lifecycle;
+pub mod live_bar;
 pub mod live_progress;
 pub mod live_segmented;
+pub mod live_tabs;
 pub mod live_toggle;
 pub mod material;
 mod metadata;
@@ -217,9 +219,7 @@ use crate::platform::{
 use crate::scroll::ScrollHandle;
 #[cfg(test)]
 use crate::text::ParleyEngine;
-use crate::theme::{
-    RadioIndicatorState, RadioSelectionMotion, TextCaretMotion, TextContextMenuMetrics,
-};
+use crate::theme::TextCaretMotion;
 use crate::time::Instant;
 use crate::widgets::inset_rect;
 

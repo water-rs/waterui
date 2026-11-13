@@ -2,7 +2,7 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::live_toggle::LiveToggleParts;
 use crate::renderer::{
-    HydroNativeView, HydroState, InteractionKey, RenderContext, Track, TrackAction,
+    GroupOpacity, HydroNativeView, HydroState, InteractionKey, RenderContext, Track, TrackAction,
     WidgetRenderContext, measure_label_intrinsic,
 };
 use crate::theme::{
@@ -321,7 +321,8 @@ pub fn render_toggle_parts<E: crate::text::TextEngine>(
     };
     // The label is a retained node sub-view re-flushed at its rect; reactive
     // content stays live through the node's own per-frame re-flush, with no dispatch.
-    let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
+    let proposal = label_proposal(ctx.bounds, style, control);
+    let label_size = state.label_view.measure(ctx.renderer_mut(), env, proposal);
     let (control_bounds, label_bounds) =
         toggle_control_and_label_bounds(ctx.bounds, style, direction, control, label_size);
     if label_bounds.width() > 0.0 {
@@ -435,16 +436,13 @@ fn push_control<E: crate::text::TextEngine>(
         let render_ctx = ctx.render_context();
         parts.push(ctx.renderer_mut(), render_ctx);
     };
-    if let Some(opacity) = parts.toggle().live_group_opacity(flags) {
-        let operands = crate::renderer::ScopeOperands {
-            opacity: Some(opacity),
-            transform: None,
-        };
-        ctx.with_live_scope(group, operands, reach, body);
-    } else {
-        let opacity = parts.toggle().fixed_group_opacity(flags);
-        ctx.with_scope_if(opacity < 1.0, group, opacity, reach, body);
-    }
+    let toggle = parts.toggle();
+    let opacity = toggle.live_group_opacity(flags).map_or_else(
+        || GroupOpacity::Fixed(toggle.fixed_group_opacity(flags)),
+        GroupOpacity::Live,
+    );
+    let space = toggle.group_blend_space();
+    ctx.with_group_scope(group, opacity, space, reach, body);
 }
 
 /// The handler of a switch's press: a press that moves farther than `slop`
@@ -531,6 +529,18 @@ pub fn measure_toggle_intrinsic<E: crate::text::TextEngine>(
     )
 }
 
+/// What a toggle of `style` in `bounds` proposes to its label: a checkbox's
+/// label takes its fitted size after the control, a switch's label is offered
+/// the room up to the control, so a label that stretches fills it while text
+/// keeps its own width at the leading edge.
+fn label_proposal(bounds: kurbo::Rect, style: ToggleStyle, toggle: &ToggleControl) -> ProposalSize {
+    if matches!(drawn_style(style), ToggleStyle::Checkbox) {
+        return ProposalSize::UNSPECIFIED;
+    }
+    let room = (bounds.width() - toggle.size().width - toggle.get_label_spacing()).max(0.0);
+    ProposalSize::new(Some(crate::num_cast::f64_as_f32(room)), None)
+}
+
 /// Where a toggle of `style` places its control and its label in `bounds`.
 /// The label lies at the leading edge of a switch's frame and the control at
 /// its trailing edge; a checkbox's control leads its label. A right-to-left
@@ -564,6 +574,7 @@ fn left_to_right_bounds(
     let control_y0 = bounds.y0 + ((bounds.height() - size.height) / 2.0).max(0.0);
     let control_y1 = control_y0 + size.height;
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
+    let label = kurbo::Size::new(f64::from(label_size.width), f64::from(label_size.height));
     // `drawn_style` only answers `Checkbox` or `Switch`.
     if matches!(drawn_style(style), ToggleStyle::Checkbox) {
         let control_x0 = bounds.x0;
@@ -574,17 +585,9 @@ fn left_to_right_bounds(
         } else {
             control_x1
         };
-        let max_label_width = (bounds.x1 - label_x0).max(0.0);
-        let label_width = f64::from(label_size.width).min(max_label_width);
         (
             control,
-            label_beside_control_bounds(
-                label_x0,
-                label_x0 + label_width,
-                bounds,
-                control,
-                f64::from(label_size.height),
-            ),
+            label_beside_control_bounds(label_x0, bounds.x1, bounds, control, label),
         )
     } else {
         let control_x0 = (bounds.x1 - size.width).max(bounds.x0);
@@ -596,13 +599,7 @@ fn left_to_right_bounds(
         };
         (
             control,
-            label_beside_control_bounds(
-                bounds.x0,
-                label_x1,
-                bounds,
-                control,
-                f64::from(label_size.height),
-            ),
+            label_beside_control_bounds(bounds.x0, label_x1, bounds, control, label),
         )
     }
 }
@@ -670,7 +667,7 @@ mod tests {
             label_size,
         );
         assert_eq!(control, Rect::new(16.0, 24.0, 68.0, 56.0));
-        assert_eq!(label, Rect::new(76.0, 32.0, 320.0, 48.0));
+        assert_eq!(label, Rect::new(256.0, 32.0, 320.0, 48.0));
 
         let (control, label) = toggle_control_and_label_bounds(
             bounds,
@@ -683,6 +680,8 @@ mod tests {
         assert_eq!(label, Rect::new(230.0, 32.0, 294.0, 48.0));
     }
 
+    /// The switch sits at the trailing edge and its label keeps its own width
+    /// at the leading edge, however much room lies between them.
     #[test]
     fn switch_layout_keeps_control_trailing() {
         let (control, label) = toggle_control_and_label_bounds(
@@ -694,7 +693,7 @@ mod tests {
         );
 
         assert_eq!(control, Rect::new(268.0, 24.0, 320.0, 56.0));
-        assert_eq!(label, Rect::new(16.0, 32.0, 260.0, 48.0));
+        assert_eq!(label, Rect::new(16.0, 32.0, 80.0, 48.0));
     }
 
     #[test]

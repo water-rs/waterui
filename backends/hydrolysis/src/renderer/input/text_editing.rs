@@ -2,6 +2,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::text::{TextLayout as _, TextPosition, TextSelection};
+use crate::theme::MenuLayout;
 use cherenkov_record::Draw as _;
 use unicode_segmentation::UnicodeSegmentation;
 use waterui_core::contract_violation;
@@ -25,6 +26,36 @@ pub enum KeyPressOutcome {
     /// The press was forwarded to an embedded surface; its paired text is
     /// delivered too, as the surface contract.
     ForwardedToSurface,
+}
+
+/// The paints a field's look gives the caret and the selection, evaluated
+/// each frame the overlay draws so a token they follow shows in place.
+#[derive(Clone)]
+pub struct CaretPaints {
+    caret: crate::theme::Driven<cherenkov_record::Paint>,
+    selection: crate::theme::Driven<cherenkov_record::Paint>,
+}
+
+impl CaretPaints {
+    /// The caret and selection paints of `look`.
+    pub fn of(look: &crate::theme::TextFieldLook) -> Self {
+        Self {
+            caret: look.caret().paint().clone(),
+            selection: look.selection().clone(),
+        }
+    }
+
+    /// The paint `paint` gives a focused field over `frame`.
+    fn resolve(
+        paint: &crate::theme::Driven<cherenkov_record::Paint>,
+        frame: kurbo::Rect,
+    ) -> cherenkov_record::Paint {
+        paint.target(&crate::theme::Inputs::at_rest(
+            frame,
+            waterui_core::interaction::InteractionState::FOCUSED,
+            &(),
+        ))
+    }
 }
 
 #[derive(Clone)]
@@ -199,6 +230,10 @@ pub struct TextInputTarget<E: crate::text::TextEngine> {
     pub(crate) text_bounds: kurbo::Rect,
     pub(crate) text_clip_bounds: kurbo::Rect,
     pub(crate) content_alpha: f32,
+    /// The paints the focused field's caret and selection draw with. A
+    /// target the semantic walk emits has none: it has no theme and draws
+    /// nothing.
+    pub(crate) paints: Option<CaretPaints>,
     pub(crate) layout: E::Layout,
     /// The string the IME-visible layout was typeset from — the committed
     /// text with the live pre-edit spliced in (a text field) or the mask
@@ -362,6 +397,8 @@ pub struct TextInputTargetRegistration<E: crate::text::TextEngine> {
     pub(crate) text_bounds: kurbo::Rect,
     pub(crate) text_clip_bounds: kurbo::Rect,
     pub(crate) content_alpha: f32,
+    /// See [`TextInputTarget::paints`].
+    pub(crate) paints: Option<CaretPaints>,
     pub(crate) layout: E::Layout,
     /// See [`TextInputTarget::display_text`].
     #[cfg_attr(
@@ -909,10 +946,7 @@ pub fn selection_range_contains_index(
     !range.is_empty() && range.contains(&index)
 }
 
-pub fn text_context_menu_size(
-    nodes: &[PopupMenuNode],
-    metrics: TextContextMenuMetrics,
-) -> (f64, f64) {
+pub fn text_context_menu_size(nodes: &[PopupMenuNode], metrics: MenuLayout) -> (f64, f64) {
     let max_label_chars = crate::num_cast::usize_as_f64(
         nodes
             .iter()
@@ -936,7 +970,7 @@ pub fn text_context_menu_overlay_bounds(
     anchor: kurbo::Point,
     nodes: &[PopupMenuNode],
     window_bounds: kurbo::Rect,
-    metrics: TextContextMenuMetrics,
+    metrics: MenuLayout,
 ) -> kurbo::Rect {
     let (width, height) = text_context_menu_size(nodes, metrics);
     let preferred_x = anchor.x;
@@ -1076,27 +1110,27 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     ) {
         let focused = self.text_editing.focused_index();
         let menu_target = self.active_text_context_menu_target();
-        let theme = self.theme();
         for index in 0..self.text_editing.text_input_targets.len() {
             let target = &self.text_editing.text_input_targets[index];
             if target.content_alpha <= 0.0 || (focused != Some(index) && menu_target != Some(index))
             {
                 continue;
             }
+            // A target the semantic walk emitted has no look and is never
+            // drawn.
+            let Some(paints) = &target.paints else {
+                continue;
+            };
             let selection = refreshed_target_selection(target);
             if selection.is_collapsed() {
                 if focused != Some(index) {
                     continue;
                 }
                 let opacity = self.text_caret_opacity(self.frame_instant());
-                let paint = theme.input_caret_paint(opacity);
-                // Preserve the theme's paint semantics, including paints whose
-                // alpha is not the requested opacity. Zero still hides the caret.
-                let alpha = if opacity > 0.0 {
-                    target.content_alpha
-                } else {
-                    0.0
-                };
+                let paint = CaretPaints::resolve(&paints.caret, target.bounds);
+                // The look's paint blinks as a group: the blink's opacity
+                // over the text's own, so zero hides the caret.
+                let alpha = target.content_alpha * opacity;
                 let rect = target.cursor_area;
                 let clip = target.text_clip_bounds;
                 let caret = self.live_caret.get_or_insert_with(|| {
@@ -1111,7 +1145,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 let source: Rc<dyn crate::renderer::chrome::LiveSource> = caret.clone();
                 self.program().push_live(source, transform);
             } else {
-                let selection_paint = theme.input_selection_paint();
+                let selection_paint = CaretPaints::resolve(&paints.selection, target.bounds);
                 let mut scene = Recording::new();
                 scene.record_picture(transform, |draw| {
                     draw.clip(target.text_clip_bounds, |draw| {
@@ -1481,11 +1515,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             return;
         }
 
-        let theme = self.theme();
-        let metrics = theme.text_context_menu_metrics();
+        let menu = menu_look(&self.theme(), &overlay.env);
+        let metrics = menu.layout();
         {
             self.scene_mut().record_picture(transform, |draw| {
-                theme.draw_text_context_menu_panel(&mut *draw, overlay.bounds);
+                menu.record_panel(&mut *draw, overlay.bounds);
             });
         }
         for (index, row) in overlay.rows.iter().enumerate() {
@@ -1505,7 +1539,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     row.bounds.y1,
                 );
                 self.scene_mut().record_picture(transform, |draw| {
-                    theme.draw_text_context_menu_separator(&mut *draw, separator);
+                    menu.record_separator(&mut *draw, separator);
                 });
             }
 
@@ -1529,18 +1563,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     );
                 }
                 PopupMenuNode::Divider => {
-                    let separator = kurbo::Rect::new(
-                        row.bounds.x0 + metrics.separator_horizontal_inset,
-                        metrics
-                            .separator_thickness
-                            .mul_add(-0.5, f64::mul_add(row.bounds.height(), 0.5, row.bounds.y0)),
-                        row.bounds.x1 - metrics.separator_horizontal_inset,
-                        metrics
-                            .separator_thickness
-                            .mul_add(0.5, f64::mul_add(row.bounds.height(), 0.5, row.bounds.y0)),
-                    );
+                    let separator = menu.separator_rect(row.bounds);
                     self.scene_mut().record_picture(transform, |draw| {
-                        theme.draw_text_context_menu_separator(&mut *draw, separator);
+                        menu.record_separator(&mut *draw, separator);
                     });
                 }
             }
@@ -1607,7 +1632,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     ) {
         let env = &overlay.env;
         let theme = Rc::clone(&overlay.theme);
-        let metrics = theme.text_context_menu_metrics();
+        let metrics = menu_look(&theme, env).layout();
         let text = self.popup_menu_text_metrics(&items, metrics, env, &theme);
         let Some(origin) = popup_window_origin(
             LayoutPoint::new(
@@ -2225,7 +2250,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             .unwrap_or(HydrolysisTextContextMenuMode::NativeWindow);
 
         if mode == HydrolysisTextContextMenuMode::Overlay {
-            let metrics = self.theme().text_context_menu_metrics();
+            let metrics = menu_look(&self.theme(), &menu_env).layout();
             let bounds =
                 text_context_menu_overlay_bounds(point, &nodes, self.window_bounds, metrics);
             let mut rows = Vec::with_capacity(nodes.len());
@@ -2262,7 +2287,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // path a `.context_menu` takes: `show_popup_menu_nodes` sizes the
         // panel, builds the borderless window, and leaves submenu rows
         // wired to open deeper popups (water-rs/hydrolysis#317).
-        let metrics = self.theme().text_context_menu_metrics();
         let theme = self.theme();
         self.show_popup_menu_nodes(
             nodes,
@@ -2270,7 +2294,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 crate::num_cast::f64_as_f32(point.x),
                 crate::num_cast::f64_as_f32(point.y),
             ),
-            metrics,
             &menu_env,
             &theme,
         );
@@ -2628,6 +2651,7 @@ impl<E: crate::text::TextEngine> Clone for TextInputTarget<E> {
             text_bounds: self.text_bounds,
             text_clip_bounds: self.text_clip_bounds,
             content_alpha: self.content_alpha,
+            paints: self.paints.clone(),
             layout: self.layout.clone(),
             #[cfg_attr(
                 not(any(target_os = "android", test)),

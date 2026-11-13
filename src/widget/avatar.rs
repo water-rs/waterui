@@ -378,8 +378,7 @@ fn initials(name: &str) -> Str {
 fn first_grapheme(word: &str) -> String {
     word.graphemes(true)
         .next()
-        .map(str::to_uppercase)
-        .unwrap_or_default()
+        .map_or_default(str::to_uppercase)
 }
 
 #[cfg(test)]

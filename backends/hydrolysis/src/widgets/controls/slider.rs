@@ -4,8 +4,8 @@ use crate::renderer::chrome::{ChromeContent, IndicatorContent, LiveChromeParts, 
 #[cfg(feature = "accessibility")]
 use crate::renderer::slider_step_for_range;
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
-    slider_value_epsilon,
+    GroupOpacity, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext,
+    WidgetRenderContext, slider_value_epsilon,
 };
 use crate::theme::{
     DragMapping, Inputs, SliderLayout, SliderLook, SliderSpec, SpecTint, WidgetTheme,
@@ -366,7 +366,7 @@ fn place(look: &SliderLook, spec: &SliderSpec, measured: &Measured, bounds: Rect
     );
     let beside = |size: Size, x0: f64| {
         (size.width > 0.0 && row.height() > 0.0)
-            .then(|| label_beside_control_bounds(x0, x0 + size.width, row, track, size.height))
+            .then(|| label_beside_control_bounds(x0, x0 + size.width, row, track, size))
     };
     let left_label = |size: Size| beside(size, bounds.x0 + layout.label_inset);
     let right_label = |size: Size| beside(size, bounds.x1 - layout.label_inset - size.width);
@@ -870,18 +870,17 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
         role: "slider-group",
         item: 0,
     };
-    if let Some(opacity) = live.group_opacity() {
-        let operands = crate::renderer::ScopeOperands {
-            opacity: Some(opacity),
-            transform: None,
-        };
-        ctx.with_live_scope(key, operands, clip, body);
-    } else {
-        let opacity = look
-            .get_group_opacity()
-            .target(&Inputs::at_rest(track, flags, &()));
-        ctx.with_scope_if(opacity < 1.0, key, opacity, clip, body);
-    }
+    let opacity = live.group_opacity().map_or_else(
+        || {
+            GroupOpacity::Fixed(look.get_group_opacity().target(&Inputs::at_rest(
+                track,
+                flags,
+                &(),
+            )))
+        },
+        GroupOpacity::Live,
+    );
+    ctx.with_group_scope(key, opacity, look.get_group_blend_space(), clip, body);
     state.indicator_text = indicator_text;
 
     // A disabled slider registers no drag target: the pointer neither presses

@@ -342,8 +342,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let live_dynamics = self
             .render_tree
             .as_ref()
-            .map(RenderNode::collect_dynamic_identities)
-            .unwrap_or_default();
+            .map_or_default(RenderNode::collect_dynamic_identities);
         self.prune_dynamic_measurements(&live_dynamics);
 
         // The frame's window-level record closes before materialization:
@@ -614,6 +613,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             ScopeLayerProps {
                 transform: layer,
                 alpha,
+                blend_space: cherenkov_record::BlendSpace::Linear,
                 operands: ScopeOperands::default(),
             },
             clip,
@@ -641,9 +641,47 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             ScopeLayerProps {
                 transform: scope.transform,
                 alpha: 1.0,
+                blend_space: cherenkov_record::BlendSpace::Linear,
                 operands,
             },
             clip,
+            paint,
+            scope,
+            true,
+        );
+    }
+
+    /// [`Self::open_scope`] for a control's group: its layer fades at
+    /// `opacity` — at rest, or following the live operand — and composites
+    /// in `blend_space`, the space its members composite with each other in
+    /// too.
+    pub(crate) fn open_group_scope(
+        &mut self,
+        key: mount::ScopeKey,
+        (opacity, blend_space): (GroupOpacity, cherenkov_record::BlendSpace),
+        paint: kurbo::Affine,
+        clip: &ScopeClip,
+        scope: crate::renderer::ScopeDelta,
+    ) {
+        let (alpha, operands) = match opacity {
+            GroupOpacity::Fixed(alpha) => (alpha, ScopeOperands::default()),
+            GroupOpacity::Live(opacity) => (
+                1.0,
+                ScopeOperands {
+                    opacity: Some(opacity),
+                    transform: None,
+                },
+            ),
+        };
+        self.open_scope_layer(
+            key,
+            ScopeLayerProps {
+                transform: scope.transform,
+                alpha,
+                blend_space,
+                operands,
+            },
+            Some(clip),
             paint,
             scope,
             true,
@@ -690,6 +728,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let ScopeLayerProps {
             transform: layer,
             alpha,
+            blend_space,
             operands,
         } = layer;
         let space = self.program().origin() * layer;
@@ -714,6 +753,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 transform: layer,
                 clip: shape,
                 alpha,
+                blend_space,
                 live,
             },
             placement,
@@ -755,10 +795,21 @@ pub struct ScopeOperands {
     pub transform: Option<Operand<kurbo::Affine>>,
 }
 
-/// A scope layer's at-rest transform and opacity and its live operands.
+/// The opacity a control's group fades at: a fixed alpha, or a live
+/// operand the group's layer follows between renders.
+pub enum GroupOpacity {
+    /// An alpha that changes only with a render.
+    Fixed(f32),
+    /// An operand the layer follows without a render.
+    Live(Operand<f32>),
+}
+
+/// A scope layer's at-rest transform and opacity, the space it composites
+/// in, and its live operands.
 struct ScopeLayerProps {
     transform: kurbo::Affine,
     alpha: f32,
+    blend_space: cherenkov_record::BlendSpace,
     operands: ScopeOperands,
 }
 

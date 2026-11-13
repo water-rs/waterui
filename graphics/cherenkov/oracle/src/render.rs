@@ -13,9 +13,11 @@
 //!   in force), then composites onto the parent with its opacity and blend
 //!   mode (W3C Compositing and Blending Level 1). A destructive
 //!   Porter-Duff blend applies within the layer's clip, or over the whole
-//!   parent when there is no clip. A pass-through — an opaque,
-//!   `Normal`-blended, unfiltered layer, or such a group in linear space,
-//!   holding no non-`Normal` blend — opens no canvas: its content draws
+//!   parent when there is no clip. A layer's or group's members composite
+//!   with each other in its `blend_space`, and it composites onto the
+//!   parent in that space. A pass-through — an opaque, `Normal`-blended,
+//!   unfiltered layer or group in linear space, holding no non-`Normal`
+//!   blend — opens no canvas: its content draws
 //!   straight into the canvas it composites into, as the engines open no
 //!   isolation for it. A composite in a space other than the canvas's (an
 //!   sRGB-encoded group, an encoded backdrop member's sample) inside it
@@ -38,8 +40,8 @@
 //! capture is taken when its first member layer (in paint order: a layer's
 //! items in order, depth-first) is reached — a full-canvas copy of the
 //! compositing canvas the member is drawn into at that moment, meaning the
-//! nearest enclosing layer isolated for a filter or a non-Normal blend
-//! (clips and translucency never isolate). A member sitting inside
+//! nearest enclosing layer isolated for a filter, a non-Normal blend or a
+//! non-linear blend space (clips and translucency never isolate). A member sitting inside
 //! `opacity < 1` ancestors sees the semantic level's canvas composited
 //! with each ancestor's partial contents in order, at each ancestor's
 //! full opacity (see `flattened`): the sample is what lies behind
@@ -223,7 +225,8 @@ impl Canvas {
 /// One compositing level: a canvas plus the opacity and blend mode it
 /// composites into the level below it with. `semantic` marks the canvases
 /// a backdrop capture sees as its compositing target: the surface canvas
-/// and every layer isolated for a filter or a non-Normal blend. An
+/// and every layer isolated for a filter, a non-Normal blend or a
+/// non-linear blend space. An
 /// `opacity < 1` level is not a root: a capture looks through it. A
 /// pass-through layer or group opens no level at all. `space` is the
 /// canvas's storage space — an isolated or translucent level's own
@@ -274,14 +277,25 @@ fn blends_within(layer: &Layer) -> bool {
 }
 
 /// Whether a non-projective `layer` is a pass-through: opaque,
-/// `Normal`-blended, unfiltered and holding no non-`Normal` blend. Its
-/// content and children draw straight into the canvas it composites
-/// into, as the engines open no isolation for it.
+/// `Normal`-blended, linear, unfiltered and holding no non-`Normal`
+/// blend. Its content and children draw straight into the canvas it
+/// composites into, as the engines open no isolation for it.
 fn layer_passes_through(layer: &Layer) -> bool {
     layer.filter.is_none()
         && layer.opacity >= 1.0
         && layer.blend == BlendMode::Normal
+        && layer.blend_space == BlendSpace::Linear
         && !blends_within(layer)
+}
+
+/// Whether a non-projective `layer`'s level is a semantic isolation —
+/// filtered, blended or in a non-linear space — whose canvas a backdrop
+/// capture inside it reads, matching `open_isolation` in
+/// gpu/src/render/lower.rs.
+fn layer_is_semantic(layer: &Layer) -> bool {
+    layer.filter.is_some()
+        || layer.blend != BlendMode::Normal
+        || layer.blend_space != BlendSpace::Linear
 }
 
 /// Whether `group` is a pass-through: opaque, `Normal`-blended, linear,
@@ -305,19 +319,31 @@ const fn top(chain: &mut [Level]) -> &mut Canvas {
 /// the nearest semantic level's canvas, composited with the partial
 /// contents of every looked-through level above it in order — what the
 /// chain would produce if every pending level composited right now at
-/// full opacity. A looked-through level is provably `Normal`-blended (a
-/// non-Normal level is a root) and stored in the root's linear space —
-/// layers never sit inside an encoded group scope — so each composites
-/// source-over as its pop would at opacity 1.
+/// full opacity. A looked-through level is provably `Normal`-blended and
+/// linear (a non-Normal or non-linear level is a root), so each
+/// composites source-over in the linear space as its pop would at
+/// opacity 1; the result stays in the semantic level's storage space.
 fn flattened(chain: &[Level]) -> Canvas {
     let sem = chain
         .iter()
         .rposition(|level| level.semantic)
         .expect("the root level is semantic");
     let mut acc = chain[sem].canvas.clone();
+    let space = chain[sem].space;
     for level in &chain[sem + 1..] {
         for (dst, &src) in acc.pixels.iter_mut().zip(&level.canvas.pixels) {
-            *dst = src_over(*dst, src);
+            *dst = if level.space == space {
+                src_over(*dst, src)
+            } else {
+                composite_pixel(
+                    BlendMode::Normal,
+                    level.space,
+                    space,
+                    level.space,
+                    *dst,
+                    src,
+                )
+            };
         }
     }
     acc
@@ -416,12 +442,10 @@ fn walk_anchor_positions(
         {
             member_pos.entry(gid).or_default().push((canvas, idx));
         }
-        // A filtered, blended or projective layer is its children's
-        // compositing canvas; other layers share their parent's.
-        let canvas = if child.filter.is_some()
-            || child.blend != BlendMode::Normal
-            || child.projection.is_some()
-        {
+        // A filtered, blended, non-linear or projective layer is its
+        // children's compositing canvas; other layers share their
+        // parent's.
+        let canvas = if layer_is_semantic(child) || child.projection.is_some() {
             Some(idx)
         } else {
             canvas
@@ -878,21 +902,21 @@ impl Renderer {
                 canvas: Canvas::new(w, h, [0.0; 4]),
                 opacity: child.opacity,
                 blend: child.blend,
-                space: BlendSpace::Linear,
-                semantic: child.blend != BlendMode::Normal,
+                space: child.blend_space,
+                semantic: child.blend != BlendMode::Normal
+                    || child.blend_space != BlendSpace::Linear,
             });
-            self.backdrop_sample(child, tf, clips, top(chain), BlendSpace::Linear, backdrops)?;
+            self.backdrop_sample(child, tf, clips, top(chain), child.blend_space, backdrops)?;
         }
-        // A filtered layer is a semantic isolation too: a backdrop capture
-        // inside it reads this canvas, matching `isolate` in
-        // gpu/src/render/lower.rs. Translucency is not an isolation:
+        // A filtered or non-linear layer is a semantic isolation too: a
+        // backdrop capture inside it reads this canvas, matching `isolate`
+        // in gpu/src/render/lower.rs. Translucency is not an isolation:
         // `opacity < 1` levels are looked through.
-        let semantic = child.filter.is_some() || child.blend != BlendMode::Normal;
+        let semantic = layer_is_semantic(child);
         // A level that composites in isolation — isolated or translucent —
-        // stores its declared space (layers always linear); an opaque
-        // `Normal` level that isolates only for a blend within shares the
-        // space it composites into, and a member inside it composites in
-        // that space too.
+        // stores its declared space; an opaque `Normal` linear level that
+        // isolates only for a blend within shares the space it composites
+        // into, and a member inside it composites in that space too.
         let parent_space = chain.last().map_or(BlendSpace::Linear, |l| l.space);
         chain.push(Level {
             canvas: Canvas::new(w, h, [0.0; 4]),
@@ -903,7 +927,7 @@ impl Renderer {
                 child.blend
             },
             space: if semantic || child.opacity < 1.0 {
-                BlendSpace::Linear
+                child.blend_space
             } else {
                 parent_space
             },
@@ -1061,6 +1085,11 @@ impl Renderer {
             .clip
             .as_ref()
             .ok_or_else(|| RenderError::Projective("projective-unclipped".into()))?;
+        // The local image is reconstructed in the linear working space;
+        // a projective layer composites in no other.
+        if child.blend_space != BlendSpace::Linear {
+            return Err(RenderError::Projective("projective-blend-space".into()));
+        }
         let pose = pose(projection, child.transform).map_err(RenderError::Projective)?;
         let homography = to_raster(&pose, parent_tf);
         let Some(placement) = place(
@@ -1302,13 +1331,17 @@ impl Renderer {
 
     /// The canvas member `child`, which opens a level of its own, draws
     /// its sample into. A filtered member's sample stays outside the
-    /// filter: in the enclosing canvas when the member's opacity and blend
-    /// are no-ops, otherwise in its member scope. Any other member's
-    /// sample is its own level's bottom-most content.
+    /// filter: in the enclosing canvas when the member's composite — its
+    /// opacity, blend and blend space — is a no-op, otherwise in its
+    /// member scope. Any other member's sample is its own level's
+    /// bottom-most content.
     fn sample_canvas(child: &Layer) -> SampleCanvas {
         if child.filter.is_none() {
             SampleCanvas::Own
-        } else if child.opacity >= 1.0 && child.blend == BlendMode::Normal {
+        } else if child.opacity >= 1.0
+            && child.blend == BlendMode::Normal
+            && child.blend_space == BlendSpace::Linear
+        {
             SampleCanvas::Enclosing
         } else {
             SampleCanvas::MemberScope
@@ -2268,8 +2301,7 @@ fn scene_clip_stack(layer: &Layer, tf: Affine, _w: usize, _h: usize) -> Vec<Vec<
     layer
         .clip
         .as_ref()
-        .map(|c| vec![shape_edges(c, tf)])
-        .unwrap_or_default()
+        .map_or_default(|c| vec![shape_edges(c, tf)])
 }
 
 #[cfg(test)]

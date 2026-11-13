@@ -332,6 +332,16 @@ impl ShapeData {
     }
 }
 
+/// An interval's edges, both at its midpoint when `hi` has passed below `lo`.
+fn collapse_inverted(lo: f64, hi: f64) -> (f64, f64) {
+    if hi < lo {
+        let mid = lo.midpoint(hi);
+        (mid, mid)
+    } else {
+        (lo, hi)
+    }
+}
+
 fn push_point(lanes: &mut Vec<f64>, point: Point) {
     lanes.extend([point.x, point.y]);
 }
@@ -416,21 +426,32 @@ impl crate::animation::AnimLanes for ShapeData {
     }
 
     fn with_lanes(&self, lanes: &[f64]) -> Self {
+        // A spring that overshoots its target passes below a zero extent,
+        // which no shape has: the extent is zero, centred where the
+        // overshoot put it.
+        let rect = |lanes: &[f64]| {
+            let (x0, x1) = collapse_inverted(lanes[0], lanes[2]);
+            let (y0, y1) = collapse_inverted(lanes[1], lanes[3]);
+            Rect::new(x0, y0, x1, y1)
+        };
         match self {
-            Self::Rect(_) => Self::Rect(Rect::new(lanes[0], lanes[1], lanes[2], lanes[3])),
+            Self::Rect(_) => Self::Rect(rect(lanes)),
             Self::RoundedRect(_) => Self::RoundedRect(RoundedRect::from_rect(
-                Rect::new(lanes[0], lanes[1], lanes[2], lanes[3]),
+                rect(lanes),
                 RoundedRectRadii::new(lanes[4], lanes[5], lanes[6], lanes[7]),
             )),
             Self::Continuous(_) => Self::Continuous(ContinuousRect {
-                rect: Rect::new(lanes[0], lanes[1], lanes[2], lanes[3]),
+                rect: rect(lanes),
                 radii: RoundedRectRadii::new(lanes[4], lanes[5], lanes[6], lanes[7]),
                 smoothing: lanes[8],
             }),
-            Self::Circle(_) => Self::Circle(Circle::new(Point::new(lanes[0], lanes[1]), lanes[2])),
+            Self::Circle(_) => Self::Circle(Circle::new(
+                Point::new(lanes[0], lanes[1]),
+                lanes[2].max(0.0),
+            )),
             Self::Ellipse(ellipse) => Self::Ellipse(Ellipse::new(
                 Point::new(lanes[0], lanes[1]),
-                (lanes[2], lanes[3]),
+                (lanes[2].max(0.0), lanes[3].max(0.0)),
                 ellipse.rotation(),
             )),
             Self::Line(_) => Self::Line(Line::new(
@@ -521,6 +542,45 @@ mod tests {
     use kurbo::{Arc, BezPath, Point, Shape as _, Vec2};
 
     use super::*;
+
+    #[test]
+    fn overshot_lanes_leave_a_zero_extent_where_the_overshoot_put_it() {
+        use crate::animation::AnimLanes as _;
+
+        // A spring past its target turns the extents inside out: x1 < x0,
+        // y1 < y0, a negative radius.
+        let rect = |lanes: &[f64]| ShapeData::Rect(Rect::new(0., 0., 10., 10.)).with_lanes(lanes);
+        assert_eq!(
+            rect(&[4., 8., 2., 6.]),
+            ShapeData::Rect(Rect::new(3., 7., 3., 7.))
+        );
+
+        let rounded = ShapeData::RoundedRect(RoundedRect::new(0., 0., 10., 10., 2.))
+            .with_lanes(&[4., 8., 2., 6., 1., 1., 1., 1.]);
+        assert_eq!(
+            rounded,
+            ShapeData::RoundedRect(RoundedRect::new(3., 7., 3., 7., 1.))
+        );
+
+        let from = ShapeData::Continuous(ContinuousRect::new(Rect::new(0., 0., 20., 10.), 5.));
+        let overshot = from.with_lanes(&[10., 0., 4.73, 10., 5., 5., 5., 5., 0.]);
+        let ShapeData::Continuous(continuous) = overshot else {
+            panic!("a continuous rect stays continuous");
+        };
+        assert_eq!(continuous.rect, Rect::new(7.365, 0., 7.365, 10.));
+        // Reaches the corner clamp that panicked on a negative maximum.
+        let _ = continuous.to_path(0.1);
+
+        let circle = ShapeData::Circle(Circle::new((1., 2.), 3.)).with_lanes(&[1., 2., -4.]);
+        assert_eq!(circle, ShapeData::Circle(Circle::new((1., 2.), 0.)));
+
+        let ellipse =
+            ShapeData::Ellipse(Ellipse::new((1., 2.), (4., 3.), 0.)).with_lanes(&[1., 2., -3., 3.]);
+        assert_eq!(
+            ellipse,
+            ShapeData::Ellipse(Ellipse::new((1., 2.), (0., 3.), 0.))
+        );
+    }
 
     #[test]
     fn kurbo_shapes_keep_their_semantics() {

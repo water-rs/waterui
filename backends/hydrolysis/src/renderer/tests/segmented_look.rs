@@ -285,7 +285,7 @@ fn near(what: &str, value: f64, want: f64, tolerance: f64) {
     );
 }
 
-fn save(case: &str, stage: &str, snapshot: &HeadlessSnapshot) {
+pub(super) fn save(case: &str, stage: &str, snapshot: &HeadlessSnapshot) {
     let path = crate::testing::artifact_snapshot_path("hydrolysis", case, stage);
     std::fs::create_dir_all(path.parent().expect("the case directory"))
         .expect("the capture directory must be creatable");
@@ -595,11 +595,11 @@ fn a_backdrop_part_at_opacity_zero_leaves_the_labels_until_pressed() {
     let without = plain.sample(0);
     let mut lensed = Rig::themed(themed(true), LayoutDirection::LeftToRight, false);
     let rest = lensed.sample(0);
-    let (x, y) = (row.center().x, row.center().y);
-    lensed.down(x, y);
+    let center = row.center();
+    lensed.down(center.x, center.y);
     lensed.settle();
     let pressed = lensed.sample(0);
-    lensed.up(x, y);
+    lensed.up(center.x, center.y);
     lensed.settle();
     let released = lensed.sample(0);
     save("segmented_pressed_lens", "without", &without);
@@ -631,10 +631,10 @@ fn a_backdrop_part_at_opacity_zero_leaves_the_labels_until_pressed() {
             "{stage}, the hidden lens leaves the label as it is: {ink:?}, without it {plain_ink:?}"
         );
     }
-    let [r, g, b, _] = pixel(&pressed, ink.0, ink.1);
+    let [red, green, blue, _] = pixel(&pressed, ink.0, ink.1);
     assert!(
-        r > 240 && g > 240 && b > 240,
-        "while pressed the lens captures the label and saturates it: ({r}, {g}, {b})"
+        red > 240 && green > 240 && blue > 240,
+        "while pressed the lens captures the label and saturates it: ({red}, {green}, {blue})"
     );
 }
 

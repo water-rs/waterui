@@ -44,6 +44,7 @@ impl RuntimeDriver for NoopDriver {
             tree_update: None,
             content_types: hydrolysis::AccessibilityContentTypes::new(),
             snapshot: None,
+            device_lost: false,
             ui_focus: None,
         }
     }
@@ -200,6 +201,7 @@ impl RuntimeDriver for EmitThenSettleDriver {
             tree_update: (self.pumps == self.emit_at).then(|| self.update.clone()),
             content_types: hydrolysis::AccessibilityContentTypes::new(),
             snapshot: None,
+            device_lost: false,
             ui_focus: None,
         }
     }
@@ -231,6 +233,127 @@ impl RuntimeDriver for EmitThenSettleDriver {
     fn wait_for_local_work(&self, _timeout: Duration) -> bool {
         false
     }
+}
+
+/// One scripted capture frame: a snapshot, or a frame its device loss
+/// skipped, or neither.
+#[derive(Clone, Copy)]
+enum CaptureFrame {
+    Captured,
+    DeviceLost,
+    Empty,
+}
+
+/// A driver that answers each capture pump with the next scripted
+/// [`CaptureFrame`] and records the instant and capture flag every pump got.
+/// The headless runtime's own device-loss reporting is covered against a
+/// real device in Hydrolysis (`generation_tests`); this checks what the
+/// capture does with the report.
+struct CaptureDriver {
+    frames: std::collections::VecDeque<CaptureFrame>,
+    pumps: Vec<(std::time::Instant, bool)>,
+}
+
+impl CaptureDriver {
+    fn new(frames: impl IntoIterator<Item = CaptureFrame>) -> Self {
+        Self {
+            frames: frames.into_iter().collect(),
+            pumps: Vec::new(),
+        }
+    }
+}
+
+impl RuntimeDriver for CaptureDriver {
+    fn pump_at(&mut self, at: std::time::Instant, capture_snapshot: bool) -> DriverPumpResult {
+        self.pumps.push((at, capture_snapshot));
+        let frame = self
+            .frames
+            .pop_front()
+            .expect("the capture pumped past its scripted frames");
+        DriverPumpResult {
+            rebuilt: false,
+            profile: hydrolysis::FrameProfile::default(),
+            tree_update: None,
+            content_types: hydrolysis::AccessibilityContentTypes::new(),
+            snapshot: matches!(frame, CaptureFrame::Captured)
+                .then(|| Snapshot::new(1, 1, vec![255, 0, 0, 255])),
+            device_lost: matches!(frame, CaptureFrame::DeviceLost),
+            ui_focus: None,
+        }
+    }
+
+    fn is_settled(&self) -> bool {
+        true
+    }
+
+    fn is_settled_except_perpetual(&self) -> bool {
+        true
+    }
+
+    fn has_pending_semantic_update(&self) -> bool {
+        false
+    }
+
+    fn perform_accessibility_action(&mut self, _request: AccessibilityActionRequest) -> bool {
+        false
+    }
+
+    fn push_input_event(&mut self, _event: InputEvent) {}
+
+    fn request_redraw(&mut self) {}
+
+    fn clear_ui_focus(&mut self) -> bool {
+        false
+    }
+
+    fn wait_for_local_work(&self, _timeout: Duration) -> bool {
+        false
+    }
+}
+
+/// A capture whose frames lose their device re-renders at the same frame
+/// instant until one carries a snapshot, so the capture neither fails on a
+/// recoverable loss nor lands a frame later than it asked for.
+#[test]
+fn capture_rerenders_a_device_lost_frame_at_the_same_instant() {
+    let mut app = mounted_on(
+        CaptureDriver::new([
+            CaptureFrame::DeviceLost,
+            CaptureFrame::DeviceLost,
+            CaptureFrame::Captured,
+        ]),
+        tree(vec![node(1, Role::GROUP, Some("root"), None, true)]),
+    );
+    let snapshot = app.capture_frame();
+    assert_eq!((snapshot.width(), snapshot.height()), (1, 1));
+
+    let pumps = &app.runtime.pumps;
+    assert_eq!(pumps.len(), 3, "two lost frames, then the captured one");
+    assert!(
+        pumps
+            .iter()
+            .all(|&(at, capture)| at == pumps[0].0 && capture),
+        "every attempt captures at the one frame instant"
+    );
+}
+
+/// A capture frame that carries no snapshot without a device loss to
+/// explain it fails at once, naming why.
+#[test]
+fn capture_without_a_snapshot_or_device_loss_fails_fast() {
+    let mut app = mounted_on(
+        CaptureDriver::new([CaptureFrame::Empty]),
+        tree(vec![node(1, Role::GROUP, Some("root"), None, true)]),
+    );
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = app.capture_frame();
+    }));
+    let message = panic_message(&*outcome.expect_err("an empty capture frame must fail"));
+    assert!(
+        message.contains("did not produce a snapshot") && message.contains("no device loss"),
+        "the failure names the missing snapshot and that no loss explains it: {message}"
+    );
+    assert_eq!(app.runtime.pumps.len(), 1, "no retry without a device loss");
 }
 
 /// A full-tree update carrying a `role`/`label` node under the root.
@@ -299,12 +422,12 @@ mod token_probe {
 
     use hydrolysis::theme::{
         BadgeMetrics, ButtonLook, ButtonSpec, Chrome, CornerShape, DividerMetrics, DragMapping,
-        FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionMotion, Knob,
-        Label, LinearProgressLook, ListMetrics, Motion, NavigationMetrics, NavigationMotion,
-        PickerMetrics, PressFeedback, ProgressControl, ProgressSpec, RadioIndicatorState,
-        RadioSelectionMotion, SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook,
-        StepperSpec, Surface, TabItemGeometry, TabItemLayout, TableMetrics, TabsMetrics,
-        TextCaretMotion, TextContextMenuMetrics, ToggleSpec, WidgetInteractionState, WidgetTheme,
+        FocusIndicator, HitRegion, IndicatorLook, InteractionMotion, Knob, Label,
+        LinearProgressLook, ListMetrics, MenuLook, MenuPickerLook, MenuSpec, Motion,
+        NavigationBarLook, NavigationSpec, PickerSpec, PressFeedback, ProgressControl,
+        ProgressSpec, RadioGroupLook, SliderLayout, SliderLook, SliderSpec, StateLayer,
+        StepperLook, StepperSpec, Surface, TableMetrics, TabsLook, TabsSpec, TextFieldLook,
+        TextFieldSpec, ToggleSpec, WidgetTheme,
     };
     use hydrolysis::theme::{CheckboxLook, SwitchDrag, SwitchLook};
     use kurbo::{Point, Rect};
@@ -312,12 +435,11 @@ mod token_probe {
     use waterui::color::Srgb;
     use waterui::component::text;
     use waterui::env::use_env;
-    use waterui::form::picker::PickerStyle;
-    use waterui::graphics::backend::draw::{Paint, Recorder};
+    use waterui::graphics::backend::draw::Recorder;
     use waterui::reactive::constant;
     use waterui::text::font::Font;
     use waterui::theme::{color as theme_color, install_color_signal, installed_color_signal};
-    use waterui::{Color, EasingCurve, Environment, Signal as _, SignalExt as _, View};
+    use waterui::{Color, Environment, Signal as _, SignalExt as _, View};
 
     use crate::Style;
 
@@ -376,23 +498,6 @@ mod token_probe {
             }
         }
 
-        fn text_caret_motion(&self) -> TextCaretMotion {
-            TextCaretMotion {
-                fade_cycle_duration: Duration::from_millis(1_060),
-                frame_interval: Duration::from_millis(530),
-                min_opacity: 0.2,
-            }
-        }
-
-        fn navigation_motion(&self) -> NavigationMotion {
-            NavigationMotion {
-                transition_duration: Duration::from_millis(450),
-                transition_easing: EasingCurve::bezier(0.2, 0.0, 0.0, 1.0),
-                shared_axis_slide_distance: 30.0,
-                fade_through_threshold: 0.35,
-            }
-        }
-
         fn button(&self, _spec: &ButtonSpec, _env: &Environment) -> ButtonLook {
             let chrome = Chrome::new(
                 Surface::clear(CornerShape::radius(0.0)),
@@ -423,108 +528,31 @@ mod token_probe {
             hydrolysis::testing::plain_stepper_look()
         }
 
+        fn text_field(&self, _spec: &TextFieldSpec, _env: &Environment) -> TextFieldLook {
+            hydrolysis::testing::plain_text_field_look(
+                hydrolysis::testing::plain_chrome(),
+                hydrolysis::testing::plain_input_metrics(),
+            )
+        }
+
+        fn menu(&self, _spec: &MenuSpec, _env: &Environment) -> MenuLook {
+            hydrolysis::testing::plain_menu_look()
+        }
+
+        fn menu_picker(&self, _spec: &PickerSpec, _env: &Environment) -> MenuPickerLook {
+            hydrolysis::testing::plain_menu_picker_look()
+        }
+
+        fn radio_group(&self, _spec: &PickerSpec, _env: &Environment) -> RadioGroupLook {
+            hydrolysis::testing::plain_radio_group_look()
+        }
+
         fn segmented_picker(
             &self,
             _spec: &hydrolysis::theme::SegmentedSpec,
             _env: &Environment,
         ) -> hydrolysis::theme::SegmentedLook {
             hydrolysis::testing::plain_segmented_look()
-        }
-
-        fn input_field_metrics(&self) -> InputFieldMetrics {
-            InputFieldMetrics {
-                label_height: 14.0,
-                min_width: 100.0,
-                min_height: 32.0,
-                horizontal_inset: 8.0,
-                vertical_inset: 6.0,
-            }
-        }
-
-        fn input_placeholder_color(&self) -> Color {
-            Color::srgb(0, 0, 0)
-        }
-
-        fn input_selection_paint(&self) -> Paint {
-            Paint::Solid(Srgb::new(0.20, 0.45, 0.90).resolve().with_alpha(0.28))
-        }
-
-        fn input_caret_paint(&self, opacity: f32) -> Paint {
-            Paint::Solid(Srgb::new(0.12, 0.14, 0.18).resolve().with_alpha(opacity))
-        }
-
-        fn draw_input_field(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _state: WidgetInteractionState,
-        ) {
-        }
-
-        fn text_context_menu_metrics(&self) -> TextContextMenuMetrics {
-            TextContextMenuMetrics {
-                row_height: 56.0,
-                horizontal_padding: 16.0,
-                vertical_padding: 12.0,
-                min_width: 112.0,
-                max_width: 320.0,
-                width_per_char: 8.5,
-                corner_radius: 4.0,
-                separator_horizontal_inset: 16.0,
-                separator_thickness: 1.0,
-            }
-        }
-
-        fn draw_text_context_menu_panel(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn draw_text_context_menu_separator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn picker_metrics(&self, _style: PickerStyle) -> PickerMetrics {
-            PickerMetrics {
-                min_width: 72.0,
-                min_height: 28.0,
-                horizontal_inset: 8.0,
-                vertical_inset: 6.0,
-                label_spacing: 8.0,
-                indicator_space: 18.0,
-                radio_indicator_size: 16.0,
-                radio_label_spacing: 8.0,
-                radio_row_spacing: 8.0,
-                popup_top_spacing: 4.0,
-                popup_row_height: 48.0,
-                popup_corner_radius: 6.0,
-            }
-        }
-
-        fn radio_selection_motion(&self) -> RadioSelectionMotion {
-            RadioSelectionMotion {
-                inner_grow: Animation::linear(Duration::from_millis(1)),
-                inner_opacity: Animation::linear(Duration::from_millis(1)),
-                outer_color: Animation::linear(Duration::from_millis(1)),
-            }
-        }
-
-        fn draw_picker_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-
-        fn draw_picker_popup(&self, _recorder: &mut Recorder, _popup_rect: Rect) {}
-
-        fn draw_picker_popup_row_background(
-            &self,
-            _recorder: &mut Recorder,
-            _row_rect: Rect,
-            _selected: bool,
-        ) {
-        }
-
-        fn draw_picker_separator(&self, _recorder: &mut Recorder, _separator: Rect) {}
-
-        fn draw_radio_indicator(
-            &self,
-            _recorder: &mut Recorder,
-            _center: Point,
-            _radius: f64,
-            _state: RadioIndicatorState,
-        ) {
         }
 
         fn slider(&self, _spec: &SliderSpec, _env: &Environment) -> SliderLook {
@@ -572,49 +600,14 @@ mod token_probe {
             ))
         }
 
-        fn navigation_metrics(&self) -> NavigationMetrics {
-            NavigationMetrics {
-                automatic_bar_height: 64.0,
-                inline_bar_height: 64.0,
-                medium_bar_height: 112.0,
-                large_bar_height: 152.0,
-                inline_title_height: 28.0,
-                medium_title_height: 36.0,
-                large_title_height: 36.0,
-                title_leading_inset: 16.0,
-                title_trailing_inset: 16.0,
-                large_title_bottom_inset: 28.0,
-                horizontal_inset: 4.0,
-                item_spacing: 0.0,
-                search_height: 56.0,
-                search_vertical_inset: 4.0,
-                back_button_size: 40.0,
-                back_button_leading_inset: 4.0,
-                back_button_top_inset: 12.0,
-            }
+        fn navigation_bar(&self, _spec: &NavigationSpec, _env: &Environment) -> NavigationBarLook {
+            hydrolysis::testing::plain_navigation_look()
         }
 
-        fn draw_navigation_bar(
-            &self,
-            _recorder: &mut Recorder,
-            _bounds: Rect,
-            _background: &Paint,
-        ) {
+        fn tabs(&self, _spec: &TabsSpec, _env: &Environment) -> TabsLook {
+            hydrolysis::testing::plain_tabs_look()
         }
 
-        fn draw_navigation_bar_separator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn draw_navigation_back_button(&self, _recorder: &mut Recorder, _bounds: Rect) {}
-        fn tabs_metrics(&self, _layout: TabItemLayout) -> TabsMetrics {
-            TabsMetrics {
-                bar_height: 48.0,
-                button_min_width: 48.0,
-                button_horizontal_inset: 16.0,
-                icon_label_spacing: 4.0,
-            }
-        }
-        fn draw_tabs_bar(&self, _recorder: &mut Recorder, _surface: Rect) {}
-        fn draw_tabs_bar_divider(&self, _recorder: &mut Recorder, _divider: Rect) {}
-        fn draw_tabs_highlight(&self, _recorder: &mut Recorder, _item: TabItemGeometry) {}
         fn draw_scroll_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
 
         fn divider_metrics(&self) -> DividerMetrics {

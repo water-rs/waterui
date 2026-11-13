@@ -719,8 +719,7 @@ fn build_nodes(
     let palette: Vec<skrifa::color::Color> = font_ref
         .color_palettes()
         .get(0)
-        .map(|p| p.colors().to_vec())
-        .unwrap_or_default();
+        .map_or_default(|p| p.colors().to_vec());
     let mut painter = ColrPainter {
         font: &font_ref,
         coords: &location,

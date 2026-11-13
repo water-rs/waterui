@@ -429,10 +429,7 @@ fn normalize_locale_tag(raw: &str) -> String {
             part.to_ascii_lowercase()
         } else if part.len() == 4 && part.chars().all(|c| c.is_ascii_alphabetic()) {
             let mut chars = part.chars();
-            let first = chars
-                .next()
-                .map(|c| c.to_ascii_uppercase())
-                .unwrap_or_default();
+            let first = chars.next().map_or_default(|c| c.to_ascii_uppercase());
             let rest = chars.as_str().to_ascii_lowercase();
             format!("{first}{rest}")
         } else if (part.len() == 2 && part.chars().all(|c| c.is_ascii_alphabetic()))
