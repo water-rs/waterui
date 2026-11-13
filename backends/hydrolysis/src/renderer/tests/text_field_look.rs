@@ -453,3 +453,63 @@ fn a_spec_change_follows_the_looks_label_font() {
         "a look with no font restores the label's own: {restored} against {own}"
     );
 }
+
+/// The world-space extent along x of the glyphs of the one run a mount draws.
+#[derive(Default)]
+struct RunExtent(Vec<(f64, f64)>);
+
+impl<E: crate::text::TextEngine> LayerVisitor<E> for RunExtent {
+    fn run(&mut self, world: kurbo::Affine, recording: &Recording) {
+        if let Some((transform, glyphs)) = recording.glyph_runs().next() {
+            let at = |glyph: &crate::renderer::recording::Glyph| {
+                (world * transform * kurbo::Point::new(f64::from(glyph.x), 0.0)).x
+            };
+            if let (Some(first), Some(last)) = (glyphs.first(), glyphs.last()) {
+                self.0.push((at(first), at(last)));
+            }
+        }
+    }
+}
+
+/// A label view rests and floats at the field's leading inset, mirrored in a
+/// right-to-left layout, as the prompt standing in for a label does, rather
+/// than centred in a box the field's width.
+#[test]
+fn a_label_view_sits_at_the_leading_inset() {
+    // One glyph's advance bounds how far a run's last glyph origin lies from
+    // the run's trailing edge.
+    const GLYPH: f64 = 16.0;
+    for direction in [LayoutDirection::LeftToRight, LayoutDirection::RightToLeft] {
+        let value = Binding::container(Str::default());
+        let mut fixture = Fixture::new(
+            AnyView::new(vstack((TextField::new("Name", &value),))),
+            direction,
+        );
+        for floated in [false, true] {
+            if floated {
+                fixture.focus_field();
+                fixture.settle();
+            }
+            let field = fixture.rect();
+            let mut extent = RunExtent::default();
+            visit(&fixture.runtime.renderer().mount_roots(), &mut extent);
+            let [(first, last)] =
+                <[_; 1]>::try_from(extent.0).expect("an empty field draws only its label");
+            let inset = METRICS.horizontal_inset;
+            match direction {
+                LayoutDirection::LeftToRight => assert!(
+                    (first - (field.x0 + inset)).abs() < 3.0,
+                    "{direction:?} floated={floated}: the label starts at the leading inset \
+                     {} but its first glyph is at {first}",
+                    field.x0 + inset
+                ),
+                LayoutDirection::RightToLeft => assert!(
+                    (field.x1 - inset) - last < GLYPH && last < field.x1 - inset,
+                    "{direction:?} floated={floated}: the label ends at the leading inset \
+                     {} but its last glyph is at {last}",
+                    field.x1 - inset
+                ),
+            }
+        }
+    }
+}

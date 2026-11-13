@@ -11,11 +11,14 @@ use crate::text::{TextLayout as _, TextPosition};
 use crate::theme::{ModalInteraction, TextFieldLook};
 use crate::widgets::controls::field_look::{FieldChrome, FloatLabel, field_look, placeholder_text};
 use core::num::NonZeroUsize;
+use nami::Signal as _;
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::cursor::CursorStyle;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
-use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
+use waterui_core::layout::{
+    HorizontalAlignment, LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions,
+};
 use waterui_core::{Environment, Native, Str};
 use waterui_form::secure::SecureFieldConfig;
 use waterui_text::styled::{Style, StyledStr};
@@ -412,7 +415,7 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
             (prompt_label_height, f64::from(size.height))
         })
     };
-    let place = LabelPlace::new(field_rect, &look, band_height, measured_height);
+    let place = LabelPlace::new(field_rect, &look, band_height, measured_height, env);
     if has_label {
         float.place(
             is_focused,
@@ -725,6 +728,7 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
             &look,
             label_height,
             f64::from(label_size.height),
+            env,
         );
         float.place(is_focused, !plain_value.is_empty(), place.floated);
         float_label(ctx, float, field_rect, |ctx| {
@@ -932,6 +936,7 @@ struct LabelPlace {
     resting: kurbo::Rect,
     floated: kurbo::Affine,
     measured_height: f64,
+    direction: LayoutDirection,
 }
 
 impl LabelPlace {
@@ -940,24 +945,44 @@ impl LabelPlace {
         look: &TextFieldLook,
         label_height: f64,
         measured_label_height: f64,
+        env: &Environment,
     ) -> Self {
+        let direction = waterui_core::layout::layout_direction(env).snapshot();
         let inset = look.metrics().horizontal_inset;
         let floating = look.floating_label();
         let resting = material_input_resting_label_rect(field_rect, inset, measured_label_height);
         let band = material_input_label_rect(field_rect, inset, floating.get_top(), label_height);
-        let floated = kurbo::Affine::translate((band.x0, band.y0))
+        // The label floats about its leading corner, so it stays at the
+        // leading inset as it scales into the band.
+        let (band_x, resting_x) = match direction {
+            LayoutDirection::LeftToRight => (band.x0, resting.x0),
+            LayoutDirection::RightToLeft => (band.x1, resting.x1),
+        };
+        let floated = kurbo::Affine::translate((band_x, band.y0))
             * kurbo::Affine::scale(floating.get_scale())
-            * kurbo::Affine::translate((-resting.x0, -resting.y0));
+            * kurbo::Affine::translate((-resting_x, -resting.y0));
         Self {
             resting,
             floated,
             measured_height: measured_label_height,
+            direction,
         }
     }
 
     /// The label's box at rest, in its own space.
     fn rest(&self) -> kurbo::Affine {
         kurbo::Affine::translate((self.resting.x0, self.resting.y0))
+    }
+
+    /// Where a box `width` wide starts within [`extent`](Self::extent) to sit
+    /// at its leading edge: the start of the band, or its end when the layout
+    /// reads right to left.
+    fn leading_offset(&self, width: f64) -> kurbo::Affine {
+        let x = match self.direction {
+            LayoutDirection::LeftToRight => 0.0,
+            LayoutDirection::RightToLeft => self.resting.width() - width,
+        };
+        kurbo::Affine::translate((x, 0.0))
     }
 
     /// The box the label lays out in: as wide as the band it floats into.
@@ -1025,12 +1050,24 @@ fn place_label_view<E: crate::text::TextEngine>(
     label_view: &mut RetainedSubview<E>,
     place: &LabelPlace,
 ) {
-    let extent = place.extent();
-    let rest = place.rest();
-    let child = ctx.child(rest, extent);
+    // The label takes the room it needs, capped to the band's width, and sits
+    // at the leading edge of the box it floats from — as the prompt stands in
+    // as the label — rather than centred in a box the field's width.
+    let band = place.extent();
+    let band_width = crate::num_cast::f64_as_f32(band.width());
+    let wanted = label_view.measure(
+        ctx.renderer_mut(),
+        env,
+        ProposalSize::new(Some(band_width), None),
+    );
     let size = LayoutSize::new(
-        crate::num_cast::f64_as_f32(extent.width()),
-        crate::num_cast::f64_as_f32(extent.height()),
+        wanted.width.min(band_width),
+        crate::num_cast::f64_as_f32(band.height()),
+    );
+    let rest = place.rest() * place.leading_offset(f64::from(size.width));
+    let child = ctx.child(
+        rest,
+        kurbo::Rect::new(0.0, 0.0, f64::from(size.width), band.height()),
     );
     // The label's semantics are merged into the field's own text-input node, so
     // the floating label sub-view flushes visual-only.
@@ -1041,7 +1078,7 @@ fn place_label_view<E: crate::text::TextEngine>(
                 renderer,
                 child,
                 env,
-                ProposalSize::UNSPECIFIED,
+                ProposalSize::new(Some(band_width), None),
                 size,
                 label_area,
                 rest,
