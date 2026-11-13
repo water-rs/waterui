@@ -13,5 +13,8 @@ crate-type = ["lib"]
 [features]
 dev = ["waterui/dynamic_linking"]
 
+[lints]
+workspace = true
+
 [dependencies]
 waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }

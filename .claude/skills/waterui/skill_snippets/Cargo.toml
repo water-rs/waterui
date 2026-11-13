@@ -21,6 +21,9 @@ dev = ["waterui/dynamic_linking"]
 # `cargo check -p skill_snippets --all-targets --features compile-gate-tests`.
 compile-gate-tests = []
 
+[lints]
+workspace = true
+
 [dependencies]
 # `ts` is what SKILL.md's "TypeScript views" snippets compile against:
 # `tsx!`, `TsProps`, and `waterui::ts::schema` exist only under it.
