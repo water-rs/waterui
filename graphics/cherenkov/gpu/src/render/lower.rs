@@ -1969,7 +1969,7 @@ impl<'a> Lowering<'a> {
         raster_scratch: &'a mut path::EmitScratch,
         compute: Option<CoverageLimit>,
     ) -> Self {
-        anchor_scratch.clear();
+        // Each walk clears `anchor_scratch` before it plans.
         Self {
             pictures: None,
             frame,
@@ -2072,6 +2072,7 @@ impl<'a> Lowering<'a> {
         bindings: &Bindings,
     ) -> Result<(), RenderError> {
         self.anchor_scratch.prepare(groups);
+        self.anchor_scratch.hidden.begin(tree.has_hidden_layers());
         self.plan_order = 0;
         let start = self.start(tree);
         self.plan_layer(start, (tree, bindings), groups, Affine::IDENTITY, None)?;
@@ -2303,7 +2304,11 @@ impl<'a> Lowering<'a> {
         let node = tree.layer(id);
         self.plan_order += 1;
         let order = self.plan_order;
-        self.plan_hidden(id, node, bindings);
+        // A tree with no layer that shows nothing has none to plan.
+        let hiding = self.anchor_scratch.hidden.is_active();
+        if hiding {
+            self.plan_hidden(id, node, bindings);
+        }
         if !self.anchor_scratch.refs.is_empty() && self.anchor_scratch.refs.contains(&id) {
             self.anchor_scratch.pos.insert(id, (canvas, order));
             self.anchor_scratch.hidden.anchor(id);
@@ -2326,7 +2331,9 @@ impl<'a> Lowering<'a> {
         for child in &node.children {
             self.plan_layer(*child, (tree, bindings), groups, children, canvas)?;
         }
-        self.anchor_scratch.hidden.leave(id);
+        if hiding {
+            self.anchor_scratch.hidden.leave(id);
+        }
         Ok(())
     }
 

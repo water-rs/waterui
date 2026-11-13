@@ -1584,11 +1584,15 @@ impl<'a, 'b> Lowering<'a, 'b> {
         }
         self.plan_order += 1;
         let order = self.plan_order;
-        // A local root's opacity and blend apply where its image composes.
-        let local_root = self.local.is_some_and(|(root, _)| root == id);
-        self.anchor_scratch
-            .hidden
-            .enter(id, !local_root && node.shows_nothing());
+        // A tree with no layer that shows nothing has none to plan.
+        let hiding = self.anchor_scratch.hidden.is_active();
+        if hiding {
+            // A local root's opacity and blend apply where its image composes.
+            let local_root = self.local.is_some_and(|(root, _)| root == id);
+            self.anchor_scratch
+                .hidden
+                .enter(id, !local_root && node.shows_nothing());
+        }
         if !self.anchor_scratch.refs.is_empty() && self.anchor_scratch.refs.contains(&id) {
             self.anchor_scratch
                 .pos
@@ -1655,7 +1659,9 @@ impl<'a, 'b> Lowering<'a, 'b> {
         if node.filter.is_some() {
             scopes.pop();
         }
-        self.anchor_scratch.hidden.leave(id);
+        if hiding {
+            self.anchor_scratch.hidden.leave(id);
+        }
         Ok(())
     }
 
@@ -1782,6 +1788,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         self.anchor_scratch
             .refs
             .extend(filters.backdrop_anchors(surface));
+        self.anchor_scratch.hidden.begin(tree.has_hidden_layers());
         self.backdrops.clear();
         self.scope_aprons.clear();
         self.plan_order = 0;

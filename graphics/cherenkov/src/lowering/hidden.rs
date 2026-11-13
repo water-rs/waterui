@@ -30,12 +30,18 @@ enum Need {
 /// The hidden layers a planning walk meets, and which of them the drawing
 /// walk skips.
 ///
-/// The planning walk reports each layer with [`Self::enter`] and
-/// [`Self::leave`], every backdrop member with [`Self::member`] and every
-/// anchor with [`Self::anchor`]; [`Self::resolve`] then decides, and the
-/// drawing walk asks [`Self::skips`] and [`Self::captures`].
+/// A walk starts with [`Self::begin`], which is active only over a tree
+/// that [has a hidden layer](crate::SurfaceTree::has_hidden_layers): an
+/// inactive walk records nothing, skips nothing and captures every group.
+/// The planning walk of an active one reports each layer with
+/// [`Self::enter`] and [`Self::leave`], every backdrop member with
+/// [`Self::member`] and every anchor with [`Self::anchor`];
+/// [`Self::resolve`] then decides, and the drawing walk asks
+/// [`Self::skips`] and [`Self::captures`].
 #[derive(Debug, Default)]
 pub struct HiddenLayers {
+    /// The walk records hidden layers: its tree has one.
+    active: bool,
     /// The hidden layers open on the planning walk, outermost first.
     open: Vec<LayerId>,
     /// Every hidden layer the planning walk entered.
@@ -54,8 +60,12 @@ pub struct HiddenLayers {
 }
 
 impl HiddenLayers {
-    /// Forgets the last walk, keeping the allocations.
+    /// Forgets the last walk, keeping the allocations. An inactive walk
+    /// recorded nothing to forget.
     pub fn clear(&mut self) {
+        if !std::mem::take(&mut self.active) {
+            return;
+        }
         self.open.clear();
         self.hidden.clear();
         self.needs.clear();
@@ -76,18 +86,38 @@ impl HiddenLayers {
         layers as u64
     }
 
-    /// The planning walk enters layer `id`, which shows nothing when
-    /// `hides`. Every layer entered is left with [`Self::leave`] once its
-    /// children are planned.
+    /// Starts a walk, after [`Self::clear`], over a tree that has a layer
+    /// that shows nothing when `any_hidden`; otherwise the walk is inactive.
+    pub fn begin(&mut self, any_hidden: bool) {
+        debug_assert!(
+            !self.active && self.hidden.is_empty() && self.members.is_empty(),
+            "a walk begins after `clear`"
+        );
+        self.active = any_hidden;
+    }
+
+    /// Whether the walk records hidden layers: only an active walk's
+    /// planning reports its layers with [`Self::enter`] and
+    /// [`Self::leave`].
+    #[must_use]
+    pub const fn is_active(&self) -> bool {
+        self.active
+    }
+
+    /// The planning walk of an active walk enters layer `id`, which shows
+    /// nothing when `hides`. Every layer entered is left with
+    /// [`Self::leave`] once its children are planned.
     pub fn enter(&mut self, id: LayerId, hides: bool) {
+        debug_assert!(self.active, "only an active walk enters layers");
         if hides {
             self.open.push(id);
             self.hidden.push(id);
         }
     }
 
-    /// The planning walk leaves layer `id`.
+    /// The planning walk of an active walk leaves layer `id`.
     pub fn leave(&mut self, id: LayerId) {
+        debug_assert!(self.active, "only an active walk leaves layers");
         if self.open.last() == Some(&id) {
             self.open.pop();
         }
@@ -110,6 +140,9 @@ impl HiddenLayers {
     /// A member of group `group` is planned at this point; it is the
     /// group's capture point when `captures_here`.
     pub fn member(&mut self, group: u64, captures_here: bool) {
+        if !self.active {
+            return;
+        }
         self.members.push((group, self.open.last().copied()));
         if captures_here {
             self.needs
@@ -204,9 +237,33 @@ mod tests {
         LayerId::new(raw)
     }
 
+    /// A walk over a tree that has a hidden layer.
+    fn active() -> HiddenLayers {
+        let mut hidden = HiddenLayers::default();
+        hidden.begin(true);
+        hidden
+    }
+
+    #[test]
+    fn an_inactive_hidden_walk_records_nothing_and_captures_every_group() {
+        let mut hidden = HiddenLayers::default();
+        hidden.begin(false);
+        assert!(!hidden.is_active());
+        hidden.member(7, true);
+        hidden.anchor(layer(3));
+        hidden.keep();
+        hidden.resolve(&[(layer(3), 7)]);
+        assert!(!hidden.skips(layer(1)));
+        assert!(hidden.captures(7));
+        assert_eq!(hidden.heap_bytes(), 0, "an inactive walk allocates nothing");
+        hidden.clear();
+        hidden.begin(true);
+        assert!(hidden.is_active());
+    }
+
     #[test]
     fn a_walk_without_hidden_layers_skips_nothing_and_captures_every_group() {
-        let mut hidden = HiddenLayers::default();
+        let mut hidden = active();
         hidden.enter(layer(1), false);
         hidden.member(7, true);
         hidden.leave(layer(1));
@@ -217,7 +274,7 @@ mod tests {
 
     #[test]
     fn a_member_under_a_hidden_layer_is_skipped_with_its_capture() {
-        let mut hidden = HiddenLayers::default();
+        let mut hidden = active();
         hidden.enter(layer(1), true);
         hidden.enter(layer(2), false);
         hidden.member(7, true);
@@ -230,7 +287,7 @@ mod tests {
 
     #[test]
     fn a_hidden_capture_point_a_drawn_member_reads_is_walked() {
-        let mut hidden = HiddenLayers::default();
+        let mut hidden = active();
         hidden.enter(layer(1), true);
         hidden.member(7, true);
         hidden.leave(layer(1));
@@ -244,7 +301,7 @@ mod tests {
 
     #[test]
     fn a_hidden_anchor_a_drawn_member_reads_is_walked() {
-        let mut hidden = HiddenLayers::default();
+        let mut hidden = active();
         hidden.enter(layer(1), true);
         hidden.anchor(layer(3));
         hidden.leave(layer(1));
@@ -258,7 +315,7 @@ mod tests {
     fn a_kept_layer_walks_its_hidden_ancestors_and_the_captures_its_members_read() {
         // Layer 1 holds group 7's capture point; layer 2 must be walked and
         // draws a member of group 7, so layer 1 is walked as well.
-        let mut hidden = HiddenLayers::default();
+        let mut hidden = active();
         hidden.enter(layer(1), true);
         hidden.member(7, true);
         hidden.leave(layer(1));
