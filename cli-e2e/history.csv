@@ -151,3 +151,7 @@ date,run_id,event,sha,platform,runner,image,rustc,status,cold_verified,cli_insta
 2026-11-12,43262251410,schedule,ad6d25966883cf696679f5f9fe10960b4fecd4b2,windows,windows-latest,,rustc 1.99.1 (58cf8f9c3 2026-10-13),success,True,929,550,,0,1111,941,,,,52
 2026-11-12,43262251410,schedule,ad6d25966883cf696679f5f9fe10960b4fecd4b2,linux,ubuntu-latest,ubuntu26 20261101.186.1,rustc 1.99.1 (58cf8f9c3 2026-10-13),success,True,563,280,,0,591,516,,,,28
 2026-11-12,43262251410,schedule,ad6d25966883cf696679f5f9fe10960b4fecd4b2,android,ubuntu-latest,ubuntu26 20261101.186.1,rustc 1.99.1 (58cf8f9c3 2026-10-13),success,True,563,338,52,0,452,,623,422,,
+2026-11-13,43460540170,schedule,8a1b8a4554008621dda0790e4c23f97d2698f78f,macos,xcode-27,macos27 20261104.0337.1,rustc 1.100.0 (0ef1bc386 2026-11-09),failure,True,778,477,,0,,,,,,
+2026-11-13,43460540170,schedule,8a1b8a4554008621dda0790e4c23f97d2698f78f,windows,windows-latest,,rustc 1.99.1 (58cf8f9c3 2026-10-13),success,True,972,402,,0,866,725,,,,45
+2026-11-13,43460540170,schedule,8a1b8a4554008621dda0790e4c23f97d2698f78f,linux,ubuntu-latest,ubuntu26 20261111.196.1,rustc 1.99.1 (58cf8f9c3 2026-10-13),success,True,477,348,,0,735,670,,,,40
+2026-11-13,43460540170,schedule,8a1b8a4554008621dda0790e4c23f97d2698f78f,android,ubuntu-latest,ubuntu26 20261101.186.1,rustc 1.99.1 (58cf8f9c3 2026-10-13),success,True,477,235,38,0,301,,414,301,,
