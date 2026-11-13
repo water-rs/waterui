@@ -970,8 +970,11 @@ impl SurfaceTree {
     /// nothing, except that the `Decay` property change lands without
     /// animation.
     pub fn apply(&mut self, op: LayerOp) {
-        let content = matches!(&op, LayerOp::Content(..));
-        let touched = match &op {
+        // Both matches read `op` in place, never through a reference: a
+        // borrowed argument is copied, not moved, into `apply_layer_op`,
+        // which costs a `memcpy` of the whole op on every commit.
+        let content = matches!(op, LayerOp::Content(..));
+        let touched = match op {
             LayerOp::Create(_) | LayerOp::Remove(_) => None,
             LayerOp::Transform(id, _)
             | LayerOp::Translation(id, _)
@@ -987,7 +990,7 @@ impl SurfaceTree {
             | LayerOp::ClearProjection(id)
             | LayerOp::Opacity(id, _)
             | LayerOp::Keyframes(id, _)
-            | LayerOp::Blend(id, _) => Some((*id, false)),
+            | LayerOp::Blend(id, _) => Some((id, false)),
             // The space changes how the subtree composites within the
             // layer, like its filter, not only how the layer composes.
             LayerOp::BlendSpace(id, _)
@@ -996,10 +999,10 @@ impl SurfaceTree {
             | LayerOp::Filter(id, _)
             | LayerOp::Backdrop(id, _)
             | LayerOp::HostWindow(id, _)
-            | LayerOp::Content(id, _) => Some((*id, true)),
+            | LayerOp::Content(id, _) => Some((id, true)),
             LayerOp::Push { parent, .. }
             | LayerOp::Insert { parent, .. }
-            | LayerOp::Detach { parent, .. } => Some((*parent, true)),
+            | LayerOp::Detach { parent, .. } => Some((parent, true)),
         };
         self.apply_layer_op(op);
         if let Some((id, inner)) = touched {
