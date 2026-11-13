@@ -32,7 +32,7 @@ use crate::record::{Binding, Content, ContentSpare, Live, LiveOwner, SampleFlag}
 use crate::shape::Shape;
 use crate::shape::ShapeData;
 use crate::size::LayoutSize;
-use crate::style::{BlendMode, FilterId};
+use crate::style::{BlendMode, BlendSpace, FilterId};
 use crate::target::{BackdropSampling, GpuInstalls, ProjectiveLayers, Queue, Target};
 use crate::tree::RunningTracks;
 use crate::{BackdropSample, Picture, WorkingColor};
@@ -1892,6 +1892,15 @@ impl<T: Target> LayerEdit<T> {
     /// Sets the blend mode the layer composites onto its parent with.
     pub fn blend(&mut self, blend: BlendMode) -> &mut Self {
         self.queue(Op::Layer(LayerOp::Blend(self.layer, blend)));
+        self
+    }
+
+    /// Sets the blend space, [`BlendSpace::Linear`] until set, with the
+    /// meaning of [`Group::blend_space`](crate::Group::blend_space): the
+    /// layer's content and children composite with each other in this
+    /// space, and the layer composites onto its parent in it.
+    pub fn blend_space(&mut self, space: BlendSpace) -> &mut Self {
+        self.queue(Op::Layer(LayerOp::BlendSpace(self.layer, space)));
         self
     }
 

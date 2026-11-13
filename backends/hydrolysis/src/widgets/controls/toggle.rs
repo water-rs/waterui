@@ -2,7 +2,7 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::live_toggle::LiveToggleParts;
 use crate::renderer::{
-    HydroNativeView, HydroState, InteractionKey, RenderContext, Track, TrackAction,
+    GroupOpacity, HydroNativeView, HydroState, InteractionKey, RenderContext, Track, TrackAction,
     WidgetRenderContext, measure_label_intrinsic,
 };
 use crate::theme::{
@@ -436,16 +436,13 @@ fn push_control<E: crate::text::TextEngine>(
         let render_ctx = ctx.render_context();
         parts.push(ctx.renderer_mut(), render_ctx);
     };
-    if let Some(opacity) = parts.toggle().live_group_opacity(flags) {
-        let operands = crate::renderer::ScopeOperands {
-            opacity: Some(opacity),
-            transform: None,
-        };
-        ctx.with_live_scope(group, operands, reach, body);
-    } else {
-        let opacity = parts.toggle().fixed_group_opacity(flags);
-        ctx.with_scope_if(opacity < 1.0, group, opacity, reach, body);
-    }
+    let toggle = parts.toggle();
+    let opacity = toggle.live_group_opacity(flags).map_or_else(
+        || GroupOpacity::Fixed(toggle.fixed_group_opacity(flags)),
+        GroupOpacity::Live,
+    );
+    let space = toggle.group_blend_space();
+    ctx.with_group_scope(group, opacity, space, reach, body);
 }
 
 /// The handler of a switch's press: a press that moves farther than `slop`

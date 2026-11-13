@@ -142,15 +142,19 @@ fn p3_cs(engine: &'static str) -> Result<ColorSpace, BenchError> {
     })
 }
 
-/// Whether this level contains only encoded-sRGB groups, possibly nested
-/// in non-isolating transform layers such as native-resolution scaling.
+/// Whether this level contains only encoded-sRGB groups and layers,
+/// possibly nested in non-isolating transform layers such as
+/// native-resolution scaling.
 fn encoded_root(layer: &Layer) -> bool {
     layer.opacity >= 1.0
         && layer.blend == SBlend::Normal
         && !layer.items.is_empty()
         && layer.items.iter().all(|item| match item {
             Item::Group(group) => group.blend_space == BlendSpace::SrgbEncoded,
-            Item::Layer(child) => child.clip.is_none() && encoded_root(child),
+            Item::Layer(child) => {
+                child.blend_space == BlendSpace::SrgbEncoded
+                    || (child.clip.is_none() && encoded_root(child))
+            }
             Item::Draw(_) => false,
         })
 }
@@ -248,9 +252,20 @@ fn encode_layer(
     counters: &mut Counters,
 ) -> Result<(), BenchError> {
     counters.layers += 1;
+    // A layer in a non-linear space maps like a group in it: only where
+    // the enclosing level stores that same space (`encode_group`).
+    let encoded = layer.blend_space != BlendSpace::Linear;
+    if encoded && layer.blend_space != space {
+        return Err(BenchError::Unsupported {
+            engine,
+            feature: Feature::BlendSpace(layer.blend_space),
+            api: Some(GROUP_SPACE_API),
+        });
+    }
     cmds.push(Cmd::Save);
     cmds.push(Cmd::Concat(sk_matrix(layer.transform)));
-    let grouped = layer.clip.is_some() || layer.blend != SBlend::Normal || layer.opacity < 1.0;
+    let grouped =
+        layer.clip.is_some() || layer.blend != SBlend::Normal || layer.opacity < 1.0 || encoded;
     if grouped {
         if let Some(clip) = &layer.clip {
             cmds.push(Cmd::Clip(sk_path(
@@ -261,7 +276,10 @@ fn encode_layer(
         let mut lp = Paint::default();
         lp.set_blend_mode(blend(layer.blend));
         lp.set_alpha_f(layer.opacity.clamp(0.0, 1.0) as f32);
-        cmds.push(Cmd::SaveLayer(lp, None));
+        let space = encoded
+            .then(|| space_cs(engine, layer.blend_space))
+            .transpose()?;
+        cmds.push(Cmd::SaveLayer(lp, space));
     }
     // Content and children draw translated by -scroll_offset inside the
     // clip; `motion` is unsupported (not in `skia_features`).

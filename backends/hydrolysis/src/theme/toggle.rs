@@ -17,7 +17,7 @@
 
 use std::rc::Rc;
 
-use cherenkov_record::ShapeData;
+use cherenkov_record::{BlendSpace, ShapeData};
 use kurbo::{Rect, Size, Vec2};
 use waterui_controls::ControlSize;
 use waterui_controls::toggle::ToggleStyle;
@@ -128,6 +128,7 @@ struct ControlParts {
     motion: Motion,
     hit: HitRegion,
     group_opacity: Driven<f32, bool>,
+    group_blend_space: BlendSpace,
     /// The parts recorded below the backdrop, bottom first; every part when
     /// the control has no backdrop.
     below: Vec<Rc<dyn CustomPart<bool>>>,
@@ -156,6 +157,7 @@ impl core::fmt::Debug for ToggleControl {
             .field("motion", &self.0.motion)
             .field("hit", &self.0.hit)
             .field("group_opacity", &self.0.group_opacity)
+            .field("group_blend_space", &self.0.group_blend_space)
             .field("below", &self.0.below.len())
             .field("backdrop", &self.0.backdrop)
             .field("above", &self.0.above.len())
@@ -176,6 +178,7 @@ impl ToggleControl {
             motion,
             hit: HitRegion::NONE,
             group_opacity: Driven::constant(1.0),
+            group_blend_space: BlendSpace::Linear,
             below: Vec::new(),
             backdrop: None,
             above: Vec::new(),
@@ -199,6 +202,15 @@ impl ToggleControl {
     #[must_use]
     pub fn group_opacity(mut self, opacity: impl Into<Driven<f32, bool>>) -> Self {
         self.parts_mut().group_opacity = opacity.into();
+        self
+    }
+
+    /// The space the group of [`Self::group_opacity`] composites in:
+    /// its parts composite with each other in it, and the group fades onto
+    /// what lies beneath in it. [`BlendSpace::Linear`] by default.
+    #[must_use]
+    pub fn group_blend_space(mut self, space: BlendSpace) -> Self {
+        self.parts_mut().group_blend_space = space;
         self
     }
 
@@ -296,6 +308,12 @@ impl ToggleControl {
     #[must_use]
     pub fn get_group_opacity(&self) -> &Driven<f32, bool> {
         &self.0.group_opacity
+    }
+
+    /// The space the group composites in.
+    #[must_use]
+    pub fn get_group_blend_space(&self) -> BlendSpace {
+        self.0.group_blend_space
     }
 
     /// The backdrop stage, when the control has one.

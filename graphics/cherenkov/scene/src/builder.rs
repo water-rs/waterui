@@ -1,6 +1,6 @@
 use crate::{
-    BackdropGroup, BlendMode, Color, Draw, FillRule, GlyphRun, Group, Item, Layer, LayerFilter,
-    Motion, Paint, ResourceHash, Sampling, Scene, Shape, StrokeStyle,
+    BackdropGroup, BlendMode, BlendSpace, Color, Draw, FillRule, GlyphRun, Group, Item, Layer,
+    LayerFilter, Motion, Paint, ResourceHash, Sampling, Scene, Shape, StrokeStyle,
 };
 use kurbo::{Affine, Rect, Vec2};
 
@@ -97,6 +97,7 @@ impl SceneBuilder {
         fn clip(shape: Shape);
         fn opacity(opacity: f64);
         fn blend(blend: BlendMode);
+        fn blend_space(blend_space: BlendSpace);
         fn backdrop(group: u32);
         fn backdrop_effect(effect: crate::BackdropEffectSpec);
         fn backdrop_outer(px: f64);
@@ -138,6 +139,13 @@ impl LayerBuilder<'_> {
     /// Set the blend mode.
     pub const fn blend(&mut self, blend: BlendMode) -> &mut Self {
         self.layer.blend = blend;
+        self
+    }
+
+    /// Set the blend space the layer's items composite in and the layer
+    /// composites onto its parent in.
+    pub const fn blend_space(&mut self, blend_space: BlendSpace) -> &mut Self {
+        self.layer.blend_space = blend_space;
         self
     }
 

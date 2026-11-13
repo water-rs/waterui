@@ -5,7 +5,9 @@ use kurbo::{Affine, Rect, RoundedRect, Vec2};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use cherenkov::testing::LayerOp;
-use cherenkov::{Animatable, BlendMode, FilterId, LayerId, Prop, Retarget, ShapeData, SurfaceTree};
+use cherenkov::{
+    Animatable, BlendMode, BlendSpace, FilterId, LayerId, Prop, Retarget, ShapeData, SurfaceTree,
+};
 
 /// A clip or backdrop change that lands at once.
 const fn snapped<T>(target: T) -> Retarget<T> {
@@ -327,6 +329,17 @@ fn a_non_default_blend_is_not_promoted() {
     });
     tree.apply(LayerOp::Blend(LayerId::new(9), BlendMode::Screen));
     assert_eq!(verdict(&tree), Err(Ineligible::Blend));
+}
+
+#[test]
+fn a_non_linear_blend_space_is_not_promoted() {
+    let mut tree = scene();
+    tree.apply(LayerOp::BlendSpace(VIDEO, BlendSpace::SrgbEncoded));
+    assert_eq!(verdict(&tree), Err(Ineligible::BlendSpace));
+    // An encoded ancestor composites its subtree through an offscreen.
+    let mut tree = scene();
+    tree.apply(LayerOp::BlendSpace(PARENT, BlendSpace::SrgbEncoded));
+    assert_eq!(verdict(&tree), Err(Ineligible::Isolated(PARENT)));
 }
 
 #[test]
