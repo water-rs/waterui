@@ -19,7 +19,7 @@ the manifest metadata round trip without checking out or publishing a release.
 exist yet — the candidate revision it will publish. The named revision is
 checked out so every recorded fact is read from the released tree.
 
-`nightly` certifies the `dev` revision a green full-matrix run tested, as
+`nightly` certifies the `main` revision a green full-matrix run tested, as
 the immutable `nightly-<date>-<sha12>` tag `nightly.yml` publishes. It
 refuses a revision that is already certified or that does not advance the
 newest certification, so the certified line only moves forward.
@@ -220,7 +220,8 @@ def write_outputs(outputs):
 def prepare_nightly():
     repository = os.environ["GITHUB_REPOSITORY"]
     revision = git("rev-parse", "HEAD")
-    if revision != os.environ["GITHUB_SHA"]:
+    expected = os.environ.get("TARGET_REVISION") or os.environ["GITHUB_SHA"]
+    if revision != expected:
         raise RuntimeError("The checkout is not the revision tested by this run")
     date = git("show", "-s", "--format=%cs", "HEAD").replace("-", "")
     tag = f"nightly-{date}-{revision[:12]}"
@@ -255,7 +256,7 @@ def main():
         "release preflight passes the candidate commit before the tag exists)",
     )
     commands.add_parser(
-        "nightly", help="certify the dev revision a green full-matrix run tested"
+        "nightly", help="certify the main revision a green full-matrix run tested"
     )
     args = parser.parse_args()
     if args.self_check:

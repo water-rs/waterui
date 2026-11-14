@@ -35,7 +35,7 @@ Framework channels are not Rust toolchain channels. The CLI supports:
 
 | Channel | Source and guarantee |
 | --- | --- |
-| `dev` | The integration `dev` branch, resolved to an exact commit; compilation-checked, not test-certified. |
+| `dev` | The `main` branch (`refs/heads/main`), resolved to an exact commit that passed `ci.yml`; compilation-checked, not test-certified. |
 | `nightly` | An immutable tagged revision whose complete required integration suite passed, with the tested dependency/backend combination. It is not a moving development branch or merely the latest commit of the day. |
 | `stable` | Formal crates.io releases with compatible native-backend versions; publishing remains owned by release-plz. Scaffold packages whose workspace requirement is a git pin are experimental: the stable `framework.json` omits them from `scaffold` and records them under `experimental-packages`. |
 

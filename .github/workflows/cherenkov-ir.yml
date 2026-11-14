@@ -20,7 +20,7 @@ on:
       base:
         description: Baseline revision; the gate measures against its merge base with head
         required: false
-        default: origin/dev
+        default: origin/main
         type: string
       path_scaling:
         description: Also profile fresh and retained solid and dashed road-network preparation
@@ -28,7 +28,7 @@ on:
         default: false
         type: boolean
   pull_request:
-    branches: [dev]
+    branches: [main]
     paths:
       - graphics/cherenkov/**
       - .github/workflows/cherenkov-ir.yml
@@ -214,11 +214,11 @@ jobs:
       - name: Measure the merge base
         run: |
           git checkout "${{ steps.pair.outputs.base }}"
-          cargo bench --timings --locked -p cherenkov-cpu --features testing --bench kernels_ir -- --save-baseline=dev
+          cargo bench --timings --locked -p cherenkov-cpu --features testing --bench kernels_ir -- --save-baseline=main
       - name: Measure the merge commit and gate
         run: |
           git checkout "${{ steps.pair.outputs.head }}"
-          cargo bench --timings --locked -p cherenkov-cpu --features testing --bench kernels_ir -- --baseline=dev --callgrind-limits='ir=1%'
+          cargo bench --timings --locked -p cherenkov-cpu --features testing --bench kernels_ir -- --baseline=main --callgrind-limits='ir=1%'
       - name: Upload gungraun's output directory
         if: always()
         uses: actions/upload-artifact@v4

@@ -1,4 +1,4 @@
-# Determinator rules for the fast gate (ci.yml `scope`, dev.yml `scope`),
+# Determinator rules for the fast gate (ci.yml `scope`),
 # read by the shared lexoliu/affected-crates tool.
 #
 # A changed file under a package's directory already belongs to that

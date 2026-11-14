@@ -189,7 +189,7 @@ for /f "tokens=1 delims= " %%x in ("!git_args!") do set "git_cmd=%%x"
 if "!git_cmd!"=="--version" (echo git version 2.43.0 & exit /b 0)
 call :contains git_args "rev-parse --is-shallow-repository"
 if %errorlevel%==0 (call :respond GIT_SHALLOW & exit /b !errorlevel!)
-call :contains git_args "rev-parse --verify refs/remotes/origin/dev"
+call :contains git_args "rev-parse --verify refs/remotes/origin/main"
 if %errorlevel%==0 (call :respond GIT_HEAD & exit /b !errorlevel!)
 call :contains git_args "rev-parse --verify"
 if %errorlevel%==0 (call :respond GIT_REVISION & exit /b !errorlevel!)

@@ -40,8 +40,8 @@
 # The revisions this inventory was frozen from. The lock file carries the
 # per-file hashes; these commits are the human-readable anchor.
 android_backend = { repository = "water-rs/android-backend", revision = "ebaf59f04b987474ba099e62c94a288b189726cf" }
-waterui = { repository = "water-rs/waterui", revision = "1b80ef536b547838e676c4ee04e74c78e78aa94d", branch = "dev" }
-hydrolysis = { repository = "water-rs/hydrolysis", revision = "4a34cf9acf44218d496c43ecdee008f8f5eeabd7", branch = "dev" }
+waterui = { repository = "water-rs/waterui", revision = "1b80ef536b547838e676c4ee04e74c78e78aa94d", branch = "main" }
+hydrolysis = { repository = "water-rs/hydrolysis", revision = "4a34cf9acf44218d496c43ecdee008f8f5eeabd7", branch = "main" }
 
 [defaults]
 # android-backend e2e/manifest.json "defaults" block, verbatim.

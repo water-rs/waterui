@@ -1,7 +1,8 @@
 name: Nightly
 
-# The framework's own test run (#923): the full matrix (#379), once a day
-# against `dev` and on demand. Every check that a pull request used to pay
+# The framework's certification gate (#923): the full matrix (#379), running
+# once a day against the latest commit on `main` and manually on demand for a
+# specific commit. Every check that a pull request used to pay
 # for on every push and that a change cannot break in the default-features
 # shape lives here: the workspace tests and doctests, every clippy shape,
 # macOS and Windows, the all-features runs, the macOS suites, the examples,
@@ -12,11 +13,12 @@ name: Nightly
 # the in-tree Apple backend is the exception — its packaged-example suite
 # (`apple-e2e.yml`) is invoked here so the certification covers it.
 #
-# A green run certifies its commit as an immutable `nightly-*` prerelease,
-# which `water channel nightly` resolves and the `Nightly healthy` check in
-# ci.yml requires on a pull request into `main`: a red nightly blocks the
-# release, not integration on `dev`. A red run on `dev` opens one tracking
-# issue and keeps it current, and the next certified run closes it.
+# A green run certifies its commit as an immutable `nightly-*` prerelease
+# (`water channel nightly`) and opens or updates the `release-plz` release PR
+# against that certified commit. A red run on `main` opens or updates one
+# tracking issue, and opens no release PR; the next certified run closes it.
+# To verify a commit or cut a release during the day, trigger this workflow
+# manually via `workflow_dispatch` (optionally passing `commit`).
 # The competitor-engine corpus renders (Vello, Skia) and the Windows leg
 # (tier 2) are informational: they neither certify nor fail the run, and file
 # an issue of their own.
@@ -28,6 +30,14 @@ on:
   schedule:
     - cron: "11 8 * * *"
   workflow_dispatch:
+    inputs:
+      commit:
+        description: >
+          Optional commit SHA on main to certify and prepare a release-plz PR
+          for (defaults to main HEAD).
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -57,8 +67,40 @@ env:
   GITHUB_TOKEN: ${{ github.token }}
 
 jobs:
+  target:
+    name: Resolve target commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: resolve
+        env:
+          INPUT_COMMIT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.commit || '' }}
+          DEFAULT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$INPUT_COMMIT" ]; then
+            sha="$(git rev-parse "${DEFAULT_SHA}^{commit}")"
+          else
+            if ! git cat-file -e "${INPUT_COMMIT}^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "$INPUT_COMMIT"
+            fi
+            sha="$(git rev-parse "${INPUT_COMMIT}^{commit}")"
+            if ! git merge-base --is-ancestor "$sha" origin/main; then
+              echo "::error::commit ${sha} is not an ancestor of origin/main"
+              exit 1
+            fi
+          fi
+          echo "Target commit: ${sha}"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
   test:
     name: Test
+    needs: target
     uses: ./.github/workflows/test.yml
     # The lint job's cache-retirement step needs actions:write on its own
     # families; nothing else in the called workflow gains a broader token.
@@ -67,17 +109,25 @@ jobs:
       actions: write
     with:
       full: true
+      ref: ${{ needs.target.outputs.sha }}
 
   webview-js:
     name: WebView JavaScript
+    needs: target
     uses: ./.github/workflows/webview-js.yml
+    with:
+      ref: ${{ needs.target.outputs.sha }}
 
   ts-js:
     name: TypeScript Runtime JavaScript
+    needs: target
     uses: ./.github/workflows/ts-js.yml
+    with:
+      ref: ${{ needs.target.outputs.sha }}
 
   windows:
     name: Windows
+    needs: target
     uses: ./.github/workflows/windows.yml
     # Informational (tier 2): windows.yml's jobs are `continue-on-error` and
     # file their own issue, so this job never fails the run and certification
@@ -87,6 +137,8 @@ jobs:
       contents: read
       actions: write
       issues: write
+    with:
+      ref: ${{ needs.target.outputs.sha }}
 
   # The in-tree Apple backend's packaged-example suite — group packaging on
   # iOS simulator and macOS, the capture shards and the packaged-app/native
@@ -95,8 +147,9 @@ jobs:
   apple-e2e:
     name: Apple e2e
     uses: ./.github/workflows/apple-e2e.yml
-    needs: cli-build
+    needs: [target, cli-build]
     with:
+      ref: ${{ needs.target.outputs.sha }}
       # `cli-build`'s macOS artifact (`water-cli-<runner.os>-<runner.arch>`
       # of an `xcode-27` runner); `with` has no runner context.
       cli_artifact: water-cli-macOS-ARM64
@@ -109,15 +162,18 @@ jobs:
 
   # The whole-workspace MSRV sweep: the per-change gate runs this check
   # only when a diff touches a toolchain boundary, so the nightly carries
-  # the standing signal that `dev` still compiles on the declared
+  # the standing signal that `main` still compiles on the declared
   # `rust-version` — including pins that moved a dependency's floor under
   # a released patch.
   msrv:
     name: MSRV
+    needs: target
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.target.outputs.sha }}
       - uses: ./.github/actions/msrv
       - uses: ./.github/actions/upload-cargo-timings
         if: always()
@@ -126,12 +182,15 @@ jobs:
 
   coverage:
     name: Coverage
+    needs: target
     runs-on: ubuntu-latest
     timeout-minutes: 90
     # A full instrumented rebuild shares nothing with the ordinary builds, so
     # it belongs to the nightly matrix, not to any per-change gate.
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.target.outputs.sha }}
       # Its own key: an instrumented build shares no artifacts with the
       # ordinary ones, so storing it under the shared key would just overwrite
       # a useful tarball with one nothing else can restore. The target dir is
@@ -202,10 +261,13 @@ jobs:
 
   feature-checks:
     name: Features
+    needs: target
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.target.outputs.sha }}
       # The single writer of `ci-ubuntu` (see Hygiene above).
       - uses: ./.github/actions/setup-rust
         with:
@@ -247,6 +309,7 @@ jobs:
   # in `cli-install-<os>` for the `cli-e2e` legs to pick up.
   cli-build:
     name: CLI build / ${{ matrix.name }}
+    needs: target
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -263,6 +326,8 @@ jobs:
       RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.target.outputs.sha }}
 
       - uses: ./.github/actions/setup-rust
         with:
@@ -346,7 +411,7 @@ jobs:
   # step summary and the `ci-metrics` history.
   cli-e2e:
     name: CLI fresh user / ${{ matrix.name }}
-    needs: cli-build
+    needs: [target, cli-build]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 240
     strategy:
@@ -379,6 +444,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.target.outputs.sha }}
 
       # The runner account keeps the hosted image's Rust toolchain for the
       # steps that build as the runner (the macOS console-user build).
@@ -1297,7 +1364,7 @@ jobs:
   # hiccup must never block certification, so publishing is best-effort.
   cli-e2e-metrics:
     name: CLI cold-compile metrics
-    needs: [cli-e2e]
+    needs: [target, cli-e2e]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1309,6 +1376,8 @@ jobs:
       ARTIFACTS_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.target.outputs.sha }}
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
@@ -1333,10 +1402,11 @@ jobs:
       # index are never touched; a rejected push (another writer got there
       # first) refetches and rebuilds on the new tip.
       - name: Append the night to the ci-metrics branch
-        if: github.ref == 'refs/heads/dev'
+        if: github.ref == 'refs/heads/main'
         continue-on-error: true
         shell: bash
         env:
+          TARGET_SHA: ${{ needs.target.outputs.sha }}
           GIT_AUTHOR_NAME: github-actions[bot]
           GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
           GIT_COMMITTER_NAME: github-actions[bot]
@@ -1368,7 +1438,7 @@ jobs:
             done
             tree=$(git write-tree)
             commit=$(git commit-tree "$tree" ${parent:+-p "$parent"} \
-              -m "cli-e2e metrics: run ${GITHUB_RUN_ID} (${GITHUB_SHA:0:12})")
+              -m "cli-e2e metrics: run ${GITHUB_RUN_ID} (${TARGET_SHA:0:12})")
             if git push --quiet origin "$commit:refs/heads/$HISTORY_BRANCH"; then
               echo "Stored as $commit on $HISTORY_BRANCH"
               exit 0
@@ -1390,11 +1460,14 @@ jobs:
   # gating in `test.yml`.
   bench-corpus-cpu:
     name: Corpus on Vello and Skia (CPU, informational)
+    needs: target
     runs-on: ubuntu-latest
     timeout-minutes: 90
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.target.outputs.sha }}
       - uses: ./.github/actions/setup-rust
         with:
           cache: "false"
@@ -1451,7 +1524,7 @@ jobs:
           print(f'{len(files)} reports ({len(measured)} measured) across {len(scenes)} scenes')
           PY
       - name: Report failure
-        if: failure() && github.ref == 'refs/heads/dev'
+        if: failure() && github.ref == 'refs/heads/main'
         uses: ./.github/actions/nightly-failure-issue
         with:
           template: .github/BENCH_CORPUS_FAILURE.md
@@ -1462,11 +1535,14 @@ jobs:
 
   bench-corpus-metal:
     name: Corpus on Vello and Skia (Metal, informational)
+    needs: target
     runs-on: xcode-27
     timeout-minutes: 90
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.target.outputs.sha }}
       - uses: ./.github/actions/setup-rust
         with:
           cache: "false"
@@ -1516,7 +1592,7 @@ jobs:
           print(f'{len(files)} reports ({len(measured)} measured) across {len(scenes)} scenes')
           PY
       - name: Report failure
-        if: failure() && github.ref == 'refs/heads/dev'
+        if: failure() && github.ref == 'refs/heads/main'
         uses: ./.github/actions/nightly-failure-issue
         with:
           template: .github/BENCH_CORPUS_FAILURE.md
@@ -1527,12 +1603,14 @@ jobs:
 
   test-report:
     name: Test Report
-    needs: [test, windows, webview-js, ts-js, msrv]
+    needs: [target, test, windows, webview-js, ts-js, msrv]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.target.outputs.sha }}
       - run: mkdir -p artifacts
       - uses: actions/download-artifact@v4
         continue-on-error: true
@@ -1544,8 +1622,8 @@ jobs:
 
   promote:
     name: Certify nightly
-    needs: [test, coverage, feature-checks, webview-js, ts-js, msrv, test-report, apple-e2e, cli-e2e]
-    if: github.ref == 'refs/heads/dev'
+    needs: [target, test, coverage, feature-checks, webview-js, ts-js, msrv, test-report, apple-e2e, cli-e2e]
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -1554,10 +1632,11 @@ jobs:
       certified: ${{ steps.snapshot.outputs.eligible }}
     env:
       GH_TOKEN: ${{ github.token }}
+      TARGET_REVISION: ${{ needs.target.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.target.outputs.sha }}
           fetch-depth: 0
       - name: Prepare the tested snapshot
         id: snapshot
@@ -1586,25 +1665,69 @@ jobs:
           TAG: ${{ steps.snapshot.outputs.tag }}
         run: gh release edit "$TAG" --draft=false --prerelease --latest=false
 
-  # One issue per broken nightly on dev, updated in place while it stays red, so a
+  release-pr:
+    name: Prepare the next release
+    needs: [target, promote]
+    if: needs.promote.outputs.certified == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    concurrency:
+      group: release-plz-pr
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+          fetch-depth: 0
+      - name: Point local main at the certified revision
+        run: git switch -C main
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: "false"
+      # The same native libraries as release.yml: computing the next versions
+      # also builds the workspace's metadata against every crate's dependencies.
+      - uses: ./.github/actions/setup-linux-deps
+      - uses: ./.github/actions/release-plz
+        id: release_plz
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # GitHub holds the pull_request runs of a pull request the Actions bot
+      # opened or pushed until they are approved, and the required CI checks
+      # report only from those runs.
+      - name: Approve the release PR's CI
+        if: fromJSON(steps.release_plz.outputs.report).prs[0] != null
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ fromJSON(steps.release_plz.outputs.report).prs[0].number }}
+        run: bash .github/scripts/approve-held-runs.sh "${PR_NUMBER}"
+
+  # One issue per broken nightly on main, updated in place while it stays red, so a
   # failure that nobody was watching at 08:11 UTC is on the board by morning.
   report:
     name: Report failure
-    needs: [test, coverage, feature-checks, webview-js, ts-js, msrv, promote, apple-e2e, cli-e2e]
-    if: failure() && github.ref == 'refs/heads/dev'
+    needs: [target, test, coverage, feature-checks, webview-js, ts-js, msrv, promote, apple-e2e, cli-e2e]
+    if: failure() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.target.outputs.sha }}
       - uses: ./.github/actions/nightly-failure-issue
         with:
           template: .github/NIGHTLY_FAILURE.md
 
   # A certified nightly closes the issue a red one opened: the issue tracks the
-  # nightly's state, so it is open exactly while dev's nightly is broken.
+  # nightly's state, so it is open exactly while main's nightly is broken.
   resolve:
     name: Close the failure issue
-    needs: promote
+    needs: [target, promote]
     if: needs.promote.outputs.certified == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1616,6 +1739,8 @@ jobs:
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.target.outputs.sha }}
       - name: Close the open failure issue
         run: |
           title=$(sed -n 's/^title: "\(.*\)"$/\1/p' .github/NIGHTLY_FAILURE.md)
