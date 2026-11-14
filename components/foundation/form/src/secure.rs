@@ -88,11 +88,42 @@ impl Drop for Secure {
 
 /// Configuration for a secure field component.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct SecureFieldConfig {
     /// The label displayed for the secure field.
-    pub label: Label,
+    label: Label,
     /// The binding to the secure value being edited.
-    pub value: Binding<Secure>,
+    value: Binding<Secure>,
+}
+
+impl SecureFieldConfig {
+    /// The label displayed for the secure field.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// Sets the `label`.
+    pub fn set_label(&mut self, label: Label) {
+        self.label = label;
+    }
+
+    /// The label displayed for the control, for editing it in place.
+    pub const fn label_mut(&mut self) -> &mut Label {
+        &mut self.label
+    }
+
+    /// The binding to the secure value being edited.
+    #[must_use]
+    pub const fn value(&self) -> &Binding<Secure> {
+        &self.value
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (Label, Binding<Secure>) {
+        (self.label, self.value)
+    }
 }
 
 configurable!(
@@ -120,7 +151,8 @@ configurable!(
     SecureField,
     SecureFieldConfig,
     StretchAxis::Horizontal,
-    resolve |config, env| config.resolve(env)
+    resolve | config,
+    env | config.resolve(env)
 );
 
 impl SecureFieldConfig {

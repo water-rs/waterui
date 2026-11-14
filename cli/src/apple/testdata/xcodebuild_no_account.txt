@@ -1,0 +1,31 @@
+Command line invocation:
+    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -project Provision.xcodeproj -target Provision -destination generic/platform=iOS -allowProvisioningUpdates -allowProvisioningDeviceRegistration -configuration Debug build
+
+--- xcodebuild: WARNING: Ignoring provided run destination because no scheme was passed.
+ComputePackagePrebuildTargetDependencyGraph
+
+Prepare packages
+
+CreateBuildRequest
+
+SendProjectDescription
+
+CreateBuildOperation
+
+ComputeTargetDependencyGraph
+note: Building targets in dependency order
+note: Target dependency graph (1 target)
+    Target 'Provision' in project 'Provision' (no dependencies)
+
+GatherProvisioningInputs
+
+CreateBuildDescription
+
+ExecuteExternalTool /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang -v -E -dM -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.5.sdk -x c -c /dev/null
+
+Build description signature: faa80b4952b2a50a73a87ee2a1956f90
+Build description path: build/XCBuildData/faa80b4952b2a50a73a87ee2a1956f90.xcbuilddata
+Provision.xcodeproj: error: No Accounts: Add a new account in Accounts settings. (in target 'Provision' from project 'Provision')
+Provision.xcodeproj: error: No profiles for 'dev.waterui.provisiontest' were found: Xcode couldn't find any iOS App Development provisioning profiles matching 'dev.waterui.provisiontest'. (in target 'Provision' from project 'Provision')
+warning: no rule to process file 'build/Debug-iphoneos/Provision.app' of type 'wrapper.application' for architecture 'arm64' (in target 'Provision' from project 'Provision')
+** BUILD FAILED **

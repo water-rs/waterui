@@ -5,7 +5,7 @@ use waterui::Identifiable;
 use waterui::prelude::*;
 
 /// Glue: the `Row` type reactivity.md's collection snippets refer to.
-#[derive(Clone, Identifiable)]
+#[derive(Clone, PartialEq, Identifiable)]
 pub struct Row {
     #[id]
     pub id: u64,
@@ -18,7 +18,7 @@ fn glue_row_view(row: Row) -> Text {
 }
 
 // ---------------------------------------------------------------------------
-// reactivity.md § "## Creating state" — rust block 1/20
+// reactivity.md § "## Creating state" — rust block 1/23
 // ---------------------------------------------------------------------------
 pub fn reactivity_block_01() {
     use waterui::media::media_picker::Selected;
@@ -46,16 +46,18 @@ pub fn reactivity_block_01() {
 }
 
 // ---------------------------------------------------------------------------
-// reactivity.md § "## Creating state" (Writing) — rust block 2/20
+// reactivity.md § "## Creating state" (Writing) — rust block 2/23
 // ---------------------------------------------------------------------------
 pub fn reactivity_block_02() {
     let count = Binding::container(Vec::<i32>::new());
+    let items = Binding::container(Vec::<i32>::new());
     let flag = Binding::bool(false);
     let x = 7_i32;
 
-    // The listing mixes receivers: `count.set(5)` / `*count.get_mut() += 1`
-    // need a scalar, `count.with_mut(|v| v.push(x))` needs a container. Each
-    // line therefore gets the receiver its own call requires.
+    // The listing mixes receivers: `count.set(5)` / `*count.get_mut() += 1` /
+    // `count.add_assign(1)` need a scalar, `count.with_mut(|v| v.push(x))` and
+    // `items.append(x)` need a container. Each line therefore gets the
+    // receiver its own call requires.
     {
         let count = Binding::i32(0);
         count.set(5);
@@ -65,11 +67,16 @@ pub fn reactivity_block_02() {
         *count.get_mut() += 1; // guard: writes back on drop
     }
     count.with_mut(|v| v.push(x)); // in-place mutation of a container
+    items.append(x); // extend a container (`T: Extend<_>`: Vec, String, …)
+    {
+        let count = Binding::i32(0);
+        count.add_assign(1); // also sub_assign, mul_assign, div_assign, …
+    }
     flag.toggle(); // bool convenience
 }
 
 // ---------------------------------------------------------------------------
-// reactivity.md § "## Transforming signals" — rust block 3/20
+// reactivity.md § "## Transforming signals" — rust block 3/23
 //
 // A method-name listing grouped by receiver kind. Each fragment is applied to a
 // receiver of the kind its own comment header names, so every method in the
@@ -171,7 +178,7 @@ pub fn reactivity_block_03() {
 // binding-specific helpers `.range(0..=10)`, `.clamp(..)`, `.filter(..)`,
 // `.bidirectional_select(a, b)`, `.unwrap_or(d)`, `.reverse()`, and the
 // associated function `Binding::mapping(&source, getter, setter)` whose setter
-// receives the source binding. Not counted as one of the 20 rust blocks.
+// receives the source binding. Not counted as one of the 23 rust blocks.
 // ---------------------------------------------------------------------------
 pub fn reactivity_binding_helpers_prose() {
     let n = Binding::i32(5);
@@ -205,7 +212,7 @@ pub fn reactivity_select_token_conversion() {
 }
 
 // ---------------------------------------------------------------------------
-// reactivity.md § "## Combining signals" — rust block 4/20
+// reactivity.md § "## Combining signals" — rust block 4/23
 // ---------------------------------------------------------------------------
 pub fn reactivity_block_04() {
     let price = Binding::f64(2.0);
@@ -223,7 +230,7 @@ pub fn reactivity_block_04() {
 }
 
 // ---------------------------------------------------------------------------
-// reactivity.md § "## Combining signals" — rust block 5/20
+// reactivity.md § "## Combining signals" — rust block 5/23
 // ---------------------------------------------------------------------------
 pub fn reactivity_block_05() {
     fn build_config(_a: i32, _b: i32, _c: i32, _d: i32) -> i32 {
@@ -245,9 +252,22 @@ pub fn reactivity_block_05() {
 }
 
 // ---------------------------------------------------------------------------
-// reactivity.md § "## Constants as signals" — rust block 6/20
+// reactivity.md § "## Reactive strings with `s!`" — rust block 6/23
 // ---------------------------------------------------------------------------
-pub mod reactivity_block_06 {
+pub fn reactivity_block_06() {
+    use waterui::reactive::s;
+
+    let count = Binding::i32(3);
+    let total = Binding::i32(10);
+    let progress = s!("{count} of {total}"); // Signal<Output = String>
+
+    let _ = progress;
+}
+
+// ---------------------------------------------------------------------------
+// reactivity.md § "## Constants as signals" — rust block 7/23
+// ---------------------------------------------------------------------------
+pub mod reactivity_block_07 {
     use waterui::prelude::*;
 
     /// Glue: the custom enum the snippet declares as a constant signal.
@@ -273,9 +293,9 @@ pub mod reactivity_block_06 {
 }
 
 // ---------------------------------------------------------------------------
-// reactivity.md § "## Projecting struct fields" — rust block 7/20
+// reactivity.md § "## Projecting struct fields" — rust block 8/23
 // ---------------------------------------------------------------------------
-pub mod reactivity_block_07 {
+pub mod reactivity_block_08 {
     use waterui::prelude::*;
 
     #[form]
@@ -298,10 +318,10 @@ pub mod reactivity_block_07 {
 }
 
 // ---------------------------------------------------------------------------
-// reactivity.md § "## Feeding signals to views" — rust block 8/20
+// reactivity.md § "## Feeding signals to views" — rust block 9/23
 // Listing: six independent one-line examples.
 // ---------------------------------------------------------------------------
-pub fn reactivity_block_08() {
+pub fn reactivity_block_09() {
     use waterui::media::Photo;
 
     let fade = Binding::f32(1.0);
@@ -326,9 +346,9 @@ pub fn reactivity_block_08() {
 }
 
 // ---------------------------------------------------------------------------
-// reactivity.md § "## Reading state in handlers" — rust block 9/20
+// reactivity.md § "## Reading state in handlers" — rust block 10/23
 // ---------------------------------------------------------------------------
-pub fn reactivity_block_09() -> impl View {
+pub fn reactivity_block_10() -> impl View {
     use reactivity_settings::Settings;
 
     let form = Settings::binding();
@@ -338,7 +358,7 @@ pub fn reactivity_block_09() -> impl View {
         .state(&form)
 }
 
-/// Glue: `Settings` for block 9, which reuses the type block 7 declares.
+/// Glue: `Settings` for block 10, which reuses the type block 8 declares.
 pub mod reactivity_settings {
     use waterui::prelude::*;
 
@@ -351,9 +371,9 @@ pub mod reactivity_settings {
 }
 
 // ---------------------------------------------------------------------------
-// reactivity.md § "## Reading state in handlers" — rust block 10/20
+// reactivity.md § "## Reading state in handlers" — rust block 11/23
 // ---------------------------------------------------------------------------
-pub mod reactivity_block_10 {
+pub mod reactivity_block_11 {
     use super::Row;
     use waterui::component::list::ListDelete;
     use waterui::prelude::*;
@@ -365,7 +385,7 @@ pub mod reactivity_block_10 {
         pub rows: ReactiveList<Row>,
     }
 
-    fn delete_row(ListDelete(index): ListDelete, state: Editor) {
+    fn delete_row(ListDelete(index): ListDelete, mut state: Editor) {
         let _ = state.rows.remove(index);
     }
 
@@ -375,9 +395,32 @@ pub mod reactivity_block_10 {
 }
 
 // ---------------------------------------------------------------------------
-// reactivity.md § "## Reading state in handlers" — rust block 11/20
+// reactivity.md § "## Reading state in handlers" — rust block 12/23
 // ---------------------------------------------------------------------------
-pub mod reactivity_block_11 {
+pub mod reactivity_block_12 {
+    use waterui::prelude::*;
+
+    /// Glue: a `Clone` value the app installs in the environment.
+    #[derive(Clone)]
+    pub struct ApiClient;
+
+    impl ApiClient {
+        fn name(&self) -> Str {
+            Str::from("api")
+        }
+    }
+
+    pub fn body() {
+        use waterui::env::use_env;
+
+        let _ = { use_env(|Use(client): Use<ApiClient>| text(client.name())) };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// reactivity.md § "## Reading state in handlers" — rust block 13/23
+// ---------------------------------------------------------------------------
+pub mod reactivity_block_13 {
     use waterui::prelude::*;
 
     use waterui::Handler;
@@ -396,9 +439,9 @@ pub mod reactivity_block_11 {
 }
 
 // ---------------------------------------------------------------------------
-// reactivity.md § "## Animation" — rust block 12/20
+// reactivity.md § "## Animation" — rust block 14/23
 // ---------------------------------------------------------------------------
-pub fn reactivity_block_12() {
+pub fn reactivity_block_14() {
     use core::time::Duration;
     use waterui::animation::Animation; // not in the prelude
 
@@ -418,7 +461,7 @@ pub fn reactivity_block_12() {
 // `Animation::default()`, `.with(animation)` as the one attachment spelling,
 // and `.animated()` as shorthand for `.with(Animation::Default)` — one
 // `AnimationExt`, reachable from the prelude and from `waterui::animation`.
-// Not counted as one of the 20 rust blocks.
+// Not counted as one of the 23 rust blocks.
 // ---------------------------------------------------------------------------
 pub fn reactivity_animation_prose() {
     use core::time::Duration;
@@ -438,6 +481,20 @@ pub fn reactivity_animation_prose() {
     let _ = scale.animated(); // shorthand for `.with(Animation::Default)`
 }
 
+// ---------------------------------------------------------------------------
+// reactivity.md § "## Animation" (prose, not a fenced block): `NoAnimation`
+// from `waterui::animation`, attached as `opacity.with(NoAnimation)`, and
+// `opacity.animated().with(NoAnimation)`.
+// Not counted as one of the 23 rust blocks.
+// ---------------------------------------------------------------------------
+pub fn reactivity_no_animation_prose() {
+    use waterui::animation::NoAnimation;
+
+    let opacity = Binding::f32(1.0);
+    let _ = opacity.with(NoAnimation);
+    let _ = opacity.animated().with(NoAnimation);
+}
+
 /// The same `AnimationExt` reached by the other documented path — "one trait,
 /// one meaning, whichever path you import it by".
 pub fn reactivity_animation_ext_single_trait() {
@@ -448,9 +505,9 @@ pub fn reactivity_animation_ext_single_trait() {
 }
 
 // ---------------------------------------------------------------------------
-// reactivity.md § "## Animation" — rust block 13/20
+// reactivity.md § "## Animation" — rust block 15/23
 // ---------------------------------------------------------------------------
-pub fn reactivity_block_13() {
+pub fn reactivity_block_15() {
     use waterui::animation::Animation;
 
     let hovered = Binding::bool(false);
@@ -466,10 +523,10 @@ pub fn reactivity_block_13() {
 }
 
 // ---------------------------------------------------------------------------
-// reactivity.md § "## Reactive collections" — rust block 14/20
+// reactivity.md § "## Reactive collections" — rust block 16/23
 // Prefix is a statement sequence; the last two lines are a listing.
 // ---------------------------------------------------------------------------
-pub fn reactivity_block_14() {
+pub fn reactivity_block_16() {
     use waterui::views::ForEach;
 
     let row_view = glue_row_view;
@@ -485,7 +542,7 @@ pub fn reactivity_block_14() {
     use waterui::component::lazy::Lazy;
     use waterui::reactive::collection::List as ReactiveList;
 
-    let rows = ReactiveList::from(seed_vec); // bulk-seed in one move — not a push loop
+    let mut rows = ReactiveList::from(seed_vec); // bulk-seed in one move — not a push loop
     rows.push(Row {
         id: 9,
         title: "Last".into(),
@@ -499,7 +556,7 @@ pub fn reactivity_block_14() {
     ); // positional splice, id-diffed
     let _ = rows.remove(0); // #[must_use] — bind the removed value
     let snapshot = rows.snapshot(); // Vec<Row>, for read-only work
-    let _ = rows.replace(new_vec); // wholesale swap, still diffed by id
+    let _ = rows.replace(new_vec); // wholesale swap, diffed by id: moves and changed rows
 
     let _ = {
         Lazy::for_each(rows.clone(), row_view) // == Lazy::vstack(ForEach::new(..))
@@ -511,7 +568,7 @@ pub fn reactivity_block_14() {
 
 // ---------------------------------------------------------------------------
 // reactivity.md § "## Reactive collections" (prose): `VStack::for_each` /
-// `HStack::for_each`. Not counted as one of the 20 rust blocks.
+// `HStack::for_each`. Not counted as one of the 23 rust blocks.
 // ---------------------------------------------------------------------------
 pub fn reactivity_stack_for_each_prose() {
     use waterui::layout::stack::{HStack, VStack};
@@ -523,10 +580,10 @@ pub fn reactivity_stack_for_each_prose() {
 }
 
 // ---------------------------------------------------------------------------
-// reactivity.md § "## Reactive collections" — rust block 15/20
+// reactivity.md § "## Reactive collections" — rust block 17/23
 // ---------------------------------------------------------------------------
-pub fn reactivity_block_15() {
-    #[derive(Clone, Identifiable)]
+pub fn reactivity_block_17() {
+    #[derive(Clone, PartialEq, Identifiable)]
     struct Message {
         #[id]
         id: u64,
@@ -549,14 +606,14 @@ pub fn reactivity_block_15() {
 }
 
 // ---------------------------------------------------------------------------
-// reactivity.md § "## Conditionals" — rust block 16/20
+// reactivity.md § "## Conditionals" — rust block 18/23
 // Listing: independent conditional forms.
 // ---------------------------------------------------------------------------
 #[expect(
     clippy::redundant_closure,
     reason = "the snippet is transcribed verbatim from the skill; rewriting it to satisfy the lint would defeat this crate's purpose"
 )]
-pub fn reactivity_block_16() {
+pub fn reactivity_block_18() {
     struct RowFlags {
         flagged: bool,
     }
@@ -615,9 +672,40 @@ pub fn reactivity_block_16() {
 }
 
 // ---------------------------------------------------------------------------
-// reactivity.md § "## `Dynamic` and `watch`" — rust block 17/20
+// reactivity.md § "## Conditionals" — rust block 19/23
 // ---------------------------------------------------------------------------
-pub fn reactivity_block_17() -> impl View {
+#[expect(
+    clippy::redundant_closure,
+    reason = "the snippet is transcribed verbatim from the skill; rewriting it to satisfy the lint would defeat this crate's purpose"
+)]
+pub fn reactivity_block_19() {
+    struct Store {
+        items: Binding<Vec<Row>>,
+    }
+    fn list_of(_items: Binding<Vec<Row>>) -> impl View {
+        text("rows")
+    }
+    fn empty_state() -> impl View {
+        text("empty")
+    }
+
+    let store = Store {
+        items: Binding::container(Vec::new()),
+    };
+    let has_items = Binding::bool(false);
+
+    use waterui::widget::condition::when;
+
+    let items = store.items.clone();
+
+    // `move || list_of(items)` would move `items` out of the closure — not `Fn`.
+    let _ = { when(has_items.clone(), move || list_of(items.clone())).otherwise(|| empty_state()) };
+}
+
+// ---------------------------------------------------------------------------
+// reactivity.md § "## `Dynamic` and `watch`" — rust block 20/23
+// ---------------------------------------------------------------------------
+pub fn reactivity_block_20() -> impl View {
     use crate::ref_reactivity::ref_reactivity_charts::{ChartMode, bar_chart, line_chart};
 
     let mode = Binding::container(ChartMode::Bar);
@@ -628,7 +716,7 @@ pub fn reactivity_block_17() -> impl View {
     })
 }
 
-/// Glue: the chart-mode enum and the two view builders block 17 switches over.
+/// Glue: the chart-mode enum and the two view builders block 20 switches over.
 pub mod ref_reactivity_charts {
     use waterui::prelude::*;
 
@@ -647,9 +735,9 @@ pub mod ref_reactivity_charts {
 }
 
 // ---------------------------------------------------------------------------
-// reactivity.md § "## `Dynamic` and `watch`" — rust block 18/20
+// reactivity.md § "## `Dynamic` and `watch`" — rust block 21/23
 // ---------------------------------------------------------------------------
-pub fn reactivity_block_18() -> impl View {
+pub fn reactivity_block_21() -> impl View {
     use waterui::media::{Photo, Url};
 
     let url = Binding::container(Str::from("https://waterui.dev/logo.png"));
@@ -662,7 +750,7 @@ pub fn reactivity_block_18() -> impl View {
             |State(url): State<Binding<Str>>,
              State(blur): State<Binding<f64>>,
              h: DynamicHandler| {
-                let Ok(parsed) = url.get().as_str().parse::<Url>() else {
+                let Ok(parsed) = url.snapshot().as_str().parse::<Url>() else {
                     return;
                 };
                 h.set(Photo::new(parsed).blur(blur.clone()));
@@ -676,14 +764,15 @@ pub fn reactivity_block_18() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// reactivity.md § "## Async, tasks, and lifecycle" — rust block 19/20
-// A statement, then four independent lifecycle one-liners.
+// reactivity.md § "## Async, tasks, and lifecycle" — rust block 22/23
+// A statement, then six independent lifecycle one-liners.
 // ---------------------------------------------------------------------------
 #[expect(
     unused_must_use,
     reason = "the snippet is transcribed verbatim from the skill; rewriting it to satisfy the lint would defeat this crate's purpose"
 )]
-pub fn reactivity_block_19() {
+pub fn reactivity_block_22() {
+    use waterui::event::LifeCycle;
     use waterui::log::debug;
 
     async fn fetch() -> Str {
@@ -700,7 +789,7 @@ pub fn reactivity_block_19() {
         })
         .state(&result);
 
-    // These four already end in `;`, so each keeps its own statement in its own
+    // These already end in `;`, so each keeps its own statement in its own
     // scope rather than being wrapped in `let _ = { … }`.
     {
         let view = Divider;
@@ -713,6 +802,17 @@ pub fn reactivity_block_19() {
     {
         let view = Divider;
         view.on_disappear(|| ());
+    }
+    {
+        let view = Divider;
+        view.lifecycle(LifeCycle::Appear, || ()); // what on_appear/on_disappear call
+    }
+    let guard = query.watch(|v| {
+        let _ = v.into_value();
+    }); // [glue: the guard `.retain` keeps alive]
+    {
+        let view = Divider;
+        view.retain(guard); // keep a `.watch(..)` guard alive as long as the view
     }
     {
         let view = Divider;
@@ -732,9 +832,9 @@ pub fn reactivity_block_19() {
 }
 
 // ---------------------------------------------------------------------------
-// reactivity.md § "## Async, tasks, and lifecycle" — rust block 20/20
+// reactivity.md § "## Async, tasks, and lifecycle" — rust block 23/23
 // ---------------------------------------------------------------------------
-pub fn reactivity_block_20() {
+pub fn reactivity_block_23() {
     use core::time::Duration;
 
     let bounce = Binding::f32(0.0);

@@ -25,14 +25,14 @@ use core::{
 
 use nami::{Binding, Computed, Signal as _, SignalExt as _};
 use waterui_controls::{ButtonStyle, IntoLabel, button};
-use waterui_core::handler::{AnyViewBuilder, BoxedAction, Handler, boxed_action};
+use waterui_core::handler::{AnyViewBuilder, BoxedAction, Handler, ReportExtraction, boxed_action};
 use waterui_core::{
     AnyView, Environment, Error, IgnorableMetadata, IntoSignal, Metadata, Native, NativeView,
-    Retain, Str, View, env::use_env, extract::ExtractionState, extract::Extractor, extract::State,
-    flatten_signal, handler::ViewBuilder, impl_extractor, layout::StretchAxis,
-    metadata::MetadataKey, raw_view,
+    Retain, SerialDispatch, Str, View, contract_violation, env::use_env, extract::ExtractionState,
+    extract::Extractor, extract::State, flatten_signal, handler::ViewBuilder, impl_extractor,
+    layout::StretchAxis, metadata::MetadataKey, raw_view,
 };
-use waterui_graphics::color::{Color, ResolvedColor};
+use waterui_graphics::color::{Color, WorkingColor};
 use waterui_icon::SystemIcon;
 use waterui_text::IntoText;
 use waterui_text::Text;
@@ -92,17 +92,50 @@ impl Debug for NavigationView {
 
 /// Reactive policy and lifecycle handlers attached to one destination.
 #[doc(hidden)]
+#[non_exhaustive]
 pub struct NavigationDestinationState {
     /// Whether a user or system initiated pop may begin.
-    pub pop_enabled: Computed<bool>,
+    pop_enabled: Computed<bool>,
     /// Called for a real user/system pop request, including a denied request.
-    pub pop_attempted: Option<BoxedAction>,
+    pop_attempted: Option<BoxedAction>,
     /// Called after the destination becomes active.
-    pub appear: Option<BoxedAction>,
+    appear: Option<BoxedAction>,
     /// Called after the destination ceases to be active.
-    pub disappear: Option<BoxedAction>,
+    disappear: Option<BoxedAction>,
     /// Called only after a completed pop removes the destination.
-    pub pop: Option<BoxedAction>,
+    pop: Option<BoxedAction>,
+}
+
+impl NavigationDestinationState {
+    /// Whether a user or system initiated pop may begin.
+    #[must_use]
+    pub const fn pop_enabled(&self) -> &Computed<bool> {
+        &self.pop_enabled
+    }
+
+    /// Called for a real user/system pop request, including a denied request.
+    #[must_use]
+    pub const fn pop_attempted(&self) -> Option<&BoxedAction> {
+        self.pop_attempted.as_ref()
+    }
+
+    /// Called after the destination becomes active.
+    #[must_use]
+    pub const fn appear(&self) -> Option<&BoxedAction> {
+        self.appear.as_ref()
+    }
+
+    /// Called after the destination ceases to be active.
+    #[must_use]
+    pub const fn disappear(&self) -> Option<&BoxedAction> {
+        self.disappear.as_ref()
+    }
+
+    /// Called only after a completed pop removes the destination.
+    #[must_use]
+    pub const fn pop(&self) -> Option<&BoxedAction> {
+        self.pop.as_ref()
+    }
 }
 
 impl Debug for NavigationDestinationState {
@@ -135,16 +168,16 @@ impl NavigationDestinationState {
     #[doc(hidden)]
     pub fn attempt_pop(&mut self, env: &Environment) -> bool {
         if let Some(handler) = &mut self.pop_attempted {
-            handler(env);
+            handler(env).report_extraction();
         }
-        self.pop_enabled.get()
+        self.pop_enabled.snapshot()
     }
 
     /// Reports that the destination became active.
     #[doc(hidden)]
     pub fn appeared(&mut self, env: &Environment) {
         if let Some(handler) = &mut self.appear {
-            handler(env);
+            handler(env).report_extraction();
         }
     }
 
@@ -152,7 +185,7 @@ impl NavigationDestinationState {
     #[doc(hidden)]
     pub fn disappeared(&mut self, env: &Environment) {
         if let Some(handler) = &mut self.disappear {
-            handler(env);
+            handler(env).report_extraction();
         }
     }
 
@@ -160,7 +193,7 @@ impl NavigationDestinationState {
     #[doc(hidden)]
     pub fn popped(&mut self, env: &Environment) {
         if let Some(handler) = &mut self.pop {
-            handler(env);
+            handler(env).report_extraction();
         }
     }
 }
@@ -223,6 +256,9 @@ struct NavigationControllerState {
     pending_transaction_id: Cell<Option<NavigationTransactionId>>,
     path_pop_handler: RefCell<Option<PathPopHandler>>,
     native_applied_pops: Cell<usize>,
+    /// Transactions issued while the receiver's `apply` is still running; they
+    /// are delivered after it returns, in order, rather than re-entering it.
+    outbox: SerialDispatch<NavigationTransaction>,
 }
 
 /// A receiver that handles navigation actions.
@@ -256,6 +292,7 @@ impl NavigationController {
                 path_depth: Cell::new(0),
                 next_transaction_id: Cell::new(1),
                 pending_transaction_id: Cell::new(None),
+                outbox: SerialDispatch::new(),
                 path_pop_handler: RefCell::new(None),
                 native_applied_pops: Cell::new(0),
             }),
@@ -342,16 +379,21 @@ impl NavigationController {
             id.checked_add(1)
                 .expect("navigation transaction identifier overflowed"),
         );
-        self.state.pending_transaction_id.set(Some(id));
-        self.state
-            .receiver
-            .borrow_mut()
-            .apply(NavigationTransaction {
+        // A mutation issued while `apply` is still running only enqueues; the
+        // delivery in flight drains it once `apply` returns, so the receiver is
+        // never called re-entrantly.
+        self.state.outbox.deliver(
+            NavigationTransaction {
                 id,
                 retained_prefix,
                 removed,
                 inserted,
-            });
+            },
+            |transaction| {
+                self.state.pending_transaction_id.set(Some(transaction.id));
+                self.state.receiver.borrow_mut().apply(transaction);
+            },
+        );
     }
 
     /// Records successful completion of the current backend transaction.
@@ -380,15 +422,18 @@ impl NavigationController {
 
     /// Installs the mutation used to commit a native pop into an explicit path.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics if a path-pop handler is already installed on this controller.
+    /// A controller drives one explicit path. Installing a second handler is
+    /// reported: a debug build panics; a release build logs it and the later
+    /// handler replaces the earlier one.
     pub fn install_path_pop_handler(&self, handler: impl Fn(usize) + 'static) {
         let previous = self.state.path_pop_handler.replace(Some(Rc::new(handler)));
-        assert!(
-            previous.is_none(),
-            "a navigation controller cannot drive more than one explicit path"
-        );
+        if previous.is_some() {
+            contract_violation!(
+                "a navigation controller cannot drive more than one explicit path; the later path handler replaces the earlier one"
+            );
+        }
     }
 
     /// Splits `count` pops into the link-pushed entries the controller owns and
@@ -401,11 +446,15 @@ impl NavigationController {
     /// on [`NavigationPath::pop_n`] still hold for callers that mutate the path
     /// directly, where an over-long pop really is a programming error.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when `count` is zero.
+    /// A zero `count` is reported: a debug build panics; a release build logs
+    /// it and pops nothing.
     fn split_pop(&self, count: usize) -> (usize, usize) {
-        assert!(count != 0, "navigation pop count must be non-zero");
+        if count == 0 {
+            contract_violation!("navigation pop count must be non-zero; nothing is popped");
+            return (0, 0);
+        }
         let count = count.min(self.state.depth.get());
         let detached = self.detached_depth().min(count);
         (detached, count - detached)
@@ -427,9 +476,10 @@ impl NavigationController {
     /// path so route state stays authoritative. Asking to pop more than the
     /// projected stack holds pops what there is.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when `count` is zero.
+    /// A zero `count` is reported: a debug build panics; a release build logs
+    /// it and pops nothing.
     pub fn request_pop(&self, count: usize) {
         let (detached, from_path) = self.split_pop(count);
         if detached != 0 {
@@ -444,10 +494,12 @@ impl NavigationController {
 
     /// Commits a pop that the native container has already completed.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when `count` is zero, exceeds the projected stack depth, or when
-    /// the explicit path fails to absorb the pop in the same update.
+    /// A zero `count`, or an explicit path that fails to absorb the pop in the
+    /// same update, is reported: a debug build panics; a release build logs it
+    /// and drops the pop that was not applied. A `count` beyond the projected
+    /// stack depth pops what there is.
     pub fn complete_native_pop(&self, count: usize) {
         let (detached, from_path) = self.split_pop(count);
         if detached != 0 {
@@ -459,12 +511,13 @@ impl NavigationController {
             let handler = self.path_pop_handler();
             self.state.native_applied_pops.set(from_path);
             handler(from_path);
-            assert_eq!(
-                self.state.native_applied_pops.get(),
-                0,
-                "a native navigation pop must be absorbed by the explicit path in the same update, \
-                 but the path did not shrink by {from_path}"
-            );
+            let unabsorbed = self.state.native_applied_pops.replace(0);
+            if unabsorbed != 0 {
+                contract_violation!(
+                    "a native navigation pop must be absorbed by the explicit path in the same update, \
+                     but the path did not shrink by {from_path}; the unabsorbed pop is dropped"
+                );
+            }
         }
     }
 
@@ -674,6 +727,10 @@ impl View for NavigationView {
 /// `navigationBarTitleDisplayMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each title display mode variant by variant; a new title display mode must fail their build instead of falling into a wildcard arm"
+)]
 pub enum NavigationTitleDisplayMode {
     /// System decides based on context (large on root, inline when pushed).
     #[default]
@@ -692,6 +749,10 @@ pub enum NavigationTitleDisplayMode {
 /// Semantic placement for one native navigation toolbar item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each toolbar placement variant by variant; a new toolbar placement must fail their build instead of falling into a wildcard arm"
+)]
 pub enum NavigationToolbarPlacement {
     /// Principal title-area content.
     Principal = 0,
@@ -715,11 +776,12 @@ pub enum NavigationToolbarPlacement {
 
 /// One semantic native toolbar item.
 #[must_use]
+#[non_exhaustive]
 pub struct NavigationToolbarItem {
     /// Semantic placement resolved by each platform backend.
-    pub placement: NavigationToolbarPlacement,
+    placement: NavigationToolbarPlacement,
     /// Item content.
-    pub content: AnyView,
+    content: AnyView,
     /// The item's name, when it was declared as a semantic label.
     ///
     /// Kept beside the content rather than only inside it, because the
@@ -729,9 +791,70 @@ pub struct NavigationToolbarItem {
     /// commonly shows the text. Once the label is erased into a view, no
     /// backend can tell the name from the icon, so both travel separately and
     /// each platform draws what its own chrome calls for.
-    pub title: Option<Text>,
+    title: Option<Text>,
     /// The item's icon, when it was declared as a semantic label.
-    pub icon: Option<ToolbarItemIcon>,
+    icon: Option<ToolbarItemIcon>,
+}
+
+impl NavigationToolbarItem {
+    /// Takes the value apart into its fields, in declaration order.
+    pub fn into_parts(
+        self,
+    ) -> (
+        NavigationToolbarPlacement,
+        AnyView,
+        Option<Text>,
+        Option<ToolbarItemIcon>,
+    ) {
+        (self.placement, self.content, self.title, self.icon)
+    }
+
+    /// Semantic placement resolved by each platform backend.
+    #[must_use]
+    pub const fn placement(&self) -> NavigationToolbarPlacement {
+        self.placement
+    }
+
+    /// Item content.
+    #[must_use]
+    pub const fn content(&self) -> &AnyView {
+        &self.content
+    }
+
+    /// Takes the item content out, leaving an empty view behind.
+    pub fn take_content(&mut self) -> AnyView {
+        core::mem::take(&mut self.content)
+    }
+
+    /// Sets the item content.
+    pub fn set_content(&mut self, content: AnyView) {
+        self.content = content;
+    }
+
+    /// Sets the item's icon.
+    pub fn set_icon(&mut self, icon: Option<ToolbarItemIcon>) {
+        self.icon = icon;
+    }
+
+    /// The item's name, when it was declared as a semantic label.
+    ///
+    /// Kept beside the content rather than only inside it, because the
+    /// platforms disagree about how much of a toolbar action to draw: a Mac
+    /// shows the icon alone and keeps the name for the overflow menu, its
+    /// tooltip and assistive technology, while a phone's navigation bar
+    /// commonly shows the text. Once the label is erased into a view, no
+    /// backend can tell the name from the icon, so both travel separately and
+    /// each platform draws what its own chrome calls for.
+    #[must_use]
+    pub const fn title(&self) -> Option<&Text> {
+        self.title.as_ref()
+    }
+
+    /// The item's icon, when it was declared as a semantic label.
+    #[must_use]
+    pub const fn icon(&self) -> Option<&ToolbarItemIcon> {
+        self.icon.as_ref()
+    }
 }
 
 /// A toolbar item's icon, kept apart from its name.
@@ -739,6 +862,10 @@ pub struct NavigationToolbarItem {
 /// The two forms are not interchangeable: a platform that recognizes the symbol
 /// draws it at whatever size and weight its chrome calls for, while a view has
 /// to be rendered into an image at a chosen size.
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each toolbar icon source variant by variant; a new toolbar icon source must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ToolbarItemIcon {
     /// A symbol the platform knows by name.
     System(SystemIcon),
@@ -809,9 +936,28 @@ impl NavigationToolbarItem {
 
 /// Native toolbar contents attached to one navigation destination.
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct NavigationToolbar {
     /// Semantic toolbar items in declaration order.
-    pub items: Vec<NavigationToolbarItem>,
+    items: Vec<NavigationToolbarItem>,
+}
+
+impl NavigationToolbar {
+    /// Semantic toolbar items in declaration order.
+    #[must_use]
+    pub const fn items(&self) -> &[NavigationToolbarItem] {
+        self.items.as_slice()
+    }
+
+    /// The items, for in-place edits.
+    pub const fn items_mut(&mut self) -> &mut [NavigationToolbarItem] {
+        self.items.as_mut_slice()
+    }
+
+    /// Takes the items out of the toolbar, leaving it empty.
+    pub fn take_items(&mut self) -> Vec<NavigationToolbarItem> {
+        core::mem::take(&mut self.items)
+    }
 }
 
 impl NavigationToolbar {
@@ -886,17 +1032,18 @@ impl MetadataKey for NavigationLinkHint {}
 /// both states in one value is what keeps "colored but unresolved" from being
 /// representable, which is the state backends used to have to panic on.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum BarColor {
     /// An author-specified color that has not been resolved yet.
     Unresolved(Computed<Color>),
     /// A color resolved against the effective environment.
-    Resolved(Computed<ResolvedColor>),
+    Resolved(Computed<WorkingColor>),
 }
 
 impl BarColor {
     /// Returns the resolved color, or `None` while still unresolved.
     #[must_use]
-    pub const fn resolved(&self) -> Option<&Computed<ResolvedColor>> {
+    pub const fn resolved(&self) -> Option<&Computed<WorkingColor>> {
         match self {
             Self::Unresolved(_) => None,
             Self::Resolved(color) => Some(color),
@@ -911,7 +1058,7 @@ impl BarColor {
     /// [`NavigationView::resolve_native_fields`].
     #[doc(hidden)]
     #[must_use]
-    pub const fn expect_resolved(&self) -> &Computed<ResolvedColor> {
+    pub const fn expect_resolved(&self) -> &Computed<WorkingColor> {
         self.resolved().expect(
             "NavigationView bar color reached a native backend before it was resolved against an environment",
         )
@@ -924,21 +1071,51 @@ impl BarColor {
 /// the destination view when the link is activated.
 #[must_use]
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct NavigationLink<Label, Content> {
     /// The label view displayed for this link
-    pub label: Label,
+    label: Label,
     /// A function that creates the destination view when the link is activated
-    pub content: Content,
+    content: Content,
+}
+
+impl<Label, Content> NavigationLink<Label, Content> {
+    /// The label view displayed for this link
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// A function that creates the destination view when the link is activated
+    #[must_use]
+    pub const fn content(&self) -> &Content {
+        &self.content
+    }
 }
 
 /// A typed navigation link that pushes a route value onto a path-backed stack.
 #[must_use]
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct NavigationValueLink<Label, T> {
     /// The label view displayed for this link.
-    pub label: Label,
+    label: Label,
     /// The route value pushed when the link is activated.
-    pub value: T,
+    value: T,
+}
+
+impl<Label, T> NavigationValueLink<Label, T> {
+    /// The label view displayed for this link.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// The route value pushed when the link is activated.
+    #[must_use]
+    pub const fn value(&self) -> &T {
+        &self.value
+    }
 }
 
 impl<Label, Content> NavigationLink<Label, Content>
@@ -1034,19 +1211,21 @@ impl HeterogeneousDestinations {
                 }),
             },
         );
-        assert!(
-            previous.is_none(),
-            "navigation destination for `{type_name}` was registered more than once"
-        );
+        if previous.is_some() {
+            contract_violation!(
+                "navigation destination for `{type_name}` was registered more than once; the later registration replaces the earlier one"
+            );
+        }
     }
 
     fn build(&self, route: &ErasedNavigationRoute) -> NavigationView {
-        let destination = self.entries.get(&route.type_id()).unwrap_or_else(|| {
-            panic!(
-                "heterogeneous navigation route `{}` has no registered destination",
+        let Some(destination) = self.entries.get(&route.type_id()) else {
+            contract_violation!(
+                "heterogeneous navigation route `{}` has no registered destination; an empty page is shown",
                 route.type_name()
-            )
-        });
+            );
+            return NavigationView::new("", ());
+        };
         (destination.build)(route)
     }
 }
@@ -1083,6 +1262,18 @@ impl<T, F> NavigationStack<T, F> {
     }
 
     /// Sets the transition style for push/pop operations.
+    ///
+    /// This is the default for every page of the stack. A page that declares
+    /// its own arrival replaces it for that page's push and pop, in this
+    /// order of precedence:
+    ///
+    /// 1. A `.transition(...)` on the page's content root: its insertion
+    ///    runs when the page is pushed and its removal when it is popped,
+    ///    while the page beneath stays in place.
+    /// 2. [`NavigationView::transition`] on the destination.
+    /// 3. This stack transition.
+    ///
+    /// A destination may declare 1 or 2, not both.
     pub fn transition(mut self, transition: impl NavigationTransition) -> Self {
         self.transition = AnyNavigationTransition::new(transition);
         self
@@ -1182,17 +1373,27 @@ fn subscribe_navigation_path<R: Clone + 'static>(
     same: impl Fn(&R, &R) -> bool + 'static,
     build: impl Fn(&R) -> AnyViewBuilder<NavigationView> + 'static,
 ) -> impl nami::watcher::WatcherGuard {
-    let current_path = Rc::new(RefCell::new(Vec::new()));
+    let current_path = RefCell::new(Vec::new());
+    // A path write issued while a reconcile still runs lands here
+    // re-entrantly; queue it and let the dispatch in flight drain it once the
+    // current reconcile returns, keeping snapshots in order.
+    let pending = SerialDispatch::new();
     let receiver = receiver.clone();
-    path.watch(move |next_path| {
-        reconcile_navigation_path(
-            &receiver,
-            &mut current_path.borrow_mut(),
-            next_path,
-            &same,
-            &build,
-        );
-    })
+    let reconcile = Rc::new(move |next_path: Vec<R>| {
+        pending.deliver(next_path, |next_path| {
+            reconcile_navigation_path(
+                &receiver,
+                &mut current_path.borrow_mut(),
+                next_path,
+                &same,
+                &build,
+            );
+        });
+    });
+    // Subscribing delivers nothing: the path's current routes are the
+    // controller's starting stack.
+    reconcile(path.snapshot());
+    path.watch(move |next_path| reconcile(next_path))
 }
 
 /// Shared body of every path-backed stack: publish the `Navigator`, install the
@@ -1325,7 +1526,10 @@ where
                     .action(move || navigator.push(value.clone())),
             )
         } else {
-            panic!("NavigationLink::value used outside of a compatible path-backed stack")
+            contract_violation!(
+                "NavigationLink::value used outside of a compatible path-backed stack; the link does nothing when activated"
+            );
+            AnyView::new(button(self.label).style(ButtonStyle::Plain).action(|| {}))
         };
         IgnorableMetadata::new(link, NavigationLinkHint)
     }
@@ -1336,7 +1540,9 @@ impl NavigationView {
     #[doc(hidden)]
     pub fn resolve_native_fields(&mut self, env: &Environment) {
         if let Some(search) = &mut self.bar.search {
-            search.prompt = waterui_text::Text::computed(search.prompt.resolve(env).content);
+            search.set_prompt(waterui_text::Text::computed(
+                search.prompt().resolve(env).into_content(),
+            ));
         }
 
         // A toolbar item's name crosses the boundary as resolved content, so it
@@ -1345,7 +1551,7 @@ impl NavigationView {
         // to resolve one against.
         for item in &mut self.bar.toolbar.items {
             if let Some(title) = item.title.take() {
-                item.title = Some(Text::computed(title.resolve(env).content));
+                item.title = Some(Text::computed(title.resolve(env).into_content()));
             }
         }
 
@@ -1378,6 +1584,11 @@ impl NavigationView {
     }
 
     /// Sets how this destination arrives, overriding its stack's transition.
+    ///
+    /// A `.transition(...)` on the content root is the other way a destination
+    /// declares its arrival — its insertion on push, its removal on pop. A
+    /// destination declares one or the other, not both; see
+    /// [`NavigationStack::transition`] for the precedence.
     ///
     /// A stack-wide transition cannot name a matched pair, because the pair
     /// differs per destination — a gallery's tile and the page it opens share an
@@ -1584,6 +1795,54 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "navigation pop count must be non-zero")
+    )]
+    fn a_zero_pop_request_pops_nothing() {
+        let pushes = Rc::new(Cell::new(0));
+        let pops = Rc::new(Cell::new(0));
+        let controller = NavigationController::new(CountingNavigationController {
+            pushes: Rc::clone(&pushes),
+            pops: Rc::clone(&pops),
+        });
+        controller.push_builder(AnyViewBuilder::new(|| NavigationView::new("One", ())));
+
+        // Release outcome: the request is ignored.
+        controller.request_pop(0);
+
+        assert_eq!(pops.get(), 0);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(
+            expected = "a navigation controller cannot drive more than one explicit path"
+        )
+    )]
+    fn a_second_path_handler_replaces_the_first() {
+        let controller = NavigationController::new(CountingNavigationController {
+            pushes: Rc::new(Cell::new(0)),
+            pops: Rc::new(Cell::new(0)),
+        });
+        let first = Rc::new(Cell::new(0));
+        let second = Rc::new(Cell::new(0));
+        controller.install_path_pop_handler({
+            let first = Rc::clone(&first);
+            move |count| first.set(first.get() + count)
+        });
+        controller.install_path_pop_handler({
+            let second = Rc::clone(&second);
+            move |count| second.set(second.get() + count)
+        });
+
+        controller.path_pop_handler()(1);
+
+        assert_eq!((first.get(), second.get()), (0, 1));
+    }
+
+    #[test]
     fn path_subscription_reconciles_initial_and_replaced_routes() {
         let path = NavigationPath::from(vec![1_u8, 2]);
         let pushes = Rc::new(Cell::new(0));
@@ -1652,6 +1911,111 @@ mod tests {
             2,
             "replacing the route must remove both the route entry and the link entry above it"
         );
+    }
+
+    /// A receiver that writes the watched path while `apply` is still running.
+    struct PathWritingNavigationController {
+        path: Rc<RefCell<Option<NavigationPath<u8>>>>,
+        inside: Cell<bool>,
+        applies: Cell<usize>,
+        applied: Rc<RefCell<alloc::vec::Vec<(usize, usize, usize)>>>,
+    }
+
+    impl CustomNavigationController for PathWritingNavigationController {
+        fn apply(&mut self, transaction: NavigationTransaction) {
+            assert!(
+                !self.inside.replace(true),
+                "the receiver must not run re-entrantly"
+            );
+            self.applied.borrow_mut().push((
+                transaction.retained_prefix,
+                transaction.removed,
+                transaction.inserted.len(),
+            ));
+            self.applies.set(self.applies.get() + 1);
+            // The write must happen on a post-registration delivery: the
+            // collection watcher fires its initial snapshot before it is
+            // registered, so a write during the first apply can never notify.
+            if self.applies.get() == 2 {
+                self.path
+                    .borrow()
+                    .as_ref()
+                    .expect("the test installs the path")
+                    .replace([9_u8, 8]);
+            }
+            self.inside.set(false);
+        }
+    }
+
+    /// A path mutation issued while the backend receiver is applying a
+    /// transaction must reconcile after `apply` returns, not re-enter it.
+    #[test]
+    fn a_path_write_during_apply_is_reconciled_after_apply_returns() {
+        let path = NavigationPath::from(vec![0_u8]);
+        let path_slot = Rc::new(RefCell::new(None));
+        let applied = Rc::new(RefCell::new(alloc::vec::Vec::new()));
+        let controller = NavigationController::new(PathWritingNavigationController {
+            path: Rc::clone(&path_slot),
+            inside: Cell::new(false),
+            applies: Cell::new(0),
+            applied: Rc::clone(&applied),
+        });
+        *path_slot.borrow_mut() = Some(path.clone());
+
+        let _guard = subscribe_navigation_path(&path, &controller, equal, route_destination);
+        path.push(1);
+
+        assert_eq!(
+            &*applied.borrow(),
+            &[(0, 0, 1), (1, 0, 1), (0, 2, 2)],
+            "the nested replace reconciles against the state left by the in-flight apply"
+        );
+        assert_eq!(path.snapshot(), vec![9, 8]);
+    }
+
+    /// A receiver that commits another mutation while `apply` is still running.
+    struct CommittingNavigationController {
+        controller: Rc<RefCell<Option<NavigationController>>>,
+        inside: Cell<bool>,
+        fired: Cell<bool>,
+        ids: Rc<RefCell<alloc::vec::Vec<u64>>>,
+    }
+
+    impl CustomNavigationController for CommittingNavigationController {
+        fn apply(&mut self, transaction: NavigationTransaction) {
+            assert!(
+                !self.inside.replace(true),
+                "the receiver must not run re-entrantly"
+            );
+            self.ids.borrow_mut().push(transaction.id);
+            if !self.fired.replace(true) {
+                self.controller
+                    .borrow()
+                    .as_ref()
+                    .expect("the test installs the controller")
+                    .push_builder(AnyViewBuilder::new(|| NavigationView::new("Nested", ())));
+            }
+            self.inside.set(false);
+        }
+    }
+
+    /// A commit issued while the backend receiver is applying a transaction
+    /// must be delivered after `apply` returns, in order, not re-entrantly.
+    #[test]
+    fn a_commit_during_apply_is_delivered_after_apply_returns() {
+        let slot = Rc::new(RefCell::new(None));
+        let ids = Rc::new(RefCell::new(alloc::vec::Vec::new()));
+        let controller = NavigationController::new(CommittingNavigationController {
+            controller: Rc::clone(&slot),
+            inside: Cell::new(false),
+            fired: Cell::new(false),
+            ids: Rc::clone(&ids),
+        });
+        *slot.borrow_mut() = Some(controller.clone());
+
+        controller.push_builder(AnyViewBuilder::new(|| NavigationView::new("Outer", ())));
+
+        assert_eq!(&*ids.borrow(), &[1, 2]);
     }
 
     /// A native interactive pop is reported after the platform already removed

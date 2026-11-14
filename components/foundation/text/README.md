@@ -6,7 +6,7 @@ Text and typography components for WaterUI with rich styling, fonts, markdown, a
 
 `waterui-text` provides comprehensive text rendering and formatting capabilities for the WaterUI framework. It handles everything from simple text display to complex styled text with multiple font properties, inline-focused markdown styling, and syntax highlighting for code snippets across 40+ programming languages.
 
-The crate is designed around reactive primitives, automatically updating text when underlying data changes. All text rendering delegates to native platform widgets (UIKit/AppKit on Apple, Android View on Android), ensuring platform-native appearance and accessibility.
+The crate is designed around reactive primitives, automatically updating text when underlying data changes.
 
 Core features include semantic font styles (body, title, headline), granular styling control (bold, italic, underline, colors), inline markdown parsing for styled text runs, and production-ready syntax highlighting via `syntect`.
 
@@ -16,14 +16,14 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-waterui-text = "0.1.0"
+waterui-text = "0.5"
 ```
 
 Or use the main WaterUI crate which re-exports text components:
 
 ```toml
 [dependencies]
-waterui = "0.3"
+waterui = "0.5"
 ```
 
 ## Quick Start
@@ -158,10 +158,17 @@ let blue_text = styled.foreground(Color::blue());
 
 ### Syntax Highlighting
 
+`DefaultHighlighter` needs the `highlight` feature:
+
+```toml
+[dependencies]
+waterui-text = { version = "0.5", features = ["highlight"] }
+```
+
 ```rust
 use waterui_text::highlight::{DefaultHighlighter, Language, highlight_text};
 use waterui_core::Str;
-use waterui_graphics::color::ColorScheme;
+use waterui_color::ColorScheme;
 
 // Create highlighter with the palette for the surface it is read against
 let mut highlighter = DefaultHighlighter::new(ColorScheme::Light);
@@ -218,16 +225,20 @@ let highlighted = highlight_text(Language::Rust, &code, &mut highlighter);
 
 ## Features
 
-- `highlight` (default) — `DefaultHighlighter`, the bundled syntect/two-face
+- `highlight` — `DefaultHighlighter`, the bundled syntect/two-face
   syntax highlighter, and the `Code` fenced-code widget built on it.
 - `markdown` — `StyledStr::from_markdown` and the `pulldown-cmark` grammar
   behind it.
-- `font-collection` — `FontCollection`, the one `parley` font collection a host
-  installs into the `Environment` and every component that shapes or typesets
-  text itself reads back out. Turned on by those components, not by
+- `font-collection` — `FontCollection`, the one font collection a host
+  installs into the `Environment` and every component that draws text itself
+  reads back out, as semantic `faces`: `parley` stays the collection's engine
+  and out of its API. Turned on by those components, not by
   applications: text drawn by the platform's own engine never reaches for it,
   and a build that does not need it carries neither the type nor the font stack
   behind it.
+- `engine` — `FontCollection::from_parley` and `FontCollection::with_parley`,
+  the `parley` context behind the collection, for the self-drawn text engine
+  that shapes with it.
 - `system-fonts` — discovering the platform's fonts, which is how a host that
   owns no font stack of its own obtains the collection it installs through
   `install_system_font_collection`.
@@ -238,7 +249,7 @@ Key dependencies that shape the API:
 
 - **waterui-core** - Provides `View` trait, `Environment`, and reactive primitives
 - **nami** - Fine-grained reactivity system (`Binding`, `Computed`, `Signal`)
-- **waterui-graphics** - Color types for text and background styling
+- **waterui-color** - Color types for text and background styling
 - **pulldown-cmark** - Markdown parsing engine
 - **syntect** - Syntax highlighting for code blocks
 - **two-face** - Extended syntax definitions including Swift

@@ -140,9 +140,8 @@ fn channel_enabled(
         subscribed,
         move |set: ChannelSet| set.contains(channel.as_set()),
         move |set: &Binding<ChannelSet>, on: bool| {
-            let mut next = set.get();
-            next.set(channel.as_set(), on);
-            set.set(next);
+            set.with_mut(|next| next.set(channel.as_set(), on));
+            let next = set.snapshot();
             // The connection task owns the socket, so the change is requested
             // rather than written here.
             let _ = subscriptions.try_send(next);
@@ -188,9 +187,9 @@ mod tests {
         let (sender, _receiver) = async_channel::unbounded();
         let frames = channel_enabled(Channel::Frames, &model.subscribed, sender);
         assert!(
-            frames.get(),
+            frames.snapshot(),
             "preview subscription was {:?}",
-            model.subscribed.get()
+            model.subscribed.snapshot()
         );
     }
 
@@ -202,12 +201,12 @@ mod tests {
         let frames = channel_enabled(Channel::Frames, &subscribed, sender.clone());
         let signals = channel_enabled(Channel::Signals, &subscribed, sender);
 
-        assert!(frames.get(), "frames is in the default subscription");
-        assert!(!signals.get(), "signals is not");
+        assert!(frames.snapshot(), "frames is in the default subscription");
+        assert!(!signals.snapshot(), "signals is not");
 
         signals.set(true);
         assert!(
-            subscribed.get().contains(ChannelSet::SIGNALS),
+            subscribed.snapshot().contains(ChannelSet::SIGNALS),
             "writing the toggle must fold the bit back into the set"
         );
     }

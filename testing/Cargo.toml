@@ -14,9 +14,10 @@ categories.workspace = true
 [dependencies]
 hydrolysis = { workspace = true, features = ["accessibility", "testing"] }
 waterui-core.workspace = true
-waterui.workspace = true
-wgpu.workspace = true
-vello.workspace = true
+waterui = { workspace = true, features = ["assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
+# `TestHost`'s offscreen texture format; the `gpu` feature.
+wgpu = { workspace = true, optional = true }
+kurbo.workspace = true
 accesskit = "0.25"
 pollster.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -24,14 +25,31 @@ executor-core.workspace = true
 sysinfo.workspace = true
 waterui-preview-protocol.workspace = true
 serde_json.workspace = true
+serde = { workspace = true, features = ["derive", "std"] }
+# The package under test's declared crate-local font files, read from its
+# Cargo metadata the way the `water` CLI reads them for an application.
+cargo_metadata.workspace = true
+waterui-assets-planner = { workspace = true, features = ["font-declarations"] }
+
+[features]
+default = ["gpu"]
+# Hydrolysis's GPU painter, and `TestHost`, which renders through it.
+gpu = ["hydrolysis/gpu", "waterui/gpu", "dep:wgpu"]
+# Hydrolysis's CPU painter. With `gpu` as well, an offscreen runtime renders
+# on the GPU when the host has a usable hardware adapter and on the CPU
+# otherwise.
+cpu = ["hydrolysis/cpu", "waterui/cpu"]
+# TypeScript views in a test: `ui()` installs the runtime loaded from the
+# bundle `WATERUI_TS_BUNDLE` names — set by `water test` — into the test
+# environment, so a view that reaches a `tsx!` mount renders. A test that
+# mounts no TypeScript never needs the variable.
+ts = ["waterui/ts"]
 
 [dev-dependencies]
+approx = "0.5"
 async-io = "2.6"
 bitflags.workspace = true
-waterui-backend-core = { workspace = true, features = ["widgets"] }
-waterui-canvas.workspace = true
+hydrolysis-m3.workspace = true
 
 [lints]
 workspace = true
-[package.metadata.cargo-machete]
-ignored = ["bitflags", "executor-core"]

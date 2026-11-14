@@ -3,17 +3,16 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use core::fmt;
 
+use crate::draw::Recorder;
 use nami::Signal;
 use nami::watcher::BoxWatcherGuard;
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis};
-use waterui_core::{AnyView, Environment, Native, NativeView, View};
+use waterui_core::{AnyView, Environment, Native, NativeView, View, contract_violation};
 
-#[cfg(feature = "gpu")]
-use crate::gpu_surface::GpuSurface;
-#[cfg(feature = "gpu")]
-use crate::scene::scene_surface::SceneSurfaceRenderer;
-use crate::scene2d::Scene2D;
+use crate::draw::Instant;
+use crate::input::SurfaceInputEvent;
+use crate::scene::resources::{RecordingResources, SceneResources};
 
 /// Environment marker: render `SceneView` directly in the backend scene.
 #[derive(Debug, Clone, Copy, Default)]
@@ -30,7 +29,6 @@ pub type SceneInvalidator = Rc<dyn Fn()>;
 /// caches survive the change, and the next `build_scene` reads the new value.
 /// Keep the guard beside the invalidator and drop both when the invalidator
 /// is cleared, which is what stopping the frames means.
-#[must_use]
 pub fn invalidate_on_change<S: Signal>(
     invalidator: &SceneInvalidator,
     signal: &S,
@@ -39,14 +37,192 @@ pub fn invalidate_on_change<S: Signal>(
     Box::new(signal.watch(move |_| invalidator()))
 }
 
+/// The frame a host presents scene content in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SceneFrame {
+    /// The width of the box the content draws into, in logical points.
+    pub width: f32,
+    /// The height of that box, in logical points.
+    pub height: f32,
+    /// The instant of the presented frame, on the host's frame clock — the
+    /// clock every animation of the host samples, which a test harness
+    /// advances by pumped frames.
+    pub time: Instant,
+}
+
+/// Which frames scene content needs after the one it was just presented in.
+///
+/// The same split the engine makes for the tracks it runs: work that ends on
+/// its own is finite, work that repeats until it is replaced is perpetual. A
+/// host presents the next frame for either; a host that asks whether its
+/// scene has come to rest waits for finite work and not for perpetual work,
+/// which would otherwise never let it rest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every scene host handles each answer; a new answer must fail their build instead of falling into a wildcard arm"
+)]
+pub enum NextFrame {
+    /// No frame: the content draws the same until it invalidates itself.
+    Idle,
+    /// Another frame, for work that reaches its end: a canvas clock from
+    /// `time_until` short of its end, a transition with a known duration.
+    Finite,
+    /// Another frame, for work with no end: a canvas reading its unbounded
+    /// `time`, a simulation that runs for as long as it is shown.
+    Perpetual,
+}
+
+impl NextFrame {
+    /// Whether the content asks for another frame at all.
+    #[must_use]
+    pub const fn wants_frame(self) -> bool {
+        !matches!(self, Self::Idle)
+    }
+}
+
+/// What [`SceneContent::update_scene`] did with the content's installed
+/// recording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every scene host handles both answers; a new answer must fail their build instead of falling into a wildcard arm"
+)]
+pub enum SceneUpdate {
+    /// The content keeps no recording it can update: the host records it
+    /// with [`SceneContent::build_scene`] and installs the result.
+    Record,
+    /// The installed recording was brought up to date in place, and stays
+    /// installed.
+    Retained {
+        /// The frames the content needs next.
+        next: NextFrame,
+    },
+}
+
 /// Object-safe scene producer for `SceneView`.
+///
+/// # Recording and updating
+///
+/// A host that keeps a content's recording installed between frames calls
+/// [`update_scene`](Self::update_scene) for every frame it presents the
+/// content in — after mounting, after an invalidation, and for each frame
+/// the content asked for — and records the content with
+/// [`build_scene`](Self::build_scene) only when that call answers
+/// [`SceneUpdate::Record`]. Content that records itself once and then edits
+/// its installed recording in place answers
+/// [`SceneUpdate::Retained`]; content that draws from scratch keeps the
+/// default, and is recorded again for every frame.
 pub trait SceneContent: 'static {
-    /// Build commands into the provided scene.
+    /// Records this content's drawing into `recorder`, registering and naming
+    /// through `resources` whatever engine resource the drawing uses.
     ///
-    /// Returns true when the content requires another frame to be rendered.
-    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool;
+    /// The recorder is the engine's live recording target: constant operands
+    /// freeze into the [`Content`](crate::draw::Content) it finishes, and
+    /// `nami` signals handed to it stay bound, so a colour or transform the
+    /// content draws from a signal animates without another call here.
+    ///
+    /// `width` and `height` are the box the content is drawing into, in
+    /// logical points — the same space every layout contract on this trait
+    /// measures in.
+    ///
+    /// # Resources
+    ///
+    /// A recorder only names fonts, images and shader paints by id; the
+    /// engine that draws the recording owns the registrations behind those
+    /// ids. `resources` is this recording's share of that engine's
+    /// registration table, and it arrives with every call — rather than once
+    /// at mount — because the moment a content first needs a resource is the
+    /// moment it first records it: here, on whichever frame that is. A canvas
+    /// whose closure reaches for a new font on its tenth frame, or an image
+    /// whose source signal delivers a new picture, registers it in the call
+    /// that draws it and records it straight away. Content never holds on to
+    /// the engine: `resources` is borrowed for the duration of the call.
+    ///
+    /// Registering returns a [`Registered`] handle, which content keeps for
+    /// as long as it goes on drawing the resource; asking again for a source
+    /// it still holds returns the same registration without a new upload.
+    /// A new registration is validated on the calling thread and queued on
+    /// the target — an image beyond
+    /// [`RecordingResources::image_limits`](crate::backend::RecordingResources::image_limits)
+    /// fails right there with `ResourceError::TooLarge`, and one that does
+    /// not fit the image budget beside the images already registered with
+    /// `ResourceError::OverBudget`; see the contract on
+    /// [`SceneResources`](crate::backend::SceneResources#blocking).
+    /// The id to record comes from [`RecordingResources::name`], which holds
+    /// the registration for this recording. It is the only way to get an id
+    /// from a handle, so name the resource in every call that draws it rather
+    /// than keeping an id from an earlier one.
+    ///
+    /// Because the recording holds what it names, content drops a handle as
+    /// soon as it stops drawing the resource, in the very call that records
+    /// the drawing without it. The recording still installed keeps the
+    /// resource until the host has installed the one that replaces it, so the
+    /// release never reaches a recording that can still be drawn — whether the
+    /// host renders before installing this call's recording or discards it.
+    ///
+    /// A host calls this with the [`RecordingResources`] of the recording
+    /// `recorder` records into, and keeps that recording's
+    /// [`HeldResources`](crate::backend::HeldResources) for as long as the
+    /// recording is installed.
+    ///
+    /// Returns the frames the content needs after this one: see
+    /// [`NextFrame`].
+    ///
+    /// [`Registered`]: crate::backend::Registered
+    fn build_scene(
+        &mut self,
+        recorder: &mut Recorder,
+        resources: &mut RecordingResources<'_>,
+        width: f32,
+        height: f32,
+    ) -> NextFrame;
+
+    /// Reconstructs this content for a newly created engine generation.
+    ///
+    /// A `SceneContent` may own registrations, a Cherenkov recording, or
+    /// another object whose identity belongs to the engine that created it.
+    /// Those values cannot be carried into a replacement engine. Recovery
+    /// clears or rebuilds this content's engine-bound state while retaining
+    /// its semantic/source state for the next [`build_scene`](Self::build_scene)
+    /// call. The host invokes this before it records the first scene on the
+    /// replacement engine, and then supplies that call's `RecordingResources`
+    /// as usual.
+    ///
+    /// Content that owns no engine-bound state must implement this explicitly
+    /// as an empty reset.
+    /// Content that caches a [`Registered`](crate::scene::resources::Registered),
+    /// a [`PictureRecording`](crate::backend::PictureRecording), or another
+    /// generation-bound value must preserve its semantic inputs while
+    /// rebuilding that value.
+    fn rebuild_for_engine(&mut self);
+
+    /// Brings the recording this content installed up to date for `frame`,
+    /// in place.
+    ///
+    /// The content follows `frame`'s box and clock, and applies what changed
+    /// since the last call to the recording it last made with
+    /// [`build_scene`](Self::build_scene), registering through `resources`
+    /// whatever the change draws. Every registration such an edit names is
+    /// held by the edited part of the recording itself, which releases it
+    /// once the edit that replaced it has reached the target, so the host
+    /// keeps holding only what the installed recording's
+    /// [`build_scene`](Self::build_scene) named.
+    ///
+    /// Answers [`SceneUpdate::Record`] when there is no installed recording
+    /// to update — before the first record, after the host retired it, after
+    /// [`rebuild_for_engine`](Self::rebuild_for_engine) — and the host then
+    /// records the content. The default answers it always.
+    fn update_scene(&mut self, resources: &SceneResources, frame: SceneFrame) -> SceneUpdate {
+        let _ = (resources, frame);
+        SceneUpdate::Record
+    }
 
     /// Installs an invalidation callback that content can trigger from signal watchers.
+    ///
+    /// The host installs one when it mounts the content and clears it with
+    /// `None` when it unmounts it, so this is also where content starts and
+    /// stops frame sources of its own, such as an animation clock.
     fn set_invalidator(&mut self, _invalidator: Option<SceneInvalidator>) {}
 
     /// The size this drawing is naturally, in logical points.
@@ -109,12 +285,54 @@ pub trait SceneContent: 'static {
     fn accessibility_value(&self) -> Option<String> {
         None
     }
+
+    /// Whether this content handles its own keyboard, IME, pointer and scroll
+    /// input.
+    ///
+    /// Content that is interactive in itself — a terminal, a text editor, a
+    /// game board — returns `true`, and whichever realization draws it then
+    /// routes the events landing on it to [`SceneContent::input`]: a backend
+    /// that merges the scene into its own tree registers the content as an
+    /// input target, and the `GpuContentView` realization forwards its surface's
+    /// events. Content that only draws — the common case — leaves this
+    /// `false`, claims no focus, and every event keeps going to the widgets
+    /// around it.
+    ///
+    /// Read when the content is placed, so the answer is a property of the
+    /// content rather than of its current state.
+    fn wants_input_events(&self) -> bool {
+        false
+    }
+
+    /// Handles one input event.
+    ///
+    /// Only called when [`SceneContent::wants_input_events`] returns `true`.
+    /// Every position is logical and local to the content: its own top-left is
+    /// `(0, 0)`, in the same space [`SceneContent::build_scene`] draws in. See
+    /// [`SurfaceInputEvent`] for the vocabulary.
+    ///
+    /// An event that changes what the content draws is followed by a call to
+    /// the invalidator from [`SceneContent::set_invalidator`]: delivering an
+    /// event does not itself schedule a frame.
+    fn input(&mut self, event: &SurfaceInputEvent) {
+        let _ = event;
+    }
+
+    /// Where this content's text caret is, in logical content-local
+    /// coordinates.
+    ///
+    /// Backends place the input-method candidate window against it, so
+    /// content that accepts composed text reports its caret. `None` — the
+    /// default — means there is no caret to place the panel against.
+    fn ime_caret(&self) -> Option<crate::draw::kurbo::Rect> {
+        None
+    }
 }
 
 /// Fills in the axes a proposal left open from scene content's intrinsic size.
 ///
 /// This is the one rule every realization of a [`SceneView`] measures by — the
-/// `GpuSurface` one, hydrolysis' retained tree, dew's display list — so a scene
+/// `GpuContentView` one, hydrolysis' retained tree, dew's display list — so a scene
 /// cannot be sized differently depending on which backend drew it.
 ///
 /// - Content with no intrinsic size is returned unchanged, so a scene that takes
@@ -133,26 +351,28 @@ pub trait SceneContent: 'static {
 /// one back and the scene keeps the `StretchAxis::None` promise of
 /// [`scene_stretch_axis`] instead of swallowing the row's leftover space.
 ///
-/// # Panics
-///
-/// Panics when `intrinsic` is not finite and positive on both axes: a
-/// [`SceneContent`] that claims a degenerate natural size would otherwise push
-/// `NaN` geometry into layout, which surfaces far away from the content that
-/// produced it.
+/// An `intrinsic` that is not finite and positive on both axes is a contract
+/// violation: a [`SceneContent`] that claims a degenerate natural size would
+/// otherwise push `NaN` geometry into layout, which surfaces far away from the
+/// content that produced it. The content is treated as having no natural
+/// size.
 #[must_use]
 pub fn resolve_scene_proposal(intrinsic: Option<Size>, proposal: ProposalSize) -> ProposalSize {
     let Some(natural) = intrinsic else {
         return proposal;
     };
-    assert!(
-        natural.width.is_finite()
-            && natural.height.is_finite()
-            && natural.width > 0.0
-            && natural.height > 0.0,
-        "SceneContent::intrinsic_size must be finite and positive, got {}x{}",
-        natural.width,
-        natural.height
-    );
+    if !(natural.width.is_finite()
+        && natural.height.is_finite()
+        && natural.width > 0.0
+        && natural.height > 0.0)
+    {
+        contract_violation!(
+            "SceneContent::intrinsic_size must be finite and positive, got {}x{}; the content is treated as having no natural size",
+            natural.width,
+            natural.height
+        );
+        return proposal;
+    }
 
     let width = proposal.width.filter(|width| width.is_finite());
     let height = proposal.height.filter(|height| height.is_finite());
@@ -177,9 +397,12 @@ fn scale_across(named: f32, natural_along: f32, natural_across: f32) -> f32 {
 ///
 /// Content with no size of its own takes whatever it is offered, exactly as it
 /// always has. Content that *is* a size is content-sized and claims no leftover
-/// space: an icon in a row must not eat the row, and a container that wants it
-/// bigger says so with a frame, which [`resolve_scene_proposal`] then honours.
-/// This is the rule `waterui-image` already measures its own surfaces by.
+/// space: an icon in a row must not eat the row. [`resolve_scene_proposal`]
+/// honours finite proposals for the scene itself; `waterui-image` adds its own
+/// non-resizable layout, which answers the natural size to an unspecified
+/// proposal and only scales down under smaller finite proposals, preserving
+/// the aspect ratio. It never scales up and remains `StretchAxis::None`.
+/// A `.resizable()` image instead fills the proposal per its `content_mode`.
 #[must_use]
 pub const fn scene_stretch_axis(intrinsic: Option<Size>) -> StretchAxis {
     if intrinsic.is_some() {
@@ -189,7 +412,7 @@ pub const fn scene_stretch_axis(intrinsic: Option<Size>) -> StretchAxis {
     }
 }
 
-/// A view that renders scene content either directly (backend) or via `GpuSurface`.
+/// A view that mounts [`SceneContent`] on the backend's engine layer tree.
 pub struct SceneView {
     content: Box<dyn SceneContent>,
 }
@@ -248,15 +471,16 @@ impl SceneView {
         self.content
     }
 
-    /// Converts this scene directly into a GPU surface.
+    /// Replaces this view's content with its source-preserving reconstruction
+    /// for a newly created engine generation.
     ///
-    /// This is primarily useful for offscreen rendering and visual tests. Normal
-    /// view composition should return `SceneView` so a self-drawn backend can
-    /// merge its commands directly into the parent scene.
-    #[cfg(feature = "gpu")]
+    /// The returned view keeps the same layout and accessibility contract;
+    /// only engine-bound scene state is reconstructed. The host must call this
+    /// before the first recording made with the replacement engine.
     #[must_use]
-    pub fn into_gpu_surface(self) -> GpuSurface {
-        GpuSurface::new(SceneSurfaceRenderer::new(self.content))
+    pub fn rebuild_for_engine(mut self) -> Self {
+        self.content.rebuild_for_engine();
+        self
     }
 }
 
@@ -267,25 +491,11 @@ impl NativeView for SceneView {
 }
 
 impl View for SceneView {
-    fn body(self, env: &Environment) -> impl View {
-        if env.get::<SceneViewMergeToParent>().is_some() {
-            return AnyView::new(Native::new(self));
-        }
-        #[cfg(feature = "gpu")]
-        {
-            AnyView::new(self.into_gpu_surface())
-        }
-        // Without a GPU surface to fall back on there is nowhere left to draw:
-        // a scene either merges into a backend's own scene or rasterizes into a
-        // surface of its own, and neither is available here.
-        #[cfg(not(feature = "gpu"))]
-        {
-            panic!(
-                "a SceneView has no way to render: the backend did not install \
-                 `SceneViewMergeToParent`, and `waterui-graphics` was built \
-                 without the `gpu` feature that provides the GpuSurface path"
-            );
-        }
+    fn body(self, _env: &Environment) -> impl View {
+        // A scene draws on the engine its backend already owns: the native
+        // leaf carries the content and the backend mounts it in its layer
+        // tree. There is no second renderer to fall back on.
+        AnyView::new(Native::new(self))
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -295,74 +505,128 @@ impl View for SceneView {
 
 #[cfg(test)]
 mod tests {
+    use crate::draw::{Draw, kurbo::Shape};
+
     use super::{
-        NativeView, ProposalSize, SceneContent, SceneView, Size, StretchAxis,
-        resolve_scene_proposal, scene_stretch_axis,
+        NativeView, NextFrame, ProposalSize, Recorder, RecordingResources, SceneContent, SceneView,
+        Size, StretchAxis, resolve_scene_proposal, scene_stretch_axis,
     };
-    use crate::scene2d::Scene2D;
 
     /// Content that is naturally 100x200 — twice as tall as it is wide.
     struct Tall;
 
+    struct Rebuildable {
+        value: f32,
+    }
+
+    impl SceneContent for Rebuildable {
+        fn build_scene(
+            &mut self,
+            recorder: &mut Recorder,
+            _resources: &mut RecordingResources<'_>,
+            width: f32,
+            height: f32,
+        ) -> NextFrame {
+            recorder.fill(
+                crate::draw::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height))
+                    .to_path(0.1),
+                crate::draw::WorkingColor::BLACK,
+            );
+            NextFrame::Idle
+        }
+
+        fn intrinsic_size(&self) -> Option<Size> {
+            Some(Size::new(self.value, 1.0))
+        }
+
+        fn rebuild_for_engine(&mut self) {}
+    }
+
     impl SceneContent for Tall {
-        fn build_scene(&mut self, _scene: &mut dyn Scene2D, _width: f32, _height: f32) -> bool {
-            false
+        fn build_scene(
+            &mut self,
+            _recorder: &mut Recorder,
+            _resources: &mut RecordingResources<'_>,
+            _width: f32,
+            _height: f32,
+        ) -> NextFrame {
+            NextFrame::Idle
         }
 
         fn intrinsic_size(&self) -> Option<Size> {
             Some(Size::new(100.0, 200.0))
         }
+
+        fn rebuild_for_engine(&mut self) {}
     }
 
     /// Content with no size of its own, which is the trait's default.
     struct Sizeless;
 
     impl SceneContent for Sizeless {
-        fn build_scene(&mut self, _scene: &mut dyn Scene2D, _width: f32, _height: f32) -> bool {
-            false
+        fn build_scene(
+            &mut self,
+            _recorder: &mut Recorder,
+            _resources: &mut RecordingResources<'_>,
+            _width: f32,
+            _height: f32,
+        ) -> NextFrame {
+            NextFrame::Idle
         }
+
+        fn rebuild_for_engine(&mut self) {}
     }
 
     /// Content that says what it draws, the way a formula or a chart does.
     struct Spoken;
 
     impl SceneContent for Spoken {
-        fn build_scene(&mut self, _scene: &mut dyn Scene2D, _width: f32, _height: f32) -> bool {
-            false
+        fn build_scene(
+            &mut self,
+            _recorder: &mut Recorder,
+            _resources: &mut RecordingResources<'_>,
+            _width: f32,
+            _height: f32,
+        ) -> NextFrame {
+            NextFrame::Idle
         }
 
         fn accessibility_value(&self) -> Option<alloc::string::String> {
             Some("x squared plus one".into())
         }
+
+        fn rebuild_for_engine(&mut self) {}
     }
 
-    /// The value has to survive the trip onto a GPU surface, because that is
-    /// the path every native backend takes: a `SceneView` that is not merged
-    /// into a backend's own scene becomes a `GpuSurface`, and a surface whose
-    /// renderer forgot the value is announced to a screen reader as a silent
-    /// rectangle.
-    #[cfg(feature = "gpu")]
+    /// The view must forward exactly what its content offers a screen reader:
+    /// the value channel survives, and quiet content is not given a name or a
+    /// value it never had.
     #[test]
-    fn a_surface_carries_the_value_its_content_gives() {
+    fn the_view_carries_the_value_its_content_gives() {
         assert_eq!(
-            SceneView::new(Spoken)
-                .into_gpu_surface()
-                .accessibility_value(),
+            SceneView::new(Spoken).accessibility_value(),
             Some("x squared plus one".into())
         );
         assert_eq!(
-            SceneView::new(Spoken)
-                .into_gpu_surface()
-                .accessibility_label(),
+            SceneView::new(Spoken).accessibility_label(),
             None,
             "content that names nothing must not invent a name for itself"
         );
         assert_eq!(
-            SceneView::new(Sizeless)
-                .into_gpu_surface()
-                .accessibility_value(),
+            SceneView::new(Sizeless).accessibility_value(),
             None,
             "content with nothing to say must not invent a value either"
+        );
+    }
+
+    #[test]
+    fn reconstruction_replaces_engine_bound_content_and_preserves_semantic_state() {
+        let view = SceneView::new(Rebuildable { value: 37.0 });
+        let rebuilt = view.rebuild_for_engine();
+        assert_eq!(
+            rebuilt.intrinsic_size(),
+            Some(Size::new(37.0, 1.0)),
+            "reconstruction must carry semantic state into the new content"
         );
     }
 
@@ -460,9 +724,16 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "must be finite and positive")]
-    fn a_degenerate_natural_size_is_rejected() {
-        let _ = resolve_scene_proposal(Some(Size::new(0.0, 10.0)), ProposalSize::UNSPECIFIED);
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "must be finite and positive")
+    )]
+    fn a_degenerate_natural_size_is_no_natural_size() {
+        let proposal = ProposalSize::new(Some(30.0), Some(40.0));
+        assert_eq!(
+            resolve_scene_proposal(Some(Size::new(0.0, 10.0)), proposal),
+            proposal
+        );
     }
 
     #[test]

@@ -1,0 +1,164 @@
+//! Emits `DEP_*_VERSION` environment variables with the exact dependency
+//! versions resolved in `Cargo.lock`, for adapter provenance reporting, and
+//! links the compiler-rt builtins archive the prebuilt Skia objects need on
+//! Apple targets.
+
+use std::path::Path;
+
+/// Reads `(name, version, git-rev)` tuples out of a `Cargo.lock`; the rev is
+/// the `#sha` fragment of a `git+` source, `None` for registry packages.
+fn lockfile_packages(text: &str) -> Vec<(String, String, Option<String>)> {
+    let mut out = Vec::new();
+    let (mut name, mut version, mut rev) = (None::<String>, None::<String>, None);
+    let mut flush =
+        |name: &mut Option<String>, version: &mut Option<String>, rev: &mut Option<String>| {
+            if let (Some(n), Some(v)) = (name.take(), version.take()) {
+                out.push((n, v, rev.take()));
+            }
+        };
+    for line in text.lines() {
+        let line = line.trim();
+        if line == "[[package]]" {
+            flush(&mut name, &mut version, &mut rev);
+        } else if let Some(v) = line
+            .strip_prefix("name = \"")
+            .and_then(|s| s.strip_suffix('"'))
+        {
+            name = Some(v.to_owned());
+        } else if let Some(v) = line
+            .strip_prefix("version = \"")
+            .and_then(|s| s.strip_suffix('"'))
+        {
+            version = Some(v.to_owned());
+        } else if let Some(v) = line.strip_prefix("source = \"git+") {
+            rev = v
+                .rsplit('#')
+                .next()
+                .and_then(|s| s.strip_suffix('"'))
+                .map(str::to_owned);
+        }
+    }
+    flush(&mut name, &mut version, &mut rev);
+    out
+}
+
+/// `CHERENKOV_GIT_SHA` is `git rev-parse HEAD`. The bench is a path
+/// crate, so Cargo.lock has no revision for it; the external-cost
+/// report prints this instead of a hand-typed `--head`. The bench only
+/// builds from a checkout, so a missing commit is an error.
+fn emit_git_sha() {
+    let manifest = std::env::var_os("CARGO_MANIFEST_DIR")
+        .expect("Cargo sets CARGO_MANIFEST_DIR for build scripts");
+    let sha = waterui_git_head::head_commit(Path::new(&manifest), None).unwrap_or_else(|| {
+        panic!(
+            "cherenkov-bench builds from a Git checkout with a commit, and {} is not one",
+            Path::new(&manifest).display()
+        )
+    });
+    assert!(
+        sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "git rev-parse HEAD returned {sha:?}"
+    );
+    println!("cargo:rustc-env=CHERENKOV_GIT_SHA={sha}");
+}
+
+/// Reads the workspace root `Cargo.lock`: the manifest's nearest ancestor
+/// directory that has one. `bench/` sits one level below the root in the
+/// standalone repository and three below it in water-rs/waterui's
+/// `graphics/` tree.
+fn workspace_lock(manifest: &str) -> Option<String> {
+    let mut dir = Path::new(manifest);
+    loop {
+        let lock = dir.join("Cargo.lock");
+        if lock.is_file() {
+            println!("cargo:rerun-if-changed={}", lock.display());
+            return std::fs::read_to_string(&lock).ok();
+        }
+        dir = dir.parent()?;
+    }
+}
+
+/// The prebuilt Skia archives `skia-bindings` downloads are compiled by
+/// Xcode's clang, whose `isOSVersionAtLeast` availability guards call
+/// `___isPlatformVersionAtLeast` — a builtin that lives in the toolchain's
+/// `libclang_rt.<platform>.a`, which nothing on rustc's default link line
+/// supplies. The Metal corpus leg could not link `cherenkov-bench` on the
+/// macOS runners for it (#2690); the same symbol broke iOS-simulator dylib
+/// links in #929. Emit the toolchain's darwin directory as a search path
+/// and the platform's archive as a link arg — the form `rustc-link-lib`
+/// cannot take, because rustc refuses to merge Apple's archive format into
+/// rlibs, while link args propagate to the final artifact's link.
+/// `rustc-link-arg` covers this package's bins/examples/benches; tests need
+/// their own directive. The iOS bench app links through Xcode's clang
+/// driver, which adds the runtime itself, so the staticlib needs nothing.
+fn link_compiler_rt() {
+    if std::env::var("CARGO_CFG_TARGET_VENDOR").as_deref() != Ok("apple") {
+        return;
+    }
+    // The undefined symbol arrives only with skia-safe's prebuilt objects.
+    if std::env::var_os("CARGO_FEATURE_SKIA").is_none()
+        && std::env::var_os("CARGO_FEATURE_SKIA_METAL").is_none()
+    {
+        return;
+    }
+    let (suffix, sdk) = match (
+        std::env::var("CARGO_CFG_TARGET_OS").as_deref(),
+        std::env::var("CARGO_CFG_TARGET_ABI").as_deref(),
+    ) {
+        (Ok("macos"), _) => ("osx", "macosx"),
+        (Ok("ios"), Ok("sim")) => ("iossim", "iphonesimulator"),
+        (Ok("ios"), _) => ("ios", "iphoneos"),
+        (os, abi) => panic!(
+            "no clang_rt platform suffix for Apple target os={os:?} abi={abi:?}; \
+             extend the match if Skia is supported there"
+        ),
+    };
+    // The resource dir is toolchain-level (its `lib/darwin` holds every
+    // platform's archive); the SDK only names which clang xcrun resolves.
+    let output = std::process::Command::new("xcrun")
+        .args(["--sdk", sdk, "clang", "-print-resource-dir"])
+        .output()
+        .expect("`xcrun clang -print-resource-dir` failed to start");
+    assert!(
+        output.status.success(),
+        "`xcrun --sdk {sdk} clang -print-resource-dir` failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let resource = String::from_utf8(output.stdout).expect("xcrun printed non-utf-8 path");
+    let darwin = Path::new(resource.trim()).join("lib/darwin");
+    let archive = darwin.join(format!("libclang_rt.{suffix}.a"));
+    assert!(
+        archive.is_file(),
+        "compiler runtime {} does not exist",
+        archive.display()
+    );
+    println!("cargo:rustc-link-search=native={}", darwin.display());
+    println!("cargo:rustc-link-arg=-lclang_rt.{suffix}");
+    println!("cargo:rustc-link-arg-tests=-lclang_rt.{suffix}");
+}
+
+fn main() {
+    emit_git_sha();
+    link_compiler_rt();
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let Some(text) = workspace_lock(&manifest) else {
+        return;
+    };
+    let packages = lockfile_packages(&text);
+    for (pkg, env) in [
+        ("vello", "DEP_VELLO"),
+        ("vello_gpu", "DEP_VELLO_GPU"),
+        ("vello_cpu", "DEP_VELLO_CPU"),
+        ("skia-safe", "DEP_SKIA_SAFE"),
+        ("wgpu", "DEP_WGPU"),
+        ("cherenkov-gpu", "DEP_CHERENKOV_GPU"),
+        ("cherenkov-cpu", "DEP_CHERENKOV_CPU"),
+    ] {
+        if let Some((_, v, rev)) = packages.iter().find(|(n, _, _)| n == pkg) {
+            println!("cargo:rustc-env={env}_VERSION={v}");
+            if let Some(rev) = rev {
+                println!("cargo:rustc-env={env}_SOURCE_REV={rev}");
+            }
+        }
+    }
+}

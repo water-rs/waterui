@@ -1,0 +1,41 @@
+# Event order source: Windows TSF/IME98 as implemented by winit (winit-0.30
+# src/platform_impl/windows/event_loop.rs, WM_IME_COMPOSITION handling). TSF
+# commits text while a composition is still live — GCS_RESULTSTR arrives with
+# GCS_COMPSTR in the same message — so the commit lands BEFORE the preedit is
+# cleared. Every keystroke is consumed by the IME before it reaches the
+# application: no plain key or text events are ever delivered.
+# Order derived from the documented TSF/IMM message flow above; not an
+# observed platform trace.
+final_text = "你好"
+selection = [6, 6]
+committing_key_swallowed = true
+
+# Typing "nihao": the composition grows per keystroke with the caret at the
+# end of the marked text.
+[[step]]
+events = [
+    { preedit = { text = "n", caret = 1 } },
+]
+
+[[step]]
+events = [
+    { preedit = { text = "ni", caret = 2 } },
+]
+
+[[step]]
+events = [
+    { preedit = { text = "ni h", caret = 4 } },
+]
+
+[[step]]
+events = [
+    { preedit = { text = "ni hao", caret = 6 } },
+]
+
+# Enter confirms the whole candidate: the commit arrives while the cleared
+# preedit is only reported afterwards.
+[[step]]
+events = [
+    { commit = "你好" },
+    { preedit = { text = "" } },
+]

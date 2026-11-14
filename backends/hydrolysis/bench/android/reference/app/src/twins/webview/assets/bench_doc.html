@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WaterUI Benchmark Document</title>
+<style>
+  body { font-family: sans-serif; margin: 16px; color: #222; }
+  h1 { font-size: 1.4em; } h2 { font-size: 1.1em; color: #356; }
+  p { line-height: 1.5; }
+  .box { border: 1px solid #8ac; border-radius: 8px; padding: 12px; margin: 12px 0; }
+  button { padding: 8px 14px; font-size: 1em; }
+</style>
+</head>
+<body>
+<h1>WaterUI Benchmark Document</h1>
+<p>This is the pinned local WebView document for the webview fixture.
+It replaces the network load the sample navigates to interactively so
+measurements never depend on the network.</p>
+<div class="box">
+<h2>Section A</h2>
+<p>Plain paragraphs, a bordered card and a script hook that reports the
+document title back to the host through the PageApi bridge.</p>
+<button onclick="document.getElementById('greet').textContent = PageApi.greet('WebView')">Greet via PageApi</button>
+<p id="greet"></p>
+</div>
+<div class="box">
+<h2>Section B</h2>
+<p>Scrollable filler so the document exercises WebView scrolling during the
+frame script.</p>
+<p>1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20</p>
+<p>A B C D E F G H I J K L M N O P Q R S T U V W X Y Z</p>
+<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod
+tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam,
+quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo
+consequat.</p>
+<p>Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod
+tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam.</p>
+</div>
+</body>
+</html>

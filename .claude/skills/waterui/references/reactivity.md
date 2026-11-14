@@ -6,6 +6,7 @@
 - Creating state
 - Transforming signals
 - Combining signals
+- Reactive strings with `s!`
 - Constants as signals
 - Projecting struct fields
 - Feeding signals to views
@@ -20,7 +21,7 @@
 
 Three types cover everything:
 
-- **`Binding<T>`** — mutable state you own. Read with `.get()`, write with `.set()` /
+- **`Binding<T>`** — mutable state you own. Read with `.snapshot()`, write with `.set()` /
   `.get_mut()`.
 - **`Computed<T>`** — a derived, read-only value. Produced by `.computed()` on any signal.
 - **`impl Signal<Output = T>`** — the trait both implement, plus every transform.
@@ -31,7 +32,7 @@ APIs take the loosest thing that works, in three flavors:
 | Parameter type | Accepts |
 |---|---|
 | `impl IntoComputed<T>` | a plain `T`, a `Binding<T>`, a `Computed<T>`, any signal of `T` |
-| `impl IntoSignalF32` | `f32`, `f64`, and signals of either |
+| `impl IntoSignalF32` | any primitive number (`f32`, `f64`, integers) and signals of one |
 | `&Binding<T>` | a binding specifically — the API writes back to it |
 
 That third one is the tell for two-way controls: `toggle`, `slider`, `stepper`, `field`,
@@ -68,13 +69,15 @@ Writing:
 count.set(5);
 *count.get_mut() += 1;          // guard: writes back on drop
 count.with_mut(|v| v.push(x));  // in-place mutation of a container
+items.append(x);                // extend a container (`T: Extend<_>`: Vec, String, …)
+count.add_assign(1);            // also sub_assign, mul_assign, div_assign, …
 flag.toggle();                  // bool convenience
 ```
 
 ## Transforming signals
 
 These are methods on any signal (from `SignalExt`, which the prelude re-exports). They
-take `&self` and do not consume or clone the source — `count.not()` and
+take `&self` and clone the source handle themselves — `count.not()` and
 `hovered.select(..)` read naturally with no `.clone()` first. Clone only when a finished
 signal is *moved* into two places (e.g. passed to `.scale(x, y)` twice).
 
@@ -134,6 +137,25 @@ let config = a.zip(&b).zip(&c).zip(&d)
 
 Call `.computed()` at the end when you need a nameable `Computed<T>` to store in a struct.
 
+## Reactive strings with `s!`
+
+`s!` formats captured signals into a signal of `String` that recomputes when any of them
+changes. It is nami's macro, reached as `waterui::reactive::s` (not in the prelude); the
+placeholders capture signals by name like `format!`, or take positional and `name = expr`
+arguments.
+
+```rust
+use waterui::reactive::s;
+
+let count = Binding::i32(3);
+let total = Binding::i32(10);
+let progress = s!("{count} of {total}");   // Signal<Output = String>
+```
+
+Displayed text goes through `text!`, which feeds the translation catalog (i18n.md); `s!`
+is for reactive strings that are not catalog content — keys, identifiers, log lines. It is
+what replaces a hand-written `.map(|..| format!(..))` over zipped signals.
+
 ## Constants as signals
 
 `impl IntoComputed<T>` accepts a plain `T`, and nami pre-declares the primitives,
@@ -191,8 +213,8 @@ a signal is moved into a modifier and used again afterwards.
 
 ## Reading state in handlers
 
-Inside an `.action()` handler you are outside the reactive graph, so `.get()` is correct
-there. What you must not do is `.get()` while *building* a view.
+Inside an `.action()` handler you are outside the reactive graph, so `.snapshot()` is correct
+there. What you must not do is `.snapshot()` while *building* a view.
 
 ```rust
 button("Reset")
@@ -210,12 +232,31 @@ Handler parameters are extractors. Besides `State<T>`:
 - `impl_extractor!(ApiClient)` instead marks a `Clone` type installed as an *environment*
   value (`env.insert`/`env.with`), a different channel from `.state()`.
 - Context extractors supplied by components, e.g. `Navigator<Route>`, `ListDelete`,
-  `ListMove`, `SnackbarManager`, `WebViewProxy`, `DragData`.
+  `ListMove`, `SnackbarManager`, `WebViewProxy`.
+
+Repeated parameters of one state type bind positionally: the first `.state()` call feeds
+the first parameter of that type. A parameter that cannot be extracted means the handler
+does not run and the failure is reported as a contract violation (a panic in a debug
+build, a log line in release) — take `Option<E>` when absence is legitimate.
 
 ```rust
-fn delete_row(ListDelete(index): ListDelete, state: Editor) {
+fn delete_row(ListDelete(index): ListDelete, mut state: Editor) {
     let _ = state.rows.remove(index);
 }
+```
+
+A handler takes its extractors as parameters. Code that runs while a *view* is built
+reads the same extractors through `waterui::env::use_env` (a tuple takes several). Its
+closure runs once, when the view is built, so a value it extracts (a `SnackbarManager`, a
+client) can shape the view or be moved into a callback that is not a WaterUI handler and
+so cannot take parameters — a self-drawn view's input callback, a closure handed to
+another component. A missing value is reported as for a handler, and the view renders
+nothing.
+
+```rust
+use waterui::env::use_env;
+
+use_env(|Use(client): Use<ApiClient>| text(client.name()))
 ```
 
 To accept a caller-supplied action in your *own* reusable view function, take the handler
@@ -255,6 +296,12 @@ Curves: `Animation::linear(d)`, `ease_in(d)`, `ease_out(d)`, `ease_in_out(d)`,
 which the prelude re-exports and `waterui::animation` also exports — one trait, one
 meaning, whichever path you import it by.
 
+A signal with no animation attached leaves the receiver to choose, and a control that
+owns its motion may still animate the change. To make changes apply in the next frame,
+attach `NoAnimation` (also from `waterui::animation`) the same way:
+`opacity.with(NoAnimation)`. It wins over an animation attached anywhere else on the
+same signal, so `opacity.animated().with(NoAnimation)` snaps too.
+
 Because the animation rides on the signal, any signal can be animated — including derived
 ones — and independently-animated signals compose:
 
@@ -266,19 +313,19 @@ let combined = hover_scale.zip(&drop_bounce).map(|(a, b)| a * b);   // still ani
 
 ## Reactive collections
 
-`nami::collection::List<T>` is a reactive sequence: mutating it emits a membership patch
+`waterui::reactive::collection::List<T>` is a reactive sequence: mutating it emits a membership patch
 rather than a whole-collection invalidation.
 
 ```rust
 use waterui::component::lazy::Lazy;
 use waterui::reactive::collection::List as ReactiveList;
 
-let rows = ReactiveList::from(seed_vec);   // bulk-seed in one move — not a push loop
+let mut rows = ReactiveList::from(seed_vec);   // bulk-seed in one move — not a push loop
 rows.push(Row { id: 9, title: "Last".into() });
 rows.insert(0, Row { id: 0, title: "First".into() });   // positional splice, id-diffed
 let _ = rows.remove(0);              // #[must_use] — bind the removed value
 let snapshot = rows.snapshot();      // Vec<Row>, for read-only work
-let _ = rows.replace(new_vec);       // wholesale swap, still diffed by id
+let _ = rows.replace(new_vec);       // wholesale swap, diffed by id: moves and changed rows
 
 Lazy::for_each(rows.clone(), row_view)          // == Lazy::vstack(ForEach::new(..))
 Lazy::hstack(ForEach::new(rows.clone(), row_view))
@@ -287,16 +334,20 @@ Lazy::hstack(ForEach::new(rows.clone(), row_view))
 `ForEach` implements `Views` (a collection of views), not `View`, so a container has to
 consume it. `Lazy::for_each` / `Lazy::vstack` / `Lazy::hstack` defer realization;
 `VStack::for_each` / `HStack::for_each` build an ordinary stack over the same collection
-when you want stack modifiers and eager layout (see components.md for
-`collection_transition`, which animates membership changes).
+when you want stack modifiers and eager layout — the stack forms require `Identifiable`
+items (see components.md for the per-row `.transition(PropertyTransition::opacity())`
+membership animation).
 
 Items must derive `Identifiable` (`use waterui::Identifiable;` — the derive is not in the
 prelude) with an `#[id]` field that is stable across updates of the same logical row.
+The mutators take `&mut self`; clones share one list, so a handler mutates its own clone.
+`replace` additionally needs `PartialEq` items: a surviving id whose item compares
+unequal is reported as an updated row.
 
 A **derived** row set — filtered, sorted, or joined from other state — is wrapped in
-`SignalCollection`, which adapts any `Signal<Output = Vec<T>>` into a diffable
-collection. This is the answer to "filter a list as the user types"; without it the only
-road is `watch` over a `Vec`, which rule 4 forbids:
+`SignalCollection`, which adapts any `Signal<Output = Vec<T>>` of `Identifiable +
+PartialEq` items into a diffable collection. This is the answer to "filter a list as the
+user types"; without it the only road is `watch` over a `Vec`, which rule 4 forbids:
 
 ```rust
 use waterui::reactive::collection::SignalCollection;
@@ -309,8 +360,10 @@ let visible = SignalCollection::new(
 List::for_each(visible, message_row)
 ```
 
-A *fixed* set of items does not need any of this: an array or `Vec` works directly with
-`List::for_each` and `ForEach::new`.
+A *fixed* set of items does not need any of this: an array (`[T; N]`), `&'static [T]`,
+`Rc<[T]>` or `Box<[T]>` works directly with `List::for_each` and `ForEach::new`, and its
+rows are identified by index. A `Vec<T>` is identified by its items' ids, so it needs
+`Identifiable` items.
 
 ## Conditionals
 
@@ -335,6 +388,23 @@ when(state.equal_to(0), || loading())
 // Negation works through the Not impl on Binding.
 when(!is_loading.clone(), || content())
 ```
+
+The payloads of `when`, `.or` and `.otherwise` are `Fn` builders, not `FnOnce`: each runs
+again every time its branch becomes active. A `move` closure that moves a captured value
+out of itself (or a field of a captured struct) stops being `Fn`, and the E0525/E0507
+points at the `when` call, far from the capture. Bind the clone in the enclosing scope so
+the closure captures a whole local, and clone inside the body:
+
+```rust
+let items = store.items.clone();
+
+// `move || list_of(items)` would move `items` out of the closure — not `Fn`.
+when(has_items.clone(), move || list_of(items.clone())).otherwise(|| empty_state())
+```
+
+A branch is built once when its condition becomes true, so a value read there with
+`.snapshot()` stays frozen while the condition holds (rule 1): anything that must change
+inside a branch goes in as a signal.
 
 `when` reconstructs the branch that becomes active — state inside a branch does not
 survive switching away and back. That is rule 5, and it is intended. When tearing a view
@@ -380,7 +450,7 @@ button("Load")
         |State(url): State<Binding<Str>>,
          State(blur): State<Binding<f64>>,
          h: DynamicHandler| {
-            let Ok(parsed) = url.get().as_str().parse::<Url>() else { return };
+            let Ok(parsed) = url.snapshot().as_str().parse::<Url>() else { return };
             h.set(Photo::new(parsed).blur(blur.clone()));
         },
     )
@@ -395,12 +465,13 @@ vstack((slot, /* … */))
 injection bare while the `Binding`s stay wrapped in `State<..>` (they are foreign types).
 
 Even there, keep the *reactive* properties reactive — the replacement above is built with
-`.blur(blur.clone())`, not `.blur(blur.get())`, so the slider keeps working without
+`.blur(blur.clone())`, not `.blur(blur.snapshot())`, so the slider keeps working without
 another swap.
 
 ## Async, tasks, and lifecycle
 
 ```rust
+use waterui::event::LifeCycle;
 use waterui::log::debug;
 
 button("Fetch")
@@ -412,12 +483,19 @@ button("Fetch")
 view.task(async { warm_cache().await });   // runs while the view is alive; dropped with it
 view.on_appear(|| debug!("shown"));
 view.on_disappear(|| ());
+view.lifecycle(LifeCycle::Appear, || ());   // what on_appear/on_disappear call
+view.retain(guard);                         // keep a `.watch(..)` guard alive as long as the view
 view.on_change(&query, |new_value: Str| debug!(?new_value));
 view.on_change(&query, |new_value: Str, State(history): State<Binding<Vec<Str>>>| {
     history.append(new_value);
 })
 .state(&history);
 ```
+
+Lifecycle handlers are one-shot (`HandlerOnce`). `on_disappear` fires when the view leaves
+the hierarchy, not when it is hidden — and leaving the hierarchy is not being destroyed. To
+tie a resource to the view's real lifetime, `.retain(value)` it: the value drops when the
+view is dropped.
 
 `.on_change(&signal, f)` takes the signal by reference and an `EventHandler`: the new value
 arrives first, **by value**, and any state extractors follow it, injected with

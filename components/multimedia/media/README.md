@@ -81,6 +81,11 @@ All media components integrate with `WaterUI`'s reactive system via `Binding` an
 
 ### Photo with Loading Events
 
+`Event::Loaded` fires once the picture is actually on screen — when the
+final decoded frame's registration with the scene backend settles. A frame
+the backend refuses (over its image limits or image budget) reports
+`Event::Error` instead, never `Loaded`.
+
 ```rust
 use waterui_media::{Photo, photo::Event, Url};
 
@@ -89,6 +94,8 @@ let photo = Photo::new(Url::new("https://assets.waterui.dev/images/logo.png"))
         match event {
             Event::Loaded => tracing::debug!("Image loaded successfully"),
             Event::Error(msg) => tracing::debug!("Failed to load: {}", msg),
+            // `Event` is `#[non_exhaustive]`: later releases may add events.
+            _ => {}
         }
     });
 ```
@@ -151,7 +158,7 @@ fn picker_demo() -> impl View {
             .label(text("Choose Video")),
 
         // Display selected media
-        selection.get().map(|sel| {
+        selection.snapshot().map(|sel| {
             // Load media asynchronously and display
             vstack((text("Media selected"),))
         }),
@@ -171,6 +178,8 @@ fn display_media(media: Media) -> impl View {
         Media::Image(_) => AnyView::new(text("Displaying Photo")),
         Media::Video(_) => AnyView::new(text("Displaying VideoPlayer")),
         Media::LivePhoto(_) => AnyView::new(text("Displaying LivePhoto")),
+        // `Media` is `#[non_exhaustive]`: later releases may add media kinds.
+        _ => AnyView::new(text("Unsupported media")),
     }
 }
 
@@ -249,7 +258,7 @@ All processing operations run on background threads via `blocking::unblock` to p
 ### Android
 
 - `Photo`: Uses Coil image loading library
-- `Video`: Uses `WaterUI` Rust video pipeline (`GpuSurface` + `waterkit-codec`)
+- `Video`: Uses `WaterUI` Rust video pipeline (`GpuContentView` + `waterkit-codec`)
 - `VideoPlayer`: Uses `WaterUI` Rust player controls and rendering pipeline
 - `LivePhoto`: Uses the same Rust-side photo/gesture/video composition
 - Live Photo picking: Extracts the embedded motion resource from Android Motion Photos

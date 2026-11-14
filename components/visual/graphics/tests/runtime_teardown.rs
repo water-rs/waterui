@@ -11,8 +11,9 @@
 //!
 //! nextest runs every test in a process of its own, so returning from this
 //! test is exactly the exit that used to crash.
+#![cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
 
-use waterui_graphics::GpuRuntime;
+use waterui_graphics::gpu::GpuRuntime;
 
 #[test]
 fn a_dropped_runtime_leaves_the_process_able_to_exit() {

@@ -1,5 +1,13 @@
+# Generated test fixtures are produced by nextest setup scripts (#2386), so
+# a local run and a CI leg share one path: each generator below is pinned,
+# hash-verified, and a cheap no-op once its output exists and verifies.
+experimental = ["setup-scripts"]
+
 # Local runs keep nextest's defaults.
 [profile.default]
+# The AppKit/UIKit-touching native tests share process-wide framework state;
+# report failures at the end of output rather than mid-stream.
+failure-output = "immediate-final"
 # Surface anything pathologically slow rather than letting CI hang on it.
 slow-timeout = { period = "60s", terminate-after = 10 }
 
@@ -31,7 +39,13 @@ slow-timeout = { period = "300s", terminate-after = 8 }
 # break into one CI round trip per failure.
 fail-fast = false
 failure-output = "immediate-final"
-status-level = "retry"
+# `slow` prints each test's name as it crosses the slow-timeout threshold
+# and `pass` prints one line per finished test binary, so a dominant test
+# or binary is identifiable from the log alone — `retry` showed only
+# retried tests, which is how a 24-minute Windows phase named none of
+# its seven slow tests.
+status-level = "slow"
+final-status-level = "pass"
 slow-timeout = { period = "120s", terminate-after = 5 }
 
 # Same bench exemption as the default profile: smoke-mode benches are cheap,
@@ -55,21 +69,78 @@ slow-timeout = { period = "300s", terminate-after = 8 }
 # The ceiling is raised rather than the tests changed: they are legitimately
 # slow the first time and fast afterwards, which is exactly what a raised
 # ceiling is for and exactly what a watchdog should not kill.
+#
+# The dependency graph keeps growing past each ceiling (15×120s was enough
+# at 39610385085 and not at 42492949228): the fixture compiles into its own
+# isolated `target/tests/trybuild`, so a cold CI run rebuilds `waterui` and
+# `waterui-testing` from scratch inside the watchdog window. Rather than
+# growing the ceiling again, the suite gets one retry — the attempt that
+# times out is what warms that cache, and the retry completes the compile
+# and the cases inside the unchanged 1800 s bound.
 [[profile.ci.overrides]]
 filter = 'package(waterui-macros)'
 slow-timeout = { period = "120s", terminate-after = 15 }
+
+# Only the trybuild binary retries: the timed-out attempt is what warms the
+# isolated fixture cache, so the retry completes inside the same bound. The
+# rest of the package is deterministic — a first failure there is real.
+[[profile.ci.overrides]]
+filter = 'package(waterui-macros) and binary(trybuild_macro_contracts)'
+retries = { backoff = "fixed", count = 1, delay = "1s" }
 
 # GPU- and process-backed tests are occasionally flaky on shared runners — a
 # WARP device losing the memory race on Windows, Metal's shader cache racing
 # another process on a developer machine — so they get a retry, and the retry
 # is reported. Everything else is deterministic: a failure there is real, and
 # an unconditional retry would only double the runtime of a genuinely broken
-# suite while hiding the first failure's evidence. The set is the same one the
-# `gpu-device` test group below is built from: every package whose tests mount
-# a `waterui-testing` host or create a `wgpu` device.
+# suite while hiding the first failure's evidence. The set is the `gpu-device`
+# test group below minus `hydrolysis`: the backend mounts
+# a GPU per test and is the suite most tempted by a retry, but retrying a GPU
+# test hides flakiness rather than fixing it — a red hydrolysis leg is the
+# honest state until the device race is fixed (#1441 review).
 [[profile.ci.overrides]]
-filter = 'package(waterui) or package(waterui-browser-cef) or package(waterui-browser-wpe) or package(waterui-controls) or package(waterui-ffi) or package(waterui-form) or package(waterui-graphics) or package(waterui-icon) or package(waterui-icons-lucide) or package(waterui-icons-material-icon) or package(waterui-inspector-app) or package(waterui-map) or package(waterui-mcp) or package(waterui-media) or package(waterui-navigation) or package(waterui-shape) or package(waterui-testing) or package(waterui-text) or package(waterui-webview) or package(gallery-example) or package(list-example) or package(reply-example) or package(stress-example) or package(typography-rtl-example)'
+filter = 'package(waterui) or package(waterui-controls) or package(waterui-form) or package(waterui-graphics) or package(waterui-icon) or package(waterui-icons-lucide) or package(waterui-icons-material-icon) or package(waterui-inspector-app) or package(waterui-layout) or package(waterui-map) or package(waterui-mcp) or package(waterui-media) or package(waterui-navigation) or package(waterui-shape) or package(waterui-testing) or package(waterui-text) or package(waterui-webview) or package(gallery-example) or package(list-example) or package(reply-example) or package(stress-example) or package(typography-rtl-example)'
 retries = { backoff = "fixed", count = 2, delay = "1s" }
+
+# The CLI's tests shell out to cargo and git — `cargo metadata`, `git clone`,
+# the `water` binary under test — which are occasionally flaky on shared
+# runners; a retry keeps that from failing the branch, and the retry is
+# reported through `final-status-level`. The standalone repository retried
+# the whole suite unconditionally for the same reason; here the retry is
+# scoped to the package, the way every other flaky-backed suite above is.
+[[profile.ci.overrides]]
+filter = 'package(waterui-cli)'
+retries = { backoff = "fixed", count = 2, delay = "1s" }
+
+# `release_build_stages_include_bundle_mounts` builds a scaffolded app in
+# release from a cold target directory, because no other test in the ignored
+# suite builds in release. That is the same build the fresh-user leg's
+# `water package` times: 451 s on macOS and 822 s on Windows in nightly run
+# 39610385085, where this test took 478 s on macOS and never finished within
+# the general 600 s ceiling on Windows. The ceiling follows the measured build.
+[[profile.default.overrides]]
+filter = 'package(waterui-cli) and test(release_build_stages_include_bundle_mounts)'
+slow-timeout = { period = "300s", terminate-after = 4 }
+
+[[profile.ci.overrides]]
+filter = 'package(waterui-cli) and test(release_build_stages_include_bundle_mounts)'
+slow-timeout = { period = "300s", terminate-after = 4 }
+
+# The large-path gates of water-rs/waterui#2546 are legitimately slow: each
+# renders the eight large-path corpus scenes — up to 10k flattened segments
+# over a 1024x768 surface — twice over, and `large_paths` also computes the
+# oracle's f64 reference for every one of them. Locally, in a debug build on
+# a Metal device, each takes about a minute; on CI's software rasterizer, in
+# an unoptimized build, several. The ceiling is raised rather than the
+# coverage cut, as for the benches above: these are the gates the GPU
+# coverage route (water-rs/waterui#2543) has to pass.
+[[profile.default.overrides]]
+filter = 'test(route_diff) or test(large_paths_match_the_oracle)'
+slow-timeout = { period = "300s", terminate-after = 6 }
+
+[[profile.ci.overrides]]
+filter = 'test(route_diff) or test(large_paths_match_the_oracle)'
+slow-timeout = { period = "300s", terminate-after = 6 }
 
 # How many wgpu devices may exist at once on the Windows runner.
 #
@@ -94,8 +165,8 @@ retries = { backoff = "fixed", count = 2, delay = "1s" }
 # Metal.
 #
 # The package list is the workspace's direct dependents of `waterui-testing`,
-# `wgpu`, `hydrolysis` and `hydrolysis-m3` — the only ways a test binary here
-# can hold a device — minus the ones whose test code cannot run it:
+# `wgpu` and `hydrolysis` — the only ways a test binary here can hold a
+# device — minus the ones whose test code cannot run it:
 # `waterui-macros` carries `trybuild` compilers and pure derive tests,
 # `skill_snippets`' host-mounting transcriptions are compile-gated and never
 # run, and `waterkit-camera-filters-example` has no tests at all.
@@ -103,24 +174,27 @@ retries = { backoff = "fixed", count = 2, delay = "1s" }
 # dev-dependency edges transitively, which pulls in the whole workspace
 # through `waterui`'s dev-dependency. Keep the list in sync when a package's
 # dependency on the GPU stack changes.
+#
+# `hydrolysis-m3` is not named: while it stays an external dependency rather
+# than a workspace member, `package(hydrolysis-m3)` fails the whole
+# expression at parse time — add it if the crate ever lands in-tree.
 [test-groups.gpu-device]
 max-threads = 2
 
 # How many processes may compile Metal shaders at once on macOS.
 #
 # Every test process that mounts a `waterui-testing` host builds its own
-# `wgpu::Device`, and each device runs Vello's shader initialisation. On macOS
-# that is `newLibraryWithSource`, which goes through Metal's on-disk
+# `wgpu::Device`, and each device runs the engine's shader initialisation. On
+# macOS that is `newLibraryWithSource`, which goes through Metal's on-disk
 # shader-compiler cache — a single file shared by every process on the machine.
 # Metal does not survive many processes reading and writing it at once: a run of
 # the mermaid suite aborted with
 #
 #     SIGBUS, subtype "FS pagein error: 22 Invalid argument"
-#     thread "Vello shader initialisation worker thread"
+#     thread "shader initialisation worker thread"
 #       MTLCompilerFSCache::getElementImpl
 #       MTLLibraryBuilder::newLibraryWithSource
 #       wgpu_hal::metal::Device::load_shader
-#       vello::WgpuEngine::build_shaders_if_needed
 #
 # on a machine that also had three cargo builds running (#434). The faulting
 # page belongs to that cache file, not to anything WaterUI allocated: a reader
@@ -149,5 +223,110 @@ test-group = 'metal-shader-compile'
 
 [[profile.ci.overrides]]
 platform = 'cfg(target_os = "windows")'
-filter = 'package(waterui) or package(waterui-browser-cef) or package(waterui-browser-wpe) or package(waterui-controls) or package(waterui-ffi) or package(waterui-form) or package(waterui-graphics) or package(waterui-icon) or package(waterui-icons-lucide) or package(waterui-icons-material-icon) or package(waterui-inspector-app) or package(waterui-map) or package(waterui-mcp) or package(waterui-media) or package(waterui-navigation) or package(waterui-shape) or package(waterui-testing) or package(waterui-text) or package(waterui-webview) or package(gallery-example) or package(list-example) or package(reply-example) or package(stress-example) or package(typography-rtl-example)'
+filter = 'package(waterui) or package(waterui-controls) or package(waterui-form) or package(waterui-graphics) or package(waterui-icon) or package(waterui-icons-lucide) or package(waterui-icons-material-icon) or package(waterui-inspector-app) or package(waterui-layout) or package(waterui-map) or package(waterui-mcp) or package(waterui-media) or package(waterui-navigation) or package(waterui-shape) or package(waterui-testing) or package(waterui-text) or package(waterui-webview) or package(gallery-example) or package(list-example) or package(reply-example) or package(stress-example) or package(typography-rtl-example) or package(hydrolysis)'
 test-group = 'gpu-device'
+
+# How many `native_app` cases may run at once on a destination — the
+# simulator the runner locks serializes runs per device anyway, so this
+# bound exists for the physical device too, where each install+launch
+# round trip is far slower than a simulator case.
+[test-groups.apple-app-launch]
+max-threads = 1
+
+[[profile.default.overrides]]
+platform = 'cfg(target_os = "ios")'
+filter = 'binary(native_app)'
+test-group = 'apple-app-launch'
+
+[[profile.ci.overrides]]
+platform = 'cfg(target_os = "ios")'
+filter = 'binary(native_app)'
+test-group = 'apple-app-launch'
+
+# The general pasteboard is one per machine, shared by every process: a test
+# that writes it and then pastes reads whatever a concurrently running paste
+# test wrote or cleared in between (#4520). The cocoa-ui input-view paste
+# tests therefore run one at a time.
+[test-groups.system-pasteboard]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'package(cocoa-ui) and test(/input_view::.*paste/)'
+test-group = 'system-pasteboard'
+
+[[profile.ci.overrides]]
+filter = 'package(cocoa-ui) and test(/input_view::.*paste/)'
+test-group = 'system-pasteboard'
+
+# The pinned, hash-verified generators, one per uncommitted asset a suite
+# needs. `uv run` reads each script's inline metadata the same way CI does.
+[scripts.setup.test-fonts]
+command = ["uv", "run", "backends/hydrolysis/test-fonts/install.py"]
+
+[scripts.setup.media-live-photo-motion]
+command = [
+    "uv",
+    "run",
+    "components/multimedia/media/tests/fixtures/generate-live-photo-motion.py",
+    "components/multimedia/media/tests/fixtures/live-photo-motion.mp4",
+]
+
+[scripts.setup.cli-roboto]
+command = ["uv", "run", "cli/tests/fixtures/fonts/generate.py"]
+
+# Which tests each generator serves. A run that reaches none of a rule's
+# packages runs no generator. Every profile, `ci` included, applies the
+# default profile's script rules, so they are written once.
+#
+# `test-fonts` serves the packages whose test binaries link a font
+# consumer — `waterui-testing`, whose styled suites resolve the installed
+# families through system font discovery, or `hydrolysis`, whose own test
+# targets render the same families under `testing::TestStyle` through the
+# dev-dependency the crate carries on itself. That set is a fact of the
+# package graph, and `.github/tools/nextest-fixtures` (run by the
+# affected-scope job) fails CI naming every package this filter
+# is missing or carries without cause. `rdeps(waterui-testing)` cannot
+# replace the list: it follows dev-dependency edges at every hop, while
+# cargo links a package's dev-dependencies into its own tests only.
+#
+# `media-live-photo-motion` generates the clip waterui-media's live-photo
+# suites read. `cli-roboto` serves the waterui-cli platform test that copies
+# the fixture into a generated project — a path membership, not a dependency
+# edge.
+[[profile.default.scripts]]
+filter = '''
+    package(gallery-example)
+ or package(hydrolysis)
+ or package(hydrolysis-android-test-app)
+ or package(list-example)
+ or package(reply-example)
+ or package(skill_snippets)
+ or package(stress-example)
+ or package(typography-rtl-example)
+ or package(waterui)
+ or package(waterui-controls)
+ or package(waterui-form)
+ or package(waterui-graphics)
+ or package(waterui-icon)
+ or package(waterui-icons-lucide)
+ or package(waterui-icons-material-icon)
+ or package(waterui-inspector-app)
+ or package(waterui-layout)
+ or package(waterui-macros)
+ or package(waterui-mcp)
+ or package(waterui-media)
+ or package(waterui-navigation)
+ or package(waterui-testing)
+ or package(waterui-text)
+ or package(waterui-ts)
+ or package(waterui-webview)
+'''
+setup = 'test-fonts'
+
+[[profile.default.scripts]]
+filter = 'package(waterui-media)'
+setup = 'media-live-photo-motion'
+
+[[profile.default.scripts]]
+filter = 'package(waterui-cli)'
+setup = 'cli-roboto'

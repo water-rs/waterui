@@ -5,8 +5,10 @@ description: Build cross-platform native apps with the WaterUI Rust framework. U
 
 # Building apps with WaterUI
 
-WaterUI is a Rust UI framework that renders to real native widgets (UIKit/AppKit,
-Android View, GTK4) or to its own GPU renderer, from one view tree. It is
+WaterUI is a Rust UI framework that renders to real native widgets (UIKit/AppKit) or
+to its own GPU renderer — Hydrolysis, which is also the Android backend — from one
+view tree. The GTK4, WinUI and TUI backends are experimental and live in their own
+repositories. It is
 **fine-grained reactive**: a value change updates exactly the widget that reads it,
 without rebuilding the surrounding tree.
 
@@ -45,17 +47,17 @@ depend on before copying from it.
 ### 1. Pass the signal, never a snapshot of it
 
 Reactive APIs take `impl IntoComputed<T>`, `impl IntoSignalF32`, or `&Binding<T>`.
-Handing them `.get()` reads the value once and freezes it — the UI then never updates,
+Handing them `.snapshot()` reads the value once and freezes it — the UI then never updates,
 and nothing fails at compile time, so this bug is silent.
 
 ```rust
 view.opacity(fade.clone())              // reacts
-view.opacity(fade.get())                // frozen forever — a plain f32
+view.opacity(fade.snapshot())                // frozen forever — a plain f32
 Photo::new(url).blur(blur.clone())      // reacts
 text!("Count: {count}")                 // reacts
 ```
 
-`.get()` belongs inside event handlers and `.map()` closures, where you genuinely want
+`.snapshot()` belongs inside event handlers and `.map()` closures, where you genuinely want
 the value at that instant. It does not belong in a view body.
 
 ### 2. `watch` is not the reactive primitive — it is the escape hatch
@@ -95,7 +97,7 @@ parameter of that type.
 ```rust
 button("Search")
     .action(|State(q): State<Binding<Str>>, State(hist): State<Binding<Vec<Str>>>| {
-        hist.get_mut().push(q.get());
+        hist.with_mut(|h| h.push(q.snapshot()));
     })
     .state(&query)      // -> first parameter
     .state(&history)    // -> second parameter
@@ -132,16 +134,18 @@ Async is the same shape: `.action_async(|State(x): State<Binding<Str>>| async mo
 
 `ForEach`/`List` diff by `Identifiable` id, so inserting one row touches one row.
 `watch` over a `Vec` rebuilds everything and can escalate to a full-window rebuild.
+The list's mutators take `&mut self`; a clone shares the same list, so a handler mutates
+its own clone (`mut state: Editor`).
 
 ```rust
-use waterui::Identifiable;                             // the derive is NOT in the prelude
+use waterui::Identifiable;                             // the trait the derive implements is NOT in the prelude
 use waterui::component::lazy::Lazy;
 use waterui::reactive::collection::List as ReactiveList;
 
 #[derive(Clone, Identifiable)]
 struct Row { #[id] id: u64, title: Str }
 
-let rows = ReactiveList::from(seed_rows);              // bulk-seed; .push/.insert/.remove diff by id
+let rows = ReactiveList::from(seed_rows);              // bulk-seed; .push/.insert/.remove (&mut self) diff by id
 
 Lazy::for_each(rows.clone(), |row| text(row.title))        // reactive sequence in a stack
 List::for_each(rows.clone(), |row| ListItem::new(...))     // platform list: lazy, editable
@@ -194,12 +198,12 @@ pub fn app(env: Environment) -> App {
 ```
 
 `use waterui::prelude::*;` brings in views, layout, colors, text, controls, navigation,
-menus, `State`, `Str`, `AnyView`, `SignalExt`, and `AnimationExt`. Several everyday names
-live outside it:
+menus, `Binding`, `Computed`, `binding` (the general constructor), `State`, `Str`,
+`AnyView`, `SignalExt`, `AnimationExt`, and, with their features, `Dialog` and
+`Snackbar`. Several everyday names live outside it:
 
 ```rust
-use waterui::Identifiable;                             // the derive macro
-use waterui::reactive::binding;                        // the general Binding constructor
+use waterui::Identifiable;                             // the trait the derive implements
 use waterui::reactive::collection::List as ReactiveList;
 use waterui::widget::condition::when;                  // conditionals
 use waterui::animation::Animation;                     // animation curves
@@ -207,16 +211,24 @@ use waterui::component::lazy::Lazy;                    // reactive stacks over a
 use waterui::views::ForEach;                           // the collection itself
 use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
 use waterui::cursor::CursorStyle;
-use waterui::drag_drop::DragData;
+use waterui::drag_drop::{Files, Transferable};
 use waterui::env::with;                                // scope a value to a subtree
 use waterui::task::{sleep, spawn_local};               // async utilities
 ```
 
 Components behind cargo features are also absent until you enable them. `waterui`'s
-defaults are `gpu`, `assets`, `media`, `inspector`, `snackbar`; `webview` and
-`flow-markdown` are opt-in in `Cargo.toml`. Canvas, charts, barcodes and particles have
-opt-in facade features `canvas`, `chart`, `barcode` and `particle`, exposing the
-independent crates as `waterui::canvas`, `waterui::chart`, `waterui::barcode` and
+defaults are `gpu`, `assets`, `dialog`, `snackbar`, `highlight` (the `Code` widget) and
+the `locale-datetime` / `locale-list` formatters. Everything else is opt-in in
+`Cargo.toml`: `media` (`Photo`, `MediaPicker`; the generated project's own `media`
+feature forwards to it), `video`, `video-gpu`, `remote` (web URLs for `Photo`,
+`Url::fetch`), `webview`, `flow-markdown`, `markdown-math`, `inspector`, `widgets`
+(home-screen widgets, `#[waterui::widget]`), `ts` / `ts-ota` (TypeScript views and
+their over-the-air update client `waterui::ts::Ota`), `navigation-restoration` and
+`std`. The `all` feature enables every one of these except `ts`, `ts-ota`, `widgets`,
+`markdown-math` and `dynamic_linking`. Canvas, charts, barcodes and particles have
+facade features `canvas`, `chart`, `barcode` and `particle`, exposing
+`waterui::canvas` (the drawing API, also at `waterui::graphics::canvas`) and the
+independent crates as `waterui::chart`, `waterui::barcode` and
 `waterui::particle`. Direct dependencies such as `waterui-chart` remain valid and expose
 the same types as the facade, including with dynamic linking. Maps and Mermaid diagrams
 use direct dependencies on `waterui-map` and `waterui-mermaid`; `waterui-mermaid` lives
@@ -306,10 +318,20 @@ text!("Blur: {blur:.1}")                        // format specs work
 text("0x1F60").monospaced()                     // the platform's fixed-pitch face, same size
 ```
 
-Import the macro and write bare `text!` — never `waterui::text!`. On a `Text`, `.size(..)`
+Import the macro and write bare `text!` — never `waterui::text!`. The same goes for every
+name, inside macro bodies too: bring it into scope with `use` and write `ForEach`, not
+`::waterui_core::views::ForEach`. The prelude's attribute macros follow the same rule
+(`#[state]`, `#[form]`, `#[preview]`), with one forced exception: the UI-test attribute is
+written `#[waterui::test]`, because the prelude names it `ui_test` so that its glob import
+cannot shadow the built-in `#[test]`, and a bare `#[test]` is the standard one. By
+convention `#[waterui::bench]`, `#[waterui::widget]`, `#[waterui::widget_intent]` and
+`#[waterui::view_builder]` are written qualified too. On a `Text`, `.size(..)`
 is the *font* size (and shadows the two-argument frame `.size(w, h)`). `.monospaced()` is a
 design, not a family: it keeps the slot and size and each backend picks its own monospaced
-face, so never spell a font name for code.
+face, so never spell a font name for code. A reactive string that is not catalog
+content (a derived id, a debug label) is `s!("{name}-{count}")` from
+`waterui::reactive::s`: it captures signals like `format!` and yields a `String` signal;
+displayed text stays `text!`.
 
 ### Layout
 
@@ -344,7 +366,33 @@ when(state.equal_to(0), || loading())
     .otherwise(|| error())
 
 new_marker().visible(is_new.clone())        // keep the view, drive its visibility
+
+// Real payloads capture state: the closure is an `Fn` builder, so clone inside it
+when(loaded.clone(), move || summary(items.clone()))
+    .otherwise(|| empty())
+
+// Branches of different view types: #[view_builder] (or a view! { .. } block)
+#[waterui::view_builder]
+fn gate(logged_in: Binding<bool>) -> impl View {
+    if logged_in { dashboard() } else { login() }
+}
+
+#[waterui::view_builder]
+fn page(tab: Binding<i32>) -> impl View {
+    match tab {
+        0 => loading(),
+        1 => ready(),
+        _ => error(),
+    }
+}
 ```
+
+The payloads of `when`, `.or` and `.otherwise` are `Fn() -> impl View` builders that run
+again each time their branch becomes active. Capture a whole local and clone inside the
+body; a closure that moves a captured value, or a field of a captured struct, out of
+itself stops being `Fn`, and the E0525/E0507 points at the `when` call, far from the
+capture. A branch is built when it becomes active, so a `.snapshot()` read inside it
+stays frozen while the condition holds: pass signals (rule 1).
 
 The distinction matters: `Option<impl View>` is a view, but a *signal* of
 `Option<impl View>` is not, so `flag.map(|b| b.then(|| view))` on a `Binding` does not
@@ -353,11 +401,27 @@ compile. Reach for `when` or `.visible` there.
 For many branches over a plain (non-reactive) value, a `match` returning `.anyview()` is
 clearer than a long `when` chain.
 
+`#[view_builder]` (a non-async function or method returning `-> impl View`) and
+`view! { .. }` (a block expression) let branches return different view types without
+`.anyview()`. They rewrite only tail-position `if`, `if let` and `match` expressions
+(and `return` values): the condition or scrutinee is evaluated once and bound as the
+signal, and the expression becomes `watch(signal.clone(), move |value| ..)`, the `if`
+or `match` running on each value; branches are wrapped in `Result`/`Option` so the
+types unify (an `if` without `else` renders nothing when false). So the condition must
+itself be a `Clone` signal: `if flag` on a `Binding<bool>` or `match tab` on a
+`Binding<i32>` is reactive, a plain `bool` or integer is a constant signal read once,
+and a comparison is a derived signal (`if count.gt(3)`), never `count > 3`. That
+closure is a `'static` `Fn`: the branches move what they capture into it, so clone a
+captured value inside a branch rather than move it out, and borrow nothing. Like any
+`watch`, every change of the signal replaces the subtree and discards its state, even
+when the same branch stays active, so the scrutinee should change only when the
+structure does (rule 2).
+
 ### Modifiers
 
 ```rust
 .padding() / .padding_with(16.0) / .padding_with((8.0, 16.0)) / .padding_horizontal(16.0)
-.background(color) / .foreground(color) / .overlay(view)
+.background(color) / .foreground(color) / .tint(color) / .overlay(view)
 .size(w, h) / .width(w) / .height(h) / .min_width(w) / .max_width(w) / .min_size(..) / .max_size(..)
 .scale(x, y) / .rotation(degrees) / .offset(x, y)     // two arguments, not one
 .border(color, width) / .shadow(shadow) / .clip(shape)
@@ -365,12 +429,19 @@ clearer than a long `when` chain.
 .blur(signal) / .brightness(..) / .contrast(..) / .saturation(..) / .grayscale(..) / .hue_rotation(..)
 .a11y_label(..) / .a11y_value(..) / .a11y_id("settings.wifi") / .a11y_role(..)
 .on_appear(..) / .on_change(&signal, ..) / .on_tap(..) / .gesture(g, handler) / .context_menu(items)
-.cursor(style) / .ignore_safe_area(EdgeSet::ALL) / .floating()
+.cursor(style) / .ignore_safe_area(EdgeSet::ALL) / .floating() / .secure()   // .secure(): no screenshots
+.ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM))   // regions × edges
 ```
 
 Visual modifiers take signals — pass bindings straight in; the filter row works on *any*
-view, not just images. Plain-size frame modifiers (`.size`, `.width`, `.min_width`) take
-`f32`; the `max_*` pair also accepts signals.
+view, not just images (it needs the default `gpu` feature or `effects`). About sixty more
+named filters live on `FilterViewExt` (`.sepia`, `.vignette`, `.bloom`, `.pixellate`,
+`.gaussian_blur`, `.sharpen`, `.invert`, `.exposure`, `.tone_curve`, `.color_matrix`,
+`.motion_blur`, …); `.filter(F)` takes any filtrate filter and `.effect(E)` (`gpu` only)
+a custom effect, and [references/media.md](references/media.md) covers shader effects. The first frame
+modifier on a view (`.size`, `.width`, `.min_width`, `.max_width`, …) takes `f32`;
+chained onto the `Frame` it returns, `.width`, `.height`, `.min_*` and `.max_*` take
+signals.
 
 ### The Environment
 
@@ -426,7 +497,11 @@ optional decoration — it drives screen readers *and* it is what `waterui-testi
 queries. To hide a label visually while keeping it in the tree, use the display-mode API,
 never drop the label: `.hide_label()` on any labeled control, `.label_style(
 LabelDisplayMode::IconOnly)` for icon buttons, `.install(LabelDisplayMode::IconOnly)` for
-a whole toolbar.
+a whole toolbar. Beyond label, value, role and id, `.a11y_geometry(AccessibilityGeometry)`
+(the rectangle the element reports: the view's own response rectangle by default,
+`Allocation` for the whole assigned frame, or `Region(rect)`), `.a11y_children(
+AccessibilityChildren)` (how descendants contribute semantics) and
+`.a11y_state(AccessibilityState)` set the rest; the types are in `waterui::accessibility`.
 
 ## Component index
 
@@ -439,14 +514,15 @@ web, graphics, and data rows live in [references/media.md](references/media.md).
 | Controls | `button` `toggle` `slider` `stepper` `field`/`TextField` `progress` `Picker` |
 | Menus | `Menu` `Command` `.context_menu` `Shortcut` |
 | Interaction | `.on_tap` `.gesture` `TapGesture` `LongPressGesture` `DragGesture` `.draggable` `.drop_destination` `.on_hover_enter` `.cursor` |
-| Text | `text` `text!` `styled` `Code` `RichText` `include_markdown!` `FlowMarkdown` |
-| Collections | `List` `ListItem` `ForEach` `SignalCollection` `ScrollController` |
+| Text | `text` `text!` `StyledStr` `Code` `RichText` `include_markdown!` `FlowMarkdown` |
+| Collections | `List` `ListItem` `ForEach` `Lazy` `SignalCollection` `ScrollController` `table` `col` |
+| Content | `Avatar` `Link` `Accordion` `.badge(n)` `loading()` |
 | Navigation | `Tabs` `Tab` `NavigationStack` `NavigationLink` `NavigationSplitView` `Window` |
 | Forms | `#[form]` `form()` `DatePicker` `Calendar` `ColorPicker` `FilePicker` |
-| Overlays | `Snackbar` `SnackbarManager` `FullScreenOverlayManager` `Card` `suspense` |
+| Overlays | `Snackbar` `SnackbarManager` `FullScreenOverlayManager` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` `.dialog` `Dialog` `DialogAction` |
 | Media | `Photo` `Image` `VideoPlayer` `PlaybackSession` `MediaPicker` |
-| Data | `Chart` (12 kinds) `Map` |
-| Graphics | `Canvas` `Barcode::qr()` `Svg` `shader!` `ParticleSystem` `GpuSurface` icon sets |
+| Data | `waterui::chart` (13 kinds: `line_chart` `bar_chart` `pie_chart` …) `Map` |
+| Graphics | `Canvas` `Barcode::qr()` `Svg` `shader!` `ParticleSystem` `GpuContentView` `ExternalFrameView` icon sets |
 | Platform | `WebView` `#[js_api]` `waterui-chromium` |
 
 ## Verify before declaring done
@@ -465,13 +541,24 @@ interaction test and an accessibility check, which is why a component that canno
 tested this way is a bug rather than a gap. Details in
 [references/testing.md](references/testing.md).
 
+Backend selection uses `[platforms.<platform>] backend = "..."` in `Water.toml`;
+`--backend` may confirm, but not contradict, that declaration. Without either,
+the platform default applies. See [platforms and backends](references/project.md#platforms-and-backends),
+including the Hydrolysis requirement for Linux previews.
+
 ## Driving the app from an agent
 
 `water mcp` serves the running app to an agent over MCP: run it in the project root and
 it builds the app headless, then exposes the live accessibility tree, actions, and
 screenshots as tools. The server answers `initialize` and `tools/list` immediately, so
 a cold first build does not stall the client handshake — tool calls simply wait for the
-build.
+build. The app renders through Hydrolysis on a wgpu adapter: a hardware GPU when there
+is one, otherwise a software adapter such as Mesa lavapipe, with a warning in the log.
+Only a host with neither fails — the app panics at startup naming the missing driver,
+the panic appears on `water mcp`'s stderr, and tool calls return the launch failure as
+a tool error. `WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER=1` makes a software adapter win
+over a real GPU, to reproduce a software-adapter run. When the client closes stdio the
+server stops the app and exits, so the client owns the session's lifetime.
 
 `water create` writes a project-level `.mcp.json` that points MCP clients at it:
 
@@ -510,14 +597,81 @@ surface — state-filtered selectors, element-anchored pointer input, `settle: f
 returns the PNG image content directly — use it to check one component without driving the
 whole app.
 
+## TypeScript views
+
+A view can be authored in TypeScript — JSX over the same component catalog — and mounted
+from Rust with `tsx!`, which returns an ordinary `View` that slots anywhere a view goes.
+The application crate needs `waterui`'s opt-in `ts` feature. The authoring guide is
+[docs/jsx.md](https://github.com/water-rs/waterui/blob/dev/docs/jsx.md); the rules that
+differ from ordinary Rust views:
+
+- The path is relative to the Rust file that mounts the module, and the module id the
+  bundle publishes is that file's path relative to the crate root, extension kept —
+  `tsx!("./promo.tsx", …)` in `src/lib.rs` mounts `"src/promo.tsx"`. The macro stats the
+  file at compile time but never parses it, and records the mount in a
+  `waterui_meta_tsx_*` static for tooling. The current `water` CLI does not read those
+  records or bundle `.tsx` modules.
+- Props are a struct literal naming a `#[derive(TsProps)]` type; the Rust struct and the
+  TypeScript interface are checked against each other by contract hash, so a bundle from
+  another build is refused rather than mis-mounted. `String` ⇄ `string`,
+  `Binding<T>` ⇄ `Signal<T>`, `Box<dyn Fn()>` ⇄ `() => void`, and
+  `#[ts(rename = "onDismiss")]` maps a snake_case field to its camelCase prop. A module
+  that takes no props is `tsx!("./about.tsx")`, typed against `NoProps`. A data type
+  nested inside props (a struct, or an enum that becomes a string-literal union or tagged
+  object) derives `TsType` from the same `waterui::ts::schema` module; it converts both
+  ways across the bridge, and a type that only travels outwards (it carries a callback)
+  adds `#[ts(one_way)]`.
+
+```rust
+use waterui::ts::schema::TsProps;
+use waterui::tsx;
+use waterui::Binding;
+
+#[derive(TsProps)]
+struct PromoProps {
+    headline: String,
+    unread: Binding<u32>,
+    #[ts(rename = "onDismiss")]
+    on_dismiss: Box<dyn Fn()>,
+}
+```
+
+```rust
+let view = tsx!(
+    "./promo.tsx",
+    PromoProps {
+        headline: String::from("Welcome back"),
+        unread,
+        on_dismiss: Box::new(|| {}),
+    }
+);
+```
+
+- **Attribute order is semantic.** `<Text padding={16} background={…}>` is
+  `text(…).padding_with(16.0).background(…)` — the same attributes in another order are
+  another view, and a modifier attribute may never arrive through a spread.
+- Component tags import from `"waterui"` and resolve against the catalog
+  (`<VStack>` `<HStack>` `<Text>` `<Button>` `<Toggle>` `<Slider>` `<List>` `<Tabs>` …),
+  with `<Show>` `<For by>` `<Suspense>` `<Box>` for control flow and `createSignal`,
+  `createMemo`, `createContext`/`useContext`, `useTheme`, `useLocale` from the same
+  module. `<Text>` children localize through the same `TranslationCatalog` as `text(…)`.
+- Tests are ordinary `#[waterui::test]`s over the mounted tree. The test host loads its
+  bundle from the path in the `WATERUI_TS_BUNDLE` environment variable; `water` has no
+  `test` subcommand and `water preview` does not set it, so a `tsx!` mount fails naming
+  the variable unless the run is given a built bundle. A test that mounts no TypeScript
+  needs none.
+- The engine differs by platform: JavaScriptCore on iOS, macOS, tvOS and visionOS;
+  QuickJS-NG on Android, Linux and Windows; **unsupported on watchOS** — the platform
+  has no JavaScriptCore and embedding QuickJS-NG there is not supported.
+
 ## Gotchas worth memorizing
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| UI never updates | `.get()` in a view body | pass the binding |
+| UI never updates | `.snapshot()` in a view body | pass the binding |
 | State resets on every keystroke | `watch` rebuilding the subtree | `text!` / signal-taking API / `Lazy::for_each` |
 | `no function or associated item named 'new'` on `Binding` | `Binding::new` does not exist | `Binding::i32(v)` / `Binding::container(v)` / `Binding::default()` |
-| `cannot find function 'when'` / derive `Identifiable` | not in the prelude | `use waterui::widget::condition::when;` / `use waterui::Identifiable;` |
+| `cannot find function 'when'` / `cannot find trait 'Identifiable'` on the derive | not in the prelude (the derive is; the trait it implements is not) | `use waterui::widget::condition::when;` / `use waterui::Identifiable;` |
 | Rounded corners come out fully round | `RoundedRectangle::new(r)` takes a *fraction* of the shorter side, not points | `new(0.1)`-scale values, or `Capsule` |
 | A background task dies instantly | the `spawn_local` handle cancels on drop | `.detach()` it |
 | `LongPressGesture::new(Duration…)` rejected | duration is a `u32` in backend time units | `LongPressGesture::new(500)` |

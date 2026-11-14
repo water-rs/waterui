@@ -1,4 +1,4 @@
-//! Snackbar test playground
+//! Snackbar test example
 
 use core::time::Duration;
 use mdi::check_circle;
@@ -10,6 +10,7 @@ use waterui::preview;
 use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 use waterui_icons_material_icon as mdi;
 
+/// The snackbar example page, with buttons that show each snackbar variant.
 #[preview]
 pub fn demo() -> impl View {
     scroll(
@@ -66,6 +67,7 @@ pub fn demo() -> impl View {
     )
 }
 
+/// Builds the snackbar example app.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

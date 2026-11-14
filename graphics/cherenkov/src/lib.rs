@@ -1,0 +1,132 @@
+//! Cherenkov is a GPU 2D rendering engine for modern hardware.
+//!
+//! The design of the public API is `docs/api.md`. This crate is the front
+//! end: the vocabulary of what to draw (colour, shapes, paint, styles), the
+//! recording of it into display lists, and the shared engine — [`Engine`],
+//! [`Surface`]s, the layer tree, transactions, resource handles, animation
+//! and the render-thread loop, plus the [`Backend`] contract a backend
+//! crate implements. There is no GPU dependency here.
+//!
+//! - [`Picture::record`] records constants on any thread into an immutable,
+//!   shareable [`Picture`].
+//! - [`Surface::record`] records on the UI thread and accepts nami signals
+//!   anywhere a value is accepted. A signal's later changes become
+//!   [`SlotUpdate`]s that regenerate only the commands referencing it.
+//! - [`Engine::render`] drains every surface's queued change set into one
+//!   commit per frame, samples the animations at the frame time and renders
+//!   on the render thread.
+#![expect(
+    clippy::exhaustive_enums,
+    reason = "publish = false: no semver surface until #2687 makes the crate publishable"
+)]
+
+// The recording layer — and now the layer tree — is `cherenkov-record`;
+// these imports keep its modules at their old `crate::*` paths so engine
+// code is unchanged.
+use cherenkov_record::{animation, color, display_list, glyph, paint, record, shape, size, style};
+
+mod backend;
+mod capability;
+mod config;
+pub mod damage;
+mod engine;
+mod error;
+mod frame;
+mod image;
+#[cfg(target_arch = "wasm32")]
+mod local;
+pub mod lowering;
+mod message;
+mod resource;
+mod surface;
+mod text;
+#[cfg(not(target_arch = "wasm32"))]
+mod transport;
+pub use cherenkov_record::wgsl;
+#[cfg(feature = "workers")]
+pub mod workers;
+
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
+pub use crate::backend::RenderTransfer;
+pub use kurbo;
+/// The shaping library [`TextLayout`] wraps, at the version the engine
+/// lowers.
+pub use parley;
+/// Monotonic presentation clock: std on native, browser performance clock on wasm.
+pub use web_time::Instant;
+
+pub use crate::animation::{
+    Animatable, Animation, AnimationTrack, CubicBezier, Curve, Decay, Easing, KeyframeAnimation,
+    Keyframes, Lanes, Repeat, Spring, Timing, curve_value, decay_step, spring_step,
+};
+
+pub use crate::backend::{
+    Backend, Display, Frame, FrameRedraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
+};
+pub use crate::capability::{
+    Backdrop, BackdropChain, BackdropRuns, BackdropShaders, DrainedProducer, Effects, Filters,
+    GpuContent, HdrOutput, HostedLayers, Planes, Runs, ShaderPaint as ShaderPaintCapability,
+    ShaderSource, Uploads,
+};
+pub use crate::color::{
+    Color, ColorSpace, DisplayP3, DynColor, LinearDisplayP3, LinearSrgb, Rec2020, Srgb,
+    WorkingColor,
+};
+pub use crate::config::{Budget, Bytes, MemoryUsage, Pressure};
+pub use crate::display_list::{
+    Command, Dirty, DisplayList, DisplayListView, Edit, Operand, OperandKind, OperandRef, Operands,
+    Picture, ScopeError, Slot, SlotUpdate, Splice,
+};
+pub use crate::engine::Engine;
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::engine::PendingFrame;
+pub use crate::engine::{CompletionWaker, FrameScope, SurfaceWakes};
+pub use crate::error::{EngineError, RenderError, ResourceError, SurfaceError, SurfaceRejection};
+pub use crate::frame::{
+    DEFAULT_REFRESH, FrameId, FrameStats, FrameTime, FrameTiming, Next, Offscreen, OffscreenFormat,
+    OutputAlpha, PassTiming, Phases, Readback,
+};
+pub use crate::glyph::{FontId, Glyph, GlyphRun, GlyphStyle};
+pub use crate::image::{
+    Astc4x4, Bc7, Etc2Rgba, Format, ImageColorSpace, ImageData, ImageFormat, ImageUpload, Rgba8,
+    Rgba16F, srgb_decode,
+};
+pub use crate::message::{FontData, InstallOp, ProducerId};
+pub use crate::paint::{
+    ColorStop, Extend, ImageId, ImagePattern, Interpolation, LinearGradient,
+    MeshColorInterpolation, MeshGradient, MeshGradientError, Paint, RadialGradient, Sampling,
+    ShaderId, ShaderPaint, SweepGradient, TransformedPaint,
+};
+pub use crate::record::{
+    Animating, Binding, Content, ContentChange, ContentSpare, Draw, Fixed, Live, LiveOwner,
+    Recorder, SampleFlag, StaticRecorder,
+};
+pub use crate::resource::{
+    BackdropGroup, BackdropShader, Filter, Font, FontSource, FrameSink, GpuProducer, Hosted, Image,
+    Shader, TextLayoutHandle,
+};
+pub use crate::shape::{
+    ContinuousRect, EvenOdd, FillRule, PATH_TOLERANCE, PathRef, Semantic, Shape, ShapeData,
+};
+pub use crate::size::LayoutSize;
+pub use crate::style::{BlendMode, BlendSpace, FilterId, Group, Shadow};
+pub use crate::surface::{EngineQueue, Surface};
+pub use crate::text::{TextLayout, TextLayoutData, TextLayouts, draw_text};
+pub use cherenkov_record::Region;
+// The moved layer-tree types: re-exported at the root exactly like the
+// rest of `cherenkov-record`.
+pub use cherenkov_record::{
+    AnimationOrigin, AnimationStart, Axis, BackdropEffect, BackdropId, BackdropOuter,
+    BackdropOuterError, BackdropSample, BackdropSampling, BackdropShaderEffect, BackdropShaderId,
+    BackdropShaderSource, BackdropSpec, BackdropUnion, BackdropUnionError, CaptureLevels,
+    CaptureLevelsError, CapturePyramid, CaptureScale, CaptureScaleError, ColorMatrix, ContentOp,
+    GpuInstalls, ImageLimits, ImageStorage, Install, KeyframeProp, Layer, LayerAnimations,
+    LayerContent, LayerEdit, LayerId, LayerKeyframes, LayerNode, LayerOwner, LevelRamp,
+    LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize,
+    RecordingScale, RecordingScaleError, Refraction, RefreshRange, ResourceId, Retarget, Rim,
+    Shared, SurfaceId, SurfaceTree, Target, TextLayoutId, TrackOrigin, TrackStart, Transaction,
+    TransformComponents, snap_animating,
+};
+pub use kurbo::Stroke;

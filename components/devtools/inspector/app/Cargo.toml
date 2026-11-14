@@ -12,7 +12,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-waterui.workspace = true
+waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 waterui-chart.workspace = true
 waterui-inspector-protocol.workspace = true
 waterui-icons-lucide.workspace = true
@@ -21,6 +21,10 @@ smol = "2.0.2"
 futures-lite = "2.6"
 async-channel.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+waterui-testing.workspace = true
+hydrolysis-m3.workspace = true
 
 [lints]
 workspace = true

@@ -1,0 +1,37 @@
+[package]
+name = "cherenkov-record"
+version = "0.0.0"
+description = "Render-target-neutral recording layer of the Cherenkov 2D engine"
+edition.workspace = true
+rust-version = "1.95"
+license.workspace = true
+repository.workspace = true
+readme = "../README.md"
+keywords = ["graphics", "2d", "display-list", "recording", "rendering"]
+categories = ["graphics", "rendering"]
+
+[features]
+serde = ["dep:serde", "color/serde", "kurbo/serde"]
+
+[dependencies]
+color = "0.3.3"
+# The working-space matrices (`filtrate_core::space`), the one definition
+# the engine's backends share.
+filtrate-core = { version = "0.2.0", path = "../../filtrate/core" }
+kurbo = "0.13.1"
+nami-core = { version = "0.5", features = ["kurbo"] }
+rustc-hash = "2"
+serde = { version = "1", features = ["derive", "rc"], optional = true }
+thiserror = "2"
+waterui-contract.workspace = true
+# The curve and spring evaluator WaterUI's core shares, so both sides sample
+# an animation identically.
+waterui-easing.workspace = true
+web-time = "1"
+
+[dev-dependencies]
+nami = { version = "0.13", default-features = false, features = ["std", "kurbo"] }
+serde_json = "1"
+
+[lints]
+workspace = true

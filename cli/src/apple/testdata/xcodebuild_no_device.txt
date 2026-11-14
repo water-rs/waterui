@@ -1,0 +1,12 @@
+Command line invocation:
+    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -project Provision.xcodeproj -scheme Provision -destination platform=iOS,id=00008140-00011C210CF3001C -allowProvisioningUpdates -allowProvisioningDeviceRegistration -configuration Debug build
+
+2026-10-01 17:15:51.919 xcodebuild[3234:33794] [MT] IDERunDestination: Supported platforms for the buildables in the current scheme is empty.
+2026-10-01 17:16:52.413 xcodebuild[3234:33794] Writing error result bundle to /var/folders/2j/fwfzfr5x639f8rbmqc9t9ym40000gn/T/ResultBundle_2026-01-10_17-16-0052.xcresult
+xcodebuild: error: Unable to find a device matching the provided destination specifier:
+		{ platform:iOS, id:00008140-00011C210CF3001C }
+
+	The requested device could not be found because no available devices matched the request.
+
+	Ineligible destinations for the "Provision" scheme:
+		{ platform:iOS, id:dvtdevice-DVTiPhonePlaceholder-iphoneos:placeholder, name:Any iOS Device, error:iOS 26.5 is not installed. Please download and install the platform from Xcode > Settings > Components. }

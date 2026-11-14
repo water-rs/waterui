@@ -1,4 +1,4 @@
-//! Animation Example - Demonstrates WaterUI's animation system
+//! Animation Example - Demonstrates `WaterUI`'s animation system
 //!
 //! This example showcases visual animations:
 //! - Scale/rotation/translation animations
@@ -8,7 +8,7 @@
 //! - Different animation curves (linear, ease-in, ease-out, spring)
 //! - Framework-driven GPU morph animation (not expressible as a simple native property transform)
 //!
-//! Animations in WaterUI are reactive - they automatically apply
+//! Animations in `WaterUI` are reactive - they automatically apply
 //! when reactive values change, using the `.animated()` or
 //! `.with(Animation::...)` modifiers.
 
@@ -72,7 +72,7 @@ fn scale_animation_section(scale: &Binding<f32>) -> impl View {
         text("Click buttons to scale the box with spring physics").body(),
         transform_stage(
             Blue.size(SCALE_BOX_SIDE, SCALE_BOX_SIDE)
-                .scale(animated_scale.clone(), animated_scale.clone()),
+                .scale(animated_scale.clone(), animated_scale),
             SCALE_STAGE_SIDE,
         ),
         hstack((
@@ -178,7 +178,7 @@ fn combined_transform_section(
         transform_stage(
             Orange
                 .size(COMBINED_BOX_SIDE, COMBINED_BOX_SIDE)
-                .scale(animated_scale.clone(), animated_scale.clone())
+                .scale(animated_scale.clone(), animated_scale)
                 .rotation(animated_rotation),
             COMBINED_STAGE_SIDE,
         ),
@@ -197,7 +197,7 @@ fn combined_transform_section(
                 .state(&transform),
             button("Pulse")
                 .action(|State(s): State<Binding<f32>>| {
-                    if s.get() > 1.2 {
+                    if s.snapshot() > 1.2 {
                         s.set(0.8);
                     } else {
                         s.set(1.5);
@@ -248,7 +248,7 @@ fn spring_progress_section(spring_value: &Binding<f64>) -> impl View {
             spacer(),
             button("Toggle")
                 .action(|State(sv): State<Binding<f64>>| {
-                    if sv.get() > 0.5 {
+                    if sv.snapshot() > 0.5 {
                         sv.set(0.1);
                     } else {
                         sv.set(0.9);
@@ -276,7 +276,7 @@ fn animation_curves_section(bar_scale: &Binding<f32>) -> impl View {
             hstack((
                 text("Linear").min_width(80.0),
                 Cyan.size(200.0, 24.0)
-                    .scale(linear_scale.clone(), 1.0)
+                    .scale(linear_scale, 1.0)
                     .min_width(220.0),
             )),
             // Ease-in - starts slow, ends fast
@@ -284,7 +284,7 @@ fn animation_curves_section(bar_scale: &Binding<f32>) -> impl View {
                 text("Ease-In").min_width(80.0),
                 Green
                     .size(200.0, 24.0)
-                    .scale(ease_in_scale.clone(), 1.0)
+                    .scale(ease_in_scale, 1.0)
                     .min_width(220.0),
             )),
             // Ease-out - starts fast, ends slow
@@ -292,14 +292,14 @@ fn animation_curves_section(bar_scale: &Binding<f32>) -> impl View {
                 text("Ease-Out").min_width(80.0),
                 Orange
                     .size(200.0, 24.0)
-                    .scale(ease_out_scale.clone(), 1.0)
+                    .scale(ease_out_scale, 1.0)
                     .min_width(220.0),
             )),
             // Spring - bouncy overshoot
             hstack((
                 text("Spring").min_width(80.0),
                 Red.size(200.0, 24.0)
-                    .scale(spring_scale.clone(), 1.0)
+                    .scale(spring_scale, 1.0)
                     .min_width(220.0),
             )),
         )),
@@ -333,7 +333,7 @@ fn toggle_animation_section(toggle_state: &Binding<bool>) -> impl View {
             // Visual indicator that animates
             Green
                 .size(60.0, 60.0)
-                .scale(indicator_scale.clone(), indicator_scale.clone())
+                .scale(indicator_scale.clone(), indicator_scale)
                 .rotation(indicator_rotation)
                 .min_width(80.0)
                 .min_height(80.0),
@@ -364,21 +364,21 @@ fn staggered_section(expanded: &Binding<bool>) -> impl View {
         hstack((
             Green
                 .size(50.0, 80.0)
-                .scale(1.0, bar1_scale.clone())
+                .scale(1.0, bar1_scale)
                 .min_height(100.0)
                 .min_width(60.0),
             Blue.size(50.0, 80.0)
-                .scale(1.0, bar2_scale.clone())
+                .scale(1.0, bar2_scale)
                 .min_height(100.0)
                 .min_width(60.0),
             Purple
                 .size(50.0, 80.0)
-                .scale(1.0, bar3_scale.clone())
+                .scale(1.0, bar3_scale)
                 .min_height(100.0)
                 .min_width(60.0),
             Orange
                 .size(50.0, 80.0)
-                .scale(1.0, bar4_scale.clone())
+                .scale(1.0, bar4_scale)
                 .min_height(100.0)
                 .min_width(60.0),
         )),
@@ -413,7 +413,7 @@ fn size_indicator_section(size_value: &Binding<f64>) -> impl View {
         hstack((
             // Vertical bar that scales vertically
             Blue.size(30.0, 100.0)
-                .scale(1.0, animated_y_scale.clone())
+                .scale(1.0, animated_y_scale)
                 .min_height(120.0)
                 .min_width(50.0),
             spacer(),
@@ -426,7 +426,7 @@ fn size_indicator_section(size_value: &Binding<f64>) -> impl View {
             // Scaling square
             Green
                 .size(60.0, 60.0)
-                .scale(animated_scale.clone(), animated_scale.clone())
+                .scale(animated_scale.clone(), animated_scale)
                 .min_height(100.0)
                 .min_width(100.0),
         )),
@@ -448,10 +448,10 @@ fn size_indicator_section(size_value: &Binding<f64>) -> impl View {
     .padding()
 }
 
-/// Demo: Framework-side custom animation rendered by WaterUI GPU pipeline.
+/// Demo: Framework-side custom animation rendered by `WaterUI` GPU pipeline.
 ///
 /// This is intentionally not a simple native transform animation (scale/rotation/offset).
-/// Geometry morphing is produced by WaterUI's renderer-side interpolation pipeline.
+/// Geometry morphing is produced by `WaterUI`'s renderer-side interpolation pipeline.
 fn custom_gpu_animation_section() -> impl View {
     vstack((
         text("Framework GPU Animation").headline(),
@@ -472,6 +472,7 @@ fn custom_gpu_animation_section() -> impl View {
     .padding()
 }
 
+/// The animation examples page, with one section per animation topic.
 #[preview]
 pub fn demo() -> impl View {
     // State for transform sections
@@ -531,6 +532,7 @@ pub fn demo() -> impl View {
     )
 }
 
+/// Builds the animation example app.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

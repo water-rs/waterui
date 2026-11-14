@@ -45,6 +45,22 @@ pub trait View: 'static {
     /// WARNING: This method should not be called directly by user.
     fn body(self, _env: &Environment) -> impl View;
 
+    /// Animates structural insertion and removal of this view.
+    ///
+    /// Value updates do not trigger a transition. Applied to a `Dynamic`, this
+    /// decorates its replacing content; applied to a collection item, it follows
+    /// that item's membership. Removal immediately ends semantic membership,
+    /// while the backend retains a non-interactive visual and a fixed-size slot.
+    fn transition(
+        self,
+        transition: impl crate::transition::Transition,
+    ) -> Metadata<crate::transition::TransitionSpec>
+    where
+        Self: Sized,
+    {
+        Metadata::new(self, crate::transition::TransitionSpec::new(transition))
+    }
+
     #[doc(hidden)]
     /// Returns the stretch axis for this view.
     ///
@@ -52,7 +68,7 @@ pub trait View: 'static {
     /// resolves to. Wrappers that only decorate or observe their content
     /// (metadata, `Option`, `Result`, single-element tuples) forward the
     /// content's axis. A composite view whose `body` produces a stretching
-    /// leaf (a `GpuSurface`, a scroll container, a stack with stretchy
+    /// leaf (a `GpuContentView`, a scroll container, a stack with stretchy
     /// children) must declare that leaf's axis here — callers read the axis
     /// before `body` runs and without an [`Environment`], so it cannot be
     /// discovered by expansion.

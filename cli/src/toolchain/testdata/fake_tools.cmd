@@ -1,0 +1,600 @@
+@echo off
+rem waterui-cli test fixture - fake host tools for Host-driven checks.
+rem Windows counterpart of fake_tools.sh; keep dispatch tables in sync.
+rem
+rem The host PATH under test contains ONLY the fixture bin directory, so this
+rem script must not invoke external commands (`findstr`, ...). Everything
+rem below is cmd builtins. pkg-config module keys are file-only because '-'
+rem and '.' cannot appear in a sh ${} expansion on Unix.
+rem
+rem Asymmetry with fake_tools.sh: `sdkmanager --licenses`/`--install` cannot
+rem drain stdin here - cmd has no builtin way to read stdin to EOF (`set /p`
+rem reads one line and cannot test EOF) - so this script returns immediately
+rem while the .sh consumes piped license confirmations first. Tests must not
+rem rely on stdin being drained on Windows.
+rem
+rem Mutable state (`rustup toolchain install`/`default`/`target add`/
+rem `component add`, `rustup update`, `cargo install`) lives in files
+rem under the fake %HOME% so a `--fix` run mutates the fixture and a
+rem re-check observes the repair. `mkdir`/`copy`/`type`/`for /f` are cmd
+rem builtins, so the restricted PATH is still honored.
+setlocal EnableDelayedExpansion
+set "tool=%~n0"
+
+rem Rust's std::process::Command quotes an argument on Windows when it
+rem contains spaces or cmd metacharacters, so %* arrives with literal '"'
+rem characters (e.g. `git fetch -q "--depth=1" "origin"`). The substring
+rem dispatch below and the invocation log both match on the dequoted copy.
+set "raw_args=%*"
+set "args_dequoted=%raw_args:"=%"
+
+rem WATERUI_FAKE_LOG names a file every fake invocation appends itself to -
+rem `<tool> <args>` one per line - the seam tests use to assert which tools
+rem ran and with which arguments. The dequoted spelling is what the .sh
+rem sees in "$@", so the log line reads identically on both platforms.
+if defined WATERUI_FAKE_LOG echo %tool% !args_dequoted!>> "%WATERUI_FAKE_LOG%"
+
+rem Defaults matching the .sh `${VAR:-default}` expansions; a declared value
+rem always wins.
+if not defined WATERUI_FAKE_RUSTC_VERSION set "WATERUI_FAKE_RUSTC_VERSION=1.0.0"
+if not defined WATERUI_FAKE_RUSTC_UPDATED_VERSION set "WATERUI_FAKE_RUSTC_UPDATED_VERSION=99.0.0"
+if not defined WATERUI_FAKE_CARGO_VERSION set "WATERUI_FAKE_CARGO_VERSION=1.95.0"
+if not defined WATERUI_FAKE_XCODE_VERSION set "WATERUI_FAKE_XCODE_VERSION=16.4"
+if not defined WATERUI_FAKE_ADB_VERSION set "WATERUI_FAKE_ADB_VERSION=36.0.0-test"
+if not defined WATERUI_FAKE_KOTLINC_VERSION set "WATERUI_FAKE_KOTLINC_VERSION=0.0.0"
+if not defined WATERUI_FAKE_SCCACHE_VERSION set "WATERUI_FAKE_SCCACHE_VERSION=1.0.0"
+if not defined WATERUI_FAKE_UNAME_MACHINE set "WATERUI_FAKE_UNAME_MACHINE=x86_64"
+goto :dispatch
+
+rem ------------------------------------------------------------------
+rem :respond <key> - echo canned text; exit /b 1 when none exists.
+:respond
+call set "v=%%WATERUI_FAKE_%~1%%"
+if defined v (echo !v! & exit /b 0)
+if exist "%WATERUI_FAKE_RESPONSES%\%~1" (type "%WATERUI_FAKE_RESPONSES%\%~1" & exit /b 0)
+exit /b 1
+
+rem :respond_file <key> - echo the response file only; exit /b 1 when absent.
+:respond_file
+if exist "%WATERUI_FAKE_RESPONSES%\%~1" (type "%WATERUI_FAKE_RESPONSES%\%~1" & exit /b 0)
+exit /b 1
+
+rem :respond_or_empty <key> - like :respond, exit /b 0 when absent.
+:respond_or_empty
+call set "v=%%WATERUI_FAKE_%~1%%"
+if defined v (echo !v!)
+if exist "%WATERUI_FAKE_RESPONSES%\%~1" (type "%WATERUI_FAKE_RESPONSES%\%~1")
+exit /b 0
+
+rem :last_arg - set last_arg to the final positional argument.
+:last_arg
+set "last_arg=%~1"
+shift
+if not "%~1"=="" goto :last_arg
+exit /b 0
+
+rem :list_contains <list> <entry> - errorlevel 0 when entry is a member.
+rem Builtin-only: remove " entry " from " list "; a change means membership.
+:list_contains
+set "list= %~1 "
+if "!list: %~2 =!"=="!list!" (exit /b 1) else (exit /b 0)
+
+rem :module_exists <name> - errorlevel 0 when a pkg-config module response
+rem file is staged for <name> (raw name; file-only, see header note).
+:module_exists
+if exist "%WATERUI_FAKE_RESPONSES%\PKG_CONFIG_%~1" exit /b 0
+exit /b 1
+
+rem :contains <haystack-var-name> <needle> - errorlevel 0 when !haystack!
+rem contains <needle>.
+:contains
+call set "hay=%%%~1%%"
+if not "!hay:%~2=!"=="!hay!" (exit /b 0) else (exit /b 1)
+
+:dispatch
+if /i "%tool%"=="rustup" goto :rustup
+if /i "%tool%"=="rustc" goto :rustc
+if /i "%tool%"=="cargo" goto :cargo
+if /i "%tool%"=="xcodebuild" goto :xcodebuild
+if /i "%tool%"=="xcode-select" goto :xcode_select
+if /i "%tool%"=="xcrun" goto :xcrun
+if /i "%tool%"=="sdkmanager" goto :sdkmanager
+if /i "%tool%"=="adb" goto :adb
+if /i "%tool%"=="emulator" goto :emulator
+if /i "%tool%"=="java" goto :java
+if /i "%tool%"=="javac" goto :java
+if /i "%tool%"=="kotlinc" goto :kotlinc
+if /i "%tool%"=="cmake" goto :simple_version
+if /i "%tool%"=="meson" goto :simple_version
+if /i "%tool%"=="sccache" goto :sccache
+if /i "%tool%"=="git" goto :git
+if /i "%tool%"=="wasm-pack" goto :wasm_pack
+if /i "%tool%"=="bun" goto :pm
+if /i "%tool%"=="npm" goto :pm
+if /i "%tool%"=="pnpm" goto :pm
+if /i "%tool%"=="yarn" goto :pm
+if /i "%tool%"=="spirv-opt" goto :simple_version
+if /i "%tool%"=="sh" goto :simple_version
+if /i "%tool%"=="bash" goto :simple_version
+if /i "%tool%"=="brew" goto :exit_ok
+if /i "%tool%"=="vswhere" goto :vswhere
+if /i "%tool%"=="winget" goto :winget
+if /i "%tool%"=="reg" goto :reg
+if /i "%tool%"=="powershell" goto :powershell
+if /i "%tool%"=="pwsh" goto :powershell
+if /i "%tool%"=="apt-get" goto :exit_ok
+if /i "%tool%"=="dnf" goto :exit_ok
+if /i "%tool%"=="zypper" goto :exit_ok
+if /i "%tool%"=="sudo" goto :exit_ok
+if /i "%tool%"=="dpkg-query" goto :dpkg_query
+if /i "%tool%"=="dpkg" goto :dpkg
+if /i "%tool%"=="rpm" goto :rpm
+if /i "%tool%"=="pacman" goto :pacman
+if /i "%tool%"=="apk" goto :apk
+if /i "%tool%"=="pkg-config" goto :pkg_config
+if not "%tool%"=="%tool:clang=%" goto :exit_ok
+if /i "%tool%"=="ld" goto :exit_ok
+if /i "%tool%"=="ld64" goto :exit_ok
+if /i "%tool%"=="uname" goto :uname
+goto :exit_ok
+
+:java
+rem Real java prints `openjdk version "X"` on stderr; the check reads
+rem combined output, so stdout works the same.
+if not defined WATERUI_FAKE_JAVA_VERSION set "WATERUI_FAKE_JAVA_VERSION=99.0.0"
+if "%~1"=="-version" echo openjdk version "%WATERUI_FAKE_JAVA_VERSION%" 2026-01-01
+if "%~1"=="--version" echo openjdk version "%WATERUI_FAKE_JAVA_VERSION%" 2026-01-01
+goto :exit_ok
+
+:exit_ok
+exit /b 0
+
+rem `merge-base --is-ancestor` exits with the configured code. The exit sits
+rem outside any parenthesised block: under `cmd /c`, `exit /b !var!` inside a
+rem block exits 0 whatever the variable holds.
+:git_merge_base
+set "code=0"
+if defined WATERUI_FAKE_GIT_ANCESTOR set "code=!WATERUI_FAKE_GIT_ANCESTOR!"
+if exist .fake-git-unshallowed set "code=0"
+if exist .fake-git-unshallowed if defined WATERUI_FAKE_GIT_ANCESTOR_COMPLETE set "code=!WATERUI_FAKE_GIT_ANCESTOR_COMPLETE!"
+exit /b !code!
+
+rem The managed-checkout sequence `git -C <dir> init | remote add | fetch |
+rem checkout` produces: on `checkout`, copy every file the staged
+rem WATERUI_FAKE_GIT_CHECKOUT tree holds into the -C directory, like a
+rem clone's detached checkout. `for /r`, `mkdir` and `copy` are builtins, so
+rem the restricted PATH is still honored. A failed mkdir/copy exits
+rem nonzero naming the file - no silent partial checkouts. The exit sits
+rem outside the parenthesised blocks: under `cmd /c`, `exit /b` inside a
+rem block does not reach the process exit code.
+rem
+rem Every invocation the CLI spawns leads with `-c core.longpaths=true`;
+rem the leading `-c <key>=<value>` pairs are stripped so git_args/git_cmd
+rem see the subcommand.
+:git
+set "git_dir="
+set "git_prev="
+for %%a in (%*) do (
+    if "!git_prev!"=="-C" set "git_dir=%%~a"
+    set "git_prev=%%~a"
+)
+set "git_args=!args_dequoted!"
+:git_strip_config
+if defined git_args if "!git_args:~0,3!"=="-c " (
+    for /f "tokens=1,2,* delims= " %%x in ("!git_args!") do set "git_args=%%z"
+    goto :git_strip_config
+)
+set "git_cmd="
+for /f "tokens=1 delims= " %%x in ("!git_args!") do set "git_cmd=%%x"
+if "!git_cmd!"=="--version" (echo git version 2.43.0 & exit /b 0)
+call :contains git_args "rev-parse --is-shallow-repository"
+if %errorlevel%==0 (call :respond GIT_SHALLOW & exit /b !errorlevel!)
+call :contains git_args "rev-parse --verify refs/remotes/origin/main"
+if %errorlevel%==0 (call :respond GIT_HEAD & exit /b !errorlevel!)
+call :contains git_args "rev-parse --verify"
+if %errorlevel%==0 (call :respond GIT_REVISION & exit /b !errorlevel!)
+call :contains git_args --unshallow
+if %errorlevel%==0 (type nul > .fake-git-unshallowed & exit /b 0)
+call :contains git_args "merge-base --is-ancestor"
+if %errorlevel%==0 goto :git_merge_base
+call :contains git_args ls-tree
+if %errorlevel%==0 (call :respond_or_empty GIT_ENTRY & exit /b !errorlevel!)
+if "!git_cmd!"=="show" (call :respond GIT_FILE & exit /b !errorlevel!)
+call :contains git_args checkout
+if %errorlevel%==0 if defined WATERUI_FAKE_GIT_CHECKOUT if defined git_dir (
+    for /r "%WATERUI_FAKE_GIT_CHECKOUT%" %%f in (*) do (
+        set "git_abs=%%f"
+        set "git_rel=!git_abs:%WATERUI_FAKE_GIT_CHECKOUT%\=!"
+        for %%d in ("!git_dir!\!git_rel!") do if not exist "%%~dpd" mkdir "%%~dpd"
+        if errorlevel 1 (
+            echo git checkout: cannot create directory for "!git_rel!" 1>&2
+            goto :git_checkout_failed
+        )
+        copy /y "!git_abs!" "!git_dir!\!git_rel!" >nul
+        if errorlevel 1 (
+            echo git checkout: cannot copy "!git_rel!" 1>&2
+            goto :git_checkout_failed
+        )
+    )
+)
+exit /b 0
+:git_checkout_failed
+exit /b 1
+
+:rustup
+rem Mutable rustup state - one channel/target/component per line in the
+rem state files, plus a directory per installed toolchain under
+rem %RUSTUP_HOME%\toolchains, the same layout a real rustup produces.
+set "state_toolchains=%HOME%\.fake-rustup-toolchains"
+set "state_default=%HOME%\.fake-rustup-default"
+set "state_targets=%HOME%\.fake-rustup-targets"
+set "state_components=%HOME%\.fake-rustup-components"
+if defined RUSTUP_HOME (set "rustup_home=%RUSTUP_HOME%") else (set "rustup_home=%HOME%\.rustup")
+if not defined WATERUI_FAKE_RUSTC_HOST set "WATERUI_FAKE_RUSTC_HOST=x86_64-unknown-fake"
+if "!args_dequoted!"=="show active-toolchain" goto :rustup_active_toolchain
+set "args=!args_dequoted!"
+if not defined args exit /b 2
+for %%a in (%*) do set "last_arg=%%~a"
+rem Prefix matches below mirror the .sh globs: `rustup <verb> ...` qualified
+rem with `--toolchain <name>` must match the same branch as the bare form.
+if "!args:~0,17!"=="toolchain install" goto :rustup_install
+if "!args:~0,13!"=="toolchain add" goto :rustup_install
+if "!args:~0,14!"=="toolchain list" (
+    if defined WATERUI_FAKE_RUSTUP_TOOLCHAINS echo !WATERUI_FAKE_RUSTUP_TOOLCHAINS!
+    if exist "%WATERUI_FAKE_RESPONSES%\RUSTUP_TOOLCHAINS" type "%WATERUI_FAKE_RESPONSES%\RUSTUP_TOOLCHAINS"
+    if exist "%state_toolchains%" type "%state_toolchains%"
+    exit /b 0
+)
+if "!args:~0,7!"=="default" goto :rustup_default
+if "!args:~0,6!"=="update" (>"%HOME%\.fake-rustc-version" echo %WATERUI_FAKE_RUSTC_UPDATED_VERSION% & exit /b 0)
+if "!args:~0,23!"=="target list --installed" (
+    if defined WATERUI_FAKE_RUSTUP_INSTALLED_TARGETS echo !WATERUI_FAKE_RUSTUP_INSTALLED_TARGETS!
+    if exist "%WATERUI_FAKE_RESPONSES%\RUSTUP_INSTALLED_TARGETS" type "%WATERUI_FAKE_RESPONSES%\RUSTUP_INSTALLED_TARGETS"
+    if exist "%state_targets%" type "%state_targets%"
+    exit /b 0
+)
+if "!args:~0,10!"=="target add" (>>"%state_targets%" echo !last_arg! & exit /b 0)
+if "!args:~0,14!"=="component list" (
+    if defined WATERUI_FAKE_RUSTUP_INSTALLED_COMPONENTS echo !WATERUI_FAKE_RUSTUP_INSTALLED_COMPONENTS!
+    if exist "%WATERUI_FAKE_RESPONSES%\RUSTUP_INSTALLED_COMPONENTS" type "%WATERUI_FAKE_RESPONSES%\RUSTUP_INSTALLED_COMPONENTS"
+    if exist "%state_components%" type "%state_components%"
+    exit /b 0
+)
+if "!args:~0,13!"=="component add" (>>"%state_components%" echo !last_arg! & exit /b 0)
+if "!args:~0,3!"=="run" goto :rustup_run
+if "%1"=="--version" (echo rustup 1.28.2 ^(waterui-test^) & exit /b 0)
+if "%1"=="-V" (echo rustup 1.28.2 ^(waterui-test^) & exit /b 0)
+exit /b 2
+
+rem `rustup toolchain install`/`add` records the channel and lays down its
+rem toolchain directory, like rustup itself.
+:rustup_install
+>>"%state_toolchains%" echo !last_arg!
+mkdir "!rustup_home!\toolchains\!last_arg!" 2>nul
+exit /b 0
+
+rem `rustup run <toolchain> <tool> <args...>` proxies to the named tool —
+rem dispatch to the sibling fake in this directory, like a real rustup proxy.
+rem cmd's `shift` rewrites %0, so the sibling path must be resolved first.
+:rustup_run
+set "run_tool=%~dp0%~3.cmd"
+shift
+shift
+set "run_args="
+:rustup_run_args
+if not "%~2"=="" (set "run_args=!run_args! %~2" & shift & goto :rustup_run_args)
+call "%run_tool%" %run_args%
+exit /b %errorlevel%
+
+rem `rustup default <channel>` installs it if absent and records the default.
+:rustup_default
+>>"%state_toolchains%" echo !last_arg!
+>"%state_default%" echo !last_arg!
+mkdir "!rustup_home!\toolchains\!last_arg!" 2>nul
+exit /b 0
+
+rem `exit /b` inside a nested parenthesized block does not reach the process
+rem exit code through `cmd /c`, so the no-toolchain branch lives at top level.
+:rustup_active_toolchain
+if defined WATERUI_FAKE_RUSTUP_NO_ACTIVE_TOOLCHAIN echo error: no active toolchain 1>&2
+if defined WATERUI_FAKE_RUSTUP_NO_ACTIVE_TOOLCHAIN exit /b 1
+if defined WATERUI_FAKE_RUSTUP_TOOLCHAIN_NOT_INSTALLED goto :rustup_pinned_toolchain
+set "def_channel="
+if exist "%state_default%" for /f "usebackq delims=" %%l in ("%state_default%") do set "def_channel=%%l"
+if defined def_channel (echo !def_channel!-%WATERUI_FAKE_RUSTC_HOST% ^(default^) & exit /b 0)
+call :respond RUSTUP_ACTIVE_TOOLCHAIN
+exit /b %errorlevel%
+
+rem A test's `rust-toolchain.toml` pin names this channel; it resolves once
+rem `rustup toolchain install`/`default` recorded it, or a toolchain
+rem directory exists (linked/esp-style toolchains live under
+rem %RUSTUP_HOME%\toolchains). stable/beta/nightly and version-prefixed
+rem channels carry the `-<host>` suffix rustup appends; custom/linked
+rem toolchain names (esp, stage0) print bare - the same split as the .sh.
+:rustup_pinned_toolchain
+set "pin=%WATERUI_FAKE_RUSTUP_TOOLCHAIN_NOT_INSTALLED%"
+set "pin_installed="
+if exist "%state_toolchains%" for /f "usebackq delims=" %%l in ("%state_toolchains%") do if "%%l"=="!pin!" set "pin_installed=file"
+if exist "!rustup_home!\toolchains\!pin!" set "pin_installed=dir"
+if not defined pin_installed (
+    echo error: toolchain '!pin!' is not installed 1>&2
+    exit /b 1
+)
+set "pin_suffixed="
+if /i "!pin!"=="stable" set "pin_suffixed=1"
+if /i "!pin!"=="beta" set "pin_suffixed=1"
+if /i "!pin!"=="nightly" set "pin_suffixed=1"
+for %%d in (0 1 2 3 4 5 6 7 8 9) do if "!pin:~0,1!"=="%%d" set "pin_suffixed=1"
+if defined pin_suffixed (echo !pin!-%WATERUI_FAKE_RUSTC_HOST% ^(overridden by rust-toolchain.toml^) & exit /b 0)
+echo !pin! (overridden by rust-toolchain.toml)
+exit /b 0
+
+:rustc
+set "rustc_version=%WATERUI_FAKE_RUSTC_VERSION%"
+if exist "%HOME%\.fake-rustc-version" for /f "usebackq delims=" %%v in ("%HOME%\.fake-rustc-version") do set "rustc_version=%%v"
+if "%1"=="--version" (echo rustc %rustc_version% ^(waterui-test 2026-01-01^) & exit /b 0)
+if "%1"=="-vV" (
+    if defined WATERUI_FAKE_RUSTC_HOST (
+        echo rustc %rustc_version% ^(waterui-test^)
+        echo binary: rustc
+        echo commit-hash: fake
+        echo commit-date: 2026-01-01
+        echo host: %WATERUI_FAKE_RUSTC_HOST%
+        echo release: %rustc_version%
+        echo LLVM version: 20.1.0
+        exit /b 0
+    )
+    call :respond RUSTC_VERBOSE & exit /b !errorlevel!
+)
+rem `rustc --print <what>` answers the staged `RUSTC_PRINT_<what>` file.
+if "%1"=="--print" (call :respond_file RUSTC_PRINT_%2 & exit /b !errorlevel!)
+exit /b 2
+
+:cargo
+if not defined WATERUI_FAKE_CARGO_VERSION set "WATERUI_FAKE_CARGO_VERSION=1.95.0"
+if "%1"=="--version" (echo cargo %WATERUI_FAKE_CARGO_VERSION% ^(waterui-test^) & exit /b 0)
+rem `cargo metadata` prints the staged CARGO_METADATA JSON and fails when none is staged.
+if "%1"=="metadata" (call :respond CARGO_METADATA & exit /b !errorlevel!)
+if "%1"=="tree" goto :cargo_tree
+if "%1"=="install" goto :cargo_install
+if "%1"=="binstall" goto :cargo_install
+exit /b 0
+
+rem The graph is resolved per build target: `cargo tree` answers
+rem `CARGO_TREE_<triple>` for each `--target` flag it is passed - a
+rem multi-target invocation's union is exactly its per-target answers - and
+rem a call naming no `--target` or a triple with no staged response fails.
+:cargo_tree
+set "tree_targets="
+set "prev="
+for %%a in (%*) do (
+    if "!prev!"=="--target" set "tree_targets=!tree_targets! %%a"
+    set "prev=%%a"
+)
+if not defined tree_targets exit /b 2
+for %%t in (!tree_targets!) do if not exist "%WATERUI_FAKE_RESPONSES%\CARGO_TREE_%%t" exit /b 1
+for %%t in (!tree_targets!) do type "%WATERUI_FAKE_RESPONSES%\CARGO_TREE_%%t"
+exit /b 0
+
+rem `cargo install <crate>` drops the crate's binary beside cargo - model that
+rem by copying this dispatcher under the crate's name.
+:cargo_install
+set "krate="
+for %%a in (%*) do (
+    if not defined krate (
+        set "arg=%%~a"
+        if not "!arg:~0,1!"=="-" if not /i "%%a"=="install" if not /i "%%a"=="binstall" set "krate=%%a"
+    )
+)
+if defined krate if not exist "%~dp0!krate!.cmd" copy /y "%~f0" "%~dp0!krate!.cmd" >nul
+exit /b 0
+
+:xcodebuild
+set "args=!args_dequoted!"
+call :contains args version && (echo Xcode %WATERUI_FAKE_XCODE_VERSION% & echo Build version 16F6 & exit /b 0)
+if "!args_dequoted!"=="-showComponent MetalToolchain -json" (call :respond XCODEBUILD_SHOW_METAL_TOOLCHAIN & exit /b !errorlevel!)
+exit /b 0
+
+:xcode_select
+if "%1"=="-p" (call :respond_or_empty XCODE_SELECT_DEVELOPER_DIR & exit /b 0)
+exit /b 0
+
+:xcrun
+set "args=!args_dequoted!"
+call :contains args --show-sdk-path && (call :respond XCRUN_SDK_PATH & exit /b !errorlevel!)
+if "!args_dequoted!"=="--find metal" (call :respond XCRUN_FIND_METAL & exit /b !errorlevel!)
+if "!args_dequoted!"=="metal --version" (call :respond XCRUN_METAL_VERSION & exit /b !errorlevel!)
+if "!args_dequoted!"=="simctl list --json" (call :respond XCRUN_SIMCTL_DEVICES & exit /b !errorlevel!)
+if "!args_dequoted!"=="simctl delete unavailable" exit /b 0
+if "!args:~0,14!"=="simctl create " exit /b 0
+exit /b 1
+
+:sdkmanager
+rem Unlike the .sh these branches return without draining stdin - see the
+rem header note for the cmd limitation.
+set "args=!args_dequoted!"
+call :contains args --licenses && exit /b 0
+call :contains args --install && exit /b 0
+call :contains args --list && (call :respond_or_empty SDKMANAGER_LIST & exit /b 0)
+call :contains args --version && (echo 5.0 & exit /b 0)
+exit /b 0
+
+:adb
+if "!args_dequoted!"=="version" (echo Android Debug Bridge version 1.0.41 & echo Version %WATERUI_FAKE_ADB_VERSION% & exit /b 0)
+if "!args_dequoted!"=="devices -l" (echo List of devices attached & call :respond_or_empty ADB_DEVICES & exit /b 0)
+if "!args_dequoted!"=="start-server" (if defined WATERUI_FAKE_ADB_START_SERVER_STATUS (exit /b %WATERUI_FAKE_ADB_START_SERVER_STATUS%) else (exit /b 0))
+set "args=!args_dequoted!"
+call :contains args "emu avd name" && (call :respond_or_empty ADB_EMU_AVD_NAME & exit /b 0)
+call :contains args getprop && (call :respond_or_empty ADB_GETPROP & exit /b 0)
+exit /b 0
+
+:emulator
+set "args=!args_dequoted!"
+call :contains args -list-avds && (call :respond_or_empty EMULATOR_AVDS & exit /b 0)
+exit /b 0
+
+:kotlinc
+if "%1"=="-version" (echo info: kotlinc-jvm %WATERUI_FAKE_KOTLINC_VERSION% ^(JRE 17.0.0^) & exit /b 0)
+exit /b 0
+
+:sccache
+if "%1"=="--version" (echo sccache %WATERUI_FAKE_SCCACHE_VERSION% ^(waterui-test^) & exit /b 0)
+if "%1"=="-version" (echo sccache %WATERUI_FAKE_SCCACHE_VERSION% ^(waterui-test^) & exit /b 0)
+if "%1"=="-v" (echo sccache %WATERUI_FAKE_SCCACHE_VERSION% ^(waterui-test^) & exit /b 0)
+exit /b 0
+
+:wasm_pack
+if not "%~1"=="build" goto :simple_version
+
+rem `build` runs in the managed crate's directory: whether the crate's lock
+rem and its seed stamp were in place before the build was invoked goes on
+rem the log so a test can assert the CLI seeded before invoking wasm-pack.
+if defined WATERUI_FAKE_LOG (
+    set "wp_lock=absent"
+    set "wp_seed=absent"
+    if exist Cargo.lock set "wp_lock=present"
+    if exist Cargo.lock.seed set "wp_seed=present"
+    echo wasm-pack-observes Cargo.lock=!wp_lock! Cargo.lock.seed=!wp_seed!>> "%WATERUI_FAKE_LOG%"
+)
+rem Emit the bundle artifact the CLI's web shell reads:
+rem `<out-dir>\<out-name>_bg.wasm`.
+set "wp_out="
+set "wp_name=app"
+set "wp_prev="
+for %%a in (%*) do (
+    if "!wp_prev!"=="--out-dir" set "wp_out=%%~a"
+    if "!wp_prev!"=="--out-name" set "wp_name=%%~a"
+    set "wp_prev=%%~a"
+)
+if defined wp_out (
+    if not exist "!wp_out!" mkdir "!wp_out!"
+    >"!wp_out!\!wp_name!_bg.wasm" echo fake wasm
+)
+exit /b 0
+
+:simple_version
+rem The tools dispatched here print a version banner on --version/-version/-v,
+rem like the .sh's `printf '%s 1.0.0 (waterui-test)\n' "$tool"`.
+if "%~1"=="--version" (echo %tool% 1.0.0 ^(waterui-test^) & exit /b 0)
+if "%~1"=="-version" (echo %tool% 1.0.0 ^(waterui-test^) & exit /b 0)
+if "%~1"=="-v" (echo %tool% 1.0.0 ^(waterui-test^) & exit /b 0)
+exit /b 0
+
+rem bun|npm|pnpm|yarn: `<pm> run <script>` prints the staged
+rem <tool>_run_<script> response and exits with WATERUI_FAKE_PM_EXIT, like
+rem the .sh. Every other invocation succeeds silently.
+:pm
+if "%~1"=="run" (
+    if exist "%WATERUI_FAKE_RESPONSES%\%tool%_run_%~2" type "%WATERUI_FAKE_RESPONSES%\%tool%_run_%~2"
+    if defined WATERUI_FAKE_PM_EXIT (exit /b %WATERUI_FAKE_PM_EXIT%) else (exit /b 0)
+)
+exit /b 0
+
+:vswhere
+call :respond_or_empty VSWHERE
+exit /b 0
+
+:winget
+if "%1 %2"=="list --id" (
+    call :list_contains "%WATERUI_FAKE_WINGET_INSTALLED%" "%~3" & exit /b !errorlevel!
+)
+rem A hung install spins in cmd itself: the fake host's PATH holds only
+rem the scratch bin\, so no system tool can stand in for the hang, and
+rem the caller's deadline kills the loop with the job.
+if "%1"=="install" (
+    if defined WATERUI_FAKE_WINGET_HANG goto :winget_hang
+    exit /b 0
+)
+exit /b 2
+
+:winget_hang
+goto :winget_hang
+
+:dpkg_query
+if not "%1"=="-W" exit /b 1
+call :last_arg %*
+call :list_contains "%WATERUI_FAKE_DPKG_INSTALLED%" "%last_arg%" && (echo install ok installed & exit /b 0)
+exit /b 1
+
+:dpkg
+if "%1"=="--print-foreign-architectures" (call :respond_or_empty DPKG_FOREIGN_ARCHES & exit /b 0)
+exit /b 0
+
+:rpm
+if not "%1"=="-q" exit /b 1
+call :last_arg %*
+call :list_contains "%WATERUI_FAKE_RPM_INSTALLED%" "%last_arg%"
+exit /b %errorlevel%
+
+:pacman
+if not "%1"=="-Q" exit /b 0
+call :last_arg %*
+call :list_contains "%WATERUI_FAKE_PACMAN_INSTALLED%" "%last_arg%" && (echo %last_arg% 1.0 & exit /b 0)
+exit /b 1
+
+:apk
+if not "%1 %2"=="info -e" exit /b 0
+call :last_arg %*
+call :list_contains "%WATERUI_FAKE_APK_INSTALLED%" "%last_arg%"
+exit /b %errorlevel%
+
+:pkg_config
+rem cmd tokenizes %1-%9 on '=', so `--atleast-version=4.14 gtk4` arrives as
+rem three tokens and %2 is the version, not the module. Match the raw %*
+rem string and take the module as the last argument, like the .sh's $2.
+if "%~1"=="--version" (echo 1.8.1 & exit /b 0)
+if "%~1"=="--exists" (
+    call :module_exists "%~2" & exit /b !errorlevel!
+)
+set "args=!args_dequoted!"
+call :contains args "--atleast-version=" && (
+    call :last_arg %*
+    call :module_exists "!last_arg!" || exit /b 1
+    call :list_contains "%WATERUI_FAKE_PKG_CONFIG_TOO_OLD%" "!last_arg!" && exit /b 1
+    exit /b 0
+)
+if "%1"=="--modversion" (
+    call :respond_file "PKG_CONFIG_%~2" & exit /b !errorlevel!
+)
+call :contains args "--variable=" && (
+    rem `--variable=prefix gtk4` tokenizes as %1=--variable, %2=prefix,
+    rem %3=gtk4 - the variable name is %2.
+    call :respond "PKG_CONFIG_VAR_%~2" & exit /b !errorlevel!
+)
+exit /b 0
+
+:uname
+if "%1"=="-m" (echo %WATERUI_FAKE_UNAME_MACHINE% & exit /b 0)
+echo WaterUITest
+exit /b 0
+:reg
+rem `reg query <key> /v LongPathsEnabled` - the only value modeled. The
+rem state file (the elevated `reg add` the powershell fake models writes
+rem it) wins over the staged WATERUI_FAKE_LONG_PATHS value; an absent
+rem value fails the query like the real tool.
+set "reg_args=!args_dequoted!"
+call :contains reg_args "query"
+if not %errorlevel%==0 exit /b 0
+call :contains reg_args "LongPathsEnabled"
+if not %errorlevel%==0 exit /b 0
+set "reg_val="
+if exist "%HOME%\.fake-long-paths" for /f "usebackq delims=" %%v in ("%HOME%\.fake-long-paths") do set "reg_val=%%v"
+if not defined reg_val set "reg_val=%WATERUI_FAKE_LONG_PATHS%"
+if not defined reg_val (
+    echo ERROR: The system was unable to find the specified registry key or value. 1>&2
+    exit /b 1
+)
+echo.
+echo HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\FileSystem
+echo     LongPathsEnabled    REG_DWORD    0x!reg_val!
+exit /b 0
+
+:powershell
+rem `doctor --fix` elevates `reg add` through `Start-Process -Verb RunAs`;
+rem land that write in the state file the :reg branch reads so a re-check
+rem observes the repair. WATERUI_FAKE_POWERSHELL_NO_WRITE models a write
+rem that did not land.
+set "ps_args=!args_dequoted!"
+call :contains ps_args "LongPathsEnabled"
+if %errorlevel%==0 if not defined WATERUI_FAKE_POWERSHELL_NO_WRITE (>"%HOME%\.fake-long-paths" echo 1)
+exit /b 0

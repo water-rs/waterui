@@ -1,0 +1,1118 @@
+//! Measure/layout for the retained tree: [`RenderNode::layout`] re-reads
+//! signals, re-measures through [`NodeSubView`], and caches each container's
+//! child frames for the flush pass.
+
+#[cfg(test)]
+use super::ContainerNode;
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
+use super::*;
+use crate::text::TextEngine;
+use crate::theme::WidgetTheme;
+use waterui_core::contract_violation;
+use waterui_core::layout::{
+    Layout, LayoutError, LayoutPlacement, ResolvedExtent, SubviewPlacement, place_layout,
+    resolve_layout_extent,
+};
+use waterui_graphics::backend::scene_stretch_axis;
+use waterui_layout::scroll::scroll_stretch_axis;
+
+impl<E: crate::text::TextEngine> RenderNode<E> {
+    /// The stretch axis this node exposes when it is a layout child.
+    /// The layout priority this subtree carries, or `0` when nothing set one.
+    ///
+    /// Only layout-transparent wrappers are walked through: a priority applies to
+    /// the child it wraps, not across a container boundary.
+    pub(super) fn priority(&self) -> i32 {
+        match self {
+            Self::Wrapper(node) => match &node.effect {
+                WrapperEffect::LayoutPriority(priority) => priority.get(),
+                _ => node.child.priority(),
+            },
+            Self::Opacity(node) => node.child.priority(),
+            Self::Scale(node) => node.child.priority(),
+            Self::Rotation(node) => node.child.priority(),
+            Self::Offset(node) => node.child.priority(),
+            Self::Retain(node) => node.child.priority(),
+            Self::Env(node) => node.child.priority(),
+            Self::Dynamic(node) => node.child.borrow().priority(),
+            Self::Filtered(node) => node.child.priority(),
+            Self::Fill(node) => node.child.priority(),
+            Self::Widget(node) => node.behavior.priority(),
+            _ => 0,
+        }
+    }
+
+    /// Whether this subtree draws nothing — `WaterUI`'s empty view `()`, or a
+    /// container/wrapper whose every descendant does the same.
+    ///
+    /// This is a semantic answer, not a measured size: a zero-size `Color` or
+    /// a collapsed `Spacer` still renders and still answers `false`. A stack
+    /// treats a child answering `true` as a non-member (§4.4: it takes no
+    /// slot and no spacing), and a `Dynamic` flipping between `()` and content
+    /// is a membership change — `layout` re-asks this every pass.
+    pub(super) fn is_empty(&self) -> bool {
+        match self {
+            Self::Widget(node) => node.behavior.renders_nothing(),
+            Self::Opacity(node) => node.child.is_empty(),
+            Self::Scale(node) => node.child.is_empty(),
+            Self::Rotation(node) => node.child.is_empty(),
+            Self::Offset(node) => node.child.is_empty(),
+            Self::Retain(node) => node.child.is_empty(),
+            Self::Env(node) => node.child.is_empty(),
+            // A conditional's ghosts take no part in layout (§4.5): the host
+            // answers for its live content alone.
+            Self::Dynamic(node) => node.child.borrow().is_empty(),
+            Self::Wrapper(node) => node.child.is_empty(),
+            Self::Fill(node) => node.child.is_empty(),
+            // A filter over a child that draws nothing draws nothing itself.
+            Self::Filtered(node) => node.child.is_empty(),
+            // A container is always a member — even a frame wrapping `()`
+            // explicitly claims its configured slot, like a `Spacer` does —
+            // and every variant not matched above draws nothing either.
+            _ => false,
+        }
+    }
+
+    pub(super) fn stretch(&self) -> StretchAxis {
+        match self {
+            Self::Color(_) => StretchAxis::Both,
+            // §6: a scroll stretches on its scrolling axis and on the
+            // non-scrolling axis only when its content stretches there
+            // (water-rs/waterui#1208).
+            Self::Scroll(node) => scroll_stretch_axis(node.axis, node.child.stretch()),
+            // The same stack laid out eagerly is content-sized on both axes, so a
+            // lazy one has to be too: making a stack virtualizable must not change
+            // how it sizes. Rows that want the full cross axis ask for it
+            // themselves, exactly as they do in the eager path.
+            Self::Text(_) | Self::LazyStack(_) => StretchAxis::None,
+            Self::Container(container) => {
+                // The retained children answer for themselves, so a transparent
+                // layout reports what its content currently claims rather than
+                // what it claimed when the tree was built.
+                let child_axes: Vec<StretchAxis> =
+                    container.children.iter().map(Self::stretch).collect();
+                container.layout.stretch_axis(&child_axes)
+            }
+            Self::Opacity(node) => node.child.stretch(),
+            Self::Scale(node) => node.child.stretch(),
+            Self::Rotation(node) => node.child.stretch(),
+            Self::Offset(node) => node.child.stretch(),
+            Self::Retain(node) => node.child.stretch(),
+            Self::Env(node) => node.child.stretch(),
+            Self::Dynamic(node) => node.child.borrow().stretch(),
+            // Scene content that is naturally a size is content-sized and claims
+            // no leftover space; content that has no size of its own fills.
+            Self::SceneView(node) => scene_stretch_axis(node.content.borrow().intrinsic_size()),
+            // GPU content's stretch is the view's declared contract, fixed
+            // at construction by `intrinsic_size`: a live `measure` answer
+            // that resolves later is a size, not a new stretch declaration
+            // (water-rs/waterui#1958). A filtered view is a
+            // layout-transparent wrapper delegating to its child.
+            #[cfg(hydrolysis_gpu)]
+            Self::GpuContent(node) => {
+                waterui_core::NativeView::stretch_axis(&node.runtime.borrow().view)
+            }
+            // An external frame stream's stretch is the same declared
+            // contract — a size learned while decoding does not change it.
+            #[cfg(hydrolysis_gpu)]
+            Self::ExternalFrame(node) => {
+                waterui_core::NativeView::stretch_axis(&node.runtime.borrow().view)
+            }
+            Self::Filtered(node) => node.child.stretch(),
+            Self::Collection(node) => {
+                // A collection's membership is reactive; its layout is one of the
+                // content-sized stacks, which ignores the children anyway.
+                node.layout.stretch_axis(&[])
+            }
+            Self::Wrapper(node) => node.child.stretch(),
+            Self::Fill(node) => node.child.stretch(),
+            Self::Widget(node) => node.stretch,
+        }
+    }
+
+    /// Measure this node under a proposal (recursive). Text shaping runs through
+    /// the renderer's [`HydroState`] on the main thread. Visible crate-wide so
+    /// the `Dynamic` dispatch measure can re-measure the retained child.
+    ///
+    /// Memoized per frame on the node's own [`NodeMeasureEntry`], for
+    /// container-like nodes only: a layout engine that re-probes a child
+    /// under different proposals (a stack measuring at `None` for an extent,
+    /// then at a concrete width, then the same pair again from `place`)
+    /// would otherwise re-run the whole subtree measure — multiplicatively
+    /// with depth. Every other node's body is a leaf answer or a
+    /// `child.measure` forward (itself gated where it matters), so memoizing
+    /// those buys nothing.
+    ///
+    /// The [`MemoGate`] runs first: a node whose probes never repeat a
+    /// proposal within a frame (the common case — the memo could never hit)
+    /// pays a `Cell` update and skips the `RefCell` borrow, the ring scan,
+    /// and the dimensions store. Only a node observed being re-probed under
+    /// a proposal it already answered keeps memoizing.
+    pub(crate) fn measure(
+        &self,
+        state: &mut HydroState<E>,
+        env: &Environment,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
+        proposal: ProposalSize,
+    ) -> ViewDimensions {
+        let (memo_gate, memo_slots) = match self {
+            Self::Container(node) => (&node.memo_gate, &node.memo_slots),
+            Self::Scroll(node) => (&node.memo_gate, &node.memo_slots),
+            Self::Collection(node) => (&node.memo_gate, &node.memo_slots),
+            Self::LazyStack(node) => (&node.memo_gate, &node.memo_slots),
+            Self::Text(node) => (&node.memo_gate, &node.memo_slots),
+            _ => return self.measure_body(state, env, theme, proposal),
+        };
+        let frame = state.measurement.frame();
+        let mut gate = memo_gate.get();
+        if !gate.probe(frame, proposal) {
+            memo_gate.set(gate);
+            return self.measure_body(state, env, theme, proposal);
+        }
+        memo_gate.set(gate);
+        // Only a probe the gate lets through needs the env identity.
+        let env_identity = env.identity();
+        let hit = memo_slots.borrow().dims(env_identity, frame, proposal);
+        if let Some(hit) = hit {
+            return hit;
+        }
+        let dimensions = self.measure_body(state, env, theme, proposal);
+        let mut memo = memo_slots.borrow_mut();
+        memo.ensure_current(frame);
+        memo.push_dims(env_identity, proposal, dimensions.clone());
+        dimensions
+    }
+
+    /// The uncached measure [`Self::measure`] memoizes; the recursive match over
+    /// the node's payload.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+    )]
+    pub(crate) fn measure_body(
+        &self,
+        state: &mut HydroState<E>,
+        env: &Environment,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
+        proposal: ProposalSize,
+    ) -> ViewDimensions {
+        state.counters.measure_calls += 1;
+        match self {
+            Self::Color(_) => ViewDimensions::new(Size::new(
+                proposal.width.unwrap_or(0.0),
+                proposal.height.unwrap_or(0.0),
+            )),
+            Self::Text(text) => text_dimensions(text, state, env, proposal),
+            Self::Container(container) => {
+                let cell = RefCell::new(state);
+                let subs: Vec<NodeSubView<E>> = container
+                    .children
+                    .iter()
+                    .map(|child| NodeSubView::new(child, &cell, env, theme))
+                    .collect();
+                let refs: Vec<&dyn SubView> = subs.iter().map(|sub| sub as &dyn SubView).collect();
+                ViewDimensions::new(container.layout.size_that_fits(proposal, &refs))
+            }
+            // Transform/opacity wrappers are layout-transparent.
+            Self::Opacity(node) => node.child.measure(state, env, theme, proposal),
+            Self::Scale(node) => node.child.measure(state, env, theme, proposal),
+            Self::Rotation(node) => node.child.measure(state, env, theme, proposal),
+            Self::Offset(node) => node.child.measure(state, env, theme, proposal),
+            Self::Retain(node) => node.child.measure(state, env, theme, proposal),
+            Self::Env(node) => node.child.measure(state, &node.env, theme, proposal),
+            Self::Dynamic(node) => {
+                let dimensions = node.child.borrow().measure(state, env, theme, proposal);
+                // The connected node's real per-proposal answers feed the
+                // dispatch measure of the same `Dynamic` (`measure_dynamic`).
+                state.measurement.store_dynamic_dimensions(
+                    node.source.identity(),
+                    proposal,
+                    dimensions.clone(),
+                );
+                dimensions
+            }
+            // Scene content that is naturally a size (an SVG's viewBox, a
+            // formula's typeset box) answers with it on whichever axis the
+            // container left open; content that is not fills the proposal.
+            Self::SceneView(node) => {
+                let dimensions = node.intrinsic_dimensions(proposal);
+                node.measured.set(Some((proposal, dimensions.size)));
+                dimensions
+            }
+            // GPU content answers like a scene: content that is naturally a
+            // size is content-sized; content without one fills the proposal.
+            #[cfg(hydrolysis_gpu)]
+            Self::GpuContent(node) => {
+                let dimensions = node.intrinsic_dimensions(proposal);
+                node.measured.set(Some((proposal, dimensions.size)));
+                dimensions
+            }
+            // External frames measure through their source: a stream with an
+            // intrinsic size is content-sized, one without fills the proposal.
+            #[cfg(hydrolysis_gpu)]
+            Self::ExternalFrame(node) => {
+                let dimensions = node.intrinsic_dimensions(proposal);
+                node.measured.set(Some((proposal, dimensions.size)));
+                dimensions
+            }
+            // A filtered view is sized by its content: the engine applies the
+            // filter to the mount the child's layers hang from.
+            Self::Filtered(node) => node.child.measure(state, &node.env, theme, proposal),
+            Self::Scroll(node) => {
+                // layout-spec.md §6 (water-rs/waterui#1208): on the scrolling
+                // axis a scroll claims the offer — a finite proposal is
+                // answered with the proposal, `None` with the content's
+                // intrinsic extent, `0` with `0`. On the non-scrolling axis
+                // it answers the content's own answer to the content
+                // proposal — the offer on that axis, `None` on the
+                // scrolling axis — clamped to a finite offer, so a scroll
+                // hugs non-filling content; `0` keeps the cached content
+                // minimum and `None` the intrinsic extent. `Axis::All`
+                // fills both axes.
+                let size = match node.axis {
+                    ScrollAxis::Vertical | ScrollAxis::Horizontal => {
+                        let cross_zero = match node.axis {
+                            ScrollAxis::Vertical => proposal.width == Some(0.0),
+                            _ => proposal.height == Some(0.0),
+                        };
+                        // The §6 content proposal: the scroll's offer on the
+                        // non-scrolling axis, `None` on the scrolling axis.
+                        // One memoised measure serves the cross answer and
+                        // an unspecified scrolling-axis extent together.
+                        let content_proposal = match node.axis {
+                            ScrollAxis::Vertical => ProposalSize::new(proposal.width, None),
+                            _ => ProposalSize::new(None, proposal.height),
+                        };
+                        // A `0` non-scrolling proposal reads the cached
+                        // content minimum: window-limits replay frames must
+                        // not run a live measure for it. The measure runs
+                        // only for a finite or unspecified answer — or once,
+                        // to seed a cold cache.
+                        let scrolling_unspecified = match node.axis {
+                            ScrollAxis::Vertical => proposal.height.is_none(),
+                            _ => proposal.width.is_none(),
+                        };
+                        let measured = (!cross_zero
+                            || scrolling_unspecified
+                            || node.non_scrolling_minimum.get().is_none())
+                        .then(|| node.child.measure(state, env, theme, content_proposal).size);
+                        let cross_extent = |measured: Size| match node.axis {
+                            ScrollAxis::Vertical => measured.width,
+                            _ => measured.height,
+                        };
+                        let scrolling_extent = |measured: Size| match node.axis {
+                            ScrollAxis::Vertical => measured.height,
+                            _ => measured.width,
+                        };
+                        let non_scrolling = |offer: Option<f32>| match offer {
+                            Some(0.0) => node.non_scrolling_minimum.get().unwrap_or_else(|| {
+                                let value = cross_extent(measured.expect(
+                                    "a cold non-scrolling minimum runs the content measure",
+                                ));
+                                node.non_scrolling_minimum.set(Some(value));
+                                value
+                            }),
+                            Some(offer) => {
+                                let answer = cross_extent(measured.expect(
+                                    "a finite non-scrolling offer runs the content measure",
+                                ));
+                                if answer.is_finite() {
+                                    answer.clamp(0.0, offer)
+                                } else {
+                                    offer
+                                }
+                            }
+                            None => cross_extent(
+                                measured.expect("an unspecified axis runs the content measure"),
+                            ),
+                        };
+                        let scrolling =
+                            |offer: Option<f32>| match offer {
+                                Some(0.0) => 0.0,
+                                Some(offer) => offer,
+                                None => scrolling_extent(measured.expect(
+                                    "an unspecified scrolling axis runs the content measure",
+                                )),
+                            };
+                        match node.axis {
+                            ScrollAxis::Vertical => {
+                                Size::new(non_scrolling(proposal.width), scrolling(proposal.height))
+                            }
+                            _ => {
+                                Size::new(scrolling(proposal.width), non_scrolling(proposal.height))
+                            }
+                        }
+                    }
+                    ScrollAxis::All => {
+                        // Unchanged: both axes scroll, so a finite proposal
+                        // is claimed, `None` asks for the intrinsic extent
+                        // and `0` answers `0`.
+                        let intrinsic = (proposal.width.is_none() || proposal.height.is_none())
+                            .then(|| {
+                                node.child
+                                    .measure(state, env, theme, ProposalSize::UNSPECIFIED)
+                                    .size
+                            });
+                        Size::new(
+                            match proposal.width {
+                                Some(0.0) => 0.0,
+                                Some(width) => width,
+                                None => intrinsic.map_or(0.0, |measured| measured.width),
+                            },
+                            match proposal.height {
+                                Some(0.0) => 0.0,
+                                Some(height) => height,
+                                None => intrinsic.map_or(0.0, |measured| measured.height),
+                            },
+                        )
+                    }
+                    other => {
+                        contract_violation!(
+                            "hydrolysis render tree: unsupported scroll axis {other:?}; the scroll view measures as zero"
+                        );
+                        Size::zero()
+                    }
+                };
+                ViewDimensions::new(size)
+            }
+            Self::LazyStack(node) => node.measure(state, theme, proposal),
+            Self::Collection(node) => node.measure(state, theme, proposal),
+            // Layout-transparent: the wrapper measures its child under the node's
+            // scoped environment (effect colors/a11y read env every frame).
+            Self::Wrapper(node) => node.child.measure(state, &node.env, theme, proposal),
+            Self::Fill(node) => node.child.measure(state, env, theme, proposal),
+            Self::Widget(node) => node.behavior.measure(state, proposal, &node.env, theme),
+        }
+    }
+
+    /// This node's response geometry (water-rs/waterui#1323), dispatched
+    /// exactly like [`Self::measure_body`] so the two cannot drift: a container
+    /// answers [`resolve_layout_extent`] over its retained children, a lazy
+    /// stack answers its stack rule from the lazy measurement alone, and a
+    /// layout-transparent wrapper forwards to its child with the same bounds,
+    /// proposal and the environment `measure_body` gives that child.
+    ///
+    /// `None` means the node is a leaf: the caller answers
+    /// [`ResolvedExtent::centred`] with its own measured, stretch-applied
+    /// answer, the same size its parent laid it out with.
+    ///
+    /// # Errors
+    ///
+    /// A [`LayoutError`] when the answer or `bounds` is not valid geometry, or
+    /// a layout broke the response-extent identity.
+    pub(crate) fn resolve_extent(
+        &self,
+        state: &mut HydroState<E>,
+        env: &Environment,
+        theme: &Rc<dyn WidgetTheme>,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<Option<ResolvedExtent>, LayoutError> {
+        match self {
+            Self::Container(container) => {
+                let cell = RefCell::new(state);
+                let subs: Vec<NodeSubView<E>> = container
+                    .children
+                    .iter()
+                    .map(|child| NodeSubView::new(child, &cell, env, theme))
+                    .collect();
+                let refs: Vec<&dyn SubView> = subs.iter().map(|sub| sub as &dyn SubView).collect();
+                resolve_layout_extent(&*container.layout, bounds, proposal, &refs).map(Some)
+            }
+            Self::Opacity(node) => node
+                .child
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::Scale(node) => node
+                .child
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::Rotation(node) => node
+                .child
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::Offset(node) => node
+                .child
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::Retain(node) => node
+                .child
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::Fill(node) => node
+                .child
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::Env(node) => node
+                .child
+                .resolve_extent(state, &node.env, theme, bounds, proposal),
+            Self::Filtered(node) => node
+                .child
+                .resolve_extent(state, &node.env, theme, bounds, proposal),
+            Self::Wrapper(node) => node
+                .child
+                .resolve_extent(state, &node.env, theme, bounds, proposal),
+            Self::Dynamic(node) => node
+                .child
+                .borrow()
+                .resolve_extent(state, env, theme, bounds, proposal),
+            Self::LazyStack(node) => node
+                .resolve_extent(state, theme, bounds, proposal)
+                .map(Some),
+            Self::Collection(node) => node
+                .resolve_extent(state, theme, bounds, proposal)
+                .map(Some),
+            // Leaves: a scroll answers its offer, widgets and text measure
+            // themselves, scene/GPU/external content answers its intrinsic size.
+            Self::Color(_)
+            | Self::Text(_)
+            | Self::Scroll(_)
+            | Self::SceneView(_)
+            | Self::Widget(_) => Ok(None),
+            #[cfg(hydrolysis_gpu)]
+            Self::GpuContent(_) | Self::ExternalFrame(_) => Ok(None),
+        }
+    }
+
+    /// The innermost container under this node's layout-transparent wrappers —
+    /// the `Env` an `hstack`'s `with(Axis)` installs, retains, effects — for
+    /// tests that drive its `Layout` against recording children.
+    #[cfg(test)]
+    pub(in crate::renderer) fn transparent_container(&self) -> Option<&ContainerNode<E>> {
+        let mut node = self;
+        loop {
+            match node {
+                Self::Container(container) => return Some(&**container),
+                Self::Env(inner) => node = &inner.child,
+                Self::Wrapper(inner) => node = &inner.child,
+                Self::Retain(inner) => node = &inner.child,
+                Self::Opacity(inner) => node = &inner.child,
+                Self::Scale(inner) => node = &inner.child,
+                Self::Rotation(inner) => node = &inner.child,
+                Self::Offset(inner) => node = &inner.child,
+                Self::Filtered(inner) => node = &inner.child,
+                Self::Fill(inner) => node = &inner.child,
+                _ => return None,
+            }
+        }
+    }
+
+    /// The stretch contract a `NodeSubView` over this child would report — for
+    /// tests that drive a container's `Layout` against recording children.
+    #[cfg(test)]
+    pub(in crate::renderer) fn stretch_for_test(&self) -> StretchAxis {
+        self.stretch()
+    }
+
+    /// Run the layout-time prepare pass over this subtree: every widget leaf
+    /// applies theme paint that could not be resolved at tree-build time —
+    /// build contexts carry no theme — and builds the retained sub-views its
+    /// measure path then reads. Called once at each layout or measure entry
+    /// point (`RetainedSubview::{measure_intrinsic, patch_and_measure,
+    /// place, place_in_ctx}` and the window's
+    /// layout pump), before any node is measured. A semantic runtime never
+    /// runs this pass, so no theme reaches it.
+    pub(in crate::renderer) fn prepare_for_measure(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<E>,
+    ) {
+        match self {
+            // Prepare builds subviews and reads bindings at measure time:
+            // run it under this widget's cell as the layout reader so its
+            // builds attach to the widget, not the window root.
+            Self::Widget(node) => {
+                renderer.with_reader(&node.core, ReaderPhase::Layout, |renderer| {
+                    node.behavior.prepare(renderer, &node.env);
+                });
+            }
+            Self::Opacity(node) => node.child.prepare_for_measure(renderer),
+            Self::Scale(node) => node.child.prepare_for_measure(renderer),
+            Self::Rotation(node) => node.child.prepare_for_measure(renderer),
+            Self::Offset(node) => node.child.prepare_for_measure(renderer),
+            Self::Retain(node) => node.child.prepare_for_measure(renderer),
+            Self::Dynamic(node) => node.child.borrow_mut().prepare_for_measure(renderer),
+            Self::Env(node) => node.child.prepare_for_measure(renderer),
+            Self::Wrapper(node) => node.child.prepare_for_measure(renderer),
+            Self::Filtered(node) => node.child.prepare_for_measure(renderer),
+            Self::Fill(node) => node.child.prepare_for_measure(renderer),
+            Self::Container(node) => {
+                for child in &mut node.children {
+                    child.prepare_for_measure(renderer);
+                }
+            }
+            Self::Scroll(node) => node.child.prepare_for_measure(renderer),
+            Self::Collection(node) => {
+                for entry in &mut node.entries {
+                    entry.node.prepare_for_measure(renderer);
+                }
+            }
+            Self::LazyStack(node) => {
+                node.item_cache.borrow_mut().prepare_for_measure(renderer);
+            }
+            Self::Color(_) | Self::Text(_) | Self::SceneView(_) => {}
+            #[cfg(hydrolysis_gpu)]
+            Self::GpuContent(_) | Self::ExternalFrame(_) => {}
+        }
+    }
+
+    /// Re-measure and re-place this subtree, caching each container's child
+    /// frames. Run on build and whenever a geometry-affecting input changes.
+    ///
+    /// `safe_area` is the §7.1 context this node lays out against — its
+    /// laid-out frame in window space plus, per edge, the boundary the
+    /// subtree's area ends at — or `None` where there is none: inside a
+    /// scroll surface's content and inside widget-owned retained
+    /// sub-views.
+    pub(crate) fn layout(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<E>,
+        env: &Environment,
+        safe_area: Option<safe_area::SafeAreaLayout>,
+        proposal: ProposalSize,
+        size: Size,
+    ) {
+        self.layout_in(renderer, env, safe_area, proposal, Rect::from_size(size));
+    }
+
+    /// [`Self::layout`] over placement `bounds` given in the node's
+    /// allocation-local space. The allocation is `bounds`' size at the local
+    /// origin; a host whose rule positions this node's response (a list row,
+    /// water-rs/waterui#3888) moves `bounds` so the response lands where the
+    /// rule puts it, and the node's children and drawing follow, while the
+    /// allocation, and with it the node's hit target, stays.
+    pub(crate) fn layout_in(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<E>,
+        env: &Environment,
+        safe_area: Option<safe_area::SafeAreaLayout>,
+        proposal: ProposalSize,
+        bounds: Rect,
+    ) {
+        let core = self.core().clone();
+        renderer.with_reader(&core, ReaderPhase::Layout, |renderer| {
+            self.layout_inner(renderer, env, safe_area, proposal, bounds);
+        });
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+    )]
+    fn layout_inner(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<E>,
+        env: &Environment,
+        safe_area: Option<safe_area::SafeAreaLayout>,
+        proposal: ProposalSize,
+        bounds: Rect,
+    ) {
+        renderer.state.counters.layout_calls += 1;
+        // The selected proposal and resolved size are distinct layout inputs.
+        // Transparent wrappers preserve both without reconstructing an offer.
+        let theme = renderer.theme();
+        let size = *bounds.size();
+        let allocation = Rect::from_size(size);
+        match self {
+            Self::Container(container) => {
+                let placement = {
+                    let cell = RefCell::new(&mut renderer.state);
+                    let subs: Vec<NodeSubView<E>> = container
+                        .children
+                        .iter()
+                        .map(|child| NodeSubView::new(child, &cell, env, &theme))
+                        .collect();
+                    let refs: Vec<&dyn SubView> =
+                        subs.iter().map(|sub| sub as &dyn SubView).collect();
+                    placed_layout(&*container.layout, bounds, proposal, &refs)
+                };
+                #[cfg(feature = "accessibility")]
+                {
+                    container.geometry = Some(PlacedGeometry {
+                        proposal,
+                        answer: placement.answer,
+                        allocation,
+                        response_rect: placement.response_rect,
+                    });
+                }
+                for (child, child_placement) in
+                    container.children.iter_mut().zip(&placement.children)
+                {
+                    let child_area = safe_area
+                        .as_ref()
+                        .map(|area| area.child(child_placement.frame));
+                    child.layout(
+                        renderer,
+                        env,
+                        child_area,
+                        child_placement.proposal,
+                        *child_placement.frame.size(),
+                    );
+                }
+                container.placed = placement
+                    .children
+                    .into_iter()
+                    .map(|child_placement| child_placement.frame)
+                    .collect();
+            }
+            // Transform/opacity wrappers are layout-transparent: the child lays out
+            // at the same concrete size as the wrapper, inside the same
+            // laid-out frame — visual transforms are not part of §7.1's
+            // "laid-out frame" and never change the touch test.
+            Self::Opacity(node) => node
+                .child
+                .layout_in(renderer, env, safe_area, proposal, bounds),
+            Self::Scale(node) => node
+                .child
+                .layout_in(renderer, env, safe_area, proposal, bounds),
+            Self::Rotation(node) => node
+                .child
+                .layout_in(renderer, env, safe_area, proposal, bounds),
+            Self::Offset(node) => node
+                .child
+                .layout_in(renderer, env, safe_area, proposal, bounds),
+            Self::Retain(node) => node
+                .child
+                .layout_in(renderer, env, safe_area, proposal, bounds),
+            Self::Env(node) => {
+                let node_env = node.env.clone();
+                node.child
+                    .layout_in(renderer, &node_env, safe_area, proposal, bounds);
+            }
+            // Layout-transparent: the child lays out at the same concrete size,
+            // under the wrapper's scoped environment — except `.ignore_safe_area`,
+            // which moves the subtree's boundary out on each named edge the
+            // wrapper's laid-out frame touches, stopping at the deepest region
+            // the declaration does not name (§7.1's "layout avoids"). An edge
+            // the frame does not touch releases nothing, and released regions
+            // accumulate, so nested declarations cannot double-release.
+            Self::Wrapper(node) => {
+                let node_env = node.env.clone();
+                if let WrapperEffect::IgnoreSafeArea(ignore) = &node.effect {
+                    let Some(area) = safe_area else {
+                        node.released_offsets.set(safe_area::EdgeOffsets::default());
+                        node.child
+                            .layout_in(renderer, &node_env, None, proposal, bounds);
+                        return;
+                    };
+                    // The declaration's named edges resolve under the
+                    // wrapper's own env direction — a scoped override
+                    // may flip direction inside the tree — while the
+                    // regions' depths stay under the publish direction
+                    // the context records (water-rs/waterui#1827).
+                    let direction =
+                        renderer.read_signal(&waterui_layout::layout_direction(&node_env));
+                    let (child_area, released, child_size) = area.release(*ignore, size, direction);
+                    node.released_offsets.set(released);
+                    let child_proposal = ProposalSize::new(
+                        proposal.width.map(|_| child_size.width),
+                        proposal.height.map(|_| child_size.height),
+                    );
+                    node.child.layout_in(
+                        renderer,
+                        &node_env,
+                        Some(child_area),
+                        child_proposal,
+                        Rect::new(bounds.origin(), child_size),
+                    );
+                } else {
+                    node.child
+                        .layout_in(renderer, &node_env, safe_area, proposal, bounds);
+                }
+            }
+            Self::Dynamic(node) => {
+                // The context stays on the host: the flush's mid-pass layout
+                // for a child that applied its pending then reuses it.
+                store_safe_area(&mut node.safe_area, safe_area.clone());
+                node.child
+                    .borrow_mut()
+                    .layout_in(renderer, env, safe_area, proposal, bounds);
+            }
+            Self::Scroll(node) => {
+                let child_proposal = match node.axis {
+                    ScrollAxis::Horizontal => ProposalSize::new(None, Some(size.height)),
+                    ScrollAxis::Vertical => ProposalSize::new(Some(size.width), None),
+                    ScrollAxis::All => ProposalSize::UNSPECIFIED,
+                    other => {
+                        contract_violation!(
+                            "hydrolysis render tree: unsupported scroll axis {other:?}; the scroll view is not laid out"
+                        );
+                        return;
+                    }
+                };
+                let intrinsic = node
+                    .child
+                    .measure(&mut renderer.state, env, &theme, child_proposal)
+                    .size;
+                let content_size = match node.axis {
+                    ScrollAxis::Horizontal => {
+                        Size::new(intrinsic.width.max(size.width), size.height)
+                    }
+                    ScrollAxis::Vertical => {
+                        Size::new(size.width, intrinsic.height.max(size.height))
+                    }
+                    ScrollAxis::All => Size::new(
+                        intrinsic.width.max(size.width),
+                        intrinsic.height.max(size.height),
+                    ),
+                    _ => unreachable!("an unsupported scroll axis returned above"),
+                };
+                // §7.1's scroll surface: the extension is computed once
+                // here — the edges whose laid-out frame touches the
+                // subtree boundary reach the window edge — and the handle
+                // is rebound exactly once, with the extended viewport and
+                // content, so an input closure captured mid-frame never
+                // meets a second generation bump at flush.
+                let facts = safe_area
+                    .as_ref()
+                    .map(safe_area::SafeAreaLayout::surface_facts);
+                node.surface.facts.set(facts);
+                let (viewport, content) = node.surface.extended(
+                    kurbo::Size::new(f64::from(size.width), f64::from(size.height)),
+                    kurbo::Size::new(
+                        f64::from(content_size.width),
+                        f64::from(content_size.height),
+                    ),
+                );
+                let viewport_width = viewport.width;
+                let viewport_height = viewport.height;
+                let content_width = content.width;
+                let content_height = content.height;
+                // The position sink reports the logical (unextended)
+                // viewport and content: the safe-area extension is the
+                // surface's presentation detail, not the semantic scroll
+                // geometry the controller reads back.
+                let position_report = node.controller.as_ref().map(|controller| {
+                    crate::scroll::ScrollPositionReport::new(
+                        controller.position_report(),
+                        size,
+                        content_size,
+                    )
+                });
+                let existing = node.handle.borrow().clone();
+                let handle = if let Some(mut handle) = existing {
+                    // Rebind outside the `node.handle` borrow — the report
+                    // writes inside may run watchers that re-enter the tree.
+                    let rebound = handle.rebind(
+                        node.axis,
+                        viewport_width,
+                        viewport_height,
+                        content_width,
+                        content_height,
+                        (0.0, 0.0),
+                        position_report,
+                    );
+                    *node.handle.borrow_mut() = Some(rebound.clone());
+                    rebound
+                } else {
+                    // `report_offset`: the handle writes the content offset
+                    // into this binding on every change, glide frames
+                    // included, from here on.
+                    let handle = ScrollHandle::new(
+                        node.axis,
+                        viewport_width,
+                        viewport_height,
+                        content_width,
+                        content_height,
+                        node.offset.clone(),
+                    );
+                    handle.set_position_report(position_report);
+                    handle
+                };
+                if let Some(controller) = &node.controller {
+                    let generation = renderer.read_signal(&controller.generation());
+                    if generation != node.applied_scroll_generation.get() {
+                        let request = renderer.read_signal(&controller.request());
+                        // A request carries an optional animation: `None`
+                        // lands in place; `Some` glides along its curve via
+                        // the smooth-scroll pump this render registers.
+                        if let Some(animation) = request.animation().cloned() {
+                            let _ = handle.scroll_to_animated(
+                                f64::from(request.target().x),
+                                f64::from(request.target().y),
+                                animation,
+                                renderer.frame_instant(),
+                            );
+                        } else {
+                            let _ = handle.scroll_to(
+                                f64::from(request.target().x),
+                                f64::from(request.target().y),
+                            );
+                        }
+                        node.applied_scroll_generation.set(generation);
+                    }
+                }
+                *node.handle.borrow_mut() = Some(handle);
+                node.content_size = content_size;
+                node.viewport = size;
+                // The content sees no safe-area context: the surface
+                // insets and clears its own subtree, so nothing inside
+                // touches an edge (§7.1).
+                node.child
+                    .layout(renderer, env, None, child_proposal, content_size);
+            }
+            Self::Collection(node) => node.layout(renderer, safe_area.as_ref(), proposal, bounds),
+            Self::Filtered(node) => {
+                let node_env = node.env.clone();
+                node.child
+                    .layout_in(renderer, &node_env, safe_area, proposal, bounds);
+            }
+            // §7.1's fill rule, layout side: the slot fill records the
+            // paint extension its laid-out frame earns (extension is a
+            // paint fact — layout sees the frame, flush grows the paint
+            // rect by exactly this) — then lays its child out at the
+            // unchanged frame.
+            Self::Fill(node) => {
+                node.extension.set(
+                    safe_area
+                        .as_ref()
+                        .map(safe_area::SafeAreaLayout::touched_edge_offsets),
+                );
+                node.child
+                    .layout_in(renderer, env, safe_area, proposal, bounds);
+            }
+            Self::Widget(node) => {
+                node.behavior.update_scroll_surface(
+                    safe_area
+                        .as_ref()
+                        .map(safe_area::SafeAreaLayout::surface_facts),
+                );
+                // The context the widget's retained sub-views read through
+                // `safe_area_for`/`content_area_for` at flush.
+                store_safe_area(&mut node.safe_area, safe_area);
+            }
+            // The context a lazy stack's flush-time item placements read —
+            // its items inherit the context it laid out against, like a
+            // collection's placed children do. Its response follows the stack
+            // rule from the lazy measurement, read by the naming scope the
+            // stack owns.
+            Self::LazyStack(node) => {
+                #[cfg(feature = "accessibility")]
+                {
+                    let resolved = resolved_or_collapsed(
+                        node.resolve_extent(&mut renderer.state, &theme, bounds, proposal),
+                        bounds,
+                    );
+                    node.geometry = Some(PlacedGeometry {
+                        proposal,
+                        answer: resolved.answer,
+                        allocation,
+                        response_rect: resolved.rect,
+                    });
+                }
+                store_safe_area(&mut node.safe_area, safe_area);
+            }
+            // The foundation leaf rule: the text's answer centred in its
+            // placement bounds. The glyphs draw and the accessibility node
+            // reports in that response rectangle.
+            Self::Text(node) => {
+                let answer = text_dimensions(node, &mut renderer.state, env, proposal).size;
+                let resolved =
+                    resolved_or_collapsed(ResolvedExtent::centred(bounds, answer), bounds);
+                node.geometry = Some(PlacedGeometry {
+                    proposal,
+                    answer,
+                    allocation,
+                    response_rect: resolved.rect,
+                });
+            }
+            // Color and GPU leaves render at flush from `ctx.bounds`.
+            Self::Color(_) | Self::SceneView(_) => {}
+            #[cfg(hydrolysis_gpu)]
+            Self::GpuContent(_) | Self::ExternalFrame(_) => {}
+        }
+    }
+}
+
+/// Places a container's children in `bounds` through [`place_layout`], which
+/// resolves the container's own response from the same answer
+/// (`docs/layout-spec.md` §7). A container is routinely assigned more than it
+/// answered (a window's `Overlay` places its base over the whole bounds), so
+/// its response, not its allocation, is its own extent.
+pub(super) fn placed_layout(
+    layout: &dyn Layout,
+    bounds: Rect,
+    proposal: ProposalSize,
+    children: &[&dyn SubView],
+) -> LayoutPlacement {
+    place_layout(layout, bounds, proposal, children).unwrap_or_else(|error| {
+        contract_violation!(
+            "hydrolysis layout: {error}; the container and its children collapse to zero size at the container's origin"
+        );
+        let collapsed = Rect::new(bounds.origin(), Size::zero());
+        LayoutPlacement {
+            answer: Size::zero(),
+            response_rect: collapsed,
+            children: children
+                .iter()
+                .map(|_| SubviewPlacement::new(collapsed, ProposalSize::new(Some(0.0), Some(0.0))))
+                .collect(),
+        }
+    })
+}
+
+/// `result`, or after a contract violation a zero-size response at `bounds`'
+/// origin when the layout driver rejected the answer or the bounds.
+pub(super) fn resolved_or_collapsed(
+    result: Result<ResolvedExtent, LayoutError>,
+    bounds: Rect,
+) -> ResolvedExtent {
+    result.unwrap_or_else(|error| {
+        contract_violation!(
+            "hydrolysis layout: {error}; the view collapses to zero size at its origin"
+        );
+        ResolvedExtent {
+            answer: Size::zero(),
+            rect: Rect::new(bounds.origin(), Size::zero()),
+        }
+    })
+}
+
+/// A text leaf's answer to `proposal`, shaped under `env`.
+fn text_dimensions<E: TextEngine>(
+    text: &TextNode<E>,
+    state: &mut HydroState<E>,
+    env: &Environment,
+    proposal: ProposalSize,
+) -> ViewDimensions {
+    let content = state.measure_signal(&text.content);
+    let alignment = state.measure_signal(&text.alignment);
+    HydrolysisRenderer::measure_text_dimensions(
+        state,
+        content,
+        alignment,
+        env,
+        proposal.width,
+        text.line_limit,
+    )
+}
+
+/// The rectangle an accessibility element reports in its owner's
+/// allocation-local space: the owner's response, unless a naming modifier in
+/// `env` names another source (`docs/layout-spec.md` §7.2).
+#[cfg(feature = "accessibility")]
+pub(super) fn accessibility_rect(env: &Environment, geometry: &PlacedGeometry) -> kurbo::Rect {
+    kurbo_rect(
+        env.get::<AccessibilityGeometry>()
+            .copied()
+            .unwrap_or_default()
+            .resolve(geometry),
+    )
+}
+
+/// `rect` in kurbo coordinates — [`Rect`] is the f32 layout space while
+/// `RenderContext` geometry is kurbo f64.
+pub(super) fn kurbo_rect(rect: Rect) -> kurbo::Rect {
+    kurbo::Rect::new(
+        f64::from(rect.x()),
+        f64::from(rect.y()),
+        f64::from(rect.max_x()),
+        f64::from(rect.max_y()),
+    )
+}
+
+/// A deterministic digest of a layout pass's output — FNV-1a over every node's
+/// variant tag and placed frame, walked depth-first. The frame-profile
+/// example compares digests across runs to prove a change left layout
+/// byte-identical.
+#[cfg(feature = "frame-profile")]
+pub(super) struct SignatureHasher(u64);
+
+#[cfg(feature = "frame-profile")]
+impl SignatureHasher {
+    pub(super) const fn new() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+
+    pub(super) const fn mix(&mut self, bits: u64) {
+        self.0 = (self.0 ^ bits).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+}
+
+#[cfg(feature = "frame-profile")]
+impl std::hash::Hasher for SignatureHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.mix(u64::from(byte));
+        }
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        self.mix(u64::from(value));
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.mix(value);
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.mix(value as u64);
+    }
+}
+
+/// Hash a [`Size`] into the layout digest.
+#[cfg(feature = "frame-profile")]
+pub(super) fn hash_size(hasher: &mut SignatureHasher, size: Size) {
+    hasher.mix(u64::from(size.width.to_bits()));
+    hasher.mix(u64::from(size.height.to_bits()));
+}
+
+/// Hash a node's placed [`Rect`] into the layout digest.
+#[cfg(feature = "frame-profile")]
+pub(super) fn hash_frame(hasher: &mut SignatureHasher, frame: Rect) {
+    hasher.mix(u64::from(frame.x().to_bits()));
+    hasher.mix(u64::from(frame.y().to_bits()));
+    hash_size(hasher, *frame.size());
+}
+
+#[cfg(feature = "frame-profile")]
+impl<E: crate::text::TextEngine> RenderNode<E> {
+    /// Digest of what the layout pass computed for this subtree under `frame`:
+    /// every node's variant tag and its placed frame, depth-first, plus the
+    /// geometry nodes cache for the flush pass (a scroll's content size and
+    /// viewport, a lazy stack's retained items). Identical digests on two runs
+    /// mean layout produced identical bounds for every node.
+    pub(crate) fn placed_signature(&self, frame: Rect) -> u64 {
+        let mut hasher = SignatureHasher::new();
+        self.signature_into(frame, &mut hasher);
+        std::hash::Hasher::finish(&hasher)
+    }
+
+    pub(super) fn signature_into(&self, frame: Rect, hasher: &mut SignatureHasher) {
+        use std::hash::Hash;
+        core::mem::discriminant(self).hash(hasher);
+        hash_frame(hasher, frame);
+        match self {
+            Self::Color(_) | Self::Text(_) | Self::SceneView(_) | Self::Widget(_) => {}
+            #[cfg(hydrolysis_gpu)]
+            Self::GpuContent(_) | Self::ExternalFrame(_) => {}
+            Self::Opacity(node) => node.child.signature_into(frame, hasher),
+            Self::Scale(node) => node.child.signature_into(frame, hasher),
+            Self::Rotation(node) => node.child.signature_into(frame, hasher),
+            Self::Offset(node) => node.child.signature_into(frame, hasher),
+            Self::Retain(node) => node.child.signature_into(frame, hasher),
+            Self::Env(node) => node.child.signature_into(frame, hasher),
+            Self::Wrapper(node) => node.child.signature_into(frame, hasher),
+            Self::Dynamic(node) => node.child.borrow().signature_into(frame, hasher),
+            Self::Filtered(node) => node.child.signature_into(frame, hasher),
+            Self::Fill(node) => node.child.signature_into(frame, hasher),
+            Self::Container(node) => {
+                node.placed.len().hash(hasher);
+                for (child, rect) in node.children.iter().zip(&node.placed) {
+                    child.signature_into(*rect, hasher);
+                }
+            }
+            Self::Collection(node) => {
+                node.placed.len().hash(hasher);
+                for (entry, rect) in node.entries.iter().zip(&node.placed) {
+                    entry.node.signature_into(*rect, hasher);
+                }
+            }
+            Self::Scroll(node) => {
+                hash_size(hasher, node.content_size);
+                hash_size(hasher, node.viewport);
+                node.child
+                    .signature_into(Rect::from_size(node.content_size), hasher);
+            }
+            Self::LazyStack(node) => node.item_cache.borrow().signature_into(hasher),
+        }
+    }
+}

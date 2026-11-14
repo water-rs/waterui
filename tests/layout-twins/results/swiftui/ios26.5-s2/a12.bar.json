@@ -1,0 +1,52 @@
+{
+  "frames" : {
+    "a12.bar" : [
+      0,
+      0,
+      834,
+      44
+    ],
+    "a12.content" : [
+      387,
+      32,
+      60,
+      300
+    ],
+    "a12.scroll" : [
+      387,
+      32,
+      60,
+      1153
+    ],
+    "root" : [
+      0,
+      0,
+      834,
+      1210
+    ],
+    "safeRegion" : [
+      0,
+      32,
+      834,
+      1153
+    ]
+  },
+  "meta" : {
+    "displayScale" : 2,
+    "safeInsets" : {
+      "bottom" : 25,
+      "leading" : 0,
+      "top" : 32,
+      "trailing" : 0
+    },
+    "window" : {
+      "h" : 1210,
+      "w" : 834
+    }
+  },
+  "osVersion" : "Version 26.5 (Build 23F77)",
+  "platform" : "ios",
+  "probes" : {
+
+  }
+}

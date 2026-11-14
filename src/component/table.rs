@@ -27,7 +27,10 @@ use waterui_core::{
 use waterui_locale::locale_binding;
 use waterui_text::{IntoText, Text};
 
-use crate::{AnyView, Environment, View, views::Views};
+use crate::{
+    AnyView, Environment, View,
+    views::{ViewSnapshot, Views},
+};
 
 /// Configuration for a table component.
 #[derive(Debug)]
@@ -146,6 +149,14 @@ impl Identifiable for TableColumn {
     }
 }
 
+/// A column never changes once built: clones share its identity and its
+/// content, so two columns are equal exactly when they are the same column.
+impl PartialEq for TableColumn {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.identity, &other.identity)
+    }
+}
+
 impl TableColumn {
     /// Creates a new table column with the given contents.
     ///
@@ -234,7 +245,7 @@ impl TableRowCountSignal {
     fn max_rows(columns: &[TableColumn]) -> usize {
         columns
             .iter()
-            .map(|column| column.rows().len().get())
+            .map(|column| column.rows().len().snapshot())
             .max()
             .unwrap_or(0)
     }
@@ -251,8 +262,8 @@ impl Signal for TableRowCountSignal {
     type Output = usize;
     type Guard = TableRowCountWatchGuard;
 
-    fn get(&self) -> Self::Output {
-        Self::max_rows(&self.columns.get())
+    fn snapshot(&self) -> Self::Output {
+        Self::max_rows(&self.columns.snapshot())
     }
 
     fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
@@ -278,7 +289,7 @@ impl Signal for TableRowCountSignal {
             }
         };
 
-        subscribe_rows(self.columns.get());
+        subscribe_rows(self.columns.snapshot());
         let columns_guard = self.columns.watch({
             let watcher = Rc::clone(&watcher);
             move |ctx| {
@@ -314,7 +325,7 @@ fn build_table_rows(columns: Computed<Vec<TableColumn>>) -> impl View {
             let cells = HStack::for_each(
                 SignalCollection::new(columns.clone()),
                 move |column: TableColumn| {
-                    column.rows().get_view(row).map_or_else(
+                    column.rows().snapshot().get_view(row).map_or_else(
                         || Text::new("").max_width(f32::INFINITY),
                         |text| text.max_width(f32::INFINITY),
                     )
@@ -377,7 +388,7 @@ mod tests {
 
     #[test]
     fn row_count_signal_tracks_max_rows_across_columns() {
-        let col1_rows = List::from(vec![SelfId::new(0usize)]);
+        let mut col1_rows = List::from(vec![SelfId::new(0usize)]);
         let col2_rows = List::from(vec![SelfId::new(0usize), SelfId::new(1usize)]);
 
         let signal = TableRowCountSignal::new(Computed::constant(vec![
@@ -385,20 +396,16 @@ mod tests {
             TableColumn::new("B", rows_from(col2_rows)),
         ]));
 
-        assert_eq!(signal.get(), 2);
+        assert_eq!(signal.snapshot(), 2);
 
         col1_rows.insert(1, SelfId::new(1usize));
         col1_rows.insert(2, SelfId::new(2usize));
-        assert_eq!(signal.get(), 3);
+        assert_eq!(signal.snapshot(), 3);
     }
 
     #[test]
-    #[allow(
-        clippy::manual_contains,
-        reason = "`.contains()` resolves to a different in-scope method for this element type; `.iter().any()` is the correct call"
-    )]
     fn row_count_signal_watches_column_len_updates() {
-        let col_rows = List::from(vec![SelfId::new(0usize)]);
+        let mut col_rows = List::from(vec![SelfId::new(0usize)]);
         let signal = TableRowCountSignal::new(Computed::constant(vec![TableColumn::new(
             "Only",
             rows_from(col_rows.clone()),
@@ -410,10 +417,10 @@ mod tests {
             seen_ref.borrow_mut().push(ctx.into_value());
         });
 
+        assert_eq!(signal.snapshot(), 1);
         col_rows.insert(1, SelfId::new(1usize));
 
-        let values = seen.borrow();
-        assert!(values.iter().any(|&value| value == 1));
-        assert!(values.iter().any(|&value| value == 2));
+        // Registering delivers nothing; the insertion delivers the new count.
+        assert_eq!(*seen.borrow(), [2]);
     }
 }

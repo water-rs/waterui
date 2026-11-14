@@ -97,7 +97,7 @@
 //!
 //! The theme system uses this pattern to inject platform-specific colors and fonts:
 //!
-//! 1. Native backend creates `Computed<ResolvedColor>` signals from system palette
+//! 1. Native backend creates `Computed<WorkingColor>` signals from system palette
 //! 2. `Theme::install()` stores these signals in the environment keyed by token type
 //! 3. Token types (e.g., `color::Foreground`) implement `Resolvable` to query these signals
 //! 4. When the native signal updates, all views using that token automatically update
@@ -163,7 +163,7 @@ pub trait Resolvable: Debug + Clone {
     /// Resolves this value in the given environment, returning a reactive signal.
     ///
     /// The returned signal will emit the current resolved value and any future updates.
-    /// Callers typically use `.get()` for one-shot reads or subscribe for continuous updates.
+    /// Callers typically use `.snapshot()` for one-shot reads or subscribe for continuous updates.
     fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved>;
 }
 

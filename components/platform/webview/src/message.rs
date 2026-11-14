@@ -63,16 +63,21 @@ impl<T: DeserializeOwned + 'static> Extractor for Json<T> {
                 core::any::type_name::<T>()
             ))
         };
+        // `waterui.invoke(name)` with no argument arrives as zero bytes; to a
+        // JSON extractor that is `null`, the value "no argument" has on the
+        // wire.
+        let payload: &[u8] = if request.payload.is_empty() {
+            b"null"
+        } else {
+            &request.payload
+        };
         // The tag is a fixed key, so a payload without it has nothing to undo
         // and is deserialized straight from its bytes.
-        if !crate::big_integers::contains_tag(&request.payload) {
-            return serde_json::from_slice(&request.payload)
-                .map(Self)
-                .map_err(describe);
+        if !crate::big_integers::contains_tag(payload) {
+            return serde_json::from_slice(payload).map(Self).map_err(describe);
         }
 
-        let mut value: serde_json::Value =
-            serde_json::from_slice(&request.payload).map_err(describe)?;
+        let mut value: serde_json::Value = serde_json::from_slice(payload).map_err(describe)?;
         crate::big_integers::untag(&mut value);
         serde_json::from_value(value).map(Self).map_err(describe)
     }
@@ -109,6 +114,7 @@ impl Extractor for HandlerName {
 /// so it sent both as base64 and `await waterui.invoke(...)` resolved to a
 /// base64 string instead of to the value the handler returned.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum JsReply {
     /// A serialized JSON value. The page receives the value itself.
     Json(Vec<u8>),
@@ -217,8 +223,18 @@ where
             name: name.clone(),
             payload: Rc::from(payload),
         });
-        let future = handler.borrow_mut().call(&scoped);
-        Box::pin(async move { future.await.into_js_reply() })
+        // The payload is untrusted page input, not a contract violation: a
+        // payload the handler cannot extract rejects the page's promise.
+        let future = handler.borrow_mut().call(&scoped).map_err(|error| {
+            tracing::debug!(%error, "rejecting a page call whose payload cannot be extracted");
+            error.to_string()
+        });
+        Box::pin(async move {
+            match future {
+                Ok(future) => future.await.into_js_reply(),
+                Err(message) => Err(message),
+            }
+        })
     })
 }
 
@@ -259,10 +275,37 @@ mod tests {
     }
 
     #[test]
+    fn a_call_without_an_argument_extracts_as_null() {
+        let env = env_with("hold", b"");
+        let Json(value): Json<serde_json::Value> = Extractor::extract(&env).expect("extracts");
+        assert_eq!(value, serde_json::Value::Null);
+        let Json(()): Json<()> = Extractor::extract(&env).expect("extracts");
+    }
+
+    #[test]
     fn a_payload_of_the_wrong_shape_names_the_handler_and_the_type() {
         let env = env_with("greet", b"[]");
         let error = Json::<Greet>::extract(&env).expect_err("rejects");
         let message = error.to_string();
+        assert!(message.contains("greet"), "{message}");
+    }
+
+    #[test]
+    fn a_page_payload_of_the_wrong_shape_rejects_instead_of_panicking() {
+        use futures::FutureExt as _;
+
+        let handler = super::boxed_handler(
+            Environment::new(),
+            Str::from("greet"),
+            |Json(greet): Json<Greet>| async move { greet.name },
+        );
+
+        // A page calls `waterui.invoke("greet", [])`.
+        let message = handler(b"[]")
+            .now_or_never()
+            .expect("a rejection is ready without polling the handler")
+            .expect_err("a payload that is not a `Greet` rejects the promise");
+        assert!(message.contains("failed to extract"), "{message}");
         assert!(message.contains("greet"), "{message}");
     }
 

@@ -1,10 +1,8 @@
 use proc_macro::TokenStream;
-use proc_macro2::{Span, TokenStream as TokenStream2};
+use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::parse::Nothing;
 use syn::{Data, DeriveInput, Item};
-
-use crate::view_builder::dependency_path;
 
 pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
     if let Err(error) = syn::parse::<Nothing>(args) {
@@ -75,16 +73,7 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
 }
 
 /// `#[state]` expands against `Extractor`/`State`/`Environment`, which the
-/// `waterui` facade and `waterui-core` both expose at the same paths. In-tree
-/// component crates do not depend on the facade, so it falls back to
-/// `waterui-core`.
+/// `waterui` facade and `waterui-core` both expose at the same paths.
 fn crate_path() -> Result<TokenStream2, syn::Error> {
-    dependency_path("waterui")
-        .or_else(|| dependency_path("waterui-core"))
-        .ok_or_else(|| {
-            syn::Error::new(
-                Span::call_site(),
-                "#[state] requires the `waterui` or `waterui-core` crate as a dependency",
-            )
-        })
+    crate::core_or_facade_path("#[state]")
 }

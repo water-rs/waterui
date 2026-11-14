@@ -4,11 +4,13 @@ extern crate self as waterui;
 #[macro_use]
 mod macros;
 mod appearance;
-pub use appearance::{background, border, filter, floating, gradient, shape, style};
+pub use appearance::{background, border, filter, floating, shape, style};
 pub mod component;
 mod interaction_support;
 pub use interaction_support::{cursor, drag_drop, gesture, interaction};
 mod runtime;
+#[cfg(feature = "dialog")]
+pub use runtime::dialog;
 #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
 pub use runtime::inspector;
 #[cfg(feature = "snackbar")]
@@ -21,6 +23,15 @@ pub mod widget;
 #[doc(inline)]
 pub use view::View;
 pub use waterui_core::accessibility;
+
+/// The shared `waterui_meta_*` record emitters — `dir_static!` lands its
+/// section and retention cfg at the invoking crate's profile — re-exported
+/// for the asset macros that emit into user code. Gated on `assets`:
+/// generated expansions only reference `__meta` when that feature's code
+/// exists.
+#[cfg(feature = "assets")]
+#[doc(hidden)]
+pub use waterui_meta as __meta;
 
 pub mod theme;
 pub mod prelude {
@@ -40,7 +51,7 @@ pub mod prelude {
     //! }
     //! ```
     // Re-export core modules from super, excluding `background` to avoid conflict with layout::background
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "effects")]
     pub use super::FilterViewExt;
     pub use super::env::Environment;
     #[cfg(feature = "media")]
@@ -50,7 +61,7 @@ pub mod prelude {
     #[cfg(feature = "webview")]
     pub use super::webview;
     pub use super::{
-        AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, State, Str, View,
+        AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, State, Str, Use, View,
         ViewExt, accessibility, animation, app, binding, color, component, cursor, drag_drop,
         entry, env, error, filter, form, fullscreen, gesture, gradient, id, layout, locale,
         metadata, navigation, reactive, regional, shape, signal, style, task, text, widget, window,
@@ -60,9 +71,13 @@ pub mod prelude {
     pub use crate::include_markdown;
 
     pub use super::color::*;
+    #[cfg(feature = "dialog")]
+    pub use super::dialog::{Dialog, DialogAction, DialogRole};
     pub use super::fullscreen::*;
     #[cfg(feature = "snackbar")]
-    pub use super::snackbar::{Snackbar, SnackbarManager, SnackbarPosition, SnackbarTheme};
+    pub use super::snackbar::{
+        Snackbar, SnackbarDismissReason, SnackbarManager, SnackbarPosition, SnackbarTheme,
+    };
 
     pub use super::gesture::GestureObserver;
 
@@ -76,18 +91,20 @@ pub mod prelude {
     pub use waterui_core::dynamic::{DynamicHandler, watch};
 
     pub use super::theme::{
-        self, ColorScheme, ColorSettings, FontSettings, Theme, color as theme_color,
+        self, ColorScheme, ColorSettings, FontSettings, Theme, Tint, color as theme_color,
     };
 
     pub use super::text::{TextConfig, font, highlight, styled};
 
     pub use super::component::link::{Link, LinkTarget, link};
     pub use super::component::list::{
-        List, ListContent, ListItem, ListSection, Row, Section, detail_row, row,
+        List, ListContent, ListItem, ListMinRowHeight, ListSection, Row, Section, detail_row, row,
     };
     pub use super::component::menu::{
-        Command, CommandExt, Menu, MenuItem, Shortcut, ShortcutModifiers,
+        Command, CommandExt, CommandRole, Menu, MenuItem, NamedKey, Shortcut, ShortcutKey,
+        ShortcutModifiers,
     };
+    pub use super::metadata::context_menu::{ContextMenu, DismissContextMenu};
 
     // Drag and drop extension traits
     pub use super::drag_drop::DropDestinationExt;
@@ -101,21 +118,25 @@ pub mod prelude {
         FlowTablePolicy, flow_markdown,
     };
 
-    // Gradient types
-    pub use super::gradient::{
-        AngularGradient, ColorStop, Gradient, LinearGradient, MeshGradient, MeshVertex,
-        RadialGradient, UnitPoint,
-    };
+    // Gradient views
+    #[cfg(feature = "gpu")]
+    pub use super::gradient::FlowingGradient;
+    pub use super::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig};
+    pub use super::gradient::{Gradient, MeshGradient};
 
     // Background types (explicit to avoid module name conflict with layout::background)
     pub use super::background::{Background, Glass, GlassStyle, Material};
 
     // Asset types
+    #[cfg(all(feature = "assets", feature = "media", not(target_arch = "wasm32")))]
+    pub use super::ImageAsset;
+    #[cfg(all(feature = "assets", feature = "video", not(target_arch = "wasm32")))]
+    pub use super::VideoAsset;
     #[cfg(feature = "assets")]
     pub use super::{AssetError, AssetKind, Data, asset, assets, include_bundle};
     #[cfg(all(feature = "assets", not(target_arch = "wasm32")))]
     pub use super::{
-        AudioAsset, Bundle, DataAsset, FontAsset, ImageAsset, LargeFile, LargeFileAsset, VideoAsset,
+        AudioAsset, Bundle, DataAsset, FontAsset, LargeFile, LargeFileAsset, ResourceContext,
     };
 
     // Re-export macros. The UI-test attribute is `ui_test` here rather than
@@ -126,28 +147,23 @@ pub mod prelude {
 }
 pub use color::Color;
 pub use form::FormBuilder;
-#[cfg(feature = "gpu")]
+#[cfg(feature = "effects")]
 #[doc(inline)]
 pub use view::FilterViewExt;
 #[doc(inline)]
 pub use view::ViewExt;
 #[cfg(feature = "barcode")]
 pub use waterui_barcode as barcode;
-#[cfg(feature = "canvas")]
-pub use waterui_canvas as canvas;
 #[cfg(feature = "chart")]
 pub use waterui_chart as chart;
 pub use waterui_form as form;
+#[cfg(feature = "canvas")]
+pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
-#[cfg(feature = "gpu")]
-pub use waterui_graphics::image_analysis;
-#[cfg(feature = "gpu")]
-pub use waterui_graphics::image_generator;
+pub use waterui_graphics::gradient;
 #[cfg(feature = "gpu")]
 pub use waterui_graphics::{
-    CheckerboardGenerator, DominantColor, DotGridGenerator, GeneratedImage, Histogram,
-    ImageAnalysis, ImageGenerator, LinearGradientGenerator, MinMaxLuma, NoiseGenerator,
-    RadialGradientGenerator, StripeGenerator,
+    GpuContent, GpuContentView, RedrawHandle, ShaderPaintView, image_decode,
 };
 pub use waterui_icon as icon;
 #[cfg(feature = "particle")]
@@ -172,21 +188,32 @@ pub use waterui_navigation as navigation;
 #[cfg(feature = "gpu")]
 pub use waterui_svg as svg;
 pub use waterui_text as text;
+#[cfg(feature = "ts")]
+pub mod ts;
 #[cfg(feature = "video")]
 pub use waterui_video as video;
 #[cfg(feature = "webview")]
 pub use waterui_webview as webview;
+/// The `WidgetKit` widget authoring surface: the closed snapshot schema a
+/// `#[waterui::widget]` function produces, dated per timeline entry, and the
+/// restricted constructors that build it.
+#[cfg(feature = "widgets")]
+pub use waterui_widgets as widgets;
 
 // Asset types re-exported for convenience
+#[cfg(all(feature = "assets", feature = "media", not(target_arch = "wasm32")))]
+pub use waterui_assets::ImageAsset;
+#[cfg(all(feature = "assets", feature = "video", not(target_arch = "wasm32")))]
+pub use waterui_assets::VideoAsset;
 #[doc(inline)]
 #[cfg(all(feature = "assets", not(target_arch = "wasm32")))]
 pub use waterui_assets::{
-    AssetError, AssetKind, AudioAsset, Bundle, Data, DataAsset, FontAsset, ImageAsset, LargeFile,
-    LargeFileAsset, VideoAsset,
+    AssetError, AssetKind, AudioAsset, Bundle, Data, DataAsset, FontAsset, LargeFile,
+    LargeFileAsset, ResourceContext,
 };
 #[cfg(all(feature = "assets", target_arch = "wasm32"))]
 pub use waterui_assets::{AssetError, AssetKind, Data};
-/// `include_web!("web")` — the one-macro web frontend. Its expansion speaks
+/// `include_web!(resources, "web")` — the one-macro web frontend. Its expansion speaks
 /// [`webview`](crate::webview)'s asset-origin API and serves a staged
 /// [`Bundle`], so it is exported only when both features are on.
 #[doc(inline)]
@@ -199,16 +226,23 @@ pub use waterui_url::Url;
 
 #[doc(inline)]
 pub use waterui_core::{
-    AnyView, Error, Str, animation,
+    AnyView, ContentLedger, Error, Str, animation, contract_violation,
     easing::{self, EasingCurve, Interpolatable},
     env::{self, Environment},
     event,
     extract::{self, Extractor, State, Use},
     handler::{self, Handler, HandlerOnce},
     id::{self, Identifiable},
-    impl_extractor, raw_view,
+    impl_extractor, key, raw_view,
     resolve::{self, AnyResolvable, Resolvable},
     views,
+};
+
+// Selective re-exports only: `waterui::transition` stays free for the
+// `waterui-transition` pixel-effects crate re-export (#1389).
+pub use waterui_core::transition::{
+    AnyTransition, Edge, PropertyTransition, ReduceMotion, Transition, TransitionContext,
+    TransitionFrame, TransitionGeometry, TransitionPhase, TransitionProperties,
 };
 
 /// Haptic feedback intensity for the `on_*_haptic` modifiers.
@@ -216,7 +250,6 @@ pub use waterui_core::{
 #[doc(inline)]
 pub use waterkit_haptic::Intensity;
 
-pub(crate) mod view_ext;
 pub use nami as reactive;
 pub use nami::SignalExt;
 #[doc(inline)]
@@ -233,6 +266,12 @@ pub use tracing as log;
 /// Internal helper macro for generating preview export symbols.
 ///
 /// Symbol format: `waterui_preview_{crate_name}_{fn_name}`
+///
+/// The export exists in debug builds of the emitting crate — the same gate
+/// the compiler-emitted `waterui_meta_*` records use — so a release build
+/// never carries the entry point or the view it forces into the artifact.
+/// The preview host loads it from the debug artifact, whether that is the
+/// dynamic-linking desktop dylib or the static Android cdylib.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __export_preview {
@@ -252,6 +291,5 @@ macro_rules! __export_preview {
 pub use pastey;
 
 // `configure_environment!` lives in `waterui-core` so generated backend crates
-// that do not depend on the facade (the ESP32 harness names `waterui-core`,
-// `waterui-dew` and `waterui-locale` only) can still install the app catalog.
+// that do not depend on the facade can still install the app catalog.
 pub use waterui_core::configure_environment;

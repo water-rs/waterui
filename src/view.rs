@@ -10,12 +10,14 @@
 //! These extensions help create a fluent API for constructing user interfaces.
 
 use executor_core::spawn_local;
-use nami::{Binding, Signal, SignalExt as _, signal::IntoComputed};
+use nami::{Binding, Computed, Signal, SignalExt as _, signal::IntoComputed};
 use waterui_core::IntoSignalF32;
+#[cfg(feature = "std")]
+use waterui_core::handler::ReportExtraction;
 pub use waterui_core::view::*;
 use waterui_core::{
     AnyView, Environment, IgnorableMetadata, Retain,
-    env::{With, use_env},
+    env::{Installed, With},
     extract::State,
     handler::{EventHandler, Handler, HandlerOnce},
     layout::{HorizontalAlignment, VerticalAlignment, ViewDimensions},
@@ -24,17 +26,17 @@ use waterui_core::{
 };
 use waterui_graphics::color::Color;
 
-/// All view-level GPU filter modifiers (`.blur()`, `.brightness()`, ...) come
+/// All view-level filter modifiers (`.blur()`, `.brightness()`, ...) come
 /// from [`waterui_graphics::filter_view::FilterViewExt`]. This re-export
 /// makes them part of the `WaterUI` prelude alongside [`ViewExt`], so a single
 /// `use waterui::prelude::*;` is enough.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "effects")]
 pub use waterui_graphics::filter_view::FilterViewExt;
 
 use suiteki::Str;
 use waterui_layout::{
-    AspectRatio, ContentMode, EdgeSet, HorizontalAlignmentGuide, IgnoreSafeArea, LayoutPriority,
-    Overlay, VerticalAlignmentGuide,
+    AspectRatio, ContentMode, HorizontalAlignmentGuide, IgnoreSafeArea, LayoutPriority, Overlay,
+    VerticalAlignmentGuide,
     frame::Frame,
     padding::{EdgeInsets, Padding},
     stack::Alignment,
@@ -43,18 +45,18 @@ use waterui_navigation::NavigationView;
 
 use crate::{
     accessibility::{
-        self, AccessibilityChildren, AccessibilityHidden, AccessibilityIdentifier,
-        AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityValue,
+        self, AccessibilityChildren, AccessibilityGeometry, AccessibilityHidden,
+        AccessibilityIdentifier, AccessibilityLabel, AccessibilityRole, AccessibilityState,
+        AccessibilityValue,
     },
     background::IntoBackground,
     border::Border,
-    drag_drop::{DragData, Draggable, DropDestination},
+    drag_drop::{Draggable, DropDestination, Transferable},
     filter::Opacity,
     gesture::{Gesture, GestureObserver, LongPressGesture, TapGesture},
     interaction::Hittable,
     metadata::secure::Secure,
     theme,
-    view_ext::OnChange,
 };
 use crate::{
     component::{badge::Badge, focus::Focused},
@@ -66,15 +68,29 @@ use crate::{
 #[cfg(feature = "std")]
 use waterkit_haptic::{Haptic, Intensity};
 use waterui_core::Metadata;
-use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
+use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent};
 use waterui_core::id::TaggedView;
+use waterui_core::interaction::{Disabled, InteractionReport, InteractionState, Selected};
+use waterui_core::key::{KeyHandling, OnKeyPress};
 
+/// Plays an impact haptic. `Haptic::impact` is async; the event that
+/// triggers it does not wait for it.
 #[cfg(feature = "std")]
 fn trigger_impact_haptic(intensity: Intensity) {
-    if let Err(error) = Haptic::impact(intensity) {
-        tracing::debug!(%error, "failed to trigger impact haptic");
-    }
+    spawn_local(async move {
+        if let Err(error) = Haptic::impact(intensity).await {
+            tracing::debug!(%error, "failed to trigger impact haptic");
+        }
+    })
+    .detach();
 }
+
+/// The inset a bare [`ViewExt::padding`] applies.
+///
+/// It is named because two places need the same number: the modifier, and the
+/// TypeScript catalog's `padding={true}`, which is the same spelling from the
+/// other side of the seam. A second literal would let the two drift.
+pub const DEFAULT_PADDING: f32 = 14.0;
 
 /// Extension trait for views, adding common styling and configuration methods.
 pub trait ViewExt: View + Sized {
@@ -152,7 +168,16 @@ pub trait ViewExt: View + Sized {
     /// * `visible` - A reactive boolean indicating whether the view should be visible
     fn visible(self, visible: impl IntoComputed<bool>) -> impl View {
         let visible = visible.into_computed();
-        let accessibility_state = visible.map(|visible| AccessibilityState::new().hidden(!visible));
+        // A visible scope says nothing about hiding: like the opacity it
+        // multiplies, `.visible(true)` never reveals what an enclosing
+        // `.visible(false)` hid, so it leaves the flag to the enclosing scope.
+        let accessibility_state = visible.map(|visible| {
+            if visible {
+                AccessibilityState::new()
+            } else {
+                AccessibilityState::new().hidden(true)
+            }
+        });
         let opacity_value = visible.map(|visible| if visible { 1.0 } else { 0.0 });
         let hittable_value = visible;
 
@@ -192,8 +217,9 @@ pub trait ViewExt: View + Sized {
     ///
     /// The handler is an [`EventHandler`]: the new value comes first, then any
     /// extractor arguments — `State<T>`, `Environment`, … — resolved from the
-    /// environment this view is rendered in. A `Binding` the handler writes
-    /// is injected with [`ViewExt::state`] and read back as a
+    /// environment this view resolves in, so a [`ViewExt::state`] install
+    /// reaches it on either side of `.on_change(..)`. A `Binding` the handler
+    /// writes is injected with [`ViewExt::state`] and read back as a
     /// `State<Binding<T>>` parameter rather than captured, so the handler can
     /// be a named function and the data flow stays visible at the call site.
     ///
@@ -212,13 +238,13 @@ pub trait ViewExt: View + Sized {
     ///     })
     ///     .state(&last_seen);
     /// ```
-    fn on_change<C, H, A>(self, source: &C, handler: H) -> OnChange<Self, C>
+    fn on_change<C, H, A>(self, source: &C, handler: H) -> Metadata<OnChange>
     where
         C: Signal,
         C::Output: PartialEq + Clone,
         H: EventHandler<C::Output, A>,
     {
-        OnChange::new(self, source, handler)
+        Metadata::new(self, OnChange::new(source, handler))
     }
 
     /// Spawns an asynchronous task tied to the lifecycle of this view.
@@ -257,7 +283,7 @@ pub trait ViewExt: View + Sized {
     /// // Color background
     /// text!("Hello").background(Color::red());
     ///
-    /// // Material background (platform backend best-effort)
+    /// // Material background: a frosted treatment of the content behind the view
     /// text!("Hello").background(Material::Regular);
     ///
     /// // Any view as background
@@ -266,6 +292,29 @@ pub trait ViewExt: View + Sized {
     /// ```
     fn background<B: IntoBackground>(self, background: B) -> B::Output<Self> {
         background.apply_background(self)
+    }
+
+    /// Groups the backdrop materials in this view's subtree.
+    ///
+    /// The materials inside share one capture of what lies behind the
+    /// group, and the style may merge them into one shape where they come
+    /// close, as a toolbar's glass controls do. The style decides whether
+    /// and how they merge; the nearest enclosing group wins. See
+    /// [`MaterialGroup`](crate::background::MaterialGroup) for the contract.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// hstack((
+    ///     text!("Back").padding().background(Glass::regular()),
+    ///     text!("Share").padding().background(Glass::regular()),
+    /// ))
+    /// .material_group();
+    /// ```
+    fn material_group(self) -> IgnorableMetadata<crate::background::MaterialGroup> {
+        IgnorableMetadata::new(AnyView::new(self), crate::background::MaterialGroup)
     }
 
     /// Sets the foreground color for this view and all its descendants.
@@ -310,6 +359,27 @@ pub trait ViewExt: View + Sized {
     /// ```
     fn muted(self) -> impl View {
         self.foreground(theme::color::MutedForeground)
+    }
+
+    /// Sets the tint the controls in this view's subtree draw with.
+    ///
+    /// A control's tint is the nearest enclosing `tint`, and the theme's
+    /// `Accent` token when none is set. Buttons, switches, sliders and other
+    /// controls draw their emphasis with it. The colour may be a signal; a
+    /// change updates the controls in place.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// vstack((
+    ///     button("Delete").action(|| {}).tint(Color::red()),
+    ///     button("Save").action(|| {}),
+    /// ));
+    /// ```
+    fn tint(self, color: impl Into<Color>) -> impl View {
+        self.with(theme::Tint::new(color))
     }
 
     /// Adds an overlay to this view.
@@ -431,6 +501,39 @@ pub trait ViewExt: View + Sized {
         self.event(Event::HoverExit, handler)
     }
 
+    /// Handles key presses that the focused view inside this one leaves
+    /// unconsumed.
+    ///
+    /// The keyboard goes to the focused view first. A key it does not use —
+    /// Escape, or an arrow in a single-line text field — bubbles to its
+    /// ancestors, nearest first, until a handler returns
+    /// [`KeyHandling::Handled`]. The handler
+    /// reads the key with `Use<KeyPress>`.
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    /// use waterui::key::{KeyHandling, KeyPress, NamedKey, Key};
+    ///
+    /// let open = binding::<bool>(true);
+    /// let query = binding::<Str>(Str::default());
+    /// field("Search", &query).on_key_press(
+    ///     |Use(press): Use<KeyPress>, State(open): State<Binding<bool>>| {
+    ///         if press.key() == &Key::Named(NamedKey::Escape) {
+    ///             open.set(false);
+    ///             KeyHandling::Handled
+    ///         } else {
+    ///             KeyHandling::Ignored
+    ///         }
+    ///     },
+    /// ).state(&open);
+    /// ```
+    fn on_key_press<H, Args>(self, handler: H) -> Metadata<OnKeyPress>
+    where
+        H: Handler<Args, KeyHandling>,
+    {
+        Metadata::new(self, OnKeyPress::new(handler))
+    }
+
     /// Sets the cursor style when hovering over this view.
     ///
     /// The cursor style is scoped to the view's bounds - when the cursor exits
@@ -545,7 +648,7 @@ pub trait ViewExt: View + Sized {
     /// Adds padding to this view with custom edge insets.
     ///
     /// `EdgeInsets` converts from a single `f32` (every edge), a
-    /// `(vertical, horizontal)` pair and a `[top, bottom, leading, trailing]`
+    /// `(vertical, horizontal)` pair and a `[top, leading, bottom, trailing]`
     /// array, so the common shapes need no constructor:
     ///
     /// ```rust
@@ -553,7 +656,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// text!("a").padding_with(16.0);
     /// text!("b").padding_with((8.0, 16.0));
-    /// text!("c").padding_with([4.0, 12.0, 16.0, 16.0]);
+    /// text!("c").padding_with([4.0, 16.0, 12.0, 16.0]);
     /// ```
     ///
     /// # Arguments
@@ -594,7 +697,7 @@ pub trait ViewExt: View + Sized {
     /// text!("Hello").padding();
     /// ```
     fn padding(self) -> Padding {
-        Padding::new(EdgeInsets::all(14.0), self)
+        Padding::new(EdgeInsets::all(DEFAULT_PADDING), self)
     }
 
     /// Marks this view as secure.
@@ -671,6 +774,21 @@ pub trait ViewExt: View + Sized {
         IgnorableMetadata::new(self, accessibility::AccessibilityHidden::new(hidden))
     }
 
+    /// Chooses which rectangle this view's accessibility element reports.
+    ///
+    /// An element reports the view's own answer, positioned in its assigned
+    /// frame, by default. `AccessibilityGeometry::Allocation` reports the
+    /// whole assigned frame — a canvas whose drawing fills it, or a gap a
+    /// stack allocated to a spacer — and `AccessibilityGeometry::Region`
+    /// an explicit rectangle in the view's own coordinates. Hit testing,
+    /// focus and drawing are unaffected.
+    fn a11y_geometry(
+        self,
+        geometry: AccessibilityGeometry,
+    ) -> IgnorableMetadata<AccessibilityGeometry> {
+        IgnorableMetadata::new(self, geometry)
+    }
+
     /// Controls how descendants contribute semantics for this view.
     fn a11y_children(
         self,
@@ -696,6 +814,11 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Observes a gesture and executes an action when the gesture is recognized.
+    ///
+    /// The action resolves its extractors from the environment of the view it
+    /// is attached to, so a value it extracts with `State<T>` must be installed
+    /// with [`ViewExt::state`] on an ancestor: `view.gesture(..).state(&value)`,
+    /// not `view.state(&value).gesture(..)`.
     ///
     /// # Arguments
     /// * `gesture` - The gesture to observe
@@ -788,7 +911,7 @@ pub trait ViewExt: View + Sized {
         let mut action = action;
         self.gesture(TapGesture::new(), move |env: Environment| {
             trigger_impact_haptic(intensity);
-            action.call(&env);
+            action.call(&env).report_extraction();
         })
     }
 
@@ -817,7 +940,7 @@ pub trait ViewExt: View + Sized {
             LongPressGesture::new(minimum_duration_ms),
             move |env: Environment| {
                 trigger_impact_haptic(intensity);
-                action.call(&env);
+                action.call(&env).report_extraction();
             },
         )
     }
@@ -1055,11 +1178,12 @@ pub trait ViewExt: View + Sized {
     /// Attaches a context menu to this view.
     ///
     /// The context menu appears when the user:
-    /// - Long-presses on iOS/Android
-    /// - Right-clicks on macOS
+    /// - Long-presses on iOS/Android, or holds a touch or pen press elsewhere
+    /// - Secondary-clicks with a pointer
     ///
-    /// # Arguments
-    /// * `items` - The menu items to display
+    /// Pass the menu items directly, or a
+    /// [`ContextMenu`](crate::metadata::context_menu::ContextMenu) to also
+    /// choose the lifted preview and anchor an interactive accessory to it.
     ///
     /// # Example
     ///
@@ -1074,22 +1198,113 @@ pub trait ViewExt: View + Sized {
     /// ```
     fn context_menu(
         self,
-        items: impl crate::component::menu::MenuView,
+        menu: impl crate::metadata::context_menu::IntoContextMenu,
     ) -> crate::metadata::context_menu::ContextMenuView<Self> {
-        crate::metadata::context_menu::ContextMenuView {
-            content: self,
-            items: items.into_menu_items(),
-        }
+        crate::metadata::context_menu::ContextMenuView::new(self, menu.into_context_menu())
     }
 
-    /// Extends this view's bounds to ignore safe area insets on the specified edges.
+    /// Presents `overlay` next to this view, above all other content in the
+    /// window, while its binding is `true`.
     ///
-    /// This allows backgrounds, images, and other visual elements to extend edge-to-edge
-    /// while content remains in the safe area. The native renderer will expand the
-    /// view's frame to include the unsafe regions on the specified edges.
+    /// The backend places it against the preferred edge of this view, flips
+    /// it to the opposite edge when there is no room, and keeps it inside the
+    /// window, as the overlay's
+    /// [`AnchorPlacement`](crate::metadata::anchored_overlay::AnchorPlacement)
+    /// declares.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::metadata::anchored_overlay::{AnchorEdge, AnchoredOverlay};
+    /// use waterui::prelude::*;
+    ///
+    /// let open = binding(false);
+    /// let trigger = button("Options")
+    ///     .action({
+    ///         let open = open.clone();
+    ///         move || open.set(true)
+    ///     })
+    ///     .anchored_overlay(AnchoredOverlay::new(&open, move || text!("Popover")).edge(AnchorEdge::Bottom));
+    /// ```
+    fn anchored_overlay(
+        self,
+        overlay: crate::metadata::anchored_overlay::AnchoredOverlay,
+    ) -> Metadata<crate::metadata::anchored_overlay::AnchoredOverlay> {
+        Metadata::new(self, overlay)
+    }
+
+    /// Presents `dialog` window-modal while its `is_presented` binding is
+    /// `true`.
+    ///
+    /// The dialog renders full-window wherever it is attached — the content
+    /// beneath is inert to pointer, keyboard and accessibility while it is up.
+    /// Choosing an action runs that action's handler and writes
+    /// `is_presented = false`; Escape, the Android back gesture and the scrim
+    /// tap run the `Cancel` action's handler the same way, and do nothing when
+    /// no `Cancel` action was declared. One dialog presents per window at a
+    /// time; a second one waits in presentation order.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::dialog::{Dialog, DialogAction};
+    /// use waterui::prelude::*;
+    ///
+    /// let confirm = binding(false);
+    /// button("Discard")
+    ///     .action({
+    ///         let confirm = confirm.clone();
+    ///         move || confirm.set(true)
+    ///     })
+    ///     .dialog(
+    ///         Dialog::new(&confirm, "Discard changes?")
+    ///             .action(DialogAction::destructive("Discard", || {}))
+    ///             .action(DialogAction::cancel("Keep", || {})),
+    ///     );
+    /// ```
+    #[cfg(feature = "dialog")]
+    fn dialog(self, dialog: crate::dialog::Dialog) -> Metadata<crate::dialog::Dialog> {
+        Metadata::new(self, dialog)
+    }
+
+    /// Sets the minimum row height of every list inside this view, in points.
+    ///
+    /// Replaces the theme's one-line row height as the floor rows are measured
+    /// against; `0.0` sizes each row to its content plus its insets. Combine
+    /// with [`ListItem::insets`](crate::component::list::ListItem::insets) to
+    /// make individual rows compact.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::layout::padding::EdgeInsets;
+    /// use waterui::prelude::*;
+    ///
+    /// let log = List::content((
+    ///     || ListItem::new(text!("Alice joined the group")).insets(EdgeInsets::all(4.0)),
+    ///     || ListItem::new(text!("Hello")),
+    /// ))
+    /// .list_min_row_height(0.0);
+    /// ```
+    fn list_min_row_height(
+        self,
+        height: f32,
+    ) -> waterui_core::env::With<Self, crate::component::list::ListMinRowHeight> {
+        waterui_core::env::with(self, crate::component::list::ListMinRowHeight(height))
+    }
+
+    /// Extends this view's bounds to ignore safe area insets on the specified
+    /// regions and edges.
+    ///
+    /// This allows backgrounds, images, and other visual elements to extend
+    /// edge-to-edge while content remains in the safe area. The native renderer
+    /// lays the view out clear of every region it does not ignore.
     ///
     /// # Arguments
-    /// * `edges` - The edges on which to ignore safe area insets
+    /// * `ignore` - The regions and edges to ignore: an
+    ///   [`EdgeSet`](waterui_layout::EdgeSet) ignores every region on its
+    ///   edges, and [`SafeAreaRegions::on`](waterui_layout::SafeAreaRegions::on)
+    ///   names one region.
     ///
     /// # Example
     ///
@@ -1103,17 +1318,18 @@ pub trait ViewExt: View + Sized {
     /// // Only extend to top (under status bar)
     /// let header = text!("Title")
     ///     .ignore_safe_area(EdgeSet::TOP);
+    ///
+    /// // Lay an editor under the keyboard but still above the container inset
+    /// let editor = text!("editor")
+    ///     .ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM));
     /// ```
-    fn ignore_safe_area(self, edges: EdgeSet) -> Metadata<IgnoreSafeArea> {
-        Metadata::new(self, IgnoreSafeArea::new(edges))
+    fn ignore_safe_area(self, ignore: impl Into<IgnoreSafeArea>) -> Metadata<IgnoreSafeArea> {
+        Metadata::new(self, ignore.into())
     }
 
     /// Installs a plugin into the environment.
     fn install(self, plugin: impl Plugin) -> impl View {
-        use_env(move |mut env: Environment| {
-            plugin.install(&mut env);
-            Metadata::new(self, env)
-        })
+        Installed::new(self, plugin)
     }
 
     /// Retains a value for the lifetime of this view.
@@ -1143,42 +1359,51 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, Retain::new(value))
     }
 
-    /// Makes this view draggable with the specified data.
+    /// Makes this view draggable, carrying `payload`.
     ///
     /// When the user drags this view (click-drag on macOS, long-press-drag on iOS/Android),
-    /// the data will be transferred to any compatible drop destination.
+    /// the payload travels to drop destinations that accept its type. [`Str`],
+    /// [`Url`](crate::Url) and [`Files`](crate::drag_drop::Files) also reach other
+    /// applications; an application's own [`Transferable`] types stay in the process.
     ///
     /// # Arguments
-    /// * `data` - The data to transfer when dragging (can be reactive)
+    /// * `payload` - The value to transfer: a plain [`Transferable`] value, or a `Binding` /
+    ///   `Computed` of one, read when the drag begins
     ///
     /// # Example
     ///
     /// ```rust
     /// use waterui::prelude::*;
-    /// use waterui::drag_drop::DragData;
+    /// use waterui::Str;
     ///
     /// text!("Drag me")
-    ///     .draggable(DragData::text("Hello!"));
+    ///     .draggable(Str::from("Hello!"));
     /// ```
-    fn draggable(self, data: impl IntoComputed<DragData>) -> Metadata<Draggable> {
-        Metadata::new(self, Draggable::new(data))
+    fn draggable<S>(self, payload: S) -> Metadata<Draggable>
+    where
+        S: waterui_core::Signal + Clone + 'static,
+        S::Output: Transferable,
+    {
+        Metadata::new(self, Draggable::new(payload))
     }
 
-    /// Makes this view a drop destination for dragged content.
+    /// Makes this view a drop destination for dragged values.
     ///
-    /// For simple cases without state, pass a handler directly. To inject
-    /// local state, use [`ViewExt::state`] and extract it in the handler.
+    /// The handler's first argument is the dropped value, and its type is the type this
+    /// destination accepts: a drag carrying any other type is neither highlighted nor
+    /// delivered. The remaining arguments are extractors, so local state injected with
+    /// [`ViewExt::state`] composes.
     ///
     /// # Example
     ///
     /// ```rust
     /// use waterui::prelude::*;
-    /// use waterui::drag_drop::DragData;
+    /// use waterui::Str;
     ///
-    /// // Simple usage without state
+    /// // Accepts plain text only.
     /// text!("Drop here")
-    ///     .drop_destination(|data: DragData| {
-    ///         let _ = data;
+    ///     .drop_destination(|text: Str| {
+    ///         let _ = text;
     ///     });
     ///
     /// // With injected state
@@ -1188,17 +1413,18 @@ pub trait ViewExt: View + Sized {
     ///     .state(&items)
     ///     .state(&count)
     ///     .drop_destination(
-    ///         |State(items): State<Binding<Vec<String>>>,
-    ///          State(count): State<Binding<i32>>,
-    ///          data: DragData| {
-    ///             items.get_mut().push(data.as_str().to_string());
+    ///         |text: Str,
+    ///          State(items): State<Binding<Vec<String>>>,
+    ///          State(count): State<Binding<i32>>| {
+    ///             items.get_mut().push(text.to_string());
     ///             *count.get_mut() += 1;
     ///         },
     ///     );
     /// ```
-    fn drop_destination<H, Args>(self, on_drop: H) -> Metadata<DropDestination>
+    fn drop_destination<T, H, Args>(self, on_drop: H) -> Metadata<DropDestination>
     where
-        H: Handler<Args, ()>,
+        T: Transferable,
+        H: EventHandler<T, Args>,
     {
         Metadata::new(self, DropDestination::new(on_drop))
     }
@@ -1262,19 +1488,50 @@ pub trait ViewExt: View + Sized {
     fn disabled(self, is_disabled: impl IntoComputed<bool>) -> impl View {
         let is_disabled = is_disabled.into_computed();
 
-        let accessibility_state =
-            is_disabled.map(|disabled| AccessibilityState::new().disabled(disabled));
+        // Disabled scopes OR-combine (`Disabled::install`), so an enabled
+        // scope leaves the flag to the enclosing scope rather than claim it.
+        let accessibility_state = is_disabled.map(|disabled| {
+            if disabled {
+                AccessibilityState::new().disabled(true)
+            } else {
+                AccessibilityState::new()
+            }
+        });
         let hittable_value = is_disabled.map(|d| !d);
-        let scope = is_disabled;
 
-        use_env(move |mut env: Environment| {
-            waterui_core::interaction::Disabled::install(&mut env, scope);
-            Metadata::new(
-                self.a11y_state_signal(accessibility_state)
-                    .hittable(hittable_value),
-                env,
-            )
-        })
+        self.a11y_state_signal(accessibility_state)
+            .hittable(hittable_value)
+            .install(DisabledScope(is_disabled))
+    }
+
+    /// Reports the state of the interactive control this modifies — or the
+    /// outermost one inside it — into `state`, whenever it changes.
+    ///
+    /// Use it to style chrome the control does not draw itself:
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    /// use waterui::interaction::InteractionState;
+    ///
+    /// let state = binding(InteractionState::empty());
+    /// let outline = state.map(|s: InteractionState| if s.contains(InteractionState::FOCUSED) { 3.0 } else { 1.0 });
+    /// let chip = button("Filter").action(|| {}).interaction_state(&state);
+    /// ```
+    fn interaction_state(self, state: &Binding<InteractionState>) -> impl View + use<Self> {
+        self.install(InteractionReport(state.clone()))
+    }
+
+    /// Marks the interactive control this modifies as selected.
+    ///
+    /// A selected control is in [`InteractionState::SELECTED`], so its
+    /// style's selected values apply — a selected list item's container, a
+    /// selected navigation destination's indicator — and assistive technology
+    /// announces it as selected. It applies to the control it modifies, not to
+    /// controls nested inside that control.
+    ///
+    /// [`InteractionState::SELECTED`]: waterui_core::interaction::InteractionState::SELECTED
+    fn selected(self, is_selected: impl IntoComputed<bool>) -> Metadata<Selected> {
+        Metadata::new(self, Selected(is_selected.into_computed()))
     }
 
     /// Injects cloneable state into this view subtree's environment.
@@ -1283,6 +1540,13 @@ pub trait ViewExt: View + Sized {
     /// [`waterui_core::extract::State`] in their handler parameters — or bare,
     /// as `value: T`, when `T` is an owned type marked `#[state]`.
     ///
+    /// A handler sees the environment its modified view resolves in, so a
+    /// `.state` install reaches the handler wherever it sits in the same
+    /// modifier chain — `.state(&v).on_hover_exit(h)` and
+    /// `.on_hover_exit(h).state(&v)` deliver the same value. State injected
+    /// inside the view's own body is not part of the chain and stays invisible
+    /// to the handler.
+    ///
     /// # Example
     ///
     /// ```rust
@@ -1290,6 +1554,8 @@ pub trait ViewExt: View + Sized {
     ///
     /// let hover_count = binding::<i32>(0);
     /// let is_hovered = binding::<bool>(false);
+    ///
+    /// // The installs may sit before the handlers in the chain…
     /// let hoverable = text!("Hover Me!")
     ///     .state(&hover_count)
     ///     .state(&is_hovered)
@@ -1302,6 +1568,13 @@ pub trait ViewExt: View + Sized {
     ///     .on_hover_exit(|State(hovered): State<Binding<bool>>| {
     ///         hovered.set(false);
     ///     });
+    ///
+    /// // …or after them — both spellings resolve to the same environment.
+    /// let equivalent = text!("Hover Me!")
+    ///     .on_hover_enter(|State(count): State<Binding<i32>>| {
+    ///         *count.get_mut() += 1;
+    ///     })
+    ///     .state(&hover_count);
     /// ```
     fn state<T: Clone + 'static>(self, state: &T) -> With<Self, State<T>> {
         With::new(self, State(state.clone()))
@@ -1309,3 +1582,33 @@ pub trait ViewExt: View + Sized {
 }
 
 impl<V: View + Sized> ViewExt for V {}
+
+/// The scope [`ViewExt::disabled`] installs: OR-combined with any disabled
+/// scope inherited from an enclosing `.disabled(...)`.
+struct DisabledScope(Computed<bool>);
+
+impl Plugin for DisabledScope {
+    fn install(self, env: &mut Environment) {
+        Disabled::install(env, self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use waterui_core::{AnyView, Binding, View, interaction::InteractionState};
+
+    use super::ViewExt;
+
+    /// `interaction_state` clones the binding it reports into, so the view it
+    /// returns must not borrow it: the binding is usually a local the body
+    /// also reads.
+    #[test]
+    fn interaction_state_does_not_borrow_the_binding() {
+        fn reported(content: AnyView) -> impl View {
+            let state = Binding::container(InteractionState::empty());
+            content.interaction_state(&state)
+        }
+
+        let _ = reported;
+    }
+}

@@ -1,0 +1,885 @@
+//! Blend-mode composites against the W3C formulas on lavapipe.
+
+use cherenkov::kurbo::{Point, Rect};
+use cherenkov::{__engine_fn as split_fn, __engine_test as split_test, __engine_wait as wait};
+use cherenkov::{
+    BlendMode, BlendSpace, Color, ColorStop, Draw, Extend, Group, Interpolation, Paint, Srgb,
+    WorkingColor,
+};
+use cherenkov::{Engine, EngineError, Offscreen, OffscreenFormat};
+use cherenkov_gpu::{Gpu, GpuConfig};
+use cherenkov_oracle::metrics::assert_close;
+
+const RED: WorkingColor = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
+const BLUE: WorkingColor = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
+const GREEN: WorkingColor = WorkingColor::new([0.0, 1.0, 0.0, 1.0]);
+const GREY: WorkingColor = WorkingColor::new([0.5, 0.5, 0.5, 1.0]);
+/// HDR primaries so a `PlusLighter` sum exceeds SDR white.
+const HDR_RED: WorkingColor = WorkingColor::new([1.5, 0.0, 0.0, 1.0]);
+const HDR_BLUE: WorkingColor = WorkingColor::new([0.0, 0.0, 1.25, 1.0]);
+
+split_fn! {
+/// An engine, or `None` when no adapter exists.
+fn engine() -> Option<Engine<Gpu>> {
+    match wait!(Engine::<Gpu>::new(GpuConfig::default())) {
+        Ok(engine) => Some(engine),
+        Err(EngineError::Backend(_)) => None,
+        Err(e) => panic!("engine init failed: {e}"),
+    }
+}
+}
+
+split_fn! {
+/// Renders a backdrop rect and a blend-layer rect in the given colours;
+/// returns the overlap pixel at (24,32) — inside the backdrop only for
+/// x < 32 — plus the pass count.
+fn render_blend(
+    engine: &Engine<Gpu>,
+    mode: BlendMode,
+    backdrop: WorkingColor,
+    source: WorkingColor,
+) -> Result<([f32; 4], u32), Box<dyn std::error::Error>> {
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| {
+            c.fill(Rect::new(0., 0., 32., 64.), backdrop);
+        }));
+    });
+    let layer = surface.layer();
+    surface.update(|tx| {
+        tx[&layer].blend(mode);
+        tx[surface.root()].push(&layer);
+    });
+    surface.update(|tx| {
+        tx[&layer].content(surface.record(|c| {
+            c.fill(Rect::new(16., 0., 64., 64.), source);
+        }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    let rb = wait!(surface.readback())?;
+    Ok((
+        rb.pixels[(32 * rb.width + 24) as usize],
+        engine.stats().passes,
+    ))
+}
+}
+
+split_test! {
+fn multiply_blends_the_overlap() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    let (px, passes) = wait!(render_blend(&engine, BlendMode::Multiply, RED, BLUE))?;
+    // Opaque red × opaque blue = opaque black.
+    for c in &px[..3] {
+        assert!(c.abs() < 1e-2, "multiply overlap: {px:?}");
+    }
+    assert!((px[3] - 1.0).abs() < 1e-2, "multiply overlap: {px:?}");
+    assert!(passes >= 2, "a blend layer must isolate: passes {passes}");
+    Ok(())
+}
+}
+
+split_test! {
+fn screen_blends_the_overlap() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    let (px, _) = wait!(render_blend(&engine, BlendMode::Screen, RED, BLUE))?;
+    // screen(red, blue) = 1-(1-r)(1-b) per channel → (1, 0, 1) magenta.
+    let [r, g, b, a] = px;
+    assert!(
+        (r - 1.0).abs() < 1e-2 && g.abs() < 1e-2 && (b - 1.0).abs() < 1e-2 && a > 0.99,
+        "screen overlap: {px:?}"
+    );
+    Ok(())
+}
+}
+
+split_test! {
+/// `DestOut` keeps the backdrop where the source is absent and knocks the
+/// overlap out to clear.
+fn dest_out_knocks_out_the_overlap() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    let (overlap, _) = wait!(render_blend(&engine, BlendMode::DestOut, RED, BLUE))?;
+    for c in overlap {
+        assert!(
+            c.abs() < 1e-2,
+            "dest-out overlap should be clear: {overlap:?}"
+        );
+    }
+    Ok(())
+}
+}
+
+split_test! {
+/// Hue sets the backdrop's luminance on the source's hue and saturation:
+/// `SetLum(blue, Lum(red))` = (19/89, 19/89, 1) — `ClipColor`'s high clip
+/// at x = 1.19, l = 0.3 pulls the low channels to 0.3 − 0.11·0.7/0.89.
+/// The non-separable formula, not a channel-wise blend.
+fn hue_is_non_separable() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    let (px, _) = wait!(render_blend(&engine, BlendMode::Hue, RED, BLUE))?;
+    let [r, g, b, _a] = px;
+    let want = 19.0 / 89.0;
+    assert!(
+        (r - want).abs() < 5e-2 && (g - want).abs() < 5e-2 && (b - 1.0).abs() < 5e-2,
+        "hue overlap should be SetLum(blue, 0.3): {px:?}"
+    );
+    Ok(())
+}
+}
+
+const GREY4: WorkingColor = WorkingColor::new([4.0, 4.0, 4.0, 1.0]);
+const GREY2: WorkingColor = WorkingColor::new([2.0, 2.0, 2.0, 1.0]);
+const NEG2: WorkingColor = WorkingColor::new([-2.0, -2.0, -2.0, 1.0]);
+
+split_test! {
+/// #2908: the non-separable modes evaluate on the affine domain covering
+/// both straight colours — grey 4 under grey 2 keeps the backdrop
+/// luminance (Hue/Saturation/Color → 4), Luminosity takes the source's
+/// (→ 2), and identical out-of-range greys pass through untouched instead
+/// of clamping into SDR.
+fn nonseparable_modes_blend_in_the_extended_domain() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    for (mode, want) in [
+        (BlendMode::Hue, 4.0_f32),
+        (BlendMode::Saturation, 4.0),
+        (BlendMode::Color, 4.0),
+        (BlendMode::Luminosity, 2.0),
+    ] {
+        let (px, _) = wait!(render_blend(&engine, mode, GREY4, GREY2))?;
+        for c in &px[..3] {
+            assert!((c - want).abs() < 0.02, "{mode:?} grey4 x grey2: {px:?}");
+        }
+        assert!((px[3] - 1.0).abs() < 0.02, "{mode:?} alpha: {px:?}");
+    }
+    for mode in [
+        BlendMode::Hue,
+        BlendMode::Saturation,
+        BlendMode::Color,
+        BlendMode::Luminosity,
+    ] {
+        for g in [GREY4, NEG2] {
+            let (px, _) = wait!(render_blend(&engine, mode, g, g))?;
+            for c in &px[..3] {
+                assert!(
+                    c.is_finite() && (c - g.components[0]).abs() < 0.02,
+                    "{mode:?} identical {g:?}: {px:?}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+}
+
+split_test! {
+/// #2908's trigger shape on the GPU path: a non-separable blended layer
+/// under a clip compositing HDR content — the corpus
+/// `blend-{color,hue,saturation}-clip-hdr` scenes. Finite output is not
+/// enough by itself (the GPU rendered finite even with the SDR-domain
+/// bug), so the clipped region's HDR greys must also keep the backdrop
+/// luminance.
+fn nonseparable_blends_under_a_clip_on_hdr_stay_finite() -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::kurbo::RoundedRect;
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    for (mode, want) in [
+        (BlendMode::Hue, 4.0_f32),
+        (BlendMode::Saturation, 4.0),
+        (BlendMode::Color, 4.0),
+        (BlendMode::Luminosity, 2.0),
+    ] {
+        let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|c| {
+                c.fill(Rect::new(0.0, 0.0, 32.0, 32.0), GREY4);
+            }));
+        });
+        let layer = surface.layer();
+        surface.update(|tx| {
+            tx[&layer].blend(mode);
+            tx[&layer].clip(RoundedRect::new(4.0, 4.0, 28.0, 28.0, 4.0));
+            tx[surface.root()].push(&layer);
+        });
+        surface.update(|tx| {
+            tx[&layer].content(surface.record(|c| {
+                c.fill(Rect::new(0.0, 0.0, 32.0, 32.0), GREY2);
+            }));
+        });
+        wait!(engine.render(cherenkov::FrameTime::now()))?;
+        let pixels = wait!(surface.readback())?.pixels;
+        for (i, px) in pixels.iter().enumerate() {
+            assert!(
+                px.iter().all(|c| c.is_finite()),
+                "{mode:?} wrote non-finite pixel {i}: {px:?}"
+            );
+        }
+        // A pixel inside the clip kept the blend semantics; a pixel
+        // outside it kept the backdrop.
+        let inside = pixels[16 * 32 + 16];
+        let outside = pixels[2 * 32 + 2];
+        for c in &inside[..3] {
+            assert!((c - want).abs() < 0.02, "{mode:?} clipped inside: {inside:?}");
+        }
+        for c in &outside[..3] {
+            assert!((c - 4.0).abs() < 0.02, "{mode:?} outside clip: {outside:?}");
+        }
+    }
+    Ok(())
+}
+}
+
+split_test! {
+/// A half-alpha extended-range source still composites source-over on the
+/// un-normalized straight values: H/S/C keep `Cr` at backdrop grey 4
+/// (`0.5·4 + 0.5·4 = 4`), Luminosity mixes to `0.5·2 + 0.5·4 = 3`.
+fn nonseparable_hdr_half_alpha_uses_source_over() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    for (mode, want) in [
+        (BlendMode::Hue, 4.0_f32),
+        (BlendMode::Saturation, 4.0),
+        (BlendMode::Color, 4.0),
+        (BlendMode::Luminosity, 3.0),
+    ] {
+        let (px, _) = wait!(render_blend(&engine, mode, GREY4, GREY2.with_alpha(0.5)))?;
+        for c in &px[..3] {
+            assert!(
+                (c - want).abs() < 0.02,
+                "{mode:?} half-alpha grey2 over grey4: {px:?}"
+            );
+        }
+        assert!((px[3] - 1.0).abs() < 0.02, "{mode:?} alpha: {px:?}");
+    }
+    Ok(())
+}
+}
+
+split_test! {
+/// `Extend::None` gradients are transparent outside the range.
+fn extend_none_is_transparent_outside_the_range() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| {
+            c.fill(
+                Rect::new(0., 0., 64., 64.),
+                Paint::Linear(cherenkov::LinearGradient {
+                    start: Point::new(16., 0.),
+                    end: Point::new(48., 0.),
+                    stops: vec![
+                        ColorStop {
+                            offset: 0.0,
+                            color: RED,
+                        },
+                        ColorStop {
+                            offset: 1.0,
+                            color: BLUE,
+                        },
+                    ],
+                    extend: Extend::None,
+                    interpolation: Interpolation::Working,
+                }),
+            );
+        }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    let rb = wait!(surface.readback())?;
+    let px = |x: u32, y: u32| rb.pixels[(y * rb.width + x) as usize];
+    // Outside the gradient's range nothing is drawn: the cleared zero.
+    assert_close(&px(4, 32), &[0.0; 4]);
+    assert_close(&px(60, 32), &[0.0; 4]);
+    assert!(px(32, 32)[3] > 0.99, "mid-range must be opaque");
+    Ok(())
+}
+}
+
+split_test! {
+/// A full-turn sweep gradient: angle 0 (+x) is the first stop.
+fn a_sweep_gradient_resolves_angles() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| {
+            c.fill(
+                Rect::new(0., 0., 64., 64.),
+                Paint::Sweep(cherenkov::SweepGradient {
+                    center: Point::new(32., 32.),
+                    start_angle: 0.0,
+                    end_angle: std::f64::consts::TAU,
+                    stops: vec![
+                        ColorStop {
+                            offset: 0.0,
+                            color: RED,
+                        },
+                        ColorStop {
+                            offset: 1.0,
+                            color: BLUE,
+                        },
+                    ],
+                    extend: Extend::Pad,
+                    interpolation: Interpolation::Working,
+                }),
+            );
+        }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    let rb = wait!(surface.readback())?;
+    let px = |x: u32, y: u32| rb.pixels[(y * rb.width + x) as usize];
+    let right = px(56, 32);
+    let top = px(32, 8);
+    assert!(
+        right[0] > 0.9 && right[2] < 0.1,
+        "angle 0 is red: {right:?}"
+    );
+    // atan2 of (0,−1) ≈ 3π/2 → t ≈ 0.75, mostly blue.
+    assert!(top[2] > 0.6 && top[0] < 0.4, "top is blue-ish: {top:?}");
+    Ok(())
+}
+}
+
+split_test! {
+/// A `Normal` group flattens unless a descendant group blends; then it
+/// must isolate, or the descendant's composite would reach the scene.
+fn blended_descendant_isolates_its_normal_group() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| {
+            c.fill(Rect::new(0., 0., 8., 8.), RED);
+            c.group(Group::new(), |c| {
+                c.fill(Rect::new(0., 0., 4., 8.), BLUE);
+                c.group(Group::new().blend(BlendMode::Clear), |c| {
+                    c.fill(Rect::new(2., 0., 6., 8.), WorkingColor::WHITE);
+                });
+            });
+        }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    let rb = wait!(surface.readback())?;
+    // `Clear` zeroes the inner group's whole raster — but only inside the
+    // outer group's offscreen, which then composites `Normal` over the red
+    // background. Without outer isolation the `Clear` reached the scene
+    // framebuffer and every pixel came out transparent.
+    for px in &rb.pixels {
+        // The isolated `Clear` leaves the opaque red background unchanged.
+        assert_close(px, &[1.0, 0.0, 0.0, 1.0]);
+    }
+    Ok(())
+}
+}
+
+split_test! {
+fn tree_layer_isolates_blended_child_layer() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
+    let background = surface.layer();
+    let pass = surface.layer();
+    let cutout = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&background).push(&pass);
+        tx[&background].content(surface.record(|c| {
+            c.fill(Rect::new(0.0, 0.0, 8.0, 8.0), RED);
+        }));
+        tx[&pass].content(surface.record(|c| {
+            c.fill(Rect::new(0.0, 0.0, 4.0, 8.0), BLUE);
+        }));
+        tx[&pass].push(&cutout);
+        tx[&cutout]
+            .blend(BlendMode::DestOut)
+            .content(surface.record(|c| {
+                c.fill(Rect::new(2.0, 0.0, 6.0, 8.0), WorkingColor::WHITE);
+            }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    let pixels = wait!(surface.readback())?.pixels;
+    let pixel = |x: usize, y: usize| pixels[y * 8 + x];
+    assert_close(&pixel(1, 3), &[0.0_f32, 0.0, 1.0, 1.0]);
+    assert_close(&pixel(3, 3), &[1.0_f32, 0.0, 0.0, 1.0]);
+    Ok(())
+}
+}
+
+split_test! {
+fn tree_layer_isolates_blended_content_group() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
+    let background = surface.layer();
+    let pass = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&background).push(&pass);
+        tx[&background].content(surface.record(|c| {
+            c.fill(Rect::new(0.0, 0.0, 8.0, 8.0), RED);
+        }));
+        tx[&pass].content(surface.record(|c| {
+            c.fill(Rect::new(0.0, 0.0, 4.0, 8.0), BLUE);
+            c.group(Group::new().blend(BlendMode::DestOut), |c| {
+                c.fill(Rect::new(2.0, 0.0, 6.0, 8.0), WorkingColor::WHITE);
+            });
+        }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    let pixels = wait!(surface.readback())?.pixels;
+    let pixel = |x: usize, y: usize| pixels[y * 8 + x];
+    assert_close(&pixel(1, 3), &[0.0_f32, 0.0, 1.0, 1.0]);
+    assert_close(&pixel(3, 3), &[1.0_f32, 0.0, 0.0, 1.0]);
+    Ok(())
+}
+}
+
+split_test! {
+fn nested_tree_layers_isolate_at_the_blending_parent() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
+    let background = surface.layer();
+    let outer = surface.layer();
+    let inner = surface.layer();
+    let cutout = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&background).push(&outer);
+        tx[&outer].push(&inner);
+        tx[&inner].push(&cutout);
+        tx[&background].content(surface.record(|c| {
+            c.fill(Rect::new(0.0, 0.0, 8.0, 8.0), RED);
+        }));
+        tx[&outer].content(surface.record(|c| {
+            c.fill(Rect::new(0.0, 0.0, 8.0, 8.0), BLUE);
+        }));
+        tx[&inner].content(surface.record(|c| {
+            c.fill(Rect::new(0.0, 0.0, 4.0, 8.0), GREEN);
+        }));
+        tx[&cutout]
+            .blend(BlendMode::DestOut)
+            .content(surface.record(|c| {
+                c.fill(Rect::new(2.0, 0.0, 6.0, 8.0), WorkingColor::WHITE);
+            }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    let pixels = wait!(surface.readback())?.pixels;
+    let pixel = |x: usize, y: usize| pixels[y * 8 + x];
+    assert_close(&pixel(1, 3), &[0.0_f32, 1.0, 0.0, 1.0]);
+    assert_close(&pixel(3, 3), &[0.0_f32, 0.0, 1.0, 1.0]);
+    Ok(())
+}
+}
+
+split_test! {
+/// Two overlapping opaque `PlusLighter` layers: coverage saturates at 1,
+/// summed light exceeds 1 and survives in the extended working space (#126).
+fn plus_lighter_saturates_alpha_not_colour() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| {
+            c.fill(Rect::new(0., 0., 32., 64.), HDR_RED);
+        }));
+    });
+    let layer = surface.layer();
+    surface.update(|tx| {
+        tx[&layer].blend(BlendMode::PlusLighter);
+        tx[surface.root()].push(&layer);
+    });
+    surface.update(|tx| {
+        tx[&layer].content(surface.record(|c| {
+            c.fill(Rect::new(16., 0., 64., 64.), HDR_BLUE);
+        }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    let px = wait!(surface.readback())?.pixels[(32 * 64 + 24) as usize];
+    assert!(
+        px[3] <= 1.0 + 1e-3,
+        "plus-lighter alpha must saturate: {px:?}"
+    );
+    assert!(
+        (px[0] - 1.5).abs() < 1e-2 && (px[2] - 1.25).abs() < 1e-2,
+        "plus-lighter colour adds unclamped: {px:?}"
+    );
+    Ok(())
+}
+}
+
+split_test! {
+/// A clipped blended layer's clip coverage must scale the source once,
+/// not again at the composite: Screen over 0.5 grey at a half-covered
+/// edge is `B(cb, 0.5·cs) = 0.75`, not `c²` = 0.4375. Clear keeps the
+/// lerp-by-clip bound.
+fn clipped_blend_layer_scales_source_by_clip_coverage() -> Result<(), Box<dyn std::error::Error>> {
+    const GREY: WorkingColor = WorkingColor::new([0.5, 0.5, 0.5, 1.0]);
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    let surface = wait!(engine.surface(Offscreen::new((12, 12), OffscreenFormat::LinearF16), || {}))?;
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| {
+            c.fill(Rect::new(0.0, 0.0, 12.0, 12.0), GREY);
+        }));
+    });
+    // Screen layer clipped to the top half, Clear to the bottom half;
+    // both clips share the half-covered left edge at x = 4.5. The layer
+    // handles must outlive the render or the layer detaches.
+    let mut layers = Vec::new();
+    for (blend, y0, y1) in [(BlendMode::Screen, 0.0, 6.0), (BlendMode::Clear, 6.0, 12.0)] {
+        let layer = surface.layer();
+        surface.update(|tx| {
+            tx[&layer].blend(blend);
+            tx[&layer].clip(Rect::new(4.5, y0, 8.0, y1));
+            tx[surface.root()].push(&layer);
+        });
+        surface.update(|tx| {
+            tx[&layer].content(surface.record(|c| {
+                c.fill(Rect::new(0.0, 0.0, 12.0, 12.0), WorkingColor::WHITE);
+            }));
+        });
+        layers.push(layer);
+    }
+    assert_eq!(layers.len(), 2);
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    let pixels = wait!(surface.readback())?.pixels;
+    let px = |x: usize, y: usize| pixels[y * 12 + x];
+    let approx = |got: [f32; 4], want: [f32; 4], what: &str| {
+        for i in 0..4 {
+            assert!(
+                (got[i] - want[i]).abs() < 0.02,
+                "{what}: got {got:?}, want {want:?}"
+            );
+        }
+    };
+    // Screen rows (3): untouched outside, screen(0.5, 1) = 1 inside,
+    // B(0.5, 0.5·white) = 0.75 at the half-covered edge.
+    approx(px(2, 3), [0.5, 0.5, 0.5, 1.0], "screen outside clip");
+    approx(
+        px(4, 3),
+        [0.75, 0.75, 0.75, 1.0],
+        "screen at half-covered edge",
+    );
+    approx(px(6, 3), [1.0; 4], "screen inside clip");
+    // Clear rows (9): the destructive path lerps by the clip coverage.
+    approx(px(2, 9), [0.5, 0.5, 0.5, 1.0], "clear outside clip");
+    approx(
+        px(4, 9),
+        [0.25, 0.25, 0.25, 0.5],
+        "clear at half-covered edge",
+    );
+    approx(px(6, 9), [0.0; 4], "clear inside clip");
+    Ok(())
+}
+}
+
+split_test! {
+/// A destructive child of the surface root composites against the surface
+/// clear colour — the scene root is not isolated, as in the oracle. `DestIn`
+/// keeps the backdrop where the source covers it and zeroes the rest
+/// (transparent, not the clear colour); Clear empties the surface; Src
+/// writes the source verbatim.
+fn destructive_child_of_root_clears_the_surface_clear_colour()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    for (mode, left, right) in [
+        (BlendMode::DestIn, RED, WorkingColor::new([0.0; 4])),
+        (
+            BlendMode::Clear,
+            WorkingColor::new([0.0; 4]),
+            WorkingColor::new([0.0; 4]),
+        ),
+        (BlendMode::Src, BLUE, WorkingColor::new([0.0; 4])),
+    ] {
+        let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
+        surface.clear_color(GREY);
+        let cutout = surface.layer();
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|c| {
+                c.fill(Rect::new(0.0, 0.0, 8.0, 8.0), RED);
+            }));
+            tx[surface.root()].push(&cutout);
+            tx[&cutout].blend(mode).content(surface.record(|c| {
+                c.fill(Rect::new(0.0, 0.0, 4.0, 8.0), BLUE);
+            }));
+        });
+        wait!(engine.render(cherenkov::FrameTime::now()))?;
+        let pixels = wait!(surface.readback())?.pixels;
+        let pixel = |x: usize, y: usize| pixels[y * 8 + x];
+        for (x, expected) in [(1usize, left), (6usize, right)] {
+            let px = pixel(x, 3);
+            for (got, want) in px.iter().zip(expected.components) {
+                assert!(
+                    (*got - want).abs() < 0.02,
+                    "{mode:?} x={x}: {px:?} != {expected:?}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+}
+
+split_test! {
+/// The same destructive child under a real intermediate layer stays
+/// isolated: the `DestIn` cuts the pass's own content, and the cleared
+/// region reads back as the surface clear colour through the composite.
+fn destructive_child_of_an_intermediate_layer_stays_isolated()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
+    surface.clear_color(GREY);
+    let pass = surface.layer();
+    let cutout = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&pass);
+        tx[&pass].content(surface.record(|c| {
+            c.fill(Rect::new(0.0, 0.0, 8.0, 8.0), RED);
+        }));
+        tx[&pass].push(&cutout);
+        tx[&cutout]
+            .blend(BlendMode::DestIn)
+            .content(surface.record(|c| {
+                c.fill(Rect::new(0.0, 0.0, 4.0, 8.0), WorkingColor::WHITE);
+            }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    let pixels = wait!(surface.readback())?.pixels;
+    let pixel = |x: usize, y: usize| pixels[y * 8 + x];
+    for (x, expected) in [(1usize, RED), (6usize, GREY)] {
+        let px = pixel(x, 3);
+        for (got, want) in px.iter().zip(expected.components) {
+            assert!((*got - want).abs() < 0.02, "x={x}: {px:?} != {expected:?}");
+        }
+    }
+    Ok(())
+}
+}
+
+split_test! {
+/// 50% sRGB blue over sRGB red inside an sRGB-encoded group composites in
+/// the encoded space: the readback is the encoded mix [0.5, 0, 0.5], not
+/// the linear-space one (~[0.735, 0, 0.735]).
+fn srgb_encoded_members_composite_in_the_encoded_space() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
+    let red = Color::<Srgb>::new([1.0, 0.0, 0.0, 1.0]).to_working();
+    let blue = Color::<Srgb>::new([0.0, 0.0, 1.0, 0.5]).to_working();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| {
+            c.group(Group::new().blend_space(BlendSpace::SrgbEncoded), |c| {
+                c.fill(Rect::new(0.0, 0.0, 8.0, 8.0), red);
+                c.fill(Rect::new(0.0, 0.0, 8.0, 8.0), blue);
+            });
+        }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    let pixels = wait!(surface.readback())?.pixels;
+    let expected = Color::<Srgb>::new([0.5, 0.0, 0.5, 1.0]).to_working();
+    for (got, want) in pixels[0].iter().zip(expected.components) {
+        assert!(
+            (*got - want).abs() < 0.02,
+            "{:?} != {expected:?}",
+            pixels[0]
+        );
+    }
+    Ok(())
+}
+}
+
+split_fn! {
+/// Renders a dark backdrop, then an opaque red rect and a 50% blue rect
+/// at opacity 0.5 in `SrgbEncoded` space: as a layer whose content holds
+/// the red rect and whose child layer holds the blue one when `layered`,
+/// otherwise as one encoded group in the root's content.
+fn render_encoded(
+    engine: &Engine<Gpu>,
+    layered: bool,
+) -> Result<Vec<[f32; 4]>, Box<dyn std::error::Error>> {
+    let surface = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {}))?;
+    let backdrop = Color::<Srgb>::new([0.1, 0.1, 0.12, 1.0]).to_working();
+    let red = Color::<Srgb>::new([0.85, 0.15, 0.2, 1.0]).to_working();
+    let blue = Color::<Srgb>::new([0.15, 0.3, 0.85, 0.5]).to_working();
+    let (front, back) = (Rect::new(2.0, 2.0, 11.0, 11.0), Rect::new(6.0, 6.0, 15.0, 15.0));
+    let faded = surface.layer();
+    let child = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| {
+            c.fill(Rect::new(0.0, 0.0, 16.0, 16.0), backdrop);
+            if !layered {
+                c.group(
+                    Group::new()
+                        .blend_space(BlendSpace::SrgbEncoded)
+                        .opacity(0.5),
+                    |c| {
+                        c.fill(front, red);
+                        c.fill(back, blue);
+                    },
+                );
+            }
+        }));
+        if layered {
+            tx[surface.root()].push(&faded);
+            tx[&faded]
+                .blend_space(BlendSpace::SrgbEncoded)
+                .opacity(0.5_f32)
+                .content(surface.record(|c| c.fill(front, red)))
+                .push(&child);
+            tx[&child].content(surface.record(|c| c.fill(back, blue)));
+        }
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    Ok(wait!(surface.readback())?.pixels)
+}
+}
+
+split_test! {
+/// A layer in `SrgbEncoded` space composites like the group of that space:
+/// its content and child layers composite with each other in encoded
+/// values, and its opacity fades it onto the backdrop in them. White over
+/// black at 0.5 decodes from an encoded 0.5 (128 of 255), not from the
+/// linear mix's encoded 0.735 (188).
+fn encoded_layer_composites_like_an_encoded_group() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    let layer = wait!(render_encoded(&engine, true))?;
+    let group = wait!(render_encoded(&engine, false))?;
+    for (i, (got, want)) in layer.iter().zip(&group).enumerate() {
+        for (g, w) in got.iter().zip(want) {
+            assert!((g - w).abs() < 0.02, "pixel {i}: {got:?} != {want:?}");
+        }
+    }
+    let surface = wait!(engine.surface(Offscreen::new((4, 4), OffscreenFormat::LinearF16), || {}))?;
+    let faded = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()]
+            .content(surface.record(|c| {
+                c.fill(Rect::new(0.0, 0.0, 4.0, 4.0), WorkingColor::BLACK);
+            }))
+            .push(&faded);
+        tx[&faded]
+            .blend_space(BlendSpace::SrgbEncoded)
+            .opacity(0.5_f32)
+            .content(surface.record(|c| {
+                c.fill(Rect::new(0.0, 0.0, 4.0, 4.0), WorkingColor::WHITE);
+            }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    let pixel = wait!(surface.readback())?.pixels[5];
+    let want = cherenkov_oracle::color::srgb_decode(0.5);
+    for channel in &pixel[..3] {
+        assert!((f64::from(*channel) - want).abs() < 0.02, "{pixel:?}");
+    }
+    Ok(())
+}
+}
+
+/// How the translucent paint of [`render_m3_field`] is recorded.
+#[derive(Clone, Copy, Debug)]
+enum Field {
+    /// A plain fill in the root's content.
+    Fill,
+    /// A fill in a child layer declaring no space.
+    Layer,
+    /// A fill in a group declaring the linear space.
+    LinearGroup,
+    /// A fill in a child layer declaring the linear space.
+    LinearLayer,
+}
+
+/// The 8-bit sRGB encoding of a premultiplied linear-P3 pixel.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "an in-gamut channel rounds to an 8-bit code"
+)]
+fn srgb8(px: [f32; 4]) -> [u8; 3] {
+    use cherenkov_oracle::color::{linear_p3_to_linear_srgb, srgb_encode};
+    let a = f64::from(px[3]);
+    let straight = [px[0], px[1], px[2]].map(|c| f64::from(c) / a);
+    linear_p3_to_linear_srgb(straight).map(|c| (srgb_encode(c) * 255.0).round() as u8)
+}
+
+split_fn! {
+/// Material 3's dark disabled filled text field — on-surface
+/// `(230, 224, 233)` at 4 % over surface `(20, 18, 24)` — on a surface
+/// storing `storage`, read back as 8-bit sRGB.
+fn render_m3_field(
+    engine: &Engine<Gpu>,
+    storage: BlendSpace,
+    field: Field,
+) -> Result<[u8; 3], Box<dyn std::error::Error>> {
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF32), || {}))?;
+    surface.clear_color(Color::<Srgb>::new([20.0 / 255.0, 18.0 / 255.0, 24.0 / 255.0, 1.0]).to_working());
+    surface.storage_space(storage);
+    let on_surface =
+        Color::<Srgb>::new([230.0 / 255.0, 224.0 / 255.0, 233.0 / 255.0, 0.04]).to_working();
+    let rect = Rect::new(0.0, 0.0, 8.0, 8.0);
+    let layer = surface.layer();
+    surface.update(|tx| match field {
+        Field::Fill => {
+            tx[surface.root()].content(surface.record(|c| c.fill(rect, on_surface)));
+        }
+        Field::LinearGroup => {
+            tx[surface.root()].content(surface.record(|c| {
+                c.group(Group::new().blend_space(BlendSpace::Linear), |c| {
+                    c.fill(rect, on_surface);
+                });
+            }));
+        }
+        Field::Layer | Field::LinearLayer => {
+            tx[surface.root()].push(&layer);
+            tx[&layer].content(surface.record(|c| c.fill(rect, on_surface)));
+            if matches!(field, Field::LinearLayer) {
+                tx[&layer].blend_space(BlendSpace::Linear);
+            }
+        }
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    Ok(srgb8(wait!(surface.readback())?.pixels[3 * 8 + 3]))
+}
+}
+
+split_test! {
+/// A surface storing sRGB-encoded values blends plain translucent paint
+/// as an sRGB-space alpha blend — Material's `(28, 26, 32)` — in its own
+/// content and in a child layer declaring no space; a linear island
+/// composites as on a linear surface, `(55, 53, 57)`.
+fn an_encoded_surface_blends_translucent_paint_in_srgb() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    for field in [Field::Fill, Field::Layer] {
+        let encoded = wait!(render_m3_field(&engine, BlendSpace::SrgbEncoded, field))?;
+        assert_eq!(encoded, [28, 26, 32], "{field:?}");
+        let linear = wait!(render_m3_field(&engine, BlendSpace::Linear, field))?;
+        assert_eq!(linear, [55, 53, 57], "{field:?}");
+    }
+    for field in [Field::LinearGroup, Field::LinearLayer] {
+        let island = wait!(render_m3_field(&engine, BlendSpace::SrgbEncoded, field))?;
+        assert_eq!(island, [55, 53, 57], "{field:?}");
+    }
+    Ok(())
+}
+}

@@ -21,15 +21,22 @@ dev = ["waterui/dynamic_linking"]
 # `cargo check -p skill_snippets --all-targets --features compile-gate-tests`.
 compile-gate-tests = []
 
+# Its own table, empty on purpose: the snippets are transcribed verbatim from the
+# skill and compile under Rust's and clippy's default levels, not the workspace's.
+[lints]
+
 [dependencies]
-waterui = { workspace = true, features = ["webview", "flow-markdown"] }
+# `ts` is what SKILL.md's "TypeScript views" snippets compile against:
+# `tsx!`, `TsProps`, and `waterui::ts::schema` exist only under it.
+# `barcode`, `chart` and `particle` back media.md's facade imports
+# (`waterui::barcode`, `waterui::chart`, `waterui::particle`); `widgets` backs
+# project.md's home-screen widget section (`waterui::widgets`, `#[waterui::widget]`).
+waterui = { workspace = true, features = ["webview", "flow-markdown", "media", "video", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list", "ts", "dialog", "canvas", "barcode", "chart", "particle", "widgets"] }
 waterui-icons-material-icon.workspace = true
 waterui-icons-lucide.workspace = true
 # Direct-crate dependencies the skill's own snippets name.
 waterui-barcode.workspace = true                             # media.md, Barcode
-waterui-canvas.workspace = true                              # media.md, Canvas
 waterui-chart.workspace = true                               # media.md, charts
-waterui-graphics = { workspace = true, features = ["gpu"] }  # styling.md, GPU gradients
 # i18n.md, formatting: dates, numbers and currency.
 waterui-locale = { workspace = true, features = ["datetime", "number"] }
 waterui-map.workspace = true                                 # media.md, Map

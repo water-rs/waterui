@@ -1,0 +1,91 @@
+//! Independent paint coordinates on the gpu backend.
+use cherenkov::{__engine_test as split_test, __engine_wait as wait};
+use cherenkov_oracle::metrics::assert_images_match;
+#[path = "../../tests/support/paint_transform.rs"]
+mod common;
+#[path = "support/visual.rs"]
+mod visual;
+use visual::crop;
+
+split_test! {
+fn live_paint_transforms_preserve_geometry_and_retained_output() {
+    wait!(common::retained::<cherenkov_gpu::Gpu>(cherenkov_gpu::GpuConfig::default()));
+}
+}
+split_test! {
+fn nested_paint_transforms_compose_and_sample_analytically() {
+    wait!(common::composition::<cherenkov_gpu::Gpu>(cherenkov_gpu::GpuConfig::default()));
+}
+}
+split_test! {
+fn singular_and_non_finite_paint_transforms_fail() {
+    wait!(common::invalid::<cherenkov_gpu::Gpu>(cherenkov_gpu::GpuConfig::default()));
+}
+}
+
+split_test! {
+fn image_paint_transform_composes_before_pattern_transform() {
+    use cherenkov::kurbo::{Affine, Rect};
+    use cherenkov::{
+        Draw, Engine, Extend, FrameTime, ImageData, ImagePattern, Offscreen, OffscreenFormat,
+        Paint, Rgba8, Sampling,
+    };
+    let engine =
+        wait!(Engine::<cherenkov_gpu::Gpu>::new(cherenkov_gpu::GpuConfig::default())).expect("GPU");
+    let image = engine
+        .image(
+            ImageData::<Rgba8>::new(
+                2,
+                2,
+                vec![
+                    255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+                ],
+            )
+            .expect("image data"),
+        )
+        .expect("image");
+    let wrapped = wait!(engine
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))
+        .expect("surface");
+    let combined = wait!(engine
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))
+        .expect("surface");
+    let pattern = Affine::translate((2.0, 3.0)) * Affine::scale_non_uniform(5.0, 7.0);
+    let paint_map = Affine::new([-1.0, 0.25, 0.5, 1.0, 28.0, -3.0]);
+    let make = |transform| {
+        Paint::Image(ImagePattern {
+            image: image.id(),
+            transform,
+            extend_x: Extend::Repeat,
+            extend_y: Extend::Reflect,
+            sampling: Sampling::Nearest,
+        })
+    };
+    wrapped.update(|tx| {
+        tx[wrapped.root()].content(wrapped.record(|c| {
+            c.fill(
+                Rect::new(1.0, 1.0, 31.0, 31.0),
+                make(pattern).transformed(paint_map),
+            );
+        }));
+    });
+    combined.update(|tx| {
+        tx[combined.root()].content(
+            combined.record(|c| c.fill(Rect::new(1.0, 1.0, 31.0, 31.0), make(paint_map * pattern))),
+        );
+    });
+    wait!(engine.render(FrameTime::now())).expect("render");
+    let actual = wait!(wrapped.readback()).expect("wrapped");
+    let expected = wait!(combined.readback()).expect("combined");
+    assert_images_match(
+        &crop(&actual, 0..32, 0..32),
+        &crop(&expected, 0..32, 0..32),
+    );
+}
+}
+
+split_test! {
+fn explicit_identity_mapping_preserves_pixels_exactly() {
+    wait!(common::identity::<cherenkov_gpu::Gpu>(cherenkov_gpu::GpuConfig::default()));
+}
+}

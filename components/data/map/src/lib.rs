@@ -141,13 +141,34 @@ impl_constant!(Coordinate, Region, Annotation, MapStyle, MapStatus);
 
 /// A map annotation (pin marker).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Annotation {
     /// The coordinate where the annotation is placed.
-    pub coordinate: Coordinate,
+    coordinate: Coordinate,
     /// The title text shown on the annotation.
-    pub title: Str,
+    title: Str,
     /// Optional subtitle text.
-    pub subtitle: Option<Str>,
+    subtitle: Option<Str>,
+}
+
+impl Annotation {
+    /// The coordinate where the annotation is placed.
+    #[must_use]
+    pub const fn coordinate(&self) -> Coordinate {
+        self.coordinate
+    }
+
+    /// The title text shown on the annotation.
+    #[must_use]
+    pub const fn title(&self) -> &Str {
+        &self.title
+    }
+
+    /// Optional subtitle text.
+    #[must_use]
+    pub const fn get_subtitle(&self) -> Option<&Str> {
+        self.subtitle.as_ref()
+    }
 }
 
 impl Annotation {
@@ -177,6 +198,10 @@ impl Annotation {
 /// `hybrid_style_url`). The map reports a load failure when it did not, rather
 /// than silently drawing the standard style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the map realizations load each style variant by variant; a new style must fail their build instead of falling into a wildcard arm"
+)]
 pub enum MapStyle {
     /// Standard road map.
     #[default]
@@ -194,6 +219,7 @@ pub enum MapStyle {
 /// Realizations that draw from a platform map report the platform's own
 /// load callbacks.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum MapStatus {
     /// The map is fetching the data it needs to draw.
     #[default]
@@ -226,6 +252,7 @@ impl MapStatus {
 
 /// Generic visibility toggle for optional map chrome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MapVisibility {
     /// Hide the feature.
     Hidden,
@@ -247,6 +274,7 @@ impl MapVisibility {
 
 /// Controls whether the user can pan and zoom the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MapInteractivity {
     /// Disable direct map interaction.
     ReadOnly,
@@ -272,32 +300,101 @@ impl MapInteractivity {
 
 /// Configuration for the Map component.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct MapConfig {
     /// The region to display.
-    pub region: Computed<Region>,
+    region: Computed<Region>,
     /// Annotations (pins) to display on the map.
-    pub annotations: Computed<Vec<Annotation>>,
+    annotations: Computed<Vec<Annotation>>,
     /// The map display style.
-    pub style: MapStyle,
+    style: MapStyle,
     /// Whether to show the user's current location.
-    pub user_location_visibility: MapVisibility,
+    user_location_visibility: MapVisibility,
     /// `WaterKit` location values rendered by portable map realizations.
     ///
     /// Native realizations may use the platform location service when this is
     /// absent. Supplying it keeps camera following, the location marker, and
     /// horizontal-accuracy visualization driven by one reactive source.
-    pub user_location: Option<Computed<Option<Location>>>,
+    user_location: Option<Computed<Option<Location>>>,
     /// Whether the map is interactive (pan/zoom enabled).
-    pub interactivity: MapInteractivity,
+    interactivity: MapInteractivity,
     /// Whether to show the compass.
-    pub compass_visibility: MapVisibility,
+    compass_visibility: MapVisibility,
     /// Whether to show the scale.
-    pub scale_visibility: MapVisibility,
+    scale_visibility: MapVisibility,
     /// Caller-owned sink the realization reports its load lifecycle into.
     ///
     /// `None` means the application is not observing status, and a realization
     /// must not allocate one on its behalf.
-    pub status: Option<Binding<MapStatus>>,
+    status: Option<Binding<MapStatus>>,
+}
+
+impl MapConfig {
+    /// The region to display.
+    #[must_use]
+    pub const fn region(&self) -> &Computed<Region> {
+        &self.region
+    }
+
+    /// Sets the `region`.
+    pub fn set_region(&mut self, region: Computed<Region>) {
+        self.region = region;
+    }
+
+    /// Annotations (pins) to display on the map.
+    #[must_use]
+    pub const fn annotations(&self) -> &Computed<Vec<Annotation>> {
+        &self.annotations
+    }
+
+    /// The map display style.
+    #[must_use]
+    pub const fn style(&self) -> MapStyle {
+        self.style
+    }
+
+    /// Whether to show the user's current location.
+    #[must_use]
+    pub const fn user_location_visibility(&self) -> MapVisibility {
+        self.user_location_visibility
+    }
+
+    /// `WaterKit` location values rendered by portable map realizations.
+    ///
+    /// Native realizations may use the platform location service when this is
+    /// absent. Supplying it keeps camera following, the location marker, and
+    /// horizontal-accuracy visualization driven by one reactive source.
+    #[must_use]
+    pub const fn user_location(&self) -> Option<&Computed<Option<Location>>> {
+        self.user_location.as_ref()
+    }
+
+    /// Whether the map is interactive (pan/zoom enabled).
+    #[must_use]
+    pub const fn interactivity(&self) -> MapInteractivity {
+        self.interactivity
+    }
+
+    /// Whether to show the compass.
+    #[must_use]
+    pub const fn compass_visibility(&self) -> MapVisibility {
+        self.compass_visibility
+    }
+
+    /// Whether to show the scale.
+    #[must_use]
+    pub const fn scale_visibility(&self) -> MapVisibility {
+        self.scale_visibility
+    }
+
+    /// Caller-owned sink the realization reports its load lifecycle into.
+    ///
+    /// `None` means the application is not observing status, and a realization
+    /// must not allocate one on its behalf.
+    #[must_use]
+    pub const fn status(&self) -> Option<&Binding<MapStatus>> {
+        self.status.as_ref()
+    }
 }
 
 // Use configurable! with StretchAxis::Both - this provides both NativeView and View impls
@@ -449,7 +546,7 @@ pub fn map_centered_on_location(location: impl IntoComputed<Location>) -> Map {
 #[cfg(test)]
 mod tests {
     use super::{Coordinate, Map, MapStatus, Region};
-    use nami::Binding;
+    use nami::{Binding, Signal};
 
     #[test]
     fn a_map_reports_status_into_the_caller_owned_binding() {
@@ -463,10 +560,10 @@ mod tests {
         sink.set(MapStatus::Failed("style unreachable".into()));
 
         assert_eq!(
-            status.get().failure().map(ToString::to_string),
+            status.snapshot().failure().map(ToString::to_string),
             Some(String::from("style unreachable"))
         );
-        assert!(!status.get().is_loading());
+        assert!(!status.snapshot().is_loading());
     }
 
     #[test]

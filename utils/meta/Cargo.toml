@@ -1,0 +1,15 @@
+[package]
+name = "waterui-meta"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Metadata-directory record format for WaterUI artifact channels"
+keywords = ["metadata", "linker-section", "waterui"]
+categories = ["no-std"]
+
+[lints]
+workspace = true

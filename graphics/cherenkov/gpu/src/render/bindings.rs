@@ -1,0 +1,464 @@
+//! Engine bind group layouts as data, shared between the crate and
+//! `build.rs`.
+//!
+//! The runtime maps these tables into `wgpu::BindGroupLayoutEntry`s; the
+//! build script maps them into the resource tables naga needs to emit
+//! matching MSL argument slots and SPIR-V descriptor indices. Keeping the
+//! layouts in one table means a precompiled shader's slot assignments
+//! cannot drift from the layout the device builds at runtime.
+//!
+//! The assignment rules below restate wgpu-hal 29: every stage counts
+//! buffers, textures and samplers independently through the groups in
+//! declaration order (`metal/device.rs` `create_pipeline_layout`); a stage
+//! that can see a storage buffer reserves a trailing runtime-array-sizes
+//! buffer, and the vertex stage always reserves one for vertex pulling.
+//! On Vulkan a WGSL `@binding` maps to its entry's ordinal position within
+//! the group (`vulkan/device.rs` `create_bind_group_layout`).
+
+/// Vertex stage bit in [`Entry::stages`].
+pub const VERTEX: u8 = 1;
+/// Fragment stage bit in [`Entry::stages`].
+pub const FRAGMENT: u8 = 2;
+/// Compute stage bit in [`Entry::stages`].
+pub const COMPUTE: u8 = 4;
+
+/// Resource kind of one binding.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+    /// A uniform buffer.
+    Uniform,
+    /// A read-only storage buffer.
+    StorageRead,
+    /// A read-write storage buffer.
+    Storage,
+    /// A sampled `texture_2d<f32>`.
+    Texture {
+        /// Whether a filtering sampler may bind it.
+        filterable: bool,
+    },
+    /// A sampled `texture_2d<u32>` (external frame planes are code-bearing
+    /// uint textures the shader decodes itself).
+    TextureUint,
+    /// A filtering sampler.
+    Sampler,
+}
+
+/// One bind group layout entry, backend-agnostic.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Entry {
+    /// The WGSL `@binding` number within its group.
+    pub binding: u32,
+    /// Stage visibility: `VERTEX | FRAGMENT`.
+    pub stages: u8,
+    /// The resource kind.
+    pub kind: Kind,
+    /// `has_dynamic_offset` for buffers; always false for samplers/textures.
+    ///
+    /// Read by the crate's `layout_entries`, not by `build.rs`.
+    #[allow(dead_code)]
+    pub dynamic_offset: bool,
+    /// `min_binding_size` for buffers; 0 for none.
+    ///
+    /// Read by the crate's `layout_entries`, not by `build.rs`.
+    #[allow(dead_code)]
+    pub min_size: u64,
+}
+
+impl Entry {
+    const fn uniform(binding: u32, stages: u8, dynamic_offset: bool, min_size: u64) -> Self {
+        Self {
+            binding,
+            stages,
+            kind: Kind::Uniform,
+            dynamic_offset,
+            min_size,
+        }
+    }
+
+    const fn storage_read(binding: u32, stages: u8) -> Self {
+        Self {
+            binding,
+            stages,
+            kind: Kind::StorageRead,
+            dynamic_offset: false,
+            min_size: 0,
+        }
+    }
+
+    const fn storage(binding: u32, stages: u8) -> Self {
+        Self {
+            binding,
+            stages,
+            kind: Kind::Storage,
+            dynamic_offset: false,
+            min_size: 0,
+        }
+    }
+
+    const fn texture(binding: u32) -> Self {
+        Self {
+            binding,
+            stages: FRAGMENT,
+            kind: Kind::Texture { filterable: true },
+            dynamic_offset: false,
+            min_size: 0,
+        }
+    }
+
+    const fn texture_uint(binding: u32) -> Self {
+        Self {
+            binding,
+            stages: FRAGMENT,
+            kind: Kind::TextureUint,
+            dynamic_offset: false,
+            min_size: 0,
+        }
+    }
+
+    const fn sampler(binding: u32) -> Self {
+        Self {
+            binding,
+            stages: FRAGMENT,
+            kind: Kind::Sampler,
+            dynamic_offset: false,
+            min_size: 0,
+        }
+    }
+}
+
+/// Group 0 of the engine pipelines (`shader.wgsl`): the per-pass globals
+/// window, the instance and gradient-stop buffers, the glyph atlas, the
+/// GPU coverage cell buffer of issue #2543 and the image transfer table.
+/// Backdrop union member records ride in the stops buffer. The cell buffer
+/// and the table are fragment storage like the stops, so neither needs a
+/// new device capability.
+pub const ENGINE_GROUP0: &[Entry] = &[
+    // One 32-byte Globals window; the dynamic offset selects the pass's slot.
+    Entry::uniform(0, VERTEX | FRAGMENT, true, 32),
+    Entry::storage_read(1, VERTEX | FRAGMENT),
+    Entry::storage_read(2, FRAGMENT),
+    Entry::texture(3),
+    // The coverage arena (issues #2543, #3081): the vertex stage joins
+    // a GPU draw's geometry records to its anchor; the fragment stage
+    // reads the block's texels for FLAG_CELL_BUFFER instances.
+    Entry::storage_read(4, VERTEX | FRAGMENT),
+    // The sRGB transfer decode table of natively stored 8-bit images.
+    Entry::storage_read(IMAGE_DECODE_BINDING, FRAGMENT),
+];
+
+/// The `ENGINE_GROUP0` binding of the image transfer decode table
+/// (`image_decode` in `shader.wgsl`).
+pub const IMAGE_DECODE_BINDING: u32 = 5;
+
+/// Group 1 of the engine pipelines: the textures a composite or paint
+/// samples — composite source, blend backdrop, image paint, clip mask —
+/// and the linear sampler `backdrop_sample_blur` reads the source through.
+pub const ENGINE_GROUP1: &[Entry] = &[
+    Entry::texture(0),
+    Entry::texture(1),
+    Entry::texture(2),
+    Entry::texture(3),
+    Entry::sampler(4),
+];
+
+/// The present pipeline's single group (`present.wgsl`): source texture,
+/// nearest sampler, encode/alpha uniforms.
+pub const PRESENT_GROUP0: &[Entry] = &[
+    Entry::texture(0),
+    Entry::sampler(1),
+    Entry::uniform(2, FRAGMENT, false, 0),
+];
+
+/// `min_size` of the external-frame params uniform
+/// (`render::external::Params`, 192 bytes). Duplicated here because
+/// `build.rs` shares this table and cannot see the render module.
+pub const EXTERNAL_PARAMS_SIZE: u64 = 192;
+
+/// Group 1 of the external-frame pipelines (`external.wgsl`): the frame's
+/// planes, the clip mask texture, and the per-frame params.
+///
+/// YUV frames bind their luma and chroma planes at 0–1 and the f32 dummy at
+/// 2; RGB frames bind the uint dummy at 0–1 and their plane at 2.
+pub const EXTERNAL_GROUP1: &[Entry] = &[
+    Entry::texture_uint(0),
+    Entry::texture_uint(1),
+    Entry::texture(2),
+    Entry::texture(3),
+    Entry::uniform(4, FRAGMENT, false, EXTERNAL_PARAMS_SIZE),
+];
+
+/// Group 1 of the projective composite pipelines (`projective.wgsl`): the
+/// layer's local image with its mips, its filtering sampler, the blend
+/// backdrop and the clip mask texture.
+pub const PROJECTIVE_GROUP1: &[Entry] = &[
+    Entry::texture(0),
+    Entry::sampler(1),
+    Entry::texture(2),
+    Entry::texture(3),
+];
+
+/// The mip pipeline's single group (`mip.wgsl`): the previous level.
+pub const MIP_GROUP0: &[Entry] = &[Entry::texture(0)];
+
+/// `min_size` of the resolve pipeline's uniform: a pass's `Globals` slot
+/// (32 bytes) followed by the resolve parameters (`resolve.wgsl`).
+pub const RESOLVE_PARAMS_SIZE: u64 = 64;
+
+/// The backdrop capture resolve pipeline's single group (`resolve.wgsl`):
+/// the pass's globals slot with the resolve parameters, and the source.
+pub const RESOLVE_GROUP0: &[Entry] = &[
+    Entry::uniform(0, FRAGMENT, true, RESOLVE_PARAMS_SIZE),
+    Entry::texture(1),
+];
+
+/// `min_size` of the reduce pipeline's uniform: a pass's `Globals` slot
+/// (32 bytes) followed by the reduce parameters (`reduce.wgsl`).
+pub const REDUCE_PARAMS_SIZE: u64 = 64;
+
+/// The capture pyramid reduce pipeline's single group (`reduce.wgsl`):
+/// the globals slot with the reduce parameters, and the source level.
+pub const REDUCE_GROUP0: &[Entry] = &[
+    Entry::uniform(0, FRAGMENT, true, REDUCE_PARAMS_SIZE),
+    Entry::texture(1),
+];
+
+/// The space conversion pipeline's single group (`space_convert.wgsl`):
+/// the texture it converts.
+pub const SPACE_CONVERT_GROUP0: &[Entry] = &[Entry::texture(0)];
+
+/// The engine pipelines' two groups, in declaration order.
+///
+/// Used by `build.rs`; the crate addresses the groups directly.
+#[allow(dead_code)]
+pub const ENGINE_GROUPS: &[&[Entry]] = &[ENGINE_GROUP0, ENGINE_GROUP1];
+
+/// The GPU coverage kernels' single group (`coverage.wgsl` and
+/// `stroke.wgsl`, issues #2543, #3081 and #2544): per-frame compute input,
+/// coverage scratch, the retained coverage arena the kernels write blocks
+/// into, the stroke records with the dash tables behind them, and the
+/// dispatch-domain argument buffer.
+///
+/// The argument buffer comes last: the main layout is this table without
+/// it, so every binding keeps its position in both layouts, which is what
+/// the Vulkan and Metal slot rules key on. Eight storage buffers is the
+/// per-stage limit a default device grants, and this layout uses all of it.
+pub const COVERAGE_GROUP0: &[Entry] = &[
+    Entry::uniform(0, COMPUTE, true, 112),
+    Entry::storage_read(1, COMPUTE),
+    Entry::storage(2, COMPUTE),
+    Entry::storage(3, COMPUTE),
+    Entry::storage(4, COMPUTE),
+    Entry::storage(5, COMPUTE),
+    Entry::storage(6, COMPUTE),
+    Entry::storage_read(7, COMPUTE),
+    Entry::storage(8, COMPUTE),
+];
+
+/// The coverage kernels' main group: every binding but the
+/// dispatch-domain argument buffer at binding 8, which only the
+/// argument-writing kernels bind.
+pub const COVERAGE_MAIN_GROUP0: &[Entry] = COVERAGE_GROUP0.split_at(8).0;
+const _: () = assert!(COVERAGE_GROUP0.len() == 9 && COVERAGE_GROUP0[8].binding == 8);
+
+/// The argument-writing coverage kernels' group list.
+pub const COVERAGE_GROUPS: &[&[Entry]] = &[COVERAGE_GROUP0];
+
+/// The other coverage kernels' group list.
+pub const COVERAGE_MAIN_GROUPS: &[&[Entry]] = &[COVERAGE_MAIN_GROUP0];
+/// The present pipeline's group list.
+///
+/// Used by `build.rs`; the crate addresses the group directly.
+#[allow(dead_code)]
+pub const PRESENT_GROUPS: &[&[Entry]] = &[PRESENT_GROUP0];
+
+/// The descriptor set the Vulkan tile executor's input attachments
+/// occupy, after the two engine groups (issue #2191).
+///
+/// These three are not `Entry` tables: an input attachment has no wgpu
+/// binding type, so the set exists only in the executor's own
+/// descriptor set layout and in the tile SPIR-V's decorations. They are
+/// the one definition both read.
+#[allow(dead_code)]
+pub const TILE_INPUT_GROUP: u32 = 2;
+/// The tile input attachment bindings, the draw's own slot first.
+#[allow(dead_code)]
+pub const TILE_INPUT_BINDINGS: [u32; 2] = [0, 1];
+/// The input attachment index the source slot is mapped to when it is
+/// not the draw's own slot.
+#[allow(dead_code)]
+pub const TILE_SOURCE_INDEX: u32 = 1;
+
+/// The external-frame pipelines' two groups, in declaration order: the
+/// shared engine group 0 followed by `EXTERNAL_GROUP1`.
+///
+/// Used by `build.rs`; the crate addresses the groups directly.
+#[allow(dead_code)]
+pub const EXTERNAL_GROUPS: &[&[Entry]] = &[ENGINE_GROUP0, EXTERNAL_GROUP1];
+
+/// The projective composite pipelines' two groups, in declaration order:
+/// the shared engine group 0 followed by `PROJECTIVE_GROUP1`.
+///
+/// Used by `build.rs`; the crate addresses the groups directly.
+#[allow(dead_code)]
+pub const PROJECTIVE_GROUPS: &[&[Entry]] = &[ENGINE_GROUP0, PROJECTIVE_GROUP1];
+
+/// The mip pipeline's group list.
+///
+/// Used by `build.rs`; the crate addresses the group directly.
+#[allow(dead_code)]
+pub const MIP_GROUPS: &[&[Entry]] = &[MIP_GROUP0];
+
+/// The resolve pipeline's group list.
+///
+/// Used by `build.rs`; the crate addresses the group directly.
+#[allow(dead_code)]
+pub const RESOLVE_GROUPS: &[&[Entry]] = &[RESOLVE_GROUP0];
+
+/// The reduce pipeline's group list.
+///
+/// Used by `build.rs`; the crate addresses the group directly.
+#[allow(dead_code)]
+pub const REDUCE_GROUPS: &[&[Entry]] = &[REDUCE_GROUP0];
+
+/// The space conversion pipeline's group list.
+///
+/// Used by `build.rs`; the crate addresses the group directly.
+#[allow(dead_code)]
+pub const SPACE_CONVERT_GROUPS: &[&[Entry]] = &[SPACE_CONVERT_GROUP0];
+
+/// Silhouette convolution: filtered source and the uploaded kernel.
+pub const SHADOW_GROUP0: &[Entry] = &[
+    Entry::texture(0),
+    Entry::storage_read(1, FRAGMENT),
+    Entry::sampler(2),
+];
+
+/// The silhouette convolution's single bind group.
+#[allow(dead_code)]
+pub const SHADOW_GROUPS: &[&[Entry]] = &[SHADOW_GROUP0];
+
+/// Group 1 of the Vulkan native external-frame module: `EXTERNAL_GROUP1`
+/// plus the designated texture/sampler pair at bindings 5–6 that the
+/// `external_native` build lowering merges into the combined sampled
+/// image at binding 5 (the `VkSamplerYcbcrConversion` sampler).
+///
+/// Used by `build.rs` only — the Vulkan descriptor layout is declared in
+/// `render::external::vulkan` because an immutable sampler cannot be
+/// expressed in this table.
+#[allow(dead_code)]
+pub const NATIVE_EXTERNAL_GROUP1: &[Entry] = &[
+    Entry::texture_uint(0),
+    Entry::texture_uint(1),
+    Entry::texture(2),
+    Entry::texture(3),
+    Entry::uniform(4, FRAGMENT, false, EXTERNAL_PARAMS_SIZE),
+    Entry::texture(5),
+    Entry::sampler(6),
+];
+
+/// The Vulkan native external-frame module's groups.
+///
+/// Used by `build.rs` only.
+#[allow(dead_code)]
+pub const NATIVE_EXTERNAL_GROUPS: &[&[Entry]] = &[ENGINE_GROUP0, NATIVE_EXTERNAL_GROUP1];
+
+/// One resource's Metal argument slots.
+///
+/// Used by `build.rs` to emit matching MSL.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct Target {
+    /// `[[buffer(n)]]` slot.
+    pub buffer: Option<u8>,
+    /// `[[texture(n)]]` slot.
+    pub texture: Option<u8>,
+    /// `[[sampler(n)]]` slot.
+    pub sampler: Option<u8>,
+    /// Whether the binding writes its buffer (read-only storage: false).
+    pub mutable: bool,
+}
+
+/// A stage's complete Metal resource assignment for a pipeline layout.
+///
+/// Used by `build.rs` to emit matching MSL.
+#[allow(dead_code)]
+#[derive(Default)]
+pub struct StagePlan {
+    /// `(group, binding, slots)` in layout order.
+    pub targets: Vec<(u32, u32, Target)>,
+    /// Slot of the `_mslBufferSizes` argument, when the stage needs or
+    /// reserves one.
+    pub sizes_buffer: Option<u8>,
+}
+
+/// wgpu-hal Metal's slot assignment for `groups` seen by `stage`
+/// (`VERTEX`/`FRAGMENT`/`COMPUTE`): each resource kind counts separately
+/// through the groups in order; storage buffers force a trailing sizes
+/// buffer; the vertex stage always reserves one for vertex pulling.
+///
+/// Used by `build.rs` to emit matching MSL.
+#[allow(dead_code)]
+pub fn metal_plan(groups: &[&[Entry]], stage: u8) -> StagePlan {
+    let (mut buffers, mut textures, mut samplers) = (0u8, 0u8, 0u8);
+    let mut plan = StagePlan::default();
+    let mut needs_sizes = false;
+    for (group, entries) in groups.iter().enumerate() {
+        for entry in *entries {
+            if matches!(entry.kind, Kind::StorageRead | Kind::Storage) {
+                needs_sizes |= entry.stages & stage != 0;
+            }
+            if entry.stages & stage == 0 {
+                continue;
+            }
+            let mut target = Target::default();
+            match entry.kind {
+                Kind::Uniform | Kind::StorageRead | Kind::Storage => {
+                    target.buffer = Some(buffers);
+                    buffers += 1;
+                }
+                Kind::Texture { .. } | Kind::TextureUint => {
+                    target.texture = Some(textures);
+                    textures += 1;
+                }
+                Kind::Sampler => {
+                    target.sampler = Some(samplers);
+                    samplers += 1;
+                }
+            }
+            plan.targets.push((
+                u32::try_from(group).expect("few groups"),
+                entry.binding,
+                target,
+            ));
+        }
+    }
+    if needs_sizes || stage == VERTEX {
+        plan.sizes_buffer = Some(buffers);
+    }
+    plan
+}
+
+/// wgpu-hal Vulkan's binding rule: a WGSL `@binding` maps to its entry's
+/// ordinal position within the group.
+///
+/// Used by `build.rs` to emit matching SPIR-V.
+#[allow(dead_code)]
+pub fn vulkan_slot(group: &[Entry], binding: u32) -> u32 {
+    group
+        .iter()
+        .position(|e| e.binding == binding)
+        .unwrap_or_else(|| panic!("no binding {binding} in the layout table"))
+        .try_into()
+        .expect("layout fits u32")
+}
+
+/// Unfiltered source texture for immutable-capture headroom reduction.
+pub const HEADROOM_GROUP0: &[Entry] = &[Entry {
+    binding: 0,
+    stages: FRAGMENT,
+    kind: Kind::Texture { filterable: false },
+    dynamic_offset: false,
+    min_size: 0,
+}];
+#[allow(dead_code)]
+pub const HEADROOM_GROUPS: &[&[Entry]] = &[HEADROOM_GROUP0];

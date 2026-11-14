@@ -6,10 +6,14 @@
 - Tap shortcuts
 - Gesture recognizers
 - Combining gestures
+- Which view receives a press
 - Hover
 - Pointer cursor
 - Drag and drop
+- Key handling
 - Reactive pressed/hover visuals
+- Reporting a control's state
+- Selected controls
 
 The compiled examples for this file are `examples/gesture`, `examples/hover`, and
 `examples/drag_drop` in the WaterUI repository.
@@ -29,7 +33,7 @@ crate root, so import the types explicitly:
 
 ```rust
 use waterui::cursor::CursorStyle;
-use waterui::drag_drop::DragData;
+use waterui::drag_drop::{Files, Transferable};
 use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
 ```
 
@@ -45,9 +49,11 @@ text("Simple Tap")
     .state(&taps)
 ```
 
-Siblings: `.on_tap_gesture_count(2, handler)` for a fixed tap count, and — behind the
-`std` cargo feature, which is not among the defaults — `.on_tap_haptic(intensity,
-handler)` / `.on_tap_haptic_default(handler)` to pair the tap with haptic feedback. Use
+Siblings: `.on_tap_gesture(handler)` (alias of `.on_tap`), `.on_tap_gesture_count(2,
+handler)` for a fixed tap count, `.on_long_press_gesture(milliseconds, handler)`, and —
+behind the `std` cargo feature, which is not among the defaults — `.on_tap_haptic(intensity,
+handler)` / `.on_tap_haptic_default(handler)` and `.on_long_press_haptic(..)` /
+`.on_long_press_haptic_default(..)` to pair the gesture with haptic feedback. Use
 `.on_tap` for tappable *content*; use `button(..)` when the
 thing is semantically a button — the button brings platform chrome and the `BUTTON`
 accessibility role.
@@ -76,6 +82,31 @@ Two argument types are traps:
 complete the set. All gesture structs are `#[non_exhaustive]` — construct them only
 through these constructors.
 
+A recognized gesture's payload is read in the handler with `Use<TapEvent>`,
+`Use<LongPressEvent>`, `Use<DragEvent>` (`location()`, `translation()`, `velocity()`,
+`phase()`), `Use<MagnificationEvent>` or `Use<RotationEvent>`, all from
+`waterui::gesture`. Pointer motion inside a view is `.event(Event::HoverMove, handler)`,
+whose handler reads the local pointer `location()` with `Use<HoverEvent>` (both from
+`waterui::event`); `.on_hover_enter` / `.on_hover_exit` carry no `HoverEvent`, so
+`Use<HoverEvent>` fails to extract there.
+
+`.gesture(g, handler)` is shorthand for `.gesture_observer(GestureObserver::new(g,
+handler))` (`GestureObserver` from `waterui::gesture`). Use `.gesture_observer(..)` when
+the observer is built or stored separately; `GestureObserver::builder(g).action(handler)`
+is the equivalent builder form.
+
+`.buttons(..)` restricts tap, long-press, and drag recognizers to a `PointerButtons`
+mask (default `PRIMARY`). A recognizer activates only when the pressing
+`PointerButton` is in the mask; a pointer sequence belongs to one button, so a
+second button pressed mid-sequence does not join it. `TapEvent`, `LongPressEvent`,
+and `DragEvent` carry the pressing `button`.
+
+```rust
+use waterui::gesture::PointerButtons;
+
+view.gesture(TapGesture::new().buttons(PointerButtons::MIDDLE), handler) // middle click
+```
+
 ## Combining gestures
 
 `.then(..)` sequences gestures; the handler fires only after the whole sequence succeeds:
@@ -93,6 +124,18 @@ view.gesture(
 
 Note in passing: `Binding::container("Waiting…")` infers `Binding<&'static str>`, which is
 a perfectly good status-string binding — `text!("{status}")` accepts it directly.
+
+## Which view receives a press
+
+Hit testing is pass-through: only views with a press handler (`.on_tap`, `.gesture`,
+`.draggable`) or inherent interactivity (a button, slider, field) capture a press;
+layout containers, `Spacer` and plain content do not. The topmost interactive view
+under the pointer wins, so an `.on_tap` on a child shadows an `.on_tap` on its ancestor
+and a row-level handler never fires where a tappable child covers the pointer.
+Recognizers attached to the *same* view combine as above. `.hittable(false)` (or a
+signal of `bool`) makes a view and everything inside it transparent to presses without
+changing how it draws; `.disabled(..)` does the same and also gives every control in the
+subtree its disabled look and accessibility state.
 
 ## Hover
 
@@ -130,14 +173,22 @@ pointing hand by default. Like hover, cursors exist only on pointer platforms.
 
 ## Drag and drop
 
-Three modifiers, one payload type. `DragData::text(..)` / `DragData::url(..)` accept
-`impl Into<Str>`, so runtime `String`s are fine:
+Three modifiers; a drag carries one typed value. `.draggable(value)` takes any
+`Transferable` type, and a destination accepts exactly the type of its handler's first
+argument. `Str`, `Url` and `Files` also cross to other applications; an app type marked
+`Transferable` stays in the process:
 
 ```rust
-use waterui::drag_drop::DragData;
+use waterui::drag_drop::Transferable;
+use waterui::reactive::impl_constant;
+
+#[derive(Debug, Clone, PartialEq)]
+struct Fruit(&'static str);
+impl Transferable for Fruit {}
+impl_constant!(Fruit); // lets a plain `Fruit` value be passed to `.draggable(..)`
 
 fn fruit_card(name: &'static str) -> impl View {
-    text(name).padding().draggable(DragData::text(name))
+    text(name).padding().draggable(Fruit(name))
 }
 
 // `+ use<>` keeps the borrowed parameters out of the returned view's lifetime (they are
@@ -146,8 +197,8 @@ fn basket(collected: &Binding<Vec<String>>, hovering: &Binding<bool>) -> impl Vi
     vstack((text("Basket"), text!("{count} items", count = collected.map(|v| v.len()))))
         .padding()
         .drop_destination(
-            |State(collected): State<Binding<Vec<String>>>, data: DragData| {
-                collected.with_mut(|v| v.push(data.as_str().to_string()));
+            |fruit: Fruit, State(collected): State<Binding<Vec<String>>>| {
+                collected.with_mut(|v| v.push(fruit.0.to_string()));
             },
         )
         .drop_hover(hovering)
@@ -157,18 +208,54 @@ fn basket(collected: &Binding<Vec<String>>, hovering: &Binding<bool>) -> impl Vi
 
 The parts an agent cannot guess:
 
-- **The dropped payload arrives as a handler parameter.** `DragData` is an extractor, so
-  `data: DragData` sits alongside `State<T>` parameters in any order. There is no
-  `|data| ...` callback form.
+- **The dropped value is the handler's first parameter, and its type is the filter.**
+  `|text: Str| ..` accepts text drags only, `|files: Files| ..` file drags only,
+  `|fruit: Fruit| ..` in-process `Fruit` drags only; any other drag is neither
+  highlighted nor delivered. Extractors such as `State<T>` follow it.
 - **`.drop_hover(&binding)` must chain directly on `.drop_destination(..)`.** It exists
   only on the value that call returns; inserting another modifier between them is a
   compile error. It sets the binding `true` on drag-enter, `false` on exit — feed it to
   a background or scale signal for a highlight. `.on_enter(f)` / `.on_exit(f)` chain in
   the same position and *add* handlers rather than replacing them.
-- `.draggable(..)` takes `impl IntoComputed<DragData>`, so the payload may itself be
-  reactive.
+- `.draggable(..)` takes a plain transferable value or any signal of one (`Binding<T>`,
+  `Computed<T>`); the payload type is inferred from it. A plain value of your own type
+  needs `impl_constant!` (as above). Text is `.draggable(Str::from(..))`.
 - The initiating gesture is platform-defined: click-drag on macOS, long-press-drag on
   iOS and Android. Do not add your own long-press recognizer on top.
+
+## Key handling
+
+`.on_key_press(handler)` attaches a key handler to a view. The focused view sees each
+key first; a key it does not consume bubbles to the nearest ancestor with an
+`OnKeyPress` handler, then the next, stopping at the first `KeyHandling::Handled`. The
+handler runs with `KeyPress` in its environment — read it with `Use<KeyPress>` — and
+returns `Handled` or `Ignored`. The backend is what decides "consumed": a single-line
+`field` eats text-editing keys and submits Return through `.on_submit(..)` when one is
+set; Escape, Up/Down, PageUp/PageDown and a Return with no `on_submit` bubble out.
+
+```rust
+use waterui::key::{Key, KeyHandling, KeyPress, NamedKey};
+
+search_panel()
+    .on_key_press(|Use(press): Use<KeyPress>, State(open): State<Binding<bool>>| {
+        if *press.key() == Key::Named(NamedKey::Escape) {
+            open.set(false);
+            KeyHandling::Handled
+        } else {
+            KeyHandling::Ignored
+        }
+    })
+    .state(&open)
+```
+
+- Return `Ignored`, never a missing `Handled` — `Ignored` is what keeps the key bubbling.
+- `KeyPress` exposes accessors: `press.key()` is the layout-aware `&Key`,
+  `press.code()` the physical `Code` (layout-independent bindings match this),
+  `press.modifiers()` a `Modifiers` bitset (`Modifiers::SHIFT`, `CONTROL`, `ALT`,
+  `META`), `press.repeat()` marks auto-repeat. `Key`, `Code`, `Modifiers` and
+  `NamedKey` are all in `waterui::key`.
+- `field("Search", &query).on_submit(handler)` fires on Return in a line-limited
+  field; with no line limit Return inserts a newline and never submits.
 
 ## Reactive pressed/hover visuals
 
@@ -195,3 +282,49 @@ Note the two opacities: `Color::with_opacity(0.2)` bakes alpha into the color va
 while `.opacity(signal)` is the reactive view modifier doing the cross-fade. Signal
 transforms (`.select`, `.map`, `.zip`) take `&self`, so no `.clone()` is needed before
 them — clone only when a finished signal is consumed twice, as `.scale(x, y)` does.
+
+## Reporting a control's state
+
+`.on_hover_enter`/`.on_hover_exit` report the pointer entering and leaving *that*
+modifier's view. When chrome lives around a control it does not own — a floating surface's
+shadow, a chip's outline, a split button's half — ask the backend for the whole
+interaction state instead: `.interaction_state(&binding)` writes the
+`InteractionState` of the outermost interactive control at or inside the view it
+is applied to, every time it changes. The binding sits at `InteractionState::empty()`
+while no interactive control is there.
+
+```rust
+use waterui::interaction::InteractionState;
+use waterui::reactive::{Binding, binding};
+
+let state: Binding<InteractionState> = binding(InteractionState::empty());
+let lift = state.map(|s| if s.contains(InteractionState::HOVERED) { -6.0 } else { 0.0 });
+
+vstack((
+    text!("Chip"),
+    button("Action").action(|| {}),
+))
+.offset(0.0, lift)            // chrome follows the control's state
+.interaction_state(&state)
+```
+
+`InteractionState` is a bitflags set — `HOVERED`, `FOCUSED` (focus-visible only,
+like `:focus-visible`: keyboard focus, never a click), `PRESSED`, `DRAGGED`,
+`SELECTED`, `DISABLED` — so test it with `.contains(...)`, never `==`.
+
+## Selected controls
+
+`.selected(..)` takes `impl IntoComputed<bool>` and marks the interactive control
+it modifies as selected: the control gains `InteractionState::SELECTED` (so its
+style's selected values apply) and assistive technology announces it as selected.
+It applies to the control it modifies — unlike `.disabled(..)` it is *not*
+inherited by nested controls.
+
+```rust
+let selection: Binding<i32> = binding(0);
+text!("Inbox").selected(selection.map(|s| s == 0))
+```
+
+Navigation destinations, tabs, and list items are the usual carriers; combine
+with `.interaction_state` when the row's own chrome (a selection indicator,
+say) must also follow hover or press.

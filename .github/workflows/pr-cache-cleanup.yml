@@ -1,0 +1,53 @@
+name: PR Cache Cleanup
+
+# A pull request's caches live on `refs/pull/<N>/merge` and are only ever
+# restorable by that pull request, yet they count against the repository's
+# 10 GiB Actions cache quota until GitHub's 7-day expiry or LRU eviction gets
+# to them — and LRU eviction is exactly what the integration-branch writers'
+# headroom check has to keep from reaching `dev`'s live caches. Delete them the
+# moment the pull request closes (merged or not).
+#
+# `pull_request_target` so pull requests from forks get a token that may
+# delete caches. This workflow never checks out or runs pull request code: it
+# only reads the event payload and calls the cache API.
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    name: Delete pull request caches
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Delete caches on the pull request's refs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          set -euo pipefail
+          refs=("refs/pull/${PR_NUMBER}/merge" "refs/pull/${PR_NUMBER}/head")
+          # A same-repository head branch may also hold caches from push
+          # runs. Never touch the integration branches.
+          if [ "${HEAD_REPO}" = "${GH_REPO}" ] && [ "${HEAD_REF}" != "dev" ] && [ "${HEAD_REF}" != "main" ]; then
+            refs+=("refs/heads/${HEAD_REF}")
+          fi
+          deleted=0
+          for ref in "${refs[@]}"; do
+            ids="$(gh cache list --ref "${ref}" --limit 1000 --json id --jq '.[].id')"
+            for id in ${ids}; do
+              # Another job may have deleted it in the meantime.
+              if gh cache delete "${id}"; then
+                deleted=$((deleted + 1))
+              else
+                echo "::warning::could not delete cache ${id} on ${ref}"
+              fi
+            done
+          done
+          echo "deleted ${deleted} cache entries for #${PR_NUMBER}"

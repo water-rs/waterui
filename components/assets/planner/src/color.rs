@@ -19,9 +19,18 @@ pub struct HexColor([u8; 3]);
 /// A string that is not a `#RRGGBB` color.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error("Invalid color '{value}'; expected #RRGGBB")]
+#[non_exhaustive]
 pub struct InvalidHexColor {
     /// The rejected text.
-    pub value: String,
+    value: String,
+}
+
+impl InvalidHexColor {
+    /// The rejected text.
+    #[must_use]
+    pub const fn value(&self) -> &str {
+        self.value.as_str()
+    }
 }
 
 impl HexColor {

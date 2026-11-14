@@ -1,0 +1,23 @@
+{%- import "bench/_macros.html" as macros -%}
+<section class="timeline-grid"><section class="line-chart">
+<div><h4>Frame time</h4><span>{{ timing.min_label }} - {{ timing.max_label }}</span></div>
+<svg viewBox="0 0 100 100" role="img" aria-label="Raw frame timing trend">
+{% for b in timing.budget_lines %}<line class="budget {{ b.class }}" x1="6" y1="{{ b.y }}" x2="94" y2="{{ b.y }}"></line>{% endfor %}
+<polyline class="line-total" points="{{ timing.total_points }}"></polyline>
+<polyline class="line-gpu" points="{{ timing.gpu_points }}"></polyline>
+<polyline class="line-render" points="{{ timing.render_points }}"></polyline>
+<polyline class="line-rebuild" points="{{ timing.rebuild_points }}"></polyline>
+<g class="sample-points">{% for s in timing.samples %}{% call macros::sample_circle(s) %}{% endcall %}{% endfor %}</g>
+</svg>
+<div class="hover-inspector" aria-live="polite">Hover a sample</div>
+<div class="legend"><span class="total">total</span><span class="gpu">GPU pipeline</span><span class="render">render</span><span class="rebuild">rebuild</span><span class="budget-label">budget markers appear when inside range</span></div>
+</section><section class="line-chart">
+<div><h4>Throughput FPS</h4><span>{{ fps.min_label }} - {{ fps.max_label }}</span></div>
+<svg viewBox="0 0 100 100" role="img" aria-label="Throughput FPS trend">
+{% for b in fps.budget_lines %}<line class="budget {{ b.class }}" x1="6" y1="{{ b.y }}" x2="94" y2="{{ b.y }}"></line>{% endfor %}
+<polyline class="line-fps" points="{{ fps.fps_points }}"></polyline>
+<g class="sample-points">{% for s in fps.samples %}{% call macros::sample_circle(s) %}{% endcall %}{% endfor %}</g>
+</svg>
+<div class="hover-inspector" aria-live="polite">Hover a frame</div>
+<div class="legend"><span class="fps">offscreen throughput FPS</span><span class="budget-label">display budgets appear when inside range</span></div>
+</section></section>

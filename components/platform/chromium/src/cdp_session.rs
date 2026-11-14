@@ -12,15 +12,42 @@ use waterui_core::impl_debug;
 
 /// A raw CDP event emitted by Chromium.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CdpEvent {
     /// Fully qualified protocol method, such as `Page.loadEventFired`.
-    pub method: Cow<'static, str>,
+    method: Cow<'static, str>,
     /// Event parameter object.
-    pub params: Value,
+    params: Value,
+}
+
+impl CdpEvent {
+    /// Fully qualified protocol method, such as `Page.loadEventFired`.
+    #[must_use]
+    pub const fn method(&self) -> &Cow<'static, str> {
+        &self.method
+    }
+
+    /// Event parameter object.
+    #[must_use]
+    pub const fn params(&self) -> &Value {
+        &self.params
+    }
+}
+
+impl CdpEvent {
+    /// The event `method` carrying `params`.
+    #[must_use]
+    pub fn new(method: impl Into<Cow<'static, str>>, params: Value) -> Self {
+        Self {
+            method: method.into(),
+            params,
+        }
+    }
 }
 
 /// Errors returned by CDP commands and event decoding.
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CdpError {
     /// Chromium rejected a protocol command.
     #[error("CDP command `{method}` failed ({code}): {message}")]
@@ -266,7 +293,7 @@ mod tests {
             futures::executor::block_on(session.execute(GetNavigationHistoryParams::default()))
                 .expect("typed CDP command should decode");
         assert_eq!(typed.current_index, 0);
-        assert!(typed.entries.is_empty());
+        assert_eq!(typed.entries, []);
 
         let calls = transport.calls.borrow();
         assert_eq!(calls.len(), 2);

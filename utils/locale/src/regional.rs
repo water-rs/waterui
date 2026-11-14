@@ -5,12 +5,12 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 #[cfg(not(target_arch = "wasm32"))]
 use std::thread;
 use std::time::Duration;
 
-use nami::Binding;
+use nami::{Binding, Signal};
 use waterui_core::Environment;
 use waterui_core::extract::Extractor;
 
@@ -43,14 +43,19 @@ impl Runtime {
         }
     }
 
+    /// Locks the shared state.
+    ///
+    /// Every critical section is a field read or a map insert/remove, and no
+    /// listener runs while the lock is held, so nothing can panic under the
+    /// lock and poison it.
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state
+            .lock()
+            .expect("the regional runtime lock is never held across code that can panic")
+    }
+
     fn remove_listener(&self, id: u64) {
-        let removed = {
-            let mut state = self
-                .state
-                .lock()
-                .expect("waterui-locale regional runtime mutex poisoned");
-            state.listeners.remove(&id)
-        };
+        let removed = self.lock().listeners.remove(&id);
         drop(removed);
     }
 }
@@ -202,18 +207,9 @@ impl fmt::Display for InvalidLocaleTag {
 impl Error for InvalidLocaleTag {}
 
 /// Returns the current shared runtime locale settings.
-///
-/// # Panics
-///
-/// Panics if the regional runtime mutex is poisoned.
 #[must_use]
 pub fn current_settings() -> RegionalContext {
-    runtime()
-        .state
-        .lock()
-        .expect("waterui-locale regional runtime mutex poisoned")
-        .current
-        .clone()
+    runtime().lock().current.clone()
 }
 
 /// Sets the shared runtime locale using a BCP 47 tag.
@@ -239,7 +235,8 @@ pub fn set_locale_tag(tag: impl AsRef<str>) -> Result<(), InvalidLocaleTag> {
 ///
 /// # Panics
 ///
-/// Panics if the regional runtime mutex is poisoned.
+/// Never in practice: the only panic is the overflow of a `u64` listener id
+/// counter that starts at 1.
 #[must_use]
 pub fn register_listener(
     listener: impl Fn(&RegionalContext) + Send + Sync + 'static,
@@ -247,15 +244,12 @@ pub fn register_listener(
     let listener: Listener = Arc::new(move |context| listener(&context));
 
     let id = {
-        let mut state = runtime()
-            .state
-            .lock()
-            .expect("waterui-locale regional runtime mutex poisoned");
+        let mut state = runtime().lock();
         let id = state.next_listener_id;
         state.next_listener_id = state
             .next_listener_id
             .checked_add(1)
-            .expect("waterui-locale regional listener id overflow");
+            .expect("a u64 listener id counter that starts at 1 cannot overflow");
         state.listeners.insert(id, listener);
         id
     };
@@ -284,59 +278,67 @@ fn start_auto_refresh(interval: Duration) {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn schedule_auto_refresh(interval: Duration) {
-    let _handle = thread::Builder::new()
+    let spawned = thread::Builder::new()
         .name("waterui-locale-regional-refresh".to_string())
         .spawn(move || {
             loop {
                 thread::sleep(interval);
                 let _ = refresh();
             }
-        })
-        .expect("failed to spawn waterui-locale regional refresh thread");
+        });
+    if let Err(error) = spawned {
+        tracing::error!(
+            %error,
+            "failed to spawn the waterui-locale regional refresh thread; the system locale is not refreshed automatically"
+        );
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
 fn schedule_auto_refresh(interval: Duration) {
     use wasm_bindgen::{JsCast, closure::Closure};
 
-    let window = web_sys::window().expect("browser locale refresh requires a Window");
+    let Some(window) = web_sys::window() else {
+        tracing::error!(
+            "browser locale refresh requires a Window; the system locale is not refreshed automatically"
+        );
+        return;
+    };
     let callback = Closure::<dyn FnMut()>::new(|| {
         let _ = refresh();
     });
-    window
-        .add_event_listener_with_callback("languagechange", callback.as_ref().unchecked_ref())
-        .expect("failed to subscribe to browser locale changes");
-    window
-        .set_interval_with_callback_and_timeout_and_arguments_0(
-            callback.as_ref().unchecked_ref(),
-            i32::try_from(interval.as_millis())
-                .expect("browser locale refresh interval exceeds i32"),
-        )
-        .expect("failed to schedule browser locale refresh");
+    if let Err(error) =
+        window.add_event_listener_with_callback("languagechange", callback.as_ref().unchecked_ref())
+    {
+        tracing::error!(
+            ?error,
+            "failed to subscribe to browser locale changes; the system locale is refreshed only on the interval"
+        );
+    }
+    let interval_millis = i32::try_from(interval.as_millis())
+        .expect("the refresh interval is the 2 second default, which fits i32 milliseconds");
+    if let Err(error) = window.set_interval_with_callback_and_timeout_and_arguments_0(
+        callback.as_ref().unchecked_ref(),
+        interval_millis,
+    ) {
+        tracing::error!(
+            ?error,
+            "failed to schedule browser locale refresh; the system locale is refreshed only on a languagechange event"
+        );
+    }
     callback.forget();
 }
 
 fn refresh() -> RegionalContext {
-    let next = {
-        let state = runtime()
-            .state
-            .lock()
-            .expect("waterui-locale regional runtime mutex poisoned");
-        state
-            .override_context
-            .clone()
-            .unwrap_or_else(detect_system_context)
-    };
+    let override_context = runtime().lock().override_context.clone();
+    let next = override_context.unwrap_or_else(detect_system_context);
 
     publish_if_changed(next)
 }
 
 fn set_settings(context: RegionalContext) -> RegionalContext {
     let listeners = {
-        let mut state = runtime()
-            .state
-            .lock()
-            .expect("waterui-locale regional runtime mutex poisoned");
+        let mut state = runtime().lock();
         state.override_context = Some(context.clone());
         if state.current == context {
             return context;
@@ -354,10 +356,7 @@ fn set_settings(context: RegionalContext) -> RegionalContext {
 
 fn publish_if_changed(next: RegionalContext) -> RegionalContext {
     let listeners = {
-        let mut state = runtime()
-            .state
-            .lock()
-            .expect("waterui-locale regional runtime mutex poisoned");
+        let mut state = runtime().lock();
 
         if state.current == next {
             return next;
@@ -394,10 +393,6 @@ fn detect_system_context() -> RegionalContext {
     }
 
     let locale_tag = preferred_languages[0].clone();
-    // ESP-IDF has no OS timezone database; the asymmetry is explicit.
-    #[cfg(target_os = "espidf")]
-    let timezone = "UTC".to_string();
-    #[cfg(not(target_os = "espidf"))]
     let timezone = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string());
 
     RegionalContext::new(locale_tag, preferred_languages, timezone)
@@ -434,10 +429,7 @@ fn normalize_locale_tag(raw: &str) -> String {
             part.to_ascii_lowercase()
         } else if part.len() == 4 && part.chars().all(|c| c.is_ascii_alphabetic()) {
             let mut chars = part.chars();
-            let first = chars
-                .next()
-                .map(|c| c.to_ascii_uppercase())
-                .unwrap_or_default();
+            let first = chars.next().map_or_default(|c| c.to_ascii_uppercase());
             let rest = chars.as_str().to_ascii_lowercase();
             format!("{first}{rest}")
         } else if (part.len() == 2 && part.chars().all(|c| c.is_ascii_alphabetic()))
@@ -474,7 +466,7 @@ fn extract_region(locale_tag: &str) -> Option<String> {
 impl Extractor for RegionalContext {
     fn extract(env: &Environment) -> Result<Self, waterui_core::Error> {
         if let Some(locale) = env.get::<Binding<Locale>>() {
-            return Ok(current_settings().with_locale(&locale.get()));
+            return Ok(current_settings().with_locale(&locale.snapshot()));
         }
 
         if let Some(context) = env.get::<Self>().cloned() {

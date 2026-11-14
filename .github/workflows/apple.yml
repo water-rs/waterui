@@ -1,0 +1,485 @@
+name: Apple backend
+
+# The per-change gate for the in-tree Apple backend (backends/apple:
+# `waterui-apple`, Rust on objc2) and the thin Swift host package
+# (backends/apple/Sources/WaterUI, published through the root Package.swift).
+# Only changes that can affect the backend's build, tests, benches or lint
+# outcome start it — every job draws from the org's macOS pool (20 of 60
+# total slots). The backend consumes the in-tree component and foundation
+# crates as workspace members, so those paths trigger this lane too: a
+# foundation change must not merge while it breaks the Apple build.
+
+permissions:
+  contents: read
+  pull-requests: read
+
+on:
+  # Trunk only: a topic branch that also has a pull request
+  # would otherwise run the job twice for one commit.
+  push:
+    branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - Package.swift
+      - ".swiftpm/**"
+      - "backends/apple/**"
+      - "backends/core/**"
+      - "core/**"
+      - "components/**"
+      - "graphics/**"
+      - "src/**"
+      - "macros/**"
+      - "testing/**"
+      - "utils/**"
+      - "facade.rs"
+      - ".cargo/**"
+      - ".config/**"
+      - "rust-toolchain.toml"
+      - ".periphery.yml"
+      - .github/workflows/apple.yml
+      - ".github/scripts/**"
+      - ".github/actions/metal-toolchain/**"
+      - ".github/actions/generate-scene-assets/**"
+      - ".github/actions/setup-rust/**"
+      - ".github/actions/cargo-sources/**"
+      - ".github/actions/retire-cargo-caches/**"
+      - ".github/actions/prune-cargo-target/**"
+      - ".github/actions/cache-headroom/**"
+  pull_request:
+    branches: ["**"]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - Package.swift
+      - ".swiftpm/**"
+      - "backends/apple/**"
+      - "backends/core/**"
+      - "core/**"
+      - "components/**"
+      - "graphics/**"
+      - "src/**"
+      - "macros/**"
+      - "testing/**"
+      - "utils/**"
+      - "facade.rs"
+      - ".cargo/**"
+      - ".config/**"
+      - "rust-toolchain.toml"
+      - ".periphery.yml"
+      - .github/workflows/apple.yml
+      - ".github/scripts/**"
+      - ".github/actions/metal-toolchain/**"
+      - ".github/actions/generate-scene-assets/**"
+      - ".github/actions/setup-rust/**"
+      - ".github/actions/cargo-sources/**"
+      - ".github/actions/retire-cargo-caches/**"
+      - ".github/actions/prune-cargo-target/**"
+      - ".github/actions/cache-headroom/**"
+
+# A pull request cancels its superseded run. An integration push queues
+# instead: its `rust` job is the cache writer for that ref, and cancelling
+# it between its save and its retirement leaves the superseded generation
+# behind beside the new one (#2338). The group still drops a queued run
+# that a newer push supersedes.
+concurrency:
+  group: apple-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Same toolchain policy as ci.yml (#328): no compile wrapper and no
+  # incremental artifacts on CI — a fresh runner can never reuse them, so
+  # they only bloat the restored cache — and the per-change gate does not
+  # pay for debuginfo it never reads. Measurement profiles that need them
+  # (release metrics, benches) are set by their own jobs.
+  RUSTC_WRAPPER: ""
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  # The Swift legs (format/lint/ast-grep, the four build shapes, Periphery)
+  # only run when a real Swift input moved: the host package manifest, the
+  # adapter, the test/reference sources, or the lint configs. A Rust-only
+  # change still gets every compile/lint check below — the skipped jobs
+  # report neutral, which a required status accepts.
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      swift: ${{ steps.filter.outputs.swift == 'true' || steps.filter.outputs.workflows == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'push'
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          base: ${{ github.ref_name }}
+          filters: |
+            swift:
+              - "Package.swift"
+              - ".swiftpm/**"
+              - "backends/apple/**/*.swift"
+              - "backends/apple/.swiftformat"
+              - "backends/apple/.swiftlint.yml"
+              - "backends/apple/.ci/**"
+              - ".periphery.yml"
+            workflows:
+              - ".github/workflows/apple.yml"
+              - ".github/actions/**"
+
+
+  # None of the lint tools need macOS: swiftformat and ast-grep are pure source
+  # tools, and the pinned swiftlint-static binary bundles SourceKit (which the
+  # `unused_import` rule requires). Running on Ubuntu frees one slot of the
+  # org's 20-slot macOS pool for every run. Tool versions are pinned in the
+  # cache key; bump them there to upgrade.
+  lint:
+    name: lint
+    needs: changes
+    if: needs.changes.outputs.swift == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        id: lint-tools
+        with:
+          path: backends/apple/.ci/bin
+          key: lint-tools-v2-swiftlint-0.65.1-swiftformat-0.63.0-ast-grep-0.45.3
+      - name: Install lint tools
+        if: steps.lint-tools.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p backends/apple/.ci/bin && cd backends/apple/.ci/bin
+          curl -sSfL -o /tmp/swiftlint.zip https://github.com/realm/SwiftLint/releases/download/0.65.1/swiftlint_linux_amd64.zip
+          unzip -jo /tmp/swiftlint.zip swiftlint-static -d .
+          mv swiftlint-static swiftlint
+          curl -sSfL -o /tmp/swiftformat.zip https://github.com/nicklockwood/SwiftFormat/releases/download/0.63.0/swiftformat_linux.zip
+          unzip -jo /tmp/swiftformat.zip -d .
+          mv swiftformat_linux swiftformat
+          curl -sSfL -o /tmp/ast-grep.zip https://github.com/ast-grep/ast-grep/releases/download/0.45.3/app-x86_64-unknown-linux-gnu.zip
+          unzip -jo /tmp/ast-grep.zip -d .
+          chmod +x swiftlint swiftformat sg ast-grep
+      - uses: actions/cache/save@v4
+        if: steps.lint-tools.outputs.cache-hit != 'true'
+        with:
+          path: backends/apple/.ci/bin
+          key: ${{ steps.lint-tools.outputs.cache-primary-key }}
+      # The lint configs live beside the source they cover; running from the
+      # backend directory keeps their `included`/relative paths unambiguous.
+      - run: echo "$PWD/backends/apple/.ci/bin" >> "$GITHUB_PATH"
+      - name: SwiftFormat lint
+        run: cd backends/apple && swiftformat . --lint --config .swiftformat
+      - name: SwiftLint
+        run: cd backends/apple && swiftlint lint --strict --config .swiftlint.yml
+      - name: ast-grep
+        run: ast-grep scan backends/apple/Sources backends/apple/Tests --inline-rules "$(cat backends/apple/.ci/sg/swift.yml)" --report-style short
+
+  # The Swift side is the thin host adapter in backends/apple/Sources/WaterUI
+  # — a single file that binds the backend's `waterui_apple_*` entry points
+  # through `@_extern(c)`. There is no generated header to sync and no Swift
+  # compilation conditions left: the component shapes the `WATERUI_MAP`/
+  # `WATERUI_NO_GPU` legs used to cover are Cargo features now, compiled in
+  # the Rust lane below, so this job builds the one remaining shape per
+  # configuration. The repository-root Package.swift is the manifest.
+  swift:
+    name: swift (${{ matrix.configuration }})
+    needs: changes
+    if: needs.changes.outputs.swift == 'true'
+    runs-on: xcode-27
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [debug, release]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore build cache
+        uses: actions/cache@v4
+        with:
+          path: .build
+          # `indexed`: a cache built without the index store would leave
+          # Periphery an index of only the files recompiled since.
+          key: swiftpm-indexed-${{ matrix.configuration }}-${{ hashFiles('Package.swift', 'backends/apple/Sources/**', 'backends/apple/Tests/**', '.periphery.yml') }}
+          restore-keys: swiftpm-indexed-${{ matrix.configuration }}-
+      # The debug build also writes the index store Periphery scans below.
+      - name: Build
+        run: >-
+          swift build --configuration ${{ matrix.configuration }}
+          -Xswiftc -warnings-as-errors
+          ${{ matrix.configuration == 'debug' && '--enable-index-store' || '' }}
+      # iOS legs: SwiftPM generates the `waterui-apple-host` workspace and
+      # scheme on demand. Build it for the supported ARM64 simulator and
+      # device destinations; `ONLY_ACTIVE_ARCH`/`ARCHS` keeps the simulator
+      # leg from compiling the retired x86_64 iOS target. Both destinations
+      # are build-only and debug-only: no simulator boots, the device leg
+      # signs nothing, and release adds nothing a compile can observe.
+      - name: Build (ios-simulator)
+        if: matrix.configuration == 'debug'
+        run: >-
+          xcodebuild build -scheme waterui-apple-host
+          -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath .build/ios-sim
+          ONLY_ACTIVE_ARCH=YES ARCHS=arm64
+          SWIFT_TREAT_WARNINGS_AS_ERRORS=YES
+      - name: Build (ios-device)
+        if: matrix.configuration == 'debug'
+        run: >-
+          xcodebuild build -scheme waterui-apple-host
+          -destination 'generic/platform=iOS'
+          -derivedDataPath .build/ios-device
+          ONLY_ACTIVE_ARCH=YES ARCHS=arm64
+          SWIFT_TREAT_WARNINGS_AS_ERRORS=YES
+          CODE_SIGNING_ALLOWED=NO
+      # Lives inside this job rather than its own: a separate job cost a
+      # whole macOS slot just to redo checkout and brew. It scans the index
+      # store the debug build wrote into `.build`.
+      - name: Install Periphery
+        if: matrix.configuration == 'debug'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install periphery
+      # Periphery (last release 3.8.0, upstream archived) looks for the
+      # index store at SwiftPM's pre-6.4 location; SwiftPM 6.4 writes it
+      # under `out/Products/Debug/index/store`, so the scan names it.
+      - name: Run Periphery
+        if: matrix.configuration == 'debug'
+        run: >-
+          periphery scan --config .periphery.yml --skip-build
+          --index-store-path .build/out/Products/Debug/index/store
+
+  # One job for every target: the three clippy passes, the feature shapes,
+  # the tests and the bench compile share one checkout, one toolchain
+  # install and one warm dependency graph — a matrix would pay the full
+  # dependency build again on every leg. The iOS passes need the iOS SDK,
+  # which only a macOS runner has. CARGO_BUILD_TARGET pins the host graph
+  # to aarch64-apple-darwin so the untargeted steps build into the same
+  # target dir the explicit clippy legs use; the iOS legs override it.
+  rust:
+    name: rust
+    runs-on: xcode-27
+    permissions:
+      contents: read
+      # Saves the replacement archives, then retires the superseded
+      # generations of only this job's two cache families
+      # (cargo-sources-macOS-*, apple-target-macOS-ARM64-*) on the job's
+      # own ref.
+      actions: write
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_TARGET: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      # This job is the only Apple cache writer (#328/#458 discipline) and
+      # it writes two deliberately separate archives:
+      #   * `cargo-sources` — only ~/.cargo/registry + ~/.cargo/git, keyed on
+      #     the root lockfile. Source archives are toolchain-independent, so
+      #     every Apple lane on every Rust toolchain restores this same key.
+      #   * `apple-target` — only `target`, keyed on the ACTUAL installed
+      #     rustc fingerprint + OS/arch + the root lockfile, so a toolchain
+      #     roll can never restore a stale object set and a lockfile change
+      #     only degrades to the prefix restore (cargo's own fingerprints
+      #     then decide what rebuilds).
+      # Both are saved on integration pushes to `dev` only, after every
+      # check below has passed — pull requests and manual runs are
+      # restore-only readers. Every other Apple lane restores the same
+      # `cargo-sources` paths/key read-only and caches no `target`, so a
+      # nightly or bench build can never evict this gate's compile cache.
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: clippy, rustfmt
+          targets: aarch64-apple-darwin, aarch64-apple-ios, aarch64-apple-ios-sim, aarch64-apple-ios-macabi
+          cache: "false"
+      - name: Rust toolchain fingerprint
+        id: rustc-fingerprint
+        run: echo "hash=$(rustc -vV | shasum -a 256 | cut -d' ' -f1)" >> "${GITHUB_OUTPUT}"
+      # Every cargo step below appends its JSON messages here (diagnostics
+      # still render to the log): the units they name are what the writer
+      # keeps when it prunes `target` before saving it.
+      - name: Cargo message log
+        run: echo "CARGO_MESSAGES=${RUNNER_TEMP}/cargo-messages.jsonl" >> "${GITHUB_ENV}"
+      - name: Restore Cargo sources
+        id: cargo-sources
+        uses: ./.github/actions/cargo-sources
+      - name: Restore compiled target cache
+        id: apple-target
+        uses: actions/cache/restore@v4
+        with:
+          path: target
+          key: apple-target-${{ runner.os }}-${{ runner.arch }}-${{ steps.rustc-fingerprint.outputs.hash }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            apple-target-${{ runner.os }}-${{ runner.arch }}-${{ steps.rustc-fingerprint.outputs.hash }}-
+      - name: Format
+        run: cargo fmt -p waterui-apple -p cocoa-ui -- --check
+      # `native-test` is on for these legs because the `native`
+      # test target is `required-features`-gated: without the feature
+      # `--all-targets` silently skips it and none of the harness code is
+      # linted. Production paths are unchanged — the feature only makes
+      # the suite's support module exist.
+      - name: Clippy (macOS)
+        run: cargo clippy --timings -pwaterui-apple --all-targets --locked --features native-test,swiftui --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      - name: Clippy (iOS)
+        run: cargo clippy --timings -pwaterui-apple --all-targets --locked --features native-test,swiftui --target aarch64-apple-ios --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      - name: Clippy (iOS simulator)
+        run: cargo clippy --timings -pwaterui-apple --all-targets --locked --features native-test,swiftui --target aarch64-apple-ios-sim --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      # `cocoa-ui` compiles inside the backend's graph, but a dependency is
+      # never linted — its own `-D warnings` legs kept their standalone
+      # coverage shape: `--all-targets` on the same three ARM64 targets.
+      # `native-test` selects the `native` harness=false test target so
+      # `--all-targets` keeps linting it.
+      - name: Clippy (cocoa-ui, macOS)
+        run: cargo clippy --timings -pcocoa-ui --all-targets --locked --features native-test --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      - name: Clippy (cocoa-ui, iOS)
+        run: cargo clippy --timings -pcocoa-ui --all-targets --locked --features native-test --target aarch64-apple-ios --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      - name: Clippy (cocoa-ui, iOS simulator)
+        run: cargo clippy --timings -pcocoa-ui --all-targets --locked --features native-test --target aarch64-apple-ios-sim --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      # Mac Catalyst compiles the same two packages' production graphs for
+      # `aarch64-apple-ios-macabi`, where UIKit arrives through the macOS
+      # SDK's iOSSupport frameworks — a compile error the per-OS legs above
+      # cannot see. It lints like they do rather than merely `cargo check`:
+      # the `native`/`native_app`/`preview` harnesses stay out of
+      # `--all-targets` on their own `required-features = ["native-test"]`,
+      # which this leg does not enable — no macOS-only gate was involved.
+      # The `.cargo/config.toml` `[env]` table supplies the 26.0 deployment
+      # floor cherenkov-gpu's build script asserts.
+      - name: Clippy (Mac Catalyst)
+        run: cargo clippy --timings -pwaterui-apple -p cocoa-ui --all-targets --locked --features swiftui --target aarch64-apple-ios-macabi --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      # The component shapes the Swift `WATERUI_MAP`/`WATERUI_NO_GPU` legs
+      # used to cover are Cargo features now (waterui#343 reasoned the same
+      # way), so they lint under -D warnings like the production legs —
+      # `cargo check` would let a warnings-only regression ship. `map`
+      # pulls waterui-map + cocoa-ui/map.
+      - name: Clippy (map)
+        run: cargo clippy --timings -pwaterui-apple --locked --features map --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      # The no-GPU shape is the default component set minus the features
+      # that depend on GPU support (`gpu_surface` and what requires it:
+      # `applied_filter`, `view_effect`, `picture`, `resolved_gradient`).
+      # The list is derived from the manifest's own `default` table rather
+      # than a hardcoded copy, so a newly ported component joins the shape
+      # automatically and only the GPU set is subtracted. `--no-default-features`
+      # alone would disable every ported component — much weaker than the
+      # old no-gpu leg.
+      - name: Clippy (no GPU components)
+        run: |
+          features="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "waterui-apple") | .features.default[]' \
+            | grep -vx -e gpu_surface -e applied_filter -e view_effect \
+                -e picture -e resolved_gradient \
+            | paste -sd, -)"
+          echo "non-GPU feature set: ${features}"
+          cargo clippy --timings -pwaterui-apple --locked \
+            --no-default-features --features "${features}" --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      # cherenkov-gpu's `cfg(target_vendor = "apple")` surface — the
+      # system-compositor planes (`render/planes/apple*`), the IOSurface
+      # and CVPixelBuffer import, and the macOS `planes` suite — is
+      # compiled away on every Linux lint leg, and the legs above build
+      # the crate only as a `waterui-apple` dependency, which never lints
+      # it (#2352). Its `#[cfg(test)]` modules `include_bytes!` the
+      # generated scene fonts, so `mode: fonts` runs first. The iOS
+      # device triple compiles the same cfg paths as the simulator, so
+      # these two legs cover all three Apple targets.
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
+        with:
+          mode: fonts
+      - name: Clippy (cherenkov-gpu, macOS)
+        run: cargo clippy --timings -pcherenkov-gpu --all-targets --locked --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      - name: Clippy (cherenkov-gpu, iOS simulator)
+        run: cargo clippy --timings -pcherenkov-gpu --all-targets --locked --target aarch64-apple-ios-sim --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      # Default-feature passes skip this binary, including its Image I/O tests.
+      - name: Clippy (screenshot comparer)
+        timeout-minutes: 2
+        run: cargo clippy --timings -pcherenkov-oracle --bin compare-screenshots --features apple-screenshots --locked --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      - name: Compile screenshot comparer tests
+        timeout-minutes: 2
+        run: cargo test --timings -pcherenkov-oracle --bin compare-screenshots --features apple-screenshots --locked --no-run --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
+      - name: Test screenshot comparer
+        timeout-minutes: 1
+        run: cargo test --timings -pcherenkov-oracle --bin compare-screenshots --features apple-screenshots --locked -- --nocapture
+      # The apple_planes harness's UIKit/CoreVideo half is
+      # `cfg(target_vendor = "apple")` and no other leg compiles it for iOS.
+      - name: Clippy (apple-planes, iOS)
+        run: cargo clippy --timings -papple-planes --all-targets --locked --target aarch64-apple-ios --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+      # Published before the target archive is saved, so the reports stay
+      # out of it.
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: apple-rust
+      # The `apple-target` cache holds this directory for the next run; the
+      # number is evidence for the repository's 10 GB budget review, not a
+      # gate.
+      - name: Target size
+        run: du -sh target
+      # Writer side of the two archives described above — reached only when
+      # every check passed, on `dev`/`main` pushes only (the compiled-target
+      # archive stays `dev`-only), and skipped when the exact key was already
+      # restored (nothing new to publish). The order keeps a restorable
+      # archive of each family on this ref at every moment (#2670): sweep
+      # the other purposes' superseded entries, save each replacement once
+      # the headroom check proves it fits next to everything live, and only
+      # then retire the generation it supersedes.
+      #
+      # One live entry per cache purpose on this ref — the shared sweep
+      # covers families no single job owns (install-tool pins, the
+      # SwiftPM archives this workflow writes) (#1441). This job's own
+      # superseded generation is still the newest of its purpose here, so
+      # it stays.
+      - name: Sweep superseded cache generations
+        if: github.ref == 'refs/heads/main'
+        uses: ./.github/actions/retire-cargo-caches
+        with:
+          primary-keys: ${{ steps.cargo-sources.outputs.cache-primary-key }}|${{ steps.apple-target.outputs.cache-primary-key }}
+          sweep: "true"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      # A target restored through the prefix key carries every superseded
+      # lockfile generation's units; the archive keeps only what this
+      # run's cargo steps used.
+      - name: Prune compiled target
+        if: github.ref == 'refs/heads/main' && steps.apple-target.outputs.cache-hit != 'true'
+        uses: ./.github/actions/prune-cargo-target
+        with:
+          messages: ${{ env.CARGO_MESSAGES }}
+      # Cache archives are written on `main`: caches are only visible to the
+      # ref that wrote them (plus the default branch).
+      - name: Save Cargo sources
+        id: save-sources
+        if: github.ref == 'refs/heads/main' && steps.cargo-sources.outputs.cache-hit != 'true'
+        uses: ./.github/actions/cargo-sources
+        with:
+          operation: save
+          primary-key: ${{ steps.cargo-sources.outputs.cache-primary-key }}
+          limit-bytes: ${{ vars.ACTIONS_CACHE_LIMIT_BYTES }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compiled target cache headroom
+        id: target-headroom
+        if: github.ref == 'refs/heads/main' && steps.apple-target.outputs.cache-hit != 'true'
+        uses: ./.github/actions/cache-headroom
+        with:
+          path: target
+          key: ${{ steps.apple-target.outputs.cache-primary-key }}
+          limit-bytes: ${{ vars.ACTIONS_CACHE_LIMIT_BYTES }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Save compiled target cache
+        if: github.ref == 'refs/heads/main' && steps.apple-target.outputs.cache-hit != 'true' && steps.target-headroom.outputs.fits == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: target
+          key: ${{ steps.apple-target.outputs.cache-primary-key }}
+      # Ref-scoped family prefixes only: pull-request caches, other
+      # families, and other refs are never touched. Nothing is retired unless
+      # every primary key exists, so a save that did not land can never leave
+      # pull requests without an archive. A save the headroom check skipped (no
+      # room) keeps the old generations too.
+      - name: Retire superseded cache generations
+        if: github.ref == 'refs/heads/main' && steps.save-sources.outputs.saved != 'false' && steps.target-headroom.outputs.fits != 'false'
+        uses: ./.github/actions/retire-cargo-caches
+        with:
+          families: cargo-sources-${{ runner.os }}-,apple-target-${{ runner.os }}-${{ runner.arch }}-
+          primary-keys: ${{ steps.cargo-sources.outputs.cache-primary-key }}|${{ steps.apple-target.outputs.cache-primary-key }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      # Host-side tests and the bench compile live in the suite's
+      # `host-native` job (apple-e2e.yml) — the main-push gate here is format
+      # plus compile/lint only.

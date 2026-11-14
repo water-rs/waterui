@@ -17,9 +17,11 @@
 //! - `DOCS_RS`: When set, enables download mode for docs.rs builds
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use waterui_icons_codegen::icons::{
     FontFamily, GlyphConst, IconEntry, IconModule, SvgConst, ViewboxConst, write_icon_module,
@@ -31,6 +33,10 @@ const FA_VERSION: &str = "7.1.0";
 
 /// Download URL for the desktop release (contains icons.json with SVG paths)
 const FA_DESKTOP_URL: &str = "https://github.com/FortAwesome/Font-Awesome/releases/download/7.1.0/fontawesome-free-7.1.0-desktop.zip";
+
+/// SHA-256 of the archive at `FA_DESKTOP_URL`, from
+/// `curl -L $FA_DESKTOP_URL | shasum -a 256`.
+const FA_DESKTOP_SHA256: &str = "d9776d5e9983faf5c791b2d2d579c53cc566e17963d13e3a4c01fc43dfa2dfd2";
 
 /// Icon metadata from icons.json
 #[derive(Debug, Deserialize)]
@@ -190,32 +196,33 @@ fn get_icons_json(cache_dir: &Path, is_docs_rs: bool) -> Result<String, String> 
 
 /// Download icons.json (for docs.rs builds).
 fn download_icons_json(cache_dir: &Path, cache_file: &Path) -> Result<String, String> {
-    // Download and extract to a temp directory
-    let mut archive =
-        arkiv::Archive::download(FA_DESKTOP_URL).map_err(|e| format!("Download failed: {e}"))?;
+    let bytes = ureq::get(FA_DESKTOP_URL)
+        .call()
+        .map_err(|e| format!("Download failed: {e}"))?
+        .into_body()
+        .read_to_vec()
+        .map_err(|e| format!("Failed to read response: {e}"))?;
 
-    // Create temp directory for extraction
-    let temp_dir = cache_dir.join("temp_extract");
-    fs::create_dir_all(&temp_dir).ok();
+    let actual_hash = hex::encode(Sha256::digest(&bytes));
+    if actual_hash != FA_DESKTOP_SHA256 {
+        return Err(format!(
+            "Font Awesome archive hash mismatch: expected {FA_DESKTOP_SHA256}, got {actual_hash}"
+        ));
+    }
 
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|e| format!("Failed to open archive: {e}"))?;
+    let entry_name = format!("fontawesome-free-{FA_VERSION}-desktop/metadata/icons.json");
+    let mut content = String::new();
     archive
-        .unpack(&temp_dir)
-        .map_err(|e| format!("Extract failed: {e}"))?;
-
-    // Find and read icons.json
-    let icons_json_path = temp_dir.join(format!(
-        "fontawesome-free-{FA_VERSION}-desktop/metadata/icons.json"
-    ));
-
-    let content = fs::read_to_string(&icons_json_path)
-        .map_err(|e| format!("Failed to read icons.json: {e}"))?;
+        .by_name(&entry_name)
+        .map_err(|e| format!("Missing {entry_name} in archive: {e}"))?
+        .read_to_string(&mut content)
+        .map_err(|e| format!("Failed to read {entry_name}: {e}"))?;
 
     // Cache the content
     fs::create_dir_all(cache_dir).ok();
     fs::write(cache_file, &content).ok();
-
-    // Clean up temp directory
-    fs::remove_dir_all(&temp_dir).ok();
 
     Ok(content)
 }

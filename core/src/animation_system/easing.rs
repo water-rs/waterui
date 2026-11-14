@@ -1,99 +1,105 @@
-//! Unified easing system for `WaterUI` animations.
+//! Easing curves and the lane decomposition `WaterUI` animations move values
+//! through.
 //!
-//! This module provides the core easing curve types used across all `WaterUI`
-//! components for consistent animation behavior. GPU renderers can use these
-//! curves for shader-based interpolation, while native animations use them
-//! for system animation configuration.
+//! Every curve and spring evaluates through `waterui-easing`, the evaluator
+//! the Cherenkov engine shares, so an animation reaches the same value at the
+//! same elapsed time whether core or the engine samples it. Its types are
+//! re-exported here: [`CubicBezier`] and [`Spring`] are the evaluated forms
+//! of a timing curve and a physical spring, and [`Timing`] is how a track
+//! moves.
 //!
-//! # Design
-//!
-//! The easing system uses only two variants:
-//! - `CubicBezier`: For all bezier-representable curves (linear, ease-in, ease-out, etc.)
-//! - `Spring`: For physics-based spring animations that overshoot and oscillate
-//!
-//! Standard curves are provided as constants with CSS-standard bezier control points.
+//! [`EasingCurve`] is the authored timing curve: a cubic Bézier over
+//! normalized time, with the CSS-standard curves as constants. A spring is
+//! not a curve over normalized time — it runs in real seconds until it
+//! settles — so it is an [`Animation`](crate::animation::Animation), never an
+//! easing curve.
 
 use core::time::Duration;
 
-/// Declarative easing curve with only two variants.
+use smallvec::SmallVec;
+pub use waterui_easing::{CubicBezier, SETTLE_TOLERANCE, Spring, Timing};
+
+/// A cubic Bézier timing curve from `(0, 0)` to `(1, 1)` with the control
+/// points `(x1, y1)` and `(x2, y2)`.
 ///
-/// Standard curves (linear, ease-in, ease-out, ease-in-out) are cubic bezier
-/// curves with predefined control points. Custom bezier curves can be created
-/// with any control points.
-///
-/// Spring animations cannot be represented by bezier curves due to their
-/// oscillating nature, so they have a separate variant.
+/// It maps normalized time to progress. The standard CSS curves are
+/// constants; [`bezier`](Self::bezier) builds any other.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum EasingCurve {
-    /// Cubic bezier curve with control points (x1, y1, x2, y2).
-    ///
-    /// The curve starts at (0, 0) and ends at (1, 1). The control points
-    /// define the shape of the curve between these endpoints.
-    ///
-    /// Standard CSS bezier curves are provided as constants.
-    CubicBezier(f32, f32, f32, f32),
-    /// Spring physics animation.
-    ///
-    /// Spring animations cannot be represented by bezier curves because they
-    /// can overshoot the target value and oscillate before settling.
-    Spring {
-        /// Stiffness of the spring (higher = faster oscillation).
-        stiffness: f32,
-        /// Damping factor (higher = less bounce/oscillation).
-        damping: f32,
-    },
+pub struct EasingCurve {
+    /// The first control point's time coordinate, in `[0, 1]`.
+    pub x1: f32,
+    /// The first control point's progress coordinate.
+    pub y1: f32,
+    /// The second control point's time coordinate, in `[0, 1]`.
+    pub x2: f32,
+    /// The second control point's progress coordinate.
+    pub y2: f32,
 }
 
 impl EasingCurve {
     /// Linear interpolation - constant velocity from start to finish.
     /// CSS: `linear` or `cubic-bezier(0, 0, 1, 1)`
-    pub const LINEAR: Self = Self::CubicBezier(0.0, 0.0, 1.0, 1.0);
+    pub const LINEAR: Self = Self::bezier(0.0, 0.0, 1.0, 1.0);
 
     /// Ease-in - starts slow and accelerates.
     /// CSS: `ease-in` or `cubic-bezier(0.42, 0, 1, 1)`
-    pub const EASE_IN: Self = Self::CubicBezier(0.42, 0.0, 1.0, 1.0);
+    pub const EASE_IN: Self = Self::bezier(0.42, 0.0, 1.0, 1.0);
 
     /// Ease-out - starts fast and decelerates.
     /// CSS: `ease-out` or `cubic-bezier(0, 0, 0.58, 1)`
-    pub const EASE_OUT: Self = Self::CubicBezier(0.0, 0.0, 0.58, 1.0);
+    pub const EASE_OUT: Self = Self::bezier(0.0, 0.0, 0.58, 1.0);
 
     /// Ease-in-out - starts slow, speeds up, then slows down.
     /// CSS: `ease-in-out` or `cubic-bezier(0.42, 0, 0.58, 1)`
-    pub const EASE_IN_OUT: Self = Self::CubicBezier(0.42, 0.0, 0.58, 1.0);
+    pub const EASE_IN_OUT: Self = Self::bezier(0.42, 0.0, 0.58, 1.0);
 
     /// Default ease curve (CSS `ease`).
     /// CSS: `ease` or `cubic-bezier(0.25, 0.1, 0.25, 1)`
-    pub const EASE: Self = Self::CubicBezier(0.25, 0.1, 0.25, 1.0);
+    pub const EASE: Self = Self::bezier(0.25, 0.1, 0.25, 1.0);
 
     /// Creates a custom cubic bezier curve.
+    ///
+    /// Every control point must be finite and `x1` and `x2` must lie in
+    /// `[0, 1]`. A debug build asserts this; a consumer calls
+    /// [`validated`](Self::validated) to turn an invalid curve into the
+    /// default one.
     #[must_use]
     pub const fn bezier(x1: f32, y1: f32, x2: f32, y2: f32) -> Self {
-        Self::CubicBezier(x1, y1, x2, y2)
+        debug_assert!(
+            bezier_is_valid(x1, y1, x2, y2),
+            "EasingCurve::bezier requires finite control points with x1/x2 in [0, 1]"
+        );
+        Self { x1, y1, x2, y2 }
     }
 
-    /// Creates a spring animation with the given stiffness and damping.
-    #[must_use]
-    pub const fn spring(stiffness: f32, damping: f32) -> Self {
-        Self::Spring { stiffness, damping }
-    }
-
-    /// Apply easing to a normalized time value t in [0, 1].
+    /// This curve when its control points are valid, otherwise the default
+    /// curve.
     ///
-    /// Returns the eased progress value, which for most curves is also in [0, 1],
-    /// but spring animations may temporarily overshoot (return values > 1 or < 0).
+    /// A consumer calls it where it takes an `EasingCurve` from app code. An
+    /// invalid curve is a contract violation: a debug build panics and a
+    /// release build logs it and uses [`EasingCurve::default`].
     #[must_use]
-    pub fn ease(&self, t: f32) -> f32 {
-        match self {
-            Self::CubicBezier(x1, y1, x2, y2) => cubic_bezier_ease(t, *x1, *y1, *x2, *y2),
-            Self::Spring { stiffness, damping } => spring_ease(t, *stiffness, *damping),
+    pub fn validated(self) -> Self {
+        if bezier_is_valid(self.x1, self.y1, self.x2, self.y2) {
+            self
+        } else {
+            crate::contract_violation!("invalid easing curve parameters: {self:?}");
+            Self::default()
         }
     }
 
-    /// Returns `true` if this is a spring animation.
+    /// The curve in the shared evaluator's terms.
     #[must_use]
-    pub const fn is_spring(&self) -> bool {
-        matches!(self, Self::Spring { .. })
+    pub fn cubic_bezier(&self) -> CubicBezier {
+        cubic_bezier(self.x1, self.y1, self.x2, self.y2)
+    }
+
+    /// The progress at normalized time `t`: `0` at and before the start,
+    /// `1` at and after the end.
+    #[must_use]
+    pub fn ease(&self, t: f64) -> f64 {
+        self.cubic_bezier().value(t)
     }
 }
 
@@ -103,197 +109,162 @@ impl Default for EasingCurve {
     }
 }
 
-/// Cubic bezier easing implementation.
+/// The shared evaluator's curve for `f32` control points.
+pub(super) fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32) -> CubicBezier {
+    CubicBezier::new(f64::from(x1), f64::from(y1), f64::from(x2), f64::from(y2))
+}
+
+/// Whether bezier control points are finite with `x1` and `x2` in `[0, 1]`:
+/// [`CubicBezier::is_valid`] for `f32` control points; the casts widen
+/// exactly, and `f64::from` is not callable in a const fn.
+pub(super) const fn bezier_is_valid(x1: f32, y1: f32, x2: f32, y2: f32) -> bool {
+    CubicBezier::new(x1 as f64, y1 as f64, x2 as f64, y2 as f64).is_valid()
+}
+
+/// The lanes a value moves through: inline for values of up to eight
+/// scalars.
+pub(super) type Lanes = SmallVec<[f64; 8]>;
+
+/// A value decomposed into scalar `f64` lanes, so an animation can move it
+/// lane by lane through the shared evaluator.
 ///
-/// Uses Newton-Raphson iteration to find the t parameter for a given x,
-/// then evaluates the bezier curve at that t to get y.
-fn cubic_bezier_ease(t: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
-    const EPSILON: f32 = 0.0001;
-
-    // Handle edge cases
-    if t <= 0.0 {
-        return 0.0;
-    }
-    if t >= 1.0 {
-        return 1.0;
-    }
-
-    // Linear case - no need for iteration
-    if (x1 - y1).abs() < 0.0001 && (x2 - y2).abs() < 0.0001 {
-        return t;
-    }
-
-    // First try Newton-Raphson for fast convergence.
-    let mut guess = t;
-    let mut converged = false;
-    for _ in 0..8 {
-        let x = bezier_sample(guess, x1, x2) - t;
-        if x.abs() < EPSILON {
-            converged = true;
-            break;
-        }
-        let dx = bezier_derivative(guess, x1, x2);
-        if dx.abs() < 0.000_001 {
-            break;
-        }
-        let next = guess - x / dx;
-        if !(0.0..=1.0).contains(&next) {
-            break;
-        }
-        guess = next;
-    }
-
-    // Fall back to binary subdivision when Newton stalls (flat derivative,
-    // poor initial guess, or highly skewed control points).
-    if !converged {
-        let mut low = 0.0;
-        let mut high = 1.0;
-        guess = t.clamp(0.0, 1.0);
-        for _ in 0..16 {
-            let sample = bezier_sample(guess, x1, x2);
-            let delta = sample - t;
-            if delta.abs() < EPSILON {
-                break;
-            }
-            if delta > 0.0 {
-                high = guess;
-            } else {
-                low = guess;
-            }
-            guess = f32::midpoint(low, high);
-        }
-    }
-
-    // Clamp to valid range before sampling y.
-    guess = guess.clamp(0.0, 1.0);
-
-    // Return y value at the found t
-    bezier_sample(guess, y1, y2)
-}
-
-/// Sample a cubic bezier curve at parameter t.
-/// The curve goes through (0, 0) at t=0 and (1, 1) at t=1.
-#[inline]
-fn bezier_sample(t: f32, p1: f32, p2: f32) -> f32 {
-    // B(t) = 3(1-t)²t·P1 + 3(1-t)t²·P2 + t³
-    let t2 = t * t;
-    let t3 = t2 * t;
-    let mt = 1.0 - t;
-    let mt2 = mt * mt;
-    (3.0 * mt2 * t).mul_add(p1, (3.0 * mt * t2).mul_add(p2, t3))
-}
-
-/// Derivative of the bezier curve at parameter t.
-#[inline]
-fn bezier_derivative(t: f32, p1: f32, p2: f32) -> f32 {
-    // B'(t) = 3(1-t)²·P1 + 6(1-t)t·(P2-P1) + 3t²·(1-P2)
-    let t2 = t * t;
-    let mt = 1.0 - t;
-    let mt2 = mt * mt;
-    (3.0 * mt2).mul_add(p1, (6.0 * mt * t).mul_add(p2 - p1, 3.0 * t2 * (1.0 - p2)))
-}
-
-/// Spring easing implementation using damped harmonic oscillator.
-///
-/// The spring starts at 0 and settles toward 1, potentially overshooting
-/// and oscillating based on the stiffness and damping parameters.
-fn spring_ease(t: f32, stiffness: f32, damping: f32) -> f32 {
-    if t <= 0.0 {
-        return 0.0;
-    }
-    if t >= 1.0 {
-        return 1.0;
-    }
-    if !stiffness.is_finite() || !damping.is_finite() || stiffness <= 0.0 || damping < 0.0 {
-        // Invalid spring parameters should be rejected by constructors, but keep
-        // easing numerically stable for deserialized or externally-provided data.
-        return t;
-    }
-
-    // Damped harmonic oscillator
-    // x(t) = 1 - e^(-ζωt) * (cos(ωd*t) + (ζω/ωd)*sin(ωd*t))
-    // where ω = sqrt(stiffness), ζ = damping / (2*sqrt(stiffness))
-    // ωd = ω * sqrt(1 - ζ²) for underdamped case
-
-    let omega = stiffness.sqrt();
-    let zeta = damping / (2.0 * omega);
-
-    if zeta >= 1.0 {
-        // Critically damped or overdamped - no oscillation
-        let decay = (-omega * zeta * t).exp();
-        decay.mul_add(-(omega * zeta).mul_add(t, 1.0), 1.0)
-    } else {
-        // Underdamped - oscillates
-        let omega_d = omega * zeta.mul_add(-zeta, 1.0).sqrt();
-        let decay = (-zeta * omega * t).exp();
-        let cos_part = (omega_d * t).cos();
-        let sin_part = (zeta * omega / omega_d) * (omega_d * t).sin();
-        decay.mul_add(-(cos_part + sin_part), 1.0)
-    }
-}
-
-/// Trait for types that can be linearly interpolated.
-///
-/// This is used by the animation system to interpolate between values.
-/// Most numeric types implement this automatically via the blanket impl.
+/// The animation system evaluates a curve or a spring on each lane: a curve
+/// interpolates every lane by the same progress, and a spring carries each
+/// lane's velocity into a retarget. Numbers, tuples and arrays of
+/// decomposable values implement it.
 pub trait Interpolatable: Clone {
-    /// Linear interpolation: `self + (other - self) * t`
+    /// How many lanes the value decomposes into.
+    const LANES: usize;
+
+    /// Writes the value's lanes into `lanes`, which holds exactly
+    /// [`LANES`](Self::LANES) of them.
+    fn write_lanes(&self, lanes: &mut [f64]);
+
+    /// The value whose lanes are `lanes`, as
+    /// [`write_lanes`](Self::write_lanes) writes them.
+    fn from_lanes(lanes: &[f64]) -> Self;
+
+    /// Linear interpolation, lane by lane: `self + (other - self) * t`.
     #[must_use]
-    fn lerp(&self, other: &Self, t: f32) -> Self;
+    fn lerp(&self, other: &Self, t: f64) -> Self {
+        let mut from = lanes_of(self);
+        let to = lanes_of(other);
+        for (lane, target) in from.iter_mut().zip(&to) {
+            *lane = (target - *lane).mul_add(t, *lane);
+        }
+        Self::from_lanes(&from)
+    }
 }
 
-// Implement for f32
+/// `value`'s lanes.
+pub(super) fn lanes_of<T: Interpolatable>(value: &T) -> Lanes {
+    let mut lanes = Lanes::from_elem(0.0, T::LANES);
+    value.write_lanes(&mut lanes);
+    lanes
+}
+
 impl Interpolatable for f32 {
-    fn lerp(&self, other: &Self, t: f32) -> Self {
-        self + (other - self) * t
+    const LANES: usize = 1;
+
+    fn write_lanes(&self, lanes: &mut [f64]) {
+        lanes[0] = f64::from(*self);
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "an f32 value's lane narrows back to f32"
+    )]
+    fn from_lanes(lanes: &[f64]) -> Self {
+        lanes[0] as Self
     }
 }
 
-// Implement for f64
 impl Interpolatable for f64 {
-    fn lerp(&self, other: &Self, t: f32) -> Self {
-        self + (other - self) * Self::from(t)
+    const LANES: usize = 1;
+
+    fn write_lanes(&self, lanes: &mut [f64]) {
+        lanes[0] = *self;
+    }
+
+    fn from_lanes(lanes: &[f64]) -> Self {
+        lanes[0]
     }
 }
 
-// Implement for tuples
 impl<A: Interpolatable, B: Interpolatable> Interpolatable for (A, B) {
-    fn lerp(&self, other: &Self, t: f32) -> Self {
-        (self.0.lerp(&other.0, t), self.1.lerp(&other.1, t))
+    const LANES: usize = A::LANES + B::LANES;
+
+    fn write_lanes(&self, lanes: &mut [f64]) {
+        let (a, b) = lanes.split_at_mut(A::LANES);
+        self.0.write_lanes(a);
+        self.1.write_lanes(b);
+    }
+
+    fn from_lanes(lanes: &[f64]) -> Self {
+        let (a, b) = lanes.split_at(A::LANES);
+        (A::from_lanes(a), B::from_lanes(b))
     }
 }
 
 impl<A: Interpolatable, B: Interpolatable, C: Interpolatable> Interpolatable for (A, B, C) {
-    fn lerp(&self, other: &Self, t: f32) -> Self {
-        (
-            self.0.lerp(&other.0, t),
-            self.1.lerp(&other.1, t),
-            self.2.lerp(&other.2, t),
-        )
+    const LANES: usize = A::LANES + B::LANES + C::LANES;
+
+    fn write_lanes(&self, lanes: &mut [f64]) {
+        let (a, rest) = lanes.split_at_mut(A::LANES);
+        let (b, c) = rest.split_at_mut(B::LANES);
+        self.0.write_lanes(a);
+        self.1.write_lanes(b);
+        self.2.write_lanes(c);
+    }
+
+    fn from_lanes(lanes: &[f64]) -> Self {
+        let (a, rest) = lanes.split_at(A::LANES);
+        let (b, c) = rest.split_at(B::LANES);
+        (A::from_lanes(a), B::from_lanes(b), C::from_lanes(c))
     }
 }
 
 impl<A: Interpolatable, B: Interpolatable, C: Interpolatable, D: Interpolatable> Interpolatable
     for (A, B, C, D)
 {
-    fn lerp(&self, other: &Self, t: f32) -> Self {
+    const LANES: usize = A::LANES + B::LANES + C::LANES + D::LANES;
+
+    fn write_lanes(&self, lanes: &mut [f64]) {
+        let (a, rest) = lanes.split_at_mut(A::LANES);
+        let (b, rest) = rest.split_at_mut(B::LANES);
+        let (c, d) = rest.split_at_mut(C::LANES);
+        self.0.write_lanes(a);
+        self.1.write_lanes(b);
+        self.2.write_lanes(c);
+        self.3.write_lanes(d);
+    }
+
+    fn from_lanes(lanes: &[f64]) -> Self {
+        let (a, rest) = lanes.split_at(A::LANES);
+        let (b, rest) = rest.split_at(B::LANES);
+        let (c, d) = rest.split_at(C::LANES);
         (
-            self.0.lerp(&other.0, t),
-            self.1.lerp(&other.1, t),
-            self.2.lerp(&other.2, t),
-            self.3.lerp(&other.3, t),
+            A::from_lanes(a),
+            B::from_lanes(b),
+            C::from_lanes(c),
+            D::from_lanes(d),
         )
     }
 }
 
-// Implement for arrays
-impl<T: Interpolatable + Copy, const N: usize> Interpolatable for [T; N] {
-    fn lerp(&self, other: &Self, t: f32) -> Self {
-        let mut result = *self;
-        for i in 0..N {
-            result[i] = self[i].lerp(&other[i], t);
+impl<T: Interpolatable, const N: usize> Interpolatable for [T; N] {
+    const LANES: usize = N * T::LANES;
+
+    fn write_lanes(&self, lanes: &mut [f64]) {
+        for (value, chunk) in self.iter().zip(lanes.chunks_exact_mut(T::LANES)) {
+            value.write_lanes(chunk);
         }
-        result
+    }
+
+    fn from_lanes(lanes: &[f64]) -> Self {
+        core::array::from_fn(|index| {
+            T::from_lanes(&lanes[index * T::LANES..(index + 1) * T::LANES])
+        })
     }
 }
 
@@ -317,16 +288,16 @@ mod tests {
     #[test]
     fn test_linear_easing() {
         let curve = EasingCurve::LINEAR;
-        assert!((curve.ease(0.0) - 0.0).abs() < 0.001);
-        assert!((curve.ease(0.5) - 0.5).abs() < 0.001);
-        assert!((curve.ease(1.0) - 1.0).abs() < 0.001);
+        assert!(curve.ease(0.0).abs() < 1e-12);
+        assert!((curve.ease(0.5) - 0.5).abs() < 1e-12);
+        assert!((curve.ease(1.0) - 1.0).abs() < 1e-12);
     }
 
     #[test]
     fn test_ease_in() {
         let curve = EasingCurve::EASE_IN;
-        assert!((curve.ease(0.0) - 0.0).abs() < 0.001);
-        assert!((curve.ease(1.0) - 1.0).abs() < 0.001);
+        assert!(curve.ease(0.0).abs() < 1e-12);
+        assert!((curve.ease(1.0) - 1.0).abs() < 1e-12);
         // Ease-in should be slower at the start
         assert!(curve.ease(0.5) < 0.5);
     }
@@ -334,8 +305,8 @@ mod tests {
     #[test]
     fn test_ease_out() {
         let curve = EasingCurve::EASE_OUT;
-        assert!((curve.ease(0.0) - 0.0).abs() < 0.001);
-        assert!((curve.ease(1.0) - 1.0).abs() < 0.001);
+        assert!(curve.ease(0.0).abs() < 1e-12);
+        assert!((curve.ease(1.0) - 1.0).abs() < 1e-12);
         // Ease-out should be faster at the start
         assert!(curve.ease(0.5) > 0.5);
     }
@@ -343,24 +314,57 @@ mod tests {
     #[test]
     fn test_ease_in_out() {
         let curve = EasingCurve::EASE_IN_OUT;
-        assert!((curve.ease(0.0) - 0.0).abs() < 0.001);
-        assert!((curve.ease(1.0) - 1.0).abs() < 0.001);
-        // Ease-in-out should be roughly 0.5 at 0.5
-        assert!((curve.ease(0.5) - 0.5).abs() < 0.1);
+        assert!(curve.ease(0.0).abs() < 1e-12);
+        assert!((curve.ease(1.0) - 1.0).abs() < 1e-12);
+        // The curve is symmetric about its midpoint.
+        assert!((curve.ease(0.5) - 0.5).abs() < 1e-6);
     }
 
     #[test]
-    fn test_spring_settles_to_one() {
-        let curve = EasingCurve::spring(100.0, 10.0);
-        assert!((curve.ease(0.0) - 0.0).abs() < 0.001);
-        assert!((curve.ease(1.0) - 1.0).abs() < 0.001);
+    fn ease_is_the_shared_evaluator() {
+        let curve = EasingCurve::bezier(0.2, 0.0, 0.0, 1.0);
+        let shared = CubicBezier::new(f64::from(0.2_f32), 0.0, 0.0, 1.0);
+        for step in 0_u8..=20 {
+            let t = f64::from(step) / 20.0;
+            assert_eq!(curve.ease(t).to_bits(), shared.value(t).to_bits(), "at {t}");
+        }
+    }
+
+    #[test]
+    fn validated_keeps_valid_curves() {
+        assert_eq!(EasingCurve::EASE.validated(), EasingCurve::EASE);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "invalid easing curve parameters")]
+    fn validated_reports_an_invalid_curve_in_debug() {
+        let _ = EasingCurve {
+            x1: 1.5,
+            y1: 0.0,
+            x2: 0.5,
+            y2: 1.0,
+        }
+        .validated();
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn validated_replaces_an_invalid_curve_with_the_default_in_release() {
+        let invalid = EasingCurve {
+            x1: f32::NAN,
+            y1: 0.0,
+            x2: 0.5,
+            y2: 1.0,
+        };
+        assert_eq!(invalid.validated(), EasingCurve::default());
     }
 
     #[test]
     fn test_bezier_solver_handles_extreme_control_points() {
         let curve = EasingCurve::bezier(0.0, 1.0, 1.0, 0.0);
         for step in 0_u16..=100 {
-            let t = f32::from(step) / 100.0;
+            let t = f64::from(step) / 100.0;
             let eased = curve.ease(t);
             assert!(eased.is_finite(), "eased must be finite at t={t}");
             assert!(
@@ -386,5 +390,21 @@ mod tests {
         let mid = a.lerp(&b, 0.5);
         assert!((mid.0 - 5.0).abs() < 0.001);
         assert!((mid.1 - 10.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn nested_values_round_trip_through_their_lanes() {
+        let value = ([1.5_f32, -2.0], (3.25_f64, 4.0_f32, [5.0_f64; 2]));
+        assert_eq!(
+            <([f32; 2], (f64, f32, [f64; 2]))>::LANES,
+            6,
+            "two, then one, one and two lanes"
+        );
+        let lanes = lanes_of(&value);
+        assert_eq!(&lanes[..], &[1.5, -2.0, 3.25, 4.0, 5.0, 5.0]);
+        assert_eq!(
+            <([f32; 2], (f64, f32, [f64; 2]))>::from_lanes(&lanes),
+            value
+        );
     }
 }

@@ -1,0 +1,663 @@
+//! A node's record: what it drew, in paint order, before it is lowered
+//! into the node's retained layers at commit (§C).
+//!
+//! Every recording node owns one [`ProgramBuilder`] while it records:
+//! drawing lands in the trailing [`Item::Run`], a child node appends an
+//! [`Item::Node`], and a widget-internal clip or group opens a named
+//! [`Item::Scope`]. The finished [`Program`] waits on the node until the
+//! commit lowers it.
+
+use std::cell::RefCell;
+use std::num::NonZeroU64;
+use std::rc::Rc;
+
+use cherenkov_record::BlendSpace;
+use cherenkov_record::Live;
+use cherenkov_record::ShapeData;
+use nami::Signal as _;
+use rustc_hash::FxHashSet;
+
+use super::cell::NodeCell;
+use super::motion::{LayerMotion, Motion};
+use super::placement::Placement;
+use crate::renderer::chrome::LiveSource;
+use crate::renderer::recording::Recording;
+use crate::theme::live::Operand;
+
+/// A widget-internal scope's identity: a literal role and an item (a row
+/// id, a page identity, or `0`). Within one record a key is unique.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ScopeKey {
+    pub role: &'static str,
+    pub item: u64,
+}
+
+/// What a run sits directly beneath.
+pub enum ItemKey<E: crate::text::TextEngine> {
+    /// A `.material_group()` scope's anchor item — its cell identity.
+    Anchor(Rc<NodeCell<E>>),
+    Node(Rc<NodeCell<E>>),
+    Scope(ScopeKey),
+    /// A `ChromeMaterial` member layer, identified by its material
+    /// ordinal in the node's record (water-rs/waterui#1788).
+    Chrome(u32),
+    /// A [`LiveItem`]'s layer, identified by its live ordinal in the
+    /// node's record.
+    Live(u32),
+}
+
+impl<E: crate::text::TextEngine> PartialEq for ItemKey<E> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Anchor(a), Self::Anchor(b)) | (Self::Node(a), Self::Node(b)) => Rc::ptr_eq(a, b),
+            (Self::Scope(a), Self::Scope(b)) => a == b,
+            (Self::Chrome(a), Self::Chrome(b)) | (Self::Live(a), Self::Live(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+/// A run's identity: the item it is drawn beneath, or the tail of its list.
+pub enum RunKey<E: crate::text::TextEngine> {
+    Before(ItemKey<E>),
+    Tail,
+}
+
+/// A scope's layer props, in the owning layer's space. The scope's hit
+/// state lives on its placement instead — `open_scope_with` gates the
+/// registrations inside through [`crate::renderer::mount::HitGate`],
+/// never here.
+///
+/// `transform` and `alpha` are the scope's values at rest — what layout,
+/// hit testing and the scope's children are placed under. A [`ScopeLive`]
+/// property follows a live operand on the layer instead, so the engine
+/// moves it between renders.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScopeProps {
+    pub transform: kurbo::Affine,
+    pub clip: Option<ShapeData>,
+    pub alpha: f32,
+    /// The space the scope's members composite in and its layer composites
+    /// onto the owning layer in; `None` composites them in the owning
+    /// layer's space.
+    pub blend_space: Option<BlendSpace>,
+    pub live: ScopeLive,
+}
+
+/// A scope layer's properties that follow live operands. Two are the same
+/// when they follow the same operands the same way, whatever value the
+/// operands hold.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScopeLive {
+    /// The group opacity.
+    pub opacity: Option<LiveOpacity>,
+    /// The layer transform over its at-rest one.
+    pub transform: Option<LiveTransform>,
+}
+
+impl ScopeLive {
+    /// No live property: the scope's at-rest values are its layer's.
+    pub const NONE: Self = Self {
+        opacity: None,
+        transform: None,
+    };
+}
+
+/// A layer opacity following an operand.
+#[derive(Clone)]
+pub struct LiveOpacity(Operand<f32>);
+
+impl LiveOpacity {
+    pub(crate) const fn new(operand: Operand<f32>) -> Self {
+        Self(operand)
+    }
+
+    /// The opacity, live.
+    pub(crate) fn live(&self) -> Live<f32> {
+        self.0.live()
+    }
+
+    /// The opacity the operand holds now.
+    pub(crate) fn now(&self) -> f32 {
+        self.0.snapshot()
+    }
+}
+
+impl PartialEq for LiveOpacity {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.same(&other.0)
+    }
+}
+
+impl core::fmt::Debug for LiveOpacity {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("LiveOpacity").field(&self.now()).finish()
+    }
+}
+
+/// A layer transform following an operand given in another space: the
+/// layer's transform is `placement * value * placement⁻¹`, `placement`
+/// mapping the operand's space into the layer's parent space.
+#[derive(Clone)]
+pub struct LiveTransform {
+    operand: Operand<kurbo::Affine>,
+    placement: kurbo::Affine,
+}
+
+impl LiveTransform {
+    /// `operand`, in the space `placement` maps into the layer's parent.
+    pub(crate) const fn new(operand: Operand<kurbo::Affine>, placement: kurbo::Affine) -> Self {
+        Self { operand, placement }
+    }
+
+    /// The transform, live.
+    pub(crate) fn live(&self) -> Live<kurbo::Affine> {
+        let placement = self.placement;
+        let into_operand = placement.inverse();
+        self.operand
+            .live()
+            .map(move |value| placement * value * into_operand)
+    }
+
+    /// The transform the operand holds now.
+    pub(crate) fn now(&self) -> kurbo::Affine {
+        self.placement * self.operand.snapshot() * self.placement.inverse()
+    }
+}
+
+impl PartialEq for LiveTransform {
+    fn eq(&self, other: &Self) -> bool {
+        self.operand.same(&other.operand) && self.placement == other.placement
+    }
+}
+
+impl core::fmt::Debug for LiveTransform {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("LiveTransform").field(&self.now()).finish()
+    }
+}
+
+/// A `ChromeMaterial` render layer (water-rs/waterui#1788): one backdrop
+/// material split out of a [`Content::record_layered`]
+/// (`cherenkov_record::Content::record_layered`) recording — the member's
+/// layer, drawn between the scene segment below it and the one above.
+#[derive(Debug, Clone)]
+pub struct ChromeMaterial {
+    /// The material's ordinal in the node's record: its mount key under
+    /// the node — a re-recorded chrome rebinds onto the member and the
+    /// group its ordinal already mounts.
+    pub ordinal: u32,
+    /// The material: clip shape, backdrop shader, capture class, effect
+    /// and material scope, all live.
+    pub material: cherenkov_record::BackdropMaterial,
+    /// The member's transform in its parent layer's space —
+    /// `draw_context`'s `ctx.local`.
+    pub transform: kurbo::Affine,
+    /// Whether the member's ancestry presented this frame: a member
+    /// under a fully transparent ancestry holds no membership.
+    pub visible: bool,
+}
+
+/// Content recorded once into its own layer and kept across records
+/// (water-rs/waterui#1433): a [`LiveSource`] whose operands are signals,
+/// so its later changes reach the engine without another recording.
+#[derive(Clone)]
+pub struct LiveItem {
+    /// The item's ordinal among the node's live items: its mount key.
+    pub ordinal: u32,
+    /// What the layer records. The mount re-records only when the item at
+    /// this ordinal names a different source.
+    pub source: Rc<dyn LiveSource>,
+    /// The layer's transform in its parent layer's space.
+    pub transform: kurbo::Affine,
+}
+
+/// One entry of a layer's ordered content.
+pub enum Item<E: crate::text::TextEngine> {
+    /// A `.material_group()` scope's anchor: a plain, empty layer the
+    /// scope's members capture beneath, painted at this position in the
+    /// canvas the item's program mounts in (water-rs/waterui#2097).
+    /// Carrying the scope's cell pins its address against reuse while
+    /// the registration keyed by it stands.
+    Anchor(Rc<NodeCell<E>>),
+    Run(Recording),
+    Node(Rc<NodeCell<E>>),
+    Chrome(ChromeMaterial),
+    Live(LiveItem),
+    Scope {
+        key: ScopeKey,
+        props: ScopeProps,
+        /// The placement registrations inside the scope resolve through.
+        placement: Rc<Placement>,
+        items: Vec<Self>,
+    },
+}
+
+impl<E: crate::text::TextEngine> Item<E> {
+    pub(crate) fn key(&self) -> Option<ItemKey<E>> {
+        match self {
+            Self::Anchor(cell) => Some(ItemKey::Anchor(Rc::clone(cell))),
+            Self::Run(_) => None,
+            Self::Node(cell) => Some(ItemKey::Node(Rc::clone(cell))),
+            Self::Chrome(chrome) => Some(ItemKey::Chrome(chrome.ordinal)),
+            Self::Live(live) => Some(ItemKey::Live(live.ordinal)),
+            Self::Scope { key, .. } => Some(ItemKey::Scope(*key)),
+        }
+    }
+}
+
+/// The scroll node's `inner` layer: viewport clip, scroll offset and the
+/// content child (§E).
+pub struct InnerProgram<E: crate::text::TextEngine> {
+    pub viewport: kurbo::Rect,
+    pub offset: kurbo::Vec2,
+    /// The overscroll stretch direction the scrolled content draws with —
+    /// HWUI's `mStretchDirection`, warped by its stretch shader in the
+    /// viewport's frame — or `None` at rest. It never reaches the clip:
+    /// the content stretches inside the unchanged viewport.
+    pub stretch: Option<kurbo::Vec2>,
+    pub items: Vec<Item<E>>,
+}
+
+/// A producer-backed node's content, installed by the target at commit.
+pub enum ProducerContent {
+    #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
+    Hosted {
+        runtime: Rc<crate::hosted::HostedRuntime>,
+        bounds: kurbo::Rect,
+    },
+    Scene(SceneContentSource),
+    #[cfg(hydrolysis_gpu)]
+    Gpu {
+        runtime: Rc<RefCell<crate::gpu_view::GpuContentRuntime>>,
+        bounds: kurbo::Rect,
+        visible: bool,
+    },
+    #[cfg(hydrolysis_gpu)]
+    External {
+        runtime: Rc<RefCell<crate::gpu_view::ExternalFrameRuntime>>,
+        bounds: kurbo::Rect,
+        visible: bool,
+    },
+}
+
+/// A `SceneView`'s content: it records at commit against the target's
+/// resources (§C).
+pub struct SceneContentSource {
+    pub content: Rc<RefCell<Box<dyn waterui_graphics::backend::SceneContent>>>,
+    pub invalidator: waterui_graphics::backend::SceneInvalidator,
+    pub association: Rc<RefCell<Option<std::rc::Weak<crate::renderer::recording::SceneResources>>>>,
+    /// The size and scale the content's input handler was last told about,
+    /// shared with the node so it survives each flush's fresh source.
+    pub resize: Rc<RefCell<crate::renderer::ResizeTracker>>,
+    pub bounds: kurbo::Rect,
+    /// The instant of the frame the commit presents.
+    pub time: crate::time::Instant,
+}
+
+/// A material wrapper's backdrop request: the member's backdrop-group
+/// terms and clip. The group it joins is keyed by `(scope, level,
+/// scheme, install canvas)` — the canvas is resolved at commit — and one
+/// group runs one key's chain (water-rs/waterui#1999).
+#[derive(Clone, Copy)]
+pub struct MaterialRequest {
+    /// The nearest enclosing `.material_group()` node's identity — the
+    /// address of its cell — or `None` for a group of the member's own.
+    pub scope: Option<NonZeroU64>,
+    /// The member's within-window level — part of its backdrop-group key.
+    pub level: crate::renderer::material::WithinWindowLevel,
+    /// The member's resolved colour scheme at flush: a subtree may
+    /// install its own scheme, so the scheme keys the backdrop group.
+    pub scheme: waterui::theme::ColorScheme,
+    /// The view's rect in its own space: the member's clip.
+    pub bounds: kurbo::Rect,
+    /// Whether the member presents this frame: an invisible member
+    /// releases its membership instead of joining a group.
+    pub visible: bool,
+}
+
+/// A node's finished record.
+pub struct Program<E: crate::text::TextEngine> {
+    /// The alpha the record is made under: what decides whether content
+    /// recorded here can show at all. The frame layer's opacity is this
+    /// value unless `opacity_motion` drives it.
+    pub opacity: f32,
+    /// The engine-run opacity the frame layer follows (water-rs/waterui#2203).
+    pub opacity_motion: Option<Motion<f32>>,
+    /// The engine-run transform components the frame layer follows over its
+    /// place (water-rs/waterui#2203).
+    pub motion: Option<Rc<LayerMotion>>,
+    pub clip: Option<ShapeData>,
+    pub filter: Option<Rc<RefCell<crate::renderer::effects::FilteredRuntime>>>,
+    pub material: Option<MaterialRequest>,
+    pub producer: Option<ProducerContent>,
+    pub inner: Option<InnerProgram<E>>,
+    pub items: Vec<Item<E>>,
+}
+
+impl<E: crate::text::TextEngine> Program<E> {
+    const fn new() -> Self {
+        Self {
+            opacity: 1.0,
+            opacity_motion: None,
+            motion: None,
+            clip: None,
+            filter: None,
+            material: None,
+            producer: None,
+            inner: None,
+            items: Vec::new(),
+        }
+    }
+}
+
+struct OpenScope<E: crate::text::TextEngine> {
+    key: ScopeKey,
+    props: ScopeProps,
+    placement: Rc<Placement>,
+    items: Vec<Item<E>>,
+    /// The record-space transform of the scope's layer origin, relative to
+    /// the node's frame.
+    origin: kurbo::Affine,
+}
+
+/// The recording target while a node records (`renderer.program`).
+pub struct ProgramBuilder<E: crate::text::TextEngine> {
+    cell: Rc<NodeCell<E>>,
+    program: Program<E>,
+    scopes: Vec<OpenScope<E>>,
+    inner_open: bool,
+    /// The placement the inner list's children are ordered under (the
+    /// scroll content placement, carrying the content offset).
+    inner_anchor: Option<Rc<Placement>>,
+    keys: FxHashSet<ScopeKey>,
+    /// How many `ChromeMaterial` items the record pushed: the next
+    /// material's ordinal.
+    chromes: u32,
+    /// How many live items the record pushed: the next one's ordinal.
+    lives: u32,
+}
+
+impl<E: crate::text::TextEngine> ProgramBuilder<E> {
+    pub(crate) fn new(cell: Rc<NodeCell<E>>) -> Self {
+        Self {
+            cell,
+            program: Program::new(),
+            scopes: Vec::new(),
+            inner_open: false,
+            inner_anchor: None,
+            keys: FxHashSet::default(),
+            chromes: 0,
+            lives: 0,
+        }
+    }
+
+    pub(crate) const fn cell(&self) -> &Rc<NodeCell<E>> {
+        &self.cell
+    }
+
+    pub(crate) const fn program_mut(&mut self) -> &mut Program<E> {
+        &mut self.program
+    }
+
+    fn items_mut(&mut self) -> &mut Vec<Item<E>> {
+        if let Some(scope) = self.scopes.last_mut() {
+            return &mut scope.items;
+        }
+        if self.inner_open {
+            return &mut self
+                .program
+                .inner
+                .as_mut()
+                .expect("hydrolysis program: inner list open without an inner layer")
+                .items;
+        }
+        &mut self.program.items
+    }
+
+    /// The trailing run, opened when the last item is not a run.
+    pub(crate) fn run(&mut self) -> &mut Recording {
+        let items = self.items_mut();
+        if !matches!(items.last(), Some(Item::Run(_))) {
+            items.push(Item::Run(Recording::new()));
+        }
+        match items.last_mut() {
+            Some(Item::Run(recording)) => recording,
+            _ => unreachable!("a run was just ensured"),
+        }
+    }
+
+    /// Appends a `.material_group()` scope's anchor item — the empty
+    /// layer the scope's members capture beneath (water-rs/waterui#2097).
+    pub(crate) fn push_anchor(&mut self, cell: Rc<NodeCell<E>>) {
+        self.items_mut().push(Item::Anchor(cell));
+    }
+
+    /// Appends a child node's frame.
+    pub(crate) fn push_node(&mut self, cell: Rc<NodeCell<E>>) {
+        self.items_mut().push(Item::Node(cell));
+    }
+
+    /// Appends a `ChromeMaterial` member: a backdrop material split out
+    /// of the node's layered recording, drawn as a render layer between
+    /// the scene segments recorded around it.
+    pub(crate) fn push_chrome(
+        &mut self,
+        material: cherenkov_record::BackdropMaterial,
+        transform: kurbo::Affine,
+        visible: bool,
+    ) {
+        let ordinal = self.chromes;
+        self.chromes += 1;
+        self.items_mut().push(Item::Chrome(ChromeMaterial {
+            ordinal,
+            material,
+            transform,
+            visible,
+        }));
+    }
+
+    /// Appends a live item drawn at `transform` — the record-space
+    /// transform of its content, like a run's drawing.
+    pub(crate) fn push_live(&mut self, source: Rc<dyn LiveSource>, transform: kurbo::Affine) {
+        let ordinal = self.lives;
+        self.lives += 1;
+        self.items_mut().push(Item::Live(LiveItem {
+            ordinal,
+            source,
+            transform,
+        }));
+    }
+
+    /// Opens a named scope. A key repeated within one record panics.
+    pub(crate) fn open_scope(
+        &mut self,
+        key: ScopeKey,
+        props: ScopeProps,
+        placement: Rc<Placement>,
+    ) {
+        assert!(
+            self.keys.insert(key),
+            "hydrolysis program: scope {key:?} opened twice in one record"
+        );
+        let origin = self.origin() * props.transform;
+        self.scopes.push(OpenScope {
+            key,
+            props,
+            placement,
+            items: Vec::new(),
+            origin,
+        });
+    }
+
+    /// Drops the item recorded last, which must be a closed scope: a
+    /// presentation that decides after recording that it is gone.
+    pub(crate) fn discard_last_scope(&mut self) {
+        match self.items_mut().pop() {
+            Some(Item::Scope { key, .. }) => {
+                self.keys.remove(&key);
+            }
+            _ => panic!("hydrolysis program: discard_last_scope with no scope recorded last"),
+        }
+    }
+
+    pub(crate) fn close_scope(&mut self) {
+        let mut scope = self
+            .scopes
+            .pop()
+            .expect("hydrolysis program: close_scope without an open scope");
+        // Items record in the node's space; a scope layer placed by a
+        // transform draws them in its own. A member left unconverted mounts
+        // under the scope layer with the node's space still in its
+        // transform — the scope transform would reach it twice
+        // (water-rs/waterui#2894).
+        if scope.origin != kurbo::Affine::IDENTITY {
+            let into_scope = scope.origin.inverse();
+            for item in &mut scope.items {
+                match item {
+                    Item::Run(run) => {
+                        let mut moved = Recording::new();
+                        moved.append(run, into_scope);
+                        *run = moved;
+                    }
+                    Item::Live(live) => live.transform = into_scope * live.transform,
+                    Item::Chrome(chrome) => chrome.transform = into_scope * chrome.transform,
+                    _ => {}
+                }
+            }
+        }
+        drop_empty_runs(&mut scope.items);
+        self.items_mut().push(Item::Scope {
+            key: scope.key,
+            props: scope.props,
+            placement: scope.placement,
+            items: scope.items,
+        });
+    }
+
+    /// Opens the scroll node's `inner` list: until [`Self::end_inner`],
+    /// items land under the clipped, scrolled inner layer, stretched in
+    /// the `stretch` direction.
+    pub(crate) fn begin_inner(
+        &mut self,
+        viewport: kurbo::Rect,
+        offset: kurbo::Vec2,
+        stretch: Option<kurbo::Vec2>,
+        anchor: Rc<Placement>,
+    ) {
+        assert!(
+            self.scopes.is_empty() && self.program.inner.is_none(),
+            "hydrolysis program: the inner layer opens once, outside every scope"
+        );
+        // The viewport's placement states the stretch too, so a platform
+        // view inside resolves the warp its host applies to it.
+        anchor.set_stretch(stretch.map(|direction| super::stretch::ShownStretch {
+            viewport,
+            direction,
+        }));
+        self.program.inner = Some(InnerProgram {
+            viewport,
+            offset,
+            stretch,
+            items: Vec::new(),
+        });
+        self.inner_open = true;
+        self.inner_anchor = Some(anchor);
+    }
+
+    pub(crate) fn end_inner(&mut self) {
+        assert!(
+            self.inner_open && self.scopes.is_empty(),
+            "hydrolysis program: end_inner without an open inner layer"
+        );
+        self.inner_open = false;
+        self.inner_anchor = None;
+    }
+
+    /// The record-space transform of the current item list's layer origin,
+    /// relative to the node's frame.
+    /// The opacity this program applies at the current record point: the
+    /// node's own times every open scope's.
+    pub(crate) fn alpha(&self) -> f32 {
+        self.scopes
+            .iter()
+            .fold(self.program.opacity, |alpha, scope| {
+                alpha * scope.props.alpha
+            })
+    }
+
+    pub(crate) fn origin(&self) -> kurbo::Affine {
+        self.scopes
+            .last()
+            .map_or(kurbo::Affine::IDENTITY, |scope| scope.origin)
+    }
+
+    /// The placement a child appended now is ordered under.
+    pub(crate) fn anchor(&self) -> Rc<Placement> {
+        if let Some(scope) = self.scopes.last() {
+            return Rc::clone(&scope.placement);
+        }
+        Rc::clone(
+            self.inner_anchor
+                .as_ref()
+                .unwrap_or_else(|| self.cell.placement()),
+        )
+    }
+
+    /// The record-space transform, from the window, of the current item
+    /// list's origin: the frame's world, the scroll offset when the inner
+    /// list is open, and the open scope's origin.
+    pub(crate) fn finish(self) -> Program<E> {
+        assert!(
+            self.scopes.is_empty(),
+            "hydrolysis program: {} scope(s) left open at the end of a record",
+            self.scopes.len()
+        );
+        assert!(
+            !self.inner_open,
+            "hydrolysis program: the inner layer left open at the end of a record"
+        );
+        let mut program = self.program;
+        drop_empty_runs(&mut program.items);
+        if let Some(inner) = &mut program.inner {
+            drop_empty_runs(&mut inner.items);
+        }
+        program
+    }
+}
+
+/// Drops runs nothing drew into: an opened but unused run mounts no layer.
+fn drop_empty_runs<E: crate::text::TextEngine>(items: &mut Vec<Item<E>>) {
+    items.retain(|item| !matches!(item, Item::Run(recording) if recording.is_empty()));
+}
+
+impl<E: crate::text::TextEngine> PartialEq for RunKey<E> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Before(a), Self::Before(b)) => a == b,
+            (Self::Tail, Self::Tail) => true,
+            _ => false,
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> Clone for RunKey<E> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Before(f0) => Self::Before(f0.clone()),
+            Self::Tail => Self::Tail,
+        }
+    }
+}
+
+impl<E: crate::text::TextEngine> Clone for ItemKey<E> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Anchor(f0) => Self::Anchor(f0.clone()),
+            Self::Node(f0) => Self::Node(f0.clone()),
+            Self::Scope(f0) => Self::Scope(*f0),
+            Self::Chrome(f0) => Self::Chrome(*f0),
+            Self::Live(f0) => Self::Live(*f0),
+        }
+    }
+}

@@ -132,7 +132,7 @@ handle.set(Some(new_handle));
 window.show(env);
 
 // Close window later
-if let Some(h) = handle.get() {
+if let Some(h) = handle.snapshot() {
     h.close();
 }
 ```
@@ -148,7 +148,6 @@ if let Some(h) = handle.get() {
 
 - Window API: `src/window.rs`
 - Material types: `src/background.rs`
-- FFI bindings: `ffi/src/window.rs`
 
 ## Related Examples
 

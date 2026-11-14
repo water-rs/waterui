@@ -12,13 +12,21 @@ keywords = ["ui", "core", "framework", "waterui"]
 categories = ["gui"]
 
 [dependencies]
+bitflags.workspace = true
+keyboard-types.workspace = true
 suiteki.workspace = true
 smallvec.workspace = true
 nami.workspace = true
+waterui-contract.workspace = true
+waterui-easing.workspace = true
 waterui-macros.workspace = true
 
 [dependencies.anyhow]
 version = "1.0"
+default-features = false
+
+[dependencies.thiserror]
+version = "2.0.20"
 default-features = false
 
 [dependencies.num-traits]
@@ -40,5 +48,3 @@ serde = ["dep:serde", "suiteki/serde"]
 
 [lints]
 workspace = true
-[package.metadata.cargo-machete]
-ignored = ["waterui-macros"]

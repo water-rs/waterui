@@ -1,0 +1,83 @@
+# Event order source: Vietnamese Telex over IBus on wl_keyboard +
+# zwp_text_input_v3 — the same co-delivery as linux-ibus-pinyin: every
+# keystroke (including the tone letter the IME consumes) arrives as a plain
+# key event with keysym-derived text, in the same flush as the preedit it
+# produced. IBus commits before clearing the preedit.
+# Order derived from the documented flow above (winit source and
+# text-input-v3 semantics); the wl_keyboard co-delivery is not an observed
+# platform trace.
+final_text = "hoàn"
+selection = [5, 5]
+committing_key_swallowed = true
+
+# "hoàn" via Telex: letters arrive as key + text and grow the preedit.
+[[step]]
+events = [
+    { key = { logical = "h", code = "KeyH", state = "pressed" } },
+    { text = "h" },
+    { preedit = { text = "h", caret = 1 } },
+]
+
+[[step]]
+events = [
+    { key = { logical = "h", code = "KeyH", state = "released" } },
+]
+
+[[step]]
+events = [
+    { key = { logical = "o", code = "KeyO", state = "pressed" } },
+    { text = "o" },
+    { preedit = { text = "ho", caret = 2 } },
+]
+
+[[step]]
+events = [
+    { key = { logical = "o", code = "KeyO", state = "released" } },
+]
+
+[[step]]
+events = [
+    { key = { logical = "a", code = "KeyA", state = "pressed" } },
+    { text = "a" },
+    { preedit = { text = "hoa", caret = 3 } },
+]
+
+[[step]]
+events = [
+    { key = { logical = "a", code = "KeyA", state = "released" } },
+]
+
+[[step]]
+events = [
+    { key = { logical = "n", code = "KeyN", state = "pressed" } },
+    { text = "n" },
+    { preedit = { text = "hoan", caret = 4 } },
+]
+
+[[step]]
+events = [
+    { key = { logical = "n", code = "KeyN", state = "released" } },
+]
+
+# 'f' is the Telex tone key: the IME consumes it and rewrites the preedit in
+# place ("hoan" -> "hoàn"), moving the accent onto the vowel.
+[[step]]
+events = [
+    { key = { logical = "f", code = "KeyF", state = "pressed" } },
+    { text = "f" },
+    { preedit = { text = "hoàn", caret = 4 } },
+]
+
+[[step]]
+events = [
+    { key = { logical = "f", code = "KeyF", state = "released" } },
+]
+
+# Space commits the current word and is consumed by the IME.
+[[step]]
+events = [
+    { key = { logical = " ", code = "Space", state = "pressed" } },
+    { text = " " },
+    { commit = "hoàn" },
+    { preedit = { text = "" } },
+]

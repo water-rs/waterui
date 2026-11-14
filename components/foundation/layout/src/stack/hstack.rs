@@ -8,14 +8,15 @@ use waterui_core::{
 };
 
 use crate::{
-    Layout, LazyContainer, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
-    SubviewPlacement,
+    Layout, LayoutError, LazyContainer, PlacedSubview, PlacementInput, Point, ProposalSize, Rect,
+    Size, StretchAxis, SubView, SubviewPlacement, UnitPoint,
     container::FixedContainer,
     stack::{
         Axis, VerticalAlignment,
         distribute::{
-            ChildMeasurement, LineAnchor, container_line, cross_envelope, measure_stack,
-            place_cross_extent, stack_spacing,
+            ChildMeasurement, LineAnchor, centred_block_start, container_line, cross_envelope,
+            empty_placement, main_block, measure_stack, place_cross_extent, stack_members,
+            stack_spacing,
         },
         stack_stretch_axis,
     },
@@ -118,14 +119,15 @@ impl Layout for HStackLayout {
     }
 
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
-        if children.is_empty() {
+        let members = stack_members(children);
+        if members.is_empty() {
             return Size::zero();
         }
 
-        let spacing = self.spacing.get();
-        let measurements = measure_stack(Axis::Horizontal, proposal, spacing, children);
+        let spacing = self.spacing.snapshot();
+        let measurements = measure_stack(Axis::Horizontal, proposal, spacing, &members);
         let width = measurements.iter().map(|m| m.size().width).sum::<f32>()
-            + stack_spacing(spacing, children.len());
+            + stack_spacing(spacing, members.len());
         let (above, below) = hstack_intrinsic_cross_metrics(&measurements, self.alignment);
         let height = if measurements.iter().any(|m| m.size().height.is_infinite()) {
             f32::INFINITY
@@ -145,14 +147,15 @@ impl Layout for HStackLayout {
             return vec![];
         }
 
-        let spacing = self.spacing.get();
+        let spacing = self.spacing.snapshot();
         // Placement is a fresh negotiation against the bounds the row was
         // placed in: every child is allocated from the row's resolved width
         // and proposed the row's resolved height, so what a child lays out
         // under is the extent it actually has, never the offer the row was
         // measured with.
         let placement = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
-        let measurements = measure_stack(Axis::Horizontal, placement, spacing, children);
+        let members = stack_members(children);
+        let measurements = measure_stack(Axis::Horizontal, placement, spacing, &members);
 
         let (above, below) = hstack_intrinsic_cross_metrics(&measurements, self.alignment);
         let guide_line = bounds.y()
@@ -163,14 +166,31 @@ impl Layout for HStackLayout {
                 below,
             );
 
-        // Place children
+        // Place children: members claim a slot each, spaced; a non-member is
+        // answered with a zero-size frame at the cursor so the returned
+        // placements still line up one-for-one with `children`.
         let mut placements = Vec::with_capacity(children.len());
-        let mut current_x = bounds.x();
+        let block = main_block(measurements.iter().map(|m| m.size().width), spacing);
+        let mut measurements = measurements.iter();
+        let mut current_x = centred_block_start(bounds.x(), bounds.width(), block);
+        let mut members_placed = 0usize;
 
-        for (i, measurement) in measurements.iter().enumerate() {
-            if i > 0 {
+        for child in children {
+            if child.is_empty() {
+                placements.push(empty_placement(
+                    Point::new(current_x, bounds.y()),
+                    placement,
+                ));
+                continue;
+            }
+
+            let measurement = measurements
+                .next()
+                .expect("stack members and measurements diverged");
+            if members_placed > 0 {
                 current_x += spacing;
             }
+            members_placed += 1;
 
             let child_height = place_cross_extent(
                 measurement.size().height,
@@ -202,6 +222,19 @@ impl Layout for HStackLayout {
         }
 
         placements
+    }
+
+    /// The row's answer, centred on the main axis and anchored on the cross
+    /// axis by the row's alignment (baselines and custom guides at the top).
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(
+            input.extent()?,
+            UnitPoint::new(0.5, LineAnchor::vertical(self.alignment).response_unit()),
+        ))
     }
 
     fn explicit_vertical(
@@ -298,7 +331,7 @@ pub fn hstack<C: TupleViews>(contents: C) -> HStack<(C,)> {
 impl<C, F, V> View for HStack<ForEach<C, F, V>>
 where
     C: Collection + Clone,
-    C::Item: Identifiable,
+    C::Item: Identifiable + Clone,
     F: 'static + Fn(C::Item) -> V,
     V: View,
 {
@@ -338,8 +371,8 @@ impl<C: TupleViews + 'static> View for HStack<(C,)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ViewDimensions;
     use crate::tests::CompressibleView;
+    use crate::{LayoutError, Rect, ResolvedExtent, ViewDimensions};
 
     struct MockSubView {
         size: Size,
@@ -347,6 +380,13 @@ mod tests {
     }
 
     impl SubView for MockSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }
@@ -366,6 +406,13 @@ mod tests {
     }
 
     impl SubView for ResponsiveSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(match proposal.width {
                 Some(width) if width <= self.wrap_at_or_below => {

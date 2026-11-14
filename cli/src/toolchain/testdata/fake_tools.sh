@@ -1,0 +1,995 @@
+#!/bin/sh
+# waterui-cli test fixture — fake host tools for Host-driven checks.
+#
+# A test installs copies of this script under one or more tool names on a
+# scratch PATH; the script dispatches on the invoked name. Canned output comes
+# from WATERUI_FAKE_<KEY> environment variables or files under
+# ${WATERUI_FAKE_RESPONSES}/<key>.
+#
+# The host PATH under test contains ONLY the fixture bin directory, so this
+# script must not invoke external commands (`cat`, `tr`, ...) — they are not
+# on the child PATH. Everything below is POSIX builtins, except absolute-path
+# `/bin/mkdir`/`/bin/cp` calls, which resolve regardless of PATH.
+#
+# Mutable state (`rustup toolchain install`/`default`/`target add`/
+# `component add`, `rustup update`, `cargo install`) lives in files
+# under the fake $HOME so a `--fix` run mutates the fixture and a
+# re-check observes the repair.
+#
+# Asymmetry with fake_tools.cmd: `sdkmanager --licenses`/`--install` drain
+# stdin here (a `read` loop) so piped license confirmations are consumed.
+# cmd.exe has no builtin way to read stdin to EOF (`set /p` reads one line
+# and cannot test EOF), so the .cmd returns immediately instead — tests must
+# not rely on stdin being drained on Windows.
+
+tool=${0##*/}
+tool=${tool%.cmd}
+tool=${tool%.bat}
+tool=${tool%.exe}
+
+# WATERUI_FAKE_LOG names a file every fake invocation appends itself to —
+# `<tool> <args>` one per line — the seam tests use to assert which tools
+# ran and with which arguments.
+if [ -n "${WATERUI_FAKE_LOG-}" ]; then
+    printf '%s' "$tool" >> "$WATERUI_FAKE_LOG"
+    for _log_arg in "$@"; do
+        printf ' %s' "$_log_arg" >> "$WATERUI_FAKE_LOG"
+    done
+    printf '\n' >> "$WATERUI_FAKE_LOG"
+fi
+
+# print_file <path>: emit a file's contents using only builtins. `|| [ -n ... ]`
+# keeps a final unterminated line.
+print_file() {
+    while IFS= read -r _line || [ -n "$_line" ]; do
+        printf '%s\n' "$_line"
+    done < "$1"
+}
+
+# respond <key>: print the canned text for <key>; exit 1 when none exists.
+# <key> must be a valid shell variable suffix ([A-Za-z0-9_] only) for the
+# env-var branch; callers whose keys can contain '-' or '.' (pkg-config
+# module names) use respond_file.
+respond() {
+    eval "value=\${WATERUI_FAKE_$1-}"
+    if [ -n "$value" ]; then
+        printf '%s\n' "$value"
+        exit 0
+    fi
+    respond_file "$1"
+}
+
+# respond_file <key>: print the response file for <key>; exit 1 when absent.
+respond_file() {
+    if [ -f "${WATERUI_FAKE_RESPONSES:-/nonexistent}/$1" ]; then
+        print_file "${WATERUI_FAKE_RESPONSES}/$1"
+        exit 0
+    fi
+    exit 1
+}
+
+# respond_or_empty <key>: like respond, but prints nothing and exits 0 when
+# no canned text exists.
+respond_or_empty() {
+    eval "value=\${WATERUI_FAKE_$1-}"
+    if [ -n "$value" ]; then
+        printf '%s\n' "$value"
+        exit 0
+    fi
+    if [ -f "${WATERUI_FAKE_RESPONSES:-/nonexistent}/$1" ]; then
+        print_file "${WATERUI_FAKE_RESPONSES}/$1"
+    fi
+    exit 0
+}
+
+# last_arg evaluates to the final positional argument after this loop.
+for last_arg; do :; done
+
+# list_contains <list> <entry>: <entry> is a whitespace-separated member.
+list_contains() {
+    case " $1 " in
+        *" $2 "*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# module_present <name>: a pkg-config module response file exists for <name>.
+# Module names can contain '-' and '.', which are not expandable inside ${}
+# on every /bin/sh, so module state lives in files only.
+module_present() {
+    [ -f "${WATERUI_FAKE_RESPONSES:-/nonexistent}/PKG_CONFIG_$1" ]
+}
+
+# file_contains <file> <entry>: <entry> is a line of <file>.
+file_contains() {
+    [ -f "$1" ] || return 1
+    while IFS= read -r _entry; do
+        [ "$_entry" = "$2" ] && return 0
+    done < "$1"
+    return 1
+}
+
+case "$tool" in
+rustup)
+    # Mutable rustup state — one channel/target/component per line.
+    _st_tc="$HOME/.fake-rustup-toolchains"
+    _st_def="$HOME/.fake-rustup-default"
+    _st_tgt="$HOME/.fake-rustup-targets"
+    _st_cmp="$HOME/.fake-rustup-components"
+    _rt_home="${RUSTUP_HOME:-$HOME/.rustup}"
+    # The channel a test's `rust-toolchain.toml` pin declares. When set,
+    # `show active-toolchain` resolves it from the state above — a pin for a
+    # toolchain nothing installed fails like rustup's own error.
+    _pin="${WATERUI_FAKE_RUSTUP_TOOLCHAIN_NOT_INSTALLED-}"
+    case "$*" in
+        "show active-toolchain")
+            if [ -n "${WATERUI_FAKE_RUSTUP_NO_ACTIVE_TOOLCHAIN-}" ]; then
+                echo "error: no active toolchain" >&2
+                exit 1
+            fi
+            if [ -n "$_pin" ]; then
+                if file_contains "$_st_tc" "$_pin" || [ -d "$_rt_home/toolchains/$_pin" ]; then
+                    case "$_pin" in
+                        stable | beta | nightly | [0-9]*)
+                            echo "$_pin-${WATERUI_FAKE_RUSTC_HOST:-x86_64-unknown-fake} (overridden by rust-toolchain.toml)"
+                            ;;
+                        *)
+                            # Custom/linked toolchains (esp, stage0) print bare.
+                            echo "$_pin (overridden by rust-toolchain.toml)"
+                            ;;
+                    esac
+                    exit 0
+                fi
+                echo "error: toolchain '$_pin' is not installed" >&2
+                exit 1
+            fi
+            if [ -f "$_st_def" ]; then
+                IFS= read -r _def < "$_st_def"
+                echo "$_def-${WATERUI_FAKE_RUSTC_HOST:-x86_64-unknown-fake} (default)"
+                exit 0
+            fi
+            respond RUSTUP_ACTIVE_TOOLCHAIN
+            ;;
+        "toolchain install "* | "toolchain add "*)
+            printf '%s\n' "$last_arg" >> "$_st_tc"
+            exit 0
+            ;;
+        "toolchain list")
+            eval "_toolchains=\${WATERUI_FAKE_RUSTUP_TOOLCHAINS-}"
+            [ -n "$_toolchains" ] && printf '%s\n' "$_toolchains"
+            if [ -f "${WATERUI_FAKE_RESPONSES:-/nonexistent}/RUSTUP_TOOLCHAINS" ]; then
+                print_file "$WATERUI_FAKE_RESPONSES/RUSTUP_TOOLCHAINS"
+            fi
+            [ -f "$_st_tc" ] && print_file "$_st_tc"
+            exit 0
+            ;;
+        "default "*)
+            printf '%s\n' "$last_arg" >> "$_st_tc"
+            printf '%s\n' "$last_arg" > "$_st_def"
+            exit 0
+            ;;
+        "update" | "update "*)
+            # `rustup update <name>` moves a moving-channel toolchain to the
+            # newest release — model that as a version jump.
+            printf '%s\n' "${WATERUI_FAKE_RUSTC_UPDATED_VERSION:-99.0.0}" \
+                > "$HOME/.fake-rustc-version"
+            exit 0
+            ;;
+        "target list --installed"*)
+            eval "_targets=\${WATERUI_FAKE_RUSTUP_INSTALLED_TARGETS-}"
+            [ -n "$_targets" ] && printf '%s\n' "$_targets"
+            if [ -f "${WATERUI_FAKE_RESPONSES:-/nonexistent}/RUSTUP_INSTALLED_TARGETS" ]; then
+                print_file "$WATERUI_FAKE_RESPONSES/RUSTUP_INSTALLED_TARGETS"
+            fi
+            [ -f "$_st_tgt" ] && print_file "$_st_tgt"
+            exit 0
+            ;;
+        "target add "*)
+            printf '%s\n' "$last_arg" >> "$_st_tgt"
+            exit 0
+            ;;
+        "component list"*)
+            eval "_components=\${WATERUI_FAKE_RUSTUP_INSTALLED_COMPONENTS-}"
+            [ -n "$_components" ] && printf '%s\n' "$_components"
+            if [ -f "${WATERUI_FAKE_RESPONSES:-/nonexistent}/RUSTUP_INSTALLED_COMPONENTS" ]; then
+                print_file "$WATERUI_FAKE_RESPONSES/RUSTUP_INSTALLED_COMPONENTS"
+            fi
+            [ -f "$_st_cmp" ] && print_file "$_st_cmp"
+            exit 0
+            ;;
+        "component add "*)
+            printf '%s\n' "$last_arg" >> "$_st_cmp"
+            exit 0
+            ;;
+        "run "*)
+            # `rustup run <toolchain> <tool> <args…>` proxies to the named
+            # tool — dispatch to the sibling fake on this scratch PATH.
+            shift
+            shift
+            _run_tool="${0%/*}/$1"
+            shift
+            exec "$_run_tool" "$@"
+            ;;
+        --version | -V)
+            echo "rustup 1.28.2 (waterui-test)"
+            exit 0
+            ;;
+        *)
+            exit 2
+            ;;
+    esac
+    ;;
+rustc)
+    _rustc_version="${WATERUI_FAKE_RUSTC_VERSION:-1.0.0}"
+    if [ -f "$HOME/.fake-rustc-version" ]; then
+        IFS= read -r _rustc_version < "$HOME/.fake-rustc-version"
+    fi
+    case "$1" in
+        --version)
+            printf 'rustc %s (waterui-test 2026-01-01)\n' "$_rustc_version"
+            exit 0
+            ;;
+        -vV)
+            if [ -n "${WATERUI_FAKE_RUSTC_HOST-}" ]; then
+                printf 'rustc %s (waterui-test)\nbinary: rustc\ncommit-hash: fake\ncommit-date: 2026-01-01\nhost: %s\nrelease: %s\nLLVM version: 20.1.0\n' \
+                    "$_rustc_version" "$WATERUI_FAKE_RUSTC_HOST" "$_rustc_version"
+                exit 0
+            fi
+            respond RUSTC_VERBOSE
+            ;;
+        --print)
+            # `rustc --print <what>` answers the staged `RUSTC_PRINT_<what>`
+            # file (`<what>` carries `-`, so only the file form fits).
+            respond_file "RUSTC_PRINT_$2"
+            ;;
+        *)
+            exit 2
+            ;;
+    esac
+    ;;
+cargo)
+    case "$1" in
+        --version)
+            printf 'cargo %s (waterui-test)\n' "${WATERUI_FAKE_CARGO_VERSION:-1.95.0}"
+            ;;
+        metadata)
+            # `cargo metadata` prints the staged CARGO_METADATA JSON and fails when none is staged.
+            respond CARGO_METADATA
+            ;;
+        tree)
+            # The graph is resolved per build target: `cargo tree` answers
+            # `CARGO_TREE_<triple>` for each `--target` flag it is passed —
+            # a multi-target invocation's union is exactly its per-target
+            # answers — and a call naming no `--target` or a triple with no
+            # staged response fails, so a host-graph resolution can never
+            # pass as the target's.
+            _tree_targets=""
+            _tree_prev=""
+            for _tree_arg in "$@"; do
+                if [ "$_tree_prev" = "--target" ]; then
+                    _tree_targets="$_tree_targets $_tree_arg"
+                fi
+                _tree_prev="$_tree_arg"
+            done
+            if [ -z "$_tree_targets" ]; then
+                exit 2
+            fi
+            for _tree_target in $_tree_targets; do
+                if [ ! -f "${WATERUI_FAKE_RESPONSES:-/nonexistent}/CARGO_TREE_$_tree_target" ]; then
+                    exit 1
+                fi
+            done
+            for _tree_target in $_tree_targets; do
+                print_file "${WATERUI_FAKE_RESPONSES}/CARGO_TREE_$_tree_target"
+            done
+            exit 0
+            ;;
+        install | binstall)
+            # `cargo install <crate>` drops the crate's binary beside cargo —
+            # model that by copying this dispatcher under the crate's name.
+            shift
+            _krate=""
+            for _arg in "$@"; do
+                case "$_arg" in
+                    -*) ;;
+                    *)
+                        _krate="$_arg"
+                        break
+                        ;;
+                esac
+            done
+            if [ -n "$_krate" ]; then
+                _dest="${0%/*}/$_krate"
+                [ -e "$_dest" ] || /bin/cp "$0" "$_dest"
+            fi
+            ;;
+    esac
+    exit 0
+    ;;
+codesign)
+    exit 0
+    ;;
+# `caffeinate -d -u -w <pid>`: the display assertion the simulator runner holds.
+caffeinate)
+    exit 0
+    ;;
+# `open -n -W --env K=V --stdout <f> --stderr <f> <app> --args …`: the
+# Catalyst runner's LaunchServices launch. Writes the staged status to
+# the file WATERUI_NATIVE_TEST_STATUS names (unless NO_STATUS is set,
+# modeling an app that died before its trials concluded) and the canned
+# streams to the --stdout/--stderr files. WATERUI_FAKE_OPEN_EXIT is the
+# launcher status, WATERUI_FAKE_OPEN_STATUS the app's.
+open)
+    _status_path=""
+    _o_stdout=""
+    _o_stderr=""
+    _prev=""
+    for _arg in "$@"; do
+        case "$_prev" in
+            --env)
+                case "$_arg" in
+                    WATERUI_NATIVE_TEST_STATUS=*) _status_path="${_arg#*=}" ;;
+                esac
+                ;;
+            --stdout) _o_stdout="$_arg" ;;
+            --stderr) _o_stderr="$_arg" ;;
+        esac
+        _prev="$_arg"
+    done
+    if [ -z "${WATERUI_FAKE_OPEN_NO_STATUS-}" ] && [ -n "$_status_path" ]; then
+        printf '%s' "${WATERUI_FAKE_OPEN_STATUS:-0}" > "$_status_path"
+    fi
+    [ -n "$_o_stdout" ] && printf '%s\n' "${WATERUI_FAKE_OPEN_STDOUT-}" > "$_o_stdout"
+    [ -n "$_o_stderr" ] && printf '%s\n' "${WATERUI_FAKE_OPEN_STDERR-}" > "$_o_stderr"
+    exit "${WATERUI_FAKE_OPEN_EXIT:-0}"
+    ;;
+xcodebuild)
+    case "$*" in
+        -version | --version)
+            printf 'Xcode %s\nBuild version 16F6\n' "${WATERUI_FAKE_XCODE_VERSION:-16.4}"
+            ;;
+        "-showComponent MetalToolchain -json")
+            respond XCODEBUILD_SHOW_METAL_TOOLCHAIN
+            ;;
+    esac
+    exit 0
+    ;;
+xcode-select)
+    case "$*" in
+        -p)
+            respond_or_empty XCODE_SELECT_DEVELOPER_DIR
+            ;;
+    esac
+    exit 0
+    ;;
+security)
+    case "$*" in
+        "find-identity -v -p codesigning")
+            respond_or_empty SECURITY_FIND_IDENTITY
+            ;;
+        "find-certificate -a -Z -p"*)
+            respond_or_empty SECURITY_FIND_CERTIFICATE
+            ;;
+        *)
+            exit 0
+            ;;
+    esac
+    ;;
+xcrun)
+    case "$*" in
+        *--show-sdk-path)
+            respond XCRUN_SDK_PATH
+            ;;
+        "--find metal")
+            respond XCRUN_FIND_METAL
+            ;;
+        "metal --version")
+            respond XCRUN_METAL_VERSION
+            ;;
+        "simctl list --json" | "simctl list devices --json")
+            respond XCRUN_SIMCTL_DEVICES
+            ;;
+        "simctl delete unavailable" | "simctl create "* | "simctl bootstatus "*)
+            exit 0
+            ;;
+        "simctl spawn "*)
+            (respond_or_empty XCRUN_SIMCTL_SPAWN)
+            exit "${WATERUI_FAKE_SIMCTL_SPAWN_STATUS:-0}"
+            ;;
+        "simctl install "*)
+            exit 0
+            ;;
+        "simctl get_app_container "*)
+            respond XCRUN_SIMCTL_APP_CONTAINER
+            ;;
+        "simctl launch "*)
+            # launch --console --terminate-running-process <udid> <bundle> [args]
+            _bundle="$6"
+            printf '%s: 4242\n' "$_bundle"
+            (respond_or_empty XCRUN_SIMCTL_LAUNCH)
+            if [ -n "${SIMCTL_CHILD_WATERUI_NATIVE_TEST_STATUS-}" ]; then
+                printf '%s' "${WATERUI_FAKE_SIMCTL_APP_STATUS:-0}" \
+                    > "$SIMCTL_CHILD_WATERUI_NATIVE_TEST_STATUS"
+            fi
+            exit 0
+            ;;
+        "devicectl list devices --json-output -")
+            respond XCRUN_DEVICE_LIST
+            ;;
+        "devicectl device info processes "*)
+            respond XCRUN_DEVICE_INFO_PROCESSES
+            ;;
+        "devicectl device info apps "*)
+            # --json-output <path> takes the report as a file; the runner
+            # parses it, never stdout.
+            _out=""
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --json-output) _out="$2"; shift 2 ;;
+                    *) shift ;;
+                esac
+            done
+            _report="${WATERUI_FAKE_DEVICE_INFO_APPS:-{}}"
+            if [ -f "${WATERUI_FAKE_RESPONSES:-/nonexistent}/XCRUN_DEVICE_INFO_APPS" ]; then
+                _report=""
+                while IFS= read -r _line || [ -n "$_line" ]; do
+                    _report="$_report$_line
+"
+                done < "${WATERUI_FAKE_RESPONSES}/XCRUN_DEVICE_INFO_APPS"
+            fi
+            printf '%s' "$_report" > "$_out"
+            exit 0
+            ;;
+        "devicectl device install app "*)
+            if [ -n "${WATERUI_FAKE_DEVICE_CONTAINER-}" ]; then
+                /bin/mkdir -p "$WATERUI_FAKE_DEVICE_CONTAINER/tmp" \
+                    "$WATERUI_FAKE_DEVICE_CONTAINER/Library"
+            fi
+            exit "${WATERUI_FAKE_DEVICE_INSTALL_STATUS:-0}"
+            ;;
+        "devicectl "--quiet" device process launch "* | "devicectl --quiet device process launch "*)
+            respond_or_empty XCRUN_DEVICE_LAUNCH
+            if [ -n "${DEVICECTL_CHILD_WATERUI_NATIVE_TEST_STATUS-}" ] \
+                && [ -n "${WATERUI_FAKE_DEVICE_CONTAINER-}" ]; then
+                printf '%s' "${WATERUI_FAKE_DEVICE_STATUS:-0}" \
+                    > "$WATERUI_FAKE_DEVICE_CONTAINER/$DEVICECTL_CHILD_WATERUI_NATIVE_TEST_STATUS"
+            fi
+            exit "${WATERUI_FAKE_DEVICE_LAUNCH_STATUS:-0}"
+            ;;
+        "devicectl device copy from "*)
+            _src=""; _dst=""
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --source) _src="$2"; shift 2 ;;
+                    --destination) _dst="$2"; shift 2 ;;
+                    *) shift ;;
+                esac
+            done
+            if [ -d "${WATERUI_FAKE_DEVICE_CONTAINER:?}/$_src" ]; then
+                /bin/cp -R "${WATERUI_FAKE_DEVICE_CONTAINER:?}/$_src" "$_dst" || exit 1
+            else
+                /bin/cp "${WATERUI_FAKE_DEVICE_CONTAINER:?}/$_src" "$_dst" || exit 1
+            fi
+            ;;
+        "devicectl device copy to "*)
+            _src=""; _dst=""
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --source) _src="$2"; shift 2 ;;
+                    --destination) _dst="$2"; shift 2 ;;
+                    *) shift ;;
+                esac
+            done
+            if [ -d "$_src" ]; then
+                /bin/cp -R "$_src" "${WATERUI_FAKE_DEVICE_CONTAINER:?}/$_dst"
+            else
+                /bin/cp "$_src" "${WATERUI_FAKE_DEVICE_CONTAINER:?}/$_dst"
+            fi
+            ;;
+        *)
+            exit 1
+            ;;
+    esac
+    ;;
+sdkmanager)
+    case "$*" in
+        *--licenses* | *--install*)
+            # Drain piped stdin (license confirmations) with builtins.
+            while IFS= read -r _drain; do :; done
+            exit 0
+            ;;
+        *--list*)
+            respond_or_empty SDKMANAGER_LIST
+            ;;
+        *--version*)
+            echo "5.0"
+            exit 0
+            ;;
+        *)
+            exit 0
+            ;;
+    esac
+    ;;
+adb)
+    # Every invocation appends its argv to the log a test points
+    # `WATERUI_FAKE_ADB_LOG` at, so sequences can be asserted.
+    if [ -n "${WATERUI_FAKE_ADB_LOG-}" ]; then
+        printf '%s\n' "$*" >> "$WATERUI_FAKE_ADB_LOG"
+    fi
+    # A wedged transport — spin until the caller's bound kills the process.
+    if [ -n "${WATERUI_FAKE_ADB_HANG-}" ]; then
+        while :; do :; done
+    fi
+    # A scripted device: every `shell` command line runs for real with the
+    # host's own tools — the one place this fixture runs external commands,
+    # on a PATH of its own: `WATERUI_FAKE_DEVICE_PATH` (the `run-as` shim
+    # and any shims a test stages) ahead of the system directories. The
+    # shell user's `/data/local/tmp` is the host directory
+    # `WATERUI_FAKE_DEVICE_TMP`, and a `push` lands there with adb's own
+    # semantics: an absent target becomes a copy of the source, an existing
+    # directory receives the source inside it.
+    if [ -n "${WATERUI_FAKE_DEVICE_TMP-}" ]; then
+        PATH="${WATERUI_FAKE_DEVICE_PATH:+$WATERUI_FAKE_DEVICE_PATH:}/usr/bin:/bin:/sbin"
+        export PATH
+        case "$*" in
+            *" push "*)
+                remote="$WATERUI_FAKE_DEVICE_TMP${5#/data/local/tmp}"
+                mkdir -p "$(dirname "$remote")" || exit 1
+                if [ -d "$remote" ]; then
+                    exec cp -R "$4" "$remote/"
+                fi
+                exec cp -R "$4" "$remote"
+                ;;
+            *" shell "*)
+                # Real adb joins every word after `shell` into one remote
+                # command line; `-T` is a client flag, not a remote word.
+                line=""
+                _take=""
+                for _a in "$@"; do
+                    if [ "$_a" = "shell" ]; then
+                        _take=1
+                        continue
+                    fi
+                    if [ "$_a" = "-T" ]; then
+                        continue
+                    fi
+                    if [ -n "$_take" ]; then
+                        line="${line:+$line }$_a"
+                    fi
+                done
+                line=$(printf '%s' "$line" | sed "s#/data/local/tmp#$WATERUI_FAKE_DEVICE_TMP#g")
+                cd / || exit 1
+                exec sh -c "$line"
+                ;;
+        esac
+    fi
+    case "$*" in
+        version)
+            printf 'Android Debug Bridge version 1.0.41\nVersion %s\n' "${WATERUI_FAKE_ADB_VERSION:-36.0.0-test}"
+            exit 0
+            ;;
+        "devices -l")
+            printf 'List of devices attached\n'
+            respond_or_empty ADB_DEVICES
+            ;;
+        start-server)
+            exit "${WATERUI_FAKE_ADB_START_SERVER_STATUS:-0}"
+            ;;
+        *"emu avd name")
+            respond_or_empty ADB_EMU_AVD_NAME
+            ;;
+        *getprop*)
+            respond_or_empty ADB_GETPROP
+            ;;
+        *"pm list packages"*)
+            respond_or_empty ADB_PM_PACKAGES
+            ;;
+        *" install "*)
+            # A failed install still prints its `Failure […]` text before
+            # the exit status — `respond_or_empty` exits 0 itself, so it
+            # runs in a subshell and the status is this branch's own.
+            (respond_or_empty ADB_INSTALL)
+            exit "${WATERUI_FAKE_ADB_INSTALL_STATUS:-0}"
+            ;;
+        *"forward --list"*)
+            respond_or_empty ADB_FORWARD_LIST
+            ;;
+        *"forward tcp:0 "*)
+            # `forward tcp:0` answers the local port it bound; the test
+            # stages the port its fake host listener holds.
+            respond_or_empty ADB_FORWARD_PORT
+            ;;
+        *"forward --remove "*)
+            (respond_or_empty ADB_FORWARD_REMOVE)
+            exit "${WATERUI_FAKE_ADB_FORWARD_REMOVE_STATUS:-0}"
+            ;;
+        *logcat*)
+            respond_or_empty ADB_LOGCAT
+            ;;
+        *"run-as"*"cat > "*)
+            # A command that writes its stdin into a file, like a run
+            # preparation: the input lands where `WATERUI_FAKE_ADB_STDIN`
+            # points, and the canned stdout goes back.
+            /bin/cat > "${WATERUI_FAKE_ADB_STDIN:-/dev/null}"
+            (respond_or_empty ADB_RUN_AS_STDOUT)
+            exit "${WATERUI_FAKE_ADB_RUN_AS_STATUS:-0}"
+            ;;
+        *"run-as"*cat*)
+            respond_or_empty ADB_CAT
+            ;;
+        *"run-as"*)
+            exit "${WATERUI_FAKE_ADB_RUN_AS_STATUS:-0}"
+            ;;
+        *shell*date*)
+            printf '%s\n' "${WATERUI_FAKE_ADB_DATE:-01-01 00:00:00.000}"
+            ;;
+        *shell*instrument*)
+            respond_or_empty ADB_AM_INSTRUMENT
+            ;;
+        *shell*)
+            exit "${WATERUI_FAKE_ADB_SHELL_STATUS:-0}"
+            ;;
+        *)
+            exit 0
+            ;;
+    esac
+    ;;
+emulator)
+    case "$*" in
+        *-list-avds*)
+            # WATERUI_FAKE_EMULATOR_STATUS stages a broken emulator:
+            # listing its AVDs fails the way a real one does.
+            exit_status="${WATERUI_FAKE_EMULATOR_STATUS:-0}"
+            if [ "$exit_status" -ne 0 ]; then
+                exit "$exit_status"
+            fi
+            respond_or_empty EMULATOR_AVDS
+            ;;
+        *)
+            exit 0
+            ;;
+    esac
+    ;;
+java | javac)
+    case "$*" in
+        -version | --version)
+            # Real java prints `openjdk version "X"` on stderr; the check
+            # reads combined output, so stdout works the same.
+            printf 'openjdk version "%s" 2026-01-01\n' "${WATERUI_FAKE_JAVA_VERSION:-99.0.0}"
+            ;;
+    esac
+    exit 0
+    ;;
+kotlinc)
+    case "$*" in
+        -version)
+            printf 'info: kotlinc-jvm %s (JRE 17.0.0)\n' "${WATERUI_FAKE_KOTLINC_VERSION:-0.0.0}"
+            ;;
+    esac
+    exit 0
+    ;;
+sccache)
+    case "$*" in
+        --version | -version | -v)
+            printf 'sccache %s (waterui-test)\n' "${WATERUI_FAKE_SCCACHE_VERSION:-1.0.0}"
+            ;;
+        --show-stats)
+            # A socket file still at SCCACHE_SERVER_UDS when connect-or-start
+            # runs is the bind collision the failing host reported. A test
+            # declaring WATERUI_FAKE_SCCACHE_LIVE says that file belongs to a
+            # live server, which the client connects to instead.
+            if [ -n "${SCCACHE_SERVER_UDS-}" ] && [ -e "$SCCACHE_SERVER_UDS" ] && [ -z "${WATERUI_FAKE_SCCACHE_LIVE-}" ]; then
+                printf 'sccache: error: Server startup failed: File exists (os error 17)\n' >&2
+                exit 2
+            fi
+            printf 'Compile requests                      0\n'
+            ;;
+    esac
+    exit 0
+    ;;
+git)
+    # The managed-checkout sequence `git -C <dir> init | remote add | fetch |
+    # checkout` produces: on `checkout`, copy the staged
+    # WATERUI_FAKE_GIT_CHECKOUT tree into the -C directory, like a clone's
+    # detached checkout — a copy that fails is a nonzero exit naming the
+    # staged tree, not a silent partial checkout. Every other subcommand
+    # succeeds silently.
+    #
+    # Every invocation the CLI spawns leads with `-c core.longpaths=true`;
+    # drop the `-c <kv>` pairs so "$*" and $1 below see the subcommand.
+    while [ $# -ge 2 ] && [ "$1" = "-c" ]; do shift 2; done
+    git_dir=""
+    git_prev=""
+    for git_arg in "$@"; do
+        if [ "$git_prev" = "-C" ]; then git_dir=$git_arg; fi
+        git_prev=$git_arg
+    done
+    case "$*" in
+        *"rev-parse --is-shallow-repository"*) respond GIT_SHALLOW ;;
+        *"rev-parse --verify refs/remotes/origin/main"*) respond GIT_HEAD ;;
+        *"rev-parse --verify"*) respond GIT_REVISION ;;
+        *"--unshallow"*) : > .fake-git-unshallowed ;;
+        *"merge-base --is-ancestor"*)
+            if [ -f .fake-git-unshallowed ]; then
+                exit "${WATERUI_FAKE_GIT_ANCESTOR_COMPLETE:-0}"
+            fi
+            exit "${WATERUI_FAKE_GIT_ANCESTOR:-0}"
+            ;;
+        *"ls-tree"*) respond_or_empty GIT_ENTRY ;;
+        "show "*) respond GIT_FILE ;;
+        "--version")
+            printf 'git version %s\n' "${WATERUI_FAKE_GIT_VERSION:-2.43.0}"
+            ;;
+        *checkout*)
+            if [ -n "${WATERUI_FAKE_GIT_CHECKOUT-}" ] && [ -n "$git_dir" ]; then
+                if ! /bin/cp -R "${WATERUI_FAKE_GIT_CHECKOUT}/." "$git_dir/"; then
+                    printf 'git checkout: failed to copy %s into %s\n' \
+                        "${WATERUI_FAKE_GIT_CHECKOUT}" "$git_dir" >&2
+                    exit 1
+                fi
+            fi
+            ;;
+    esac
+    exit 0
+    ;;
+reg)
+    # `reg query <key> /v LongPathsEnabled` — the only value modeled. The
+    # state file wins over the staged WATERUI_FAKE_LONG_PATHS value: it is
+    # what the elevated write the powershell fake models produces. An absent
+    # value fails the query like the real tool.
+    case "$1" in
+        query)
+            _reg_val="${WATERUI_FAKE_LONG_PATHS-}"
+            if [ -f "$HOME/.fake-long-paths" ]; then
+                IFS= read -r _reg_val < "$HOME/.fake-long-paths"
+            fi
+            if [ -n "$_reg_val" ]; then
+                printf '\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\FileSystem\n'
+                printf '    LongPathsEnabled    REG_DWORD    0x%s\n' "$_reg_val"
+                exit 0
+            fi
+            echo "ERROR: The system was unable to find the specified registry key or value." >&2
+            exit 1
+            ;;
+    esac
+    exit 0
+    ;;
+powershell | pwsh)
+    # `doctor --fix` elevates `reg add` through `Start-Process -Verb RunAs`;
+    # land that write in the state file the `reg` branch reads so a re-check
+    # observes the repair. WATERUI_FAKE_POWERSHELL_NO_WRITE models a write
+    # that did not land.
+    case "$*" in
+        *LongPathsEnabled*)
+            if [ -z "${WATERUI_FAKE_POWERSHELL_NO_WRITE-}" ]; then
+                printf '1\n' > "$HOME/.fake-long-paths"
+            fi
+            ;;
+    esac
+    exit 0
+    ;;
+cmake | meson | spirv-opt | sh | bash)
+    case "$*" in
+        --version | -version | -v)
+            printf '%s 1.0.0 (waterui-test)\n' "$tool"
+            ;;
+    esac
+    if [ "$tool" = "cmake" ]; then
+        # WPE source-build fixture: --install --prefix <dir> materializes the
+        # two bridge outputs (or only the bridge under OMIT_EXTENSION); any
+        # invocation fails under WATERUI_FAKE_CMAKE_FAIL.
+        if [ -n "${WATERUI_FAKE_LOG-}" ]; then
+            printf 'cmake-env PKG_CONFIG_PATH=%s\n' "${PKG_CONFIG_PATH-}" >> "$WATERUI_FAKE_LOG"
+        fi
+        [ -n "${WATERUI_FAKE_CMAKE_FAIL-}" ] && exit 1
+        _prefix=""
+        _prev=""
+        for _arg in "$@"; do
+            [ "$_prev" = "--prefix" ] && _prefix="$_arg"
+            _prev="$_arg"
+        done
+        if [ -n "$_prefix" ]; then
+            /bin/mkdir -p "$_prefix/lib/waterui-wpe/extensions"
+            printf 'fake bridge' > "$_prefix/lib/libwaterui_wpe.so"
+            if [ -z "${WATERUI_FAKE_CMAKE_OMIT_EXTENSION-}" ]; then
+                printf 'fake extension' > "$_prefix/lib/waterui-wpe/extensions/waterui_wpe_extension.so"
+            fi
+        fi
+    fi
+    exit 0
+    ;;
+wasm-pack)
+    case "$1" in
+        --version | -version | -v)
+            printf '%s 1.0.0 (waterui-test)\n' "$tool"
+            ;;
+        build)
+            # `build` runs in the managed crate's directory: what it observes
+            # there — whether the crate's lock and its seed stamp were in
+            # place before the build was invoked — goes on the log so a test
+            # can assert the CLI seeded before it invoked wasm-pack.
+            if [ -n "${WATERUI_FAKE_LOG-}" ]; then
+                _wp_lock=absent
+                _wp_seed=absent
+                [ -f Cargo.lock ] && _wp_lock=present
+                [ -f Cargo.lock.seed ] && _wp_seed=present
+                printf 'wasm-pack-observes Cargo.lock=%s Cargo.lock.seed=%s\n' \
+                    "$_wp_lock" "$_wp_seed" >> "$WATERUI_FAKE_LOG"
+            fi
+            # Emit the bundle artifact the CLI's web shell reads:
+            # `<out-dir>/<out-name>_bg.wasm`.
+            _wp_out=""
+            _wp_name=app
+            _wp_prev=""
+            for _wp_arg in "$@"; do
+                if [ "$_wp_prev" = "--out-dir" ]; then _wp_out="$_wp_arg"; fi
+                if [ "$_wp_prev" = "--out-name" ]; then _wp_name="$_wp_arg"; fi
+                _wp_prev="$_wp_arg"
+            done
+            if [ -n "$_wp_out" ]; then
+                /bin/mkdir -p "$_wp_out"
+                printf 'fake wasm\n' > "${_wp_out}/${_wp_name}_bg.wasm"
+            fi
+            ;;
+    esac
+    exit 0
+    ;;
+brew)
+    exit 0
+    ;;
+vswhere)
+    # `-products * -requires ... -property installationPath -latest` answers
+    # with the install path, or nothing when no VC.Tools install exists.
+    respond_or_empty VSWHERE
+    ;;
+winget)
+    case "$1 $2" in
+        "list --id")
+            if list_contains "${WATERUI_FAKE_WINGET_INSTALLED-}" "$3"; then
+                exit 0
+            fi
+            exit 1
+            ;;
+        install*)
+            # A winget that never returns: its child outlives the direct
+            # process unless the whole tree is killed.
+            if [ -n "${WATERUI_FAKE_WINGET_HANG-}" ]; then
+                /bin/sleep 300
+            fi
+            exit 0
+            ;;
+        *)
+            exit 2
+            ;;
+    esac
+    ;;
+apt-get | dnf | zypper | sudo)
+    exit 0
+    ;;
+dpkg-query)
+    case "$1" in
+        -W)
+            if list_contains "${WATERUI_FAKE_DPKG_INSTALLED-}" "$last_arg"; then
+                echo "install ok installed"
+                exit 0
+            fi
+            exit 1
+            ;;
+        *)
+            exit 1
+            ;;
+    esac
+    ;;
+dpkg)
+    case "$1" in
+        --print-foreign-architectures)
+            respond_or_empty DPKG_FOREIGN_ARCHES
+            ;;
+    esac
+    exit 0
+    ;;
+rpm)
+    case "$1" in
+        -q)
+            if list_contains "${WATERUI_FAKE_RPM_INSTALLED-}" "$last_arg"; then
+                exit 0
+            fi
+            exit 1
+            ;;
+        *)
+            exit 1
+            ;;
+    esac
+    ;;
+pacman)
+    case "$1" in
+        -Q)
+            if list_contains "${WATERUI_FAKE_PACMAN_INSTALLED-}" "$last_arg"; then
+                printf '%s 1.0\n' "$last_arg"
+                exit 0
+            fi
+            exit 1
+            ;;
+        *)
+            exit 0
+            ;;
+    esac
+    ;;
+apk)
+    case "$1 $2" in
+        "info -e")
+            if list_contains "${WATERUI_FAKE_APK_INSTALLED-}" "$last_arg"; then
+                exit 0
+            fi
+            exit 1
+            ;;
+        *)
+            exit 0
+            ;;
+    esac
+    ;;
+pkg-config)
+    case "$1" in
+        --version)
+            echo "1.8.1"
+            exit 0
+            ;;
+        --exists)
+            module_present "$2" || exit 1
+            exit 0
+            ;;
+        --atleast-version=*)
+            module_present "$2" || exit 1
+            if list_contains "${WATERUI_FAKE_PKG_CONFIG_TOO_OLD-}" "$2"; then
+                exit 1
+            fi
+            exit 0
+            ;;
+        --modversion)
+            respond_file "PKG_CONFIG_$2"
+            ;;
+        --variable=*)
+            respond "PKG_CONFIG_VAR_${1#--variable=}"
+            ;;
+        *)
+            exit 0
+            ;;
+    esac
+    ;;
+*-clang | *-clang++* | clang | clang++ | ld | ld64)
+    exit 0
+    ;;
+# A staged test binary a destination's exec route spawns directly —
+# `stage_binary` names it `harness-<hash>`: its own exit status passes
+# through.
+harness-*)
+    exit "${WATERUI_FAKE_EXEC_STATUS:-0}"
+    ;;
+uname)
+    case "$*" in
+        -m)
+            echo "${WATERUI_FAKE_UNAME_MACHINE:-x86_64}"
+            ;;
+        *)
+            echo "WaterUITest"
+            ;;
+    esac
+    exit 0
+    ;;
+bun | npm | pnpm | yarn)
+    case "$1" in
+        run)
+            if [ -f "${WATERUI_FAKE_RESPONSES:-/nonexistent}/${tool}_run_$2" ]; then
+                print_file "${WATERUI_FAKE_RESPONSES}/${tool}_run_$2"
+            fi
+            exit "${WATERUI_FAKE_PM_EXIT:-0}"
+            ;;
+        *)
+            exit 0
+            ;;
+    esac
+    ;;
+*)
+    exit 0
+    ;;
+esac

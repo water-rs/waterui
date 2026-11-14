@@ -1,0 +1,49 @@
+name: Performance
+description: Report a regression, or propose an improvement backed by a measurement
+labels: ["performance"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Performance work is decided by measurement. Describe what is slow or heavy, and how you measured it. Leave out the fix you have in mind; that belongs in the pull request.
+
+        Title convention: `<area>: <what is slow or heavy>`, e.g. `hydrolysis: hover on a dense list re-records every row's chrome`.
+  - type: textarea
+    id: observation
+    attributes:
+      label: What is slow or heavy
+      description: The scene, interaction or build step, and the cost you see. The cost can be frame time, CPU or GPU time, energy, memory, package size or build time.
+    validations:
+      required: true
+  - type: textarea
+    id: measurement
+    attributes:
+      label: Measurement
+      description: The numbers and how they were taken. Include the tool, the sample count, p50/p99, and the baseline or reference you compare against (the previous revision, another backend, another engine).
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Revision
+      description: The commit or version measured, and the baseline's.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Device, OS, build profile, and thermal or power state, if relevant.
+      placeholder: Pixel 9 Pro, Android 16, release, screen off, thermal status 0
+    validations:
+      required: true
+  - type: textarea
+    id: target
+    attributes:
+      label: Target
+      description: What would count as resolved, e.g. the 8.33 ms frame budget at p99, parity with the reference, or no regression against the baseline.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Traces, captures, related issues.

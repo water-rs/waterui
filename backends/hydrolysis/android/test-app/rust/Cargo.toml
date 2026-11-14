@@ -1,0 +1,42 @@
+[package]
+name = "hydrolysis-android-test-app"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+license.workspace = true
+description = "Debug app exercising the Hydrolysis Android host on an emulator or device"
+
+[lib]
+crate-type = ["cdylib"]
+name = "hydrolysis_test_app"
+
+[dependencies]
+waterui-map = { workspace = true, optional = true }
+waterui-map-gpu = { workspace = true, optional = true }
+waterui-url = { workspace = true, optional = true }
+
+[features]
+default = ["gpu"]
+gpu = ["hydrolysis/gpu", "waterui/gpu"]
+hwui = ["hydrolysis/hwui"]
+# A probe scene replaces the host scene. Each probe feature implies `probe`.
+probe = []
+filter-probe = ["probe"]
+stretch-probe = ["probe"]
+# GPU content under the HWUI painter (`--features hwui,gpu-video-probe`):
+# the GPU video player and the GPU vector map, each its own scene
+# (water-rs/waterui#1812).
+gpu-video-probe = ["probe", "gpu", "hydrolysis/video-gpu", "waterui/video-gpu", "waterui/remote"]
+gpu-map-probe = ["probe", "gpu", "dep:waterui-map", "dep:waterui-map-gpu", "dep:waterui-url"]
+
+# The whole crate is `cfg(target_os = "android")`, so these are named only there.
+[target.'cfg(target_os = "android")'.dependencies]
+# `testing` for `hydrolysis::testing::TestStyle`: the debug app exercises the
+# host, not a style package, so it mounts the in-tree test theme.
+hydrolysis = { workspace = true, default-features = false, features = ["accessibility", "testing"] }
+waterui = { workspace = true, default-features = false }
+waterui-core.workspace = true
+jni.workspace = true
+
+[lints]
+workspace = true

@@ -4,7 +4,7 @@ Layout building blocks for arranging views in WaterUI applications.
 
 ## Overview
 
-`waterui-layout` provides the fundamental layout primitives used to compose user interfaces in WaterUI. Unlike traditional UI frameworks that manually calculate positions, this crate implements a declarative, constraint-based layout system inspired by SwiftUI's layout protocol. All components render to native platform widgets (UIKit/AppKit on Apple, Android View on Android) rather than drawing custom pixels.
+`waterui-layout` provides the fundamental layout primitives used to compose user interfaces in WaterUI. Unlike traditional UI frameworks that manually calculate positions, this crate implements a declarative, constraint-based layout system inspired by SwiftUI's layout protocol.
 
 The crate bridges the declarative `View` trait with the imperative, backend-driven layout pass through the `Layout` trait, enabling flexible composition of stacks, spacers, frames, and scrollable containers. All layout values use logical pixels (points/dp) matching design tool specifications exactly, with native backends handling density-aware conversion to physical pixels.
 
@@ -217,7 +217,7 @@ pub fn constrained_content() -> impl View {
 - **`Padding`** - Insets child with edge spacing
   - `EdgeInsets::all(f32)` - Equal padding on all edges
   - `EdgeInsets::symmetric(vertical, horizontal)` - Symmetric padding
-  - `EdgeInsets::new(top, bottom, leading, trailing)` - Custom edges
+  - `EdgeInsets::new(top, leading, bottom, trailing)` - Custom edges
 
 ### Advanced Layouts
 
@@ -226,6 +226,7 @@ pub fn constrained_content() -> impl View {
 - **`LazyContainer`** - Efficient container for dynamic collections with `ForEach`
 - **`IgnoreSafeArea`** - Metadata to extend content into safe area regions
   - `EdgeSet` - Bitflags for specifying which edges ignore safe area
+  - `SafeAreaRegions` - The container and keyboard regions (`KEYBOARD.on(EdgeSet::BOTTOM)` lays a view under the keyboard but above the container inset)
 
 ### Alignment Types
 
@@ -257,7 +258,8 @@ Layouts communicate with native backends through the `Layout` trait's protocol:
 2. Backend calls `place(bounds, children)` to get child rectangles
 3. Backend renders native widgets at the calculated positions
 
-The FFI layer in `waterui-ffi` handles the Rust ↔ Native boundary.
+Each backend implements this protocol directly — `waterui-apple` bridges it
+to AppKit/UIKit and Hydrolysis maps it onto its Cherenkov renderer.
 
 ### Performance Characteristics
 

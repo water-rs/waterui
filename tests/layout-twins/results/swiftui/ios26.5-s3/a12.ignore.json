@@ -1,0 +1,46 @@
+{
+  "frames" : {
+    "a12.content" : [
+      171,
+      0,
+      60,
+      300
+    ],
+    "a12.scroll" : [
+      171,
+      62,
+      60,
+      778
+    ],
+    "root" : [
+      0,
+      0,
+      402,
+      874
+    ],
+    "safeRegion" : [
+      0,
+      62,
+      402,
+      778
+    ]
+  },
+  "meta" : {
+    "displayScale" : 3,
+    "safeInsets" : {
+      "bottom" : 34,
+      "leading" : 0,
+      "top" : 62,
+      "trailing" : 0
+    },
+    "window" : {
+      "h" : 874,
+      "w" : 402
+    }
+  },
+  "osVersion" : "Version 26.5 (Build 23F73)",
+  "platform" : "ios",
+  "probes" : {
+
+  }
+}

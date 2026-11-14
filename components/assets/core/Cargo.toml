@@ -20,6 +20,9 @@ tempfile = { version = "3.27", optional = true }
 [features]
 default = ["std"]
 std = ["waterui-url/std", "dep:blocking", "dep:tempfile"]
+# `download_remote_bytes` pulls in the HTTP client through `waterui-url`; off by
+# default so asset classification and local file I/O carry no networking stack.
+remote = ["std", "waterui-url/remote"]
 
 [lints]
 workspace = true

@@ -42,6 +42,10 @@ pub const ASSET_HTTPS_ORIGIN: &str = "https://waterui.localhost";
 
 /// The only methods an asset origin answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: the only methods an asset origin answers are GET and HEAD"
+)]
 pub enum AssetMethod {
     /// `GET`.
     Get,
@@ -51,25 +55,84 @@ pub enum AssetMethod {
 
 /// One request the engine intercepted on the asset origin.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct AssetRequest {
     /// The request method.
-    pub method: AssetMethod,
+    method: AssetMethod,
     /// The URL path as received — leading `/`, still percent-encoded. The
     /// server owns decoding and resolution against its fixed asset set.
-    pub path: Str,
+    path: Str,
     /// The query string without `?`, when one was sent.
-    pub query: Option<Str>,
+    query: Option<Str>,
+}
+
+impl AssetRequest {
+    /// Creates a `AssetRequest` from its parts.
+    #[must_use]
+    pub const fn new(method: AssetMethod, path: Str, query: Option<Str>) -> Self {
+        Self {
+            method,
+            path,
+            query,
+        }
+    }
+
+    /// The request method.
+    #[must_use]
+    pub const fn method(&self) -> AssetMethod {
+        self.method
+    }
+
+    /// The URL path as received — leading `/`, still percent-encoded. The
+    /// server owns decoding and resolution against its fixed asset set.
+    #[must_use]
+    pub const fn path(&self) -> &Str {
+        &self.path
+    }
+
+    /// The query string without `?`, when one was sent.
+    #[must_use]
+    pub const fn query(&self) -> Option<&Str> {
+        self.query.as_ref()
+    }
 }
 
 /// What the asset origin answers.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AssetResponse {
     /// The HTTP status code.
-    pub status: u16,
+    status: u16,
     /// Response headers as name/value pairs.
-    pub headers: Vec<(Str, Str)>,
+    headers: Vec<(Str, Str)>,
     /// The response body.
-    pub body: Vec<u8>,
+    body: Vec<u8>,
+}
+
+impl AssetResponse {
+    /// The HTTP status code.
+    #[must_use]
+    pub const fn status(&self) -> u16 {
+        self.status
+    }
+
+    /// Response headers as name/value pairs.
+    #[must_use]
+    pub const fn headers(&self) -> &[(Str, Str)] {
+        self.headers.as_slice()
+    }
+
+    /// The response body.
+    #[must_use]
+    pub const fn body(&self) -> &[u8] {
+        self.body.as_slice()
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (u16, Vec<(Str, Str)>, Vec<u8>) {
+        (self.status, self.headers, self.body)
+    }
 }
 
 impl AssetResponse {
@@ -132,28 +195,6 @@ impl AssetResponse {
 /// scheme callback, a CEF IO thread — hence `Send + Sync`, and it must not
 /// block on the engine's UI thread.
 pub type AssetServer = Arc<dyn Fn(&AssetRequest) -> AssetResponse + Send + Sync>;
-
-/// Creation-time configuration for a web view.
-///
-/// Engines that expose an asset origin register their interception facility
-/// while the native view is constructed — `WKWebView` takes scheme handlers on
-/// its configuration before the view exists — so this is an input to
-/// [`CustomWebViewController::open`](crate::CustomWebViewController::open), not
-/// a method that could be called later.
-#[derive(Clone, Default)]
-pub struct WebViewConfig {
-    /// The server behind the engine's local asset origin, when the view was
-    /// opened with one.
-    pub asset_server: Option<AssetServer>,
-}
-
-impl std::fmt::Debug for WebViewConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WebViewConfig")
-            .field("asset_server", &self.asset_server.as_ref().map(|_| ".."))
-            .finish()
-    }
-}
 
 /// The single entry point every engine routes an intercepted request through.
 ///
@@ -290,8 +331,12 @@ mod tests {
         let response = dispatch(&server, "HEAD", "/index.html", None);
 
         assert_eq!(response.status, 200);
-        assert!(response.body.is_empty());
-        assert!(!response.headers.is_empty());
+        assert_eq!(response.body, Vec::<u8>::new());
+        assert!(
+            matches!(response.headers.as_slice(), [_, ..]),
+            "expected headers, got {:?}",
+            response.headers
+        );
     }
 
     #[test]

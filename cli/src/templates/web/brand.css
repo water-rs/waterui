@@ -1,0 +1,112 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.5;
+  color: #1c2b33;
+  background: #f6fafb;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+}
+
+.page {
+  max-width: 42rem;
+  padding: 3rem 1.5rem;
+  text-align: center;
+}
+
+.logos {
+  display: flex;
+  justify-content: center;
+  gap: 1.5rem;
+}
+
+.logo {
+  height: 6em;
+  padding: 1em;
+  border-radius: 1rem;
+  background: #fff;
+  box-shadow: 0 1px 4px rgb(28 43 51 / 12%);
+  transition: filter 300ms;
+  will-change: filter;
+}
+
+.logo:hover {
+  filter: drop-shadow(0 0 1.5em rgb(28 127 140 / 40%));
+}
+
+h1 {
+  margin: 1.5rem 0 0.5rem;
+  font-size: 2.4rem;
+  line-height: 1.1;
+}
+
+.tagline {
+  color: #4a5a64;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  padding: 0.1em 0.35em;
+  border-radius: 0.3em;
+  background: #e4f0f2;
+}
+
+.card {
+  display: grid;
+  gap: 1rem;
+  justify-items: center;
+  margin: 2rem auto;
+  padding: 1.5rem;
+  border-radius: 1rem;
+  background: #fff;
+  box-shadow: 0 1px 6px rgb(28 43 51 / 10%);
+}
+
+.bridge {
+  display: flex;
+  gap: 0.5rem;
+}
+
+input {
+  font: inherit;
+  padding: 0.5em 0.8em;
+  border: 1px solid #c6d5d9;
+  border-radius: 0.5em;
+}
+
+button {
+  font: inherit;
+  font-weight: 600;
+  padding: 0.5em 1.2em;
+  border: 1px solid transparent;
+  border-radius: 0.5em;
+  background: #1c7f8c;
+  color: #fff;
+  cursor: pointer;
+  transition: background 200ms;
+}
+
+button:hover {
+  background: #156a75;
+}
+
+.greeting {
+  margin: 0;
+  min-height: 1.5em;
+  font-weight: 500;
+  color: #1c7f8c;
+}
+
+.footer {
+  margin-top: 2.5rem;
+}
+
+.footer a {
+  color: #1c7f8c;
+}

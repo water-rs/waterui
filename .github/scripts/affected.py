@@ -1,0 +1,360 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "tree-sitter==0.26.0",
+#     "tree-sitter-rust==0.24.2",
+# ]
+# ///
+"""Compute what the PR/push gate must run for a diff.
+
+Reads the diff between the given base revision and `HEAD`, takes the shared
+`lexoliu/affected-crates` tool's report of it (run with
+`.github/affected-rules.toml`; it supplies `workspace`, `affected`,
+`members` and `owners`) from `--report-file` or the `AFFECTED_REPORT`
+environment variable, then
+writes `GITHUB_OUTPUT` keys:
+
+- `packages` — the crates the gate checks and lints: space-separated
+  package names, or the literal `workspace` when the diff can reach any
+  crate (an outside-package path the rules do not map, or a path that
+  directory-matches only the root package without belonging to it, selects
+  everything — see the tool's documentation). Empty when nothing can be
+  affected — a prose-only change still gets `cargo fmt`, nothing more.
+- `package-args` — `packages` rendered as `-p` flags for cargo.
+- `linux-package-args` — `package-args` without the crates the Linux lint
+  never compiles (`LINUX_EXCLUDED`); empty exactly when `package-args` is.
+- `workspace-wide` — `true` when `packages` is `workspace`, or the affected
+  packages that are Linux lint members reach `WORKSPACE_WIDE_SHARE` of
+  them (#3229): the pull request then compiles most of the workspace and
+  gets the integration lint budget. `false` for a scoped, comment-only or
+  empty diff.
+- `comment-only` — `true` when every changed file is either prose or a
+  `.rs` file whose syntax tree is unchanged once comments, doc comments
+  and doc attributes are removed (the `rust_semantic_diff` comparison the
+  layout gate also runs). The gate then lints and builds rustdoc for only
+  the crates owning those files — never their reverse dependencies — and
+  MSRV stays off unless the diff moves a dependency boundary on its own.
+- `msrv` — `true` when the diff can move the toolchain floor: a
+  `rust-version` key, any Cargo.toml dependency section (including
+  `target.<cfg>.dependencies`), or Cargo.lock.
+- `scene-assets` — `true` when a package whose `--all-targets` compile
+  `include_bytes!`s a generated Cherenkov scene font is in scope, or the
+  whole workspace is. That is a fixed owner set, not a dev-dependency
+  closure: `cherenkov-oracle`'s glyph tests, `cherenkov-gpu`'s
+  bitmap/browser test targets, and `cherenkov-cpu`'s bitmap unit tests
+  `include_bytes!` `scenes/fonts/*`. Test-only code never compiles for a
+  dependent, so `SCENE_ASSET_OWNERS` names them directly. `cherenkov-cpu`'s
+  integration tests and `cherenkov-bench` read the corpus at run time and
+  are not in the set: the gate never runs tests. Jobs that execute those
+  tests generate the corpus themselves.
+- `apple-legs` — JSON list of test.yml's `macos` matrix entries: the Apple
+  lint targets with an Apple-gated crate in scope (`apple_gated.py`),
+  `[]` when there is none, so no macOS runner starts to find nothing.
+- `wasm` — `true` when a package with a wasm32 lint leg (`wasm_gated.py`) is
+  in scope, so the `wasm32` job starts only when it has work.
+
+Usage:
+
+    AFFECTED_REPORT=<report JSON> affected.py --base <rev>
+
+Any uncertainty — an unresolvable base, an unparsable manifest — widens
+the gate to `workspace`; it never narrows it on a guess.
+"""
+
+import argparse
+import fnmatch
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tomllib
+
+from apple_gated import legs as apple_legs
+from wasm_gated import legs_in_scope as wasm_legs
+from rust_semantic_diff import changed_entries, git, semantic_differs, source_at
+
+# Cargo.toml tables whose content can move the dependency graph or the
+# toolchain floor. Compared by parsed value, not text, so a comment or
+# formatting edit elsewhere in the manifest does not re-arm MSRV.
+# `[target.<cfg>.dependencies]` sections flatten to ("target", <cfg>,
+# <kind>, <name>) — caught by the `target` + `*dependencies` test below.
+DEPENDENCY_TABLES = (
+    "dependencies",
+    "dev-dependencies",
+    "build-dependencies",
+    "workspace.dependencies",
+    "patch",
+)
+
+# The packages whose `--all-targets` compile `include_bytes!`s a file the
+# Cherenkov scene generator writes (its test targets embed
+# `scenes/fonts/*` subsets). The gate's `scene-assets` output is this set
+# intersected with the scoped package names: test-only code never
+# compiles for a dependent, so no dev-dependency closure is involved.
+SCENE_ASSET_OWNERS = {"cherenkov-oracle", "cherenkov-gpu", "cherenkov-cpu"}
+
+
+# The workspace members the Linux lint never compiles: they build only on
+# Apple hosts, so the macOS legs lint them and test.yml's Linux scope drops
+# them from the `-p` list (`-p` and `--exclude` cannot be combined).
+LINUX_EXCLUDED = {"waterui-apple", "cocoa-ui"}
+
+# A pull request whose affected packages are at least this share of the
+# Linux-linted members re-checks most of the workspace, so it gets the
+# 30-minute lint budget instead of the 10-minute scoped gate (#3229). A
+# cherenkov-gpu change reaches about 74% and overran the scoped gate (#3246).
+WORKSPACE_WIDE_SHARE = 0.7
+
+
+def linux_package_args(names):
+    """`-p` flags for the affected packages the Linux lint compiles."""
+    return " ".join(f"-p {name}" for name in names if name not in LINUX_EXCLUDED)
+
+
+def is_workspace_wide(names, members):
+    """Whether `names` (affected packages) reach `WORKSPACE_WIDE_SHARE` of
+    the Linux-linted `members` (every workspace member, from the tool)."""
+    linux_members = set(members) - LINUX_EXCLUDED
+    affected = set(names) & linux_members
+    return len(affected) >= WORKSPACE_WIDE_SHARE * len(linux_members)
+
+
+def is_prose(path):
+    """Whether `path` is documentation or repository prose that no compile
+    can read — the same set the `code` path filter treats as 'not code'.
+
+    Scoped to paths *outside* every package: a markdown file inside a
+    package directory is not prose — `include_str!` and
+    `#![doc = include_str!(…)]` compile it into the crate, so the
+    determinator's ancestor matching must still see it. The crate-side
+    examples are `#![doc = include_str!("../README.md")]` in several
+    components and `include_str!("instructions.md")` in the mcp protocol
+    crate."""
+    if "/" not in path and fnmatch.fnmatch(path, "*.md"):
+        return True
+    if "/" not in path and (
+        fnmatch.fnmatch(path, "LICENSE*")
+        or fnmatch.fnmatch(path, "README*")
+        or fnmatch.fnmatch(path, "CONTRIBUTING*")
+        or fnmatch.fnmatch(path, "CODE_OF_CONDUCT*")
+        or fnmatch.fnmatch(path, "SECURITY*")
+    ):
+        return True
+    if fnmatch.fnmatch(path, "docs/**"):
+        return True
+    return fnmatch.fnmatch(path, ".github/ISSUE_TEMPLATE/**")
+
+
+def manifest_tables(source):
+    """The MSRV-relevant content of a Cargo.toml: `rust-version` keys and
+    every dependency-bearing table, parsed so layout and comments drop
+    out. `None` when the manifest does not parse — the caller treats that
+    as 'could matter' rather than guessing."""
+    try:
+        manifest = tomllib.loads(source)
+    except tomllib.TOMLDecodeError:
+        return None
+
+    def flatten(value, prefix=()):
+        if not isinstance(value, dict):
+            return {prefix: value}
+        result = {}
+        for key, child in value.items():
+            result.update(flatten(child, prefix + (key,)))
+        return result
+
+    relevant = {}
+    for section, body in flatten(manifest).items():
+        top = section[0]
+        is_dependency = top in DEPENDENCY_TABLES or (
+            top == "target"
+            and any(part.endswith("dependencies") for part in section[1:])
+        )
+        if is_dependency or section[-1] == "rust-version":
+            relevant[section] = body
+    return relevant
+
+
+# A change to the check must run the check.
+MSRV_CHECK = ".github/actions/msrv/"
+
+
+def msrv_relevant(base, head, entries):
+    """Whether the diff can move the toolchain floor: Cargo.lock, a
+    Cargo.toml whose `rust-version` or dependency tables changed, or the
+    MSRV check itself. A parse failure or an added/deleted manifest counts
+    as relevant — the gate widens rather than guesses."""
+    for entry in entries:
+        path = entry[-1]
+        if path == "Cargo.lock" or path.startswith(MSRV_CHECK):
+            return True
+        if not path.endswith("Cargo.toml"):
+            continue
+        if entry[0].startswith(("A", "D", "R", "C")):
+            return True
+        old_tables = manifest_tables(source_at(base, path))
+        new_tables = manifest_tables(source_at(head, path))
+        if old_tables is None or new_tables is None or old_tables != new_tables:
+            return True
+    return False
+
+
+def emit(outputs):
+    print(json.dumps(outputs))
+    output_file = os.environ.get("GITHUB_OUTPUT")
+    if output_file:
+        with open(output_file, "a") as handle:
+            for key, value in outputs.items():
+                handle.write(f"{key}={value}\n")
+
+
+def load_report(report_file: str | None) -> dict:
+    """Load the affected-crates JSON report from `--report-file` or `AFFECTED_REPORT`."""
+    raw = (
+        Path(report_file).read_text(encoding="utf-8")
+        if report_file is not None
+        else os.environ["AFFECTED_REPORT"]
+    )
+    return json.loads(raw)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--base", required=True, help="base revision or sha")
+    parser.add_argument(
+        "--report-file",
+        help="path to the affected-crates JSON report (defaults to AFFECTED_REPORT)",
+    )
+    args = parser.parse_args()
+    head = "HEAD"
+
+    outputs = {
+        "packages": "workspace",
+        "package-args": "",
+        "linux-package-args": "",
+        "workspace-wide": "true",
+        "comment-only": "false",
+        "msrv": "true",
+        "apple-legs": json.dumps(apple_legs("workspace"), separators=(",", ":")),
+        "wasm": "true",
+    }
+    try:
+        base = git("merge-base", args.base, head).strip()
+        entries = changed_entries(base, head)
+        msrv = msrv_relevant(base, head, entries)
+
+        # The comment-only classification: a modified .rs file is
+        # comment-only when its normalised tree is unchanged; prose does
+        # not widen the gate; anything else does.
+        commentable_paths = []
+        has_rs_change = False
+        for entry in entries:
+            status = entry[0]
+            paths = entry[1:] if status.startswith(("R", "C")) else [entry[1]]
+            for path in paths:
+                if status == "M" and path.endswith(".rs"):
+                    has_rs_change = True
+                elif not is_prose(path):
+                    commentable_paths = None
+                    break
+            if commentable_paths is None:
+                break
+            if status == "M" and paths[-1].endswith(".rs"):
+                commentable_paths.append(paths[-1])
+
+        comment_only = (
+            commentable_paths is not None
+            and has_rs_change
+            and all(
+                not semantic_differs(source_at(base, path), source_at(head, path))
+                for path in commentable_paths
+            )
+        )
+
+        # The shared tool's `owners` map is the only path→crate mapper (the
+        # comment-only lane reads it); a missing report widens below.
+        report = load_report(args.report_file) if entries else None
+
+        def scene_assets_for(names):
+            return "true" if SCENE_ASSET_OWNERS & set(names) else "false"
+
+        def wide(names):
+            return "true" if is_workspace_wide(names, report["members"]) else "false"
+
+        def apple_legs_for(scope):
+            return json.dumps(apple_legs(scope), separators=(",", ":"))
+
+        def wasm_for(scope):
+            return "true" if wasm_legs(scope) else "false"
+
+        if not entries:
+            outputs.update(
+                {
+                    "wasm": "false",
+                    "packages": "",
+                    "workspace-wide": "false",
+                    "msrv": "false",
+                    "scene-assets": "false",
+                    "apple-legs": "[]",
+                }
+            )
+        elif report["workspace"]:
+            # The diff can reach anywhere — workspace in scope keeps every
+            # signal on, and generated assets must exist for it.
+            outputs.update(
+                {
+                    "packages": "workspace",
+                    "workspace-wide": "true",
+                    "msrv": "true" if msrv else "false",
+                    "scene-assets": "true",
+                    "apple-legs": apple_legs_for("workspace"),
+                    "wasm": "true",
+                }
+            )
+        elif comment_only:
+            owners = sorted(
+                {
+                    report["owners"].get(path)
+                    for path in commentable_paths
+                    if report["owners"].get(path)
+                }
+            )
+            outputs.update(
+                {
+                    "packages": " ".join(owners),
+                    "package-args": " ".join(f"-p {name}" for name in owners),
+                    "linux-package-args": linux_package_args(owners),
+                    "workspace-wide": wide(owners),
+                    "comment-only": "true",
+                    "msrv": "true" if msrv else "false",
+                    "scene-assets": scene_assets_for(owners),
+                    "apple-legs": apple_legs_for(" ".join(owners)),
+                    "wasm": wasm_for(" ".join(owners)),
+                }
+            )
+        else:
+            affected = report["affected"]
+            outputs.update(
+                {
+                    "packages": " ".join(affected),
+                    "package-args": " ".join(f"-p {name}" for name in affected),
+                    "linux-package-args": linux_package_args(affected),
+                    "workspace-wide": wide(affected),
+                    "msrv": "true" if msrv else "false",
+                    "scene-assets": scene_assets_for(affected),
+                    "apple-legs": apple_legs_for(" ".join(affected)),
+                    "wasm": wasm_for(" ".join(affected)),
+                }
+            )
+    except Exception as error:  # widen on any failure — never scope on a guess
+        print(
+            f"::warning::affected.py fell back to the whole workspace: {error}",
+            file=sys.stderr,
+        )
+
+    emit(outputs)
+
+
+if __name__ == "__main__":
+    main()

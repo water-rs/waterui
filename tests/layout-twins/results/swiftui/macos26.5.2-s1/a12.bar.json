@@ -1,0 +1,52 @@
+{
+  "frames" : {
+    "a12.bar" : [
+      0,
+      0,
+      900,
+      44
+    ],
+    "a12.content" : [
+      420,
+      32,
+      60,
+      300
+    ],
+    "a12.scroll" : [
+      420,
+      32,
+      60,
+      418
+    ],
+    "root" : [
+      0,
+      0,
+      900,
+      450
+    ],
+    "safeRegion" : [
+      0,
+      32,
+      900,
+      418
+    ]
+  },
+  "meta" : {
+    "displayScale" : 1,
+    "safeInsets" : {
+      "bottom" : 0,
+      "leading" : 0,
+      "top" : 32,
+      "trailing" : 0
+    },
+    "window" : {
+      "h" : 450,
+      "w" : 900
+    }
+  },
+  "osVersion" : "Version 26.5.2 (Build 25F84)",
+  "platform" : "macos",
+  "probes" : {
+
+  }
+}

@@ -1,0 +1,291 @@
+//! Frame driving: [`Engine::render`](crate::Engine::render) input, the
+//! [`Next`] scheduling answer, per-frame statistics and readback types.
+//!
+//! [`Engine::render`]: crate::Engine::render
+
+use cherenkov_record::RefreshRange;
+use waterui_contract::contract_violation;
+
+use crate::Instant;
+
+/// The time handed to [`Engine::render`](crate::Engine::render): the instant
+/// the engine animates and schedules against, and whether that instant is a
+/// target presentation time the platform reported.
+///
+/// Two frame times are equal when they name the same instant from the same
+/// source — a host that batches one engine frame per production target
+/// timestamp deduplicates on this, not on an approximation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FrameTime {
+    instant: Instant,
+    reported: bool,
+}
+
+impl FrameTime {
+    /// A frame whose platform reported `target` as its presentation time (a
+    /// display link's target timestamp, for example).
+    #[must_use]
+    pub const fn presented_at(target: Instant) -> Self {
+        Self {
+            instant: target,
+            reported: true,
+        }
+    }
+
+    /// A frame with no reported presentation time, rendered at the current
+    /// instant.
+    #[must_use]
+    pub fn now() -> Self {
+        Self::unpresented_at(Instant::now())
+    }
+
+    /// A frame with no reported presentation time, rendered at `instant`: an
+    /// offscreen capture or a harness's synthetic clock.
+    #[must_use]
+    pub const fn unpresented_at(instant: Instant) -> Self {
+        Self {
+            instant,
+            reported: false,
+        }
+    }
+
+    /// The instant the engine animates and schedules against.
+    #[must_use]
+    pub const fn instant(&self) -> Instant {
+        self.instant
+    }
+
+    /// The target presentation time the platform reported, or `None` when
+    /// the frame has none.
+    #[must_use]
+    pub const fn presentation_time(&self) -> Option<Instant> {
+        if self.reported {
+            Some(self.instant)
+        } else {
+            None
+        }
+    }
+}
+
+/// The refresh range a surface requests when its host does not set one: up
+/// to 120 Hz, the performance target on current high-refresh displays.
+pub const DEFAULT_REFRESH: RefreshRange = 60..=120;
+
+/// What the engine needs next, returned by
+/// [`Engine::render`](crate::Engine::render).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Next {
+    /// No animation is running; the display link may sleep.
+    Idle,
+    /// The next frame is needed at `time`, at a refresh rate in `rate`.
+    At {
+        /// When the next frame is due.
+        time: Instant,
+        /// The acceptable refresh rates.
+        rate: RefreshRange,
+    },
+}
+
+/// Identifies one [`Engine::render`](crate::Engine::render): the render
+/// loop numbers every render from zero, in order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FrameId(pub(crate) u64);
+
+impl FrameId {
+    /// Creates an identifier from a raw value.
+    ///
+    /// [`Engine::render`](crate::Engine::render) numbers renders itself; this
+    /// is for harnesses driving a [`Renderer`](crate::Renderer) directly.
+    #[must_use]
+    pub const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    /// The render's position in the engine's sequence of renders.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// The GPU time of one submitted frame, read from its timestamp queries.
+///
+/// GPU timings accumulate on the renderer and are returned only by
+/// [`Engine::finish_timings`](crate::Engine::finish_timings), oldest first.
+/// This tooling call waits for frames still on the GPU; rendering never
+/// waits for GPU idle.
+#[derive(Clone, Debug)]
+pub struct FrameTiming {
+    /// The frame measured.
+    pub frame: FrameId,
+    /// GPU seconds from the first pass's start to the last pass's end;
+    /// `None` when the adapter wrote timestamps that do not increase
+    /// across that span.
+    pub gpu_seconds: Option<f64>,
+    /// Each pass of the frame, in submission order; empty when the
+    /// backend times only whole frames.
+    pub passes: Vec<PassTiming>,
+}
+
+/// One timed render pass of a [`FrameTiming`].
+#[derive(Clone, Debug)]
+pub struct PassTiming {
+    /// The pass's deterministic name: `"surface"` or `"scratch{n}"` by
+    /// isolation depth.
+    pub name: String,
+    /// Target width in pixels.
+    pub width: u32,
+    /// Target height in pixels.
+    pub height: u32,
+    /// Target texture format (`"rgba16float"`, `"rgba8unorm"`, ...).
+    pub format: &'static str,
+    /// GPU seconds the pass took, between its pass-boundary timestamp
+    /// writes; `None` when the adapter's end timestamp does not exceed
+    /// its start.
+    pub gpu_seconds: Option<f64>,
+}
+
+/// Wall-clock seconds the render thread spent in each phase of the last
+/// [`crate::Engine::render`]; independent of GPU timestamp support.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Phases {
+    /// CPU lowering of every dirty surface (raster, instance build, uploads).
+    pub lower_seconds: f64,
+    /// Command encoding and queue submission.
+    pub encode_seconds: f64,
+    /// Timestamp bracket overhead: the drains around the stamps and the
+    /// timestamp resolve/readback. Zero when timestamps are off.
+    pub stamp_seconds: f64,
+    /// Blocking waits on the GPU: for an upload staging slot still in
+    /// flight, and the final drain of the queue.
+    pub wait_seconds: f64,
+    /// Glyph resolution after lowering: rasterizing the glyph masks the
+    /// lowered items read that no cache holds, and filling their slots.
+    /// Zero on a backend that does not time it apart from
+    /// `lower_seconds`.
+    pub glyph_seconds: f64,
+    /// The CPU raster pass: shading the lowered items into the target,
+    /// the store into its output format, and the local images (with their
+    /// mip chains) of projective layers. Zero on a GPU backend, whose
+    /// shading is GPU time.
+    pub shade_seconds: f64,
+}
+
+/// Measurements of the last [`Engine::render`](crate::Engine::render).
+#[derive(Clone, Debug, Default)]
+pub struct FrameStats {
+    /// This render's frame, when it drew any surface; `None` when no
+    /// surface had changed.
+    pub frame: Option<FrameId>,
+    /// CPU time spent in each render phase.
+    pub phases: Phases,
+    /// Render passes recorded (`render_to_texture` and effect passes).
+    pub passes: u32,
+    /// Scene commands encoded this frame.
+    pub draws: u32,
+    /// Pipeline state changes issued while encoding draw ranges.
+    pub pipeline_switches: u32,
+    /// Texture bind groups created this frame; cached groups are reused.
+    pub bind_groups_created: u32,
+    /// Layer content instances drawn.
+    pub instances: u32,
+    /// Glyphs rasterized this frame.
+    pub glyphs_rasterized: u32,
+    /// Paths rasterized this frame.
+    pub paths_rasterized: u32,
+    /// Display-list commands lowered this frame (a full lowering or the
+    /// dirty commands of a slot update).
+    pub commands_lowered: u32,
+    /// Layers whose device-space content run was rebuilt rather than reused.
+    pub layers_composed: u32,
+    /// Projective layers' local images realized this frame: a local
+    /// rasterization plus a mip build each. Zero on a warm matrix-only
+    /// frame whose density buckets are retained.
+    pub projective_realized: u32,
+    /// Projective layers composed this frame, cached or fresh.
+    pub projective_composed: u32,
+    /// Layer filters applied this frame: one per filter each rendered
+    /// surface ran over its filtered subtree.
+    pub filters_applied: u32,
+}
+
+/// Decoded pixels of a surface readback: premultiplied linear Display P3,
+/// row-major.
+#[derive(Clone, Debug)]
+pub struct Readback {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// `width * height` premultiplied RGBA pixels.
+    pub pixels: Vec<[f32; 4]>,
+}
+
+/// Alpha convention of a presented frame's pixels: a host-owned GPU
+/// presentation texture, or the bytes a CPU presentation pass produces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputAlpha {
+    /// The destination is opaque.
+    Opaque,
+    /// Channels are multiplied by alpha in the destination encoding. For
+    /// sRGB this multiplication follows transfer encoding, including when the
+    /// texture format applies the transfer in hardware.
+    Premultiplied,
+    /// Channels are independent of alpha.
+    Straight,
+}
+
+/// The storage format of an [`Offscreen`] target.
+///
+/// A backend renders into exactly the requested format, or fails surface
+/// creation with [`SurfaceError::UnsupportedFormat`](crate::SurfaceError::UnsupportedFormat)
+/// when the device cannot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum OffscreenFormat {
+    /// Linear `Rgba16Float`.
+    #[default]
+    LinearF16,
+    /// Linear `Rgba32Float`.
+    LinearF32,
+}
+
+/// An offscreen render target description.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Offscreen {
+    /// The target size in pixels.
+    pub size: (u32, u32),
+    /// The target storage format.
+    pub format: OffscreenFormat,
+    /// Refresh range used by animated backend content.
+    pub refresh: RefreshRange,
+}
+
+impl Offscreen {
+    /// Configure the refresh range of this target.
+    ///
+    /// # Contract
+    /// An empty range or one containing zero hertz is a contract
+    /// violation; the refresh range stays as it was.
+    #[must_use]
+    pub fn rate(mut self, rate: RefreshRange) -> Self {
+        if *rate.start() == 0 || rate.is_empty() {
+            contract_violation!(
+                "refresh range must be positive and ordered, not {rate:?}; the range stays {:?}",
+                self.refresh
+            );
+            return self;
+        }
+        self.refresh = rate;
+        self
+    }
+
+    /// An offscreen target of `size` pixels in `format`.
+    #[must_use]
+    pub const fn new(size: (u32, u32), format: OffscreenFormat) -> Self {
+        Self {
+            size,
+            format,
+            refresh: DEFAULT_REFRESH,
+        }
+    }
+}

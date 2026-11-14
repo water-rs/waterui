@@ -1,0 +1,767 @@
+//! The `text` leaf: `Native<TextConfig>` rendered through the kit's label.
+//!
+//! Mirrors `WuiText` + `WuiTextBase`: the `content` `Computed<StyledStr>`
+//! re-resolves each chunk's font and color signals, `paragraph_alignment`
+//! pushes to the platform's text alignment, and `line_limit` maps onto the
+//! label's break mode. Every update is an imperative kit call inside a
+//! watcher — no signal type crosses into `cocoa-ui`.
+
+use alloc::rc::Rc;
+use alloc::vec::Vec;
+use core::any::Any;
+use core::cell::RefCell;
+use core::num::{NonZero, NonZeroUsize};
+use core::ops::Range;
+
+use cocoa_ui::Retained;
+use waterui::Str;
+use waterui::animation::{Animation, ChangeAnimation};
+use waterui::graphics::color::WorkingColor;
+use waterui::reactive::Signal;
+use waterui::reactive::watcher::Metadata;
+use waterui::resolve::Resolvable;
+use waterui::text::StyledStr;
+use waterui::text::TapSpan;
+use waterui::text::TextConfig;
+use waterui::text::font::ResolvedFont;
+use waterui::theme::color::Foreground;
+use waterui_backend_core::Environment;
+use waterui_core::layout::{
+    HorizontalAlignment, LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis,
+    SubView, VerticalAlignment, ViewDimensions,
+};
+
+use super::font::platform_font;
+use crate::contract::{NativeLeaf, RenderContext};
+use crate::dispatch::Dispatcher;
+use crate::proposal;
+use crate::theme::platform_color;
+
+#[cfg(target_os = "macos")]
+mod platform {
+    use alloc::rc::Rc;
+    use core::cell::RefCell;
+
+    use cocoa_ui::appkit::gesture;
+    use cocoa_ui::gesture::ButtonMask;
+    use cocoa_ui::objc2_app_kit::NSClickGestureRecognizer;
+
+    use super::TextState;
+
+    pub(super) use cocoa_ui::appkit::HostView;
+    pub(super) use cocoa_ui::appkit::Label;
+    pub(super) use cocoa_ui::appkit::colors;
+    pub(super) use cocoa_ui::appkit::gesture::GestureAttachment;
+    pub(super) use cocoa_ui::objc2_app_kit::NSTextAlignment;
+
+    /// Attaches the span tap recognizer: a click that begins only when the
+    /// point's character index falls in a span and activates that span.
+    pub(super) fn attach_tap(label: &Label, state: &Rc<RefCell<TextState>>) -> GestureAttachment {
+        let (gate, handler) = super::span_tap(
+            label,
+            state,
+            |recognizer: &NSClickGestureRecognizer, label| {
+                recognizer.locationInView(Some(label)).into()
+            },
+        );
+        gesture::click_gated(label, 1, ButtonMask::PRIMARY, gate, handler)
+    }
+
+    /// An `NSView` hit-tests without an interaction switch — nothing to
+    /// toggle.
+    pub(super) const fn set_interaction_enabled(_label: &Label, _enabled: bool) {}
+}
+
+#[cfg(target_os = "ios")]
+mod platform {
+    use alloc::rc::Rc;
+    use core::cell::RefCell;
+
+    use cocoa_ui::gesture::ButtonMask;
+    use cocoa_ui::objc2_ui_kit::UITapGestureRecognizer;
+    use cocoa_ui::uikit::gesture;
+
+    use super::TextState;
+
+    pub(super) use cocoa_ui::objc2_ui_kit::NSTextAlignment;
+    pub(super) use cocoa_ui::uikit::HostView;
+    pub(super) use cocoa_ui::uikit::Label;
+    pub(super) use cocoa_ui::uikit::gesture::GestureAttachment;
+
+    /// Attaches the span tap recognizer: a tap that begins only when the
+    /// point's character index falls in a span and activates that span.
+    pub(super) fn attach_tap(label: &Label, state: &Rc<RefCell<TextState>>) -> GestureAttachment {
+        let (gate, handler) = super::span_tap(
+            label,
+            state,
+            |recognizer: &UITapGestureRecognizer, label| {
+                recognizer.locationInView(Some(label)).into()
+            },
+        );
+        gesture::tap_gated(label, 1, ButtonMask::PRIMARY, gate, handler)
+    }
+
+    /// A `UILabel` hit-tests only with interaction enabled — required for
+    /// the span recognizer to see touches at all.
+    pub(super) fn set_interaction_enabled(label: &Label, enabled: bool) {
+        label.setUserInteractionEnabled(enabled);
+    }
+}
+
+use cocoa_ui::PlatformView;
+use platform::{HostView, Label};
+
+/// The label as its platform view, for animations and layout direction.
+fn as_view(label: &Label) -> &PlatformView {
+    label
+}
+
+/// A styled chunk resolved into its current values: the text plus the
+/// attributes the attributed-string builder consumes.
+struct Chunk {
+    /// The chunk's characters.
+    text: Str,
+    /// Its latest resolved font.
+    font: ResolvedFont,
+    /// Its latest foreground — `None` draws the theme default.
+    foreground: Option<RunForeground>,
+    /// Its latest background.
+    background: Option<WorkingColor>,
+    /// Whether the chunk is italicized.
+    italic: bool,
+    /// Whether the chunk is underlined.
+    underline: bool,
+    /// Whether the chunk is struck through.
+    strikethrough: bool,
+}
+
+/// The leaf's live state: what the content watcher and the per-chunk signal
+/// watchers read and mutate. `KeepAlive` holds the `Rc`; the guards inside
+/// stop their subscriptions when the leaf drops.
+struct TextState {
+    /// Proof of the main thread for kit calls inside watchers.
+    mtm: cocoa_ui::MainThreadMarker,
+    /// The environment this leaf resolves signals through.
+    env: Environment,
+    /// The platform label.
+    label: Retained<Label>,
+    /// The theme default for chunks without their own foreground.
+    default_foreground: RunForeground,
+    /// The resolved chunks of the current `StyledStr`.
+    chunks: Vec<Chunk>,
+    /// Watcher guards of the current `StyledStr`'s per-chunk signals,
+    /// replaced wholesale when the content changes.
+    signal_guards: Vec<Box<dyn Any>>,
+    /// The theme-foreground guard — set once; the theme slot does not belong
+    /// to the content, so it survives `apply_styled`. The field is never read
+    /// after creation: holding it keeps the subscription alive.
+    default_guard: Option<Box<dyn Any>>,
+    /// The current `StyledStr`'s tap spans, kept for activation.
+    tap_spans: Vec<TapSpan>,
+    /// Each span's range over the plain text in UTF-16 code units — the
+    /// currency the label's hit testing speaks.
+    span_ranges: Vec<Range<usize>>,
+    /// The span-gated tap recognizer, attached while spans exist.
+    tap: Option<platform::GestureAttachment>,
+}
+
+/// The index of the span a point in label coordinates hits, or `None` —
+/// the same query the recognizer's gate and handler both run.
+fn span_index_at(state: &TextState, point: cocoa_ui::geometry::Point) -> Option<usize> {
+    let index = state.label.character_index(point)?;
+    state
+        .span_ranges
+        .iter()
+        .position(|range| range.contains(&index))
+}
+
+/// The gate and handler of a label's span tap recognizer, shared by both
+/// platforms: `location` reads the recognizer's point in label coordinates.
+/// The gate admits a recognition only over a span; the handler activates the
+/// span under the point once the tap ends.
+fn span_tap<R, L>(
+    label: &platform::Label,
+    state: &Rc<RefCell<TextState>>,
+    location: L,
+) -> (
+    impl Fn(&R) -> bool + use<R, L>,
+    impl Fn(cocoa_ui::gesture::GestureState, &R) + use<R, L>,
+)
+where
+    L: Fn(&R, &platform::Label) -> cocoa_ui::geometry::Point + Copy + 'static,
+{
+    let gate = {
+        let state = Rc::downgrade(state);
+        let label = objc2::Message::retain(label);
+        move |recognizer: &R| {
+            state.upgrade().is_some_and(|state| {
+                span_index_at(&state.borrow(), location(recognizer, &label)).is_some()
+            })
+        }
+    };
+    let handler = {
+        let state = Rc::downgrade(state);
+        let label = objc2::Message::retain(label);
+        move |gesture_state: cocoa_ui::gesture::GestureState, recognizer: &R| {
+            if gesture_state != cocoa_ui::gesture::GestureState::Ended {
+                return;
+            }
+            let Some(state) = state.upgrade() else {
+                return;
+            };
+            // The action runs after the borrow ends: it may write the binding
+            // this text renders, whose watcher re-applies the content.
+            let hit = {
+                let state = state.borrow();
+                span_index_at(&state, location(recognizer, &label))
+                    .map(|index| (state.tap_spans[index].clone(), state.env.clone()))
+            };
+            if let Some((span, env)) = hit {
+                span.activate(&env);
+            }
+        }
+    };
+    (gate, handler)
+}
+
+/// Keeps the label's span machinery in step with `state`: a gated tap
+/// recognizer while spans exist, removed when a content update leaves
+/// none.
+fn sync_tap(state: &Rc<RefCell<TextState>>) {
+    if state.borrow().tap_spans.is_empty() {
+        let mut state = state.borrow_mut();
+        platform::set_interaction_enabled(&state.label, false);
+        if let Some(attachment) = state.tap.take()
+            && let Some(recognizer) = attachment.recognizer()
+        {
+            state.label.removeGestureRecognizer(&recognizer);
+        }
+        return;
+    }
+    if state.borrow().tap.is_none() {
+        let label = state.borrow().label.clone();
+        let attachment = platform::attach_tap(&label, state);
+        let mut state = state.borrow_mut();
+        platform::set_interaction_enabled(&state.label, true);
+        state.tap = Some(attachment);
+    }
+}
+
+/// The cross-dissolve duration the metadata calls for, in seconds: `None`,
+/// for a change that names no animation or disables it, applies the change
+/// directly — the same table `withCrossDissolveAnimation` uses.
+fn cross_dissolve_duration(metadata: &Metadata) -> Option<f64> {
+    match ChangeAnimation::of(metadata).animation() {
+        None => None,
+        Some(Animation::Default) => Some(0.25),
+        Some(Animation::Bezier { duration, .. }) => Some(duration.as_secs_f64()),
+        Some(Animation::Spring { .. }) => Some(0.15),
+    }
+}
+
+/// A run's foreground: the latest value of its color signal and, on
+/// `AppKit`, the system label color that signal stands for.
+///
+/// Which color a run came from is a property of its signal, not of its
+/// value: a theme token resolves to the very signal the backend installed in
+/// its slot (see [`crate::theme::SystemLabelSlots`]), while an app color
+/// equal in value to a token is a different signal. A run whose signal is a
+/// label slot draws as the dynamic system label color, which `AppKit`
+/// renders vibrant inside an `NSVisualEffectView`; every other run draws its
+/// value.
+struct RunForeground {
+    /// The signal's latest value.
+    value: WorkingColor,
+    /// The system label color the signal stands for, if it is one of the
+    /// backend's label slots. Fixed for the signal's lifetime.
+    #[cfg(target_os = "macos")]
+    system: Option<platform::colors::AppColor>,
+}
+
+impl RunForeground {
+    /// Reads `signal`'s current value and source in `env`.
+    #[cfg(target_os = "macos")]
+    fn resolve(env: &Environment, signal: &impl Signal<Output = WorkingColor>) -> Self {
+        let slots = env
+            .get::<crate::theme::SystemLabelSlots>()
+            .expect("the Apple theme installs its label slots with the color slots");
+        Self {
+            value: signal.snapshot(),
+            system: slots.system_color(signal),
+        }
+    }
+
+    /// Reads `signal`'s current value: `UIKit` draws no vibrant text, so the
+    /// source does not matter.
+    #[cfg(target_os = "ios")]
+    fn resolve(_env: &Environment, signal: &impl Signal<Output = WorkingColor>) -> Self {
+        Self {
+            value: signal.snapshot(),
+        }
+    }
+
+    /// The platform color the run draws in.
+    #[cfg(target_os = "macos")]
+    fn platform(&self) -> Retained<cocoa_ui::objc2_app_kit::NSColor> {
+        self.system
+            .map_or_else(|| platform_color(&self.value), platform::colors::dynamic)
+    }
+
+    /// The platform color the run draws in.
+    #[cfg(target_os = "ios")]
+    fn platform(&self) -> Retained<cocoa_ui::objc2_ui_kit::UIColor> {
+        platform_color(&self.value)
+    }
+}
+
+/// The attributed string the current chunks render into: font, colors and
+/// decorations resolved per chunk, the theme default under unstyled
+/// foregrounds.
+fn render_attributed(state: &TextState) -> Retained<objc2_foundation::NSAttributedString> {
+    let fonts: Vec<Retained<cocoa_ui::Font>> = state
+        .chunks
+        .iter()
+        .map(|chunk| platform_font(state.mtm, &chunk.font, chunk.italic))
+        .collect();
+    let foregrounds: Vec<Option<Retained<_>>> = state
+        .chunks
+        .iter()
+        .map(|chunk| {
+            Some(
+                chunk
+                    .foreground
+                    .as_ref()
+                    .unwrap_or(&state.default_foreground)
+                    .platform(),
+            )
+        })
+        .collect();
+    let backgrounds: Vec<Option<Retained<_>>> = state
+        .chunks
+        .iter()
+        .map(|chunk| chunk.background.as_ref().map(platform_color))
+        .collect();
+    let runs: Vec<cocoa_ui::text::TextRun<'_>> = state
+        .chunks
+        .iter()
+        .enumerate()
+        .map(|(i, chunk)| cocoa_ui::text::TextRun {
+            text: chunk.text.as_str(),
+            font: &fonts[i],
+            foreground: foregrounds[i].as_deref(),
+            background: backgrounds[i].as_deref(),
+            underline: chunk.underline,
+            strikethrough: chunk.strikethrough,
+            letter_spacing: f64::from(chunk.font.letter_spacing()),
+            line_height: chunk.font.line_height().map_or(0.0, f64::from),
+        })
+        .collect();
+    cocoa_ui::text::build(state.mtm, &runs).into_super()
+}
+
+/// Pushes the rebuilt attributed string onto the label, animating the swap
+/// when the watcher metadata asks for it.
+fn rebuild(state: &TextState, duration: Option<f64>) {
+    crate::measure_memo::invalidate();
+    let attributed = render_attributed(state);
+    match duration {
+        Some(seconds) => {
+            let label = state.label.clone();
+            cocoa_ui::core_animation::cross_dissolve(as_view(&state.label), seconds, move || {
+                label.set_attributed_text(&attributed);
+            });
+        }
+        None => state.label.set_attributed_text(&attributed),
+    }
+}
+
+/// The UTF-16 ranges of `tap_spans` within `plain`, which the label's link
+/// elements are positioned by.
+fn utf16_span_ranges(plain: &str, tap_spans: &[TapSpan]) -> Vec<Range<usize>> {
+    tap_spans
+        .iter()
+        .map(|span| {
+            let range = span.range();
+            let start = cocoa_ui::text::utf16_offset_at_byte(plain, range.start)
+                .expect("a tap span starts on a char boundary");
+            let end = cocoa_ui::text::utf16_offset_at_byte(plain, range.end)
+                .expect("a tap span ends on a char boundary");
+            start..end
+        })
+        .collect()
+}
+
+/// Resolves a `StyledStr` into chunk state plus the guards that keep its
+/// signals subscribed — the work `WuiStyledStrRenderer` performs.
+fn apply_styled(state: &Rc<RefCell<TextState>>, styled: &StyledStr) {
+    let env = state.borrow().env.clone();
+    let mut chunks = Vec::with_capacity(styled.chunks().len());
+    let mut guards: Vec<Box<dyn Any>> = Vec::new();
+    for (index, (text, style)) in styled.chunks().iter().enumerate() {
+        let font = style.get_font().resolve(&env);
+        let foreground = style
+            .get_foreground()
+            .as_ref()
+            .map(|color| color.resolve(&env));
+        let background = style
+            .get_background()
+            .as_ref()
+            .map(|color| color.resolve(&env));
+        chunks.push(Chunk {
+            text: text.clone(),
+            font: font.snapshot(),
+            foreground: foreground
+                .as_ref()
+                .map(|signal| RunForeground::resolve(&env, signal)),
+            background: background.as_ref().map(Signal::snapshot),
+            italic: style.get_italic(),
+            underline: style.get_underline(),
+            strikethrough: style.get_strikethrough(),
+        });
+
+        guards.push(Box::new(font.watch({
+            let state = Rc::downgrade(state);
+            move |ctx| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
+                let duration = cross_dissolve_duration(ctx.metadata());
+                let mut state = state.borrow_mut();
+                state.chunks[index].font = ctx.into_value();
+                rebuild(&state, duration);
+            }
+        })));
+        if let Some(signal) = foreground {
+            guards.push(Box::new(signal.watch({
+                let state = Rc::downgrade(state);
+                move |ctx| {
+                    let Some(state) = state.upgrade() else {
+                        return;
+                    };
+                    let duration = cross_dissolve_duration(ctx.metadata());
+                    let mut state = state.borrow_mut();
+                    state.chunks[index]
+                        .foreground
+                        .as_mut()
+                        .expect("a chunk with a foreground signal has a foreground")
+                        .value = ctx.into_value();
+                    rebuild(&state, duration);
+                }
+            })));
+        }
+        if let Some(signal) = background {
+            guards.push(Box::new(signal.watch({
+                let state = Rc::downgrade(state);
+                move |ctx| {
+                    let Some(state) = state.upgrade() else {
+                        return;
+                    };
+                    let duration = cross_dissolve_duration(ctx.metadata());
+                    let mut state = state.borrow_mut();
+                    state.chunks[index].background = Some(ctx.into_value());
+                    rebuild(&state, duration);
+                }
+            })));
+        }
+    }
+    let plain = styled.to_plain();
+    let tap_spans: Vec<TapSpan> = styled.tap_spans().to_vec();
+    let span_ranges = utf16_span_ranges(&plain, &tap_spans);
+    let links: Vec<cocoa_ui::text::SpanLink<'_>> = tap_spans
+        .iter()
+        .zip(&span_ranges)
+        .map(|(span, utf16)| {
+            let span = span.clone();
+            let env = env.clone();
+            cocoa_ui::text::SpanLink {
+                range: utf16.clone(),
+                text: &plain[span.range()],
+                activate: Rc::new(move || span.activate(&env)),
+            }
+        })
+        .collect();
+    let label = {
+        let mut state = state.borrow_mut();
+        state.chunks = chunks;
+        state.signal_guards = guards;
+        state.tap_spans = tap_spans;
+        state.span_ranges = span_ranges;
+        state.label.clone()
+    };
+    sync_tap(state);
+    label.set_link_elements(&links);
+}
+
+/// The label's layout face: intrinsic, baseline-aware, non-stretching.
+struct TextSubView {
+    /// The label whose laid-out text the measure reports.
+    label: Retained<Label>,
+}
+
+impl core::fmt::Debug for TextSubView {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TextSubView").finish_non_exhaustive()
+    }
+}
+
+impl SubView for TextSubView {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
+    // `TextMetrics` measures in f64; `ViewDimensions` speaks f32 — the
+    // narrowing is the layout contract.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the layout contract is f32; measured points always fit"
+    )]
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let metrics = self.label.measure(wrap_for(proposal.width));
+        // `cocoa_ui::text::measure` reports the cell-fitting width, two
+        // points past the bare text bounds; `WuiTextBase` measures the bare
+        // bounds, so the inset comes back out here.
+        let mut dimensions = ViewDimensions::new(Size::new(
+            (metrics.size.width - 2.0).max(0.0) as f32,
+            metrics.size.height as f32,
+        ));
+        if let Some(first) = metrics.first_baseline {
+            dimensions = dimensions.with_vertical(VerticalAlignment::FirstBaseline, first as f32);
+        }
+        if let Some(last) = metrics.last_baseline {
+            dimensions = dimensions.with_vertical(VerticalAlignment::LastBaseline, last as f32);
+        }
+        dimensions
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+/// The wrap mode a width proposal implies: none means natural width, a
+/// positive bound wraps at it, and zero/negative width can only fit the
+/// widest unbreakable run.
+fn wrap_for(proposal_width: Option<f32>) -> cocoa_ui::text::WrapWidth {
+    match proposal_width {
+        None => cocoa_ui::text::WrapWidth::Free,
+        Some(width) if width > 0.0 => cocoa_ui::text::WrapWidth::Fixed(f64::from(width)),
+        Some(_) => cocoa_ui::text::WrapWidth::Unbreakable,
+    }
+}
+
+/// The `HorizontalAlignment` mapping `WuiText` applies: `Center` centers,
+/// `Trailing` flips with the reading direction, anything else stays natural.
+fn apply_alignment(label: &Label, alignment: HorizontalAlignment) {
+    use platform::NSTextAlignment;
+    let alignment = if alignment == HorizontalAlignment::Center {
+        NSTextAlignment::Center
+    } else if alignment == HorizontalAlignment::Trailing {
+        if cocoa_ui::view::is_right_to_left(as_view(label)) {
+            NSTextAlignment::Left
+        } else {
+            NSTextAlignment::Right
+        }
+    } else {
+        NSTextAlignment::Natural
+    };
+    label.set_text_alignment(alignment);
+    crate::measure_memo::invalidate();
+}
+
+/// Builds a label leaf around `styled` at `line_limit`/`alignment`, sharing
+/// `WuiTextBase`'s shape: the leaf is a container whose measured size is the
+/// bare text bounds while the label inside keeps its cell-fitting width, so
+/// text ink never clips when the two disagree by the cell's insets.
+fn label_leaf(
+    ctx: &RenderContext,
+    line_limit: Option<NonZeroUsize>,
+    styled: &StyledStr,
+    alignment: HorizontalAlignment,
+) -> (NativeLeaf, Rc<RefCell<TextState>>, Retained<Label>) {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, cocoa_ui::geometry::Rect::ZERO);
+    // `labelWithString:` keeps the minimal cell insets of an AppKit label;
+    // `Label::new` (`initWithFrame:`) keeps NSTextField's 4pt padding.
+    #[cfg(target_os = "macos")]
+    let label = Label::label_with_string(mtm, "");
+    #[cfg(not(target_os = "macos"))]
+    let label = Label::new(mtm);
+    label.set_line_limit(line_limit.map_or(0, NonZero::get));
+    let host_view: &PlatformView = &host;
+    host.add_subview(as_view(&label));
+    host.set_layout_handler({
+        let label = label.clone();
+        move |view| {
+            // The text draws in its response rectangle, centred in the
+            // frame it was assigned (docs/layout-spec.md §2.4).
+            let bounds = proposal::response(view);
+            // A `labelWithString:` field keeps its text's alignment rect
+            // inside the frame (`-[NSView alignmentRectInsets]`); expand
+            // the frame by those insets so the ink lands exactly on the
+            // response. `UILabel` draws at the frame's origin and wraps
+            // at `preferredMaxLayoutWidth`, so it takes the response
+            // unchanged.
+            #[cfg(target_os = "macos")]
+            let frame = {
+                let insets = label.alignment_rect_insets();
+                cocoa_ui::geometry::Rect::new(
+                    bounds.origin.x - insets.left,
+                    bounds.origin.y - insets.top,
+                    bounds.size.width + insets.left + insets.right,
+                    bounds.size.height + insets.top + insets.bottom,
+                )
+            };
+            #[cfg(not(target_os = "macos"))]
+            let frame = bounds;
+            cocoa_ui::view::set_frame(as_view(&label), frame);
+        }
+    });
+
+    // The theme default backs every chunk without its own foreground,
+    // exactly as the Swift renderer's `defaultForeground` slot does.
+    let default_foreground = Foreground.resolve(ctx.env());
+    let state = Rc::new(RefCell::new(TextState {
+        mtm,
+        env: ctx.env().clone(),
+        label: label.clone(),
+        default_foreground: RunForeground::resolve(ctx.env(), &default_foreground),
+        chunks: Vec::new(),
+        signal_guards: Vec::new(),
+        default_guard: None,
+        tap_spans: Vec::new(),
+        span_ranges: Vec::new(),
+        tap: None,
+    }));
+
+    let foreground_guard = default_foreground.watch({
+        let state = Rc::downgrade(&state);
+        move |ctx| {
+            let Some(state) = state.upgrade() else {
+                return;
+            };
+            let duration = cross_dissolve_duration(ctx.metadata());
+            let mut state = state.borrow_mut();
+            state.default_foreground.value = ctx.into_value();
+            rebuild(&state, duration);
+        }
+    });
+    state.borrow_mut().default_guard = Some(Box::new(foreground_guard));
+
+    apply_styled(&state, styled);
+    rebuild(&state.borrow(), None);
+    apply_alignment(&label, alignment);
+
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        TextSubView {
+            label: label.clone(),
+        },
+    );
+    leaf.keep(Rc::clone(&state));
+    (leaf, state, label)
+}
+
+/// Installs the `text` handler on the dispatcher: `Native<TextConfig>` maps
+/// to a kit label with per-chunk signal watches and baseline measurement,
+/// and `Native<Str>` (a bare string used as a view) maps to the same leaf
+/// with static content.
+pub fn install(dispatcher: &mut Dispatcher) {
+    dispatcher.register_native::<TextConfig>(|config, ctx| {
+        let content = config.content();
+        let (mut leaf, state, label) = label_leaf(
+            ctx,
+            config.line_limit(),
+            &content.snapshot(),
+            config.paragraph_alignment().snapshot(),
+        );
+
+        // Content changes re-resolve every chunk signal; paragraph
+        // alignment pushes straight to the label inside the leaf.
+        leaf.watch(&content, move |ctx| {
+            let duration = cross_dissolve_duration(ctx.metadata());
+            apply_styled(&state, ctx.value());
+            rebuild(&state.borrow(), duration);
+        });
+        leaf.watch(config.paragraph_alignment(), move |ctx| {
+            apply_alignment(&label, *ctx.value());
+        });
+        leaf
+    });
+
+    // `plain` owns the bare-`Str` leaf when enabled; `text` supplies it
+    // only so a `text`-without-`plain` build still renders strings. Two
+    // claims on the same type are rejected by the dispatcher.
+    #[cfg(not(feature = "plain"))]
+    dispatcher.register_native::<Str>(|text, ctx| {
+        let (leaf, ..) = label_leaf(
+            ctx,
+            None,
+            &StyledStr::from(text),
+            HorizontalAlignment::Leading,
+        );
+        leaf
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use core::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn cross_dissolve_duration_follows_animation_table() {
+        assert_eq!(cross_dissolve_duration(&Metadata::new()), None);
+        let table: [(Animation, f64); 3] = [
+            (Animation::Default, 0.25),
+            (
+                Animation::Bezier {
+                    duration: Duration::from_millis(300),
+                    x1: 0.0,
+                    y1: 0.0,
+                    x2: 1.0,
+                    y2: 1.0,
+                },
+                0.3,
+            ),
+            (
+                Animation::Spring {
+                    stiffness: 170.0,
+                    damping: 15.0,
+                },
+                0.15,
+            ),
+        ];
+        for (animation, expected) in table {
+            assert_eq!(
+                cross_dissolve_duration(&Metadata::new().with(animation)).map(f64::to_bits),
+                Some(expected.to_bits())
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use cocoa_ui::text::WrapWidth;
+
+    use super::wrap_for;
+
+    #[test]
+    fn the_width_proposal_picks_the_wrap_mode() {
+        assert_eq!(wrap_for(None), WrapWidth::Free);
+        assert_eq!(wrap_for(Some(120.0)), WrapWidth::Fixed(120.0));
+        assert_eq!(wrap_for(Some(0.0)), WrapWidth::Unbreakable);
+        assert_eq!(wrap_for(Some(-1.0)), WrapWidth::Unbreakable);
+        // NaN is not a positive bound: unbreakable, like zero.
+        assert_eq!(wrap_for(Some(f32::NAN)), WrapWidth::Unbreakable);
+    }
+}

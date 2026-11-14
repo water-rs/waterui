@@ -31,8 +31,8 @@ use nami::{Computed, Signal, SignalExt, watcher::BoxWatcherGuard};
 use waterui_core::{IntoSignalF32, View, layout::LayoutInvalidationCallback, view::TupleViews};
 
 use crate::{
-    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement, UnitPoint,
-    container::FixedContainer,
+    Layout, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
+    SubviewPlacement, UnitPoint, container::FixedContainer,
 };
 
 // ============================================================================
@@ -59,6 +59,16 @@ impl Layout for AbsoluteLayout {
         )
     }
 
+    /// The canvas's answer at the bounds' origin. It is not a union of the
+    /// positioned children.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
+    }
+
     fn place(
         &self,
         bounds: Rect,
@@ -81,6 +91,10 @@ impl Layout for AbsoluteLayout {
 
 /// Target position for absolute positioning.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "frozen layout contract (docs/layout-spec.md): every position target is resolved variant by variant"
+)]
 pub enum PositionTarget {
     /// Absolute position in points (relative to parent origin)
     Absolute {
@@ -221,6 +235,16 @@ impl Layout for PositionedLayout {
         )
     }
 
+    /// A positioning wrapper is a canvas: its answer at the bounds' origin.
+    /// The positioned child's own response belongs to the child.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
+    }
+
     #[allow(clippy::too_many_lines)]
     fn place(
         &self,
@@ -247,8 +271,8 @@ impl Layout for PositionedLayout {
                 match &self.target {
                     PositionTarget::Absolute { x, y } => {
                         let child_size = sanitize_size(intrinsic, bounds);
-                        let target_x = bounds.x() + x.get();
-                        let target_y = bounds.y() + y.get();
+                        let target_x = bounds.x() + x.snapshot();
+                        let target_y = bounds.y() + y.snapshot();
 
                         let x = target_x - child_size.width * self.anchor.x;
                         let y = target_y - child_size.height * self.anchor.y;
@@ -270,8 +294,8 @@ impl Layout for PositionedLayout {
                         offset_y,
                     } => {
                         let child_size = sanitize_size(intrinsic, bounds);
-                        let target_x = bounds.x() + bounds.width() * unit.x + offset_x.get();
-                        let target_y = bounds.y() + bounds.height() * unit.y + offset_y.get();
+                        let target_x = bounds.x() + bounds.width() * unit.x + offset_x.snapshot();
+                        let target_y = bounds.y() + bounds.height() * unit.y + offset_y.snapshot();
 
                         let x = target_x - child_size.width * self.anchor.x;
                         let y = target_y - child_size.height * self.anchor.y;
@@ -288,12 +312,14 @@ impl Layout for PositionedLayout {
                         )
                     }
                     PositionTarget::Pinned(pinned) => {
-                        let leading = pinned.leading.as_ref().map(waterui_core::Signal::get);
-                        let trailing = pinned.trailing.as_ref().map(waterui_core::Signal::get);
-                        let top = pinned.top.as_ref().map(waterui_core::Signal::get);
-                        let bottom = pinned.bottom.as_ref().map(waterui_core::Signal::get);
-                        let explicit_width = pinned.width.as_ref().map(waterui_core::Signal::get);
-                        let explicit_height = pinned.height.as_ref().map(waterui_core::Signal::get);
+                        let leading = pinned.leading.as_ref().map(waterui_core::Signal::snapshot);
+                        let trailing = pinned.trailing.as_ref().map(waterui_core::Signal::snapshot);
+                        let top = pinned.top.as_ref().map(waterui_core::Signal::snapshot);
+                        let bottom = pinned.bottom.as_ref().map(waterui_core::Signal::snapshot);
+                        let explicit_width =
+                            pinned.width.as_ref().map(waterui_core::Signal::snapshot);
+                        let explicit_height =
+                            pinned.height.as_ref().map(waterui_core::Signal::snapshot);
 
                         let mut width = explicit_width.unwrap_or_else(|| {
                             if let (Some(leading), Some(trailing)) = (leading, trailing) {
@@ -502,8 +528,10 @@ pub trait PositionExt: View + Sized {
 
     /// Position view's center at fractional location in parent.
     ///
-    /// The anchor point on the view matches the target position.
-    /// e.g., `UnitPoint::CENTER` means view's center at parent's center.
+    /// The omitted anchor is the view's centre: `UnitPoint::TOP_TRAILING`
+    /// puts the view's centre on the parent's top-trailing corner. Name the
+    /// anchor with [`position_in_anchor`](Self::position_in_anchor) to place
+    /// another point of the view there.
     ///
     /// # Example
     ///
@@ -514,7 +542,7 @@ pub trait PositionExt: View + Sized {
     /// # }
     /// ```
     fn position_in(self, position: UnitPoint) -> PositionedChild<Self> {
-        self.position_in_anchor(position, position)
+        self.position_in_anchor(UnitPoint::CENTER, position)
     }
 
     /// Position view's anchor at fractional location in parent.
@@ -689,6 +717,7 @@ mod tests {
     use super::*;
     use crate::StretchAxis;
     use crate::ViewDimensions;
+    use crate::{LayoutError, Rect, ResolvedExtent};
     use alloc::vec;
     use core::cell::Cell;
     use waterui_core::MainThreadBound;
@@ -699,6 +728,13 @@ mod tests {
     }
 
     impl SubView for MockSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }
@@ -729,6 +765,13 @@ mod tests {
     }
 
     impl SubView for ProposalAwareView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             self.last_width.set(proposal.width);
             self.last_height.set(proposal.height);

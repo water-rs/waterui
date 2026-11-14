@@ -1,0 +1,1492 @@
+use crate::platform::TextInputPurpose;
+use crate::renderer::text_editing::CaretPaints;
+use crate::renderer::{
+    HydroNativeView, HydroState, HydrolysisRenderer, RetainedSubview, TailMark, TextInputModel,
+    TextInputTargetRegistration, TextSelectionSlot, WidgetRenderContext, clamp_to_char_boundary,
+    measure_label_intrinsic, measure_secure_field_intrinsic,
+    measure_secure_field_size_with_label_size, measure_text_field_intrinsic,
+    measure_text_field_size_with_label_size, transformed_rect,
+};
+use crate::text::{TextLayout as _, TextPosition};
+use crate::theme::{ModalInteraction, TextFieldLook};
+use crate::widgets::controls::field_look::{
+    FieldChrome, FloatLabel, field_look, placeholder_text, value_text,
+};
+use core::num::NonZeroUsize;
+use nami::Signal as _;
+use std::cell::RefCell;
+use std::rc::Rc;
+use waterui::cursor::CursorStyle;
+use waterui_controls::text_field::ResolvedTextFieldConfig;
+use waterui_core::interaction::InteractionState;
+use waterui_core::layout::{
+    HorizontalAlignment, LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions,
+};
+use waterui_core::{Environment, Native, Str};
+use waterui_form::secure::SecureFieldConfig;
+use waterui_text::styled::{Style, StyledStr};
+
+/// The retained render state of a text field: the cloneable [`ResolvedTextFieldConfig`]
+/// drives the input model + accessibility, and its floating label is held as a
+/// [`RetainedSubview`] built once and placed each frame at its resting place,
+/// riding the look's float operands, so reactive label content stays live.
+pub struct TextFieldRenderState<E: crate::text::TextEngine> {
+    config: ResolvedTextFieldConfig,
+    label_view: RetainedSubview<E>,
+    /// The look the field was requested for, its container's live chrome and
+    /// the operands its label floats on.
+    field: FieldChrome,
+    /// The caret/selection anchor+focus for this field, owned by the node so it
+    /// persists across frames without a renderer-global, flush-order-indexed slot
+    /// pool. Node-owned control state is reset only when this node is dropped.
+    selection_slot: Rc<RefCell<TextSelectionSlot>>,
+}
+
+impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
+    pub(crate) fn from_config(config: ResolvedTextFieldConfig) -> Self {
+        let field = FieldChrome::new();
+        Self {
+            label_view: RetainedSubview::new(field.label_view(config.label().clone())),
+            config,
+            field,
+            selection_slot: Rc::new(RefCell::new(TextSelectionSlot::default())),
+        }
+    }
+
+    /// Eagerly build the label sub-view (the measure path has only
+    /// `&mut HydroState`, no renderer, so it must be built before then).
+    pub(crate) fn prebuild(
+        &mut self,
+        renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+    ) {
+        self.label_view.ensure_built(renderer, env);
+    }
+
+    /// Consume the label sub-view's layout-dirty marks: its measured size
+    /// feeds the field's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.label_view.take_layout_dirty_if_built()
+    }
+}
+
+/// The retained render state of a secure field: the cloneable [`SecureFieldConfig`]
+/// drives the input model + accessibility, and its floating label is held as a
+/// [`RetainedSubview`] built once and re-flushed each frame under the animated
+/// label transform so reactive label content stays live.
+pub struct SecureFieldRenderState<E: crate::text::TextEngine> {
+    config: SecureFieldConfig,
+    label_view: RetainedSubview<E>,
+    /// The look and live parts the field realizes; see [`TextFieldRenderState::field`].
+    field: FieldChrome,
+    /// Node-owned caret/selection state; see [`TextFieldRenderState::selection_slot`].
+    selection_slot: Rc<RefCell<TextSelectionSlot>>,
+}
+
+impl<E: crate::text::TextEngine> SecureFieldRenderState<E> {
+    pub(crate) fn from_config(config: SecureFieldConfig) -> Self {
+        let field = FieldChrome::new();
+        Self {
+            label_view: RetainedSubview::new(field.label_view(config.label().clone())),
+            config,
+            field,
+            selection_slot: Rc::new(RefCell::new(TextSelectionSlot::default())),
+        }
+    }
+
+    /// Eagerly build the label sub-view (the measure path has only
+    /// `&mut HydroState`, no renderer, so it must be built before then).
+    pub(crate) fn prebuild(
+        &mut self,
+        renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+    ) {
+        self.label_view.ensure_built(renderer, env);
+    }
+
+    /// Consume the label sub-view's layout-dirty marks: its measured size
+    /// feeds the field's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.label_view.take_layout_dirty_if_built()
+    }
+}
+
+#[cfg(feature = "accessibility")]
+use crate::renderer::AccessibilityActionTarget;
+#[cfg(feature = "accessibility")]
+use accesskit::{
+    Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
+};
+
+use crate::widgets::util::widget_disabled;
+
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedTextFieldConfig> {
+    fn intrinsic(
+        state: &mut HydroState<E>,
+        view: &Self,
+        env: &Environment,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
+    ) -> LayoutSize {
+        measure_text_field_intrinsic(view.as_inner(), state, env, theme)
+    }
+
+    fn dimensions(
+        state: &mut HydroState<E>,
+        view: &Self,
+        env: &Environment,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
+        proposal: ProposalSize,
+    ) -> ViewDimensions {
+        let text_field = view.as_inner();
+        let label_size = measure_label_intrinsic(text_field.label(), state, env, theme);
+        ViewDimensions::new(measure_text_field_size_with_label_size(
+            text_field,
+            label_size,
+            state,
+            env,
+            &field_look(theme, env),
+            proposal,
+        ))
+    }
+}
+
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SecureFieldConfig> {
+    fn intrinsic(
+        state: &mut HydroState<E>,
+        view: &Self,
+        env: &Environment,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
+    ) -> LayoutSize {
+        measure_secure_field_intrinsic(view.as_inner(), state, env, theme)
+    }
+
+    fn dimensions(
+        state: &mut HydroState<E>,
+        view: &Self,
+        env: &Environment,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
+        proposal: ProposalSize,
+    ) -> ViewDimensions {
+        let secure_field = view.as_inner();
+        let label_size = measure_label_intrinsic(secure_field.label(), state, env, theme);
+        ViewDimensions::new(measure_secure_field_size_with_label_size(
+            secure_field,
+            label_size,
+            state,
+            env,
+            &field_look(theme, env),
+            proposal,
+        ))
+    }
+}
+
+/// Renders a retained text-field leaf every flush: text fields are
+/// render-driven a11y, so the inline a11y is emitted by `render_text_field_parts`
+/// itself; this node suppresses it when the field is accessibility-hidden (the
+/// dispatch path's render-driven suppression contract).
+pub fn render_text_field_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<TextFieldRenderState<E>>>,
+    env: &Environment,
+) {
+    #[cfg(feature = "accessibility")]
+    let hidden = env
+        .get::<waterui::accessibility::AccessibilityHidden>()
+        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    #[cfg(feature = "accessibility")]
+    if hidden {
+        ctx.renderer_mut().push_accessibility_suppression();
+    }
+    render_text_field_parts(ctx, state, env);
+    #[cfg(feature = "accessibility")]
+    if hidden {
+        ctx.renderer_mut().pop_accessibility_suppression();
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn render_text_field_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<TextFieldRenderState<E>>>,
+    env: &Environment,
+) {
+    let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
+    let theme = ctx.theme();
+    let mut state = state.borrow_mut();
+    let state = &mut *state;
+    let look = state.field.look(&theme, env).clone();
+    let input_metrics = look.metrics();
+    ctx.renderer_mut()
+        .set_text_caret_motion(look.caret().blink());
+    // The config's `disabled` already OR-combines the explicit
+    // `TextField::disabled` signal with any enclosing `.disabled(...)` scope
+    // (`TextFieldConfig` resolves it through `Disabled::resolve`). Reading it
+    // watches it, so a change schedules a frame and this persistent node
+    // re-renders (and re-registers input) with the new state.
+    let disabled = {
+        let signal = widget_disabled(env);
+        ctx.renderer_mut().read_signal(&signal)
+    };
+    // Read every retained field from the retained config each frame: the `label`/
+    // `value`/`prompt`/`selection_menu` are cloneable signals (the value is read
+    // through `read_signal` below so a binding change schedules a frame). The label
+    // is a retained node sub-view flushed under the animated transform each frame.
+    let (label, value_binding, prompt_signal, selection_menu, line_limit_raw, on_submit) = {
+        let text_field = &state.config;
+        (
+            text_field.label().clone(),
+            text_field.value().clone(),
+            text_field.prompt().content(),
+            text_field.selection_menu().clone(),
+            text_field.line_limit(),
+            text_field.on_submit().cloned(),
+        )
+    };
+    #[cfg(feature = "accessibility")]
+    let default_accessibility_label =
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
+    #[cfg(not(feature = "accessibility"))]
+    let _ = label;
+    state.field.apply_label_font(
+        &mut state.label_view,
+        state.config.label(),
+        ctx.renderer_mut(),
+        env,
+    );
+    let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
+    let label_height = material_input_label_height(label_size, input_metrics.label_height);
+    let line_limit = line_limit_raw.map(NonZeroUsize::get);
+    #[cfg(feature = "accessibility")]
+    {
+        let prompt = ctx
+            .renderer_mut()
+            .read_signal(&prompt_signal)
+            .to_plain()
+            .to_string();
+        let value = ctx
+            .renderer_mut()
+            .read_signal(&value_binding)
+            .to_plain()
+            .to_string();
+        let default_label =
+            default_accessibility_label.or_else(|| (!prompt.is_empty()).then_some(prompt.clone()));
+        let local = ctx.bounds;
+        let bounds = local;
+        let mut node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
+                env,
+                if line_limit == Some(1) {
+                    AccessibilityNodeRole::TextInput
+                } else {
+                    AccessibilityNodeRole::MultilineTextInput
+                },
+            ),
+        );
+        let label = ctx
+            .renderer_mut()
+            .resolve_accessibility_label(env, default_label);
+        if let Some(label) = label {
+            node.set_label(label);
+        }
+        if !prompt.is_empty() {
+            node.set_placeholder(prompt);
+        }
+        // The field's own text is the default value; an explicit
+        // `.a11y_value` wins the same way `.a11y_label` wins the name.
+        if let Some(value) = ctx
+            .renderer_mut()
+            .resolve_accessibility_value(env, (!value.is_empty()).then_some(value))
+        {
+            node.set_value(value);
+        }
+        if disabled {
+            node.set_disabled();
+        } else {
+            node.add_action(AccessibilityAction::Focus);
+            node.add_action(AccessibilityAction::Click);
+            node.add_action(AccessibilityAction::SetValue);
+        }
+        if let Some(node_id) = ctx.renderer_mut().register_accessibility_node(
+            node,
+            bounds,
+            env,
+            (!disabled).then_some(AccessibilityActionTarget::TextField {
+                value: value_binding.clone(),
+                line_limit,
+            }),
+        ) {
+            if let Some(content_type) = state.config.content_type() {
+                ctx.renderer_mut()
+                    .register_accessibility_content_type(node_id, content_type);
+            }
+            ctx.renderer_mut()
+                .push_pending_text_input_accessibility_node(node_id);
+        }
+    }
+    let field_rect = ctx.bounds;
+    let is_focused = ctx.renderer_mut().is_text_input_focused(&interaction_key);
+    let (field_interaction, _, _) =
+        state
+            .field
+            .bind(ctx, &interaction_key, field_rect, env, disabled, is_focused);
+    let field_flags = field_interaction.state;
+    let selection_slot = Rc::clone(&state.selection_slot);
+    let input_model = TextInputModel::TextField {
+        value: value_binding.clone(),
+        line_limit,
+        selection_menu,
+        on_submit,
+    };
+    let (prompt, value, preedit, preedit_caret) = {
+        let (preedit, preedit_caret) = if is_focused {
+            (
+                ctx.renderer_mut().current_ime_preedit().unwrap_or_default(),
+                ctx.renderer_mut().current_ime_preedit_caret(),
+            )
+        } else {
+            (Str::new(), None)
+        };
+        (
+            ctx.renderer_mut().read_signal(&prompt_signal).to_plain(),
+            ctx.renderer_mut().read_signal(&value_binding).to_plain(),
+            preedit,
+            preedit_caret,
+        )
+    };
+    // Normalize the selection first: the composition is inserted at — and
+    // replaces — the live selection, so the display string and the caret
+    // mapping below both need the clamped range.
+    let (selection_start, selection_end) = {
+        let mut slot = selection_slot.borrow_mut();
+        if !slot.initialized {
+            slot.anchor = value.len();
+            slot.focus = value.len();
+            slot.initialized = true;
+        }
+        slot.anchor = clamp_to_char_boundary(value.as_str(), slot.anchor);
+        slot.focus = clamp_to_char_boundary(value.as_str(), slot.focus);
+        (slot.anchor.min(slot.focus), slot.anchor.max(slot.focus))
+    };
+    let committed_with_preedit = if preedit.is_empty() {
+        value.clone()
+    } else {
+        let mut text = String::with_capacity(value.len() + preedit.len());
+        text.push_str(&value[..selection_start]);
+        text.push_str(preedit.as_str());
+        text.push_str(&value[selection_end..]);
+        Str::from(text)
+    };
+    let use_placeholder = committed_with_preedit.is_empty();
+    // With no label view the prompt stands in as the floating label (#85):
+    // it rests centred in the container and floats to the top on focus or
+    // content under the same Material transition a label view rides.
+    let prompt_as_label = label_height == 0.0 && !prompt.is_empty();
+    // The prompt-as-label reserves the same band a label view does, but its
+    // resting rect and laid-out box are still the prompt's own line box —
+    // the band's smaller height would drop the resting prompt below centre
+    // (#1705).
+    let prompt_label = prompt_as_label.then(|| {
+        let styled = placeholder_text(&look, prompt.clone(), field_rect, field_flags);
+        let size = HydrolysisRenderer::measure_text_dimensions(
+            ctx.state_mut(),
+            styled.clone(),
+            HorizontalAlignment::Leading,
+            env,
+            None,
+            Some(1),
+        )
+        .size;
+        (styled, size)
+    });
+    let prompt_label_height = prompt_label.as_ref().map_or(0.0, |(_, size)| {
+        material_input_label_height(*size, input_metrics.label_height)
+    });
+    let has_label = label_height > 0.0 || prompt_as_label;
+    // The label floats while the field is focused or holds content. Its
+    // operands move under the look's float motion, so a focus change or a
+    // typed character records nothing.
+    let float = state.field.float();
+    let (band_height, measured_height) = if label_height > 0.0 {
+        (label_height, f64::from(label_size.height))
+    } else {
+        prompt_label.as_ref().map_or((0.0, 0.0), |(_, size)| {
+            (prompt_label_height, f64::from(size.height))
+        })
+    };
+    let place = LabelPlace::new(field_rect, &look, band_height, measured_height, env);
+    if has_label {
+        float.place(
+            is_focused,
+            !committed_with_preedit.is_empty(),
+            place.floated,
+        );
+    }
+    if label_height > 0.0 {
+        float_label(ctx, float, field_rect, |ctx| {
+            place_label_view(ctx, env, &mut state.label_view, &place);
+        });
+    } else if let Some((prompt_styled, _)) = prompt_label {
+        float_label(ctx, float, field_rect, |ctx| {
+            place_prompt_label(ctx, env, prompt_styled, &place);
+        });
+    }
+    let content_alpha = if has_label && !float.is_floated() {
+        0.0
+    } else {
+        1.0
+    };
+    let content_visible = !has_label || float.text_visible();
+    let display = if use_placeholder && !prompt_as_label {
+        prompt
+    } else {
+        committed_with_preedit.clone()
+    };
+    // The placeholder keeps the look's placeholder styling, never the value's.
+    let value_paint = (!use_placeholder || prompt_as_label)
+        .then(|| state.field.value_paint())
+        .flatten();
+    let display_styled = if use_placeholder && !prompt_as_label {
+        placeholder_text(&look, display, field_rect, field_flags)
+    } else if preedit.is_empty() {
+        value_text(&look, StyledStr::plain(display), field_rect, field_flags)
+    } else {
+        // The pre-edit run carries the composing underline a native text
+        // field draws under the IME's composing span; the committed text
+        // either side of the splice stays plain.
+        let mut styled = StyledStr::empty();
+        styled.push_str(value[..selection_start].to_string());
+        styled.push(preedit.clone(), Style::new().underline());
+        styled.push_str(value[selection_end..].to_string());
+        value_text(&look, styled, field_rect, field_flags)
+    };
+    let effective_label_height = if prompt_as_label {
+        prompt_label_height
+    } else {
+        label_height
+    };
+    let text_bounds = material_input_text_rect(
+        field_rect,
+        input_metrics.horizontal_inset,
+        input_metrics.vertical_inset,
+        effective_label_height,
+    );
+    let committed_layout = HydrolysisRenderer::build_text_layout(
+        ctx.state_mut(),
+        value_text(
+            &look,
+            StyledStr::plain(value.clone()),
+            field_rect,
+            field_flags,
+        ),
+        HorizontalAlignment::Leading,
+        env,
+        Some(crate::num_cast::f64_as_f32(text_bounds.width())),
+    );
+    let display_layout = HydrolysisRenderer::build_text_layout(
+        ctx.state_mut(),
+        display_styled.clone(),
+        HorizontalAlignment::Leading,
+        env,
+        Some(crate::num_cast::f64_as_f32(text_bounds.width())),
+    );
+    let display_layout_height = display_layout.height();
+    // A single-line field carrying no inside label — neither a label view
+    // nor a prompt standing in as one — centres its input text vertically
+    // in the container, the label's resting spot.
+    let text_bounds = if effective_label_height == 0.0 && line_limit == Some(1) {
+        material_input_centered_text_rect(
+            field_rect,
+            text_bounds,
+            f64::from(committed_layout.height().max(display_layout_height))
+                .max(input_metrics.label_height),
+        )
+    } else {
+        text_bounds
+    };
+    let text_clip_bounds = material_input_text_clip_rect(
+        field_rect,
+        text_bounds,
+        committed_layout.height().max(display_layout_height),
+    );
+    let selection = {
+        let mut slot = selection_slot.borrow_mut();
+        let anchor_layout = input_model.layout_index_from_plain_index(slot.anchor);
+        let focus_layout = input_model.layout_index_from_plain_index(slot.focus);
+        let selection = committed_layout.selection(
+            TextPosition::in_text(anchor_layout, value.len()),
+            TextPosition::in_text(focus_layout, value.len()),
+        );
+        slot.anchor = input_model.plain_index_from_layout_index(selection.anchor.index);
+        slot.focus = input_model.plain_index_from_layout_index(selection.focus.index);
+        selection
+    };
+    if content_visible {
+        let text = |ctx: &mut WidgetRenderContext<'_, E>| {
+            ctx.render_styled_text_limited(
+                display_styled,
+                HorizontalAlignment::Leading,
+                env,
+                text_bounds,
+                line_limit,
+                value_paint.as_ref(),
+            );
+        };
+        text_scope(ctx, has_label.then_some(float), text_clip_bounds, text);
+    }
+    // While composing, the caret the platform cares about is the live
+    // composition caret inside the marked text, mapped through the display
+    // layout — never the committed text's caret, which makes the candidate
+    // window refuse to follow the composition (#25).
+    let cursor_geometry = if preedit.is_empty() {
+        committed_layout.caret_rect(selection.focus)
+    } else {
+        let caret = preedit_caret.map_or(preedit.len(), |caret| {
+            clamp_to_char_boundary(preedit.as_str(), caret.min(preedit.len()))
+        });
+        let caret_index = selection_start + caret;
+        display_layout.caret_rect(TextPosition::in_text(
+            caret_index,
+            committed_with_preedit.len(),
+        ))
+    };
+    let cursor_area = material_input_cursor_rect(field_rect, text_bounds, cursor_geometry);
+    let hit_transform = ctx.renderer_mut().current_hit_transform();
+    if !disabled {
+        ctx.renderer_mut()
+            .register_cursor_target(field_rect, CursorStyle::IBeam);
+    }
+    tracing::trace!(
+        target: "waterui::hydrolysis::hit_region",
+        component = "text_field",
+        layout_bounds = ?ctx.bounds,
+        field_bounds = ?transformed_rect(hit_transform, field_rect),
+        cursor_area = ?transformed_rect(hit_transform, cursor_area),
+        "register text field input region"
+    );
+    if !disabled {
+        ctx.renderer_mut()
+            .register_text_input_target(TextInputTargetRegistration {
+                interaction_key,
+                modal: env
+                    .get::<ModalInteraction>()
+                    .is_some_and(ModalInteraction::is_active),
+                bounds: field_rect,
+                cursor_area,
+                text_bounds,
+                text_clip_bounds,
+                content_alpha,
+                paints: Some(CaretPaints::of(&look)),
+                layout: committed_layout,
+                display_text: committed_with_preedit,
+                display_layout,
+                purpose: TextInputPurpose::Normal,
+                model: input_model,
+                selection: selection_slot,
+                env: env.clone(),
+            });
+    }
+}
+
+/// Renders a retained secure-field leaf every flush: secure fields are
+/// render-driven a11y, so the inline a11y is emitted by `render_secure_field_parts`
+/// itself; this node suppresses it when the field is accessibility-hidden (the
+/// dispatch path's render-driven suppression contract).
+pub fn render_secure_field_node<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<SecureFieldRenderState<E>>>,
+    env: &Environment,
+) {
+    #[cfg(feature = "accessibility")]
+    let hidden = env
+        .get::<waterui::accessibility::AccessibilityHidden>()
+        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    #[cfg(feature = "accessibility")]
+    if hidden {
+        ctx.renderer_mut().push_accessibility_suppression();
+    }
+    render_secure_field_parts(ctx, state, env);
+    #[cfg(feature = "accessibility")]
+    if hidden {
+        ctx.renderer_mut().pop_accessibility_suppression();
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn render_secure_field_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<SecureFieldRenderState<E>>>,
+    env: &Environment,
+) {
+    let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
+    let theme = ctx.theme();
+    let disabled = {
+        let signal = widget_disabled(env);
+        ctx.renderer_mut().read_signal(&signal)
+    };
+    let mut state = state.borrow_mut();
+    let state = &mut *state;
+    let look = state.field.look(&theme, env).clone();
+    let input_metrics = look.metrics();
+    ctx.renderer_mut()
+        .set_text_caret_motion(look.caret().blink());
+    // Read the retained label/value from the retained config each frame (the value
+    // is a cloneable `Binding<Secure>`; it is read through `read_signal` below so a
+    // binding change schedules a frame). The label is a retained node sub-view
+    // flushed under the animated transform each frame.
+    let (label, value_binding) = {
+        let secure_field = &state.config;
+        (secure_field.label().clone(), secure_field.value().clone())
+    };
+    #[cfg(feature = "accessibility")]
+    let default_accessibility_label =
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
+    #[cfg(not(feature = "accessibility"))]
+    let _ = label;
+    state.field.apply_label_font(
+        &mut state.label_view,
+        state.config.label(),
+        ctx.renderer_mut(),
+        env,
+    );
+    let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
+    let label_height = material_input_label_height(label_size, input_metrics.label_height);
+    #[cfg(feature = "accessibility")]
+    {
+        let secure_len = ctx
+            .renderer_mut()
+            .read_signal(&value_binding)
+            .expose()
+            .chars()
+            .count();
+        let local = ctx.bounds;
+        let bounds = local;
+        let mut node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
+                env,
+                AccessibilityNodeRole::PasswordInput,
+            ),
+        );
+        let label = ctx
+            .renderer_mut()
+            .resolve_accessibility_label(env, default_accessibility_label);
+        if let Some(label) = label {
+            node.set_label(label);
+        }
+        if let Some(value) = ctx
+            .renderer_mut()
+            .resolve_accessibility_value(env, Some("*".repeat(secure_len)))
+        {
+            node.set_value(value);
+        }
+        if disabled {
+            node.set_disabled();
+        } else {
+            node.add_action(AccessibilityAction::Focus);
+            node.add_action(AccessibilityAction::Click);
+            node.add_action(AccessibilityAction::SetValue);
+        }
+        if let Some(node_id) = ctx.renderer_mut().register_accessibility_node(
+            node,
+            bounds,
+            env,
+            (!disabled).then_some(AccessibilityActionTarget::SecureField {
+                value: value_binding.clone(),
+            }),
+        ) {
+            ctx.renderer_mut()
+                .push_pending_text_input_accessibility_node(node_id);
+        }
+    }
+    let field_rect = ctx.bounds;
+    let is_focused = ctx.renderer_mut().is_text_input_focused(&interaction_key);
+    let (field_interaction, _, _) =
+        state
+            .field
+            .bind(ctx, &interaction_key, field_rect, env, disabled, is_focused);
+    let field_flags = field_interaction.state;
+    let value_paint = state.field.value_paint();
+    let selection_slot = Rc::clone(&state.selection_slot);
+    let input_model = TextInputModel::SecureField {
+        value: value_binding.clone(),
+    };
+    let (masked, plain_value) = {
+        let plain_value = ctx
+            .renderer_mut()
+            .read_signal(&value_binding)
+            .expose()
+            .to_owned();
+        let preedit_count = if is_focused {
+            ctx.renderer_mut()
+                .current_ime_preedit()
+                .as_ref()
+                .map_or(0, |value| value.chars().count())
+        } else {
+            0
+        };
+        let count = plain_value.chars().count() + preedit_count;
+        ("*".repeat(count), plain_value)
+    };
+    let has_label = label_height > 0.0;
+    // The label floats while the field is focused or holds content; see
+    // the text field.
+    let float = state.field.float();
+    if has_label {
+        let place = LabelPlace::new(
+            field_rect,
+            &look,
+            label_height,
+            f64::from(label_size.height),
+            env,
+        );
+        float.place(is_focused, !plain_value.is_empty(), place.floated);
+        float_label(ctx, float, field_rect, |ctx| {
+            place_label_view(ctx, env, &mut state.label_view, &place);
+        });
+    }
+    let content_alpha = if has_label && !float.is_floated() {
+        0.0
+    } else {
+        1.0
+    };
+    let content_visible = !has_label || float.text_visible();
+    let text_bounds = material_input_text_rect(
+        field_rect,
+        input_metrics.horizontal_inset,
+        input_metrics.vertical_inset,
+        label_height,
+    );
+    let masked_display = value_text(
+        &look,
+        StyledStr::plain(masked.clone()),
+        field_rect,
+        field_flags,
+    );
+    let committed_layout = HydrolysisRenderer::build_text_layout(
+        ctx.state_mut(),
+        masked_display.clone(),
+        HorizontalAlignment::Leading,
+        env,
+        Some(crate::num_cast::f64_as_f32(text_bounds.width())),
+    );
+    // Secure fields are single-line; with no inside label the masked text
+    // centres vertically in the container (#85).
+    let text_bounds = if label_height == 0.0 {
+        material_input_centered_text_rect(
+            field_rect,
+            text_bounds,
+            f64::from(committed_layout.height()).max(input_metrics.label_height),
+        )
+    } else {
+        text_bounds
+    };
+    let text_clip_bounds =
+        material_input_text_clip_rect(field_rect, text_bounds, committed_layout.height());
+    let selection = {
+        let mut slot = selection_slot.borrow_mut();
+        if !slot.initialized {
+            slot.anchor = plain_value.len();
+            slot.focus = plain_value.len();
+            slot.initialized = true;
+        }
+        slot.anchor = clamp_to_char_boundary(plain_value.as_str(), slot.anchor);
+        slot.focus = clamp_to_char_boundary(plain_value.as_str(), slot.focus);
+        let text_len = plain_value.chars().count();
+        let anchor_layout = input_model.layout_index_from_plain_index(slot.anchor);
+        let focus_layout = input_model.layout_index_from_plain_index(slot.focus);
+        let selection = committed_layout.selection(
+            TextPosition::in_text(anchor_layout, text_len),
+            TextPosition::in_text(focus_layout, text_len),
+        );
+        slot.anchor = input_model.plain_index_from_layout_index(selection.anchor.index);
+        slot.focus = input_model.plain_index_from_layout_index(selection.focus.index);
+        selection
+    };
+    if content_visible {
+        let text = |ctx: &mut WidgetRenderContext<'_, E>| {
+            ctx.render_styled_text_limited(
+                masked_display,
+                HorizontalAlignment::Leading,
+                env,
+                text_bounds,
+                Some(1),
+                value_paint.as_ref(),
+            );
+        };
+        text_scope(ctx, has_label.then_some(float), text_clip_bounds, text);
+    }
+    let cursor_geometry = committed_layout.caret_rect(selection.focus);
+    let cursor_area = material_input_cursor_rect(field_rect, text_bounds, cursor_geometry);
+    let hit_transform = ctx.renderer_mut().current_hit_transform();
+    if !disabled {
+        ctx.renderer_mut()
+            .register_cursor_target(field_rect, CursorStyle::IBeam);
+    }
+    tracing::trace!(
+        target: "waterui::hydrolysis::hit_region",
+        component = "secure_field",
+        layout_bounds = ?ctx.bounds,
+        field_bounds = ?transformed_rect(hit_transform, field_rect),
+        cursor_area = ?transformed_rect(hit_transform, cursor_area),
+        "register secure field input region"
+    );
+    if !disabled {
+        ctx.renderer_mut()
+            .register_text_input_target(TextInputTargetRegistration {
+                interaction_key,
+                modal: env
+                    .get::<ModalInteraction>()
+                    .is_some_and(ModalInteraction::is_active),
+                bounds: field_rect,
+                cursor_area,
+                text_bounds,
+                text_clip_bounds,
+                content_alpha,
+                paints: Some(CaretPaints::of(&look)),
+                layout: committed_layout.clone(),
+                display_text: masked.into(),
+                display_layout: committed_layout,
+                purpose: TextInputPurpose::Password,
+                model: input_model,
+                selection: selection_slot,
+                env: env.clone(),
+            });
+    }
+}
+
+/// Measures a retained text-field leaf from its [`TextFieldRenderState`], mirroring
+/// [`measure_text_field_intrinsic`] but reading the label size from its already-built
+/// [`RetainedSubview`] so layout and the floating-label render agree.
+pub fn measure_text_field_node<E: crate::text::TextEngine>(
+    render_state: &TextFieldRenderState<E>,
+    proposal: ProposalSize,
+    state: &mut HydroState<E>,
+    env: &Environment,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
+) -> ViewDimensions {
+    let label_size = render_state.label_view.measure_built(state, env, theme);
+    ViewDimensions::new(measure_text_field_size_with_label_size(
+        &render_state.config,
+        label_size,
+        state,
+        env,
+        &render_state.field.peek(theme, env),
+        proposal,
+    ))
+}
+
+/// Measures a retained secure-field leaf from its [`SecureFieldRenderState`],
+/// mirroring [`measure_secure_field_intrinsic`] but reading the label size from its
+/// already-built [`RetainedSubview`] so layout and the floating-label render agree.
+pub fn measure_secure_field_node<E: crate::text::TextEngine>(
+    render_state: &SecureFieldRenderState<E>,
+    proposal: ProposalSize,
+    state: &mut HydroState<E>,
+    env: &Environment,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
+) -> ViewDimensions {
+    let label_size = render_state.label_view.measure_built(state, env, theme);
+    ViewDimensions::new(measure_secure_field_size_with_label_size(
+        &render_state.config,
+        label_size,
+        state,
+        env,
+        &render_state.field.peek(theme, env),
+        proposal,
+    ))
+}
+
+/// The band a labeled field reserves for its floating label is exactly the
+/// theme's `label_height` — matching `measured_input_label_height` on the
+/// measure path so the dealt frame and the rendered geometry agree. The
+/// label's own measure only decides whether the band exists; it still sizes
+/// the resting rect and the laid-out label box the transform scales into
+/// the band (water-rs/waterui#2387).
+fn material_input_label_height(label_size: LayoutSize, label_height: f64) -> f64 {
+    if label_size.width > 0.0 || label_size.height > 0.0 {
+        label_height
+    } else {
+        0.0
+    }
+}
+
+fn material_input_label_rect(
+    field_rect: kurbo::Rect,
+    horizontal_inset: f64,
+    top: f64,
+    label_height: f64,
+) -> kurbo::Rect {
+    let y0 = field_rect.y0 + top;
+    kurbo::Rect::new(
+        field_rect.x0 + horizontal_inset,
+        y0,
+        field_rect.x1 - horizontal_inset,
+        (y0 + label_height).min(field_rect.y1),
+    )
+}
+
+fn material_input_resting_label_rect(
+    field_rect: kurbo::Rect,
+    horizontal_inset: f64,
+    label_height: f64,
+) -> kurbo::Rect {
+    let y0 = field_rect.y0 + ((field_rect.height() - label_height) * 0.5).max(0.0);
+    kurbo::Rect::new(
+        field_rect.x0 + horizontal_inset,
+        y0,
+        field_rect.x1 - horizontal_inset,
+        (y0 + label_height).min(field_rect.y1),
+    )
+}
+
+/// Where a field's inside label rests, and the transform that carries it
+/// from there to the band along the container's top edge, scaled by the
+/// look's floating label.
+///
+/// `label_height` is the reserved band (the look's `label_height` exactly);
+/// `measured_label_height` is the label's own unscaled height — it centres
+/// the resting box and gives the label its natural layout box, which the
+/// transform scales down into the band.
+struct LabelPlace {
+    resting: kurbo::Rect,
+    floated: kurbo::Affine,
+    measured_height: f64,
+    direction: LayoutDirection,
+}
+
+impl LabelPlace {
+    fn new(
+        field_rect: kurbo::Rect,
+        look: &TextFieldLook,
+        label_height: f64,
+        measured_label_height: f64,
+        env: &Environment,
+    ) -> Self {
+        let direction = waterui_core::layout::layout_direction(env).snapshot();
+        let inset = look.metrics().horizontal_inset;
+        let floating = look.floating_label();
+        let resting = material_input_resting_label_rect(field_rect, inset, measured_label_height);
+        let band = material_input_label_rect(field_rect, inset, floating.get_top(), label_height);
+        // The label floats about its leading corner, so it stays at the
+        // leading inset as it scales into the band.
+        let (band_x, resting_x) = match direction {
+            LayoutDirection::LeftToRight => (band.x0, resting.x0),
+            LayoutDirection::RightToLeft => (band.x1, resting.x1),
+        };
+        let floated = kurbo::Affine::translate((band_x, band.y0))
+            * kurbo::Affine::scale(floating.get_scale())
+            * kurbo::Affine::translate((-resting_x, -resting.y0));
+        Self {
+            resting,
+            floated,
+            measured_height: measured_label_height,
+            direction,
+        }
+    }
+
+    /// The label's box at rest, in its own space.
+    fn rest(&self) -> kurbo::Affine {
+        kurbo::Affine::translate((self.resting.x0, self.resting.y0))
+    }
+
+    /// Where a box `width` wide starts within [`extent`](Self::extent) to sit
+    /// at its leading edge: the start of the band, or its end when the layout
+    /// reads right to left.
+    fn leading_offset(&self, width: f64) -> kurbo::Affine {
+        let x = match self.direction {
+            LayoutDirection::LeftToRight => 0.0,
+            LayoutDirection::RightToLeft => self.resting.width() - width,
+        };
+        kurbo::Affine::translate((x, 0.0))
+    }
+
+    /// The box the label lays out in: as wide as the band it floats into.
+    const fn extent(&self) -> kurbo::Rect {
+        kurbo::Rect::new(0.0, 0.0, self.resting.width(), self.measured_height)
+    }
+}
+
+/// Lists the inside label in a layer that rides `float`'s transform: `place`
+/// records the label at its resting place, and the layer carries it to the
+/// top as the label floats, with nothing recorded again.
+fn float_label<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    float: &FloatLabel,
+    field_rect: kurbo::Rect,
+    place: impl FnOnce(&mut WidgetRenderContext<'_, E>),
+) {
+    ctx.with_live_scope(
+        crate::renderer::mount::ScopeKey {
+            role: "field-label",
+            item: 0,
+        },
+        crate::renderer::ScopeOperands {
+            opacity: None,
+            transform: Some(float.transform()),
+        },
+        field_rect,
+        place,
+    );
+}
+
+/// Lists the field's text clipped to `clip`, in a layer whose opacity follows
+/// `float` when the field has an inside label — the text makes way for the
+/// label at rest and shows as it floats.
+fn text_scope<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    float: Option<&FloatLabel>,
+    clip: kurbo::Rect,
+    text: impl FnOnce(&mut WidgetRenderContext<'_, E>),
+) {
+    let key = crate::renderer::mount::ScopeKey {
+        role: "text-clip",
+        item: 0,
+    };
+    match float {
+        Some(float) => ctx.with_live_scope(
+            key,
+            crate::renderer::ScopeOperands {
+                opacity: Some(float.opacity()),
+                transform: None,
+            },
+            clip,
+            text,
+        ),
+        None => ctx.with_scope(key, 1.0, clip, text),
+    }
+}
+
+/// Places the floating label sub-view at its resting place. The label is a
+/// retained node sub-view re-laid-out and re-flushed each frame, so reactive
+/// label content stays live without re-dispatch.
+fn place_label_view<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    env: &Environment,
+    label_view: &mut RetainedSubview<E>,
+    place: &LabelPlace,
+) {
+    // The label takes the room it needs, capped to the band's width, and sits
+    // at the leading edge of the box it floats from — as the prompt stands in
+    // as the label — rather than centred in a box the field's width.
+    let band = place.extent();
+    let band_width = crate::num_cast::f64_as_f32(band.width());
+    let wanted = label_view.measure(
+        ctx.renderer_mut(),
+        env,
+        ProposalSize::new(Some(band_width), None),
+    );
+    let size = LayoutSize::new(
+        wanted.width.min(band_width),
+        crate::num_cast::f64_as_f32(band.height()),
+    );
+    let rest = place.rest() * place.leading_offset(f64::from(size.width));
+    let child = ctx.child(
+        rest,
+        kurbo::Rect::new(0.0, 0.0, f64::from(size.width), band.height()),
+    );
+    // The label's semantics are merged into the field's own text-input node, so
+    // the floating label sub-view flushes visual-only.
+    let label_area = ctx.safe_area_for(place.resting);
+    ctx.renderer_mut()
+        .with_suppressed_accessibility(|renderer| {
+            label_view.place_in_ctx(
+                renderer,
+                child,
+                env,
+                ProposalSize::new(Some(band_width), None),
+                size,
+                label_area,
+                rest,
+            );
+        });
+}
+
+/// Draws the prompt text at the inside label's resting place — centred in
+/// the container — used when the field has no label view so the prompt
+/// stands in as the label (#85).
+fn place_prompt_label<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    env: &Environment,
+    prompt_styled: StyledStr,
+    place: &LabelPlace,
+) {
+    let child = ctx.child(place.rest(), place.extent());
+    let renderer = ctx.renderer_mut();
+    renderer.render_styled_text_limited(
+        child,
+        child.bounds_width_f32(),
+        prompt_styled,
+        HorizontalAlignment::Leading,
+        env,
+        TailMark::Clip(1),
+        None,
+    );
+}
+
+fn material_input_text_rect(
+    field_rect: kurbo::Rect,
+    horizontal_inset: f64,
+    vertical_inset: f64,
+    label_height: f64,
+) -> kurbo::Rect {
+    kurbo::Rect::new(
+        field_rect.x0 + horizontal_inset,
+        field_rect.y0 + vertical_inset + label_height,
+        field_rect.x1 - horizontal_inset,
+        field_rect.y1 - vertical_inset,
+    )
+}
+
+/// Material 3 centres the input text of a single-line field vertically in
+/// the container when the field carries no inside label — the label's
+/// resting spot — instead of top-aligning it under the vertical inset (#85).
+fn material_input_centered_text_rect(
+    field_rect: kurbo::Rect,
+    text_rect: kurbo::Rect,
+    text_height: f64,
+) -> kurbo::Rect {
+    let y0 = field_rect.y0 + ((field_rect.height() - text_height) * 0.5).max(0.0);
+    kurbo::Rect::new(
+        text_rect.x0,
+        y0,
+        text_rect.x1,
+        (y0 + text_height).min(field_rect.y1),
+    )
+}
+
+fn material_input_text_clip_rect(
+    field_rect: kurbo::Rect,
+    text_rect: kurbo::Rect,
+    layout_height: f32,
+) -> kurbo::Rect {
+    let required_height = f64::from(layout_height).max(text_rect.height());
+    if required_height <= text_rect.height() {
+        return text_rect;
+    }
+    let y1 = (text_rect.y0 + required_height).min(field_rect.y1);
+    let y0 = (y1 - required_height).max(field_rect.y0);
+    kurbo::Rect::new(text_rect.x0, y0, text_rect.x1, y1)
+}
+
+fn material_input_cursor_rect(
+    field_rect: kurbo::Rect,
+    text_rect: kurbo::Rect,
+    cursor_geometry: kurbo::Rect,
+) -> kurbo::Rect {
+    let x0 = text_rect.x0 + cursor_geometry.x0;
+    let x1 = text_rect.x0 + cursor_geometry.x1.max(cursor_geometry.x0 + 1.0);
+    // `text_rect` is the thin baseline strip the layout sits on — a real
+    // cursor already reports the shaped line's block extent (which legitimately
+    // rises above the strip's top and sinks below its bottom), so it is never
+    // clamped back into the strip. An empty layout reports no line at all:
+    // the caret still occupies the first line, which runs from the strip down
+    // to the field's bottom edge.
+    let (y0, y1) = if cursor_geometry.height() > 1.0 {
+        (
+            text_rect.y0 + cursor_geometry.y0,
+            text_rect.y0 + cursor_geometry.y1,
+        )
+    } else {
+        (text_rect.y0, field_rect.y1.max(text_rect.y0 + 1.0))
+    };
+    kurbo::Rect::new(x0, y0, x1, y1)
+}
+
+/// Emits a retained text field's accessibility node and text-input target for
+/// the semantic walk — the same node `render_text_field_parts` registers, with
+/// no bounds. The input target gets a real text layout (shaped from the
+/// environment's font settings — text shaping needs no theme and no GPU) so
+/// keyboard events reaching the focused field edit against a live selection,
+/// and zero rects where the rendered path takes its layout's.
+#[cfg(feature = "accessibility")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the emission walks every text-field element in one ordered sequence; splitting it would obscure the node ordering"
+)]
+pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<TextFieldRenderState<E>>>,
+    env: &Environment,
+) {
+    if env
+        .get::<waterui::accessibility::AccessibilityHidden>()
+        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden)
+    {
+        return;
+    }
+    let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
+    let disabled = {
+        let signal = widget_disabled(env);
+        renderer.read_signal(&signal)
+    };
+    let mut state = state.borrow_mut();
+    let (label, value_binding, prompt_signal, selection_menu, line_limit_raw, on_submit) = {
+        let text_field = &state.config;
+        (
+            text_field.label().clone(),
+            text_field.value().clone(),
+            text_field.prompt().content(),
+            text_field.selection_menu().clone(),
+            text_field.line_limit(),
+            text_field.on_submit().cloned(),
+        )
+    };
+    let default_accessibility_label =
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
+    let line_limit = line_limit_raw.map(NonZeroUsize::get);
+    {
+        let prompt = renderer.read_signal(&prompt_signal).to_plain().to_string();
+        let value = renderer.read_signal(&value_binding).to_plain().to_string();
+        let default_label =
+            default_accessibility_label.or_else(|| (!prompt.is_empty()).then_some(prompt.clone()));
+        let mut node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
+                env,
+                if line_limit == Some(1) {
+                    AccessibilityNodeRole::TextInput
+                } else {
+                    AccessibilityNodeRole::MultilineTextInput
+                },
+            ),
+        );
+        let label = renderer.resolve_accessibility_label(env, default_label);
+        if let Some(label) = label {
+            node.set_label(label);
+        }
+        if !prompt.is_empty() {
+            node.set_placeholder(prompt);
+        }
+        if !value.is_empty() {
+            node.set_value(value.clone());
+        }
+        if disabled {
+            node.set_disabled();
+        } else {
+            node.add_action(AccessibilityAction::Focus);
+            node.add_action(AccessibilityAction::Click);
+            node.add_action(AccessibilityAction::SetValue);
+        }
+        if let Some(node_id) = renderer.register_accessibility_node_semantic(
+            node,
+            env,
+            (!disabled).then_some(AccessibilityActionTarget::TextField {
+                value: value_binding.clone(),
+                line_limit,
+            }),
+        ) {
+            if let Some(content_type) = state.config.content_type() {
+                renderer.register_accessibility_content_type(node_id, content_type);
+            }
+            renderer.push_pending_text_input_accessibility_node(node_id);
+        }
+        if !disabled {
+            let layout = HydrolysisRenderer::build_text_layout(
+                renderer.state_mut(),
+                state.field.value_styled(
+                    StyledStr::plain(value.clone()),
+                    kurbo::Rect::ZERO,
+                    InteractionState::empty(),
+                ),
+                HorizontalAlignment::Leading,
+                env,
+                None,
+            );
+            renderer.register_text_input_target(TextInputTargetRegistration {
+                interaction_key,
+                modal: env
+                    .get::<ModalInteraction>()
+                    .is_some_and(ModalInteraction::is_active),
+                bounds: kurbo::Rect::ZERO,
+                cursor_area: kurbo::Rect::ZERO,
+                text_bounds: kurbo::Rect::ZERO,
+                text_clip_bounds: kurbo::Rect::ZERO,
+                content_alpha: 1.0,
+                paints: None,
+                layout: layout.clone(),
+                display_text: value.into(),
+                display_layout: layout,
+                purpose: TextInputPurpose::Normal,
+                model: TextInputModel::TextField {
+                    value: value_binding.clone(),
+                    line_limit,
+                    selection_menu,
+                    on_submit,
+                },
+                selection: Rc::clone(&state.selection_slot),
+                env: env.clone(),
+            });
+        }
+    }
+    // The floating label is a real node subtree in the retained tree — emit
+    // its semantics exactly as the unsuppressed rendered flush does.
+    state.label_view.emit_accessibility(renderer, env);
+}
+
+/// Emits a retained secure field's accessibility node and text-input target
+/// for the semantic walk — the same node `render_secure_field_parts`
+/// registers, with no bounds.
+#[cfg(feature = "accessibility")]
+pub fn emit_secure_field_accessibility<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    state: &Rc<RefCell<SecureFieldRenderState<E>>>,
+    env: &Environment,
+) {
+    if env
+        .get::<waterui::accessibility::AccessibilityHidden>()
+        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden)
+    {
+        return;
+    }
+    let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
+    let disabled = {
+        let signal = widget_disabled(env);
+        renderer.read_signal(&signal)
+    };
+    let mut state = state.borrow_mut();
+    let (label, value_binding) = {
+        let secure_field = &state.config;
+        (secure_field.label().clone(), secure_field.value().clone())
+    };
+    let default_accessibility_label =
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
+    {
+        let secure_len = renderer
+            .read_signal(&value_binding)
+            .expose()
+            .chars()
+            .count();
+        let mut node = AccessibilityNode::new(
+            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
+                env,
+                AccessibilityNodeRole::PasswordInput,
+            ),
+        );
+        let label = renderer.resolve_accessibility_label(env, default_accessibility_label);
+        if let Some(label) = label {
+            node.set_label(label);
+        }
+        node.set_value("*".repeat(secure_len));
+        if disabled {
+            node.set_disabled();
+        } else {
+            node.add_action(AccessibilityAction::Focus);
+            node.add_action(AccessibilityAction::Click);
+            node.add_action(AccessibilityAction::SetValue);
+        }
+        if let Some(node_id) = renderer.register_accessibility_node_semantic(
+            node,
+            env,
+            (!disabled).then_some(AccessibilityActionTarget::SecureField {
+                value: value_binding.clone(),
+            }),
+        ) {
+            renderer.push_pending_text_input_accessibility_node(node_id);
+        }
+        if !disabled {
+            let masked = "*".repeat(secure_len);
+            let layout = HydrolysisRenderer::build_text_layout(
+                renderer.state_mut(),
+                state.field.value_styled(
+                    StyledStr::plain(masked.clone()),
+                    kurbo::Rect::ZERO,
+                    InteractionState::empty(),
+                ),
+                HorizontalAlignment::Leading,
+                env,
+                None,
+            );
+            renderer.register_text_input_target(TextInputTargetRegistration {
+                interaction_key,
+                modal: env
+                    .get::<ModalInteraction>()
+                    .is_some_and(ModalInteraction::is_active),
+                bounds: kurbo::Rect::ZERO,
+                cursor_area: kurbo::Rect::ZERO,
+                text_bounds: kurbo::Rect::ZERO,
+                text_clip_bounds: kurbo::Rect::ZERO,
+                content_alpha: 1.0,
+                paints: None,
+                layout: layout.clone(),
+                display_text: masked.into(),
+                display_layout: layout,
+                purpose: TextInputPurpose::Password,
+                model: TextInputModel::SecureField {
+                    value: value_binding.clone(),
+                },
+                selection: Rc::clone(&state.selection_slot),
+                env: env.clone(),
+            });
+        }
+    }
+    state.label_view.emit_accessibility(renderer, env);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{material_input_cursor_rect, material_input_text_clip_rect};
+
+    #[test]
+    fn material_input_text_clip_expands_for_tall_fallback_glyphs() {
+        let field = kurbo::Rect::new(0.0, 0.0, 200.0, 56.0);
+        let text = kurbo::Rect::new(16.0, 26.0, 184.0, 48.0);
+
+        let clip = material_input_text_clip_rect(field, text, 30.0);
+
+        approx::assert_relative_eq!(clip.x0, text.x0);
+        approx::assert_relative_eq!(clip.x1, text.x1);
+        assert!(clip.height() >= 30.0);
+        assert!(clip.y0 >= field.y0);
+        assert!(clip.y1 <= field.y1);
+    }
+
+    #[test]
+    fn material_input_text_clip_expands_for_placeholder_layout() {
+        let field = kurbo::Rect::new(0.0, 0.0, 200.0, 56.0);
+        let text = kurbo::Rect::new(16.0, 26.0, 184.0, 48.0);
+
+        let clip = material_input_text_clip_rect(field, text, 34.0);
+
+        approx::assert_relative_eq!(clip.x0, text.x0);
+        approx::assert_relative_eq!(clip.x1, text.x1);
+        assert!(clip.height() >= 34.0);
+        assert!(clip.y1 > text.y1);
+    }
+
+    #[test]
+    fn material_input_cursor_spans_the_line_for_empty_layout_geometry() {
+        // A material field's text rect is the thin baseline strip; with no
+        // shaped line the caret still spans the strip down to the field's
+        // bottom edge rather than collapsing into the strip.
+        let field = kurbo::Rect::new(0.0, 0.0, 200.0, 56.0);
+        let text = kurbo::Rect::new(16.0, 24.75, 184.0, 26.0);
+        let empty_geometry = kurbo::Rect::new(0.0, 0.0, 0.0, 1.0);
+
+        let cursor = material_input_cursor_rect(field, text, empty_geometry);
+
+        approx::assert_relative_eq!(cursor.x0, text.x0);
+        approx::assert_relative_eq!(cursor.x1, text.x0 + 1.0);
+        approx::assert_relative_eq!(cursor.y0, text.y0);
+        approx::assert_relative_eq!(cursor.y1, field.y1);
+    }
+
+    #[test]
+    fn material_input_cursor_preserves_non_empty_layout_geometry() {
+        let field = kurbo::Rect::new(0.0, 0.0, 200.0, 56.0);
+        let text = kurbo::Rect::new(16.0, 26.0, 184.0, 60.0);
+        let geometry = kurbo::Rect::new(42.0, 3.0, 43.0, 25.0);
+
+        let cursor = material_input_cursor_rect(field, text, geometry);
+
+        approx::assert_relative_eq!(cursor.x0, text.x0 + 42.0);
+        approx::assert_relative_eq!(cursor.x1, text.x0 + 43.0);
+        approx::assert_relative_eq!(cursor.y0, text.y0 + 3.0);
+        approx::assert_relative_eq!(cursor.y1, text.y0 + 25.0);
+    }
+}

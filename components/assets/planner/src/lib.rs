@@ -10,40 +10,118 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use walkdir::WalkDir;
 use waterui_assets_core::AssetKind;
+use waterui_meta::{DirRecord, dir_record};
 
 mod color;
+#[cfg(feature = "font-declarations")]
+mod font_declarations;
 mod launch;
 
 pub use color::{HexColor, InvalidHexColor};
+#[cfg(feature = "font-declarations")]
+pub use font_declarations::{
+    FontDeclaration, FontDeclarationError, FontPlatform, FontSource, GraphScope,
+    dependency_font_declarations, font_platform_scope,
+};
 pub use launch::{ColorScheme, LaunchConfig, LaunchPlan};
+
+/// One `with_<slot>` builder method per theme color slot.
+macro_rules! theme_slot_setters {
+    ($($(#[$doc:meta])* $method:ident => $slot:ident;)*) => {
+        $(
+            $(#[$doc])*
+            #[must_use]
+            pub const fn $method(mut self, color: HexColor) -> Self {
+                self.$slot = Some(color);
+                self
+            }
+        )*
+    };
+}
 
 /// The `[theme]` section of `Water.toml`: the theme color slots.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ThemeConfig {
     /// Window or page background color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub background: Option<HexColor>,
+    background: Option<HexColor>,
     /// Main surface color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub surface: Option<HexColor>,
+    surface: Option<HexColor>,
     /// Secondary surface color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub surface_variant: Option<HexColor>,
+    surface_variant: Option<HexColor>,
     /// Border color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub border: Option<HexColor>,
+    border: Option<HexColor>,
     /// Primary foreground color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub foreground: Option<HexColor>,
+    foreground: Option<HexColor>,
     /// Muted foreground color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub muted_foreground: Option<HexColor>,
+    muted_foreground: Option<HexColor>,
     /// Accent color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accent: Option<HexColor>,
+    accent: Option<HexColor>,
     /// Foreground color used on accent surfaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accent_foreground: Option<HexColor>,
+    accent_foreground: Option<HexColor>,
+}
+
+impl ThemeConfig {
+    /// Window or page background color.
+    #[must_use]
+    pub const fn background(&self) -> Option<HexColor> {
+        self.background
+    }
+
+    /// Sets the `background`.
+    pub const fn set_background(&mut self, background: Option<HexColor>) {
+        self.background = background;
+    }
+
+    /// Main surface color.
+    #[must_use]
+    pub const fn surface(&self) -> Option<HexColor> {
+        self.surface
+    }
+
+    /// Secondary surface color.
+    #[must_use]
+    pub const fn surface_variant(&self) -> Option<HexColor> {
+        self.surface_variant
+    }
+
+    /// Border color.
+    #[must_use]
+    pub const fn border(&self) -> Option<HexColor> {
+        self.border
+    }
+
+    /// Primary foreground color.
+    #[must_use]
+    pub const fn foreground(&self) -> Option<HexColor> {
+        self.foreground
+    }
+
+    /// Muted foreground color.
+    #[must_use]
+    pub const fn muted_foreground(&self) -> Option<HexColor> {
+        self.muted_foreground
+    }
+
+    /// Accent color.
+    #[must_use]
+    pub const fn accent(&self) -> Option<HexColor> {
+        self.accent
+    }
+
+    /// Foreground color used on accent surfaces.
+    #[must_use]
+    pub const fn accent_foreground(&self) -> Option<HexColor> {
+        self.accent_foreground
+    }
 }
 
 impl ThemeConfig {
@@ -59,48 +137,156 @@ impl ThemeConfig {
             && self.accent.is_none()
             && self.accent_foreground.is_none()
     }
+
+    theme_slot_setters! {
+        /// Sets the window or page background color.
+        with_background => background;
+        /// Sets the main surface color.
+        with_surface => surface;
+        /// Sets the secondary surface color.
+        with_surface_variant => surface_variant;
+        /// Sets the border color.
+        with_border => border;
+        /// Sets the primary foreground color.
+        with_foreground => foreground;
+        /// Sets the muted foreground color.
+        with_muted_foreground => muted_foreground;
+        /// Sets the accent color.
+        with_accent => accent;
+        /// Sets the foreground color used on accent surfaces.
+        with_accent_foreground => accent_foreground;
+    }
 }
 
 /// Asset bundle mounted from an application or included bundle root.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct BundleMount {
     /// Logical mount name.
-    pub name: String,
+    name: String,
     /// Filesystem root for this mount.
-    pub root: PathBuf,
+    root: PathBuf,
 }
 
-/// Symbol prefix for `include_bundle!` mount metadata statics.
+impl BundleMount {
+    /// Logical mount name.
+    #[must_use]
+    pub const fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    /// Filesystem root for this mount.
+    #[must_use]
+    pub const fn root(&self) -> &PathBuf {
+        &self.root
+    }
+}
+
+impl BundleMount {
+    /// The mount `name` rooted at `root`.
+    #[must_use]
+    pub const fn new(name: String, root: PathBuf) -> Self {
+        Self { name, root }
+    }
+}
+
+/// Name prefix for `include_bundle!` mount metadata records.
 ///
-/// `include_bundle!` emits one `#[used] static` per mounted directory whose
-/// mangled name ends in `{BUNDLE_META_PREFIX}<mount>`; the CLI enumerates the
-/// compiled artifact's symbol table and decodes the matching
-/// [`BundleMountMeta`] payload.
+/// `include_bundle!` emits one record per mounted directory into the
+/// artifact's metadata directory section whose name is
+/// `{BUNDLE_META_PREFIX}<mount>`; the CLI walks the section's records,
+/// matches the prefix, and decodes the matching [`BundleMountMeta`]
+/// payload.
 pub const BUNDLE_META_PREFIX: &str = "waterui_meta_bundle_";
 
 /// One bundle mount declared by `include_bundle!`, carried to the CLI as the
-/// NUL-terminated payload of a `#[used]` static.
+/// NUL-terminated payload of a `waterui_meta_bundle_*` record in the app
+/// crate's metadata directory section.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct BundleMountMeta {
     /// Logical mount name; `"assets"` is the main application asset root.
-    pub mount: String,
+    mount: String,
     /// Absolute path of the mounted directory at expansion time.
-    pub path: PathBuf,
+    path: PathBuf,
     /// Absolute path of the toolchain project that produces `path` — the
     /// frontend root for a web mount (`include_web!`), `None` for a plain
     /// `include_bundle!`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project: Option<PathBuf>,
+    project: Option<PathBuf>,
 }
 
 impl BundleMountMeta {
-    /// Leaf of the metadata symbol's demangled name.
+    /// Logical mount name; `"assets"` is the main application asset root.
     #[must_use]
-    pub fn symbol_leaf(&self) -> String {
+    pub const fn mount(&self) -> &str {
+        self.mount.as_str()
+    }
+
+    /// Absolute path of the mounted directory at expansion time.
+    #[must_use]
+    pub const fn path(&self) -> &PathBuf {
+        &self.path
+    }
+
+    /// Sets the `path`.
+    pub fn set_path(&mut self, path: PathBuf) {
+        self.path = path;
+    }
+
+    /// Absolute path of the toolchain project that produces `path` — the
+    /// frontend root for a web mount (`include_web!`), `None` for a plain
+    /// `include_bundle!`.
+    #[must_use]
+    pub const fn project(&self) -> Option<&PathBuf> {
+        self.project.as_ref()
+    }
+
+    /// Sets the toolchain project that produces `path`.
+    pub fn set_project(&mut self, project: Option<PathBuf>) {
+        self.project = project;
+    }
+
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (String, PathBuf, Option<PathBuf>) {
+        (self.mount, self.path, self.project)
+    }
+}
+
+impl BundleMountMeta {
+    /// The mount `mount` of the directory `path`, produced by the toolchain
+    /// project at `project` when it is a web mount.
+    #[must_use]
+    pub const fn new(mount: String, path: PathBuf, project: Option<PathBuf>) -> Self {
+        Self {
+            mount,
+            path,
+            project,
+        }
+    }
+
+    /// The record's name — also the emitted static's item name, since a
+    /// record names itself.
+    #[must_use]
+    pub fn record_name(&self) -> String {
         format!("{BUNDLE_META_PREFIX}{}", rust_identifier(&self.mount))
     }
 
-    /// Serialize as the symbol payload: JSON followed by a NUL terminator.
+    /// The directory record the emitter bakes: [`record_name`](Self::record_name),
+    /// NUL, the payload, NUL — one [`dir_entry`](waterui_meta::dir_entry)-shaped
+    /// record.
+    ///
+    /// # Panics
+    ///
+    /// Panics if serialization fails, which cannot happen for this type.
+    #[must_use]
+    pub fn to_record(&self) -> Vec<u8> {
+        dir_record(self.record_name().as_bytes(), &self.to_payload())
+    }
+
+    /// Serialize as the record's payload field: JSON followed by a NUL
+    /// terminator.
     ///
     /// # Panics
     ///
@@ -113,7 +299,27 @@ impl BundleMountMeta {
         payload
     }
 
-    /// Decode a symbol payload read from an artifact.
+    /// Decode one metadata-directory record into the mount it describes.
+    ///
+    /// The record's name must carry the [`BUNDLE_META_PREFIX`]; its payload
+    /// decodes like [`from_payload`](Self::from_payload).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PlannerError::NotABundleRecord`] when `record.name` does not
+    /// start with [`BUNDLE_META_PREFIX`], and
+    /// [`PlannerError::InvalidMountMeta`] when the payload is not a
+    /// serialized [`BundleMountMeta`].
+    pub fn from_record(record: DirRecord<'_>) -> Result<Self, PlannerError> {
+        if !record.name.starts_with(BUNDLE_META_PREFIX.as_bytes()) {
+            return Err(PlannerError::NotABundleRecord {
+                name: String::from_utf8_lossy(record.name).into_owned(),
+            });
+        }
+        Self::from_payload(record.payload)
+    }
+
+    /// Decode a record's payload field read from an artifact.
     ///
     /// A trailing NUL terminator is tolerated; anything else malformed is an
     /// error.
@@ -130,6 +336,7 @@ impl BundleMountMeta {
 
 /// Semantic role assigned to a planned asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AssetRole {
     /// Normal asset exposed through generated asset modules.
     Regular,
@@ -186,22 +393,88 @@ impl RootArtwork {
 
 /// Asset discovered during bundle planning.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PlannedAsset {
     /// Mount name, empty for the main application asset root.
-    pub mount: String,
+    mount: String,
     /// Absolute source path on disk.
-    pub source_path: PathBuf,
+    source_path: PathBuf,
     /// Path relative to the asset mount.
-    pub relative_path: PathBuf,
+    relative_path: PathBuf,
     /// Logical path exposed to generated code.
-    pub logical_path: PathBuf,
+    logical_path: PathBuf,
     /// Inferred asset kind.
-    pub kind: AssetKind,
+    kind: AssetKind,
     /// Inferred semantic role.
-    pub role: AssetRole,
+    role: AssetRole,
 }
 
 impl PlannedAsset {
+    /// Mount name, empty for the main application asset root.
+    #[must_use]
+    pub const fn mount(&self) -> &str {
+        self.mount.as_str()
+    }
+
+    /// Absolute source path on disk.
+    #[must_use]
+    pub const fn source_path(&self) -> &PathBuf {
+        &self.source_path
+    }
+
+    /// Sets the `source_path`.
+    pub fn set_source_path(&mut self, source_path: PathBuf) {
+        self.source_path = source_path;
+    }
+
+    /// Path relative to the asset mount.
+    #[must_use]
+    pub const fn relative_path(&self) -> &PathBuf {
+        &self.relative_path
+    }
+
+    /// Logical path exposed to generated code.
+    #[must_use]
+    pub const fn logical_path(&self) -> &PathBuf {
+        &self.logical_path
+    }
+
+    /// Inferred asset kind.
+    #[must_use]
+    pub const fn kind(&self) -> AssetKind {
+        self.kind
+    }
+
+    /// Inferred semantic role.
+    #[must_use]
+    pub const fn role(&self) -> AssetRole {
+        self.role
+    }
+}
+
+impl PlannedAsset {
+    /// The asset at `source_path`, mounted under `mount` at `relative_path`
+    /// and exposed to generated code as `logical_path`, with its kind and
+    /// role.
+    #[must_use]
+    pub const fn new(
+        mount: String,
+        source_path: PathBuf,
+        relative_path: PathBuf,
+        logical_path: PathBuf,
+        kind: AssetKind,
+        role: AssetRole,
+    ) -> Self {
+        Self {
+            mount,
+            source_path,
+            relative_path,
+            logical_path,
+            kind,
+            role,
+        }
+    }
+
     /// Returns Rust module path segments for this asset, relative to its
     /// mount's generated module.
     #[must_use]
@@ -236,18 +509,78 @@ impl PlannedAsset {
 
 /// Complete manifest describing assets discovered for a crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct BundleManifest {
     /// Root directory of the application crate.
-    pub crate_root: PathBuf,
+    crate_root: PathBuf,
     /// Main application assets directory.
-    pub assets_root: PathBuf,
+    assets_root: PathBuf,
     /// Additional bundle mounts discovered from `include_bundle!`.
-    pub mounts: Vec<BundleMount>,
+    mounts: Vec<BundleMount>,
     /// Planned assets across the main root and all mounts.
-    pub assets: Vec<PlannedAsset>,
+    assets: Vec<PlannedAsset>,
 }
 
 impl BundleManifest {
+    /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
+    pub fn into_parts(self) -> (PathBuf, PathBuf, Vec<BundleMount>, Vec<PlannedAsset>) {
+        (self.crate_root, self.assets_root, self.mounts, self.assets)
+    }
+
+    /// Root directory of the application crate.
+    #[must_use]
+    pub const fn crate_root(&self) -> &PathBuf {
+        &self.crate_root
+    }
+
+    /// Main application assets directory.
+    #[must_use]
+    pub const fn assets_root(&self) -> &PathBuf {
+        &self.assets_root
+    }
+
+    /// Additional bundle mounts discovered from `include_bundle!`.
+    #[must_use]
+    pub const fn mounts(&self) -> &[BundleMount] {
+        self.mounts.as_slice()
+    }
+
+    /// The mounts the bundle declares, for in-place edits.
+    pub const fn mounts_mut(&mut self) -> &mut Vec<BundleMount> {
+        &mut self.mounts
+    }
+
+    /// Planned assets across the main root and all mounts.
+    #[must_use]
+    pub const fn assets(&self) -> &[PlannedAsset] {
+        self.assets.as_slice()
+    }
+
+    /// The planned assets, for in-place edits.
+    pub const fn assets_mut(&mut self) -> &mut Vec<PlannedAsset> {
+        &mut self.assets
+    }
+}
+
+impl BundleManifest {
+    /// The manifest of the crate at `crate_root` whose main assets live in
+    /// `assets_root`, with its additional mounts and every planned asset.
+    #[must_use]
+    pub const fn new(
+        crate_root: PathBuf,
+        assets_root: PathBuf,
+        mounts: Vec<BundleMount>,
+        assets: Vec<PlannedAsset>,
+    ) -> Self {
+        Self {
+            crate_root,
+            assets_root,
+            mounts,
+            assets,
+        }
+    }
+
     /// The root-level artwork claiming `role` (`Icon.*`, `Launch.*`), if the
     /// project provides one.
     #[must_use]
@@ -258,6 +591,7 @@ impl BundleManifest {
 
 /// Errors produced while discovering and planning asset bundles.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum PlannerError {
     /// Failed to read `Water.toml`.
     #[error("Failed to read Water.toml at '{path}': {source}")]
@@ -275,7 +609,14 @@ pub enum PlannerError {
         /// Underlying TOML parse error.
         source: toml::de::Error,
     },
-    /// A `waterui_meta_bundle_*` symbol payload is malformed.
+    /// A metadata-directory record's name does not mark it as bundle mount
+    /// metadata.
+    #[error("Record '{name}' is not a `{BUNDLE_META_PREFIX}*` metadata record")]
+    NotABundleRecord {
+        /// The record's name.
+        name: String,
+    },
+    /// A `waterui_meta_bundle_*` record payload is malformed.
     #[error("Invalid bundle mount metadata payload: {source}")]
     InvalidMountMeta {
         /// Underlying JSON decode error.
@@ -583,6 +924,7 @@ mod tests {
     use std::fs;
 
     use tempfile::tempdir;
+    use waterui_meta::dir_records;
 
     #[test]
     fn rust_identifier_normalizes_segments() {
@@ -665,19 +1007,28 @@ mod tests {
     }
 
     #[test]
-    fn bundle_mount_meta_payload_round_trips() {
+    fn bundle_mount_meta_record_round_trips() {
         let meta = BundleMountMeta {
             mount: "web".to_string(),
             path: PathBuf::from("/abs/path/dist"),
             project: Some(PathBuf::from("/abs/path")),
         };
-        assert_eq!(meta.symbol_leaf(), "waterui_meta_bundle_web");
-        let payload = meta.to_payload();
-        assert_eq!(payload.last(), Some(&0));
-        let decoded = BundleMountMeta::from_payload(&payload).expect("decode payload");
+        assert_eq!(meta.record_name(), "waterui_meta_bundle_web");
+        let record = meta.to_record();
+        let parsed: Vec<_> = dir_records(&record).collect();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, b"waterui_meta_bundle_web");
+        let decoded = BundleMountMeta::from_record(parsed[0]).expect("decode record");
         assert_eq!(decoded, meta);
-        // The artifact reader already cuts at the first NUL; decoding without
-        // the terminator must still work.
+        // A record from another channel must not decode as a bundle mount.
+        let foreign_bytes = dir_record(b"waterui_meta_tsprops_X", b"\x02\x0c");
+        let foreign = dir_records(&foreign_bytes).next().expect("one record");
+        assert!(matches!(
+            BundleMountMeta::from_record(foreign),
+            Err(PlannerError::NotABundleRecord { .. })
+        ));
+        // Decoding the payload without its terminator must still work.
+        let payload = meta.to_payload();
         let decoded = BundleMountMeta::from_payload(&payload[..payload.len() - 1])
             .expect("decode without terminator");
         assert_eq!(decoded, meta);

@@ -1,16 +1,17 @@
 name: Version boundary
 
-# Every merge to `main` publishes to crates.io immediately, so a pull request
-# that carries breaking changes is a minor-version boundary whether it was
-# meant to be one or not. The `release` label is the recorded human decision
-# that this merge is that boundary; without it, the merge is blocked.
+# Release pull requests (`release-plz-*`) publish bumped versions to crates.io,
+# so a release PR carrying breaking changes requires the `release` label to
+# record that a human intended that version boundary. Regular feature and fix
+# pull requests into `main` do not bump crate versions or publish immediately,
+# so they pass without the label.
 
 on:
   pull_request:
     branches: [main]
     # `labeled`/`unlabeled` are not in the default trigger set; they must be
     # listed so that applying the `release` label re-runs this check.
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -21,10 +22,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        if: startsWith(github.head_ref, 'release-plz-')
         with:
           fetch-depth: 0
 
       - name: Scan pull-request commits for breaking markers
+        if: startsWith(github.head_ref, 'release-plz-')
         id: scan
         run: |
           set -euo pipefail
@@ -37,7 +40,7 @@ jobs:
           fi
 
       - name: Block the merge without the release label
-        if: steps.scan.outputs.breaking == 'true' && !contains(github.event.pull_request.labels.*.name, 'release')
+        if: startsWith(github.head_ref, 'release-plz-') && steps.scan.outputs.breaking == 'true' && !contains(github.event.pull_request.labels.*.name, 'release')
         run: |
-          echo "::error title=Version boundary::This pull request carries breaking changes, and merging it to main publishes a new minor release. Add the 'release' label to record that this merge is the intended version boundary."
+          echo "::error title=Version boundary::This release pull request carries breaking changes, and merging it publishes a new minor release. Add the 'release' label to record that this merge is the intended version boundary."
           exit 1

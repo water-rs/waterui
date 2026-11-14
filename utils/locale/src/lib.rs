@@ -128,6 +128,7 @@ mod tests {
     use super::*;
     use format::date::{DateStyle, SimpleDate, format_date};
     use format::unit::{Gram, Kilogram, Mass};
+    use nami::Signal;
     use waterui_core::Environment;
 
     // =========================================================
@@ -139,7 +140,7 @@ mod tests {
         let mut env = Environment::new();
         env.insert(locales::EN_GB);
 
-        let locale = locale_binding(&env).get();
+        let locale = locale_binding(&env).snapshot();
         assert_eq!(locale.language.as_str(), "en");
         assert_eq!(
             locale
@@ -158,11 +159,11 @@ mod tests {
         env.insert(binding.clone());
 
         let resolved = locale_binding(&env);
-        assert_eq!(resolved.get().language.as_str(), "zh");
+        assert_eq!(resolved.snapshot().language.as_str(), "zh");
 
         // The returned binding is the very same one, so later writes are visible.
         binding.set(locales::EN_US);
-        assert_eq!(resolved.get().language.as_str(), "en");
+        assert_eq!(resolved.snapshot().language.as_str(), "en");
     }
 
     #[test]

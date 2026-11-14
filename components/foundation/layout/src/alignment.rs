@@ -13,6 +13,7 @@ macro_rules! token {
     ($(#[$meta:meta])* $name:ident => $($target:ident),+) => {
         $(#[$meta])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+        #[expect(clippy::exhaustive_structs, reason = "field-less alignment marker used by name")]
         pub struct $name;
 
         $(

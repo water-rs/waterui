@@ -2,15 +2,16 @@
 
 use alloc::{vec, vec::Vec};
 use core::num::NonZeroUsize;
-use nami::{Computed, SignalExt};
+use nami::{Computed, Signal, SignalExt};
 use num_traits::ToPrimitive;
+use waterui_contract::contract_violation;
 use waterui_core::{
     AnyView, Environment, IntoSignalF32, View, layout::LayoutInvalidationCallback, view::TupleViews,
 };
 
 use crate::{
-    Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView, SubviewPlacement,
-    ViewDimensions,
+    Layout, LayoutError, PlacedSubview, PlacementInput, Point, ProposalSize, Rect, Size,
+    StretchAxis, SubView, SubviewPlacement, UnitPoint, ViewDimensions,
     container::FixedContainer,
     stack::{Alignment, HorizontalAlignment, VerticalAlignment},
 };
@@ -57,7 +58,7 @@ impl GridLayout {
     ) -> GridMeasurement {
         let num_columns = self.columns.get();
         let num_rows = children.len().div_ceil(num_columns);
-        let spacing = nami::Signal::get(&self.spacing);
+        let spacing = self.spacing.snapshot();
 
         let constrained_width = proposed_width
             .filter(|width| width.is_finite())
@@ -132,13 +133,30 @@ impl GridLayout {
 
 #[allow(clippy::cast_precision_loss)]
 impl Layout for GridLayout {
-    fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
-        if children.is_empty() {
-            return Size::zero();
-        }
+    /// A grid relays the union of its children's stretch claims. It has no
+    /// main axis of its own, so axis-relative claims resolve the way they do
+    /// for its cells: `MainAxis` claims nothing, `CrossAxis` fills
+    /// horizontally.
+    fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
+        crate::stack::axisless_stretch_union(children)
+    }
 
+    fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
+        // An empty grid has no rows, so its height collapses — but it still
+        // answers the proposal width like a populated one.
         let measurement = self.measure_grid(proposal.width, children);
         Size::new(measurement.total_width, measurement.total_height)
+    }
+
+    /// The grid block anchored top-leading, where `place` starts its rows.
+    /// The grid's alignment aligns cells inside their cells; it never moves
+    /// the block.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
     }
 
     fn place(
@@ -152,7 +170,7 @@ impl Layout for GridLayout {
         }
 
         let num_columns = self.columns.get();
-        let spacing = nami::Signal::get(&self.spacing);
+        let spacing = self.spacing.snapshot();
         let measurement = self.measure_grid(proposal.width, children);
 
         let mut placements = Vec::with_capacity(children.len());
@@ -301,6 +319,9 @@ fn usize_to_f32(value: usize) -> f32 {
 
 /// A data-carrying struct that represents a single row in a `Grid`.
 /// It does not implement `View` itself; it is consumed by the `Grid`.
+///
+/// A row holds at most as many views as the grid has columns; a shorter row
+/// leaves its trailing cells empty.
 #[derive(Debug)]
 pub struct GridRow {
     pub(crate) contents: Vec<AnyView>,
@@ -356,16 +377,18 @@ pub struct Grid {
 impl Grid {
     /// Creates a new Grid.
     ///
-    /// - `columns`: The number of columns in the grid. Must be greater than 0.
+    /// - `columns`: The number of columns in the grid. Must be greater than 0;
+    ///   0 is a contract violation — a debug build panics, a release build
+    ///   logs it and uses 1 column.
     /// - `rows`: A tuple of `GridRow` views.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `columns` is 0.
     pub fn new(columns: usize, rows: impl IntoIterator<Item = GridRow>) -> Self {
+        let columns = NonZeroUsize::new(columns).unwrap_or_else(|| {
+            contract_violation!("Grid columns must be greater than 0; using 1 column");
+            NonZeroUsize::MIN
+        });
         Self {
             layout: GridLayout::new(
-                NonZeroUsize::new(columns).expect("Grid columns must be greater than 0"),
+                columns,
                 Size::new(8.0, 8.0), // Default spacing
                 Alignment::Center,   // Default alignment
             ),
@@ -399,15 +422,31 @@ impl Grid {
 
 impl View for Grid {
     fn body(self, _env: &Environment) -> impl View {
-        // Flatten the children from all GridRows into a single Vec<AnyView>.
-        // This is the list that the GridLayout engine will operate on.
-        let flattened_children = self
-            .rows
-            .into_iter()
-            .flat_map(|row| row.contents)
-            .collect::<Vec<AnyView>>();
+        // `GridLayout` assigns cells to rows by position, so each row's
+        // children are followed by empty cells up to the next row boundary:
+        // a short row leaves its trailing cells empty and the next row still
+        // starts in column 0 (docs/layout-spec.md §5). The last row needs no
+        // padding, since no row follows it.
+        let columns = self.layout.columns.get();
+        let row_count = self.rows.len();
+        let mut cells = Vec::with_capacity(row_count * columns);
+        for (index, row) in self.rows.into_iter().enumerate() {
+            let len = row.contents.len();
+            if len > columns {
+                // The overflow wraps onto further rows of its own, which the
+                // padding below closes, so later rows keep their cells.
+                contract_violation!(
+                    "GridRow {index} has {len} cells but the grid has {columns} columns"
+                );
+            }
+            cells.extend(row.contents);
+            if index + 1 < row_count {
+                let padding = len.next_multiple_of(columns) - len;
+                cells.extend(core::iter::repeat_with(AnyView::default).take(padding));
+            }
+        }
 
-        FixedContainer::new(self.layout, flattened_children)
+        FixedContainer::new(self.layout, cells)
     }
 
     /// Resolves to `FixedContainer` over the same layout and the flattened
@@ -443,7 +482,7 @@ pub fn row(contents: impl TupleViews) -> GridRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::StretchAxis;
+    use crate::{LayoutError, ResolvedExtent, StretchAxis};
     use core::num::NonZeroUsize;
 
     struct MockSubView {
@@ -451,6 +490,13 @@ mod tests {
     }
 
     impl SubView for MockSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
             ViewDimensions::new(self.size)
         }
@@ -459,6 +505,112 @@ mod tests {
         }
         fn priority(&self) -> i32 {
             0
+        }
+    }
+
+    struct StretchingSubView {
+        size: Size,
+    }
+
+    impl SubView for StretchingSubView {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(self.size)
+        }
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::Both
+        }
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "Grid columns must be greater than 0")
+    )]
+    fn a_zero_column_grid_uses_one_column() {
+        let grid = Grid::new(0, []);
+        assert_eq!(grid.layout.columns.get(), 1);
+    }
+
+    #[test]
+    fn grid_relays_live_child_stretch() {
+        // A grid has no main axis of its own; §3 requires it to relay the
+        // union of its children's stretch. A filling cell must therefore
+        // stretch the grid's root frame to the window.
+        let layout = GridLayout::new(
+            NonZeroUsize::new(1).unwrap(),
+            Size::zero(),
+            Alignment::Center,
+        );
+
+        let child = StretchingSubView {
+            size: Size::new(20.0, 10.0),
+        };
+        let children: Vec<&dyn SubView> = vec![&child];
+
+        let proposal = ProposalSize::new(Some(100.0), Some(80.0));
+        assert_eq!(
+            layout.size_that_fits(proposal, &children),
+            Size::new(100.0, 10.0),
+            "the grid answers the proposal width and the row's intrinsic height"
+        );
+
+        let axes: Vec<StretchAxis> = children.iter().map(|child| child.stretch_axis()).collect();
+        assert_eq!(
+            layout.stretch_axis(&axes),
+            StretchAxis::Both,
+            "the union of the children's claims"
+        );
+
+        // The root is placed at its answer stretched on declared axes:
+        // 100x10 stretched on both is the whole 100x80 window. Rows keep
+        // their intrinsic height, so the cell still lands at (40,0,20,10).
+        let placements = layout.place(
+            Rect::new(Point::zero(), Size::new(100.0, 80.0)),
+            proposal,
+            &children,
+        );
+        assert_eq!(
+            placements[0].frame,
+            Rect::new(Point::new(40.0, 0.0), Size::new(20.0, 10.0))
+        );
+    }
+
+    #[test]
+    fn empty_grid_retains_finite_width() {
+        // A grid answers the proposal width; with no cells there are no
+        // rows, so the height collapses but the finite width survives.
+        let layout = GridLayout::new(
+            NonZeroUsize::new(2).unwrap(),
+            Size::zero(),
+            Alignment::Center,
+        );
+        let children: Vec<&dyn SubView> = vec![];
+
+        for (proposal, expected) in [
+            (ProposalSize::new(Some(0.0), Some(40.0)), Size::zero()),
+            (
+                ProposalSize::new(Some(100.0), Some(40.0)),
+                Size::new(100.0, 0.0),
+            ),
+            (ProposalSize::UNSPECIFIED, Size::zero()),
+        ] {
+            assert_eq!(layout.size_that_fits(proposal, &children), expected);
+            assert!(
+                layout
+                    .place(Rect::from_size(expected), proposal, &children)
+                    .is_empty(),
+                "an empty grid places no children"
+            );
         }
     }
 

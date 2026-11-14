@@ -15,10 +15,10 @@
 //! ```
 
 use nami::{Computed, collection::Collection};
-use waterui_core::{View, id::Identifiable};
+use waterui_core::View;
 use waterui_layout::{
     LazyContainer,
-    scroll::scroll,
+    scroll::{scroll, scroll_horizontal},
     stack::{HStackLayout, VStackLayout},
 };
 
@@ -63,12 +63,12 @@ impl Lazy {
         ))
     }
 
-    /// Creates a lazy horizontal stack wrapped in a scroll view.
+    /// Creates a lazy horizontal stack wrapped in a horizontal scroll view.
     ///
     /// Views are reconstructed on-demand as they become visible,
     /// making this suitable for large collections.
     pub fn hstack<V: View>(contents: impl Views<View = V> + 'static) -> impl View {
-        scroll(LazyContainer::new(HStackLayout::default(), contents))
+        scroll_horizontal(LazyContainer::new(HStackLayout::default(), contents))
     }
 
     /// Creates a lazy horizontal stack with custom spacing, wrapped in a scroll view.
@@ -76,7 +76,7 @@ impl Lazy {
         spacing: f32,
         contents: impl Views<View = V> + 'static,
     ) -> impl View {
-        scroll(LazyContainer::new(
+        scroll_horizontal(LazyContainer::new(
             HStackLayout {
                 spacing: Computed::constant(spacing),
                 ..Default::default()
@@ -87,37 +87,22 @@ impl Lazy {
 
     /// Creates a lazy vertical stack by iterating over a collection and generating views.
     ///
+    /// Rows take their identity from the collection: an array or static
+    /// slice identifies a row by its index, and a reactive `List` of
+    /// [`Identifiable`](crate::id::Identifiable) items by each item's id.
+    ///
     /// # Example
     ///
     /// ```rust
     /// use waterui::component::lazy::Lazy;
     /// use waterui::prelude::*;
-    /// use waterui::id::Id;
     ///
-    /// #[derive(Clone)]
-    /// struct Item {
-    ///     id: Id,
-    ///     name: &'static str,
-    /// }
-    ///
-    /// impl waterui_core::id::Identifiable for Item {
-    ///     type Id = Id;
-    ///
-    ///     fn id(&self) -> Id {
-    ///         self.id
-    ///     }
-    /// }
-    ///
-    /// let items = vec![
-    ///     Item { id: Id::try_from(1).unwrap(), name: "First" },
-    ///     Item { id: Id::try_from(2).unwrap(), name: "Second" },
-    /// ];
-    /// let list = Lazy::for_each(items, |item| text::text(item.name));
+    /// let list = Lazy::for_each(["First", "Second"], |name| text::text(name));
     /// ```
     pub fn for_each<C, F, V>(collection: C, generator: F) -> impl View
     where
         C: Collection + Clone,
-        C::Item: Identifiable,
+        C::Item: Clone,
         F: 'static + Fn(C::Item) -> V,
         V: View,
     {

@@ -47,3 +47,19 @@ fn derives_identity_for_a_newtype() {
 
     assert_eq!(contact_id.id(), 7);
 }
+
+/// The derive expands against an absolute path, so the prelude alone suffices.
+mod with_prelude_only {
+    use waterui::prelude::*;
+
+    #[derive(Clone, Identifiable)]
+    struct Row {
+        #[id]
+        id: u64,
+    }
+
+    #[test]
+    fn derive_expands_with_only_the_prelude_imported() {
+        assert_eq!(id::Identifiable::id(&Row { id: 7 }), 7);
+    }
+}

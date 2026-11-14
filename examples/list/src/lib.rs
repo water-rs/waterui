@@ -4,6 +4,7 @@
 //! regular stack: lazy row realization, indexed jumps, deletion, and moving.
 
 use waterui::Identifiable;
+use waterui::animation::Animation;
 use waterui::app::App;
 use waterui::component::list::{List, ListDelete, ListItem, ListMove};
 use waterui::prelude::theme_color::Foreground;
@@ -14,7 +15,7 @@ use waterui::reactive::collection::List as ReactiveList;
 
 const DATASET_SIZE: usize = 100_000;
 
-#[derive(Clone, Copy, Identifiable)]
+#[derive(Clone, Copy, PartialEq, Eq, Identifiable)]
 struct Record {
     #[id]
     id: u64,
@@ -36,7 +37,9 @@ impl DemoState {
             .collect::<Vec<_>>();
         Self {
             records: ReactiveList::from(records),
-            remaining: binding(DATASET_SIZE as i32),
+            remaining: binding(
+                i32::try_from(DATASET_SIZE).expect("DATASET_SIZE is 100,000, which fits in i32"),
+            ),
             editing: binding(false),
             scroll: ScrollController::new(0),
         }
@@ -58,38 +61,61 @@ fn record_row(record: Record) -> ListItem {
     )
 }
 
-fn delete_record(ListDelete(index): ListDelete, state: DemoState) {
+fn delete_record(ListDelete(index): ListDelete, mut state: DemoState) {
     let _ = state.records.remove(index);
     *state.remaining.get_mut() -= 1;
 }
 
-fn move_record(ListMove(movement): ListMove, state: DemoState) {
+fn move_record(ListMove(movement): ListMove, mut state: DemoState) {
     let mut records = state.records.snapshot();
     let record = records.remove(movement.from());
     records.insert(movement.to(), record);
     let _ = state.records.replace(records);
 }
 
-fn jump_top(state: DemoState) {
-    state.scroll.scroll_to(0);
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the button action extracts DemoState by value, as the Handler contract requires"
+)]
+fn scroll_top(state: DemoState) {
+    state.scroll.animate_to(0, Animation::default());
 }
 
-fn jump_middle(state: DemoState) {
-    state.scroll.scroll_to((state.remaining.get() as usize) / 2);
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the button action extracts DemoState by value, as the Handler contract requires"
+)]
+fn scroll_middle(state: DemoState) {
+    state.scroll.animate_to(
+        usize::try_from(state.remaining.snapshot()).expect("remaining row count is never negative")
+            / 2,
+        Animation::default(),
+    );
 }
 
-fn jump_last(state: DemoState) {
-    let remaining = state.remaining.get();
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the button action extracts DemoState by value, as the Handler contract requires"
+)]
+fn scroll_last(state: DemoState) {
+    let remaining = state.remaining.snapshot();
     if remaining > 0 {
-        state.scroll.scroll_to(remaining as usize - 1);
+        state.scroll.animate_to(
+            usize::try_from(remaining).expect("remaining row count is never negative") - 1,
+            Animation::default(),
+        );
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the button action extracts DemoState by value, as the Handler contract requires"
+)]
 fn toggle_editing(state: DemoState) {
     state.editing.toggle();
 }
 
-fn content(state: DemoState) -> impl View {
+fn content(state: &DemoState) -> impl View + use<> {
     let edit_label = state.editing.select("Done", "Edit");
     let list = List::for_each(state.records.clone(), record_row)
         .editing(state.editing.clone())
@@ -107,9 +133,9 @@ fn content(state: DemoState) -> impl View {
             .sub_headline()
             .muted(),
             hstack((
-                button("Top").bordered().action(jump_top),
-                button("Middle").bordered().action(jump_middle),
-                button("Last").bordered().action(jump_last),
+                button("Top").bordered().action(scroll_top),
+                button("Middle").bordered().action(scroll_middle),
+                button("Last").bordered().action(scroll_last),
                 button(text!("{edit_label}"))
                     .bordered_prominent()
                     .action(toggle_editing),
@@ -127,17 +153,20 @@ fn content(state: DemoState) -> impl View {
         Divider,
         list,
     ))
-    .state(&state)
+    .state(state)
 }
 
+/// The large-data list demo: a 100,000-row lazy list with jumps and editing.
 #[preview]
 pub fn demo() -> impl View {
-    content(DemoState::new())
+    content(&DemoState::new())
 }
 
+/// Builds the example app, showing the large-data list demo.
+#[must_use]
 pub fn app(env: Environment) -> App {
     let state = DemoState::new();
-    App::new(move || content(state.clone()), env)
+    App::new(move || content(&state), env)
 }
 
 #[cfg(test)]

@@ -14,7 +14,6 @@
 
 use core::num::NonZeroI32;
 use core::num::TryFromIntError;
-use core::{hash::Hash, ops::Deref};
 
 use crate::{AnyView, View};
 
@@ -42,120 +41,10 @@ impl TryFrom<i32> for Id {
     }
 }
 
-/// Defines an interface for types that can be uniquely identified.
-///
-/// Implementors of this trait can provide a specific ID type and a way to retrieve
-/// the ID from an instance.
-#[diagnostic::on_unimplemented(
-    message = "`{Self}` has no stable WaterUI identity",
-    label = "expected a type implementing `Identifiable`",
-    note = "Collections such as `ForEach` and `List` diff items by id, so each item needs `Identifiable`: derive it with `#[derive(Identifiable)]` and `#[id]` on the identifier field (`use waterui::Identifiable;` — the derive is not in the prelude), for a type you do not own, wrap the value with `.use_id(..)` / `.self_id()`."
-)]
-pub trait Identifiable {
-    /// The type of ID to use, which must implement Hash and Ord traits.
-    type Id: Hash + Ord + Clone;
-
-    /// Retrieves the unique identifier for this instance.
-    fn id(&self) -> Self::Id;
-}
-
-/// A wrapper that provides identity to a value through a function.
-///
-/// This allows attaching identity behavior to any type by providing a function
-/// to extract an ID from the wrapped value.
-#[derive(Debug)]
-pub struct UseId<T, F> {
-    /// The wrapped value
-    value: T,
-    /// Function to extract an ID from the value
-    f: F,
-}
-
-impl<T, F> UseId<T, F> {
-    /// Creates a new [`UseId`] instance wrapping the given value and function.
-    pub const fn new(value: T, f: F) -> Self {
-        Self { value, f }
-    }
-
-    /// Consumes the wrapper and returns the inner value.
-    pub fn into_inner(self) -> T {
-        self.value
-    }
-}
-
-impl<T, F> Deref for UseId<T, F> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.value
-    }
-}
-
-impl<T, F, Id> Identifiable for UseId<T, F>
-where
-    F: Fn(&T) -> Id,
-    Id: Ord + Hash + Clone,
-{
-    type Id = Id;
-
-    /// Applies the stored function to the wrapped value to generate an ID.
-    fn id(&self) -> Self::Id {
-        (self.f)(&self.value)
-    }
-}
-
-/// A wrapper that uses the value itself as its own identifier.
-///
-/// This is useful for types that are already suitable as identifiers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SelfId<T>(T);
-
-impl<T> SelfId<T> {
-    /// Creates a new [`SelfId`] instance wrapping the given value.
-    pub const fn new(value: T) -> Self {
-        Self(value)
-    }
-    /// Consumes the wrapper and returns the inner value.
-    pub fn into_inner(self) -> T {
-        self.0
-    }
-}
-
-impl<T: Hash + Ord + Clone> Identifiable for SelfId<T> {
-    type Id = T;
-
-    /// Returns a clone of the wrapped value as the identifier.
-    fn id(&self) -> Self::Id {
-        self.0.clone()
-    }
-}
-
-impl<T> Deref for SelfId<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-/// Extension trait that provides convenient methods for making types identifiable.
-pub trait IdentifiableExt: Sized {
-    /// Wraps the value in a [`UseId`] with the provided identification function.
-    fn use_id<F, Id>(self, f: F) -> UseId<Self, F>
-    where
-        F: Fn(&Self) -> Id,
-        Id: Ord + Hash,
-    {
-        UseId { value: self, f }
-    }
-
-    /// Wraps the value in a `SelfId`, making the value serve as its own identifier.
-    fn self_id(self) -> SelfId<Self> {
-        SelfId(self)
-    }
-}
-
-impl<T> IdentifiableExt for T {}
+/// Item identity, shared with `nami`'s collections: a `List` of
+/// [`Identifiable`] items diffs them by id, and so does every view
+/// collection built on it.
+pub use nami::{Identifiable, IdentifiableExt, SelfId, UseId};
 
 /// A view that includes an identifying tag of type T.
 ///
@@ -234,13 +123,14 @@ impl<T: Ord + Clone> MappingInner<T> {
 
     /// Registers a new value in the mapping and returns its assigned ID.
     pub fn register(&mut self, value: T) -> Id {
-        let id = Id(NonZeroI32::new(self.counter).expect("counter should not be zero"));
+        let id = Id(NonZeroI32::new(self.counter)
+            .expect("the counter starts at 1 and only increases, so it is never zero"));
         self.to_id.insert(value.clone(), id);
         self.from_id.insert(id, value);
         self.counter = self
             .counter
             .checked_add(1)
-            .expect("counter should not overflow");
+            .expect("a mapping registers fewer than i32::MAX values");
         id
     }
 
@@ -318,7 +208,9 @@ impl<T: Ord + Clone> Mapping<T> {
     ///
     /// # Panics
     ///
-    /// Panics if the provided `Id` does not correspond to any value in the mapping.
+    /// A write of an `Id` the mapping never issued is a broken contract of the
+    /// writer: a debug build panics, a release build drops the write and the
+    /// source keeps its value.
     #[must_use]
     pub fn binding(&self, source: &Binding<T>) -> Binding<Id>
     where
@@ -330,11 +222,13 @@ impl<T: Ord + Clone> Mapping<T> {
             source,
             move |value| mapping.to_id(value),
             move |binding, value| {
-                binding.set(
-                    mapping2
-                        .to_data(value)
-                        .expect("Invalid binding mapping : Data not found"),
-                );
+                let Some(data) = mapping2.to_data(value) else {
+                    crate::contract_violation!(
+                        "Invalid binding mapping: {value:?} was never issued by the mapping, so the write is dropped"
+                    );
+                    return;
+                };
+                binding.set(data);
             },
         )
     }
@@ -346,7 +240,9 @@ impl<T: Ord + Clone> Mapping<T> {
     ///
     /// # Panics
     ///
-    /// Panics if the provided `Id` does not correspond to any value in the mapping.
+    /// A write of an `Id` the mapping never issued is a broken contract of the
+    /// writer: a debug build panics, a release build drops the write and the
+    /// source keeps its value.
     #[must_use]
     pub fn optional_binding(&self, source: &Binding<Option<T>>) -> Binding<Option<Id>>
     where
@@ -358,12 +254,54 @@ impl<T: Ord + Clone> Mapping<T> {
             source,
             move |value| value.map(|value| mapping.to_id(value)),
             move |binding, value| {
-                binding.set(value.map(|value| {
-                    mapping2
-                        .to_data(value)
-                        .expect("Invalid optional binding mapping : Data not found")
-                }));
+                let data = match value {
+                    Some(id) => {
+                        let Some(data) = mapping2.to_data(id) else {
+                            crate::contract_violation!(
+                                "Invalid optional binding mapping: {id:?} was never issued by the mapping, so the write is dropped"
+                            );
+                            return;
+                        };
+                        Some(data)
+                    }
+                    None => None,
+                };
+                binding.set(data);
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Id, Mapping};
+    use nami::{Binding, Signal as _};
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "Invalid binding mapping: Id(")
+    )]
+    fn writing_an_unissued_id_keeps_the_source_value() {
+        let mapping = Mapping::new();
+        let source: Binding<i32> = Binding::container(5);
+        mapping.to_id(5);
+        let ids = mapping.binding(&source);
+        ids.set(Id::try_from(99).unwrap());
+        assert_eq!(source.snapshot(), 5);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "Invalid optional binding mapping: Id(")
+    )]
+    fn writing_an_unissued_optional_id_keeps_the_source_value() {
+        let mapping = Mapping::new();
+        let source: Binding<Option<i32>> = Binding::container(Some(5));
+        mapping.to_id(5);
+        let ids = mapping.optional_binding(&source);
+        ids.set(Some(Id::try_from(99).unwrap()));
+        assert_eq!(source.snapshot(), Some(5));
     }
 }

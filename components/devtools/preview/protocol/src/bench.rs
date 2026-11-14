@@ -31,7 +31,7 @@ pub const BENCH_MAX_REBUILD_RATIO_ENV: &str = "WATERUI_BENCH_MAX_REBUILD_RATIO";
 pub const BENCH_MAX_SCENE_LAYERS_ENV: &str = "WATERUI_BENCH_MAX_SCENE_LAYERS";
 /// Environment variable capping every bench's embedded GPU-surface-layer budget.
 pub const BENCH_MAX_GPU_SURFACE_LAYERS_ENV: &str = "WATERUI_BENCH_MAX_GPU_SURFACE_LAYERS";
-/// Environment variable capping every bench's Vello clip-layer budget.
+/// Environment variable capping every bench's engine clip-layer budget.
 pub const BENCH_MAX_CLIP_LAYERS_ENV: &str = "WATERUI_BENCH_MAX_CLIP_LAYERS";
 
 /// File name of one bench's report inside the report directory.
@@ -58,30 +58,139 @@ pub struct BenchReport {
 
 /// Frame-run shape of one bench execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct BenchRunConfig {
     /// Unrecorded frames run before sampling.
-    pub warmups: u32,
+    warmups: u32,
     /// Recorded frames per measurement.
-    pub samples: u32,
+    samples: u32,
     /// Independent measurement repetitions.
-    pub repetitions: u32,
+    repetitions: u32,
+}
+
+impl BenchRunConfig {
+    /// Unrecorded frames run before sampling.
+    #[must_use]
+    pub const fn warmups(&self) -> u32 {
+        self.warmups
+    }
+
+    /// Recorded frames per measurement.
+    #[must_use]
+    pub const fn samples(&self) -> u32 {
+        self.samples
+    }
+
+    /// Independent measurement repetitions.
+    #[must_use]
+    pub const fn repetitions(&self) -> u32 {
+        self.repetitions
+    }
+}
+
+impl BenchRunConfig {
+    /// `warmups` unrecorded frames, then `repetitions` measurements of
+    /// `samples` recorded frames each.
+    #[must_use]
+    pub const fn new(warmups: u32, samples: u32, repetitions: u32) -> Self {
+        Self {
+            warmups,
+            samples,
+            repetitions,
+        }
+    }
 }
 
 /// Optional per-metric ceilings applied to every measurement a bench records.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the field names are the serialized budget keys"
+)]
 pub struct BenchBudgets {
     /// Maximum allowed 95th-percentile frame time, in microseconds.
-    pub max_p95_us: Option<u64>,
+    max_p95_us: Option<u64>,
     /// Maximum allowed mean frame time, in microseconds.
-    pub max_mean_us: Option<u64>,
+    max_mean_us: Option<u64>,
     /// Maximum allowed share of sampled frames that rebuilt (0.0..=1.0).
-    pub max_rebuild_ratio: Option<f64>,
+    max_rebuild_ratio: Option<f64>,
     /// Maximum allowed compositor scene layers submitted by one frame.
-    pub max_scene_layers: Option<u64>,
+    max_scene_layers: Option<u64>,
     /// Maximum allowed embedded GPU surface layers submitted by one frame.
-    pub max_gpu_surface_layers: Option<u64>,
-    /// Maximum allowed Vello clip layers pushed by one frame.
-    pub max_clip_layers: Option<u64>,
+    max_gpu_surface_layers: Option<u64>,
+    /// Maximum allowed clip layers pushed by one frame.
+    max_clip_layers: Option<u64>,
+}
+
+impl BenchBudgets {
+    /// Maximum allowed 95th-percentile frame time, in microseconds.
+    #[must_use]
+    pub const fn max_p95_us(&self) -> Option<u64> {
+        self.max_p95_us
+    }
+
+    /// Maximum allowed mean frame time, in microseconds.
+    #[must_use]
+    pub const fn max_mean_us(&self) -> Option<u64> {
+        self.max_mean_us
+    }
+
+    /// Maximum allowed share of sampled frames that rebuilt (0.0..=1.0).
+    #[must_use]
+    pub const fn max_rebuild_ratio(&self) -> Option<f64> {
+        self.max_rebuild_ratio
+    }
+
+    /// Maximum allowed compositor scene layers submitted by one frame.
+    #[must_use]
+    pub const fn max_scene_layers(&self) -> Option<u64> {
+        self.max_scene_layers
+    }
+
+    /// Maximum allowed embedded GPU surface layers submitted by one frame.
+    #[must_use]
+    pub const fn max_gpu_surface_layers(&self) -> Option<u64> {
+        self.max_gpu_surface_layers
+    }
+
+    /// Maximum allowed clip layers pushed by one frame.
+    #[must_use]
+    pub const fn max_clip_layers(&self) -> Option<u64> {
+        self.max_clip_layers
+    }
+}
+
+/// One `with_<budget>` builder method per budget; `None` leaves the metric
+/// uncapped.
+macro_rules! budget_setters {
+    ($($(#[$doc:meta])* $method:ident => $budget:ident: $ty:ty;)*) => {
+        $(
+            $(#[$doc])*
+            #[must_use]
+            pub const fn $method(mut self, limit: Option<$ty>) -> Self {
+                self.$budget = limit;
+                self
+            }
+        )*
+    };
+}
+
+impl BenchBudgets {
+    budget_setters! {
+        /// Caps the 95th-percentile frame time, in microseconds.
+        with_max_p95_us => max_p95_us: u64;
+        /// Caps the mean frame time, in microseconds.
+        with_max_mean_us => max_mean_us: u64;
+        /// Caps the share of sampled frames that rebuilt (0.0..=1.0).
+        with_max_rebuild_ratio => max_rebuild_ratio: f64;
+        /// Caps the compositor scene layers one frame submits.
+        with_max_scene_layers => max_scene_layers: u64;
+        /// Caps the embedded GPU surface layers one frame submits.
+        with_max_gpu_surface_layers => max_gpu_surface_layers: u64;
+        /// Caps the clip layers one frame pushes.
+        with_max_clip_layers => max_clip_layers: u64;
+    }
 }
 
 /// Aggregated statistics of one perf measurement.
@@ -123,7 +232,7 @@ pub struct PerfMeasurement {
     pub measurement_cache_misses: u64,
     /// Compositor scene layers submitted.
     pub scene_layers: u64,
-    /// Vello scene layers submitted.
+    /// Engine scene layers submitted.
     pub vello_scene_layers: u64,
     /// GPU surface layers submitted.
     pub gpu_surface_layers: u64,
@@ -219,7 +328,7 @@ pub struct PerfFrame {
     pub measurement_cache_misses: u64,
     /// Compositor scene layers this frame.
     pub scene_layers: u64,
-    /// Vello scene layers this frame.
+    /// Engine scene layers this frame.
     pub vello_scene_layers: u64,
     /// GPU surface layers this frame.
     pub gpu_surface_layers: u64,

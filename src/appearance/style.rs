@@ -4,22 +4,24 @@
 //!
 //! ```
 //! use waterui::prelude::*;
+//! use waterui::shape::FixedRoundedRectangle;
 //! use waterui::style;
 //! use waterui_graphics::color::Color;
 //!
 //! fn shadow_example() {
-//!     let shadow = style::Shadow {
-//!         color: Color::srgb(0, 0, 0),
-//!         offset: style::Vector { x: 2.0, y: 2.0 },
-//!         radius: 4.0,
-//!         corner_radius: 8.0,
-//!     };
+//!     let shadow = style::Shadow::new(
+//!         Color::srgb(0, 0, 0),
+//!         style::Vector { x: 2.0, y: 2.0 },
+//!         4.0,
+//!         FixedRoundedRectangle::new(8.0),
+//!     );
 //! }
 //! ```
 
 use nami::{Computed, SignalExt};
-use waterui_core::{IntoSignalF32, metadata::MetadataKey, plugin::Plugin};
+use waterui_core::{IntoSignalF32, interaction::StateValue, metadata::MetadataKey, plugin::Plugin};
 use waterui_graphics::color::Color;
+use waterui_shape::{ClipShape, Rectangle, Shape};
 
 /// Theme tokens for a view promoted with [`ViewExt::floating`](crate::ViewExt::floating).
 ///
@@ -45,6 +47,17 @@ pub struct FloatingStyle {
     pub minimum_height: f64,
     /// Opacity applied to floating-button content while disabled.
     pub disabled_content_opacity: f32,
+    /// The surface's elevation per interaction state — a floating action
+    /// button rises one level while hovered.
+    pub elevation: StateValue<FloatingElevation>,
+}
+
+impl Plugin for FloatingStyle {}
+
+/// The two shadows that lift a floating surface: a soft ambient shadow and a
+/// tighter key shadow.
+#[derive(Debug, Clone)]
+pub struct FloatingElevation {
     /// Ambient shadow color.
     pub ambient_shadow_color: Color,
     /// Ambient shadow blur radius.
@@ -58,8 +71,6 @@ pub struct FloatingStyle {
     /// Key shadow vertical offset.
     pub key_shadow_offset_y: f32,
 }
-
-impl Plugin for FloatingStyle {}
 
 impl Default for FloatingStyle {
     fn default() -> Self {
@@ -75,81 +86,120 @@ impl Default for FloatingStyle {
             minimum_width: 44.0,
             minimum_height: 44.0,
             disabled_content_opacity: 0.38,
-            ambient_shadow_color: Color::new(Foreground).with_opacity(0.08),
-            ambient_shadow_radius: 6.0,
-            ambient_shadow_offset_y: 2.0,
-            key_shadow_color: Color::new(Foreground).with_opacity(0.12),
-            key_shadow_radius: 3.0,
-            key_shadow_offset_y: 1.0,
+            elevation: StateValue::new(FloatingElevation {
+                ambient_shadow_color: Color::new(Foreground).with_opacity(0.08),
+                ambient_shadow_radius: 6.0,
+                ambient_shadow_offset_y: 2.0,
+                key_shadow_color: Color::new(Foreground).with_opacity(0.12),
+                key_shadow_radius: 3.0,
+                key_shadow_offset_y: 1.0,
+            }),
         }
     }
 }
 
 /// Represents a shadow effect that can be applied to UI elements.
 ///
-/// A shadow is defined by its color, offset from the original element,
-/// blur radius, and the corner radius of the element casting it.
+/// A shadow is defined by its color, offset from the original element, blur
+/// radius, and the silhouette of the element casting it.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Shadow {
     /// The color of the shadow, including alpha for opacity.
-    pub color: Color,
+    color: Color,
     /// The offset of the shadow from the original element.
-    pub offset: Vector<f32>,
+    offset: Vector<f32>,
     /// The blur radius of the shadow in pixels.
-    pub radius: f32,
-    /// The corner radius of the element casting the shadow.
+    radius: f32,
+    /// The shape of the element casting the shadow.
     ///
-    /// Backends that rasterize the shadow themselves draw a blurred rounded
-    /// rect; this must match the caster's corner radius or the shadow
-    /// silhouette won't follow the element's shape.
-    pub corner_radius: f32,
+    /// Backends that rasterize the shadow themselves blur this shape, so it
+    /// must be the caster's own shape — the one it is filled or clipped with —
+    /// or the shadow will not follow the element's outline. It carries the
+    /// shape's [`ShapeKind`](waterui_shape::ShapeKind), so a normalized corner
+    /// radius and an absolute one can never be confused.
+    silhouette: ClipShape,
+}
+
+impl Shadow {
+    /// The color of the shadow, including alpha for opacity.
+    #[must_use]
+    pub const fn color(&self) -> &Color {
+        &self.color
+    }
+
+    /// The offset of the shadow from the original element.
+    #[must_use]
+    pub const fn offset(&self) -> &Vector<f32> {
+        &self.offset
+    }
+
+    /// The blur radius of the shadow in pixels.
+    #[must_use]
+    pub const fn radius(&self) -> f32 {
+        self.radius
+    }
+
+    /// The shape of the element casting the shadow.
+    ///
+    /// Backends that rasterize the shadow themselves blur this shape, so it
+    /// must be the caster's own shape — the one it is filled or clipped with —
+    /// or the shadow will not follow the element's outline. It carries the
+    /// shape's [`ShapeKind`](waterui_shape::ShapeKind), so a normalized corner
+    /// radius and an absolute one can never be confused.
+    #[must_use]
+    pub const fn silhouette(&self) -> &ClipShape {
+        &self.silhouette
+    }
 }
 
 impl MetadataKey for Shadow {}
 
 impl Shadow {
-    /// Creates a new shadow with the specified color, offset, and radius.
+    /// Creates a new shadow with the specified color, offset, blur radius and
+    /// caster silhouette.
     ///
     /// # Arguments
     ///
     /// * `color` - The color of the shadow
     /// * `offset` - The offset of the shadow from the original element
     /// * `radius` - The blur radius of the shadow in pixels
-    /// * `corner_radius` - The corner radius of the element casting the shadow
+    /// * `silhouette` - The shape of the element casting the shadow
     #[must_use]
-    pub const fn new(color: Color, offset: Vector<f32>, radius: f32, corner_radius: f32) -> Self {
+    pub fn new(color: Color, offset: Vector<f32>, radius: f32, silhouette: impl Shape) -> Self {
         Self {
             color,
             offset,
             radius,
-            corner_radius,
+            silhouette: ClipShape::new(silhouette),
         }
     }
 
-    /// Creates a shadow with the same offset and radius for both x and y directions.
+    /// Creates a black shadow of a rectangular caster, with the same offset and
+    /// blur radius in both directions.
     ///
-    /// The color is set to black by default.
     /// # Arguments
     /// * `value` - The value to set for both offset and radius
     #[must_use]
     pub fn splat(value: f32) -> Self {
-        Self {
-            color: Color::srgb(0, 0, 0),
-            offset: Vector { x: value, y: value },
-            radius: value,
-            corner_radius: 0.0,
-        }
+        Self::new(
+            Color::srgb(0, 0, 0),
+            Vector { x: value, y: value },
+            value,
+            Rectangle,
+        )
     }
 }
 
 impl Default for Shadow {
+    /// A moderate black shadow slightly below a rectangular caster.
     fn default() -> Self {
-        Self {
-            color: Color::srgb(0, 0, 0),       // Default to black shadow
-            offset: Vector { x: 0.0, y: 2.0 }, // Slightly below the element
-            radius: 4.0,                       // Moderate blur
-            corner_radius: 0.0,
-        }
+        Self::new(
+            Color::srgb(0, 0, 0),
+            Vector { x: 0.0, y: 2.0 },
+            4.0,
+            Rectangle,
+        )
     }
 }
 
@@ -157,12 +207,7 @@ impl Default for Shadow {
 impl<T: Into<f64>> From<T> for Shadow {
     fn from(value: T) -> Self {
         let v = value.into() as f32;
-        Self {
-            color: Color::srgb(0, 0, 0),
-            offset: Vector { x: 0.0, y: v },
-            radius: v,
-            corner_radius: 0.0,
-        }
+        Self::new(Color::srgb(0, 0, 0), Vector { x: 0.0, y: v }, v, Rectangle)
     }
 }
 
@@ -279,13 +324,34 @@ impl Default for Anchor {
 /// let pulsing = text!("Hello").scale(factor, 1.0);
 /// ```
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Scale {
     /// Scale factor along X axis (1.0 = no scale)
-    pub x: Computed<f32>,
+    x: Computed<f32>,
     /// Scale factor along Y axis (1.0 = no scale)
-    pub y: Computed<f32>,
+    y: Computed<f32>,
     /// Anchor point for the scale transform
-    pub anchor: Anchor,
+    anchor: Anchor,
+}
+
+impl Scale {
+    /// Scale factor along X axis (1.0 = no scale)
+    #[must_use]
+    pub const fn x(&self) -> &Computed<f32> {
+        &self.x
+    }
+
+    /// Scale factor along Y axis (1.0 = no scale)
+    #[must_use]
+    pub const fn y(&self) -> &Computed<f32> {
+        &self.y
+    }
+
+    /// Anchor point for the scale transform
+    #[must_use]
+    pub const fn anchor(&self) -> Anchor {
+        self.anchor
+    }
 }
 
 impl MetadataKey for Scale {}
@@ -359,11 +425,26 @@ impl Scale {
 /// let spinning = text!("Hello").rotation(angle);
 /// ```
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Rotation {
     /// Rotation angle in degrees (positive = clockwise)
-    pub angle: Computed<f32>,
+    angle: Computed<f32>,
     /// Anchor point for the rotation transform
-    pub anchor: Anchor,
+    anchor: Anchor,
+}
+
+impl Rotation {
+    /// Rotation angle in degrees (positive = clockwise)
+    #[must_use]
+    pub const fn angle(&self) -> &Computed<f32> {
+        &self.angle
+    }
+
+    /// Anchor point for the rotation transform
+    #[must_use]
+    pub const fn anchor(&self) -> Anchor {
+        self.anchor
+    }
 }
 
 impl MetadataKey for Rotation {}

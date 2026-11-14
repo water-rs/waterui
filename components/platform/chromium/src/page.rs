@@ -104,6 +104,7 @@ impl ChromiumConfiguration {
 
 /// Presentation mode of a Chromium page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PageMode {
     /// Page owns a visible GPU presenter.
     Visible,
@@ -113,6 +114,7 @@ pub enum PageMode {
 
 /// Chromium page lifecycle events.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum ChromiumEvent {
     /// Browser creation completed and CDP is attached.
     Ready,
@@ -130,6 +132,10 @@ pub enum ChromiumEvent {
 
 /// Encoded screenshot format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every Chromium host encodes each screenshot format variant by variant; a new format must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ScreenshotFormat {
     /// Portable Network Graphics.
     Png,

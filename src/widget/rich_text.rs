@@ -1,12 +1,12 @@
-use std::{mem, num::NonZeroUsize, str::FromStr};
+use std::{mem, num::NonZeroUsize, ops::Range, str::FromStr};
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag};
 use suiteki::Str;
 use waterui_core::{AnyView, Environment, View};
-use waterui_graphics::color::Blue;
+use waterui_graphics::color::{AccentColor, Blue, Color};
 use waterui_layout::{
-    Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement,
-    ViewDimensions,
+    Layout, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
+    SubviewPlacement, UnitPoint, ViewDimensions,
     container::FixedContainer,
     stack::{HStack, HorizontalAlignment, VStack, hstack},
 };
@@ -21,7 +21,7 @@ use waterui_text::{
 
 #[cfg(feature = "snackbar")]
 use crate::snackbar::{Snackbar, SnackbarManager};
-use crate::{ViewExt, widget::Divider};
+use crate::{ViewExt, component::link::open_url, widget::Divider};
 
 /// Rich text widget for displaying formatted content.
 #[derive(Debug, Default, Clone)]
@@ -158,6 +158,10 @@ pub enum RichTextElement {
 
 /// Column alignment metadata for Markdown tables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: the Markdown table column alignments (none, left, center, right)"
+)]
 pub enum MarkdownTableAlignment {
     /// No explicit alignment.
     None,
@@ -205,10 +209,12 @@ impl View for RichTextElement {
                 // is rendered from Markdown, so the snackbar coupling is here.
                 #[cfg(feature = "snackbar")]
                 let view = view.on_copied(|env| {
-                    let snackbar = env
-                        .extract::<SnackbarManager>()
-                        .expect("the window's environment carries its SnackbarManager");
-                    snackbar.show(Snackbar::new("Copied to clipboard"));
+                    match env.extract::<SnackbarManager>() {
+                        Ok(snackbar) => snackbar.show(Snackbar::new("Copied to clipboard")),
+                        Err(error) => crate::contract_violation!(
+                            "the window's environment carries no SnackbarManager, so the copy shows no feedback: {error}"
+                        ),
+                    }
                 });
                 AnyView::new(view)
             }
@@ -257,14 +263,23 @@ fn render_math(source: Str, block: bool) -> AnyView {
 fn render_image(src: &Str) -> AnyView {
     #[cfg(feature = "media")]
     {
-        let url = Url::parse(src)
-            .unwrap_or_else(|| panic!("RichText image source is not a valid URL: {src}"));
+        // The source is document content, not the app's own contract: an
+        // invalid URL is input to report, never a reason to panic.
+        let Some(url) = Url::parse(src) else {
+            tracing::warn!(
+                "RichText image source is not a valid URL, so the image renders nothing: {src}"
+            );
+            return AnyView::default();
+        };
         AnyView::new(media_photo(url))
     }
 
     #[cfg(not(feature = "media"))]
     {
-        panic!("RichText image rendering requires the `media` feature: {src}");
+        crate::contract_violation!(
+            "RichText image rendering requires the `media` feature, so the image renders nothing: {src}"
+        );
+        AnyView::default()
     }
 }
 
@@ -341,7 +356,7 @@ fn render_table(
         })
         .collect();
     let layout = MarkdownTableLayout::new(
-        NonZeroUsize::new(col_count).expect("Markdown table must have at least one column"),
+        NonZeroUsize::new(col_count).expect("a zero column count returned an empty view above"),
         resolved_alignments,
     );
     AnyView::new(FixedContainer::new(layout, cells))
@@ -417,11 +432,8 @@ impl MarkdownTableLayout {
         for cell_index in 0..cell_count {
             let dimensions =
                 children[self.child_index(cell_index)].measure(ProposalSize::UNSPECIFIED);
-            let width = dimensions.size.width;
-            assert!(
-                width.is_finite(),
-                "Markdown table cells must have finite intrinsic widths"
-            );
+            let width =
+                finite_or_zero(dimensions.size.width, "Markdown table cell intrinsic width");
             let column = cell_index % columns;
             column_widths[column] = column_widths[column].max(width.max(0.0));
         }
@@ -445,11 +457,13 @@ impl MarkdownTableLayout {
         let mut row_heights = vec![0.0_f32; row_count];
         for cell_index in 0..cell_count {
             let column = cell_index % columns;
-            let dimensions = children[self.child_index(cell_index)]
+            let mut dimensions = children[self.child_index(cell_index)]
                 .measure(ProposalSize::new(Some(column_widths[column]), None));
-            assert!(
-                dimensions.size.width.is_finite() && dimensions.size.height.is_finite(),
-                "Markdown table cells must have finite measured sizes"
+            dimensions.size.width =
+                finite_or_zero(dimensions.size.width, "Markdown table cell measured width");
+            dimensions.size.height = finite_or_zero(
+                dimensions.size.height,
+                "Markdown table cell measured height",
             );
             let row = cell_index / columns;
             row_heights[row] = row_heights[row].max(dimensions.size.height.max(0.0));
@@ -458,11 +472,11 @@ impl MarkdownTableLayout {
 
         let separator_dimensions =
             children[self.separator_index()].measure(ProposalSize::new(Some(width), None));
-        assert!(
-            separator_dimensions.size.height.is_finite(),
-            "Markdown table separator must have a finite height"
-        );
-        let separator_height = separator_dimensions.size.height.max(0.0);
+        let separator_height = finite_or_zero(
+            separator_dimensions.size.height,
+            "Markdown table separator height",
+        )
+        .max(0.0);
         let height = row_heights.iter().sum::<f32>()
             + separator_height
             + repeated_spacing(MARKDOWN_TABLE_ROW_SPACING, row_count);
@@ -480,6 +494,15 @@ impl MarkdownTableLayout {
 impl Layout for MarkdownTableLayout {
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         self.measure(proposal.width, children).size
+    }
+
+    /// Anchored top-leading: `place` lays the table out from `bounds`' origin.
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
     }
 
     fn place(
@@ -544,6 +567,17 @@ impl Layout for MarkdownTableLayout {
     fn stretch_axis(&self, _children: &[StretchAxis]) -> StretchAxis {
         StretchAxis::Horizontal
     }
+}
+
+/// `value`, or 0 after a contract violation when a measured size is not
+/// finite: a debug build panics, and a release build logs the error and
+/// counts the size as zero.
+fn finite_or_zero(value: f32, what: &str) -> f32 {
+    if value.is_finite() {
+        return value;
+    }
+    crate::contract_violation!("{what} is {value}, which is not finite, so it counts as 0");
+    0.0
 }
 
 fn repeated_spacing(spacing: f32, count: usize) -> f32 {
@@ -677,10 +711,9 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     }
                 }
                 Tag::Link { dest_url, .. } => {
-                    stack.push(Container::InlineLink {
-                        url: Str::from(dest_url.into_string()),
-                        label: MarkdownInlineBuilder::new(),
-                    });
+                    if let Some(mut sink) = current_inline_sink(&mut stack) {
+                        sink.enter_link(Str::from(dest_url.into_string()));
+                    }
                 }
                 Tag::Image { dest_url, .. } => {
                     stack.push(Container::InlineImage {
@@ -815,12 +848,8 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     }
                 }
                 pulldown_cmark::TagEnd::Link => {
-                    if let Some(Container::InlineLink { url, label }) = stack.pop() {
-                        let element = RichTextElement::Link {
-                            label: label.finish(),
-                            url,
-                        };
-                        push_inline_element(&mut stack, element);
+                    if let Some(mut sink) = current_inline_sink(&mut stack) {
+                        sink.exit_link();
                     }
                 }
                 pulldown_cmark::TagEnd::Image => {
@@ -994,7 +1023,7 @@ const fn map_table_alignment(alignment: Alignment) -> MarkdownTableAlignment {
 fn collapse_inline(mut elements: Vec<RichTextElement>) -> RichTextElement {
     match elements.len() {
         0 => RichTextElement::Text(StyledStr::empty()),
-        1 => elements.pop().expect("elements should have one item"),
+        1 => elements.pop().expect("this arm matches a length of one"),
         _ => RichTextElement::Group {
             elements,
             inline: true,
@@ -1005,7 +1034,7 @@ fn collapse_inline(mut elements: Vec<RichTextElement>) -> RichTextElement {
 fn collapse_block(mut elements: Vec<RichTextElement>) -> RichTextElement {
     match elements.len() {
         0 => RichTextElement::Text(StyledStr::empty()),
-        1 => elements.pop().expect("elements should have one item"),
+        1 => elements.pop().expect("this arm matches a length of one"),
         _ => RichTextElement::Group {
             elements,
             inline: false,
@@ -1119,12 +1148,25 @@ impl InlineSinkMut<'_> {
             Self::Builder(builder) => builder.exit(),
         }
     }
+
+    /// Starts a link inside flowing text. An image's alt text is plain, so a
+    /// link inside it only contributes its label.
+    fn enter_link(&mut self, url: Str) {
+        if let Self::Group(group) = self {
+            group.enter_link(url);
+        }
+    }
+
+    fn exit_link(&mut self) {
+        if let Self::Group(group) = self {
+            group.exit_link();
+        }
+    }
 }
 
 fn current_inline_sink(stack: &mut [Container]) -> Option<InlineSinkMut<'_>> {
     for container in stack.iter_mut().rev() {
         match container {
-            Container::InlineLink { label, .. } => return Some(InlineSinkMut::Builder(label)),
             Container::InlineImage { alt, .. } => return Some(InlineSinkMut::Builder(alt)),
             Container::Paragraph(group)
             | Container::Heading(group)
@@ -1154,10 +1196,6 @@ enum Container {
         blocks: Vec<RichTextElement>,
         inline: InlineGroup,
     },
-    InlineLink {
-        url: Str,
-        label: MarkdownInlineBuilder,
-    },
     InlineImage {
         url: Str,
         alt: MarkdownInlineBuilder,
@@ -1183,26 +1221,53 @@ enum Container {
 struct InlineGroup {
     builder: MarkdownInlineBuilder,
     segments: Vec<RichTextElement>,
+    /// Bytes pushed into `builder` since it was last taken, which is the
+    /// offset the next text lands at in the segment's plain text.
+    offset: usize,
+    /// The URL and start offset of the link being read, if any.
+    open_link: Option<(usize, Str)>,
+    /// Finished links of the current segment, as byte ranges of its plain text.
+    links: Vec<(Range<usize>, Str)>,
 }
 
 impl InlineGroup {
     fn with_style(style: Style) -> Self {
         Self {
             builder: MarkdownInlineBuilder::with_base_style(style),
-            segments: Vec::new(),
+            ..Self::default()
         }
     }
 
     fn push_text(&mut self, text: &str) {
         self.builder.push_text(text);
+        self.offset += text.len();
     }
 
     fn soft_break(&mut self) {
         self.builder.push_soft_break();
+        self.offset += ' '.len_utf8();
     }
 
     fn hard_break(&mut self) {
         self.builder.push_hard_break();
+        self.offset += '\n'.len_utf8();
+    }
+
+    /// Starts a link whose label is styled by the enclosing emphasis and
+    /// heading, so it stays part of the surrounding run of text.
+    fn enter_link(&mut self, url: Str) {
+        self.builder
+            .enter_with(|style| style.underline().foreground(Color::new(AccentColor)));
+        self.open_link = Some((self.offset, url));
+    }
+
+    fn exit_link(&mut self) {
+        self.builder.exit();
+        if let Some((start, url)) = self.open_link.take()
+            && start < self.offset
+        {
+            self.links.push((start..self.offset, url));
+        }
     }
 
     fn enter_emphasis(&mut self) {
@@ -1219,23 +1284,34 @@ impl InlineGroup {
 
     fn push_inline_code(&mut self, text: &str) {
         self.builder.push_inline_code(text);
+        self.offset += text.len();
     }
 
     fn exit_style(&mut self) {
         self.builder.exit();
     }
 
-    fn push_element(&mut self, element: RichTextElement) {
+    /// Moves the text read so far into a segment, tapping its links.
+    fn close_text(&mut self) {
         if let Some(text) = self.builder.take() {
-            self.segments.push(RichTextElement::Text(text));
+            let links = mem::take(&mut self.links);
+            self.segments
+                .push(RichTextElement::Text(attach_links(text, links)));
         }
+        // A link that spans the split continues in the next segment.
+        if let Some((_, url)) = self.open_link.take() {
+            self.open_link = Some((0, url));
+        }
+        self.offset = 0;
+    }
+
+    fn push_element(&mut self, element: RichTextElement) {
+        self.close_text();
         self.segments.push(element);
     }
 
     fn take(&mut self) -> Option<Vec<RichTextElement>> {
-        if let Some(text) = self.builder.take() {
-            self.segments.push(RichTextElement::Text(text));
-        }
+        self.close_text();
 
         if self.segments.is_empty() {
             return None;
@@ -1248,9 +1324,7 @@ impl InlineGroup {
     }
 
     fn finish(mut self) -> Vec<RichTextElement> {
-        if let Some(text) = self.builder.take() {
-            self.segments.push(RichTextElement::Text(text));
-        }
+        self.close_text();
         self.segments
     }
 }
@@ -1260,13 +1334,65 @@ impl Default for InlineGroup {
         Self {
             builder: MarkdownInlineBuilder::new(),
             segments: Vec::new(),
+            offset: 0,
+            open_link: None,
+            links: Vec::new(),
         }
     }
+}
+
+/// Makes each link range of `text` open its URL when tapped.
+///
+/// A link edge is always a chunk edge, because entering and leaving a link
+/// starts a new styled span, so a chunk lies wholly inside or outside a link.
+fn attach_links(text: StyledStr, links: Vec<(Range<usize>, Str)>) -> StyledStr {
+    if links.is_empty() {
+        return text;
+    }
+    let mut links = links.into_iter().peekable();
+    let mut linked = StyledStr::empty();
+    let mut label = StyledStr::empty();
+    let mut position = 0;
+    for (chunk, style) in text.into_chunks() {
+        let length = chunk.len();
+        let link_end = links
+            .peek()
+            .filter(|(range, _)| range.start <= position)
+            .map(|(range, _)| range.end);
+        position += length;
+        match link_end {
+            Some(end) => {
+                label.push(chunk, style);
+                if position >= end
+                    && let Some((_, url)) = links.next()
+                {
+                    linked = linked + mem::take(&mut label).on_tap(url, |url: Str| open_url(&url));
+                }
+            }
+            None => linked.push(chunk, style),
+        }
+    }
+    linked
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use waterui_layout::ResolvedExtent;
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "which is not finite"))]
+    fn a_non_finite_measured_size_counts_as_zero() {
+        assert!((finite_or_zero(1.5, "size") - 1.5).abs() < f32::EPSILON);
+        assert!(finite_or_zero(f32::NAN, "size").abs() < f32::EPSILON);
+    }
+
+    #[test]
+    #[cfg(feature = "media")]
+    fn an_invalid_image_url_renders_nothing() {
+        let view = render_image(&Str::from("not a url"));
+        assert!(view.is::<()>());
+    }
 
     /// Collects a document's elements into a shape that is easy to assert on.
     fn plain_text_of(elements: &[RichTextElement]) -> String {
@@ -1332,6 +1458,14 @@ mod tests {
     }
 
     impl SubView for MockTableCell {
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
+
         fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
             let width = proposal
                 .width
@@ -1361,10 +1495,13 @@ mod tests {
 
         let rich = RichText::from_markdown(markdown);
         let elements = rich.elements();
-        assert!(!elements.is_empty());
+        assert!(
+            matches!(elements, [_, ..]),
+            "expected non-empty elements, got {elements:?}"
+        );
 
         assert!(matches!(elements[0], RichTextElement::Text(_)));
-        assert!(matches!(elements[1], RichTextElement::Group { .. }));
+        assert!(matches!(elements[1], RichTextElement::Text(_)));
         assert!(matches!(elements[2], RichTextElement::List { .. }));
         assert!(matches!(elements[3], RichTextElement::Table { .. }));
     }
@@ -1619,11 +1756,15 @@ fn main() {
 
         fn find_code_chunk(elements: &[RichTextElement]) -> bool {
             elements.iter().any(|el| match el {
-                RichTextElement::Text(styled) => styled
-                    .clone()
-                    .into_chunks()
-                    .into_iter()
-                    .any(|(txt, style)| txt.as_str() == "cargo run" && style.background.is_some()),
+                RichTextElement::Text(styled) => {
+                    styled
+                        .clone()
+                        .into_chunks()
+                        .into_iter()
+                        .any(|(txt, style)| {
+                            txt.as_str() == "cargo run" && style.get_background().is_some()
+                        })
+                }
                 RichTextElement::Group { elements, .. } => find_code_chunk(elements),
                 _ => false,
             })
@@ -1643,31 +1784,17 @@ fn main() {
         let rich = RichText::from_markdown(markdown);
         let elements = rich.elements();
 
-        // Should have one Group element (inline paragraph)
-        assert_eq!(elements.len(), 1);
-
-        if let RichTextElement::Group {
-            elements: inner,
-            inline,
-        } = &elements[0]
-        {
-            assert!(inline, "Should be inline group");
-
-            // Find the Link element
-            let link = inner
-                .iter()
-                .find(|el| matches!(el, RichTextElement::Link { .. }));
-            assert!(link.is_some(), "Should have a Link element");
-
-            if let Some(RichTextElement::Link { label, url: _ }) = link {
-                let label_text = label.to_plain();
-                assert_eq!(
-                    &*label_text, "WaterUI on GitHub",
-                    "Link text should be complete"
-                );
-            }
-        } else {
-            panic!("Expected Group element, got {:?}", elements[0]);
-        }
+        // The link stays inside the paragraph's single run of text.
+        let [RichTextElement::Text(text)] = elements else {
+            panic!("Expected one Text element, got {elements:?}");
+        };
+        let [span] = text.tap_spans() else {
+            panic!("Expected one link span, got {:?}", text.tap_spans());
+        };
+        assert_eq!(
+            &text.to_plain()[span.range()],
+            "WaterUI on GitHub",
+            "Link text should be complete"
+        );
     }
 }

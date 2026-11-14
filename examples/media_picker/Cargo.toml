@@ -13,6 +13,9 @@ publish = false
 [features]
 dev = ["waterui/dynamic_linking"]
 
+[lints]
+workspace = true
+
 [dependencies]
-waterui = { workspace = true, features = ["video-gpu"] }
+waterui = { workspace = true, features = ["media", "video", "video-gpu", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 tracing.workspace = true

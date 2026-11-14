@@ -4,7 +4,8 @@
 //! for clipping views and as filled views.
 //!
 //! Filled shapes are emitted as native `ResolvedShape` raw views so each backend
-//! renders paths with its own 2D engine. Morphing shapes stay GPU-backed.
+//! renders paths with its own 2D engine. Morphing shapes interpolate the
+//! built-in shapes' parameters and draw the resulting path through Canvas.
 //!
 //! # Example
 //!
@@ -22,29 +23,14 @@
 extern crate alloc;
 
 use core::f32::consts::{FRAC_PI_2, PI, TAU};
-#[cfg(feature = "gpu")]
-use core::fmt;
-use core::time::Duration;
-#[cfg(feature = "gpu")]
-use num_traits::ToPrimitive;
 
-#[cfg(feature = "gpu")]
-use nami::Signal as _;
-use nami::{Computed, SignalExt as _, signal::IntoComputed};
-#[cfg(feature = "gpu")]
-use shaderloom::CompiledShader;
-#[cfg(feature = "gpu")]
-use waterui_core::reactive::watcher::BoxWatcherGuard;
-use waterui_core::{Environment, View, easing::EasingCurve, metadata::MetadataKey};
+use nami::{Computed, SignalExt as _};
+use waterui_core::{Environment, View, metadata::MetadataKey};
 use waterui_graphics::color::Color;
-#[cfg(feature = "gpu")]
-use waterui_graphics::{
-    GpuContext, GpuFrame, GpuSurface, GpuView, reactive_color::ReactiveColor,
-    single_bind_group_render_stages,
-};
 
-#[cfg(feature = "gpu")]
-const MORPH_SHADER: CompiledShader = include!(concat!(env!("OUT_DIR"), "/morph.rs"));
+mod morph;
+
+pub use morph::{MorphAnimation, MorphShape};
 
 // ============================================================================
 // PathCommand - The primitive operations for drawing paths
@@ -55,6 +41,10 @@ const MORPH_SHADER: CompiledShader = include!(concat!(env!("OUT_DIR"), "/morph.r
 /// All coordinates are normalized (0.0-1.0) and scale with view bounds.
 /// Native backends convert these to absolute coordinates based on view size.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each path command variant by variant; a new path command must fail their build instead of falling into a wildcard arm"
+)]
 pub enum PathCommand {
     /// Move to a position without drawing.
     MoveTo {
@@ -288,9 +278,18 @@ impl Shape for Capsule {
 
 /// A rectangle with uniform corner radius.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct RoundedRectangle {
     /// Corner radius (normalized, 0.0-0.5 range).
-    pub corner_radius: f32,
+    corner_radius: f32,
+}
+
+impl RoundedRectangle {
+    /// Corner radius (normalized, 0.0-0.5 range).
+    #[must_use]
+    pub const fn corner_radius(&self) -> f32 {
+        self.corner_radius
+    }
 }
 
 impl RoundedRectangle {
@@ -379,15 +378,42 @@ impl Shape for RoundedRectangle {
 
 /// A rectangle with independent corner radii.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct UnevenRoundedRectangle {
     /// Top-leading corner radius (normalized).
-    pub top_leading: f32,
+    top_leading: f32,
     /// Top-trailing corner radius (normalized).
-    pub top_trailing: f32,
+    top_trailing: f32,
     /// Bottom-leading corner radius (normalized).
-    pub bottom_leading: f32,
+    bottom_leading: f32,
     /// Bottom-trailing corner radius (normalized).
-    pub bottom_trailing: f32,
+    bottom_trailing: f32,
+}
+
+impl UnevenRoundedRectangle {
+    /// Top-leading corner radius (normalized).
+    #[must_use]
+    pub const fn top_leading(&self) -> f32 {
+        self.top_leading
+    }
+
+    /// Top-trailing corner radius (normalized).
+    #[must_use]
+    pub const fn top_trailing(&self) -> f32 {
+        self.top_trailing
+    }
+
+    /// Bottom-leading corner radius (normalized).
+    #[must_use]
+    pub const fn bottom_leading(&self) -> f32 {
+        self.bottom_leading
+    }
+
+    /// Bottom-trailing corner radius (normalized).
+    #[must_use]
+    pub const fn bottom_trailing(&self) -> f32 {
+        self.bottom_trailing
+    }
 }
 
 impl UnevenRoundedRectangle {
@@ -496,9 +522,18 @@ impl Shape for UnevenRoundedRectangle {
 /// shape resizes, which is the whole point: spec radii stay constant however
 /// tall or wide the surface ends up.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct FixedRoundedRectangle {
     /// Corner radius in logical points.
-    pub corner_radius: f32,
+    corner_radius: f32,
+}
+
+impl FixedRoundedRectangle {
+    /// Corner radius in logical points.
+    #[must_use]
+    pub const fn corner_radius(&self) -> f32 {
+        self.corner_radius
+    }
 }
 
 impl FixedRoundedRectangle {
@@ -544,15 +579,42 @@ impl Shape for FixedRoundedRectangle {
 /// is a length in points, used where a spec names per-corner values — a modal
 /// panel's trailing corners, say.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct FixedUnevenRoundedRectangle {
     /// Top-leading corner radius in logical points.
-    pub top_leading: f32,
+    top_leading: f32,
     /// Top-trailing corner radius in logical points.
-    pub top_trailing: f32,
+    top_trailing: f32,
     /// Bottom-leading corner radius in logical points.
-    pub bottom_leading: f32,
+    bottom_leading: f32,
     /// Bottom-trailing corner radius in logical points.
-    pub bottom_trailing: f32,
+    bottom_trailing: f32,
+}
+
+impl FixedUnevenRoundedRectangle {
+    /// Top-leading corner radius in logical points.
+    #[must_use]
+    pub const fn top_leading(&self) -> f32 {
+        self.top_leading
+    }
+
+    /// Top-trailing corner radius in logical points.
+    #[must_use]
+    pub const fn top_trailing(&self) -> f32 {
+        self.top_trailing
+    }
+
+    /// Bottom-leading corner radius in logical points.
+    #[must_use]
+    pub const fn bottom_leading(&self) -> f32 {
+        self.bottom_leading
+    }
+
+    /// Bottom-trailing corner radius in logical points.
+    #[must_use]
+    pub const fn bottom_trailing(&self) -> f32 {
+        self.bottom_trailing
+    }
 }
 
 impl FixedUnevenRoundedRectangle {
@@ -767,7 +829,11 @@ impl MetadataKey for ClipShape {}
 // ============================================================================
 
 /// The kind of shape for backend rendering optimization.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends render each shape kind with its own native primitive, variant by variant; a new kind must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ShapeKind {
     /// Rectangle with sharp corners.
     #[default]
@@ -824,37 +890,37 @@ pub enum ShapeKind {
 
 /// Resolved shape payload rendered directly by native backends.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ResolvedShape {
     /// Shape kind for backend-side optimization.
-    pub kind: ShapeKind,
+    kind: ShapeKind,
     /// Path commands in unit coordinate space.
-    pub commands: Vec<PathCommand>,
+    commands: Vec<PathCommand>,
     /// Environment-resolved fill color that remains reactive to theme changes.
-    pub fill: Computed<waterui_graphics::ResolvedColor>,
+    fill: Computed<waterui_graphics::WorkingColor>,
+}
+
+impl ResolvedShape {
+    /// Shape kind for backend-side optimization.
+    #[must_use]
+    pub const fn kind(&self) -> ShapeKind {
+        self.kind
+    }
+
+    /// Path commands in unit coordinate space.
+    #[must_use]
+    pub const fn commands(&self) -> &[PathCommand] {
+        self.commands.as_slice()
+    }
+
+    /// Environment-resolved fill color that remains reactive to theme changes.
+    #[must_use]
+    pub const fn fill(&self) -> &Computed<waterui_graphics::WorkingColor> {
+        &self.fill
+    }
 }
 
 waterui_core::raw_view!(ResolvedShape, waterui_core::layout::StretchAxis::Both);
-
-/// Resolved morphing shape payload rendered directly by capable backends.
-#[derive(Debug, Clone)]
-pub struct ResolvedMorphShape {
-    /// Source shape kind.
-    pub from: ShapeKind,
-    /// Target shape kind.
-    pub to: ShapeKind,
-    /// Environment-resolved fill color that remains reactive to theme changes.
-    pub fill: Computed<waterui_graphics::ResolvedColor>,
-    /// Time-based morph animation configuration.
-    pub animation: MorphAnimation,
-    /// Optional explicit progress signal.
-    pub progress: Option<Computed<f32>>,
-}
-
-impl waterui_core::NativeView for ResolvedMorphShape {
-    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-        waterui_core::layout::StretchAxis::Both
-    }
-}
 
 // ============================================================================
 // FilledShape - Shape as a View with backend-native fill rendering
@@ -873,16 +939,7 @@ impl FilledShape {
     #[allow(clippy::needless_pass_by_value)]
     pub fn new(shape: impl Shape, fill: impl Into<Color>) -> Self {
         Self {
-            kind: ShapeKind::CustomPath,
-            commands: shape.path().into_iter().collect(),
-            fill: fill.into(),
-        }
-    }
-
-    #[allow(clippy::needless_pass_by_value)]
-    fn with_kind(kind: ShapeKind, shape: impl Shape, fill: impl Into<Color>) -> Self {
-        Self {
-            kind,
+            kind: shape.shape_kind(),
             commands: shape.path().into_iter().collect(),
             fill: fill.into(),
         }
@@ -908,139 +965,16 @@ impl FilledShape {
 
     /// Creates a morphing shape animation from this shape to another built-in shape.
     ///
-    /// Morphing currently supports SDF-backed built-in shapes:
-    /// `Rectangle`, `Circle`, `Ellipse`, `RoundedRectangle`, `UnevenRoundedRectangle`, `Capsule`.
+    /// Morphing supports the built-in shapes, each a parameterized rounded
+    /// rectangle; a [`Path`] has no parameters to interpolate.
+    ///
+    /// # Panics
+    ///
+    /// When either shape is a custom [`Path`].
     #[must_use]
     #[allow(clippy::needless_pass_by_value)]
     pub fn morph_to(self, target: impl ShapeExt) -> MorphShape {
         MorphShape::new(self.kind, target.shape_kind(), self.fill)
-    }
-}
-
-/// Configuration for shape morph animations.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MorphAnimation {
-    /// Duration of one forward morph cycle.
-    pub duration: Duration,
-    /// Easing curve applied to normalized cycle progress.
-    pub easing: EasingCurve,
-    /// Whether the animation repeats after reaching the end.
-    pub repeat: bool,
-    /// Whether repeating animation should play in reverse every other cycle.
-    pub autoreverse: bool,
-}
-
-impl Default for MorphAnimation {
-    fn default() -> Self {
-        Self {
-            duration: Duration::from_millis(900),
-            easing: EasingCurve::EASE_IN_OUT,
-            repeat: true,
-            autoreverse: true,
-        }
-    }
-}
-
-impl MorphAnimation {
-    /// Creates a one-shot morph animation.
-    #[must_use]
-    pub const fn once(duration: Duration, easing: EasingCurve) -> Self {
-        Self {
-            duration,
-            easing,
-            repeat: false,
-            autoreverse: false,
-        }
-    }
-
-    #[cfg(feature = "gpu")]
-    #[must_use]
-    fn sample(self, elapsed: Duration) -> f32 {
-        if self.duration.is_zero() {
-            return 1.0;
-        }
-        let raw = elapsed.as_secs_f32() / self.duration.as_secs_f32();
-        let cycle = if self.repeat {
-            let base = raw.fract();
-            let index = raw
-                .floor()
-                .to_u64()
-                .expect("MorphAnimation::sample: cycle index must fit into u64");
-            if self.autoreverse && index % 2 == 1 {
-                1.0 - base
-            } else {
-                base
-            }
-        } else {
-            raw.clamp(0.0, 1.0)
-        };
-        self.easing.ease(cycle).clamp(0.0, 1.0)
-    }
-}
-
-/// A morphing filled shape view.
-#[derive(Debug, Clone)]
-pub struct MorphShape {
-    from: ShapeKind,
-    to: ShapeKind,
-    fill: Color,
-    animation: MorphAnimation,
-    progress: Option<Computed<f32>>,
-}
-
-impl MorphShape {
-    fn new(from: ShapeKind, to: ShapeKind, fill: Color) -> Self {
-        Self {
-            from,
-            to,
-            fill,
-            animation: MorphAnimation::default(),
-            progress: None,
-        }
-    }
-
-    /// Sets explicit animation configuration.
-    #[must_use]
-    pub const fn animation(mut self, animation: MorphAnimation) -> Self {
-        self.animation = animation;
-        self
-    }
-
-    /// Sets the cycle duration (keeps other animation options unchanged).
-    #[must_use]
-    pub const fn duration(mut self, duration: Duration) -> Self {
-        self.animation.duration = duration;
-        self
-    }
-
-    /// Sets easing (keeps other animation options unchanged).
-    #[must_use]
-    pub const fn easing(mut self, easing: EasingCurve) -> Self {
-        self.animation.easing = easing;
-        self
-    }
-
-    /// Enables/disables repeating.
-    #[must_use]
-    pub const fn repeat(mut self, repeat: bool) -> Self {
-        self.animation.repeat = repeat;
-        self
-    }
-
-    /// Enables/disables autoreverse for repeating animations.
-    #[must_use]
-    pub const fn autoreverse(mut self, autoreverse: bool) -> Self {
-        self.animation.autoreverse = autoreverse;
-        self
-    }
-
-    /// Overrides animated progress with an explicit reactive progress signal `[0, 1]`.
-    ///
-    /// When set, this takes precedence over the time-based animation config.
-    #[must_use]
-    pub fn progress(mut self, progress: impl IntoComputed<f32>) -> Self {
-        self.progress = Some(progress.into_computed());
-        self
     }
 }
 
@@ -1059,355 +993,6 @@ impl View for FilledShape {
     }
 }
 
-impl View for MorphShape {
-    fn body(self, env: &Environment) -> impl View {
-        let resolved = self.fill.resolve(env).computed();
-        // The GPU fallback renderer also consumes `progress`, so clone it
-        // only on that path; the lean path moves it into the native node.
-        #[cfg(feature = "gpu")]
-        let progress_for_gpu = self.progress.clone();
-        let native = waterui_core::Native::new(ResolvedMorphShape {
-            from: self.from,
-            to: self.to,
-            fill: resolved,
-            animation: self.animation,
-            progress: self.progress,
-        });
-        #[cfg(feature = "gpu")]
-        let native = native.with_fallback(GpuSurface::new(MorphShapeRenderer::new(
-            kind_to_morph_shape(self.from)
-                .expect("morph source shape must be a built-in morphable shape"),
-            kind_to_morph_shape(self.to)
-                .expect("morph target shape must be a built-in morphable shape"),
-            ReactiveColor::new(&Computed::constant(self.fill), env),
-            self.animation,
-            progress_for_gpu,
-        )));
-        native
-    }
-
-    /// Resolves to `Native<ResolvedMorphShape>` (or its `GpuSurface`
-    /// fallback), both of which fill both axes.
-    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-        waterui_core::layout::StretchAxis::Both
-    }
-}
-
-// ============================================================================
-// MorphShapeRenderer - SDF morphing for built-in shapes
-// ============================================================================
-
-#[cfg(feature = "gpu")]
-#[derive(Debug, Clone, Copy)]
-struct MorphSdfShape {
-    shape_type: u32,
-    radii: [f32; 4],
-}
-
-#[cfg(feature = "gpu")]
-fn kind_to_morph_shape(kind: ShapeKind) -> Option<MorphSdfShape> {
-    match kind {
-        ShapeKind::Rect => Some(MorphSdfShape {
-            shape_type: 0,
-            radii: [0.0; 4],
-        }),
-        ShapeKind::Circle => Some(MorphSdfShape {
-            shape_type: 1,
-            radii: [0.0; 4],
-        }),
-        ShapeKind::Ellipse => Some(MorphSdfShape {
-            shape_type: 2,
-            radii: [0.0; 4],
-        }),
-        ShapeKind::RoundedRect { corner_radius } => Some(MorphSdfShape {
-            shape_type: 3,
-            radii: [clamp_radius(corner_radius); 4],
-        }),
-        ShapeKind::UnevenRoundedRect {
-            top_left,
-            top_right,
-            bottom_left,
-            bottom_right,
-        } => {
-            let corners = CornerRadii {
-                top_left,
-                top_right,
-                bottom_right,
-                bottom_left,
-            }
-            .sanitized();
-            Some(MorphSdfShape {
-                shape_type: 3,
-                radii: [
-                    corners.top_left,
-                    corners.top_right,
-                    corners.bottom_right,
-                    corners.bottom_left,
-                ],
-            })
-        }
-        ShapeKind::Capsule => Some(MorphSdfShape {
-            shape_type: 4,
-            radii: [0.0; 4],
-        }),
-        // Absolute radii cannot be normalized for the SDF shader without
-        // knowing the bounds the shape resolves against, and custom paths
-        // carry no radius structure at all.
-        ShapeKind::FixedRoundedRect { .. }
-        | ShapeKind::FixedUnevenRoundedRect { .. }
-        | ShapeKind::CustomPath => None,
-    }
-}
-
-#[cfg(feature = "gpu")]
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
-struct MorphUniforms {
-    color: [f32; 4],
-    dimensions_and_progress: [f32; 4], // width, height, progress, pad
-    shape_types: [f32; 4],             // from_type, to_type, pad, pad
-    from_radii: [f32; 4],              // tl, tr, br, bl
-    to_radii: [f32; 4],                // tl, tr, br, bl
-}
-
-#[cfg(feature = "gpu")]
-struct MorphShapeRenderer {
-    from: MorphSdfShape,
-    to: MorphSdfShape,
-    fill_color: ReactiveColor,
-    animation: MorphAnimation,
-    progress: Option<Computed<f32>>,
-    progress_guard: Option<BoxWatcherGuard>,
-    start: Option<Duration>,
-    pipeline: Option<wgpu::RenderPipeline>,
-    uniform_buffer: Option<wgpu::Buffer>,
-    bind_group: Option<wgpu::BindGroup>,
-    pipeline_format: Option<wgpu::TextureFormat>,
-}
-
-#[cfg(feature = "gpu")]
-impl fmt::Debug for MorphShapeRenderer {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MorphShapeRenderer")
-            .field("from", &self.from)
-            .field("to", &self.to)
-            .finish_non_exhaustive()
-    }
-}
-
-#[cfg(feature = "gpu")]
-impl MorphShapeRenderer {
-    fn new(
-        from: MorphSdfShape,
-        to: MorphSdfShape,
-        fill_color: ReactiveColor,
-        animation: MorphAnimation,
-        progress: Option<Computed<f32>>,
-    ) -> Self {
-        Self {
-            from,
-            to,
-            fill_color,
-            animation,
-            progress,
-            progress_guard: None,
-            start: None,
-            pipeline: None,
-            uniform_buffer: None,
-            bind_group: None,
-            pipeline_format: None,
-        }
-    }
-}
-
-#[cfg(feature = "gpu")]
-impl GpuView for MorphShapeRenderer {
-    fn setup(
-        &mut self,
-        ctx: &GpuContext<'_>,
-        _env: &mut waterui_core::Environment,
-    ) -> impl core::future::Future<Output = ()> {
-        self.fill_color.install(&ctx.redraw_handle);
-        if let Some(progress) = &self.progress {
-            let redraw = ctx.redraw_handle.clone();
-            self.progress_guard = Some(progress.watch(move |_| redraw.request_redraw()));
-        }
-
-        let (vertex_shader, fragment_shader, bind_group_layout) = single_bind_group_render_stages(
-            &MORPH_SHADER,
-            ctx.device,
-            "the morph shape shader",
-            "vs_main",
-            "fs_main",
-        );
-
-        let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Morph Shape Uniforms"),
-            size: core::mem::size_of::<MorphUniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Morph Shape Bind Group"),
-            layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
-        });
-
-        let pipeline_layout = ctx
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Morph Shape Pipeline Layout"),
-                bind_group_layouts: &[Some(&bind_group_layout)],
-                immediate_size: 0,
-            });
-
-        let blend = ctx.alpha_blend_state();
-
-        let pipeline = ctx
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Morph Shape Pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: vertex_shader.module(),
-                    entry_point: Some(vertex_shader.entry_point()),
-                    buffers: &[],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: fragment_shader.module(),
-                    entry_point: Some(fragment_shader.entry_point()),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: ctx.surface_format,
-                        blend,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            });
-
-        self.pipeline = Some(pipeline);
-        self.uniform_buffer = Some(uniform_buffer);
-        self.bind_group = Some(bind_group);
-        self.pipeline_format = Some(ctx.surface_format);
-        self.start = None;
-        core::future::ready(())
-    }
-
-    fn render(&mut self, frame: &mut GpuFrame) {
-        assert_eq!(
-            self.pipeline_format,
-            Some(frame.format),
-            "MorphShape target format changed after setup"
-        );
-        let pipeline = self
-            .pipeline
-            .as_ref()
-            .expect("MorphShape render called before setup");
-        let uniform_buffer = self
-            .uniform_buffer
-            .as_ref()
-            .expect("MorphShape render called before setup");
-        let bind_group = self
-            .bind_group
-            .as_ref()
-            .expect("MorphShape render called before setup");
-
-        // The frame clock is supplied by the backend, so it is monotonic on
-        // every target — `std::time::Instant` does not exist on wasm32 — and
-        // deterministic under preview/offscreen pumping.
-        let start = *self.start.get_or_insert_with(|| frame.elapsed());
-        let age = frame.elapsed().saturating_sub(start);
-        let progress = if let Some(signal) = &self.progress {
-            let value = signal.get();
-            assert!(value.is_finite(), "MorphShape progress must be finite");
-            value.clamp(0.0, 1.0)
-        } else {
-            self.animation.sample(age)
-        };
-
-        let fill_color = self.fill_color.get();
-        let [r, g, b] = fill_color.linear_with_headroom();
-        let uniforms = MorphUniforms {
-            color: [r, g, b, fill_color.opacity],
-            dimensions_and_progress: [
-                u32_to_f32(frame.width),
-                u32_to_f32(frame.height),
-                progress,
-                0.0,
-            ],
-            shape_types: [
-                u32_to_f32(self.from.shape_type),
-                u32_to_f32(self.to.shape_type),
-                0.0,
-                0.0,
-            ],
-            from_radii: self.from.radii,
-            to_radii: self.to.radii,
-        };
-        frame
-            .queue
-            .write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
-
-        let mut encoder = frame
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Morph Shape Encoder"),
-            });
-
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Morph Shape Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame.view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-
-            render_pass.set_pipeline(pipeline);
-            render_pass.set_bind_group(0, bind_group, &[]);
-            render_pass.draw(0..6, 0..1);
-        }
-
-        frame.queue.submit(core::iter::once(encoder.finish()));
-
-        // Request continuous redraw while animation is active
-        let animation_active =
-            self.progress.is_none() && (self.animation.repeat || age < self.animation.duration);
-        if animation_active {
-            frame.request_redraw();
-        }
-    }
-}
-
-#[cfg(feature = "gpu")]
-fn u32_to_f32(value: u32) -> f32 {
-    value
-        .to_f32()
-        .expect("shape dimensions must be representable as f32")
-}
-
 // ============================================================================
 // ShapeExt - Extension trait for adding fill to shapes
 // ============================================================================
@@ -1416,13 +1001,17 @@ fn u32_to_f32(value: u32) -> f32 {
 pub trait ShapeExt: Shape + Sized {
     /// Fills the shape with the specified color.
     fn fill(self, color: impl Into<Color>) -> FilledShape {
-        FilledShape::with_kind(self.shape_kind(), self, color)
+        FilledShape::new(self, color)
     }
 
     /// Creates a morphing filled shape from this shape to another built-in shape.
     ///
-    /// Morphing currently supports SDF-backed built-in shapes:
-    /// `Rectangle`, `Circle`, `Ellipse`, `RoundedRectangle`, `UnevenRoundedRectangle`, `Capsule`.
+    /// Morphing supports the built-in shapes, each a parameterized rounded
+    /// rectangle; a [`Path`] has no parameters to interpolate.
+    ///
+    /// # Panics
+    ///
+    /// When either shape is a custom [`Path`].
     fn morph_to(self, target: impl ShapeExt, fill: impl Into<Color>) -> MorphShape {
         MorphShape::new(self.shape_kind(), target.shape_kind(), fill.into())
     }
@@ -1449,6 +1038,18 @@ impl ShapeExt for Path {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filled_shape_new_keeps_kind() {
+        let via_fill = Capsule.fill(Color::srgb(255, 0, 0));
+        let via_new = FilledShape::new(Capsule, Color::srgb(255, 0, 0));
+        assert!(matches!(via_fill.kind(), ShapeKind::Capsule));
+        assert!(
+            matches!(via_new.kind(), ShapeKind::Capsule),
+            "FilledShape::new(Capsule, c) lost the kind: got CustomPath = {}",
+            matches!(via_new.kind(), ShapeKind::CustomPath)
+        );
+    }
 
     #[test]
     fn rounded_rectangle_radius_is_clamped() {
@@ -1526,14 +1127,5 @@ mod tests {
             }
             _ => panic!("unexpected kind"),
         }
-    }
-
-    #[cfg(feature = "gpu")]
-    #[test]
-    fn one_shot_animation_reaches_end() {
-        let animation = MorphAnimation::once(Duration::from_millis(200), EasingCurve::LINEAR);
-        assert!((animation.sample(Duration::ZERO) - 0.0).abs() < 1e-6);
-        assert!((animation.sample(Duration::from_millis(100)) - 0.5).abs() < 1e-3);
-        assert!((animation.sample(Duration::from_secs(1)) - 1.0).abs() < 1e-6);
     }
 }

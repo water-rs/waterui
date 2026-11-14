@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use waterui_inspector_protocol::{Channel, ChannelSet, InspectorEvent, InspectorEventEnvelope};
 
@@ -177,23 +177,41 @@ impl EventHub {
 
 /// Milliseconds since the Unix epoch.
 ///
-/// # Panics
+/// # Contract
 ///
-/// Panics when the system clock is before the Unix epoch, which would make
-/// every timestamp in the session meaningless.
+/// A system clock before the Unix epoch breaks the contract of the host: a
+/// debug build panics, and a release build logs the error and stamps 0.
 fn unix_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock is before the UNIX epoch")
-        .as_millis()
-        .try_into()
-        .expect("UNIX millisecond timestamp overflowed u64")
+    millis_since_epoch(SystemTime::now())
+}
+
+/// The milliseconds `time` is after the Unix epoch.
+fn millis_since_epoch(time: SystemTime) -> u64 {
+    let since_epoch = time.duration_since(UNIX_EPOCH).unwrap_or_else(|error| {
+        crate::contract_violation!(
+            "system clock is before the UNIX epoch ({error}), so the timestamp is 0"
+        );
+        Duration::ZERO
+    });
+    since_epoch.as_millis().try_into().expect(
+        "a u64 of milliseconds since the UNIX epoch lasts for hundreds of millions of years",
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Dispatch, EventHub};
+    use super::{Dispatch, EventHub, millis_since_epoch};
+    use std::time::{Duration, UNIX_EPOCH};
     use waterui_inspector_protocol::{Channel, ChannelSet, FrameKind, FrameSample, InspectorEvent};
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "system clock is before the UNIX epoch")
+    )]
+    fn a_clock_before_the_epoch_stamps_zero() {
+        assert_eq!(millis_since_epoch(UNIX_EPOCH - Duration::from_secs(1)), 0);
+    }
 
     fn frame() -> InspectorEvent {
         InspectorEvent::Frame(FrameSample {
@@ -216,7 +234,7 @@ mod tests {
         let (hub, receiver) = EventHub::new();
         assert!(!hub.wants(Channel::Frames));
         hub.publish(frame());
-        assert!(receiver.is_empty());
+        assert_eq!(receiver.len(), 0);
     }
 
     #[test]

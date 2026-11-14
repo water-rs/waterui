@@ -1,0 +1,3 @@
+{%- macro sample_circle(s) -%}
+<circle class="sample-point" cx="{{ s.cx }}" cy="{{ s.cy }}" r="2.4" tabindex="0" data-frame="{{ s.frame }}" data-total="{{ s.total }}" data-gpu="{{ s.gpu }}" data-render="{{ s.render }}" data-rebuild="{{ s.rebuild }}"{% if let Some(build) = s.build %} data-build="{{ build }}"{% endif %}{% if let Some(dispatch) = s.dispatch %} data-dispatch="{{ dispatch }}"{% endif %}{% if let Some(finish) = s.finish %} data-finish="{{ finish }}"{% endif %} data-cpu="{{ s.cpu }}" data-memory="{{ s.memory }}" data-fps="{{ s.fps }}" data-layers="{{ s.layers }}" data-clip-layers="{{ s.clip_layers }}" data-clip-depth="{{ s.clip_depth }}"{% if let Some(value) = s.value %} data-value="{{ value }}"{% endif %}></circle>
+{%- endmacro -%}

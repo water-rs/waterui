@@ -8,6 +8,7 @@
 //! - `Environment`: A store for typed values that can be passed between views
 //! - `UseEnv`: A view that allows consuming environment values
 //! - `With`: A view that extends the environment with additional values
+//! - `Installed`: A view that installs a plugin into its content's environment
 //!
 //! # Example
 //!
@@ -196,11 +197,9 @@ impl Environment {
         match state {
             EnvironmentState::Map(map) => {
                 if let Some(value) = map.get(&TypeId::of::<T>()) {
-                    matches.push(
-                        value
-                            .downcast_ref::<T>()
-                            .expect("failed to downcast value while collecting environment state"),
-                    );
+                    matches.push(value.downcast_ref::<T>().expect(
+                        "an environment entry keyed by TypeId::of::<T>() holds a value of type T",
+                    ));
                 }
             }
             EnvironmentState::Overlay { parent, key, entry } => {
@@ -209,11 +208,10 @@ impl Environment {
                     return;
                 }
                 match entry {
-                    EnvironmentEntry::Present(value) => matches.push(
-                        value
-                            .downcast_ref::<T>()
-                            .expect("failed to downcast value while collecting environment state"),
-                    ),
+                    EnvironmentEntry::Present(value) => matches
+                        .push(value.downcast_ref::<T>().expect(
+                        "an environment entry keyed by TypeId::of::<T>() holds a value of type T",
+                    )),
                     EnvironmentEntry::Removed => matches.clear(),
                 }
             }
@@ -330,8 +328,10 @@ impl Environment {
     #[must_use]
     #[allow(clippy::coerce_container_to_any)]
     pub fn get<T: 'static>(&self) -> Option<&T> {
-        self.lookup_any(TypeId::of::<T>())
-            .map(|v| v.downcast_ref::<T>().expect("failed to downcast value"))
+        self.lookup_any(TypeId::of::<T>()).map(|v| {
+            v.downcast_ref::<T>()
+                .expect("an environment entry keyed by TypeId::of::<T>() holds a value of type T")
+        })
     }
 
     /// Retrieves the `index`-th visible value of type `T`, counting from the
@@ -367,7 +367,7 @@ impl Environment {
             self.insert(f());
         }
         self.get::<T>()
-            .expect("value missing from environment after insertion")
+            .expect("a value inserted into the environment is visible to the next lookup")
     }
 
     /// Extracts a value from the environment using the `Extractor` trait.
@@ -436,19 +436,28 @@ impl<F> UseEnv<F> {
 /// });
 /// ```
 ///
-/// # Panics
+/// # Missing values
 ///
-/// Panics if [`Extractor::extract`] fails for `E`.
+/// When [`Extractor::extract`] fails for `E`, the closure does not run: a
+/// debug build panics and a release build logs the failure through
+/// [`contract_violation!`](crate::contract_violation), and the view renders
+/// nothing. Take `Option<E>` to handle an absent value in the closure.
 #[must_use]
-pub fn use_env<E, V, F>(f: F) -> UseEnv<impl FnOnce(&Environment) -> V>
+pub fn use_env<E, V, F>(f: F) -> UseEnv<impl FnOnce(&Environment) -> Option<V>>
 where
     E: Extractor,
     V: View,
     F: FnOnce(E) -> V + 'static,
 {
-    UseEnv::new(move |env: &Environment| {
-        let extracted = E::extract(env).expect("failed to extract value from environment");
-        f(extracted)
+    UseEnv::new(move |env: &Environment| match E::extract(env) {
+        Ok(extracted) => Some(f(extracted)),
+        Err(error) => {
+            crate::contract_violation!(
+                "failed to extract `{}` from environment: {error}",
+                core::any::type_name::<E>()
+            );
+            None
+        }
     })
 }
 
@@ -496,11 +505,43 @@ impl<V: View, T: 'static> View for With<V, T> {
     }
 }
 
+/// A view that installs a [`Plugin`] into the environment of its content.
+///
+/// The plugin is installed into a copy of the parent environment when the view
+/// renders, so it applies to the content's subtree only. Like [`With`],
+/// `Installed` is transparent for layout and reports its content's stretch
+/// axis.
+#[derive(Debug, Clone)]
+pub struct Installed<V, P> {
+    content: V,
+    plugin: P,
+}
+
+impl<V: View, P: Plugin> Installed<V, P> {
+    /// Creates a view that installs `plugin` into the environment of `content`.
+    pub const fn new(content: V, plugin: P) -> Self {
+        Self { content, plugin }
+    }
+}
+
+impl<V: View, P: Plugin> View for Installed<V, P> {
+    fn body(self, env: &Environment) -> impl View {
+        let mut env = env.clone();
+        self.plugin.install(&mut env);
+        Metadata::new(self.content, env)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.content.stretch_axis()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::string::String;
 
     use super::*;
+    use crate::extract::Use;
 
     #[test]
     fn extending_reuses_parent_state_via_overlay() {
@@ -544,6 +585,42 @@ mod tests {
         let env = Environment::new().extending(1_i32).extending(2_i32);
 
         assert_eq!(env.get_nth::<i32>(0), env.get::<i32>());
+    }
+
+    #[test]
+    fn use_env_runs_the_closure_with_the_extracted_value() {
+        let seen = alloc::rc::Rc::new(core::cell::Cell::new(0_u8));
+        let view = use_env({
+            let seen = alloc::rc::Rc::clone(&seen);
+            move |Use(value): Use<u8>| seen.set(value)
+        });
+        let mut env = Environment::new();
+        env.insert(5_u8);
+
+        let _ = View::body(view, &env);
+
+        assert_eq!(seen.get(), 5);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "failed to extract")]
+    fn use_env_reports_a_missing_value_in_debug() {
+        let _ = View::body(use_env(|Use(_): Use<u8>| ()), &Environment::new());
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn use_env_skips_the_closure_for_a_missing_value_in_release() {
+        let ran = alloc::rc::Rc::new(core::cell::Cell::new(false));
+        let view = use_env({
+            let ran = alloc::rc::Rc::clone(&ran);
+            move |Use(_): Use<u8>| ran.set(true)
+        });
+
+        let _ = View::body(view, &Environment::new());
+
+        assert!(!ran.get());
     }
 
     #[test]

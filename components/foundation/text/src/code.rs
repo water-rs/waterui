@@ -13,17 +13,16 @@ use alloc::{
 use core::error::Error;
 use core::fmt;
 
-#[cfg(target_arch = "wasm32")]
-use executor_core::spawn_local;
 use nami::SignalExt;
 use suiteki::Str;
+use waterui_color::{
+    AccentColor, Color, CurrentColorScheme, MutedForegroundColor, SurfaceVariantColor,
+};
+use waterui_core::accessibility::AccessibilityRole;
 use waterui_core::gesture::{GestureObserver, TapGesture};
 use waterui_core::resolve::Resolvable;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
-use waterui_core::{AnyView, Environment, Metadata, View};
-use waterui_graphics::color::{
-    AccentColor, Color, CurrentColorScheme, MutedForegroundColor, SurfaceVariantColor,
-};
+use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, View, contract_violation};
 use waterui_layout::{
     background::background,
     padding::{EdgeInsets, Padding},
@@ -38,13 +37,20 @@ use crate::{
 };
 
 /// Copies text to the system clipboard.
-#[cfg(all(
-    not(target_os = "android"),
-    not(target_arch = "wasm32"),
-    not(target_os = "espidf")
+///
+/// `waterkit_clipboard` keeps serving the selection after `set_text`
+/// returns — an X11 worker thread holds the data, a forked child holds it
+/// on Wayland — so the handle may be scoped to the call.
+#[cfg(any(
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android",
+    target_arch = "wasm32"
 ))]
 fn copy_to_clipboard(text: &str) {
-    match arboard::Clipboard::new() {
+    match waterkit_clipboard::Clipboard::new() {
         Ok(mut clipboard) => {
             if let Err(error) = clipboard.set_text(text) {
                 tracing::error!(%error, "Failed to copy to clipboard");
@@ -56,35 +62,17 @@ fn copy_to_clipboard(text: &str) {
     }
 }
 
-/// Embedded targets have no system clipboard; copy is a no-op.
-#[cfg(target_os = "espidf")]
+/// `waterkit_clipboard` builds only where a system clipboard exists; other
+/// targets copy nothing.
+#[cfg(not(any(
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android",
+    target_arch = "wasm32"
+)))]
 fn copy_to_clipboard(_text: &str) {}
-
-/// Copies text to the Android clipboard.
-#[cfg(target_os = "android")]
-fn copy_to_clipboard(text: &str) {
-    if let Err(error) = android_clipboard::set_text(text.to_string()) {
-        tracing::error!(%error, "Failed to copy to clipboard");
-    }
-}
-
-/// Copies text to the browser clipboard.
-#[cfg(target_arch = "wasm32")]
-fn copy_to_clipboard(text: &str) {
-    let clipboard = web_sys::window()
-        .expect("browser window is unavailable for clipboard access")
-        .navigator()
-        .clipboard();
-    let text = text.to_string();
-
-    spawn_local(async move {
-        let promise = clipboard.write_text(&text);
-        if let Err(error) = wasm_bindgen_futures::JsFuture::from(promise).await {
-            tracing::error!(?error, "Failed to write browser clipboard text");
-        }
-    })
-    .detach();
-}
 
 /// What runs after a block's text has landed on the clipboard.
 ///
@@ -120,13 +108,16 @@ pub struct Code {
 impl Code {
     /// Creates a new `Code` view for the provided language and content.
     ///
-    /// # Panics
-    ///
-    /// Panics if the language cannot be converted into a supported [`Language`].
+    /// A language that cannot be converted into a supported [`Language`] is a
+    /// contract violation: the code is shown as [`Language::Plaintext`].
     pub fn new(language: impl TryInto<Language, Error: Error>, content: impl Into<Str>) -> Self {
+        let language = language.try_into().unwrap_or_else(|error| {
+            contract_violation!("Invalid language: {error}; the code is shown as plain text");
+            Language::Plaintext
+        });
         Self {
             info: None,
-            language: language.try_into().expect("Invalid language"),
+            language,
             content: content.into(),
             on_copied: None,
         }
@@ -160,17 +151,46 @@ impl Code {
 /// environment; a hook that does not recognise [`info`](Self::info) calls
 /// [`ViewConfiguration::render`] to get the ordinary code block back.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CodeConfig {
     /// The fence's info token as written (`mermaid`, `rust`, …), if it had one.
-    pub info: Option<Str>,
+    info: Option<Str>,
     /// The language that token resolved to; [`Language::Plaintext`] when it
     /// resolved to nothing.
-    pub language: Language,
+    language: Language,
     /// The block's text, verbatim.
-    pub content: Str,
+    content: Str,
     /// The caller's feedback for a copy, if it asked for any. Carried so a hook
     /// that declines the fence and renders the default keeps it.
-    pub on_copied: Option<OnCopied>,
+    on_copied: Option<OnCopied>,
+}
+
+impl CodeConfig {
+    /// The fence's info token as written (`mermaid`, `rust`, …), if it had one.
+    #[must_use]
+    pub const fn info(&self) -> Option<&Str> {
+        self.info.as_ref()
+    }
+
+    /// The language that token resolved to; [`Language::Plaintext`] when it
+    /// resolved to nothing.
+    #[must_use]
+    pub const fn language(&self) -> &Language {
+        &self.language
+    }
+
+    /// The block's text, verbatim.
+    #[must_use]
+    pub const fn content(&self) -> &Str {
+        &self.content
+    }
+
+    /// The caller's feedback for a copy, if it asked for any. Carried so a hook
+    /// that declines the fence and renders the default keeps it.
+    #[must_use]
+    pub const fn on_copied(&self) -> Option<&OnCopied> {
+        self.on_copied.as_ref()
+    }
 }
 
 impl ViewConfiguration for CodeConfig {
@@ -264,18 +284,43 @@ fn default_rendering(env: &Environment, config: CodeConfig) -> impl View {
 }
 
 fn copy_button(content: String, on_copied: Option<OnCopied>) -> impl View {
-    Metadata::new(
-        text("Copy").color(Color::new(AccentColor)),
-        GestureObserver::new(TapGesture::new(), move |env: Environment| {
-            copy_to_clipboard(&content);
-            if let Some(on_copied) = &on_copied {
-                on_copied.call(&env);
-            }
-        }),
+    // `waterui-controls` depends on this crate, so the `Button` type is out of
+    // reach here; the semantics are attached directly. A tap observer that
+    // resolves with `AccessibilityRole` in its environment registers an
+    // accessibility node of that role — focusable, clickable, activatable —
+    // while the label renders exactly as before.
+    IgnorableMetadata::new(
+        Metadata::new(
+            text("Copy").color(Color::new(AccentColor)),
+            GestureObserver::new(TapGesture::new(), move |env: Environment| {
+                copy_to_clipboard(&content);
+                if let Some(on_copied) = &on_copied {
+                    on_copied.call(&env);
+                }
+            }),
+        ),
+        AccessibilityRole::Button,
     )
 }
 
 /// Convenience constructor for creating a [`Code`] view inline.
 pub fn code(language: impl TryInto<Language, Error: Error>, content: impl Into<Str>) -> Code {
     Code::new(language, content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "Invalid language"))]
+    fn an_unknown_language_shows_the_code_as_plain_text() {
+        let code = Code::new("no-such-language", "fn main() {}");
+        assert_eq!(code.language, Language::Plaintext);
+    }
+
+    #[test]
+    fn a_known_language_is_kept() {
+        assert_eq!(Code::new("rust", "").language, Language::Rust);
+    }
 }

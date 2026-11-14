@@ -1,0 +1,349 @@
+#[cfg(feature = "accessibility")]
+use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::{HydroNativeView, HydroState, WidgetRenderContext, measure_view_intrinsic};
+#[cfg(feature = "accessibility")]
+use accesskit::{
+    Action as AccessibilityAction, Node as AccessibilityNode, NodeId as AccessibilityNodeId,
+    Role as AccessibilityNodeRole,
+};
+use std::rc::Rc;
+use waterui_core::Environment;
+use waterui_core::Native;
+#[cfg(feature = "accessibility")]
+use waterui_core::contract_violation;
+use waterui_core::layout::{ProposalSize, Size as LayoutSize};
+use waterui_layout::scroll::{Axis as ScrollAxis, ScrollView};
+
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ScrollView> {
+    fn intrinsic(
+        state: &mut HydroState<E>,
+        view: &Self,
+        env: &Environment,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
+    ) -> LayoutSize {
+        measure_view_intrinsic(view.as_inner().content(), state, env, theme)
+    }
+
+    fn dimensions(
+        state: &mut HydroState<E>,
+        view: &Self,
+        env: &Environment,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
+        proposal: ProposalSize,
+    ) -> waterui_core::layout::ViewDimensions {
+        // A scroll fills the offered extent on bounded axes — answering the
+        // content's intrinsic would report through the view path a width the
+        // viewport clips anyway (and can exceed the proposal when the content
+        // is wider, as in water-rs/waterui#1232).
+        let intrinsic = Self::intrinsic(state, view, env, theme);
+        waterui_core::layout::ViewDimensions::new(LayoutSize::new(
+            proposal.width.unwrap_or(intrinsic.width),
+            proposal.height.unwrap_or(intrinsic.height),
+        ))
+    }
+}
+
+#[cfg(feature = "accessibility")]
+pub fn register_scroll_accessibility_node<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    env: &Environment,
+    bounds: Option<kurbo::Rect>,
+    handle: &crate::scroll::ScrollHandle,
+    metrics: crate::scroll::ScrollMetrics,
+    axis: ScrollAxis,
+) -> Option<AccessibilityNodeId> {
+    let mut node = AccessibilityNode::new(
+        crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
+            env,
+            AccessibilityNodeRole::ScrollView,
+        ),
+    );
+    let label = renderer.resolve_accessibility_label(env, None);
+    if let Some(label) = label {
+        node.set_label(label);
+    }
+    if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+        node.set_value(value);
+    }
+    node.set_scroll_x(metrics.offset_x);
+    node.set_scroll_x_min(0.0);
+    node.set_scroll_x_max(metrics.max_x);
+    node.set_scroll_y(metrics.offset_y);
+    node.set_scroll_y_min(0.0);
+    node.set_scroll_y_max(metrics.max_y);
+    match axis {
+        ScrollAxis::Horizontal => {
+            node.add_action(AccessibilityAction::ScrollLeft);
+            node.add_action(AccessibilityAction::ScrollRight);
+        }
+        ScrollAxis::Vertical => {
+            node.add_action(AccessibilityAction::ScrollUp);
+            node.add_action(AccessibilityAction::ScrollDown);
+        }
+        ScrollAxis::All => {
+            node.add_action(AccessibilityAction::ScrollLeft);
+            node.add_action(AccessibilityAction::ScrollRight);
+            node.add_action(AccessibilityAction::ScrollUp);
+            node.add_action(AccessibilityAction::ScrollDown);
+        }
+        axis => contract_violation!(
+            "scroll axis variant {axis:?} is not supported by hydrolysis; the node exposes no scroll actions"
+        ),
+    }
+    match bounds {
+        Some(bounds) => renderer.register_accessibility_node(
+            node,
+            bounds,
+            env,
+            Some(AccessibilityActionTarget::Scroll {
+                handle: handle.clone(),
+                axis,
+            }),
+        ),
+        None => renderer.register_accessibility_node_semantic(
+            node,
+            env,
+            Some(AccessibilityActionTarget::Scroll {
+                handle: handle.clone(),
+                axis,
+            }),
+        ),
+    }
+}
+
+/// Registers `handle`'s scroll view as the wheel/trackpad target covering
+/// `viewport` — the one registration every scrolling container performs, in
+/// window hit-test space through `hit_transform`.
+///
+/// A container must call this *before* flushing its scrollable children:
+/// `handle_scroll` walks the frame's targets newest-first, so a scroll region
+/// nested inside this one — registered by the children below — hit-tests
+/// ahead of it and consumes the delta until it hits its own edge, where the
+/// delta falls through to the next enclosing region.
+pub fn register_scroll_wheel_target<E: crate::text::TextEngine>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    viewport: kurbo::Rect,
+    handle: &crate::scroll::ScrollHandle,
+) {
+    let target_handle = handle.clone();
+    renderer.register_scroll_target(viewport, handle.clone(), move |dx, dy, is_line_delta| {
+        target_handle.apply_scroll_delta(dx, dy, is_line_delta)
+    });
+}
+
+/// Geometry of one scroll indicator along its track: where the thumb starts,
+/// its extent, and how far it can travel. `None` when the content does not
+/// overflow the viewport on that axis.
+struct IndicatorGeometry {
+    thumb_offset: f64,
+    thumb_extent: f64,
+    travel: f64,
+}
+
+fn indicator_geometry(
+    track: f64,
+    viewport_extent: f64,
+    content_extent: f64,
+    max_offset: f64,
+    offset: f64,
+    min_extent: f64,
+) -> Option<IndicatorGeometry> {
+    if max_offset <= 0.0 {
+        return None;
+    }
+    let min_thumb = track.min(min_extent);
+    let thumb_extent = (track * (viewport_extent / content_extent)).clamp(min_thumb, track);
+    let travel = track - thumb_extent;
+    // A touch gesture can hold the offset past an edge while it rubber-
+    // bands; the thumb stays pinned to the end of its track meanwhile.
+    let progress = (offset / max_offset).clamp(0.0, 1.0);
+    Some(IndicatorGeometry {
+        thumb_offset: travel * progress,
+        thumb_extent,
+        travel,
+    })
+}
+
+/// Draws the scroll indicators for `metrics` and registers their gutters as
+/// draggable scrollbar targets: pressing the thumb drags it, pressing the track
+/// jumps the thumb to the pointer and keeps dragging. The thumb draws widened
+/// while it owns a drag; a drag schedules re-encode frames only, never layout.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn draw_scroll_indicators<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    env: &Environment,
+    viewport: kurbo::Rect,
+    metrics: crate::scroll::ScrollMetrics,
+    axis: ScrollAxis,
+    handle: &crate::scroll::ScrollHandle,
+    extension: crate::renderer::EdgeOffsets,
+) {
+    // The rebound metrics carry the §7.1 extension on both extents; the
+    // thumb maps the window the user actually sees — the laid-out viewport
+    // — against the extended content, so subtract the extension back off.
+    let visible_viewport_height = (metrics.viewport_height - extension.vertical()).max(0.0);
+    let visible_viewport_width = (metrics.viewport_width - extension.horizontal()).max(0.0);
+    let key = handle.cache_key();
+    let dragging = ctx.renderer_mut().scrollbar_drag_active(key);
+    let look = ctx.theme().scroll_indicator(env);
+    let thickness = if dragging {
+        look.get_drag_thickness()
+    } else {
+        look.get_thickness()
+    };
+    let edge_inset = look.get_edge_inset();
+    let min_extent = look.get_min_extent();
+    let gutter_width = look.get_gutter();
+    let vertical = matches!(axis, ScrollAxis::Vertical | ScrollAxis::All)
+        .then(|| {
+            indicator_geometry(
+                viewport.height(),
+                visible_viewport_height,
+                metrics.content_height,
+                metrics.max_y,
+                metrics.offset_y,
+                min_extent,
+            )
+        })
+        .flatten();
+    let horizontal = matches!(axis, ScrollAxis::Horizontal | ScrollAxis::All)
+        .then(|| {
+            indicator_geometry(
+                viewport.width(),
+                visible_viewport_width,
+                metrics.content_width,
+                metrics.max_x,
+                metrics.offset_x,
+                min_extent,
+            )
+        })
+        .flatten();
+
+    ctx.draw_context(|draw| {
+        if let Some(geometry) = &vertical {
+            let thumb_y = viewport.y0 + geometry.thumb_offset;
+            look.record_thumb(
+                &mut *draw,
+                kurbo::Rect::new(
+                    viewport.x1 - edge_inset - thickness,
+                    thumb_y,
+                    viewport.x1 - edge_inset,
+                    thumb_y + geometry.thumb_extent,
+                ),
+            );
+        }
+        if let Some(geometry) = &horizontal {
+            let thumb_x = viewport.x0 + geometry.thumb_offset;
+            look.record_thumb(
+                &mut *draw,
+                kurbo::Rect::new(
+                    thumb_x,
+                    viewport.y1 - edge_inset - thickness,
+                    thumb_x + geometry.thumb_extent,
+                    viewport.y1 - edge_inset,
+                ),
+            );
+        }
+    });
+
+    if vertical.is_some_and(|geometry| geometry.travel > 0.0) {
+        let gutter = kurbo::Rect::new(
+            viewport.x1 - gutter_width,
+            viewport.y0,
+            viewport.x1,
+            viewport.y1,
+        );
+        // The drag's point lands in window space and the gutter is
+        // node-local: resolve the inverse through the region's live
+        // placement at invoke time — a transform that changed since this
+        // record (a parent scroll, a transition) would otherwise drag
+        // against stale geometry.
+        let placement = ctx.renderer_mut().current_placement();
+        let handle = handle.clone();
+        ctx.renderer_mut()
+            .register_scrollbar_drag_target(gutter, move |renderer, point, _env| {
+                let point = placement.resolved_transform(true).inverse() * point;
+                let metrics = handle.metrics();
+                let Some(geometry) = indicator_geometry(
+                    gutter.height(),
+                    (metrics.viewport_height - extension.vertical()).max(0.0),
+                    metrics.content_height,
+                    metrics.max_y,
+                    metrics.offset_y,
+                    min_extent,
+                ) else {
+                    return false;
+                };
+                if geometry.travel <= 0.0 {
+                    return false;
+                }
+                let pointer = point.y - gutter.y0;
+                let grab = renderer.scrollbar_drag_grab(key).unwrap_or_else(|| {
+                    let grab = if pointer >= geometry.thumb_offset
+                        && pointer <= geometry.thumb_offset + geometry.thumb_extent
+                    {
+                        pointer - geometry.thumb_offset
+                    } else {
+                        geometry.thumb_extent / 2.0
+                    };
+                    renderer.begin_scrollbar_drag(key, grab);
+                    grab
+                });
+                let target = ((pointer - grab) / geometry.travel).clamp(0.0, 1.0) * metrics.max_y;
+                let changed = handle.user_scroll_to(metrics.offset_x, target);
+                if changed {
+                    renderer.mark_scroll_owner(&handle, crate::renderer::Dirty::LAYOUT);
+                }
+                changed
+            });
+    }
+    if horizontal.is_some_and(|geometry| geometry.travel > 0.0) {
+        let gutter = kurbo::Rect::new(
+            viewport.x0,
+            viewport.y1 - gutter_width,
+            viewport.x1,
+            viewport.y1,
+        );
+        let placement = ctx.renderer_mut().current_placement();
+        let handle = handle.clone();
+        ctx.renderer_mut()
+            .register_scrollbar_drag_target(gutter, move |renderer, point, _env| {
+                let point = placement.resolved_transform(true).inverse() * point;
+                let metrics = handle.metrics();
+                let Some(geometry) = indicator_geometry(
+                    gutter.width(),
+                    (metrics.viewport_width - extension.horizontal()).max(0.0),
+                    metrics.content_width,
+                    metrics.max_x,
+                    metrics.offset_x,
+                    min_extent,
+                ) else {
+                    return false;
+                };
+                if geometry.travel <= 0.0 {
+                    return false;
+                }
+                let pointer = point.x - gutter.x0;
+                let grab = renderer.scrollbar_drag_grab(key).unwrap_or_else(|| {
+                    let grab = if pointer >= geometry.thumb_offset
+                        && pointer <= geometry.thumb_offset + geometry.thumb_extent
+                    {
+                        pointer - geometry.thumb_offset
+                    } else {
+                        geometry.thumb_extent / 2.0
+                    };
+                    renderer.begin_scrollbar_drag(key, grab);
+                    grab
+                });
+                let target = ((pointer - grab) / geometry.travel).clamp(0.0, 1.0) * metrics.max_x;
+                let changed = handle.user_scroll_to(target, metrics.offset_y);
+                if changed {
+                    renderer.mark_scroll_owner(&handle, crate::renderer::Dirty::LAYOUT);
+                }
+                changed
+            });
+    }
+}

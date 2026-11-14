@@ -1,0 +1,1945 @@
+//! One engine surface realized as a stack of child surface controls.
+//!
+//! The stack, bottom to top, interleaves the engine's own composited parts
+//! with promoted external frames. Every frame the engine blits each part
+//! into one of that part's plane buffers in a single submission, exports
+//! the submission's completion as a sync fence, and applies one
+//! transaction that sets every part's buffer, every promoted frame's buffer
+//! and every property that changed — so a promoted frame and the content
+//! around it change on the same display frame.
+//!
+//! The transaction's completion hands back the release fence of every
+//! buffer it replaced or removed: the engine's own buffers return to their
+//! part's pool behind that fence, and a promoted frame's fence joins the
+//! producer's release fence before the plane's lease on the frame ends.
+
+use std::os::fd::{AsFd, OwnedFd};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+
+use ash::vk;
+use cherenkov::kurbo::Affine;
+use cherenkov::{LayerId, RenderError, ShapeData, SurfaceError};
+use rustc_hash::FxHashMap;
+use waterui_contract::contract_violation;
+
+use super::buffer::{self, Buffer, State};
+use super::ffi::{ExtendedRangeBrightness, SurfaceControl, Transaction};
+use super::plan::{
+    self, BufferTransform, Dataspace, Encoding, Geometry, HostedProperties, IRect, Inexpressible,
+    Op, Placement, Properties, Slot,
+};
+use crate::interop::android::SurfaceControlTarget;
+use crate::interop::{
+    ExternalFrame, FramePlanes, HdrMetadata, OutputAlpha, OutputColor, TextureOutput,
+};
+use crate::render::external::vulkan::{self, NativeError, PlaneAcquire, ReleaseSync, Repr, Shared};
+use crate::render::planes::Presentation;
+use crate::render::planes::{Composition, Compositor, PlaneContent, SystemPlanes};
+use crate::render::present::{Presenter, WindowSurface};
+
+/// Buffers per engine part: one shown, one queued, one being drawn.
+const BUFFERS_PER_PART: usize = 3;
+
+/// A `SurfaceControl` the host supplies, shown on a plane of its own
+/// (`cherenkov::HostedLayers`).
+///
+/// The host goes on drawing into it — a `SurfaceControlViewHost`'s
+/// surface package, another renderer's container — and keeps its own
+/// reference. While it is bound, the engine reparents it under the
+/// surface's container and sets its z-order, visibility, crop, scale and
+/// position in the frame's transaction; its own coordinate space is
+/// mapped onto the layer's content space.
+#[derive(Clone)]
+pub struct HostedSurface(Arc<HostedInner>);
+
+struct HostedInner {
+    surface: SurfaceControl,
+    /// The engine container it is reparented under, null when it is under
+    /// none: an object bound on a second surface moves there, and the
+    /// first surface's next transaction must not take it back off the
+    /// display.
+    parent: AtomicPtr<super::ffi::ASurfaceControl>,
+}
+
+impl HostedSurface {
+    /// Wraps the host's reference to `surface`.
+    #[must_use]
+    pub fn new(surface: SurfaceControl) -> Self {
+        Self(Arc::new(HostedInner {
+            surface,
+            parent: AtomicPtr::new(std::ptr::null_mut()),
+        }))
+    }
+
+    /// Whether `self` and `other` hold the same surface control.
+    #[must_use]
+    pub fn is(&self, other: &Self) -> bool {
+        self.0.surface.as_ptr() == other.0.surface.as_ptr()
+    }
+
+    /// Records the reparenting under `root` in `transaction`.
+    fn attach(&self, transaction: &mut Transaction, root: &SurfaceControl) {
+        transaction.reparent(&self.0.surface, Some(root));
+        self.0.parent.store(root.as_ptr(), Ordering::Relaxed);
+    }
+
+    /// Records taking the surface off the display in `transaction` — only
+    /// while it is still under `root`.
+    fn detach(&self, transaction: &mut Transaction, root: &SurfaceControl) {
+        if self
+            .0
+            .parent
+            .compare_exchange(
+                root.as_ptr(),
+                std::ptr::null_mut(),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            transaction.reparent(&self.0.surface, None);
+        }
+    }
+}
+
+impl std::fmt::Debug for HostedSurface {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("HostedSurface")
+            .field(&self.0.surface.as_ptr())
+            .finish()
+    }
+}
+
+/// A hosted surface control's place in the stack.
+struct HostedPlane {
+    object: HostedSurface,
+    shown: Option<HostedProperties>,
+}
+
+/// A promoted external frame's place in the stack.
+struct Promotion<'a> {
+    /// The layer the frame is the content of.
+    layer: LayerId,
+    /// The frame.
+    frame: &'a vulkan::Frame,
+    /// The surface's install count when the frame was installed.
+    generation: u64,
+    /// Everything the transaction sets on its plane but the z-order.
+    properties: Properties,
+}
+
+/// One entry of a surface's plane stack, bottom to top.
+enum Entry<'a> {
+    /// Engine-composited content: premultiplied linear Display P3.
+    Engine {
+        view: Option<&'a wgpu::TextureView>,
+        size: (u32, u32),
+        raster: Option<(LayerId, u64)>,
+        format: wgpu::TextureFormat,
+        color: OutputColor,
+        properties: Properties,
+        damage: std::borrow::Cow<'a, cherenkov::damage::Region>,
+    },
+    /// A frame shown on its own plane.
+    Frame(Promotion<'a>),
+    /// A hosted surface control.
+    Hosted {
+        layer: LayerId,
+        object: &'a HostedSurface,
+        properties: HostedProperties,
+    },
+}
+
+/// Why a frame's buffer cannot be shown on an Android plane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum Ineligible {
+    /// The frame is not an `AHardwareBuffer`.
+    #[error("the frame is not an AHardwareBuffer")]
+    NotABuffer,
+    /// The buffer was not allocated for hardware overlays.
+    #[error("the buffer lacks AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY")]
+    NoOverlayUsage,
+    /// The producer's acquire is a Vulkan semaphore, which the system
+    /// compositor cannot wait on.
+    #[error("the frame's acquire is a Vulkan semaphore, not a sync fence")]
+    SemaphoreAcquire,
+    /// The producer's release is a timeline semaphore, which a plane's
+    /// release fence cannot signal.
+    #[error("the frame's release is a timeline semaphore, not a sync fence")]
+    TimelineRelease,
+    /// The frame's colour contract has no plane equivalent.
+    #[error(transparent)]
+    Inexpressible(#[from] Inexpressible),
+}
+
+/// What a plane sets for a frame's buffer wherever it sits.
+struct Contract {
+    opaque: bool,
+    dataspace: Dataspace,
+    hdr: HdrMetadata,
+}
+
+/// The buffer contract of `frame` on a plane: the Android half of
+/// [`Compositor::shows`].
+///
+/// # Errors
+/// [`Ineligible`] naming the first reason the frame stays in engine
+/// composition.
+///
+/// # Panics
+/// On a poisoned release-sync mutex.
+fn contract(frame: &vulkan::Frame) -> Result<Contract, Ineligible> {
+    let generation = &frame.generation;
+    let Some(source) = &generation.plane else {
+        return Err(Ineligible::NotABuffer);
+    };
+    if !source.overlay {
+        return Err(Ineligible::NoOverlayUsage);
+    }
+    if matches!(source.acquire, PlaneAcquire::Semaphore) {
+        return Err(Ineligible::SemaphoreAcquire);
+    }
+    if matches!(
+        *generation.release_sync.lock().expect("release sync"),
+        Some(ReleaseSync::Timeline { .. })
+    ) {
+        return Err(Ineligible::TimelineRelease);
+    }
+    let encoding = match generation.repr {
+        Repr::Rgb { format } => Encoding::Rgb {
+            float: format == wgpu::TextureFormat::Rgba16Float,
+            alpha: generation.alpha,
+        },
+        Repr::Planes { .. } | Repr::ExternalFormat { .. } => Encoding::Yuv,
+    };
+    Ok(Contract {
+        opaque: plan::opaque(encoding)?,
+        dataspace: plan::dataspace(&generation.color, encoding)?,
+        hdr: source.hdr,
+    })
+}
+
+/// The reason `frame`'s buffer cannot be shown on a plane, if any —
+/// `contract`'s diagnostic half for reporting.
+pub fn ineligible(frame: &vulkan::Frame) -> Option<Ineligible> {
+    contract(frame).err()
+}
+
+/// The error a promoted layer's buffer or placement failure reports.
+fn cannot_show(layer: LayerId, why: &dyn std::fmt::Display) -> RenderError {
+    RenderError::Render(format!(
+        "layer {layer:?} was promoted but a surface control cannot show it: {why}"
+    ))
+}
+
+/// Duplicates a fence file descriptor: a buffer is set with its own fd,
+/// so every acquirer gets a distinct one.
+fn dup_fence(fd: &OwnedFd) -> Result<OwnedFd, RenderError> {
+    fd.try_clone()
+        .map_err(|e| RenderError::Render(format!("duplicate a fence: {e}")))
+}
+
+fn engine_encoding(
+    range: crate::render::present::ColorRange,
+) -> Result<(wgpu::TextureFormat, OutputColor, Dataspace), RenderError> {
+    if range == crate::render::present::ColorRange::Standard {
+        return Ok((buffer::FORMAT, OutputColor::Srgb, Dataspace::SRGB));
+    }
+    let hdr = range == crate::render::present::ColorRange::HighDynamicRange;
+    let color = crate::interop::FrameColor {
+        transfer: if hdr {
+            crate::interop::Transfer::Linear
+        } else {
+            crate::interop::Transfer::Srgb
+        },
+        ..crate::interop::FrameColor::LINEAR_P3
+    };
+    let dataspace = plan::dataspace(
+        &color,
+        Encoding::Rgb {
+            float: hdr,
+            alpha: crate::interop::RgbAlpha::Premultiplied,
+        },
+    )
+    .map_err(|error| RenderError::Render(error.to_string()))?;
+    Ok((
+        if hdr {
+            wgpu::TextureFormat::Rgba16Float
+        } else {
+            buffer::FORMAT
+        },
+        if hdr {
+            OutputColor::LinearDisplayP3
+        } else {
+            OutputColor::DisplayP3
+        },
+        dataspace,
+    ))
+}
+
+fn raster_entry<'a>(
+    view: Option<&'a wgpu::TextureView>,
+    generation: u64,
+    range: crate::render::present::ColorRange,
+    placement: &crate::render::planes::Placement,
+    size: (u32, u32),
+) -> Result<Entry<'a>, RenderError> {
+    let layer = placement.layer;
+    let (format, output_color, dataspace) = engine_encoding(range)?;
+    let mut damage = cherenkov::damage::Region::new(placement.size);
+    damage.mark_full();
+    Ok(Entry::Engine {
+        damage: std::borrow::Cow::Owned(damage),
+        view,
+        size: placement.size,
+        raster: Some((layer, generation)),
+        format,
+        color: output_color,
+        properties: Properties {
+            z: 0,
+            placement: plan::promoted(placement, size).map_err(|e| cannot_show(layer, &e))?,
+            alpha: placement.opacity,
+            opaque: false,
+            dataspace,
+            hdr: HdrMetadata::default(),
+        },
+    })
+}
+
+/// The base stack `composition` describes — everything beneath its first
+/// host-window mark — bottom first, with each promoted frame's plane
+/// properties. What lies above the first mark presents in bands
+/// ([`band_regions`]).
+///
+/// # Errors
+/// [`RenderError`] when the plan promoted a layer whose buffer or placement
+/// a plane cannot show.
+fn stack<'a>(composition: &Composition<'a>) -> Result<Vec<Entry<'a>>, RenderError> {
+    let mut entries = Vec::with_capacity(composition.parts.len() + composition.planes.len());
+    for slot in plan::stack_order(composition.parts.len(), composition.planes.len()) {
+        let plane = match slot {
+            Slot::Part(n) => {
+                let (format, color, dataspace) = engine_encoding(composition.parts[n].range)?;
+                entries.push(Entry::Engine {
+                    damage: std::borrow::Cow::Borrowed(composition.parts[n].damage),
+                    view: Some(composition.parts[n].view),
+                    size: composition.size,
+                    raster: None,
+                    format,
+                    color,
+                    properties: Properties {
+                        z: 0,
+                        placement: full(composition.size),
+                        alpha: 1.0,
+                        opaque: false,
+                        dataspace,
+                        hdr: HdrMetadata::default(),
+                    },
+                });
+                continue;
+            }
+            Slot::Plane(n) => &composition.planes[n],
+        };
+        let layer = plane.placement.layer;
+        let (frame, generation) = match &plane.content {
+            PlaneContent::Frame { frame, generation } => (frame, generation),
+            PlaneContent::Hosted { object, extent } => {
+                entries.push(Entry::Hosted {
+                    layer,
+                    object,
+                    properties: HostedProperties {
+                        z: 0,
+                        placement: plan::hosted(plane.placement, *extent, composition.size)
+                            .map_err(|e| cannot_show(layer, &e))?,
+                    },
+                });
+                continue;
+            }
+            PlaneContent::Raster {
+                view,
+                generation,
+                range,
+            } => {
+                entries.push(raster_entry(
+                    *view,
+                    *generation,
+                    *range,
+                    plane.placement,
+                    composition.size,
+                )?);
+                continue;
+            }
+            // The base stack ends at the first host window: the stack's
+            // surface controls cannot sit between the host's windows.
+            PlaneContent::HostWindow { .. } => break,
+        };
+        let FramePlanes::Native(native) = &frame.planes else {
+            return Err(cannot_show(layer, &Ineligible::NotABuffer));
+        };
+        let contract = contract(native).map_err(|e| cannot_show(layer, &e))?;
+        let placement = plan::promoted(plane.placement, composition.size)
+            .map_err(|e| cannot_show(layer, &e))?;
+        entries.push(Entry::Frame(Promotion {
+            layer,
+            frame: native,
+            generation: *generation,
+            properties: Properties {
+                z: 0,
+                placement,
+                alpha: plane.placement.opacity,
+                opaque: contract.opaque,
+                dataspace: contract.dataspace,
+                hdr: contract.hdr,
+            },
+        }));
+    }
+    Ok(entries)
+}
+
+/// The whole-surface placement of an engine part.
+const fn full(size: (u32, u32)) -> Placement {
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "surface sizes are bounded by the texture limit"
+    )]
+    let rect = IRect {
+        left: 0,
+        top: 0,
+        right: size.0 as i32,
+        bottom: size.1 as i32,
+    };
+    Placement::Visible(Geometry {
+        source: rect,
+        destination: rect,
+        transform: BufferTransform {
+            mirror_x: false,
+            mirror_y: false,
+            rotate_90: false,
+        },
+    })
+}
+
+/// The band regions of `composition` in paint order: each host window's
+/// id with the engine part painted above its mark and beneath the next
+/// one, `None` where nothing is painted there.
+///
+/// # Panics
+/// When a promoted plane lies above the first mark: the planner keeps
+/// everything there in the engine ([`Compositor::HOST_WINDOW_BANDS`]).
+fn band_regions(composition: &Composition<'_>) -> Vec<(u64, Option<usize>)> {
+    let mut regions: Vec<(u64, Option<usize>)> = Vec::new();
+    for slot in plan::stack_order(composition.parts.len(), composition.planes.len()) {
+        match slot {
+            Slot::Plane(n) => match composition.planes[n].content {
+                PlaneContent::HostWindow { window } => regions.push((window, None)),
+                _ => assert!(
+                    regions.is_empty(),
+                    "layer {:?} was promoted above a host window's mark",
+                    composition.planes[n].placement.layer
+                ),
+            },
+            Slot::Part(n) => {
+                if let Some((_, part)) = regions.last_mut() {
+                    *part = Some(n);
+                }
+            }
+        }
+    }
+    regions
+}
+
+/// The presentation surface of one band region: a window — on Android
+/// the `ImageReader` surface behind the host's band `View` — whose
+/// swapchain shows the region's engine composition. The host stacks the
+/// band right above the host window that opens the region
+/// (water-rs/waterui#2225).
+pub struct Band {
+    window: WindowSurface,
+    /// The engine part the band's latest image shows; `None` before its
+    /// first image and once its region is empty.
+    shown: Option<usize>,
+}
+
+impl Band {
+    /// A band presenting through `window`'s swapchain, showing nothing
+    /// yet.
+    ///
+    /// # Errors
+    /// The swapchain's negotiated format when it is not 8-bit RGBA: the
+    /// band's `ImageReader` holds `RGBA_8888` buffers.
+    pub fn new(window: WindowSurface) -> Result<Self, wgpu::TextureFormat> {
+        let format = window.selection().format;
+        if !matches!(
+            format,
+            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb
+        ) {
+            return Err(format);
+        }
+        Ok(Self {
+            window,
+            shown: None,
+        })
+    }
+}
+
+/// What a band's host does with one band when it applies a
+/// [`BandCommit`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BandUpdate {
+    /// The host's id for the window whose band changed.
+    pub window: u64,
+    /// `Some(space)`: show the newest image the band's swapchain
+    /// delivered, whose pixels are encoded in `space` — the colour space
+    /// the swapchain negotiated. `None`: the region is empty — show
+    /// nothing.
+    pub image: Option<wgpu::SurfaceColorSpace>,
+}
+
+/// A frame that changed bands, handed to the host once the GPU finished
+/// every image of it (water-rs/waterui#2225).
+///
+/// The host latches each band's newest image — or clears it — as
+/// [`Self::updates`] lists, and applies the commit in the same UI-thread
+/// turn, ahead of the view system's next draw: the base surface's
+/// transaction then reaches the system compositor in the same frame as
+/// the view frame that draws the bands. The surface presents nothing new
+/// until the commit is applied; dropping it applies it.
+pub struct BandCommit {
+    transaction: Option<(Transaction, Vec<Pending>)>,
+    release: mpsc::Sender<Released>,
+    applied: Arc<AtomicBool>,
+    waker: cherenkov::CompletionWaker,
+    updates: Vec<BandUpdate>,
+}
+
+impl BandCommit {
+    /// The bands this frame changed, by host window.
+    #[must_use]
+    pub fn updates(&self) -> &[BandUpdate] {
+        &self.updates
+    }
+
+    /// Applies the base surface's transaction and lets the surface
+    /// present its next frame.
+    pub fn apply(mut self) {
+        self.commit();
+    }
+
+    fn commit(&mut self) {
+        if let Some((transaction, pending)) = self.transaction.take() {
+            Planes::apply(transaction, &self.release, pending);
+            self.applied.store(true, Ordering::Release);
+            self.waker.wake();
+        }
+    }
+}
+
+impl Drop for BandCommit {
+    fn drop(&mut self) {
+        self.commit();
+    }
+}
+
+impl std::fmt::Debug for BandCommit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BandCommit")
+            .field("updates", &self.updates)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A band commit the host holds: the surface waits for it before its
+/// next frame.
+struct Committing {
+    applied: Arc<AtomicBool>,
+    generation: u64,
+    display: cherenkov::Display,
+}
+
+/// A buffer whose release a completion reports.
+struct Released {
+    buffer: u64,
+    fence: Option<OwnedFd>,
+}
+
+/// What a transaction replaced or removed on one surface control.
+enum Replaced {
+    /// One of the engine's own buffers.
+    Buffer(u64),
+    /// A promoted frame, still leased by its plane.
+    Frame(vulkan::Frame),
+    /// A surface control removed before it ever showed a buffer.
+    Nothing,
+}
+
+/// One release a transaction's completion delivers.
+struct Pending {
+    /// The handle the replacement happened on.
+    surface: *mut super::ffi::ASurfaceControl,
+    what: Replaced,
+    /// A removed surface control, released after its last query.
+    removed: Option<SurfaceControl>,
+}
+
+// SAFETY: `surface` is never dereferenced: it is compared with the handles
+// a completion reports, and passed to the NDK's thread-safe stats query only
+// when the completion's own stats hold a reference to that surface control.
+// Every other field is `Send`.
+unsafe impl Send for Pending {}
+
+const fn output_alpha(part: usize, transparent: bool) -> OutputAlpha {
+    if part == 0 && !transparent {
+        OutputAlpha::Opaque
+    } else {
+        OutputAlpha::Premultiplied
+    }
+}
+
+/// One engine part's surface control and buffers.
+struct Part {
+    surface: SurfaceControl,
+    buffers: Vec<Buffer>,
+    /// The buffer the last transaction set.
+    current: Option<u64>,
+    uniform: wgpu::Buffer,
+    shown: Option<Properties>,
+    size: (u32, u32),
+    raster: Option<(LayerId, u64)>,
+    headroom: f32,
+    format: wgpu::TextureFormat,
+    damage: cherenkov::damage::Region,
+    damage_generation: Option<u64>,
+    mapping: Option<(OutputColor, OutputAlpha)>,
+    damage_rects: Vec<ndk_sys::ARect>,
+}
+
+impl Part {
+    fn retains_raster(&self, raster: Option<(LayerId, u64)>) -> bool {
+        raster.is_some()
+            && self.raster == raster
+            && self.current.is_some_and(|id| {
+                self.buffers
+                    .iter()
+                    .find(|buffer| buffer.id == id)
+                    .expect("the current buffer belongs to this part")
+                    .repair
+                    .is_empty()
+            })
+    }
+
+    fn publish_damage(&mut self, transaction: &mut Transaction) {
+        self.damage_rects.clear();
+        self.damage_rects
+            .extend(self.damage.rectangles().iter().map(|rect| ndk_sys::ARect {
+                left: i32::try_from(rect.x0()).expect("buffer extent fits i32"),
+                top: i32::try_from(rect.y0()).expect("buffer extent fits i32"),
+                right: i32::try_from(rect.x1()).expect("buffer extent fits i32"),
+                bottom: i32::try_from(rect.y1()).expect("buffer extent fits i32"),
+            }));
+        transaction.set_damage_region(&self.surface, &self.damage_rects);
+        self.damage.clear();
+    }
+}
+
+/// One promoted frame's surface control.
+struct Plane {
+    surface: SurfaceControl,
+    /// The frame the last transaction set; its plane lease is held.
+    frame: vulkan::Frame,
+    /// The install count of `frame`.
+    generation: u64,
+    shown: Option<Properties>,
+}
+
+/// A `refresh` update validated against its plane and recorded in the
+/// transaction — staged until the transaction holds every update, so an
+/// error mid-way leaves `promoted` untouched (#90).
+struct Update {
+    layer: LayerId,
+    generation: u64,
+    /// The frame to lease and install — `None` keeps the plane's current
+    /// one (its generation already matches).
+    frame: Option<vulkan::Frame>,
+    properties: Properties,
+}
+
+/// A complete frame whose source brightness is still being read by the GPU.
+struct PendingPresentation {
+    ready: Arc<AtomicBool>,
+    transaction: Transaction,
+    replaced: Vec<Pending>,
+    headrooms: Vec<(usize, crate::render::headroom::Readback)>,
+    /// The bands the frame changed: the transaction goes to the host as a
+    /// [`BandCommit`] instead of being applied here.
+    bands: Vec<BandUpdate>,
+    generation: u64,
+    display: cherenkov::Display,
+}
+
+/// An engine surface realized under the host's parent surface control.
+pub struct Planes {
+    looper: ndk::looper::ForeignLooper,
+    waker: cherenkov::CompletionWaker,
+    presenting: Option<PendingPresentation>,
+    /// The engine's container under the host's parent: every part and plane
+    /// is its child, so their z-orders never interleave with the host's.
+    root: SurfaceControl,
+    /// The bands by the host's id for the window whose mark opens their
+    /// region: each presents the content painted above that window's mark
+    /// and beneath the next one (water-rs/waterui#2225). A region with no
+    /// band is not shown, never drawn beneath a window the paint order
+    /// places it above.
+    bands: FxHashMap<u64, Band>,
+    /// Where a frame that changed bands goes once its GPU work finished;
+    /// `None` on a host that presents no bands.
+    band_commits: Option<mpsc::Sender<BandCommit>>,
+    /// The band commit the host holds, which the next frame waits for.
+    committing: Option<Committing>,
+    root_shown: bool,
+    extended_range: Option<ExtendedRangeBrightness>,
+    size: (u32, u32),
+    transparent: bool,
+    shared: Arc<Shared>,
+    /// The engine's submit guard: a submission here carries queue waits
+    /// and a signal of its own.
+    submit_lock: Arc<Mutex<()>>,
+    parts: Vec<Part>,
+    /// The planes showing promoted frames, by layer.
+    promoted: FxHashMap<LayerId, Plane>,
+    /// The hosted surface controls the last transaction placed, by layer.
+    hosted: FxHashMap<LayerId, HostedPlane>,
+    /// `refresh`'s validated hosted placements, staged like `updates`.
+    hosted_updates: Vec<(LayerId, HostedProperties)>,
+    /// `refresh`'s validated updates, staged while its transaction is
+    /// built and drained once it is — the buffer is reused across calls.
+    updates: Vec<Update>,
+    raster_updates: Vec<(usize, Properties)>,
+    /// Buffers of removed parts and previous sizes, dropped once released.
+    retiring: Vec<Buffer>,
+    next_buffer: u64,
+    /// Signalled by each present submission; exported as the parts'
+    /// acquire fence.
+    signal: vk::Semaphore,
+    released: mpsc::Receiver<Released>,
+    release: mpsc::Sender<Released>,
+    ops: Vec<Op>,
+}
+
+impl Planes {
+    /// Creates the engine's container under `target`'s parent.
+    ///
+    /// # Errors
+    /// [`SurfaceError::UnsupportedTarget`] when the device cannot import
+    /// plane buffers or export sync fences, or the system refuses the
+    /// surface control.
+    pub fn new(
+        shared: Arc<Shared>,
+        submit_lock: Arc<Mutex<()>>,
+        target: &SurfaceControlTarget,
+        waker: cherenkov::CompletionWaker,
+    ) -> Result<Self, SurfaceError> {
+        let unsupported =
+            |why: &str| SurfaceError::UnsupportedTarget(format!("surface control: {why}"));
+        if shared.vk.ahb.is_none() {
+            return Err(unsupported(
+                "AHardwareBuffer import is not enabled on the device",
+            ));
+        }
+        if !shared.caps.external_semaphore_sync_fd {
+            return Err(unsupported("the device cannot export sync fences"));
+        }
+        let root = target
+            .parent
+            .child(c"cherenkov")
+            .map_err(|e| unsupported(&e.to_string()))?;
+        let mut export = vk::ExportSemaphoreCreateInfo::default()
+            .handle_types(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD);
+        // SAFETY: `shared.vk.device` is live and the create chain requests
+        // `SYNC_FD` export, a capability `new` checked above.
+        let signal = unsafe {
+            shared.vk.device.create_semaphore(
+                &vk::SemaphoreCreateInfo::default().push_next(&mut export),
+                None,
+            )
+        }
+        .map_err(|e| unsupported(&format!("sync-fence semaphore: {e}")))?;
+        let (release, released) = mpsc::channel();
+        Ok(Self {
+            looper: target.looper.clone(),
+            waker,
+            presenting: None,
+            root,
+            bands: FxHashMap::default(),
+            band_commits: target.band_commits.clone(),
+            committing: None,
+            root_shown: false,
+            extended_range: ExtendedRangeBrightness::load(),
+            size: target.size(),
+            transparent: target.transparent,
+            shared,
+            submit_lock,
+            parts: Vec::new(),
+            promoted: FxHashMap::default(),
+            hosted: FxHashMap::default(),
+            hosted_updates: Vec::new(),
+            updates: Vec::new(),
+            raster_updates: Vec::new(),
+            retiring: Vec::new(),
+            next_buffer: 0,
+            signal,
+            released,
+            release,
+            ops: Vec::new(),
+        })
+    }
+
+    /// Resizes the parts' buffers; buffers of the old size retire once the
+    /// system compositor releases them.
+    fn resize_parts(&mut self, size: (u32, u32)) {
+        self.size = size;
+        // Immutable captures keep their own local extent across resizes.
+        for part in self.parts.iter_mut().filter(|part| part.raster.is_none()) {
+            for buffer in part.buffers.drain(..) {
+                if matches!(buffer.state, State::Shown) {
+                    self.retiring.push(buffer);
+                }
+            }
+        }
+    }
+
+    /// Takes the releases the system compositor delivered since the last
+    /// frame.
+    fn collect_releases(&mut self) {
+        while let Ok(Released { buffer, fence }) = self.released.try_recv() {
+            if let Some(found) = self
+                .parts
+                .iter_mut()
+                .flat_map(|part| &mut part.buffers)
+                .find(|b| b.id == buffer)
+            {
+                found.state = State::Free(fence);
+            } else if let Some(at) = self.retiring.iter().position(|b| b.id == buffer) {
+                self.retiring.swap_remove(at);
+            }
+        }
+        for part in self.parts.iter_mut().filter(|part| part.raster.is_some()) {
+            part.buffers
+                .retain(|buffer| matches!(buffer.state, State::Shown));
+        }
+    }
+
+    /// The index of a free buffer of `part` to draw into, allocating up to
+    /// the pool size; `None` when every buffer is still with the system
+    /// compositor.
+    fn free_buffer(&mut self, part: usize) -> Result<Option<usize>, NativeError> {
+        let buffers = &self.parts[part].buffers;
+        if let Some(at) = buffers
+            .iter()
+            .position(|b| matches!(b.state, State::Free(_)))
+        {
+            return Ok(Some(at));
+        }
+        if buffers.len() == BUFFERS_PER_PART {
+            return Ok(None);
+        }
+        let id = self.next_buffer;
+        self.next_buffer += 1;
+        let this = &self.parts[part];
+        let buffer = if this.format == buffer::FORMAT {
+            buffer::allocate(&self.shared, this.size, id)?
+        } else {
+            buffer::allocate_format(&self.shared, this.size, id, this.format)?
+        };
+        let buffers = &mut self.parts[part].buffers;
+        buffers.push(buffer);
+        Ok(Some(buffers.len() - 1))
+    }
+
+    /// Presents `composition` in one transaction. Returns `false` when a
+    /// part has no free buffer yet: nothing changed on screen and the frame
+    /// is retried.
+    ///
+    /// # Errors
+    /// [`RenderError`] when a plane buffer cannot be allocated, a fence
+    /// cannot be imported or exported, or a promoted layer is not showable.
+    ///
+    /// # Panics
+    /// When the engine queue is not Vulkan.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one frame's buffers, submission and transaction belong together"
+    )]
+    fn present(&mut self, composition: Composition<'_>) -> Result<Presentation, RenderError> {
+        if let Some(committing) = &self.committing {
+            // The host still holds the last band commit: a new frame
+            // would let its images and the base transaction pair with
+            // the wrong band images.
+            if !committing.applied.load(Ordering::Acquire) {
+                return Ok(Presentation::Pending);
+            }
+            let committing = self.committing.take().expect("held band commit");
+            if committing.generation == composition.generation
+                && committing.display == composition.display
+            {
+                return Ok(Presentation::Presented);
+            }
+        }
+        if let Some(pending) = &self.presenting {
+            if !pending.ready.load(Ordering::Acquire) {
+                return Ok(Presentation::Pending);
+            }
+            let mut pending = self.presenting.take().expect("pending presentation");
+            for (part, readback) in pending.headrooms {
+                // SAFETY: the native completion event precedes the Acquire load;
+                // this buffer holds only this submitted frame's reduction result.
+                let peak = unsafe { readback.read() };
+                let part = &mut self.parts[part];
+                if part.headroom.to_bits() != peak.to_bits() {
+                    part.damage.mark_full();
+                    part.publish_damage(&mut pending.transaction);
+                }
+                part.headroom = peak;
+                self.extended_range
+                    .as_ref()
+                    .expect("HDR support checked")
+                    .set(
+                        &mut pending.transaction,
+                        &part.surface,
+                        peak,
+                        pending.display.headroom.max(1.0).min(peak),
+                    );
+            }
+            if !pending.bands.is_empty() {
+                // Every band image of the frame is complete: the host
+                // latches them and applies the base transaction together.
+                let applied = Arc::new(AtomicBool::new(false));
+                self.band_commits
+                    .as_ref()
+                    .expect("a surface with bands has a band-commit sink")
+                    .send(BandCommit {
+                        transaction: Some((pending.transaction, pending.replaced)),
+                        release: self.release.clone(),
+                        applied: Arc::clone(&applied),
+                        waker: self.waker.clone(),
+                        updates: pending.bands,
+                    })
+                    .map_err(|_| {
+                        RenderError::Render("the host's band-commit receiver is gone".into())
+                    })?;
+                self.committing = Some(Committing {
+                    applied,
+                    generation: pending.generation,
+                    display: pending.display,
+                });
+                return Ok(Presentation::Pending);
+            }
+            Self::apply(pending.transaction, &self.release, pending.replaced);
+            if pending.generation == composition.generation
+                && pending.display == composition.display
+            {
+                return Ok(Presentation::Presented);
+            }
+        }
+        let native = |e: NativeError| RenderError::Render(format!("surface control: {e}"));
+        let stack = stack(&composition)?;
+        let regions = band_regions(&composition);
+        if self.extended_range.is_none()
+            && stack.iter().any(|entry| {
+                matches!(
+                    entry,
+                    Entry::Engine {
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        ..
+                    }
+                )
+            })
+        {
+            return Err(RenderError::Render(
+                "linear HDR system planes require Android 14 extended-range brightness support"
+                    .into(),
+            ));
+        }
+        let Composition {
+            device,
+            queue,
+            presenter,
+            display,
+            storage_space,
+            ..
+        } = composition;
+        self.collect_releases();
+        let engine_parts = stack
+            .iter()
+            .filter(|entry| matches!(entry, Entry::Engine { .. }))
+            .count();
+        while self.parts.len() < engine_parts {
+            let surface = self
+                .root
+                .child(c"cherenkov part")
+                .map_err(|e| RenderError::Render(e.to_string()))?;
+            self.parts.push(Part {
+                surface,
+                buffers: Vec::new(),
+                current: None,
+                uniform: Presenter::uniform(device),
+                shown: None,
+                size: self.size,
+                raster: None,
+                headroom: display.headroom,
+                format: buffer::FORMAT,
+                damage: cherenkov::damage::Region::new(self.size),
+                damage_generation: None,
+                mapping: None,
+                damage_rects: Vec::new(),
+            });
+        }
+        // Immutable captures follow layer identity, not their current slot
+        // among engine parts. Their engine source is released on publication.
+        for (index, raster) in stack
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Engine { raster, .. } => Some(raster),
+                Entry::Frame(_) | Entry::Hosted { .. } => None,
+            })
+            .enumerate()
+        {
+            if let Some((layer, _)) = raster
+                && let Some(old) = self
+                    .parts
+                    .iter()
+                    .position(|part| part.raster.is_some_and(|(id, _)| id == *layer))
+            {
+                self.parts.swap(index, old);
+            }
+        }
+        let mut chosen = Vec::with_capacity(engine_parts);
+        for (part, entry) in stack
+            .iter()
+            .filter(|entry| matches!(entry, Entry::Engine { .. }))
+            .enumerate()
+        {
+            let Entry::Engine {
+                size,
+                raster,
+                format,
+                color,
+                damage,
+                ..
+            } = entry
+            else {
+                unreachable!("filtered engine entries");
+            };
+            let format = *format;
+            let this = &mut self.parts[part];
+            if this.size != *size || this.format != format {
+                for buffer in this.buffers.drain(..) {
+                    if matches!(buffer.state, State::Shown) {
+                        self.retiring.push(buffer);
+                    }
+                }
+                this.size = *size;
+                this.format = format;
+                this.raster = None;
+                this.damage = cherenkov::damage::Region::new(*size);
+                this.damage_generation = None;
+                this.mapping = None;
+            }
+            // HDR is scene-referred; SDR content never enters the tone
+            // shoulder. Display headroom therefore does not alter stored pixels.
+            let mapping = (*color, output_alpha(part, self.transparent));
+            let invalidated = this.mapping != Some(mapping) || this.raster != *raster;
+            if invalidated {
+                this.damage.mark_full();
+                for buffer in &mut this.buffers {
+                    buffer.repair.mark_full();
+                }
+                this.mapping = Some(mapping);
+            }
+            if this.damage_generation != Some(composition.generation)
+                && !this.retains_raster(*raster)
+            {
+                for rect in damage.rectangles() {
+                    let (x, y, width, height) = rect.xywh();
+                    this.damage.add(x, y, width, height);
+                    for buffer in &mut this.buffers {
+                        buffer.repair.add(x, y, width, height);
+                    }
+                }
+                this.damage_generation = Some(composition.generation);
+            }
+        }
+        for (part, entry) in stack
+            .iter()
+            .filter(|entry| matches!(entry, Entry::Engine { .. }))
+            .enumerate()
+        {
+            let Entry::Engine { raster, .. } = entry else {
+                unreachable!("engine entry")
+            };
+            let this = &self.parts[part];
+            if this.retains_raster(*raster) {
+                chosen.push(None);
+            } else {
+                match self.free_buffer(part).map_err(native)? {
+                    Some(at) => chosen.push(Some(at)),
+                    None => return Ok(Presentation::Retry),
+                }
+            }
+        }
+        // Each band shows its region's part: a new image when the part
+        // changed or the band shows another one, nothing once the region
+        // is empty. Every image is acquired before anything is submitted,
+        // so a swapchain that cannot give one retries the whole frame.
+        let mut band_images = Vec::new();
+        let mut band_clears = Vec::new();
+        for (&window, band) in &self.bands {
+            let part = regions
+                .iter()
+                .find(|&&(marked, _)| marked == window)
+                .and_then(|&(_, part)| part);
+            match part {
+                Some(part) => {
+                    if band.shown == Some(part) && composition.parts[part].damage.is_empty() {
+                        continue;
+                    }
+                    let Some(image) = band.window.acquire(device)? else {
+                        return Ok(Presentation::Retry);
+                    };
+                    band_images.push((window, part, image));
+                }
+                None if band.shown.is_some() => band_clears.push(window),
+                None => {}
+            }
+        }
+        let mut band_updates = Vec::with_capacity(band_images.len() + band_clears.len());
+        for window in band_clears {
+            self.bands.get_mut(&window).expect("listed above").shown = None;
+            band_updates.push(BandUpdate {
+                window,
+                image: None,
+            });
+        }
+        // Parts the plan no longer splits off leave in this frame's
+        // transaction.
+        let mut transaction = Transaction::new();
+        let mut pending: Vec<Pending> = Vec::new();
+        while self.parts.len() > engine_parts {
+            let part = self.parts.pop().expect("more parts than the stack uses");
+            for buffer in part.buffers {
+                if matches!(buffer.state, State::Shown) {
+                    self.retiring.push(buffer);
+                }
+            }
+            transaction.reparent(&part.surface, None);
+            pending.push(Pending {
+                surface: part.surface.as_ptr(),
+                what: part.current.map_or(Replaced::Nothing, Replaced::Buffer),
+                removed: Some(part.surface),
+            });
+        }
+
+        // One submission: acquire every chosen buffer, blit each part,
+        // hand the buffers back, signal the exported fence.
+        let images: Vec<(vk::Image, bool)> = chosen
+            .iter()
+            .enumerate()
+            .filter_map(|(part, &at)| {
+                at.map(|at| {
+                    let buffer = &self.parts[part].buffers[at];
+                    (buffer.image, buffer.initialized)
+                })
+            })
+            .collect();
+        let mut waits = Vec::new();
+        for (part, &at) in chosen.iter().enumerate() {
+            let Some(at) = at else {
+                continue;
+            };
+            if let State::Free(fence) = &mut self.parts[part].buffers[at].state
+                && let Some(fence) = fence.take()
+            {
+                waits.push(vulkan::import_sync_fd(&self.shared, fence).map_err(native)?);
+            }
+        }
+        let barrier = |acquire: bool, readback: bool| {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("plane ownership"),
+            });
+            // SAFETY: the encoder is recording on the engine's device and
+            // `images` are this surface's live plane buffers, satisfying
+            // `ownership`'s contract; wgpu's tracking of the command buffer
+            // is untouched.
+            unsafe {
+                encoder.as_hal_mut::<wgpu::hal::vulkan::Api, _, _>(|hal| {
+                    let cb = hal.expect("the engine encoder is Vulkan").raw_handle();
+                    buffer::ownership(&self.shared, cb, &images, acquire);
+                    if readback {
+                        // This raw encoder follows the wgpu copy commands on the
+                        // same queue. Publish their writes to the host domain;
+                        // the exported sync fence orders the later CPU read.
+                        self.shared.vk.device.cmd_pipeline_barrier(
+                            cb,
+                            vk::PipelineStageFlags::TRANSFER,
+                            vk::PipelineStageFlags::HOST,
+                            vk::DependencyFlags::empty(),
+                            &[vk::MemoryBarrier::default()
+                                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                                .dst_access_mask(vk::AccessFlags::HOST_READ)],
+                            &[],
+                            &[],
+                        );
+                    }
+                });
+            }
+            encoder.finish()
+        };
+        let acquire = barrier(true, false);
+        let mut blits = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("plane present"),
+        });
+        let mut headrooms = Vec::new();
+        // An engine part stores the surface's storage space; a static
+        // layer's capture stores the linear space.
+        let mut sources = stack.iter().filter_map(|entry| match entry {
+            Entry::Engine {
+                view,
+                color,
+                raster,
+                ..
+            } => Some((
+                *view,
+                *color,
+                if raster.is_some() {
+                    cherenkov::BlendSpace::Linear
+                } else {
+                    storage_space
+                },
+            )),
+            Entry::Frame(_) | Entry::Hosted { .. } => None,
+        });
+        for (part, &at) in chosen.iter().enumerate() {
+            let (source, color, space) = sources.next().expect("one source per part");
+            let Some(at) = at else {
+                continue;
+            };
+            let output = TextureOutput {
+                texture: &self.parts[part].buffers[at].texture,
+                color,
+                alpha: output_alpha(part, self.transparent),
+                headroom: display.headroom,
+            };
+            let source = source.expect("a new native buffer has engine pixels");
+            let mut uniform = Presenter::uniform_bytes(&output, space);
+            if self.parts[part].format == wgpu::TextureFormat::Rgba16Float {
+                // Scene-referred linear P3; SurfaceFlinger maps it to the display.
+                uniform[..4].copy_from_slice(&10_u32.to_ne_bytes());
+                headrooms.push((
+                    part,
+                    presenter.source_headroom(
+                        device,
+                        &mut blits,
+                        (source, space),
+                        self.parts[part].size,
+                    )?,
+                ));
+            }
+            queue.write_buffer(&self.parts[part].uniform, 0, &uniform);
+            presenter.encode(
+                device,
+                &mut blits,
+                source,
+                &crate::render::present::Presentation {
+                    texture: output,
+                    coverage: crate::render::present::RetainedRegion(
+                        &self.parts[part].buffers[at].repair,
+                    ),
+                },
+                &self.parts[part].uniform,
+                None,
+            );
+        }
+        let blits = blits.finish();
+        let hand_back = barrier(false, !headrooms.is_empty());
+        {
+            let _submit = self.submit_lock.lock().expect("submit guard");
+            // The band images go first: the base submission's exported
+            // fence signals only after every earlier operation on this
+            // queue — the band blits and the swapchains' release of each
+            // queued image — so the completion it reports covers them,
+            // and the host never samples a band image the GPU is still
+            // writing.
+            for (window, part, image) in band_images {
+                let band = self.bands.get_mut(&window).expect("acquired above");
+                presenter.texture_in(
+                    device,
+                    queue,
+                    (composition.parts[part].view, storage_space),
+                    band.window.output(&image.texture, display.headroom),
+                );
+                queue.present(image);
+                band.shown = Some(part);
+                band_updates.push(BandUpdate {
+                    window,
+                    image: Some(band.window.selection().color_space),
+                });
+            }
+            // SAFETY: `queue` is the engine's Vulkan queue, and the waits
+            // and signal staged on it are consumed by the `queue.submit`
+            // below on the same queue.
+            let hal_queue =
+                unsafe { queue.as_hal::<wgpu::hal::vulkan::Api>() }.expect("vulkan queue");
+            for &wait in &waits {
+                hal_queue.add_wait_semaphore(
+                    wait,
+                    None,
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                );
+            }
+            hal_queue.add_signal_semaphore(self.signal, None);
+            queue.submit([acquire, blits, hand_back]);
+        }
+        for (part, &at) in chosen.iter().enumerate() {
+            if let Some(at) = at {
+                self.parts[part].buffers[at].initialized = true;
+                self.parts[part].buffers[at].repair.clear();
+            }
+        }
+        crate::diag::submit(device, queue, "plane present");
+        // SAFETY: `self.signal` is a live semaphore created with `SYNC_FD`
+        // export and carrying the signal the submission above just staged —
+        // the pending-signal state a sync-fd export requires.
+        let acquire_fence = unsafe {
+            self.shared
+                .vk
+                .external_semaphore_fd
+                .as_ref()
+                .expect("sync-fence export checked at creation")
+                .get_semaphore_fd(
+                    &vk::SemaphoreGetFdInfoKHR::default()
+                        .semaphore(self.signal)
+                        .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD),
+                )
+        }
+        .map_err(|e| native(e.into()))?;
+        // SAFETY: `get_semaphore_fd` returned a new descriptor we own.
+        let acquire_fence =
+            unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(acquire_fence) };
+        let ready = Arc::new(AtomicBool::new(false));
+        // Reclaim completed wgpu resources even when this is the last frame
+        // before idle and no HDR readback or imported wait needs a callback.
+        {
+            let device = device.clone();
+            let completed = Arc::clone(&ready);
+            let waker = self.waker.clone();
+            let wake = !headrooms.is_empty() || !band_updates.is_empty();
+            let owner = Arc::clone(&self.shared);
+            let completion = Arc::new(dup_fence(&acquire_fence)?);
+            let retained = Arc::clone(&completion);
+            self.looper
+                .add_fd_with_callback(
+                    completion.as_fd(),
+                    ndk::looper::FdEvent::INPUT,
+                    move |_, events| {
+                        // An error or hang-up leaves the fence unsignalled for
+                        // good; the frame is still completed so the surface
+                        // does not stall on it.
+                        if !events.contains(ndk::looper::FdEvent::INPUT) {
+                            tracing::error!(
+                                ?events,
+                                "GPU completion fence did not signal; the frame is completed anyway"
+                            );
+                        }
+                        for wait in std::mem::take(&mut waits) {
+                            // SAFETY: the submission's sync fence has signalled,
+                            // so no queue still waits on these semaphores.
+                            unsafe { owner.vk.device.destroy_semaphore(wait, None) };
+                        }
+                        if let Err(error) = device.poll(wgpu::PollType::Poll) {
+                            tracing::error!(%error, "GPU completion resource reclamation failed");
+                        }
+                        completed.store(true, Ordering::Release);
+                        if wake {
+                            waker.wake();
+                        }
+                        let _ = &retained;
+                        false
+                    },
+                )
+                .map_err(|error| {
+                    RenderError::Render(format!("register GPU completion with looper: {error}"))
+                })?;
+        }
+
+        // The transaction: the stack's buffers and changed properties.
+        if !self.root_shown {
+            transaction.set(&self.root, Op::Visible(true));
+            self.root_shown = true;
+        }
+        // A hosted object that left the stack leaves the display — before
+        // any entry below reparents an object, so one that only moved to
+        // another layer of this stack stays.
+        let hosted_in = |object: &HostedSurface| {
+            stack.iter().any(
+                |entry| matches!(entry, Entry::Hosted { object: placed, .. } if placed.is(object)),
+            )
+        };
+        self.hosted.retain(|layer, plane| {
+            let kept = stack.iter().any(|entry| {
+                matches!(entry, Entry::Hosted { layer: at, object, .. }
+                    if at == layer && object.is(&plane.object))
+            });
+            if !kept && !hosted_in(&plane.object) {
+                plane.object.detach(&mut transaction, &self.root);
+            }
+            kept
+        });
+        let mut part = 0;
+        let mut seen = Vec::new();
+        for (index, entry) in stack.iter().enumerate() {
+            let z = plan::z_order(index);
+            match entry {
+                Entry::Engine {
+                    raster, properties, ..
+                } => {
+                    let this = &mut self.parts[part];
+                    if let Some(at) = chosen[part] {
+                        let buffer = &mut this.buffers[at];
+                        buffer.state = State::Shown;
+                        // SAFETY: `buffer.ahb` is a live `AHardwareBuffer`
+                        // `buffer::allocate` created with
+                        // `GPU_SAMPLED_IMAGE` usage — `set_buffer`'s
+                        // contract.
+                        unsafe {
+                            transaction.set_buffer(
+                                &this.surface,
+                                buffer.ahb.0,
+                                Some(dup_fence(&acquire_fence)?),
+                            );
+                        }
+                        if let Some(previous) = this.current.replace(buffer.id) {
+                            pending.push(Pending {
+                                surface: this.surface.as_ptr(),
+                                what: Replaced::Buffer(previous),
+                                removed: None,
+                            });
+                        }
+                    }
+                    this.publish_damage(&mut transaction);
+                    let properties = Properties {
+                        z,
+                        opaque: raster.is_none() && part == 0 && !self.transparent,
+                        ..*properties
+                    };
+                    self.ops.clear();
+                    plan::diff(this.shown.as_ref(), &properties, &mut self.ops);
+                    for &op in &self.ops {
+                        transaction.set(&this.surface, op);
+                    }
+                    if let Some(extended_range) = &self.extended_range {
+                        let hdr = this.format == wgpu::TextureFormat::Rgba16Float;
+                        if !hdr || chosen[part].is_none() {
+                            let peak = if hdr { this.headroom } else { 1.0 };
+                            extended_range.set(
+                                &mut transaction,
+                                &this.surface,
+                                peak,
+                                display.headroom.max(1.0).min(peak),
+                            );
+                        }
+                    }
+                    this.shown = Some(properties);
+                    this.raster = *raster;
+                    part += 1;
+                }
+                Entry::Frame(promotion) => {
+                    let properties = Properties {
+                        z,
+                        ..promotion.properties
+                    };
+                    seen.push(promotion.layer);
+                    let plane = match self.promoted.entry(promotion.layer) {
+                        std::collections::hash_map::Entry::Occupied(slot) => slot.into_mut(),
+                        std::collections::hash_map::Entry::Vacant(slot) => {
+                            let surface = self
+                                .root
+                                .child(c"cherenkov frame")
+                                .map_err(|e| RenderError::Render(e.to_string()))?;
+                            // The fallible work precedes the bookkeeping:
+                            // a `set_frame` error leaves `promoted`
+                            // describing the last applied transaction.
+                            set_frame(&mut transaction, &surface, promotion.frame, dup_fence)?;
+                            promotion.frame.lease();
+                            slot.insert(Plane {
+                                surface,
+                                frame: promotion.frame.clone(),
+                                generation: promotion.generation,
+                                shown: None,
+                            })
+                        }
+                    };
+                    if plane.generation != promotion.generation {
+                        set_frame(&mut transaction, &plane.surface, promotion.frame, dup_fence)?;
+                        promotion.frame.lease();
+                        plane.generation = promotion.generation;
+                        let previous = std::mem::replace(&mut plane.frame, promotion.frame.clone());
+                        pending.push(Pending {
+                            surface: plane.surface.as_ptr(),
+                            what: Replaced::Frame(previous),
+                            removed: None,
+                        });
+                    }
+                    self.ops.clear();
+                    plan::diff(plane.shown.as_ref(), &properties, &mut self.ops);
+                    for &op in &self.ops {
+                        transaction.set(&plane.surface, op);
+                    }
+                    plane.shown = Some(properties);
+                }
+                Entry::Hosted {
+                    layer,
+                    object,
+                    properties,
+                } => {
+                    let properties = HostedProperties { z, ..*properties };
+                    let plane = self.hosted.entry(*layer).or_insert_with(|| {
+                        object.attach(&mut transaction, &self.root);
+                        HostedPlane {
+                            object: (*object).clone(),
+                            shown: None,
+                        }
+                    });
+                    self.ops.clear();
+                    plan::diff_hosted(plane.shown.as_ref(), &properties, &mut self.ops);
+                    for &op in &self.ops {
+                        transaction.set(&plane.object.0.surface, op);
+                    }
+                    plane.shown = Some(properties);
+                }
+            }
+        }
+        let gone: Vec<LayerId> = self
+            .promoted
+            .keys()
+            .filter(|layer| !seen.contains(layer))
+            .copied()
+            .collect();
+        for layer in gone {
+            let plane = self.promoted.remove(&layer).expect("listed above");
+            transaction.reparent(&plane.surface, None);
+            pending.push(Pending {
+                surface: plane.surface.as_ptr(),
+                what: Replaced::Frame(plane.frame),
+                removed: Some(plane.surface),
+            });
+        }
+
+        if headrooms.is_empty() && band_updates.is_empty() {
+            Self::apply(transaction, &self.release, pending);
+            Ok(Presentation::Presented)
+        } else {
+            // A frame that changed bands waits for its GPU completion like
+            // one that reads source brightness back: only then may the
+            // host sample the band images it latches with this transaction.
+            self.presenting = Some(PendingPresentation {
+                ready,
+                transaction,
+                replaced: pending,
+                headrooms,
+                bands: band_updates,
+                generation: composition.generation,
+                display,
+            });
+            Ok(Presentation::Pending)
+        }
+    }
+
+    /// Applies `transaction`, delivering each `Pending` its release fence
+    /// through the completion: an engine buffer's returns to its part's
+    /// pool, a replaced frame's joins its producer's release before the
+    /// plane's lease on it ends, and a removed surface control is dropped.
+    fn apply(transaction: Transaction, release: &mpsc::Sender<Released>, pending: Vec<Pending>) {
+        let sender = release.clone();
+        transaction.apply(move |completion| {
+            for Pending {
+                surface,
+                what,
+                removed,
+            } in pending
+            {
+                let fence = completion
+                    .surfaces()
+                    .contains(&surface)
+                    .then(|| completion.previous_release(surface))
+                    .flatten();
+                match what {
+                    Replaced::Buffer(id) => {
+                        // A closed receiver means the surface is gone and
+                        // its buffers with it.
+                        sender.send(Released { buffer: id, fence }).ok();
+                    }
+                    Replaced::Frame(frame) => {
+                        if let Some(fence) = fence {
+                            frame.generation.add_plane_release(fence);
+                        }
+                        frame.unlease();
+                    }
+                    Replaced::Nothing => {}
+                }
+                drop(removed);
+            }
+        });
+    }
+
+    /// Sets or clears the band presenting the region above host window
+    /// `window`'s mark — `window` is the host's own id for it, the id the
+    /// mark carries (water-rs/waterui#2225). A new band shows its region
+    /// from the next frame on; `None` leaves the region unshown.
+    ///
+    /// # Contract
+    /// A band on a surface whose target registered no band-commit sink
+    /// ([`SurfaceControlTarget::band_commits`]) is a contract violation;
+    /// the band is dropped and its region stays unshown.
+    pub fn set_band(&mut self, window: u64, band: Option<Band>) {
+        match band {
+            Some(band) => {
+                if self.band_commits.is_none() {
+                    contract_violation!(
+                        "a surface presenting bands needs a band-commit sink; the band for host window {window} is dropped and its region is not shown"
+                    );
+                    return;
+                }
+                self.bands.insert(window, band);
+            }
+            None => {
+                self.bands.remove(&window);
+            }
+        }
+    }
+
+    /// Presents only `frames`: one transaction that sets each promoted
+    /// layer's new buffer with a duplicate of its acquire fence and any
+    /// property the new frame's contract changes, leaving every part's
+    /// shown buffer in place — no buffer is acquired, no submission runs
+    /// and no fence is exported (#90).
+    ///
+    /// Every update is validated and recorded in the transaction before
+    /// any bookkeeping moves, so an error leaves `promoted` describing
+    /// the last applied transaction.
+    ///
+    /// # Errors
+    /// [`RenderError`] when a promoted layer's buffer a plane cannot show,
+    /// or a refresh names a plane that is not showing.
+    fn refresh<'a>(
+        &mut self,
+        frames: impl Iterator<Item = crate::render::planes::Plane<'a>>,
+    ) -> Result<(), RenderError> {
+        self.collect_releases();
+        // Validate every update and build the transaction before any
+        // bookkeeping moves (as `present` does through `stack`): an error
+        // leaves `promoted` describing the last applied transaction and
+        // drops no staged release.
+        self.updates.clear();
+        self.raster_updates.clear();
+        self.hosted_updates.clear();
+        let mut transaction = Transaction::new();
+        for update in frames {
+            let layer = update.placement.layer;
+            let (frame, generation) = match &update.content {
+                PlaneContent::Frame { frame, generation } => (frame, generation),
+                PlaneContent::Hosted { extent, .. } => {
+                    self.refresh_hosted(&mut transaction, update.placement, *extent)?;
+                    continue;
+                }
+                PlaneContent::Raster { generation, .. } => {
+                    let (index, part) = self
+                        .parts
+                        .iter()
+                        .enumerate()
+                        .find(|(_, part)| part.raster == Some((layer, *generation)))
+                        .expect("refresh names a committed raster generation");
+                    let mut properties = part.shown.expect("committed raster properties");
+                    properties.placement = plan::promoted(update.placement, self.size)
+                        .map_err(|e| cannot_show(layer, &e))?;
+                    properties.alpha = update.placement.opacity;
+                    self.ops.clear();
+                    plan::diff(part.shown.as_ref(), &properties, &mut self.ops);
+                    for &op in &self.ops {
+                        transaction.set(&part.surface, op);
+                    }
+                    self.raster_updates.push((index, properties));
+                    continue;
+                }
+                // A host-window mark carries no buffer to refresh.
+                PlaneContent::HostWindow { .. } => continue,
+            };
+            let FramePlanes::Native(native) = &frame.planes else {
+                return Err(cannot_show(layer, &Ineligible::NotABuffer));
+            };
+            let contract = contract(native).map_err(|e| cannot_show(layer, &e))?;
+            let Some(plane) = self.promoted.get(&layer) else {
+                return Err(RenderError::Render(format!(
+                    "layer {layer:?}'s frame changed while no plane shows it"
+                )));
+            };
+            // Admission preserves stack membership and z-order; poses and
+            // opacity can change without replacing the buffer. `shown`
+            // is `None` only when a previous present failed mid-
+            // transaction — report it rather than touch the surface
+            // control with half its properties.
+            let Some(mut properties) = plane.shown else {
+                return Err(RenderError::Render(format!(
+                    "layer {layer:?}'s plane never showed a frame"
+                )));
+            };
+            let frame = if plane.generation == *generation {
+                None
+            } else {
+                set_frame(&mut transaction, &plane.surface, native, dup_fence)?;
+                Some(native.clone())
+            };
+            properties.opaque = contract.opaque;
+            properties.placement =
+                plan::promoted(update.placement, self.size).map_err(|e| cannot_show(layer, &e))?;
+            properties.alpha = update.placement.opacity;
+            properties.dataspace = contract.dataspace;
+            properties.hdr = contract.hdr;
+            self.ops.clear();
+            plan::diff(plane.shown.as_ref(), &properties, &mut self.ops);
+            for &op in &self.ops {
+                transaction.set(&plane.surface, op);
+            }
+            self.updates.push(Update {
+                layer,
+                generation: *generation,
+                frame,
+                properties,
+            });
+        }
+        let mut pending = Vec::with_capacity(self.updates.len());
+        for update in self.updates.drain(..) {
+            let plane = self
+                .promoted
+                .get_mut(&update.layer)
+                .expect("validated above");
+            if let Some(frame) = update.frame {
+                frame.lease();
+                plane.generation = update.generation;
+                let previous = std::mem::replace(&mut plane.frame, frame);
+                pending.push(Pending {
+                    surface: plane.surface.as_ptr(),
+                    what: Replaced::Frame(previous),
+                    removed: None,
+                });
+            }
+            plane.shown = Some(update.properties);
+        }
+        for (index, properties) in self.raster_updates.drain(..) {
+            self.parts[index].shown = Some(properties);
+        }
+        for (layer, properties) in self.hosted_updates.drain(..) {
+            self.hosted.get_mut(&layer).expect("validated above").shown = Some(properties);
+        }
+        Self::apply(transaction, &self.release, pending);
+        Ok(())
+    }
+
+    /// Records a committed hosted plane's new placement in `transaction`
+    /// and stages it for `refresh`'s bookkeeping.
+    ///
+    /// # Errors
+    /// [`RenderError`] when the placement is not expressible.
+    fn refresh_hosted(
+        &mut self,
+        transaction: &mut Transaction,
+        placement: &crate::render::planes::Placement,
+        extent: cherenkov::kurbo::Size,
+    ) -> Result<(), RenderError> {
+        let layer = placement.layer;
+        let plane = self
+            .hosted
+            .get(&layer)
+            .expect("refresh names a committed hosted plane");
+        let shown = plane.shown.expect("committed hosted properties");
+        let properties = HostedProperties {
+            placement: plan::hosted(placement, extent, self.size)
+                .map_err(|e| cannot_show(layer, &e))?,
+            ..shown
+        };
+        self.ops.clear();
+        plan::diff_hosted(Some(&shown), &properties, &mut self.ops);
+        for &op in &self.ops {
+            transaction.set(&plane.object.0.surface, op);
+        }
+        self.hosted_updates.push((layer, properties));
+        Ok(())
+    }
+
+    /// Removes every part and plane from the display; their releases are
+    /// delivered by the transaction's completion.
+    fn clear(&mut self) {
+        let mut transaction = Transaction::new();
+        let mut pending = self
+            .presenting
+            .take()
+            .map_or_else(Vec::new, |frame| frame.replaced);
+        for previous in &pending {
+            if let Some(surface) = &previous.removed {
+                transaction.reparent(surface, None);
+            }
+        }
+        for (_, plane) in self.promoted.drain() {
+            transaction.reparent(&plane.surface, None);
+            pending.push(Pending {
+                surface: plane.surface.as_ptr(),
+                what: Replaced::Frame(plane.frame),
+                removed: Some(plane.surface),
+            });
+        }
+        for part in self.parts.drain(..) {
+            transaction.reparent(&part.surface, None);
+            pending.push(Pending {
+                surface: part.surface.as_ptr(),
+                what: Replaced::Nothing,
+                removed: Some(part.surface),
+            });
+        }
+        for (_, plane) in self.hosted.drain() {
+            plane.object.detach(&mut transaction, &self.root);
+        }
+        transaction.reparent(&self.root, None);
+        Self::apply(transaction, &self.release, pending);
+    }
+}
+
+impl Compositor for Planes {
+    const BUDGET: usize = plan::BUDGET;
+    // `setBufferAlpha` fades a buffer only; a hosted container has none.
+    const HOSTS_OPACITY: bool = false;
+    // A region above a host window presents in a band `View` the host
+    // stacks between its windows; no surface control can sit there.
+    const HOST_WINDOW_BANDS: bool = true;
+
+    fn expresses_transform(transform: Affine) -> bool {
+        plan::expresses_transform(transform)
+    }
+
+    fn hosts_transform(transform: Affine) -> bool {
+        plan::hosts_transform(transform)
+    }
+
+    fn expresses_clip(clip: &ShapeData) -> bool {
+        plan::expresses_clip(clip)
+    }
+
+    fn shows(frame: &ExternalFrame) -> bool {
+        matches!(&frame.planes, FramePlanes::Native(native) if contract(native).is_ok())
+    }
+}
+
+impl SystemPlanes for Planes {
+    // Android parts present inside `Transaction::apply` on the render
+    // thread; nothing travels to a platform compositor thread.
+    type Commit = ();
+
+    fn cpu_bytes(&self) -> u64 {
+        (self.parts.capacity() * std::mem::size_of::<Part>()
+            + self.retiring.capacity() * std::mem::size_of::<Buffer>()) as u64
+            + self
+                .parts
+                .iter()
+                .map(|part| {
+                    (part.buffers.capacity() * std::mem::size_of::<Buffer>()
+                        + part.damage_rects.capacity() * std::mem::size_of::<ndk_sys::ARect>())
+                        as u64
+                        + part.damage.heap_bytes().0
+                        + part
+                            .buffers
+                            .iter()
+                            .map(|buffer| buffer.repair.heap_bytes().0)
+                            .sum::<u64>()
+                })
+                .sum::<u64>()
+            + self
+                .retiring
+                .iter()
+                .map(|buffer| buffer.repair.heap_bytes().0)
+                .sum::<u64>()
+    }
+
+    fn native_bytes(&self) -> u64 {
+        self.parts
+            .iter()
+            .flat_map(|part| &part.buffers)
+            .chain(&self.retiring)
+            .map(|buffer| buffer.bytes)
+            .sum::<u64>()
+            + self.presenting.as_ref().map_or(0, |pending| {
+                pending
+                    .headrooms
+                    .iter()
+                    .map(|(_, readback)| readback.bytes())
+                    .sum()
+            })
+    }
+
+    fn compose(
+        &mut self,
+        composition: Composition<'_>,
+    ) -> Result<(crate::render::planes::Presentation, ()), RenderError> {
+        self.present(composition)
+            .map(|presentation| (presentation, ()))
+    }
+
+    fn refresh<'a>(
+        &mut self,
+        frames: impl Iterator<Item = crate::render::planes::Plane<'a>>,
+    ) -> Result<(), RenderError> {
+        Self::refresh(self, frames)
+    }
+
+    fn resize(&mut self, size: (u32, u32)) {
+        self.resize_parts(size);
+    }
+
+    fn reselect(&mut self, _: &wgpu::Adapter, _: &wgpu::Device) -> Result<(), SurfaceError> {
+        // Content selects each part's storage and dataspace. Display changes
+        // update the requested brightness in the next transaction; they do not
+        // negotiate a swapchain or invalidate scene-referred capture pixels.
+        Ok(())
+    }
+}
+
+impl Drop for Planes {
+    fn drop(&mut self) {
+        self.clear();
+        // SAFETY: `self.signal` is the live semaphore `new` created on this
+        // device, and `clear` retired every plane, so no submission stages
+        // a signal on it again.
+        unsafe { self.shared.vk.device.destroy_semaphore(self.signal, None) };
+    }
+}
+
+/// Sets `frame`'s buffer on `surface` with a duplicate of its acquire fence.
+fn set_frame(
+    transaction: &mut Transaction,
+    surface: &SurfaceControl,
+    frame: &vulkan::Frame,
+    dup: impl Fn(&OwnedFd) -> Result<OwnedFd, RenderError>,
+) -> Result<(), RenderError> {
+    let source = frame
+        .generation
+        .plane
+        .as_ref()
+        .expect("eligibility checked the plane source");
+    let fence = match &source.acquire {
+        PlaneAcquire::Ready => None,
+        PlaneAcquire::Fence(fd) => Some(dup(fd)?),
+        PlaneAcquire::Semaphore => unreachable!("eligibility rejects semaphore acquires"),
+    };
+    // SAFETY: the generation's producer lease keeps the buffer alive, and
+    // the plane's own lease keeps the generation's lease.
+    unsafe { transaction.set_buffer(surface, source.buffer, fence) };
+    Ok(())
+}

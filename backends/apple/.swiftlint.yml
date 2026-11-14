@@ -1,0 +1,13 @@
+included:
+  - Sources
+  - Tests
+
+only_rules:
+  - force_cast
+  - force_try
+  - unused_import
+  - empty_count
+  - explicit_init
+  - overridden_super_call
+
+reporter: "xcode"

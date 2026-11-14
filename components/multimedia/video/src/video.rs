@@ -20,11 +20,13 @@
 //! ```
 
 use core::fmt;
-use nami::SignalExt as _;
+use nami::{Signal as _, SignalExt as _};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::time::Duration;
+use waterui_core::handler::ReportExtraction as _;
 use waterui_core::{
-    Binding, Computed, Environment, NativeView, binding, configurable, layout::StretchAxis,
+    Binding, Computed, Environment, NativeView, SerialDispatch, binding, configurable,
+    contract_violation, layout::StretchAxis,
 };
 
 use crate::{
@@ -35,6 +37,7 @@ use crate::{
 /// How the decoded picture fills the bounds it is given.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(i32)]
+#[non_exhaustive]
 pub enum ContentMode {
     /// Fit the video within the bounds while maintaining aspect ratio (letterbox/pillarbox).
     #[default]
@@ -48,6 +51,10 @@ pub enum ContentMode {
 /// Packing layout for an equirectangular spherical-video source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(i32)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the video realizations unpack each stereo layout variant by variant; a new layout must fail their build instead of falling into a wildcard arm"
+)]
 pub enum SphericalStereoLayout {
     /// One panorama shared by both eyes or displayed as an ordinary 360-degree view.
     #[default]
@@ -70,11 +77,11 @@ impl fmt::Debug for SphericalViewport {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("SphericalViewport")
-            .field("yaw_degrees", &self.yaw.get())
-            .field("pitch_degrees", &self.pitch.get())
+            .field("yaw_degrees", &self.yaw.snapshot())
+            .field("pitch_degrees", &self.pitch.snapshot())
             .field(
                 "vertical_field_of_view_degrees",
-                &self.vertical_field_of_view.get(),
+                &self.vertical_field_of_view.snapshot(),
             )
             .finish()
     }
@@ -83,14 +90,18 @@ impl fmt::Debug for SphericalViewport {
 impl SphericalViewport {
     /// Creates a spherical camera with a validated orientation and vertical field of view.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics unless all values are finite, pitch is within `-90..=90`, and
-    /// vertical field of view is within `30..=120` degrees.
+    /// All values must be finite, pitch within `-90..=90`, and vertical field
+    /// of view within `30..=120` degrees. Otherwise a debug build panics; a
+    /// release build logs it and uses the nearest valid value, with a
+    /// non-finite value replaced by the centered camera's.
     #[must_use]
     pub fn new(yaw_degrees: f32, pitch_degrees: f32, vertical_field_of_view_degrees: f32) -> Self {
-        validate_spherical_orientation(yaw_degrees, pitch_degrees);
-        validate_spherical_field_of_view(vertical_field_of_view_degrees);
+        let (yaw_degrees, pitch_degrees) =
+            checked_spherical_orientation(yaw_degrees, pitch_degrees);
+        let vertical_field_of_view_degrees =
+            checked_spherical_field_of_view(vertical_field_of_view_degrees);
         Self {
             yaw: binding(normalize_yaw(yaw_degrees)),
             pitch: binding(pitch_degrees),
@@ -107,42 +118,46 @@ impl SphericalViewport {
     /// Returns the current normalized yaw in degrees.
     #[must_use]
     pub fn yaw_degrees(&self) -> f32 {
-        self.yaw.get()
+        self.yaw.snapshot()
     }
 
     /// Returns the current pitch in degrees.
     #[must_use]
     pub fn pitch_degrees(&self) -> f32 {
-        self.pitch.get()
+        self.pitch.snapshot()
     }
 
     /// Returns the current vertical field of view in degrees.
     #[must_use]
     pub fn vertical_field_of_view_degrees(&self) -> f32 {
-        self.vertical_field_of_view.get()
+        self.vertical_field_of_view.snapshot()
     }
 
     /// Updates the camera orientation.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics unless both values are finite and pitch is within `-90..=90`.
+    /// Both values must be finite and pitch within `-90..=90`. Otherwise a
+    /// debug build panics; a release build logs it and applies the nearest
+    /// valid orientation, with a non-finite value replaced by `0.0`.
     pub fn set_orientation(&self, yaw_degrees: f32, pitch_degrees: f32) {
-        validate_spherical_orientation(yaw_degrees, pitch_degrees);
+        let (yaw_degrees, pitch_degrees) =
+            checked_spherical_orientation(yaw_degrees, pitch_degrees);
         self.yaw.set(normalize_yaw(yaw_degrees));
         self.pitch.set(pitch_degrees);
     }
 
     /// Applies an interactive orientation delta, clamping pitch at the poles.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics unless both deltas are finite.
+    /// Both deltas must be finite. Otherwise a debug build panics; a release
+    /// build logs it and ignores the call.
     pub fn pan_by(&self, yaw_delta_degrees: f32, pitch_delta_degrees: f32) {
-        assert!(
-            yaw_delta_degrees.is_finite() && pitch_delta_degrees.is_finite(),
-            "spherical camera deltas must be finite"
-        );
+        if !(yaw_delta_degrees.is_finite() && pitch_delta_degrees.is_finite()) {
+            contract_violation!("spherical camera deltas must be finite; the call is ignored");
+            return;
+        }
         self.set_orientation(
             self.yaw_degrees() + yaw_delta_degrees,
             (self.pitch_degrees() + pitch_delta_degrees).clamp(-90.0, 90.0),
@@ -151,24 +166,29 @@ impl SphericalViewport {
 
     /// Updates the vertical field of view.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics unless `degrees` is finite and within `30..=120`.
+    /// `degrees` must be finite and within `30..=120`. Otherwise a debug
+    /// build panics; a release build logs it and applies the nearest valid
+    /// field of view, with a non-finite value replaced by 90 degrees.
     pub fn set_vertical_field_of_view_degrees(&self, degrees: f32) {
-        validate_spherical_field_of_view(degrees);
-        self.vertical_field_of_view.set(degrees);
+        self.vertical_field_of_view
+            .set(checked_spherical_field_of_view(degrees));
     }
 
     /// Applies a positive magnification scale to the current field of view.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics unless `scale` is finite and positive.
+    /// `scale` must be finite and positive. Otherwise a debug build panics; a
+    /// release build logs it and ignores the call.
     pub fn magnify(&self, scale: f32) {
-        assert!(
-            scale.is_finite() && scale > 0.0,
-            "spherical magnification scale must be finite and positive"
-        );
+        if !(scale.is_finite() && scale > 0.0) {
+            contract_violation!(
+                "spherical magnification scale must be finite and positive; the call is ignored"
+            );
+            return;
+        }
         self.vertical_field_of_view
             .set((self.vertical_field_of_view_degrees() / scale).clamp(30.0, 120.0));
     }
@@ -237,6 +257,10 @@ impl EquirectangularProjection {
 
 /// Projection used to present decoded video frames.
 #[derive(Debug, Clone, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the video realizations present each projection variant by variant; a new projection must fail their build instead of falling into a wildcard arm"
+)]
 pub enum VideoProjection {
     /// Ordinary planar presentation using [`ContentMode`].
     #[default]
@@ -253,22 +277,42 @@ impl VideoProjection {
     }
 }
 
-fn validate_spherical_orientation(yaw_degrees: f32, pitch_degrees: f32) {
-    assert!(
-        yaw_degrees.is_finite() && pitch_degrees.is_finite(),
-        "spherical camera orientation must be finite"
-    );
-    assert!(
-        (-90.0..=90.0).contains(&pitch_degrees),
-        "spherical camera pitch must be within -90..=90 degrees"
-    );
+/// The orientation to apply for a requested one: the request when valid,
+/// otherwise the nearest valid orientation (a non-finite value becomes `0.0`).
+fn checked_spherical_orientation(yaw_degrees: f32, pitch_degrees: f32) -> (f32, f32) {
+    if !(yaw_degrees.is_finite() && pitch_degrees.is_finite()) {
+        contract_violation!(
+            "spherical camera orientation must be finite; a non-finite value becomes 0.0"
+        );
+        let finite_or_zero = |degrees: f32| if degrees.is_finite() { degrees } else { 0.0 };
+        return (
+            finite_or_zero(yaw_degrees),
+            finite_or_zero(pitch_degrees).clamp(-90.0, 90.0),
+        );
+    }
+    if !(-90.0..=90.0).contains(&pitch_degrees) {
+        contract_violation!(
+            "spherical camera pitch must be within -90..=90 degrees; the pitch is clamped"
+        );
+        return (yaw_degrees, pitch_degrees.clamp(-90.0, 90.0));
+    }
+    (yaw_degrees, pitch_degrees)
 }
 
-fn validate_spherical_field_of_view(degrees: f32) {
-    assert!(
-        degrees.is_finite() && (30.0..=120.0).contains(&degrees),
-        "spherical vertical field of view must be within 30..=120 degrees"
+/// The field of view to apply for a requested one: the request when valid,
+/// otherwise the nearest valid one (a non-finite value becomes 90 degrees).
+fn checked_spherical_field_of_view(degrees: f32) -> f32 {
+    if degrees.is_finite() && (30.0..=120.0).contains(&degrees) {
+        return degrees;
+    }
+    contract_violation!(
+        "spherical vertical field of view must be within 30..=120 degrees; the nearest valid field of view is used (90 for a non-finite value)"
     );
+    if degrees.is_finite() {
+        degrees.clamp(30.0, 120.0)
+    } else {
+        90.0
+    }
 }
 
 fn normalize_yaw(yaw_degrees: f32) -> f32 {
@@ -291,16 +335,24 @@ impl Volume {
 
     /// Creates a validated linear playback-volume level.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when `level` is not finite or is outside `0.0..=1.0`.
+    /// `level` must be finite and within `0.0..=1.0`. Otherwise a debug build
+    /// panics; a release build logs it and clamps the level into the range,
+    /// with `NaN` becoming silence.
     #[must_use]
-    pub const fn new(level: f32) -> Self {
-        assert!(
-            level >= 0.0 && level <= 1.0,
-            "video volume must be finite and within 0.0..=1.0"
+    pub fn new(level: f32) -> Self {
+        if (0.0..=1.0).contains(&level) {
+            return Self(level);
+        }
+        contract_violation!(
+            "video volume must be finite and within 0.0..=1.0; the level is clamped into the range (NaN becomes silence)"
         );
-        Self(level)
+        if level.is_nan() {
+            Self::SILENT
+        } else {
+            Self(level.clamp(0.0, 1.0))
+        }
     }
 
     /// Returns the validated linear level.
@@ -318,6 +370,10 @@ impl Default for Volume {
 
 /// Subtitle track selection policy for a player instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the video realizations select subtitles variant by variant; a new policy must fail their build instead of falling into a wildcard arm"
+)]
 pub enum SubtitleSelection {
     /// Use the player's default choice.
     #[default]
@@ -330,6 +386,10 @@ pub enum SubtitleSelection {
 
 /// Audio track selection policy for a player instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the video realizations select tracks variant by variant; a new policy must fail their build instead of falling into a wildcard arm"
+)]
 pub enum AudioTrackSelection {
     /// Use the player's default or autoselected audio track.
     #[default]
@@ -340,6 +400,10 @@ pub enum AudioTrackSelection {
 
 /// Video-quality track selection policy for a player instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the video realizations select tracks variant by variant; a new policy must fail their build instead of falling into a wildcard arm"
+)]
 pub enum VideoTrackSelection {
     /// Let adaptive playback select the video quality.
     #[default]
@@ -360,28 +424,38 @@ pub struct LiveWindow {
 impl LiveWindow {
     /// Creates a validated live-window snapshot.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics unless `seekable_start <= target_position <= seekable_end <= live_edge`.
+    /// `seekable_start <= target_position <= seekable_end <= live_edge` must
+    /// hold. Otherwise a debug build panics; a release build logs it and
+    /// widens the window: the target position is raised to the window start,
+    /// the window end to the target position, and the live edge to the window
+    /// end.
     #[must_use]
     pub fn new(
         seekable_start: Duration,
-        seekable_end: Duration,
-        live_edge: Duration,
-        target_position: Duration,
+        mut seekable_end: Duration,
+        mut live_edge: Duration,
+        mut target_position: Duration,
     ) -> Self {
-        assert!(
-            seekable_start <= target_position,
-            "live target position must not precede the seekable window"
-        );
-        assert!(
-            target_position <= seekable_end,
-            "live target position must not exceed the seekable window"
-        );
-        assert!(
-            seekable_end <= live_edge,
-            "live edge must not precede the seekable window"
-        );
+        if target_position < seekable_start {
+            contract_violation!(
+                "live target position must not precede the seekable window; the target position is raised to the window start"
+            );
+            target_position = seekable_start;
+        }
+        if target_position > seekable_end {
+            contract_violation!(
+                "live target position must not exceed the seekable window; the window end is raised to the target position"
+            );
+            seekable_end = target_position;
+        }
+        if seekable_end > live_edge {
+            contract_violation!(
+                "live edge must not precede the seekable window; the live edge is raised to the window end"
+            );
+            live_edge = seekable_end;
+        }
         Self {
             seekable_start,
             seekable_end,
@@ -438,16 +512,19 @@ pub struct AudioTrackInfo {
 impl AudioTrackInfo {
     /// Creates an audio-track descriptor.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when `label` is empty or whitespace-only.
+    /// `label` must not be empty or whitespace-only. Otherwise a debug build
+    /// panics; a release build logs it and creates the descriptor with the
+    /// label as given.
     #[must_use]
     pub fn new(label: impl Into<String>, language: Option<String>, roles: Vec<String>) -> Self {
         let label = label.into();
-        assert!(
-            !label.trim().is_empty(),
-            "audio-track label must not be empty"
-        );
+        if label.trim().is_empty() {
+            contract_violation!(
+                "audio-track label must not be empty; the track is created with the label as given"
+            );
+        }
         Self {
             label,
             language,
@@ -488,9 +565,11 @@ pub struct VideoTrackInfo {
 impl VideoTrackInfo {
     /// Creates a video-track descriptor.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when `id` or `label` is empty or whitespace-only.
+    /// `id` and `label` must not be empty or whitespace-only. Otherwise a
+    /// debug build panics; a release build logs it and creates the descriptor
+    /// with the values as given.
     #[must_use]
     pub fn new(
         id: impl Into<String>,
@@ -502,14 +581,16 @@ impl VideoTrackInfo {
     ) -> Self {
         let id = id.into();
         let label = label.into();
-        assert!(
-            !id.trim().is_empty(),
-            "video-track identity must not be empty"
-        );
-        assert!(
-            !label.trim().is_empty(),
-            "video-track label must not be empty"
-        );
+        if id.trim().is_empty() {
+            contract_violation!(
+                "video-track identity must not be empty; the track is created with the identity as given"
+            );
+        }
+        if label.trim().is_empty() {
+            contract_violation!(
+                "video-track label must not be empty; the track is created with the label as given"
+            );
+        }
         Self {
             id,
             label,
@@ -559,6 +640,7 @@ impl VideoTrackInfo {
 
 /// Origin of one subtitle track in the active presentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum SubtitleTrackOrigin {
     /// Application-supplied sidecar asset.
     Sidecar,
@@ -583,9 +665,11 @@ pub struct SubtitleTrackInfo {
 impl SubtitleTrackInfo {
     /// Creates a subtitle-track descriptor.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when `label` is empty or whitespace-only.
+    /// `label` must not be empty or whitespace-only. Otherwise a debug build
+    /// panics; a release build logs it and creates the descriptor with the
+    /// label as given.
     #[must_use]
     pub fn new(
         label: impl Into<String>,
@@ -595,10 +679,11 @@ impl SubtitleTrackInfo {
         origin: SubtitleTrackOrigin,
     ) -> Self {
         let label = label.into();
-        assert!(
-            !label.trim().is_empty(),
-            "subtitle-track label must not be empty"
-        );
+        if label.trim().is_empty() {
+            contract_violation!(
+                "subtitle-track label must not be empty; the track is created with the label as given"
+            );
+        }
         Self {
             label,
             language,
@@ -699,21 +784,66 @@ impl TrackCatalog {
 /// `Video` / `VideoPlayer` use one policy object so apps can explicitly choose
 /// between VOD buffering behavior and realtime behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PlaybackPolicy {
     /// `true` for realtime streams (low-latency/live), `false` for VOD/static files.
-    pub realtime: bool,
+    realtime: bool,
     /// Minimum buffered duration before starting playback for VOD.
-    pub vod_start_buffer_ms: u32,
+    vod_start_buffer_ms: u32,
     /// Minimum buffered duration to resume after a VOD stall.
-    pub vod_resume_buffer_ms: u32,
+    vod_resume_buffer_ms: u32,
     /// Buffer level below which VOD enters buffering state.
-    pub vod_stall_buffer_ms: u32,
+    vod_stall_buffer_ms: u32,
     /// For realtime mode, drop video frames that are later than this threshold.
-    pub live_max_video_late_ms: u32,
+    live_max_video_late_ms: u32,
     /// Bounded segmented-network and adaptive-selection policy.
-    pub network: NetworkPlaybackPolicy,
+    network: NetworkPlaybackPolicy,
     /// Required platform power path for this session.
-    pub power: PlaybackPowerPolicy,
+    power: PlaybackPowerPolicy,
+}
+
+impl PlaybackPolicy {
+    /// `true` for realtime streams (low-latency/live), `false` for VOD/static files.
+    #[must_use]
+    pub const fn realtime(&self) -> bool {
+        self.realtime
+    }
+
+    /// Minimum buffered duration before starting playback for VOD.
+    #[must_use]
+    pub const fn vod_start_buffer_ms(&self) -> u32 {
+        self.vod_start_buffer_ms
+    }
+
+    /// Minimum buffered duration to resume after a VOD stall.
+    #[must_use]
+    pub const fn vod_resume_buffer_ms(&self) -> u32 {
+        self.vod_resume_buffer_ms
+    }
+
+    /// Buffer level below which VOD enters buffering state.
+    #[must_use]
+    pub const fn vod_stall_buffer_ms(&self) -> u32 {
+        self.vod_stall_buffer_ms
+    }
+
+    /// For realtime mode, drop video frames that are later than this threshold.
+    #[must_use]
+    pub const fn live_max_video_late_ms(&self) -> u32 {
+        self.live_max_video_late_ms
+    }
+
+    /// Bounded segmented-network and adaptive-selection policy.
+    #[must_use]
+    pub const fn network(&self) -> NetworkPlaybackPolicy {
+        self.network
+    }
+
+    /// Required platform power path for this session.
+    #[must_use]
+    pub const fn get_power(&self) -> PlaybackPowerPolicy {
+        self.power
+    }
 }
 
 /// Power-path requirement for media playback.
@@ -722,6 +852,7 @@ pub struct PlaybackPolicy {
 /// output route, or active interactive features cannot satisfy the invariant.
 /// They never begin on one path and silently fall back to another.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum PlaybackPowerPolicy {
     /// Let the backend select its canonical path while preserving all features.
     #[default]
@@ -734,6 +865,7 @@ pub enum PlaybackPowerPolicy {
 
 /// Active media-output architecture selected by a backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum PlaybackOutputPath {
     /// A native player owns its platform-defined media path.
     PlatformManaged,
@@ -772,25 +904,33 @@ impl NetworkPlaybackPolicy {
     /// therefore cannot panic.
     #[must_use]
     pub const fn standard() -> Self {
-        Self::new(
-            NonZeroUsize::new(4 * 1_024 * 1_024).expect("manifest limit must be non-zero"),
-            NonZeroUsize::new(64 * 1_024 * 1_024).expect("segment limit must be non-zero"),
-            NonZeroU64::new(5_000_000).expect("initial bandwidth must be non-zero"),
-            750,
-            Duration::from_secs(10),
-            Duration::from_secs(2),
-            Duration::from_secs(30),
-        )
+        Self {
+            maximum_manifest_bytes: NonZeroUsize::new(4 * 1_024 * 1_024)
+                .expect("manifest limit must be non-zero"),
+            maximum_segment_bytes: NonZeroUsize::new(64 * 1_024 * 1_024)
+                .expect("segment limit must be non-zero"),
+            initial_bandwidth: NonZeroU64::new(5_000_000)
+                .expect("initial bandwidth must be non-zero"),
+            bandwidth_fraction_per_mille: 750,
+            minimum_buffer_for_upgrade: Duration::from_secs(10),
+            emergency_buffer: Duration::from_secs(2),
+            maximum_prefetch_buffer: Duration::from_secs(30),
+            live_catch_up_tolerance: Duration::from_millis(500),
+            live_minimum_rate_per_mille: 970,
+            live_maximum_rate_per_mille: 1_030,
+        }
     }
 
     /// Creates a validated segmented-network policy.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics unless the bandwidth fraction is in `1..=1000`, the emergency
-    /// buffer is below the upgrade buffer, and the prefetch bound is non-zero.
+    /// The bandwidth fraction must be in `1..=1000`, the emergency buffer
+    /// below the upgrade buffer, and the prefetch bound non-zero. Otherwise a
+    /// debug build panics; a release build logs it and returns
+    /// [`Self::standard`].
     #[must_use]
-    pub const fn new(
+    pub fn new(
         maximum_manifest_bytes: NonZeroUsize,
         maximum_segment_bytes: NonZeroUsize,
         initial_bandwidth: NonZeroU64,
@@ -799,20 +939,24 @@ impl NetworkPlaybackPolicy {
         emergency_buffer: Duration,
         maximum_prefetch_buffer: Duration,
     ) -> Self {
-        assert!(
-            bandwidth_fraction_per_mille > 0 && bandwidth_fraction_per_mille <= 1_000,
-            "adaptive bandwidth fraction must be in 1..=1000"
-        );
-        assert!(
-            emergency_buffer.as_secs() < minimum_buffer_for_upgrade.as_secs()
-                || (emergency_buffer.as_secs() == minimum_buffer_for_upgrade.as_secs()
-                    && emergency_buffer.subsec_nanos() < minimum_buffer_for_upgrade.subsec_nanos()),
-            "adaptive emergency buffer must be below the upgrade buffer"
-        );
-        assert!(
-            !maximum_prefetch_buffer.is_zero(),
-            "maximum segmented prefetch buffer must be non-zero"
-        );
+        if !(bandwidth_fraction_per_mille > 0 && bandwidth_fraction_per_mille <= 1_000) {
+            contract_violation!(
+                "adaptive bandwidth fraction must be in 1..=1000; the standard network playback policy is used"
+            );
+            return Self::standard();
+        }
+        if emergency_buffer >= minimum_buffer_for_upgrade {
+            contract_violation!(
+                "adaptive emergency buffer must be below the upgrade buffer; the standard network playback policy is used"
+            );
+            return Self::standard();
+        }
+        if maximum_prefetch_buffer.is_zero() {
+            contract_violation!(
+                "maximum segmented prefetch buffer must be non-zero; the standard network playback policy is used"
+            );
+            return Self::standard();
+        }
         Self {
             maximum_manifest_bytes,
             maximum_segment_bytes,
@@ -833,29 +977,33 @@ impl NetworkPlaybackPolicy {
     /// and `1030` is `1.03x`. DASH service-description bounds further restrict
     /// this application policy when present.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when the tolerance is zero or the rates do not form a positive,
-    /// ordered interval containing `1000`.
+    /// The tolerance must be non-zero and the rates must form a positive,
+    /// ordered interval containing `1000`. Otherwise a debug build panics; a
+    /// release build logs it and returns the policy unchanged.
     #[must_use]
-    pub const fn live_catch_up(
+    pub fn live_catch_up(
         mut self,
         tolerance: Duration,
         minimum_rate_per_mille: u16,
         maximum_rate_per_mille: u16,
     ) -> Self {
-        assert!(
-            !tolerance.is_zero(),
-            "live catch-up tolerance must be non-zero"
-        );
-        assert!(
-            minimum_rate_per_mille >= 250
-                && minimum_rate_per_mille <= 1_000
-                && maximum_rate_per_mille >= 1_000
-                && maximum_rate_per_mille <= 4_000
-                && minimum_rate_per_mille <= maximum_rate_per_mille,
-            "live catch-up rates must be within 250..=4000, ordered, and contain 1000 per mille"
-        );
+        if tolerance.is_zero() {
+            contract_violation!(
+                "live catch-up tolerance must be non-zero; the live catch-up settings are unchanged"
+            );
+            return self;
+        }
+        if !((250..=1_000).contains(&minimum_rate_per_mille)
+            && (1_000..=4_000).contains(&maximum_rate_per_mille)
+            && minimum_rate_per_mille <= maximum_rate_per_mille)
+        {
+            contract_violation!(
+                "live catch-up rates must be within 250..=4000, ordered, and contain 1000 per mille; the live catch-up settings are unchanged"
+            );
+            return self;
+        }
         self.live_catch_up_tolerance = tolerance;
         self.live_minimum_rate_per_mille = minimum_rate_per_mille;
         self.live_maximum_rate_per_mille = maximum_rate_per_mille;
@@ -1078,13 +1226,17 @@ impl PlaybackMetrics {
 
     /// Records an observed audio-minus-video clock drift.
     ///
-    /// # Panics
+    /// # Contract violation
     ///
-    /// Panics when `drift_ms` is not finite.
+    /// `drift_ms` must be finite. Otherwise a debug build panics; a release
+    /// build logs it and records no drift.
     #[must_use]
     pub fn av_drift_ms(mut self, drift_ms: f32) -> Self {
-        assert!(drift_ms.is_finite(), "audio-video drift must be finite");
-        self.av_drift_ms = Some(drift_ms);
+        if drift_ms.is_finite() {
+            self.av_drift_ms = Some(drift_ms);
+        } else {
+            contract_violation!("audio-video drift must be finite; no drift is recorded");
+        }
         self
     }
 
@@ -1161,6 +1313,7 @@ impl PlaybackMetrics {
 
 /// Events emitted by video components.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum Event {
     /// The video is ready to play.
     ReadyToPlay,
@@ -1228,6 +1381,34 @@ pub enum Event {
 /// `State<T>` / `Environment` extractor machinery used by [`Button::action`].
 type OnEvent = waterui_core::handler::BoxedEventAction<Event>;
 
+/// Serializes event delivery to the user handler: an event emitted while the
+/// handler still runs — typically because it wrote a playback signal the video
+/// watches — is queued and delivered after it returns, in order, rather than
+/// re-entering the handler.
+struct QueuedVideoEvents {
+    handler: core::cell::RefCell<OnEvent>,
+    events: SerialDispatch<Event>,
+    env: Environment,
+}
+
+impl QueuedVideoEvents {
+    fn new(handler: OnEvent, env: Environment) -> Self {
+        Self {
+            handler: core::cell::RefCell::new(handler),
+            events: SerialDispatch::new(),
+            env,
+        }
+    }
+
+    fn emit(&self, event: Event) {
+        self.events.deliver(event, |event| {
+            // An event handler whose extractors fail does not run; the event
+            // is dropped and the failure reported.
+            (self.handler.borrow_mut())(event, &self.env).report_extraction();
+        });
+    }
+}
+
 /// An event handler that has not yet been bound to a rendering environment.
 ///
 /// This is part of the public configuration type only so native resolution can
@@ -1251,16 +1432,13 @@ impl VideoEventHandler {
     #[doc(hidden)]
     #[must_use]
     pub fn bind_callback(self, env: Environment) -> std::rc::Rc<dyn Fn(Event)> {
-        let handler = core::cell::RefCell::new(self.0);
-        std::rc::Rc::new(move |event| {
-            (handler.borrow_mut())(event, &env);
-        })
+        let events = std::rc::Rc::new(QueuedVideoEvents::new(self.0, env));
+        std::rc::Rc::new(move |event| events.emit(event))
     }
 
     fn bind(self, env: &Environment) -> BoundVideoEventHandler {
         BoundVideoEventHandler {
-            handler: core::cell::RefCell::new(self.0),
-            env: env.clone(),
+            handler: QueuedVideoEvents::new(self.0, env.clone()),
         }
     }
 }
@@ -1268,8 +1446,7 @@ impl VideoEventHandler {
 /// A video event handler bound to the environment of its rendered view.
 #[doc(hidden)]
 pub struct BoundVideoEventHandler {
-    handler: core::cell::RefCell<OnEvent>,
-    env: Environment,
+    handler: QueuedVideoEvents,
 }
 
 impl fmt::Debug for BoundVideoEventHandler {
@@ -1283,7 +1460,7 @@ impl BoundVideoEventHandler {
     /// Dispatches an event using the rendering environment captured during
     /// native view resolution.
     pub fn call(&self, event: Event) {
-        (self.handler.borrow_mut())(event, &self.env);
+        self.handler.emit(event);
     }
 }
 
@@ -1536,7 +1713,8 @@ configurable!(
             ContentMode::Fill | ContentMode::Stretch => StretchAxis::Both,
         }
     },
-    resolve |config, env| config.bind_event_environment(env)
+    resolve | config,
+    env | config.bind_event_environment(env)
 );
 
 impl Video {
@@ -1702,7 +1880,8 @@ configurable!(
             ContentMode::Fill | ContentMode::Stretch => StretchAxis::Both,
         }
     },
-    resolve |config, env| config.bind_event_environment(env)
+    resolve | config,
+    env | config.bind_event_environment(env)
 );
 
 impl VideoPlayer {
@@ -1763,21 +1942,179 @@ pub fn video_player(item: impl Into<MediaItem>) -> VideoPlayer {
 mod tests {
     use super::*;
 
+    /// An event emitted while the handler still runs must queue behind the
+    /// in-flight call instead of re-entering the handler.
+    #[test]
+    fn a_nested_event_is_delivered_after_the_handler_returns() {
+        use core::cell::{Cell, RefCell};
+        use std::rc::Rc;
+
+        let callback_slot = Rc::new(RefCell::new(None::<Rc<dyn Fn(Event)>>));
+        let delivered = Rc::new(RefCell::new(Vec::<String>::new()));
+        let inside = Cell::new(false);
+        let once = Cell::new(false);
+        let handler: OnEvent = Box::new({
+            let callback_slot = Rc::clone(&callback_slot);
+            let delivered = Rc::clone(&delivered);
+            move |event, _env| {
+                assert!(
+                    !inside.replace(true),
+                    "the handler must not run re-entrantly"
+                );
+                delivered.borrow_mut().push(format!("{event:?}"));
+                if !once.replace(true) {
+                    callback_slot.borrow().as_ref().expect("callback installed")(Event::Ended);
+                }
+                inside.set(false);
+                Ok(())
+            }
+        });
+        let callback = VideoEventHandler::new(handler).bind_callback(Environment::new());
+        *callback_slot.borrow_mut() = Some(callback.clone());
+
+        callback(Event::ReadyToPlay);
+
+        assert_eq!(&*delivered.borrow(), &["ReadyToPlay", "Ended"]);
+    }
+
+    /// The bound-handler surface used by native resolution queues nested
+    /// events the same way.
+    #[test]
+    fn a_nested_call_on_the_bound_handler_is_delivered_after_it_returns() {
+        use core::cell::{Cell, RefCell};
+        use std::rc::Rc;
+
+        let handler_slot = Rc::new(RefCell::new(None::<BoundVideoEventHandler>));
+        let delivered = Rc::new(RefCell::new(Vec::<String>::new()));
+        let inside = Cell::new(false);
+        let once = Cell::new(false);
+        let handler: OnEvent = Box::new({
+            let handler_slot = Rc::clone(&handler_slot);
+            let delivered = Rc::clone(&delivered);
+            move |event, _env| {
+                assert!(
+                    !inside.replace(true),
+                    "the handler must not run re-entrantly"
+                );
+                delivered.borrow_mut().push(format!("{event:?}"));
+                if !once.replace(true) {
+                    handler_slot
+                        .borrow()
+                        .as_ref()
+                        .expect("handler installed")
+                        .call(Event::Ended);
+                }
+                inside.set(false);
+                Ok(())
+            }
+        });
+        let bound = VideoEventHandler::new(handler).bind(&Environment::new());
+        *handler_slot.borrow_mut() = Some(bound);
+
+        handler_slot
+            .borrow()
+            .as_ref()
+            .expect("handler installed")
+            .call(Event::ReadyToPlay);
+
+        assert_eq!(&*delivered.borrow(), &["ReadyToPlay", "Ended"]);
+    }
+
     #[test]
     fn volume_preserves_valid_level() {
         assert!((Volume::new(0.8).level() - 0.8).abs() < f32::EPSILON);
     }
 
     #[test]
-    #[should_panic(expected = "video volume must be finite and within 0.0..=1.0")]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "video volume must be finite and within 0.0..=1.0")
+    )]
     fn volume_rejects_negative_level() {
-        let _ = Volume::new(-0.1);
+        // Release outcome: the level is clamped into the range.
+        assert_eq!(Volume::new(-0.1), Volume::SILENT);
+        assert_eq!(Volume::new(1.5), Volume::FULL);
     }
 
     #[test]
-    #[should_panic(expected = "video volume must be finite and within 0.0..=1.0")]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "video volume must be finite and within 0.0..=1.0")
+    )]
     fn volume_rejects_nan() {
-        let _ = Volume::new(f32::NAN);
+        assert_eq!(Volume::new(f32::NAN), Volume::SILENT);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "live target position must not exceed the seekable window")
+    )]
+    fn live_window_widens_to_hold_its_target() {
+        let window = LiveWindow::new(
+            Duration::from_secs(30),
+            Duration::from_secs(90),
+            Duration::from_secs(92),
+            Duration::from_secs(95),
+        );
+
+        assert_eq!(window.target_position(), Duration::from_secs(95));
+        assert_eq!(window.seekable_end(), Duration::from_secs(95));
+        assert_eq!(window.live_edge(), Duration::from_secs(95));
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "adaptive emergency buffer must be below the upgrade buffer")
+    )]
+    fn network_policy_falls_back_to_the_standard_policy() {
+        let standard = NetworkPlaybackPolicy::standard();
+        let policy = NetworkPlaybackPolicy::new(
+            standard.maximum_manifest_bytes(),
+            standard.maximum_segment_bytes(),
+            standard.initial_bandwidth(),
+            standard.bandwidth_fraction_per_mille(),
+            Duration::from_secs(2),
+            Duration::from_secs(10),
+            Duration::from_secs(30),
+        );
+
+        assert_eq!(policy, standard);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "live catch-up tolerance must be non-zero")
+    )]
+    fn invalid_live_catch_up_leaves_the_policy_unchanged() {
+        let standard = NetworkPlaybackPolicy::standard();
+
+        assert_eq!(standard.live_catch_up(Duration::ZERO, 970, 1_030), standard);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "audio-video drift must be finite")
+    )]
+    fn non_finite_drift_is_not_recorded() {
+        let metrics = PlaybackMetrics::new(Duration::ZERO, Duration::ZERO, Duration::ZERO)
+            .av_drift_ms(f32::NAN);
+
+        assert_eq!(metrics.observed_av_drift_ms(), None);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "audio-track label must not be empty")
+    )]
+    fn empty_track_label_is_kept_as_given() {
+        let track = AudioTrackInfo::new("  ", None, Vec::new());
+
+        assert_eq!(track.label(), "  ");
     }
 
     #[test]
@@ -1852,8 +2189,27 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "spherical vertical field of view must be within 30..=120 degrees")]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(
+            expected = "spherical vertical field of view must be within 30..=120 degrees"
+        )
+    )]
     fn spherical_viewport_rejects_invalid_field_of_view() {
-        let _ = SphericalViewport::new(0.0, 0.0, 121.0);
+        // Release outcome: the nearest valid field of view is used.
+        let viewport = SphericalViewport::new(0.0, 0.0, 121.0);
+        assert!((viewport.vertical_field_of_view_degrees() - 120.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "spherical camera deltas must be finite")
+    )]
+    fn spherical_viewport_ignores_non_finite_pan() {
+        let viewport = SphericalViewport::centered();
+        viewport.pan_by(f32::NAN, 1.0);
+        assert!(viewport.yaw_degrees().abs() < f32::EPSILON);
+        assert!(viewport.pitch_degrees().abs() < f32::EPSILON);
     }
 }

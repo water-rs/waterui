@@ -6,37 +6,43 @@ permissions:
   # dorny/paths-filter lists a pull request's changed files.
   pull-requests: read
 
-# The pull-request gate (#379); dev pushes use the lint-only dev.yml (#458).
+# The pull-request and main-push gate (#379).
 # It is a compile-check gate, not a test-certifying one: format and
 # default-features clippy on Linux, plus the checks a change can break, chosen
 # per change by the `changes` job below. Running anything is `test.yml` with
-# `full: false`, and every job in that workflow except `lint` is gated on
-# `full`, so no test executes here — that is the #458 decision, "dev is the
+# `full: false`, and every job in that workflow except `lint` and the
+# scoped Apple and wasm32 lint legs is gated on `full`, so no test executes
+# here — that is the #458 decision, "`dev` (the `main` trunk) is the
 # compile-checked, not test-certified channel". The tests themselves, every
 # other clippy shape, macOS and Windows, the all-features runs, the macOS
-# suites, the examples, coverage and the `cargo hack` sweep are `nightly.yml`,
-# once a day against `dev` (#923). The backend e2e nightlies in the backend
-# repositories drive every example on their platform; they do not run the
-# framework's suite.
+# suites, the examples, coverage and the `cargo hack` sweep live in
+# `nightly.yml`, which certifies commits on `main` and opens `release-plz`
+# pull requests. The backend e2e nightlies in the backend repositories drive
+# every example on their platform; they do not run the framework's suite.
 #
 # So a green gate here says the change compiles and lints, and says nothing
 # about whether it works. A change whose correctness matters is run locally by
-# whoever writes it, and the nightly is what certifies `dev`; a release
-# (a pull request into `main`) requires that certification below.
+# whoever writes it, and `nightly.yml` certifies commits on `main` before
+# `release-plz` prepares a release pull request.
 on:
-  # Integration branches only: a branch that also has a PR would otherwise run
-  # the whole gate twice for one commit. On dev pushes every job skips itself;
-  # the dev-push lint signal stays with dev.yml.
+  # Single trunk only: a topic branch that also has a PR would otherwise run
+  # the whole gate twice for one commit.
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
-    branches: ["**"]
-    # edited covers retargeting the pull request between dev and main.
-    types: [opened, reopened, synchronize, edited]
+    branches: [main, dev]
+    # No `edited`: a run on the same commit replaces the one before it in
+    # the required-check verdict, so a run started by a title or description
+    # edit would hide the source run's results and block the merge (#3825).
+    types: [opened, reopened, synchronize]
 
+# A pull request cancels its superseded run. A `main` push queues instead:
+# its lint job is the cache writer for that ref, and a writer cancelled
+# mid-sweep or mid-save leaves no archive for the runs after it (#2338).
+# The group still drops a queued run that a newer push supersedes.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -57,23 +63,38 @@ env:
   # fast runs write that cache; the full nightly lint is a restore-only reader.
   # Daily test profiles no longer save their multi-GB target archives, which
   # previously occupied the budget while every dev push cold-compiled clippy.
-  # The other jobs share Cargo sources under per-OS cargo-home keys, with one
-  # writer per OS. No test or platform coverage is removed by this allocation.
+  # The other jobs share Cargo sources under per-OS `cargo-sources-<OS>`
+  # archives (only ~/.cargo/registry + ~/.cargo/git, lockfile-keyed), each
+  # with one writer per OS: the fast lint job on Linux, the Apple gate's
+  # rust job on macOS, and the main test job on Windows. No test or platform
+  # coverage is removed by this allocation.
   # The former full set of target archives measured ~27 GB against the cap.
   # Incremental artifacts are per-machine rebuild state, useless to a fresh
   # runner, so they stay disabled rather than bloating the restored cache.
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # release-plz pull requests only bump versions and changelogs on top of a
+  # nightly-certified commit, so they skip redundant compilation/lint jobs while
+  # required check contexts still report success.
+  bump:
+    name: Not a release bump
+    if: ${{ github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-plz-') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo "checking code changes"
+
   # Which checks this change can reach. `code` is any changed file that is
-  # not prose or repository metadata, so a docs-only change runs the typo
-  # check and nothing else; `ffi` is the C ABI and the root manifest whose
-  # metadata names its Android floor; `deps` is what the audit, license and
-  # unused-dependency checks read. A workflow change runs the whole gate, because a
+  # not prose or repository metadata; `deps` is what the audit, license and
+  # unused-dependency checks read; `android` is the CLI's Android paths and
+  # the Hydrolysis Android host, the only changes that can break the
+  # create/build/package cycle the `android-package` job runs. A workflow
+  # change runs the whole gate, because a
   # filter cannot see what a workflow edit reaches.
   #
   # Two filter steps, because dorny/paths-filter applies one quantifier to
-  # every filter it evaluates: `ffi`/`deps`/`workflows` match any pattern,
+  # every filter it evaluates: `deps`/`workflows` match any pattern,
   # while `code` matches a file outside every prose pattern. The second
   # step combines negated patterns with `predicate-quantifier: every`. For a
   # `pull_request` event the action reads the changed files from the API; a
@@ -82,16 +103,15 @@ jobs:
   # the checkout below fetches.
   changes:
     name: Changes
-    # The compile-check gate does not run on dev pushes (dev.yml owns that
-    # signal); every job below either needs this one or skips itself.
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    needs: bump
+    if: needs.bump.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       code: ${{ steps.prose.outputs.code == 'true' || steps.filter.outputs.workflows == 'true' }}
-      ffi: ${{ steps.filter.outputs.ffi == 'true' || steps.filter.outputs.workflows == 'true' }}
       deps: ${{ steps.filter.outputs.deps == 'true' || steps.filter.outputs.workflows == 'true' }}
       scripts: ${{ steps.filter.outputs.scripts == 'true' || steps.filter.outputs.workflows == 'true' }}
+      android: ${{ steps.filter.outputs.android == 'true' }}
     steps:
       - uses: actions/checkout@v4
         if: github.event_name == 'push'
@@ -102,16 +122,35 @@ jobs:
         with:
           base: ${{ github.ref_name }}
           filters: |
-            ffi:
-              - "ffi/**"
-              - "Cargo.toml"
             deps:
               - "**/Cargo.toml"
               - "**/Cargo.lock"
               - "deny.toml"
             scripts:
               - ".github/scripts/**"
+              - ".github/tools/nextest-fixtures/**"
+              - ".github/affected-rules.toml"
               - "Cargo.toml"
+            android:
+              - "cli/src/android/**"
+              - "cli/src/hydrolysis/android.rs"
+              - "cli/src/templates/*android*/**"
+              - "cli/src/toolchain/**"
+              - "cli/src/toolchain_checks.rs"
+              - "cli/Cargo.toml"
+              - "backends/hydrolysis/android/**"
+              # `[package.metadata.waterui]`'s Android keys drive the scaffold.
+              - "Cargo.toml"
+              # The packaging job's workflow and transitive local action inputs.
+              # Keep these with the android-package job's setup below.
+              - ".github/workflows/ci.yml"
+              - ".github/actions/setup-rust/action.yml"
+              - ".github/actions/cargo-sources/action.yml"
+              - ".github/actions/cache-headroom/action.yml"
+              - ".github/actions/setup-android-ndk/action.yml"
+              - ".github/actions/install-android-platform/action.yml"
+              - ".github/actions/setup-linux-deps/action.yml"
+              - ".github/actions/refresh-apt-index/refresh.sh"
             workflows:
               - ".github/workflows/**"
               - ".github/actions/**"
@@ -127,36 +166,88 @@ jobs:
               - "!LICENSE*"
               - "!.github/ISSUE_TEMPLATE/**"
 
-  typos:
-    name: Typos
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      # Pinned like every other tool install: a new dictionary turns a
-      # green job red with no change to the repository. crate-ci/typos
-      # downloaded this same binary on every run; install-tool caches it.
-      - uses: ./.github/actions/install-tool
-        with:
-          tool: typos@1.49.0
-          path: ~/.cargo/bin/typos*
-      - run: typos
+  # The affected-only scope (#1428): the determinator compares the base
+  # and head package graphs and marks every crate the diff can reach —
+  # anything under a package's directory belongs to it, an outside-package
+  # path the rules do not name selects the whole workspace, and prose
+  # selects nothing (see `.github/affected-rules.toml`). The `test`
+  # call below lints exactly that set; `msrv` runs only when the diff can
+  # move the toolchain floor — a `rust-version`, dependency-section or
+  # Cargo.lock change — because a source edit cannot raise it and the
+  # signal repeats in the nightly sweep instead.
+  #
+  # A pull request is measured against its base branch, not the event's
+  # `pull_request.base.sha`: the checkout is the test merge commit of the
+  # head into the base branch's current tip, while the event's base sha can
+  # sit commits behind it, and the diff from there pulled every
+  # intervening merge — other pull requests' lockfile changes included —
+  # into this pull request's scope (#2338). The merge-base of the base
+  # branch and the merge commit is the tip the head was merged into.
+  scope:
+    name: Affected scope
+    needs: bump
+    if: needs.bump.result == 'success'
+    uses: ./.github/workflows/affected.yml
+    with:
+      base: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
 
   # The release scripts derive the certified `framework.json` from the root
   # manifest; their tests pin that derivation to the tree, so they run whenever
   # the scripts or the manifest change.
+  # Required ordinary jobs must be scheduled on source events: GitHub does
+  # not evaluate the name of a skipped ordinary job. Apply scope to their
+  # steps so out-of-scope source changes still report the required context.
   scripts:
     name: Release scripts
-    needs: changes
-    if: needs.changes.outputs.scripts == 'true'
+    needs: [bump, changes]
+    if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
+      - name: Require successful scope discovery
+        if: needs.bump.result == 'success'
+        env:
+          CHANGES: ${{ needs.changes.result }}
+        run: test "$CHANGES" = success
       - uses: actions/checkout@v4
+        if: needs.bump.result == 'success' && needs.changes.outputs.scripts == 'true'
       - uses: astral-sh/setup-uv@v6
+        if: needs.bump.result == 'success' && needs.changes.outputs.scripts == 'true'
+      # The tool-backed tests skip when a binary is absent: the shared
+      # affected-crates release built from source, and the
+      # nextest fixtures checker built under the same cache key.
+      - uses: ./.github/actions/setup-rust
+        if: needs.bump.result == 'success' && needs.changes.outputs.scripts == 'true'
+        with:
+          cache: "false"
+      - name: Restore Cargo sources
+        if: needs.bump.result == 'success' && needs.changes.outputs.scripts == 'true'
+        uses: ./.github/actions/cargo-sources
+      # The tests run the shared tool at synthetic commits, so they need
+      # its binary rather than the action; build the pinned release.
+      - name: Install the shared affected-crates tool
+        if: needs.bump.result == 'success' && needs.changes.outputs.scripts == 'true'
+        run: |
+          cargo install --timings --locked --git https://github.com/lexoliu/affected-crates --tag v0.0.1 --root "$RUNNER_TEMP/affected-crates" affected-crates
+          echo "AFFECTED_CRATES=$RUNNER_TEMP/affected-crates/bin/affected-crates" >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        id: nextest-fixtures-tool
+        if: needs.bump.result == 'success' && needs.changes.outputs.scripts == 'true'
+        with:
+          path: .github/tools/nextest-fixtures/target/release/nextest-fixtures
+          key: nextest-fixtures-tool-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/tools/nextest-fixtures/Cargo.lock', '.github/tools/nextest-fixtures/Cargo.toml', '.github/tools/nextest-fixtures/src/**') }}
+      - name: Build the nextest fixtures checker
+        if: needs.bump.result == 'success' && needs.changes.outputs.scripts == 'true' && steps.nextest-fixtures-tool.outputs.cache-hit != 'true'
+        run: cargo build --timings --locked --release --manifest-path .github/tools/nextest-fixtures/Cargo.toml
       - name: Manifest derivation tests
-        run: uv run --with pytest pytest .github/scripts
+        if: needs.bump.result == 'success' && needs.changes.outputs.scripts == 'true'
+        run: >
+          uv run --with pytest --with 'tree-sitter==0.26.0'
+          --with 'tree-sitter-rust==0.24.2' pytest .github/scripts
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always() && needs.bump.result == 'success' && needs.changes.outputs.scripts == 'true'
+        with:
+          name: ci-scripts
 
   # Security audit, license check and unused-dependency check are each a cheap
   # metadata pass over the dependency graph, but were previously three separate
@@ -165,27 +256,38 @@ jobs:
   # them sequentially pays that fixed cost once instead of three times.
   hygiene:
     name: Hygiene
-    needs: changes
-    if: needs.changes.outputs.deps == 'true'
+    needs: [bump, changes]
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Require successful scope discovery
+        if: needs.bump.result == 'success'
+        env:
+          CHANGES: ${{ needs.changes.result }}
+        run: test "$CHANGES" = success
       - uses: actions/checkout@v4
+        if: needs.bump.result == 'success' && needs.changes.outputs.deps == 'true'
       # Restore-only: this job and Features share `ci-ubuntu`, and two jobs
       # saving the same key race for the reservation, so one of them always
       # loses and uploads nothing. Features owns the write because it builds
       # the larger graph.
       - uses: ./.github/actions/setup-rust
+        if: needs.bump.result == 'success' && needs.changes.outputs.deps == 'true'
         with:
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        if: needs.bump.result == 'success' && needs.changes.outputs.deps == 'true'
+        uses: ./.github/actions/cargo-sources
       # Only the license check below needs a native dependency (nasm, for a
       # build script) and it never runs a GUI/audio/video stack, so this job
       # does not need the full setup-linux-deps package list.
       - uses: ./.github/actions/refresh-apt-index
+        if: needs.bump.result == 'success' && needs.changes.outputs.deps == 'true'
       - run: sudo apt-get -o Acquire::Retries=10 install -y nasm
+        if: needs.bump.result == 'success' && needs.changes.outputs.deps == 'true'
       # The audit and deny checks run against the COMMITTED Cargo.lock — the
       # dependency set the workspace actually builds. A `cargo generate-lockfile`
       # step used to precede them; it silently re-resolved everything to the
@@ -198,158 +300,262 @@ jobs:
       # cargo-audit from a fresh resolution on every run, which put a broken,
       # newly published dependency of the *tool* on our critical path (#316).
       - uses: ./.github/actions/install-tool
+        if: needs.bump.result == 'success' && needs.changes.outputs.deps == 'true'
         with:
           tool: cargo-audit@0.22.2
           path: ~/.cargo/bin/cargo-audit*
       - name: Security audit
+        if: needs.bump.result == 'success' && needs.changes.outputs.deps == 'true'
         run: cargo audit
       - uses: ./.github/actions/install-tool
+        if: needs.bump.result == 'success' && needs.changes.outputs.deps == 'true'
         with:
           tool: cargo-deny@0.20.2
           path: ~/.cargo/bin/cargo-deny*
       - name: License and ban check
+        if: needs.bump.result == 'success' && needs.changes.outputs.deps == 'true'
         run: cargo deny check licenses bans
-      - uses: ./.github/actions/install-tool
-        with:
-          tool: cargo-machete@0.9.2
-          path: ~/.cargo/bin/cargo-machete*
-      - name: Unused dependencies
-        run: |
-          cargo machete --with-metadata
 
-  ffi-header:
-    name: FFI Header
-    needs: changes
-    if: needs.changes.outputs.ffi == 'true'
-    # The header is platform-dependent: the Apple exports (Metal, CEF) only
-    # appear when cbindgen expands on an Apple target, and the committed header
-    # contains them. Regenerating anywhere else would delete them and break the
-    # Apple backend, so macOS is the canonical generation host.
-    runs-on: macos-latest
-    timeout-minutes: 45
+  # gpu-allocator's `windows >=0.53, <=0.62` requirement admits every windows
+  # line the lockfile already carries, so a partial lock re-resolution can
+  # slide it onto a different version than wgpu-hal's — and the windows
+  # crates' COM types do not unify across versions, which is how the Windows
+  # nightly's dx12 backend broke (#1338, the edge #1379 re-pinned by hand).
+  # Compiling that backend against the committed lockfile catches it:
+  # `wgpu-hal` is not a workspace member, so `dx12` is enabled through
+  # `wgpu/dx12`, which forwards to it. The check blocks an invalid lockfile;
+  # it does not alter Cargo's resolution.
+  windows-dx12:
+    name: Windows DX12 deps
+    needs: [bump, changes]
+    if: needs.bump.result == 'success' && needs.changes.outputs.deps == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      # The toolchain pin, the cache and the verification all live in the
-      # action, which `ffi-header-cache.yml` runs on pushes to `dev` with
-      # `save: 'true'`. That warmer is the only writer; this job reads.
-      #
-      # The cache hits here where the old one never did: the generator is its
-      # own crate whose build costs cbindgen alone, the one framework compile
-      # left is cbindgen's check-profile expansion — rmeta, a fraction of the
-      # 0.8 GB dev-profile tarball this job measured when it last tried a target
-      # cache — and the nightly it runs on is a fixed date instead of a channel
-      # that moved out from under the key every day.
-      - uses: ./.github/actions/ffi-header
+      # Restore-only reader of the shared Linux `~/.cargo` tarball (see the
+      # cache budget note at the top of this file).
+      - uses: ./.github/actions/setup-rust
         with:
-          save: 'false'
+          targets: x86_64-pc-windows-msvc
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      - name: Compile the DX12 backend against the committed lockfile
+        run: cargo check --timings --locked --profile ci-check -p waterui-graphics --lib --no-default-features --features wgpu/dx12 --target x86_64-pc-windows-msvc
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: ci-windows-dx12
 
-  android-ffi:
-    name: Android FFI
-    needs: changes
-    if: needs.changes.outputs.ffi == 'true'
+  # The shared steps live in `.github/actions/msrv` so the nightly can run
+  # the identical check: here it is gated on the diff touching a toolchain
+  # boundary, there it sweeps the whole workspace nightly — the signal
+  # moves, it does not disappear.
+  msrv:
+    name: MSRV
+    needs: [bump, changes, scope]
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # `waterui-ffi` selects its ABI with mutually exclusive features, and
-    # `ffi/src/lib.rs` turns "both" into a `compile_error!`. Every other leg
-    # therefore builds the `c-api` half, and nothing at all compiled
-    # `ffi/src/jni/` or the `cfg(target_os = "android")` bodies it reaches — a
-    # compile error there used to arrive on a device rather than in CI.
+    # An ordinary job, not a workflow_call: `MSRV` is a required status
+    # check, and a reusable workflow would report `MSRV / MSRV` — the
+    # required context never fires. The shared steps live in the
+    # `.github/actions/msrv` composite.
+    steps:
+      - name: Require successful scope discovery
+        if: needs.bump.result == 'success'
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          SCOPE: ${{ needs.scope.result }}
+        run: test "$CHANGES" = success && test "$SCOPE" = success
+      - uses: actions/checkout@v4
+        if: needs.bump.result == 'success' && needs.scope.outputs.msrv == 'true'
+      - uses: ./.github/actions/msrv
+        if: needs.bump.result == 'success' && needs.scope.outputs.msrv == 'true'
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always() && needs.bump.result == 'success' && needs.scope.outputs.msrv == 'true'
+        with:
+          name: ci-msrv
+
+  # Packaging is the only signal that drives the CLI's Android path end to
+  # end on a clean machine (#2290): `water create` scaffolds against this
+  # checkout, `water build` compiles the workspace for
+  # `aarch64-linux-android`, and `water package` builds the Hydrolysis
+  # Gradle host into an APK — a defect in that path passes every other leg
+  # and only surfaces on a device. The gate pays for it only when the CLI's
+  # Android paths or the Hydrolysis Android host change; the nightly
+  # `cli-e2e` legs run the same cycle unconditionally.
+  android-package:
+    name: Android package
+    needs: [bump, changes]
+    if: needs.bump.result == 'success' && needs.changes.outputs.android == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      # Its own key: this is the only leg that compiles the dependency graph
-      # for an Android target, so it shares no artifacts with the others and
-      # storing it under theirs would evict a tarball nothing else can use.
+      # Its own cache story: the job builds the workspace for
+      # `aarch64-linux-android` and compiles the CLI for the host, so
+      # sharing the lint jobs' keys would only evict their tarballs.
       - uses: ./.github/actions/setup-rust
         with:
           targets: aarch64-linux-android
-          components: clippy
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
-      # `--all-targets` reaches the crate's dev-dependency graph, part of which
-      # is built for the host: without this the Linux-only `cros-libva` build
-      # script fails on the missing `libva-dev`, long before anything Android
-      # is compiled.
-      - uses: ./.github/actions/setup-linux-deps
-      - uses: nttld/setup-ndk@v1
-        id: ndk
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      # The scaffold declares its JDK toolchain in
+      # `[package.metadata.waterui-scaffold] android-jdk-version`; Gradle
+      # picks it up through JAVA_HOME.
+      - uses: actions/setup-java@v4
         with:
-          # The version the CLI's toolchain check installs and `water build`
-          # uses; keeping CI on it means CI compiles against the same sysroot a
-          # developer's Android build does.
-          ndk-version: r29
-          # Downloaded fresh every run, on purpose. The repository cache sits at
-          # the 10 GiB eviction limit, so a 708 MiB NDK entry is evicted and
-          # re-created continuously, and a restore that races an eviction hands
-          # the probe below a tree with the clang wrappers but no clang (#284).
-          # A miss costs ~79 s against ~53 s for a hit, on a 9-12 minute job.
-          local-cache: false
-      # The Android API floor lives in the root manifest's
-      # `[package.metadata.waterui]` table — the channel `cargo metadata`
-      # reads without scraping source, and the same table every published
-      # `framework.json` carries verbatim.
-      - name: Read the framework's Android API floor
-        run: |
-          set -euo pipefail
-          api="$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "waterui") | .metadata.waterui["android-min-api-level"] | numbers')"
-          if ! [[ "$api" =~ ^[0-9]+$ ]]; then
-            echo "::error file=Cargo.toml::package.metadata.waterui.android-min-api-level must be an integer API level (got '$api')"
-            exit 1
-          fi
-          echo "WATERUI_ANDROID_MIN_API_LEVEL=$api" >> "$GITHUB_ENV"
-      # `ring` compiles C for the target, so the NDK's clang wrapper is
-      # required even though clippy itself never links. The wrapper is named
-      # after the API level the framework declares.
-      - name: Point cargo at the NDK toolchain
+          distribution: temurin
+          java-version: "21"
+      - uses: ./.github/actions/setup-android-ndk
+      # `sdkmanager` is the tool doctor's own remedy text names.
+      - uses: ./.github/actions/install-android-platform
+      # The CLI links libudev (serialport) on the host.
+      - uses: ./.github/actions/setup-linux-deps
+      # The binary under test needs no release optimisation: the ci-check
+      # profile skips the release profile's fat LTO and single codegen unit.
+      - name: Install the CLI under test
+        run: cargo install --timings --locked --profile ci-check --path cli --root /tmp/water-cli
+      - name: Create, build and package a Hydrolysis Android app
         env:
-          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+          WATER_CARGO_TIMINGS: "1"
         run: |
           set -euo pipefail
-          api="$WATERUI_ANDROID_MIN_API_LEVEL"
-          bin="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          # The wrapper is a shell script that execs `clang` beside it, so a
-          # half-restored NDK fails inside a `cc` build script six minutes
-          # later with nothing but "exit status 127". Prove the toolchain runs
-          # here instead, where the evidence is still on screen.
-          if ! "$bin/aarch64-linux-android$api-clang" --version; then
-            echo "::error::the NDK toolchain at $bin cannot compile for API $api"
-            find "$bin" -maxdepth 1 | head -60
+          export PATH="/tmp/water-cli/bin:$PATH"
+          mkdir -p e2e-logs
+          water create e2eapp --waterui-path "$GITHUB_WORKSPACE" 2>&1 | tee e2e-logs/create.log
+          cd e2eapp
+          # Inside a project doctor scopes the Android group in, so `--fix`
+          # provisions what the toolchain check wants (the Android SDK and
+          # NDK, the Rust targets) exactly as on a developer machine.
+          water doctor --fix 2>&1 | tee ../e2e-logs/doctor-fix.log
+          if grep -q 'Failed to install' ../e2e-logs/doctor-fix.log; then
+            echo "::error::doctor --fix reported failed installs"
             exit 1
           fi
-          {
-            echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
-            echo "ANDROID_NDK_HOME=$ANDROID_NDK_ROOT"
-            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$bin/aarch64-linux-android$api-clang"
-            echo "CC_aarch64_linux_android=$bin/aarch64-linux-android$api-clang"
-            echo "CXX_aarch64_linux_android=$bin/aarch64-linux-android$api-clang++"
-            echo "AR_aarch64_linux_android=$bin/llvm-ar"
-          } >> "$GITHUB_ENV"
-      - name: Clippy (aarch64-linux-android)
-        run: cargo clippy --profile ci-check -p waterui-ffi --no-default-features --features std,android-jni,gpu --target aarch64-linux-android --all-targets -- -D warnings
+          water build --platform android --yes 2>&1 | tee ../e2e-logs/build.log
+          water package --platform android --arch arm64 --debug --yes 2>&1 | tee ../e2e-logs/package-debug.log
+          water package --platform android --arch arm64 --release --unsigned --yes 2>&1 | tee ../e2e-logs/package-release.log
+          grep -q 'Packaged at' ../e2e-logs/package-debug.log
+          grep -q 'Packaged at' ../e2e-logs/package-release.log
+      # The APK paths come from the `Packaged at <path>` lines (anstream
+      # strips the colour codes off a piped stderr).
+      - name: Collect the APKs
+        run: |
+          set -euo pipefail
+          for profile in debug release; do
+            apk=$(sed -n 's/.*Packaged at //p' "e2e-logs/package-$profile.log" | tail -n 1)
+            [ -f "$apk" ] || { echo "::error::water package reported '$apk', which is not a file"; exit 1; }
+            mkdir -p "$RUNNER_TEMP/apk-$profile"
+            cp "$apk" "$RUNNER_TEMP/apk-$profile/"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-package-apk-debug
+          path: ${{ runner.temp }}/apk-debug
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-package-apk-release
+          path: ${{ runner.temp }}/apk-release
+          if-no-files-found: error
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: ci-android-package
 
   test:
     name: Test
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
+    needs: [bump, changes, scope]
+    if: needs.bump.result == 'success' && needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/test.yml
+    # The lint job's cache-retirement step needs actions:write on its own
+    # families; nothing else in the called workflow gains a broader token.
+    permissions:
+      contents: read
+      actions: write
     with:
       full: false
+      affected: ${{ needs.scope.outputs.packages }}
+      linux-package-args: ${{ needs.scope.outputs.linux-package-args }}
+      workspace-wide: ${{ needs.scope.outputs.workspace-wide == 'true' }}
+      comment-only: ${{ needs.scope.outputs.comment-only == 'true' }}
+      scene-assets: ${{ needs.scope.outputs.scene-assets == 'true' }}
+      apple-legs: ${{ needs.scope.outputs.apple-legs }}
+      wasm: ${{ needs.scope.outputs.wasm == 'true' }}
 
-  # The nightly is the only run of the full suite, so its result gates the
-  # release: a pull request into `main` merges only a certified `dev`.
-  # `nightly.yml`'s promote job records a green run as an immutable
-  # `nightly-*` prerelease at the tested commit, which makes certification a
-  # git fact — the newest completed nightly run on dev is healthy exactly
-  # when a `nightly-*` tag points at its head, and the line being released is
-  # certified when that tag's commit is an ancestor of it.
-  #
-  # Only `main` is gated. A red nightly is fixed by ordinary pull requests
-  # into `dev`, which this check never blocks, so it cannot deadlock its own
-  # repair; what it blocks is publishing a `dev` the nightly has not passed.
+  # The one required check for the Test workflow. A pull request that changes
+  # no code skips the `test` call above, and a skipped reusable-workflow call
+  # reports a single `Test` check, never the nested `Test / <job>` names, so
+  # requiring those names left such a pull request pending forever. This job
+  # passes when `test` succeeded or was skipped by the path filter, and fails
+  # on anything else, including a failed `changes` job.
+  test-result:
+    name: Test result
+    needs: [bump, changes, scope, test, windows-dx12]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require Test to have passed or been skipped by the path filter
+        env:
+          BUMP: ${{ needs.bump.result }}
+          CHANGES: ${{ needs.changes.result }}
+          SCOPE: ${{ needs.scope.result }}
+          TEST: ${{ needs.test.result }}
+          DX12: ${{ needs.windows-dx12.result }}
+        run: |
+          if [ "$BUMP" = skipped ]; then
+            echo "release-plz pull request; code checks skipped"
+            exit 0
+          fi
+          if [ "$BUMP" != success ]; then
+            echo "::error::Not a release bump finished as $BUMP"
+            exit 1
+          fi
+          if [ "$CHANGES" != success ]; then
+            echo "::error::Changes finished as $CHANGES, so the Test selection is unknown"
+            exit 1
+          fi
+          # `scope` feeding `test` means a scope failure skips Test, and the
+          # cases below cannot tell that skip from a prose-only one.
+          case "$SCOPE" in
+            success | skipped) ;;
+            *)
+              echo "::error::Affected scope finished as $SCOPE"
+              exit 1
+              ;;
+          esac
+          case "$TEST" in
+            success | skipped) ;;
+            *)
+              echo "::error::Test finished as $TEST"
+              exit 1
+              ;;
+          esac
+          case "$DX12" in
+            success | skipped) ;;
+            *)
+              echo "::error::Windows DX12 deps finished as $DX12"
+              exit 1
+              ;;
+          esac
+
+  # `nightly.yml` certifies `main` commits as immutable `nightly-*` prereleases
+  # and opens the `release-plz-*` PR from that certified commit.
+  # Regular PRs into `main` skip this gate so a red nightly never deadlocks its
+  # own fix; `release-plz-*` PRs verify that their commit descends from a
+  # certified `nightly-*` prerelease on `main`.
   nightly-healthy:
     name: Nightly healthy
-    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -360,38 +566,28 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+        if: startsWith(github.head_ref, 'release-plz-')
         with:
           fetch-depth: 0
-      # dev is fetched so the latest nightly run's head and the tag targets
-      # resolve even when this pull request's own history does not reach them.
-      - name: Fetch tags and the dev line
-        run: git fetch --tags --quiet origin dev
+      # main and tags are fetched so the certified nightly tag targets resolve
+      # cleanly against the release PR's base commit.
+      - name: Fetch tags and the main line
+        if: startsWith(github.head_ref, 'release-plz-')
+        run: git fetch --tags --quiet origin main
       - name: Require a certified line
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
 
-          # Which line is being published decides what certifies it. `dev` is
-          # certified by the nightly, and that is what the rest of this step
-          # checks. The release line is not: a `hotfix/*` branch cut from
-          # `main`, and the release-plz bump that follows it, publish `main` —
-          # already certified when it was released — plus their own delta,
-          # which their own checks gate. They can never descend from a
-          # certification recorded on `dev`, so holding them to one does not
-          # make them safer, it makes them impossible. Hold them to descending
-          # from `main` instead, which is what stops this exit from being used
-          # to route code onto the release line around `dev`.
-          if [ "${HEAD_REF}" != "dev" ]; then
-            if ! git merge-base --is-ancestor "${BASE_SHA}" "${HEAD_SHA}"; then
-              echo "::error::${HEAD_SHA} publishes the release line but does not descend from main (${BASE_SHA}); cut it from main"
-              exit 1
-            fi
-            echo "release line: ${HEAD_SHA} descends from main (${BASE_SHA}); the nightly certifies dev, not this"
-            exit 0
-          fi
+          case "${HEAD_REF}" in
+            release-plz-*) ;;
+            *)
+              echo "non-release pull request (${HEAD_REF}); nightly certification is gated on release-plz PRs"
+              exit 0
+              ;;
+          esac
 
           # The newest certification, selected the way promote records it in
           # .github/scripts/framework_manifest.py: among published non-draft
@@ -401,25 +597,29 @@ jobs:
                 and (.tag_name | test("^nightly-[0-9]{8}-[0-9a-f]{12}$"))) ]
             | max_by(.published_at).tag_name // empty')"
           if [ -z "${tag}" ]; then
-            echo "::error::no nightly certification exists; nothing is released until the nightly matrix produces one"
+            echo "::error::no nightly certification exists; nothing is released until nightly.yml certifies a commit"
             exit 1
           fi
           certified="$(git rev-parse "${tag}^{commit}")"
 
-          # The line being released (the pull request head, normally the dev
-          # tip) must contain the last certification; main itself only gains
-          # certification through this merge.
+          # A release PR opened by nightly certification commits its version/
+          # changelog bump directly on top of the certified commit (`HEAD_SHA~1`),
+          # which carries a `nightly-*` tag. When manually updated or rebased,
+          # it still descends from the latest certified commit while nightly
+          # on `main` is certified.
+          parent_tags="$(git tag --points-at "$(git rev-parse "${HEAD_SHA}~1")" --list 'nightly-*')"
+          if [ -n "${parent_tags}" ]; then
+            echo "nightly line healthy: release PR parent carries certification (${parent_tags})"
+            exit 0
+          fi
+
           if ! git merge-base --is-ancestor "${certified}" "${HEAD_SHA}"; then
             echo "::error::${HEAD_SHA} does not descend from the last certified commit ${certified} (${tag})"
             exit 1
           fi
 
-          # A certification only counts while the nightly still says so: the
-          # newest completed nightly run on dev must carry a `nightly-*` tag
-          # at the commit it tested. A red or cancelled run certifies
-          # nothing, so the line stays uncertified until a run goes green.
           run="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/nightly.yml/runs?branch=dev&status=completed&per_page=1" \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/nightly.yml/runs?branch=main&status=completed&per_page=1" \
             --jq 'if (.workflow_runs | length) == 0 then "" else .workflow_runs[0] | .head_sha + " " + .html_url end')"
           if [ -z "${run}" ] || [ -z "$(git tag --points-at "${run%% *}" --list 'nightly-*')" ]; then
             issue="$(gh api "repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100" --jq '

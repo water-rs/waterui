@@ -2,71 +2,142 @@ use core::{
     any::type_name,
     fmt,
     future::Future,
+    num::NonZeroU32,
     pin::Pin,
     task::{Context, Poll},
 };
 use std::{
     backtrace::Backtrace,
-    cell::RefCell,
     collections::HashMap,
-    sync::{
-        Arc, Mutex, Weak,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
-#[cfg(all(any(unix, windows), not(target_os = "espidf")))]
+#[cfg(any(unix, windows))]
 use cpu_time::ThreadTime;
 use executor_core::LocalExecutor;
-use minstant::Instant;
+use web_time::Instant;
 
-const FALLBACK_REFRESH_RATE_HZ: f64 = 60.0;
+/// The refresh rate a monitored executor derives its frame budget from.
+///
+/// It is supplied by the host that owns the main loop and the displays — the
+/// same host that supplies the [`LocalExecutor`] itself. The executor never
+/// queries a display: a headless or test host has none to query, and a
+/// display-server connection opened from an arbitrary thread is exactly the
+/// kind of process-global side effect an executor constructor must not have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RefreshRate {
+    millihertz: NonZeroU32,
+}
 
-#[cfg(all(any(unix, windows), not(target_os = "espidf")))]
+impl RefreshRate {
+    /// The rate for a host that drives no display — a test pump, a headless
+    /// runner, a preview session. Frames there are paced by the host, not by a
+    /// panel, so the budget is the conventional 60 Hz.
+    pub const HEADLESS: Self = Self::from_hz(NonZeroU32::new(60).expect("60 is not zero"));
+
+    /// A rate in millihertz, the unit windowing systems report
+    /// (`winit::monitor::MonitorHandle::refresh_rate_millihertz`).
+    #[must_use]
+    pub const fn from_millihertz(millihertz: NonZeroU32) -> Self {
+        Self { millihertz }
+    }
+
+    /// A whole-hertz rate.
+    ///
+    /// A rate too large to express in millihertz as a `u32` (above about
+    /// 4.29 MHz) saturates at the largest rate that fits.
+    #[must_use]
+    pub const fn from_hz(hz: NonZeroU32) -> Self {
+        Self {
+            millihertz: hz.saturating_mul(NonZeroU32::MIN.saturating_add(999)),
+        }
+    }
+
+    /// The rate in hertz.
+    #[must_use]
+    pub fn hz(self) -> f64 {
+        f64::from(self.millihertz.get()) / 1000.0
+    }
+
+    /// The time one frame may take at this rate.
+    #[must_use]
+    pub fn frame_budget(self) -> Duration {
+        Duration::from_secs_f64(1000.0 / f64::from(self.millihertz.get()))
+    }
+}
+
+#[cfg(any(unix, windows))]
 type CpuClockSample = ThreadTime;
 
 /// Stands in for [`ThreadTime`] on targets with no per-thread CPU clock, so the
 /// sample a poll carries is a named "this platform cannot measure CPU time"
 /// rather than a bare `()`.
-#[cfg(not(all(any(unix, windows), not(target_os = "espidf"))))]
+#[cfg(not(any(unix, windows)))]
 #[derive(Debug, Clone, Copy)]
 struct NoCpuClock;
 
-#[cfg(not(all(any(unix, windows), not(target_os = "espidf"))))]
+#[cfg(not(any(unix, windows)))]
 type CpuClockSample = NoCpuClock;
 
-#[cfg(all(any(unix, windows), not(target_os = "espidf")))]
+#[cfg(any(unix, windows))]
 fn cpu_clock_now() -> CpuClockSample {
     ThreadTime::now()
 }
 
-#[cfg(not(all(any(unix, windows), not(target_os = "espidf"))))]
+#[cfg(not(any(unix, windows)))]
 const fn cpu_clock_now() -> CpuClockSample {
     NoCpuClock
 }
 
-#[cfg(all(any(unix, windows), not(target_os = "espidf")))]
+#[cfg(any(unix, windows))]
 fn cpu_clock_elapsed(start: CpuClockSample) -> Duration {
     start.elapsed()
 }
 
-#[cfg(not(all(any(unix, windows), not(target_os = "espidf"))))]
+#[cfg(not(any(unix, windows)))]
 const fn cpu_clock_elapsed(_start: CpuClockSample) -> Duration {
     Duration::ZERO
 }
 
 /// Configuration for main-thread stall detection.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct MainThreadStallProbeConfig {
     /// Emit `info` once this ratio of frame budget is reached.
-    pub info_ratio: f64,
+    info_ratio: f64,
     /// Emit `warn` once this ratio of frame budget is reached.
-    pub warn_ratio: f64,
+    warn_ratio: f64,
     /// Per-task cool-down for `info` logs.
-    pub info_cooldown: Duration,
+    info_cooldown: Duration,
     /// Per-task cool-down for `warn` logs.
-    pub warn_cooldown: Duration,
+    warn_cooldown: Duration,
+}
+
+impl MainThreadStallProbeConfig {
+    /// Emit `info` once this ratio of frame budget is reached.
+    #[must_use]
+    pub const fn info_ratio(&self) -> f64 {
+        self.info_ratio
+    }
+
+    /// Emit `warn` once this ratio of frame budget is reached.
+    #[must_use]
+    pub const fn warn_ratio(&self) -> f64 {
+        self.warn_ratio
+    }
+
+    /// Per-task cool-down for `info` logs.
+    #[must_use]
+    pub const fn info_cooldown(&self) -> Duration {
+        self.info_cooldown
+    }
+
+    /// Per-task cool-down for `warn` logs.
+    #[must_use]
+    pub const fn warn_cooldown(&self) -> Duration {
+        self.warn_cooldown
+    }
 }
 
 impl Default for MainThreadStallProbeConfig {
@@ -82,19 +153,78 @@ impl Default for MainThreadStallProbeConfig {
 
 /// Per-poll runtime sample captured from a local task on the main thread.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct TaskPollSample {
     /// Type name of the spawned future.
-    pub task_type: &'static str,
+    task_type: &'static str,
     /// Whether this poll finished the future.
-    pub poll_ready: bool,
+    poll_ready: bool,
     /// Wall-clock duration spent in this poll.
-    pub wall: Duration,
+    wall: Duration,
     /// CPU time consumed by this thread during this poll.
-    pub cpu: Duration,
+    cpu: Duration,
     /// Frame budget used for thresholding.
-    pub frame_budget: Duration,
+    frame_budget: Duration,
     /// Refresh rate used to derive frame budget.
-    pub refresh_hz: f64,
+    refresh_hz: f64,
+}
+
+impl TaskPollSample {
+    /// Creates a `TaskPollSample` from its parts.
+    #[must_use]
+    pub const fn new(
+        task_type: &'static str,
+        poll_ready: bool,
+        wall: Duration,
+        cpu: Duration,
+        frame_budget: Duration,
+        refresh_hz: f64,
+    ) -> Self {
+        Self {
+            task_type,
+            poll_ready,
+            wall,
+            cpu,
+            frame_budget,
+            refresh_hz,
+        }
+    }
+
+    /// Type name of the spawned future.
+    #[must_use]
+    pub const fn task_type(&self) -> &'static str {
+        self.task_type
+    }
+
+    /// Whether this poll finished the future.
+    #[must_use]
+    pub const fn poll_ready(&self) -> bool {
+        self.poll_ready
+    }
+
+    /// Wall-clock duration spent in this poll.
+    #[must_use]
+    pub const fn wall(&self) -> Duration {
+        self.wall
+    }
+
+    /// CPU time consumed by this thread during this poll.
+    #[must_use]
+    pub const fn cpu(&self) -> Duration {
+        self.cpu
+    }
+
+    /// Frame budget used for thresholding.
+    #[must_use]
+    pub const fn frame_budget(&self) -> Duration {
+        self.frame_budget
+    }
+
+    /// Refresh rate used to derive frame budget.
+    #[must_use]
+    pub const fn refresh_hz(&self) -> f64 {
+        self.refresh_hz
+    }
 }
 
 /// Extension point for runtime diagnostics based on per-poll samples.
@@ -123,16 +253,17 @@ impl<E> MonitoredLocalExecutor<E>
 where
     E: LocalExecutor,
 {
-    /// Creates a monitored executor with default thresholds.
+    /// Creates a monitored executor with default thresholds, budgeting each
+    /// frame for the host-supplied `refresh` rate.
     #[must_use]
-    pub fn new(inner: E) -> Self {
-        Self::with_config(inner, MainThreadStallProbeConfig::default())
+    pub fn new(inner: E, refresh: RefreshRate) -> Self {
+        Self::with_config(inner, refresh, MainThreadStallProbeConfig::default())
     }
 
     /// Creates a monitored executor with custom thresholds.
     #[must_use]
-    pub fn with_config(inner: E, config: MainThreadStallProbeConfig) -> Self {
-        Self::with_config_and_probes(inner, config, [])
+    pub fn with_config(inner: E, refresh: RefreshRate, config: MainThreadStallProbeConfig) -> Self {
+        Self::with_config_and_probes(inner, refresh, config, [])
     }
 
     /// Creates a monitored executor with custom thresholds and additional
@@ -140,11 +271,10 @@ where
     #[must_use]
     pub fn with_config_and_probes(
         inner: E,
+        refresh: RefreshRate,
         config: MainThreadStallProbeConfig,
         probes: impl IntoIterator<Item = Arc<dyn RuntimeProbe>>,
     ) -> Self {
-        let refresh_hz = max_refresh_rate_hz();
-        let frame_budget = Duration::from_secs_f64(1.0 / refresh_hz.max(1.0));
         let probes =
             core::iter::once(Arc::new(MainThreadStallProbe::new(config)) as Arc<dyn RuntimeProbe>)
                 .chain(probes)
@@ -153,11 +283,9 @@ where
         Self {
             inner,
             state: Arc::new(MonitorState {
-                refresh_hz,
-                frame_budget,
+                refresh_hz: refresh.hz(),
+                frame_budget: refresh.frame_budget(),
                 probes,
-                outstanding: AtomicUsize::new(0),
-                registered: AtomicBool::new(false),
             }),
         }
     }
@@ -173,12 +301,6 @@ where
     where
         Fut: Future + 'static,
     {
-        if !self.state.registered.swap(true, Ordering::SeqCst) {
-            EXECUTOR_MONITORS.with(|monitors| {
-                monitors.borrow_mut().push(Arc::downgrade(&self.state));
-            });
-        }
-        self.state.outstanding.fetch_add(1, Ordering::SeqCst);
         let guarded = GuardedFuture {
             inner: fut,
             task_type: type_name::<Fut>(),
@@ -188,31 +310,34 @@ where
     }
 }
 
-/// Wraps a local executor with main-thread stall instrumentation.
+/// Wraps a local executor with main-thread stall instrumentation, budgeting
+/// each frame for the host-supplied `refresh` rate.
 #[must_use]
-pub fn monitored_local_executor<E>(inner: E) -> MonitoredLocalExecutor<E>
+pub fn monitored_local_executor<E>(inner: E, refresh: RefreshRate) -> MonitoredLocalExecutor<E>
 where
     E: LocalExecutor,
 {
-    MonitoredLocalExecutor::new(inner)
+    MonitoredLocalExecutor::new(inner, refresh)
 }
 
 /// Wraps a local executor with custom main-thread stall settings.
 #[must_use]
 pub fn monitored_local_executor_with_config<E>(
     inner: E,
+    refresh: RefreshRate,
     config: MainThreadStallProbeConfig,
 ) -> MonitoredLocalExecutor<E>
 where
     E: LocalExecutor,
 {
-    MonitoredLocalExecutor::with_config(inner, config)
+    MonitoredLocalExecutor::with_config(inner, refresh, config)
 }
 
 /// Wraps a local executor with explicitly owned runtime probes.
 #[must_use]
 pub fn monitored_local_executor_with_probes<E>(
     inner: E,
+    refresh: RefreshRate,
     probes: impl IntoIterator<Item = Arc<dyn RuntimeProbe>>,
 ) -> MonitoredLocalExecutor<E>
 where
@@ -220,6 +345,7 @@ where
 {
     MonitoredLocalExecutor::with_config_and_probes(
         inner,
+        refresh,
         MainThreadStallProbeConfig::default(),
         probes,
     )
@@ -229,14 +355,6 @@ struct GuardedFuture<F> {
     inner: F,
     task_type: &'static str,
     state: Arc<MonitorState>,
-}
-
-impl<F> Drop for GuardedFuture<F> {
-    fn drop(&mut self) {
-        // Dropping is the one event every task ending shares: finishing,
-        // cancellation, and executor teardown all land here.
-        self.state.outstanding.fetch_sub(1, Ordering::SeqCst);
-    }
 }
 
 impl<F> Future for GuardedFuture<F>
@@ -274,59 +392,6 @@ struct MonitorState {
     refresh_hz: f64,
     frame_budget: Duration,
     probes: Vec<Arc<dyn RuntimeProbe>>,
-    /// `spawn_local` futures alive on the owning thread: queued, parked on an
-    /// external wake, or mid-poll. Incremented at spawn, decremented when the
-    /// guarded future is dropped.
-    outstanding: AtomicUsize,
-    /// Set once this state is listed in the owning thread's monitor registry.
-    registered: AtomicBool,
-}
-
-std::thread_local! {
-    /// Monitor states that have spawned work on this thread.
-    ///
-    /// The installed executor is type-erased inside `executor-core`'s
-    /// thread-local, so this registry is how a driving host reaches the
-    /// counters. `spawn_local` can only reach an executor through the thread
-    /// that installed it, so every state registered here belongs to this
-    /// thread's executor.
-    static EXECUTOR_MONITORS: RefCell<Vec<Weak<MonitorState>>> =
-        const { RefCell::new(Vec::new()) };
-}
-
-/// `spawn_local` tasks still alive on this thread's local executor — queued,
-/// parked on an external wake, or mid-poll.
-///
-/// This is the completion signal a pending-runnable probe cannot express: a
-/// task parked on a wall-clock timer or an in-flight network read holds no
-/// queued runnable, so "nothing queued" does not mean "work done". Hosts that
-/// drive the executor frame by frame — test pumps, preview and MCP sessions —
-/// pace real time while this is nonzero so work that completes after real I/O
-/// is published before they report the result.
-///
-/// The count drops when the task's future finishes or is dropped, so cancelled
-/// work is covered.
-///
-/// The blind spot, by design: only work spawned through a monitored executor
-/// is counted. A thread whose local executor was installed bare — a direct
-/// `init_local_executor` without [`monitored_local_executor`] or
-/// [`monitored_local_executor_with_probes`] — reports zero while work is
-/// outstanding; "no monitored work" is truthfully zero and must not be
-/// misread as quiescence. Threads with no executor installed at all likewise
-/// report zero.
-#[must_use]
-pub fn outstanding_local_tasks() -> usize {
-    EXECUTOR_MONITORS.with(|monitors| {
-        let mut monitors = monitors.borrow_mut();
-        let mut total = 0;
-        monitors.retain(|state| {
-            state.upgrade().is_some_and(|state| {
-                total += state.outstanding.load(Ordering::SeqCst);
-                true
-            })
-        });
-        total
-    })
 }
 
 #[derive(Debug)]
@@ -457,46 +522,6 @@ fn classify_level(usage_ratio: f64, config: &MainThreadStallProbeConfig) -> Opti
     }
 }
 
-/// Highest refresh rate the display can drive, in hertz.
-///
-/// Frame budgets everywhere — executor monitoring and inspector frame
-/// reporting alike — derive from this one detection.
-#[must_use]
-#[cfg(feature = "gpu")]
-pub fn max_refresh_rate_hz() -> f64 {
-    match waterkit_screen::max_refresh_rate() {
-        Ok(refresh_rate) => f64::from(refresh_rate.get()),
-        Err(waterkit_screen::Error::Unsupported | waterkit_screen::Error::MonitorNotFound) => {
-            tracing::debug!(
-                target: "waterui::runtime_guard",
-                fallback_refresh_hz = FALLBACK_REFRESH_RATE_HZ,
-                "Display refresh rate metadata is unavailable; using fallback"
-            );
-            FALLBACK_REFRESH_RATE_HZ
-        }
-        Err(err) => {
-            tracing::info!(
-                target: "waterui::runtime_guard",
-                error = ?err,
-                fallback_refresh_hz = FALLBACK_REFRESH_RATE_HZ,
-                "Failed to read display refresh rate; using fallback"
-            );
-            FALLBACK_REFRESH_RATE_HZ
-        }
-    }
-}
-
-// Without the GPU feature (embedded targets) there is no `waterkit-screen`
-// wgpu display query, so frame pacing uses the fallback refresh rate.
-/// Highest refresh rate the display can drive, in hertz.
-///
-/// Without the GPU feature there is no display query, so this is the fallback.
-#[must_use]
-#[cfg(not(feature = "gpu"))]
-pub const fn max_refresh_rate_hz() -> f64 {
-    FALLBACK_REFRESH_RATE_HZ
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::{
@@ -506,8 +531,18 @@ mod tests {
 
     use executor_core::LocalExecutor;
 
-    use super::{LogLevel, MainThreadStallProbeConfig, classify_level};
+    use super::{LogLevel, MainThreadStallProbeConfig, RefreshRate, classify_level};
     use super::{RuntimeProbe, TaskPollSample};
+
+    #[test]
+    fn a_rate_beyond_u32_millihertz_saturates() {
+        let rate = RefreshRate::from_hz(core::num::NonZeroU32::MAX);
+        assert_eq!(
+            rate,
+            RefreshRate::from_millihertz(core::num::NonZeroU32::MAX)
+        );
+        assert!((RefreshRate::from_hz(core::num::NonZeroU32::MIN).hz() - 1.0).abs() < 1e-9);
+    }
 
     #[derive(Debug, Clone, Copy)]
     struct PollOnceExecutor;
@@ -566,61 +601,6 @@ mod tests {
         }
     }
 
-    /// An executor that holds each future without polling it, so a spawn stays
-    /// "parked" — the state a runnable-queue probe cannot observe — until the
-    /// task handle is dropped.
-    #[derive(Debug, Clone, Copy)]
-    struct ParkingExecutor;
-
-    struct ParkingTask<T> {
-        _future: core::pin::Pin<Box<dyn core::future::Future<Output = ()>>>,
-        _output: core::marker::PhantomData<fn() -> T>,
-    }
-
-    impl<T> core::fmt::Debug for ParkingTask<T> {
-        fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-            formatter
-                .debug_struct("ParkingTask")
-                .finish_non_exhaustive()
-        }
-    }
-
-    impl<T> core::future::Future for ParkingTask<T> {
-        type Output = T;
-
-        fn poll(
-            self: core::pin::Pin<&mut Self>,
-            _cx: &mut core::task::Context<'_>,
-        ) -> core::task::Poll<Self::Output> {
-            core::task::Poll::Pending
-        }
-    }
-
-    impl<T: 'static> executor_core::Task<T> for ParkingTask<T> {
-        fn poll_result(
-            self: core::pin::Pin<&mut Self>,
-            _cx: &mut core::task::Context<'_>,
-        ) -> core::task::Poll<Result<T, Box<dyn core::any::Any + Send>>> {
-            core::task::Poll::Pending
-        }
-    }
-
-    impl LocalExecutor for ParkingExecutor {
-        type Task<T: 'static> = ParkingTask<T>;
-
-        fn spawn_local<Fut>(&self, fut: Fut) -> Self::Task<Fut::Output>
-        where
-            Fut: core::future::Future + 'static,
-        {
-            ParkingTask {
-                _future: Box::pin(async move {
-                    let _ = fut.await;
-                }),
-                _output: core::marker::PhantomData,
-            }
-        }
-    }
-
     #[derive(Debug)]
     struct CountingProbe(Arc<AtomicUsize>);
 
@@ -645,31 +625,12 @@ mod tests {
         let probe = Arc::new(CountingProbe(Arc::clone(&hits))) as Arc<dyn RuntimeProbe>;
         let executor = super::MonitoredLocalExecutor::with_config_and_probes(
             PollOnceExecutor,
+            super::RefreshRate::HEADLESS,
             MainThreadStallProbeConfig::default(),
             [probe],
         );
         executor.spawn_local(async {});
 
         assert!(hits.load(Ordering::Relaxed) >= 1);
-    }
-
-    #[test]
-    fn outstanding_local_tasks_counts_work_parked_on_a_wake() {
-        use super::{monitored_local_executor, outstanding_local_tasks};
-
-        let executor = monitored_local_executor(ParkingExecutor);
-        let parked = executor.spawn_local(core::future::pending::<()>());
-        assert_eq!(
-            outstanding_local_tasks(),
-            1,
-            "a parked future holds no runnable, so only the task count sees it"
-        );
-
-        drop(parked);
-        assert_eq!(
-            outstanding_local_tasks(),
-            0,
-            "dropping the task handle drops the guarded future"
-        );
     }
 }

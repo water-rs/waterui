@@ -1,0 +1,31 @@
+[package]
+name = "android-planes"
+version = "0.0.0"
+description = "On-device verification harness for Android system-compositor planes (#90)"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+cherenkov = { path = "../../.." }
+cherenkov-gpu = { path = "../.." }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std", "fmt"] }
+
+[dev-dependencies]
+wgpu.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6", features = ["native-activity"] }
+ash = "0.38"
+jni = "0.22"
+libc = "0.2"
+ndk = { version = "0.9", default-features = false, features = ["api-level-30", "sync"] }
+ndk-sys = "0.6"
+skrifa = "0.48"

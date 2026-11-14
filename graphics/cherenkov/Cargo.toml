@@ -1,0 +1,54 @@
+[package]
+name = "cherenkov"
+version = "0.0.0"
+description = "GPU 2D rendering engine for modern hardware"
+edition.workspace = true
+rust-version = "1.95"
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["graphics", "2d", "rendering", "engine", "wgpu"]
+categories = ["graphics", "rendering"]
+
+[features]
+workers = []
+testing = ["dep:cherenkov-oracle"]
+
+[dependencies]
+arc-swap = "1"
+cherenkov-oracle = { path = "oracle", optional = true }
+cherenkov-record = { version = "0.0.0", path = "record", features = ["serde"] }
+web-time = "1"
+filtrate-core = { version = "0.2.0", path = "../filtrate/core" }
+kurbo = { version = "0.13.1", features = ["serde"] }
+libm = "0.2"
+# Text layout stays outside the engine; `TextLayout` lowers a shaped
+# layout. No system font backend: hosts bring their own font collection.
+parley = { version = "0.12.0", default-features = false, features = ["std"] }
+rustc-hash = "2"
+smallvec = { workspace = true, features = ["union"] }
+thiserror = "2"
+tracing = "0.1"
+waterui-contract.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+async-channel = { workspace = true, default-features = false, features = ["std"] }
+crossbeam-channel.workspace = true
+# `Stream` polls a pending frame's reply channel from its owned future, and
+# `block_on` is the synchronous entry points' wait on the same futures: its
+# parker and waker are cached per thread, so a frame's wait allocates nothing.
+futures-lite = { workspace = true, default-features = false, features = ["std"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-timers = { version = "0.4", default-features = false }
+wasm-bindgen-futures = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[dev-dependencies]
+cherenkov-oracle = { path = "oracle" }
+nami = { version = "0.13", default-features = false, features = ["std", "kurbo"] }
+
+[lints]
+workspace = true

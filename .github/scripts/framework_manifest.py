@@ -2,21 +2,24 @@
 
 The manifest records the worktree's lockfile hash, the scaffold table the root manifest's `[package.metadata.waterui]` declares, and
 that metadata table verbatim. A scaffold package whose
-`[workspace.dependencies]` requirement is a git pin (`git` + `rev`) has no
-registry release the stable channel could resolve, so a `stable` manifest
-withholds its entries from `scaffold` and records the pin under
-`experimental-packages` instead; `nightly` carries it in `scaffold` like any
+requirement is a git pin (`git` + `rev`) is not one
+the stable channel distributes, whatever the registry holds for that name, so
+a `stable` manifest withholds its entries from `scaffold` and records the pin
+under `experimental-packages` instead; `nightly` carries it in `scaffold` like any
 other package. The Rust side derives exactly the same tables for a tree
-(`framework_scaffold` in
-https://github.com/water-rs/cli/blob/dev/src/project_model/framework.rs) — the
-two must not drift, so this script never reads anything from the CLI.
+(`framework_scaffold` in `cli/src/project_model/framework.rs` in this
+tree) — the two must not drift, so this script never reads anything from
+the CLI.
+
+Run `python3 .github/scripts/framework_manifest.py --self-check` to verify
+the manifest metadata round trip without checking out or publishing a release.
 
 `stable` certifies the framework release tag release-plz published
 (`v<version>`), or — under release preflight, where the release does not
 exist yet — the candidate revision it will publish. The named revision is
 checked out so every recorded fact is read from the released tree.
 
-`nightly` certifies the `dev` revision a green full-matrix run tested, as
+`nightly` certifies the `main` revision a green full-matrix run tested, as
 the immutable `nightly-<date>-<sha12>` tag `nightly.yml` publishes. It
 refuses a revision that is already certified or that does not advance the
 newest certification, so the certified line only moves forward.
@@ -50,18 +53,25 @@ def lockfile_hashes():
 
 def framework_scaffold(framework):
     """The scaffold table the framework manifest itself declares: each
-    `scaffold-packages` entry's `[workspace.dependencies]` requirement —
+    `scaffold-packages` entry's requirement — its `scaffold-pins` entry, else
+    its `[workspace.dependencies]` one —
     `{name}-version`, plus `{name}-git` and `{name}-rev` when the requirement
     pins a repository — and every backend coordinate — `{name}-backend-url`,
     plus the `{name}-backend-version` of a backend pinned by release or the
-    `{name}-backend-revision` of one pinned by commit — from
-    `[package.metadata.waterui]`.
+    `{name}-backend-revision` of one pinned by commit — and every in-tree
+    member declaration — `{name}-path`, which the native backends' own
+    `{name}-backend-path` form specializes — and the
+    `{name}-host-subdirectory` of a platform host that lives in this
+    repository, naming a path inside the certified framework checkout
+    itself — from `[package.metadata.waterui]`.
     Identical to `framework_scaffold` in the CLI for the same tree."""
     metadata = framework["package"]["metadata"]["waterui"]
     workspace = framework["workspace"]["dependencies"]
+    pins = metadata.get("scaffold-pins", {})
     scaffold = {}
     for name in metadata["scaffold-packages"]:
-        dependency = workspace[name]
+        # A package no member links is declared only as a pin.
+        dependency = pins[name] if name in pins else workspace[name]
         scaffold[f"{name}-version"] = (
             dependency if isinstance(dependency, str) else dependency["version"]
         )
@@ -74,12 +84,20 @@ def framework_scaffold(framework):
                 r"[0-9a-fA-F]{40}", revision
             ):
                 raise RuntimeError(
-                    f"workspace.dependencies.{name} must pin an immutable Git revision"
+                    f"{name} must pin an immutable Git revision"
                 )
             scaffold[f"{name}-git"] = dependency["git"]
             scaffold[f"{name}-rev"] = revision
     for key, value in metadata.items():
-        if key.endswith(("-backend-url", "-backend-version", "-backend-revision")):
+        if key.endswith(
+            (
+                "-backend-url",
+                "-backend-version",
+                "-backend-revision",
+                "-path",
+                "-host-subdirectory",
+            )
+        ):
             scaffold[key] = value
     return scaffold
 
@@ -87,9 +105,9 @@ def framework_scaffold(framework):
 def channel_scaffold(framework, channel):
     """The `(scaffold, experimental)` tables `channel`'s manifest records.
 
-    A scaffold package pinned to a git revision has no registry release the
-    stable channel could resolve, so `stable` withholds its `{name}-*`
-    entries from the scaffold table and records the pin — name, git URL,
+    A scaffold package pinned to a git revision is not one the stable channel
+    distributes, since it distributes only registry requirements, so `stable`
+    withholds its `{name}-*` entries from the scaffold table and records the pin — name, git URL,
     revision and declared version — under `experimental-packages`; `dev` and
     `nightly` distribute it through `scaffold` as always. The split derives
     from the dependency's shape alone: `framework_scaffold` already marks a
@@ -111,19 +129,19 @@ def channel_scaffold(framework, channel):
     return scaffold, experimental
 
 
-def build_manifest(channel, tag, revision, repository):
-    """Write `framework.json` for the checked-out revision."""
+def manifest_data(channel, tag, revision, repository, run_id, run_attempt):
+    """The certified manifest for the checked-out revision."""
     framework = tomllib.loads(Path("Cargo.toml").read_text())
     metadata = framework["package"]["metadata"]["waterui"]
     scaffold, experimental = channel_scaffold(framework, channel)
-    manifest = {
+    return {
         "schema_version": 2,
         "channel": channel,
         "repository": repository,
         "revision": revision,
         "tag": tag,
-        "run_id": int(os.environ["GITHUB_RUN_ID"]),
-        "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+        "run_id": run_id,
+        "run_attempt": run_attempt,
         "lockfiles": lockfile_hashes(),
         "scaffold": scaffold,
         # The packages the channel withholds: stable's git-pinned scaffold
@@ -134,6 +152,14 @@ def build_manifest(channel, tag, revision, repository):
         # manifest without a schema change.
         "metadata": metadata,
     }
+
+
+def build_manifest(channel, tag, revision, repository):
+    """Write `framework.json` for the checked-out revision."""
+    manifest = manifest_data(
+        channel, tag, revision, repository,
+        int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]),
+    )
     Path("framework.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 
@@ -141,6 +167,21 @@ def checkout(revision):
     """Put the worktree at `revision` so every recorded fact names the tree
     being certified rather than whatever the job happened to check out."""
     git("checkout", revision)
+
+
+def self_check():
+    """Verify the release serializer carries the framework's deployment floor and the
+    web frontend's deployment targets."""
+    framework = tomllib.loads(Path("Cargo.toml").read_text())
+    expected = framework["package"]["metadata"]["waterui"]["apple-deployment-targets"]
+    for channel in ("stable", "nightly"):
+        manifest = manifest_data(channel, "self-check", git("rev-parse", "HEAD"), "water-rs/waterui", 1, 1)
+        actual = json.loads(json.dumps(manifest))["metadata"]["apple-deployment-targets"]
+        assert actual == expected
+        for platform in ("macos", "ios"):
+            assert re.fullmatch(r"\d+(?:\.\d+)*", actual[platform])
+        web = framework["package"]["metadata"]["waterui"]["web-frontend-apple-deployment-targets"]
+        assert json.loads(json.dumps(manifest))["metadata"]["web-frontend-apple-deployment-targets"] == web
 
 
 def prepare_stable(tag, revision):
@@ -179,7 +220,8 @@ def write_outputs(outputs):
 def prepare_nightly():
     repository = os.environ["GITHUB_REPOSITORY"]
     revision = git("rev-parse", "HEAD")
-    if revision != os.environ["GITHUB_SHA"]:
+    expected = os.environ.get("TARGET_REVISION") or os.environ["GITHUB_SHA"]
+    if revision != expected:
         raise RuntimeError("The checkout is not the revision tested by this run")
     date = git("show", "-s", "--format=%cs", "HEAD").replace("-", "")
     tag = f"nightly-{date}-{revision[:12]}"
@@ -200,7 +242,8 @@ def prepare_nightly():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest="channel", required=True)
+    parser.add_argument("--self-check", action="store_true", help="verify metadata serialization offline")
+    commands = parser.add_subparsers(dest="channel")
     stable = commands.add_parser(
         "stable", help="certify a published framework release"
     )
@@ -213,13 +256,17 @@ def main():
         "release preflight passes the candidate commit before the tag exists)",
     )
     commands.add_parser(
-        "nightly", help="certify the dev revision a green full-matrix run tested"
+        "nightly", help="certify the main revision a green full-matrix run tested"
     )
     args = parser.parse_args()
-    if args.channel == "nightly":
+    if args.self_check:
+        self_check()
+    elif args.channel == "nightly":
         prepare_nightly()
-    else:
+    elif args.channel == "stable":
         prepare_stable(args.tag, args.revision)
+    else:
+        parser.error("a channel or --self-check is required")
 
 
 if __name__ == "__main__":

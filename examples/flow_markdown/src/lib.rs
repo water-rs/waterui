@@ -1,4 +1,4 @@
-//! Flow Markdown playground.
+//! Flow Markdown example.
 use std::time::Duration;
 
 use waterui::animation::Animation;
@@ -35,9 +35,15 @@ const SECONDARY_CONTROL_WIDTH: f32 = 92.0;
 const WIDE_CONTROL_WIDTH: f32 = 152.0;
 const TOKEN_CONTROL_WIDTH: f32 = 172.0;
 
+/// Clamps a stream speed to `STREAM_CPS_MIN..=STREAM_CPS_MAX` as an unsigned rate.
+fn clamped_stream_cps(stream_cps: i32) -> u64 {
+    // The clamp's lower bound is positive, so the clamped rate is never negative.
+    u64::try_from(stream_cps.clamp(STREAM_CPS_MIN, STREAM_CPS_MAX))
+        .expect("clamped stream rate is non-negative")
+}
+
 fn stream_interval_ms(stream_cps: i32) -> u64 {
-    let cps = stream_cps.clamp(STREAM_CPS_MIN, STREAM_CPS_MAX) as u64;
-    let nanos = 1_000_000_000u64 / cps;
+    let nanos = 1_000_000_000u64 / clamped_stream_cps(stream_cps);
     (nanos / 1_000_000).max(8)
 }
 
@@ -57,7 +63,9 @@ fn normalized_document_index(index: i32) -> usize {
         "flow-markdown example requires at least one markdown document"
     );
 
-    index.rem_euclid(count as i32) as usize
+    let count = i32::try_from(count).expect("the markdown document table is tiny");
+    usize::try_from(index.rem_euclid(count))
+        .expect("rem_euclid by a positive count is non-negative")
 }
 
 fn current_document(index: i32) -> &'static MarkdownDocument {
@@ -73,7 +81,8 @@ fn current_document_title(index: i32) -> &'static str {
 }
 
 fn current_document_char_count(index: i32) -> i32 {
-    current_document_body(index).chars().count() as i32
+    i32::try_from(current_document_body(index).chars().count())
+        .expect("a markdown document has fewer than i32::MAX characters")
 }
 
 fn cancel_stream(streaming: &Binding<bool>, stream_revision: &Binding<i32>) {
@@ -104,15 +113,17 @@ fn start_character_stream(
     char_progress: Binding<i32>,
     stream_revision: Binding<i32>,
     streaming: Binding<bool>,
-    document_index: Binding<i32>,
+    document_index: &Binding<i32>,
     stream_cps: Binding<i32>,
 ) {
-    let revision = stream_revision.get().wrapping_add(1);
-    stream_revision.set(revision);
+    let revision = stream_revision.with_mut(|revision| {
+        *revision = (*revision).wrapping_add(1);
+        *revision
+    });
     streaming.set(true);
     reset_stream(&markdown, &char_progress);
 
-    let document = current_document_body(document_index.get());
+    let document = current_document_body(document_index.snapshot());
     let char_end_offsets: Vec<usize> = document
         .char_indices()
         .map(|(start, ch)| start + ch.len_utf8())
@@ -124,39 +135,47 @@ fn start_character_stream(
 
     spawn_local(async move {
         for (index, end_offset) in char_end_offsets.into_iter().enumerate() {
-            if stream_revision.get() != revision {
+            if stream_revision.snapshot() != revision {
                 return;
             }
 
             markdown.set(Str::from_static(&document[..end_offset]));
-            char_progress.set((index + 1) as i32);
+            char_progress.set(
+                i32::try_from(index + 1)
+                    .expect("a markdown document has fewer than i32::MAX characters"),
+            );
 
-            let cps = stream_cps.get().clamp(STREAM_CPS_MIN, STREAM_CPS_MAX) as u64;
+            let cps = clamped_stream_cps(stream_cps.snapshot());
             let interval = Duration::from_nanos(1_000_000_000u64 / cps);
             sleep(interval).await;
         }
 
-        if stream_revision.get() == revision {
+        if stream_revision.snapshot() == revision {
             streaming.set(false);
         }
     })
     .detach();
 }
 
+/// The presets the picker cycles through, with the label it shows for each.
+const PRESETS: [(FlowAnimationPreset, &str); 3] = [
+    (FlowAnimationPreset::AssistantDefault, "assistant"),
+    (FlowAnimationPreset::Minimal, "minimal"),
+    (FlowAnimationPreset::None, "none"),
+];
+
+fn preset_entry(index: i32) -> (FlowAnimationPreset, &'static str) {
+    let len = i32::try_from(PRESETS.len()).expect("the preset table is tiny");
+    let slot = usize::try_from(index.rem_euclid(len)).expect("rem_euclid is non-negative");
+    PRESETS[slot]
+}
+
 fn preset_from_index(index: i32) -> FlowAnimationPreset {
-    match index.rem_euclid(3) {
-        0 => FlowAnimationPreset::AssistantDefault,
-        1 => FlowAnimationPreset::Minimal,
-        _ => FlowAnimationPreset::None,
-    }
+    preset_entry(index).0
 }
 
 fn preset_label(index: i32) -> &'static str {
-    match preset_from_index(index) {
-        FlowAnimationPreset::AssistantDefault => "assistant",
-        FlowAnimationPreset::Minimal => "minimal",
-        FlowAnimationPreset::None => "none",
-    }
+    preset_entry(index).1
 }
 
 fn configured_flow_config(
@@ -165,7 +184,7 @@ fn configured_flow_config(
     stream_cps: i32,
     token_fade_enabled: bool,
 ) -> FlowMarkdownConfig {
-    let cps = cps.clamp(8, 256) as u32;
+    let cps = u32::try_from(cps.clamp(8, 256)).expect("clamped token rate is non-negative");
     let batch_ms = stream_interval_ms(stream_cps).clamp(8, 40);
     let token_fade = token_fade_animation(stream_cps, token_fade_enabled);
     let text_policy = FlowAnimationPolicy::Typewriter {
@@ -208,6 +227,17 @@ struct StreamControl {
     stream_cps: Binding<i32>,
 }
 
+/// The flow-markdown example page: streaming controls over a Markdown document.
+///
+/// # Panics
+///
+/// Panics if the built-in markdown document table does not fit in an `i32`.
+// The page is one declarative view tree; splitting it would scatter the bindings
+// its controls share, which is what the example shows.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the example page is a single declarative view tree sharing its bindings"
+)]
 #[preview]
 pub fn demo() -> impl View {
     let markdown: Binding<Str> = Binding::container(Str::from_static(""));
@@ -225,20 +255,18 @@ pub fn demo() -> impl View {
         document_index: document_index.clone(),
         char_progress: char_progress.clone(),
         streaming: streaming.clone(),
-        stream_revision: stream_revision.clone(),
+        stream_revision,
         stream_cps: stream_cps.clone(),
     };
-    let document_title = document_index.clone().map(current_document_title);
+    let document_title = document_index.map(current_document_title);
     let document_number = document_index
-        .clone()
         .map(normalized_document_index)
         .map(|index| index + 1);
-    let document_char_count = document_index.clone().map(current_document_char_count);
-    let document_total = MARKDOWN_DOCUMENTS.len() as i32;
-    let stream_speed = stream_cps
-        .clone()
-        .map(|cps| cps.clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
-    let stream_status = streaming.clone().select("running", "idle");
+    let document_char_count = document_index.map(current_document_char_count);
+    let document_total =
+        i32::try_from(MARKDOWN_DOCUMENTS.len()).expect("the markdown document table is tiny");
+    let stream_speed = stream_cps.map(|cps| cps.clamp(STREAM_CPS_MIN, STREAM_CPS_MAX));
+    let stream_status = streaming.select("running", "idle");
     let flow_summary = animation_preset
         .zip(&animation_cps)
         .zip(&stream_cps)
@@ -262,14 +290,12 @@ pub fn demo() -> impl View {
             configured_flow_config(preset, cps, stream_cps, token_fade_enabled)
         })
         .computed();
-    let token_fade_label = token_fade_enabled
-        .clone()
-        .select("Token fade on", "Token fade off");
+    let token_fade_label = token_fade_enabled.select("Token fade on", "Token fade off");
     let document_title_text = document_title.clone();
-    let document_number_text = document_number.clone();
-    let char_progress_text = char_progress.clone();
-    let document_char_count_text = document_char_count.clone();
-    let stream_speed_text = stream_speed.clone();
+    let document_number_text = document_number;
+    let char_progress_text = char_progress;
+    let document_char_count_text = document_char_count;
+    let stream_speed_text = stream_speed;
     let stream_status_text = stream_status.clone();
     let flow_preset_text = flow_preset.clone();
     let flow_cps_text = flow_cps.clone();
@@ -324,8 +350,8 @@ pub fn demo() -> impl View {
                         c.char_progress.clone(),
                         c.stream_revision.clone(),
                         c.streaming.clone(),
-                        c.document_index.clone(),
-                        c.stream_cps.clone(),
+                        &c.document_index,
+                        c.stream_cps,
                     );
                 })
                 .state(&control)
@@ -337,7 +363,7 @@ pub fn demo() -> impl View {
                         &c.char_progress,
                         &c.stream_revision,
                         &c.streaming,
-                        c.document_index.get(),
+                        c.document_index.snapshot(),
                     );
                 })
                 .state(&control)
@@ -411,6 +437,7 @@ pub fn demo() -> impl View {
     .padding()
 }
 
+/// Builds the flow-markdown example app.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

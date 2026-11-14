@@ -16,29 +16,41 @@ hydrolysis-m3 = "0.2"
 use waterui_testing::{Role, SemanticApp, UiBuilder};
 
 // Mounting form: the macro mounts a no-arg view function.
-#[waterui::test(login_view, theme = hydrolysis_m3::install, viewport = (360, 320))]
+#[waterui::test(login_view, theme = hydrolysis_m3::Material3::defaults(), viewport = (360, 320))]
 fn login_flow(app: &mut SemanticApp) {
     app.query().role(Role::BUTTON).label("Login").tap();
     app.query().label("Welcome").assert_exists();
 }
 
 // Manual-mount form: the test owns Bindings the view closes over.
-#[waterui::test(theme = hydrolysis_m3::install)]
+#[waterui::test]
 fn stepper_updates(ui: UiBuilder) {
     let value = Binding::i32(2);
     let value_for_view = value.clone();
     let mut app = ui.mount(move || stepper("Limited", &value_for_view));
     app.query().label("Limited").increment();
-    assert_eq!(value.get(), 3);
+    assert_eq!(value.snapshot(), 3);
 }
 ```
 
 ## Design
 
-- **Theme and render mode are orthogonal.** `.theme(installer)` swaps the theme package
-  (Material 3 by default, the theme a generated project installs); `mount()` is the fast
-  semantic runtime,
+- **Theme and render mode are orthogonal.** `ui()` mounts with no style package;
+  `.theme(installer)` carries one into the builder (the theme a generated project
+  installs); `mount()` is the fast semantic runtime,
   `mount_offscreen()` the GPU-backed one. Any theme works in either mode.
+- **Style-package fonts resolve strictly.** A styled test resolves the font
+  families its style package names against the host's installed fonts plus the
+  font files the package under test's dependency graph declares, exactly as the
+  application does. The harness reads those declarations itself — `cargo
+  metadata --all-features` on `$CARGO_MANIFEST_DIR`, with the `cargo` that runs
+  the test, over the package's own closure (its normal dependencies plus its
+  dev-dependencies) — and registers every `local_path` file of a
+  `[[package.metadata.waterui.assets.font]]` table into every mount, styled or
+  not, the way the `water` CLI stages them for an application. A named family
+  that is neither installed nor declared that way fails the test naming it.
+  Fonts declared by registry name or `remote_path` are staged only by the
+  `water` CLI, so a test needs them installed on the host.
 - **Interactions are assertions.** `tap`, `set_text`, `increment`, `focus`, drags and key
   presses return `()` and panic when the runtime reports the accessibility action
   unhandled. Tests for disabled/clamped controls assert the panic (`catch_unwind`).
@@ -57,11 +69,19 @@ fn stepper_updates(ui: UiBuilder) {
   `.identifier("settings.wifi")` — the same identifier surfaces to XCUITest and Android
   automation in the native backends.
 - **Gesture and keyboard control.** `DragOptions` paces drags (`frame_per_step` gives
-  recognizers a real motion timeline); `press_named_key_with` / `press_character_key_with`
-  hold explicit `Modifiers`.
+  recognizers a real motion timeline, `pointer` picks the `PointerKind` the drag
+  dispatches — touch is what scrolls); `press_named_key_with` / `press_character_key_with`
+  dispatch a full key stroke — press, then release — under explicit `Modifiers`, and
+  `key_down` / `key_up` hold a key across calls.
 - **Performance harness.** `ui().perf(view)` / `perf_with` measure steady-state offscreen
   frames (`PerfConfig`, `PerfReport`) with per-phase Hydrolysis timings and process
   resource samples.
+- **TypeScript views** (feature `ts`). A session mounts a view that reaches a `tsx!`
+  mount: `ui()` installs the runtime loaded from the bundle `WATERUI_TS_BUNDLE` names,
+  which `water test` builds and sets before it runs `cargo nextest`. An absolute path is
+  used as written; a relative one resolves against `CARGO_MANIFEST_DIR`. With the variable
+  unset, a test that mounts no TypeScript is unaffected and one that does fails at the
+  mount with a message naming the variable and `water test`.
 
 Because the tree under test is the [Hydrolysis accessibility tree](https://github.com/water-rs/hydrolysis),
 every test doubles as an accessibility-correctness test: a component that cannot be

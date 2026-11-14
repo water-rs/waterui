@@ -1,0 +1,1711 @@
+//! Shared native GPU devices and engine-composed content presentation.
+
+use alloc::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+use alloc::vec::Vec;
+use core::fmt;
+use core::mem::ManuallyDrop;
+#[cfg(not(target_arch = "wasm32"))]
+use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicBool, Ordering};
+use std::string::String;
+use std::sync::Mutex;
+
+use wgpu::{Adapter, Device, Instance, Queue, TextureFormat};
+
+use super::external::{ExternalFrameStream, FrameReceiver, PresentedSize};
+use super::{GpuContent, GpuContentView, RedrawHandle, Shared};
+use crate::draw::kurbo::Affine;
+use crate::offscreen::{OffscreenImage, OffscreenSize};
+use cherenkov::{Display, Engine, FrameTime, Layer, Next, Surface};
+use cherenkov_gpu::{
+    Gpu, GpuConfig,
+    interop::{
+        ExternalFrame, FramePlanes, GpuContentBox, OutputAlpha, OutputColor, Presenter,
+        SharedDevice, TextureOutput, TextureTarget, shader_delivery,
+    },
+};
+
+/// Why a [`GpuRuntime`] could not be created.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum GpuRuntimeError {
+    /// No adapter satisfied the request.
+    #[error("no compatible GPU adapter: {0}")]
+    Adapter(#[from] wgpu::RequestAdapterError),
+    /// The target's only GPU backend (Vulkan, DX12 or Metal) has no usable
+    /// adapter.
+    #[error("{required} ({source})")]
+    UnsupportedDevice {
+        /// The backend the target requires.
+        required: cherenkov_gpu::RequiredBackend,
+        /// Why the adapter request failed.
+        #[source]
+        source: wgpu::RequestAdapterError,
+    },
+    /// The adapter refuses passthrough shaders, which the precompiled
+    /// shaders this device loads require on Vulkan, Metal and Direct3D 12
+    /// (cherenkov issue #57; shaderloom native artifacts).
+    #[error(
+        "{backend:?} adapter does not offer Features::PASSTHROUGH_SHADERS, which the device's precompiled shaders require"
+    )]
+    PassthroughShadersUnsupported {
+        /// The backend the adapter reported.
+        backend: wgpu::Backend,
+    },
+    /// The adapter refused the device.
+    #[error(transparent)]
+    Device(#[from] wgpu::RequestDeviceError),
+    /// The Android device request failed, whether the device was opened
+    /// with the `AHardwareBuffer` import requirements or plainly.
+    #[cfg(target_os = "android")]
+    #[error(transparent)]
+    DeviceRequest(#[from] wgpu_external_frame::ahardware_buffer::DeviceRequestError),
+}
+
+/// The shared GPU device cannot be recovered.
+///
+/// A run of devices each died before presenting a frame, the rebuild budget
+/// is spent, and no fresh context will ever land. Returned by
+/// [`GpuRuntime::context_after`].
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, thiserror::Error)]
+#[error(
+    "the GPU device is unrecoverable: {} consecutive devices were lost before presenting a frame ({})",
+    .losses.len(),
+    .losses.join(" | ")
+)]
+pub struct Unrecoverable {
+    losses: Vec<String>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Unrecoverable {
+    /// The recorded loss reasons of the devices that never presented.
+    #[must_use]
+    pub fn losses(&self) -> &[String] {
+        &self.losses
+    }
+}
+
+/// What creating or presenting a hosted engine layer's frame can fail with.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum HostedLayerError {
+    /// The engine or the presentation shader set could not be created.
+    #[error("hosted layer engine creation failed: {0}")]
+    Engine(#[from] cherenkov::EngineError),
+    /// The retained surface rejected creation, resize or a display update.
+    #[error("hosted layer surface failed: {0}")]
+    Surface(#[from] cherenkov::SurfaceError),
+    /// The frame's engine render failed.
+    #[error("hosted layer render failed: {0}")]
+    Render(#[from] cherenkov::RenderError),
+    /// The host's target texture has a zero extent: there is nothing to
+    /// render into.
+    #[error("hosted layer target texture has a zero extent")]
+    EmptyTarget,
+}
+
+/// A handle that answers whether its device has been reported lost.
+///
+/// `DeviceLoss` exists separately from the owning [`SharedGpuContext`] because
+/// work that runs off the frame path — a decoder or producer thread keeping
+/// its own `wgpu` objects — cannot wait for the owning runtime's rebuild to
+/// reach it. Observing the loss directly is what lets that work stop: the
+/// next [`GpuContent::setup`] on the rebuilt context replaces everything the
+/// worker was producing anyway.
+///
+/// [`GpuContent::setup`]: super::GpuContent::setup
+#[derive(Clone, Default)]
+pub struct DeviceLoss {
+    reason: Arc<Mutex<Option<String>>>,
+    /// Runs once a loss is recorded — the owning [`GpuRuntime`] installs its
+    /// rebuild trigger here so recovery starts when the driver reports the
+    /// loss instead of waiting for the next frame to notice it.
+    wakeup: Arc<Mutex<Option<LossWakeup>>>,
+}
+
+impl fmt::Debug for DeviceLoss {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DeviceLoss")
+            .field("reason", &self.reason)
+            .finish_non_exhaustive()
+    }
+}
+
+impl DeviceLoss {
+    /// Starts observing `device`: installs its device-lost callback so the
+    /// returned handle reports the loss the moment the driver announces it.
+    ///
+    /// wgpu keeps one lost callback per device, so this belongs to whoever
+    /// owns the device — the runtime's [`SharedGpuContext`] here, or a host
+    /// that opened its own — and is called once, right after the device is
+    /// created.
+    #[must_use]
+    pub fn observe(device: &wgpu::Device) -> Self {
+        let handle = Self::default();
+        let recorder = handle.clone();
+        device.set_device_lost_callback(move |reason, message| {
+            tracing::error!(?reason, message, "WaterUI GPU device was lost");
+            recorder.record(format!("{reason:?}: {message}"));
+        });
+        handle
+    }
+
+    /// Installs `wakeup`, run once after the loss is recorded. Only the
+    /// device owner calls this: the [`GpuRuntime`] to trigger its rebuild,
+    /// or a host that opened its own device.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn set_wakeup(&self, wakeup: impl Fn() + Send + Sync + 'static) {
+        *self
+            .wakeup
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(Box::new(wakeup) as LossWakeup);
+    }
+
+    /// Whether the driver has reported this device lost.
+    #[must_use]
+    pub fn is_lost(&self) -> bool {
+        self.reason().is_some()
+    }
+
+    /// The reason the driver gave for the loss, once it reported one.
+    #[must_use]
+    pub fn reason(&self) -> Option<String> {
+        self.reason
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn record(&self, reason: String) {
+        *self
+            .reason
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
+        if let Some(wakeup) = &*self
+            .wakeup
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            wakeup();
+        }
+    }
+}
+
+/// A one-shot action run when a device loss is recorded.
+type LossWakeup = Box<dyn Fn() + Send + Sync>;
+
+/// One device generation of a [`GpuRuntime`]: the shared `wgpu` instance,
+/// adapter, device and queue the runtime hands out.
+///
+/// A context is replaced wholesale when the driver reports its device lost:
+/// nothing created on it — swapchain, engine, pipeline — survives, so every
+/// subsequent `GpuRuntime::context()` call answers a freshly built context on
+/// a new device. Callers holding device-bound resources compare
+/// [`generation`](Self::generation) against the generation they built under
+/// to know they must rebuild them.
+#[derive(Debug)]
+pub struct SharedGpuContext {
+    generation: u64,
+    /// Never dropped: it lives as long as the process. Dropping a wgpu
+    /// `Instance` drops wgpu-hal's `libloading` handles for `libEGL` /
+    /// `libvulkan`, which `dlclose`s the driver they loaded. Mesa's software
+    /// drivers (llvmpipe, lavapipe — every GPU-less CI runner, container and
+    /// VM) and the LLVM inside them register `atexit` destructors, and once
+    /// the mapping is gone the process dies inside `exit()` after the last
+    /// context has been torn down cleanly. A driver has to outlive the process
+    /// by construction, so this is not a leak; the device is still dropped
+    /// with the context.
+    instance: ManuallyDrop<Instance>,
+    adapter: Adapter,
+    device: Device,
+    queue: Queue,
+    device_loss: DeviceLoss,
+    /// Whether a submitted frame's GPU work finished on this context's device.
+    ///
+    /// A completed submission is the only success signal a device reports:
+    /// [`GpuRuntime`] treats a loss as recoverable only when the lost context
+    /// reached this point, and treats a run of losses with no presented frame
+    /// between them as a driver that cannot sustain a device at all.
+    frame_presented: Arc<AtomicBool>,
+}
+
+impl SharedGpuContext {
+    /// Requests a high-performance adapter and a device with the adapter's
+    /// own limits — wgpu's default limit set exceeds what constrained
+    /// adapters (the iOS simulator's is one) can grant.
+    ///
+    /// Device loss otherwise surfaces only as a bare `Validation` status on the
+    /// next swapchain acquire, with the reason discarded; the `DeviceLoss`
+    /// observer records it so the failure names its cause.
+    ///
+    /// # Errors
+    /// [`GpuRuntimeError`] when no adapter or device is available.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        allow(
+            clippy::future_not_send,
+            reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
+        )
+    )]
+    pub async fn new(generation: u64) -> Result<Self, GpuRuntimeError> {
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+        let enabled = cherenkov_gpu::GpuConfig::default().backends;
+        // Validates `WGPU_BACKEND` against the target: a request for another
+        // backend than the target's required one panics instead of leaving
+        // no backend.
+        descriptor.backends = cherenkov_gpu::backends_from_env().unwrap_or(enabled) & enabled;
+        let instance = Instance::new(descriptor);
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                force_fallback_adapter: false,
+                compatible_surface: None,
+                apply_limit_buckets: false,
+            })
+            .await
+            .map_err(|source| match cherenkov_gpu::REQUIRED_BACKEND {
+                Some(required) => GpuRuntimeError::UnsupportedDevice { required, source },
+                None => GpuRuntimeError::Adapter(source),
+            })?;
+        // cherenkov's fixed shaders are precompiled and load through wgpu's
+        // passthrough API on Vulkan and Metal (cherenkov issue #57), and
+        // shaderloom-compiled component shaders load native artifacts the
+        // same way — Direct3D 12 included: a device handed to cherenkov-gpu
+        // via `SharedDevice` or to a shaderloom `CompiledShader` must request
+        // whatever the shader runtime needs where the adapter offers it.
+        let backend = adapter.get_info().backend;
+        let required_features =
+            shaderloom::required_features(adapter.features()) | wgpu::Features::SHADER_F16;
+        // The backends above load passthrough artifacts unconditionally, so
+        // an adapter that withholds the feature cannot run this device at
+        // all — fail here rather than at the first shader load.
+        if matches!(
+            backend,
+            wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12
+        ) && !required_features.contains(wgpu::Features::PASSTHROUGH_SHADERS)
+        {
+            return Err(GpuRuntimeError::PassthroughShadersUnsupported { backend });
+        }
+        let descriptor = wgpu::DeviceDescriptor {
+            label: Some("waterui GpuRuntime"),
+            required_features,
+            // The adapter's own limits, not wgpu's defaults: a default
+            // that exceeds the adapter's ceiling fails the request
+            // outright (iOS simulator: default 16 > adapter 15).
+            required_limits: adapter.limits(),
+            ..Default::default()
+        };
+        #[cfg(target_os = "android")]
+        let (device, queue) = super::device::request_device(&adapter, &descriptor).await?;
+        #[cfg(not(target_os = "android"))]
+        let (device, queue) = adapter.request_device(&descriptor).await?;
+        let device_loss = DeviceLoss::observe(&device);
+        Ok(Self {
+            generation,
+            instance: ManuallyDrop::new(instance),
+            adapter,
+            device,
+            queue,
+            device_loss,
+            frame_presented: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    /// Which recreation this context is — `0` initially, increasing each time
+    /// the owning [`GpuRuntime`] rebuilds after device loss. A surface,
+    /// pipeline or texture created under another generation belongs to a dead
+    /// device and must be rebuilt against this context.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// The instance surfaces are created from.
+    #[must_use]
+    pub fn instance(&self) -> &Instance {
+        &self.instance
+    }
+
+    /// The adapter the device was created from.
+    #[must_use]
+    pub const fn adapter(&self) -> &Adapter {
+        &self.adapter
+    }
+
+    /// The device.
+    #[must_use]
+    pub const fn device(&self) -> &Device {
+        &self.device
+    }
+
+    /// The device's queue.
+    #[must_use]
+    pub const fn queue(&self) -> &Queue {
+        &self.queue
+    }
+
+    /// The generation's whole device-creation chain, as the engine and
+    /// external-frame importers take it.
+    #[must_use]
+    pub fn shared_device(&self) -> SharedDevice {
+        SharedDevice {
+            instance: self.instance().clone(),
+            adapter: self.adapter.clone(),
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+        }
+    }
+
+    /// The device-lost reason recorded by the callback, once the driver reports
+    /// one. A `Some` here means every device-bound resource on this context is
+    /// dead: swapchain acquire, configure and pipeline use all fail until a new
+    /// runtime is created.
+    #[must_use]
+    pub fn device_lost_reason(&self) -> Option<String> {
+        self.device_loss.reason()
+    }
+
+    /// A handle that answers whether this context's device has been lost, for
+    /// work that runs off the frame path and cannot wait for the owning
+    /// runtime's rebuild to reach it.
+    #[must_use]
+    pub fn device_loss(&self) -> DeviceLoss {
+        self.device_loss.clone()
+    }
+
+    /// Records a device loss the driver never reported, for tests that
+    /// exercise the runtime's recreation path.
+    #[doc(hidden)]
+    pub fn mark_device_lost_for_testing(&self, reason: &str) {
+        self.device_loss.record(reason.to_owned());
+    }
+
+    /// Whether this device generation presented a frame to completion.
+    ///
+    /// A lost generation that presented at least once counts as an ordinary
+    /// recoverable loss; a run of generations that each died first is a driver
+    /// that cannot sustain a device, and [`GpuRuntime::context`] caps its
+    /// rebuilds there.
+    #[must_use]
+    pub fn frame_presented(&self) -> bool {
+        self.frame_presented.load(Ordering::Relaxed)
+    }
+
+    /// Records a completed presented frame the driver never resolved, for
+    /// tests that exercise the runtime's recreation budget.
+    #[doc(hidden)]
+    pub fn mark_frame_presented_for_testing(&self) {
+        self.frame_presented.store(true, Ordering::Relaxed);
+    }
+
+    /// Marks this device generation as having presented a frame.
+    ///
+    /// Registers an idle-queue callback ordered after the presented frame's
+    /// real work, so its invocation proves the frame's GPU work finished. The
+    /// callback resolves when `wgpu` next maintains the queue — on the next
+    /// submission — which is soon enough for the rebuild budget, the only
+    /// reader of the flag.
+    pub fn note_frame_presented(&self) {
+        let frame_presented = Arc::clone(&self.frame_presented);
+        self.queue.on_submitted_work_done(move || {
+            frame_presented.store(true, Ordering::Relaxed);
+        });
+    }
+}
+
+/// The budget for devices that die before ever presenting a frame.
+///
+/// One stillborn device is hardware noise; several in a row mean the driver
+/// loses every device it hands out, so past this count the runtime logs the
+/// recorded losses and stops paying for another stillborn device.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_CONSECUTIVE_UNPRODUCTIVE_REBUILDS: usize = 3;
+
+/// Cloneable owner for one explicitly-created shared GPU context.
+///
+/// The context is recreated in place when the driver reports its device lost:
+/// [`GpuRuntime::context`] notices the recorded loss and swaps in a freshly
+/// built [`SharedGpuContext`] — new instance, adapter and device — so every
+/// subsequent caller is back on live hardware. The swap is what makes
+/// recovery possible at all: a dead device cannot honour a surface, so
+/// nothing built on it is salvageable.
+///
+/// Recovery is bounded: a recreation only counts as recovery when the device
+/// it replaced presented at least one frame. Consecutive losses of devices
+/// that never presented — the signature of a driver that loses every device
+/// it hands out — are capped at `MAX_CONSECUTIVE_UNPRODUCTIVE_REBUILDS`,
+/// after which the collected loss reasons are logged once, no further rebuild
+/// starts, and [`GpuRuntime::context`] keeps answering the lost context.
+#[derive(Clone)]
+pub struct GpuRuntime {
+    inner: Shared<RuntimeInner>,
+}
+
+struct RuntimeInner {
+    /// The live context, replaced when the spawned rebuild lands after its
+    /// device was reported lost.
+    context: Mutex<Shared<SharedGpuContext>>,
+    /// The recorded reasons of consecutive losses that produced no presented
+    /// frame — the current streak of stillborn devices. A context lost after
+    /// presenting real work is an ordinary recoverable loss and clears the
+    /// streak. WebGPU never rebuilds, so the streak exists on native targets
+    /// only.
+    #[cfg(not(target_arch = "wasm32"))]
+    unproductive_losses: Mutex<Vec<String>>,
+    /// Generation handed to the next rebuilt context. WebGPU has no
+    /// asynchronous rebuild path, so on wasm32 no context is ever rebuilt.
+    #[cfg(not(target_arch = "wasm32"))]
+    next_generation: AtomicU64,
+    /// Set while a rebuild runs on its spawned thread so at most one is in
+    /// flight; callers keep receiving the still-lost context meanwhile and
+    /// report the frame pending.
+    #[cfg(not(target_arch = "wasm32"))]
+    rebuild_in_flight: AtomicBool,
+    /// Notified on every rebuild outcome — a published fresh context or a
+    /// retryable recreation failure — so a [`GpuRuntime::context_after`]
+    /// waiter always wakes to observe the state it was waiting on.
+    #[cfg(not(target_arch = "wasm32"))]
+    published: event_listener::Event,
+    /// Outstanding [`GpuRuntime::hold_rebuild_for_testing`] holds with the
+    /// condition the rebuild thread waits on: while the count is nonzero a
+    /// finished rebuild parks before publishing its fresh context, so a
+    /// test can order a frame against the publication.
+    #[cfg(not(target_arch = "wasm32"))]
+    rebuild_holds: (Mutex<usize>, std::sync::Condvar),
+}
+
+/// A testing hold on a [`GpuRuntime`] context rebuild.
+///
+/// While the guard lives, a device-loss rebuild that finishes waits before
+/// publishing its fresh context: `context_after` waiters stay parked and
+/// frames keep observing the lost context. Dropping the guard releases the
+/// hold; the rebuild publishes and the parked waits wake.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct RebuildHold {
+    inner: Shared<RuntimeInner>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl fmt::Debug for RebuildHold {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RebuildHold")
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for RebuildHold {
+    fn drop(&mut self) {
+        let (holds, released) = &self.inner.rebuild_holds;
+        let mut holds = holds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *holds -= 1;
+        if *holds == 0 {
+            drop(holds);
+            released.notify_all();
+        }
+    }
+}
+
+impl fmt::Debug for GpuRuntime {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GpuRuntime")
+            .field("context", &self.inner.context)
+            .finish()
+    }
+}
+
+impl GpuRuntime {
+    /// Creates an independent GPU runtime.
+    ///
+    /// # Errors
+    /// [`GpuRuntimeError`] when no adapter or device is available, or the
+    /// adapter cannot provide the passthrough-shader feature cherenkov
+    /// requires of a shared device.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        allow(
+            clippy::future_not_send,
+            reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
+        )
+    )]
+    pub async fn new() -> Result<Self, GpuRuntimeError> {
+        let inner = Shared::new(RuntimeInner {
+            context: Mutex::new(Shared::new(SharedGpuContext::new(0).await?)),
+            #[cfg(not(target_arch = "wasm32"))]
+            unproductive_losses: Mutex::new(Vec::new()),
+            #[cfg(not(target_arch = "wasm32"))]
+            next_generation: AtomicU64::new(1),
+            #[cfg(not(target_arch = "wasm32"))]
+            rebuild_in_flight: AtomicBool::new(false),
+            #[cfg(not(target_arch = "wasm32"))]
+            published: event_listener::Event::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            rebuild_holds: (Mutex::new(0), std::sync::Condvar::new()),
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        Self::arm_rebuild_wakeup(&inner);
+        Ok(Self { inner })
+    }
+
+    /// Hooks the live context's device-lost observer so the rebuild starts
+    /// the moment the driver reports the loss instead of waiting for the
+    /// next [`context`](Self::context) call.
+    ///
+    /// The observer is rebuilt with the context, so the rebuild thread arms
+    /// the fresh context's `DeviceLoss` the same way through
+    /// [`install_rebuild_wakeup`](Self::install_rebuild_wakeup).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn arm_rebuild_wakeup(inner: &Shared<RuntimeInner>) {
+        let device_loss = inner
+            .context
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .device_loss();
+        Self::install_rebuild_wakeup(&device_loss, inner);
+    }
+
+    /// Installs the rebuild trigger on `device_loss`, held weakly so a lost
+    /// context's callback cannot keep a dropped runtime alive.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_rebuild_wakeup(device_loss: &DeviceLoss, inner: &Shared<RuntimeInner>) {
+        let weak = Shared::downgrade(inner);
+        device_loss.set_wakeup(move || {
+            if let Some(inner) = weak.upgrade() {
+                Self::start_rebuild(&inner);
+            }
+        });
+    }
+
+    /// Returns this runtime's shared GPU resources.
+    ///
+    /// While the driver-reported device loss is being recovered, this returns
+    /// the still-lost context — its [`SharedGpuContext::device_lost_reason`]
+    /// names the cause and callers report their frame pending — and a spawned
+    /// thread performs the rebuild, so a driver call never runs on the
+    /// frame's caller. Callers holding device-bound resources from an earlier
+    /// call compare [`SharedGpuContext::generation`] to know they must
+    /// rebuild them once a fresh context lands.
+    ///
+    /// Once `MAX_CONSECUTIVE_UNPRODUCTIVE_REBUILDS` devices in a row were
+    /// each lost before presenting a frame — a driver that loses every device
+    /// it hands out is not recoverable — the collected loss reasons are
+    /// logged once, no further rebuild starts, and this keeps answering the
+    /// lost context, so frames stay pending.
+    #[must_use]
+    pub fn context(&self) -> Shared<SharedGpuContext> {
+        {
+            let slot = self
+                .inner
+                .context
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if slot.device_lost_reason().is_none() {
+                return Shared::clone(&slot);
+            }
+        }
+        self.request_rebuild()
+    }
+
+    /// The lost half of [`context`](Self::context): kicks the rebuild and
+    /// answers whatever context is current — usually still the lost one.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn request_rebuild(&self) -> Shared<SharedGpuContext> {
+        Self::start_rebuild(&self.inner);
+        Shared::clone(
+            &self
+                .inner
+                .context
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// WebGPU reports device loss but offers no asynchronous rebuild path —
+    /// `request_adapter` is a JS promise with no executor to run it here — so
+    /// the lost context stays in place and keeps naming its cause.
+    #[cfg(target_arch = "wasm32")]
+    fn request_rebuild(&self) -> Shared<SharedGpuContext> {
+        Shared::clone(
+            &self
+                .inner
+                .context
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// Waits for the first live context newer than `generation`.
+    ///
+    /// Resolves as soon as a rebuild after device loss has published a
+    /// context whose generation is strictly newer — immediately when that
+    /// publication already landed, otherwise when the runtime's rebuild
+    /// thread stores the fresh context. The listener is installed before
+    /// the current context is observed, so a publication racing the call is
+    /// never missed; waiting is the event's own parking, not a poll.
+    ///
+    /// Dropping the returned future cancels the wait: the listener keeps no
+    /// state behind and no task survives the caller.
+    ///
+    /// Only native targets rebuild — WebGPU's recovery contract is the
+    /// unchanged `context()` behaviour of keeping the lost context — so the
+    /// wait exists on `cfg(not(target_arch = "wasm32"))` only.
+    ///
+    /// Same budget as [`context`](Self::context): a run of devices that each
+    /// died before presenting a frame is unrecoverable. The wait then
+    /// resolves `Err` at once — waiters already parked included — because
+    /// the loss reasons were logged once and no fresh context will land.
+    ///
+    /// # Errors
+    /// [`Unrecoverable`] when the rebuild budget is spent.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn context_after(
+        &self,
+        generation: u64,
+    ) -> Result<Shared<SharedGpuContext>, Unrecoverable> {
+        loop {
+            let listener = self.inner.published.listen();
+            let context = self.context();
+            if context.generation() > generation && context.device_lost_reason().is_none() {
+                return Ok(context);
+            }
+            if let Some(unrecoverable) = self.unrecoverable() {
+                return Err(unrecoverable);
+            }
+            listener.await;
+        }
+    }
+
+    /// The exhausted-budget error when the streak of stillborn devices
+    /// exceeds `MAX_CONSECUTIVE_UNPRODUCTIVE_REBUILDS` — the same condition
+    /// under which `start_rebuild` stops spawning rebuilds.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn unrecoverable(&self) -> Option<Unrecoverable> {
+        let losses = self
+            .inner
+            .unproductive_losses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (losses.len() > MAX_CONSECUTIVE_UNPRODUCTIVE_REBUILDS).then(|| Unrecoverable {
+            losses: losses.clone(),
+        })
+    }
+
+    /// Holds the next context publication until the returned guard drops.
+    ///
+    /// A device-loss rebuild still runs its driver work and finishes
+    /// installing its wakeup, but it waits on this hold before swapping the
+    /// fresh context in: `context()` keeps answering the lost context and
+    /// `context_after` waiters stay parked. Use it to order a frame against
+    /// the publication deterministically.
+    #[doc(hidden)]
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn hold_rebuild_for_testing(&self) -> RebuildHold {
+        *self
+            .inner
+            .rebuild_holds
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+        RebuildHold {
+            inner: Shared::clone(&self.inner),
+        }
+    }
+
+    /// Spawns the context rebuild, once per device loss.
+    ///
+    /// `request_adapter`/`request_device` are driver calls that take tens of
+    /// milliseconds; they run on the spawned thread, the same shape
+    /// `create_gpu_runtime` uses for the first runtime, so the frame's caller
+    /// never waits on a driver. `rebuild_in_flight` serializes attempts: the
+    /// device-lost wakeup and every `context()` call that finds the loss all
+    /// funnel into one rebuild, and the still-lost context is returned until
+    /// the fresh one lands.
+    ///
+    /// A failed rebuild keeps the dead context in place and records the
+    /// failure as a loss, so the next trigger retries under the same budget
+    /// the losses themselves count against.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_rebuild(inner: &Shared<RuntimeInner>) {
+        if inner.rebuild_in_flight.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let generation = {
+            let slot = inner
+                .context
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if slot.device_lost_reason().is_none() {
+                // The context was already replaced; nothing to rebuild.
+                inner.rebuild_in_flight.store(false, Ordering::Release);
+                return;
+            }
+            let mut unproductive = inner
+                .unproductive_losses
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if slot.frame_presented() {
+                unproductive.clear();
+            } else {
+                unproductive.push(
+                    slot.device_lost_reason()
+                        .unwrap_or_else(|| "device lost with no recorded reason".to_owned()),
+                );
+            }
+            if unproductive.len() > MAX_CONSECUTIVE_UNPRODUCTIVE_REBUILDS {
+                tracing::error!(
+                    "WaterUI GPU device was lost {} times in a row without ever \
+                     presenting a frame; the device is unrecoverable and frames stay \
+                     pending. Recorded losses: {}",
+                    unproductive.len(),
+                    unproductive.join(" | ")
+                );
+                // `rebuild_in_flight` stays set: the device is unrecoverable,
+                // so no further attempt is ever spawned and this is logged
+                // once.
+                drop(unproductive);
+                drop(slot);
+                // Parked `context_after` waiters wake to observe the spent
+                // budget and resolve `Err`.
+                inner.published.notify(usize::MAX);
+                return;
+            }
+            drop(unproductive);
+            drop(slot);
+            inner.next_generation.fetch_add(1, Ordering::Relaxed)
+        };
+
+        let worker = Shared::clone(inner);
+        let spawned = std::thread::Builder::new()
+            .name("waterui-gpu-runtime-rebuild".to_owned())
+            .spawn(move || {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    pollster::block_on(SharedGpuContext::new(generation))
+                }));
+                match outcome {
+                    Ok(Ok(fresh)) => {
+                        let fresh = Shared::new(fresh);
+                        tracing::warn!(
+                            generation,
+                            adapter = %fresh.adapter().get_info().name,
+                            "GPU device was lost; recreated the runtime context"
+                        );
+                        Self::install_rebuild_wakeup(&fresh.device_loss(), &worker);
+                        // A testing hold gates the publication: the fresh
+                        // context stays uninstalled while a test orders a
+                        // frame against the rebuild.
+                        let (holds, released) = &worker.rebuild_holds;
+                        let holds = holds
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        drop(
+                            released
+                                .wait_while(holds, |holds| *holds != 0)
+                                .unwrap_or_else(std::sync::PoisonError::into_inner),
+                        );
+                        // Only this thread replaces the slot: `rebuild_in_flight`
+                        // stays set until the store below, so no second writer
+                        // can interleave.
+                        *worker
+                            .context
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = fresh;
+                    }
+                    Ok(Err(error)) => {
+                        worker
+                            .unproductive_losses
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("context recreation failed: {error}"));
+                        tracing::error!(
+                            "GPU device was lost and recreation failed ({error}); \
+                             retrying on the next trigger"
+                        );
+                    }
+                    Err(payload) => {
+                        worker.rebuild_in_flight.store(false, Ordering::Release);
+                        // Woken waiters re-kick the rebuild through `context()`
+                        // before this thread dies.
+                        worker.published.notify(usize::MAX);
+                        std::panic::resume_unwind(payload);
+                    }
+                }
+                worker.rebuild_in_flight.store(false, Ordering::Release);
+                // `rebuild_in_flight` is clear before the notification so a
+                // woken waiter that finds the context still lost can kick the
+                // next attempt instead of parking on an event that never
+                // fires again.
+                worker.published.notify(usize::MAX);
+            });
+        if let Err(error) = spawned {
+            Self::rebuild_thread_failed(inner, &error);
+        }
+    }
+
+    /// The same outcome as a failed recreation: the dead context stays in
+    /// place and the next trigger retries under the loss budget.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn rebuild_thread_failed(inner: &Shared<RuntimeInner>, error: &std::io::Error) {
+        inner
+            .unproductive_losses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(format!("rebuild thread spawn failed: {error}"));
+        tracing::error!(
+            "GPU device was lost and the rebuild thread could not start ({error}); \
+             retrying on the next trigger"
+        );
+        inner.rebuild_in_flight.store(false, Ordering::Release);
+        inner.published.notify(usize::MAX);
+    }
+
+    /// The instance surfaces are created from.
+    ///
+    /// Convenience for `self.context().instance().clone()`; callers holding
+    /// device-bound resources must take [`context`](Self::context) instead so
+    /// they can compare its generation.
+    #[must_use]
+    pub fn instance(&self) -> Instance {
+        self.context().instance().clone()
+    }
+
+    /// The adapter the device was created from.
+    ///
+    /// See [`instance`](Self::instance) for the generation contract.
+    #[must_use]
+    pub fn adapter(&self) -> Adapter {
+        self.context().adapter().clone()
+    }
+
+    /// The device.
+    ///
+    /// See [`instance`](Self::instance) for the generation contract.
+    #[must_use]
+    pub fn device(&self) -> Device {
+        self.context().device().clone()
+    }
+
+    /// The device's queue.
+    ///
+    /// See [`instance`](Self::instance) for the generation contract.
+    #[must_use]
+    pub fn queue(&self) -> Queue {
+        self.context().queue().clone()
+    }
+
+    /// Creates an engine sharing this runtime's current context's device,
+    /// waiting for the render thread's setup.
+    ///
+    /// The engine is bound to the context generation it was built under: a
+    /// rebuilt context after device loss needs a new engine, created from the
+    /// replacement context. [`engine_async`](Self::engine_async) is the form
+    /// that does not block the calling thread.
+    ///
+    /// # Errors
+    /// When the engine cannot initialize its rendering resources.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn engine(&self) -> Result<Engine<Gpu>, cherenkov::EngineError> {
+        self.engine_on(&self.context())
+    }
+
+    /// Creates an engine sharing this runtime's current context's device,
+    /// without making the caller wait for the render thread's setup.
+    ///
+    /// # Errors
+    /// When the engine cannot initialize its rendering resources.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn engine_async(&self) -> Result<Engine<Gpu>, cherenkov::EngineError> {
+        self.engine_on_async(&self.context()).await
+    }
+
+    /// Creates an engine sharing this runtime's current context's device.
+    ///
+    /// The engine is bound to the context generation it was built under: a
+    /// rebuilt context after device loss needs a new engine, created from the
+    /// replacement context.
+    ///
+    /// # Errors
+    /// When the engine cannot initialize its rendering resources.
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+    )]
+    pub async fn engine(&self) -> Result<Engine<Gpu>, cherenkov::EngineError> {
+        self.engine_on(&self.context()).await
+    }
+
+    /// Creates an engine on `context` — the generation a caller that also
+    /// holds device-bound resources must pass so everything agrees — waiting
+    /// for the render thread's setup.
+    ///
+    /// # Errors
+    /// When the engine cannot initialize its rendering resources.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn engine_on(
+        &self,
+        context: &SharedGpuContext,
+    ) -> Result<Engine<Gpu>, cherenkov::EngineError> {
+        Engine::new(Self::engine_config(context))
+    }
+
+    /// Creates an engine on `context` — the generation a caller that also
+    /// holds device-bound resources must pass so everything agrees —
+    /// without making the caller wait for the render thread's setup.
+    ///
+    /// # Errors
+    /// When the engine cannot initialize its rendering resources.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn engine_on_async(
+        &self,
+        context: &SharedGpuContext,
+    ) -> Result<Engine<Gpu>, cherenkov::EngineError> {
+        Engine::new_async(Self::engine_config(context)).await
+    }
+
+    /// Creates an engine on `context` — the generation a caller that also
+    /// holds device-bound resources must pass so everything agrees.
+    ///
+    /// # Errors
+    /// When the engine cannot initialize its rendering resources.
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+    )]
+    pub async fn engine_on(
+        &self,
+        context: &SharedGpuContext,
+    ) -> Result<Engine<Gpu>, cherenkov::EngineError> {
+        Engine::new(Self::engine_config(context)).await
+    }
+
+    fn engine_config(context: &SharedGpuContext) -> GpuConfig {
+        GpuConfig {
+            device: Some(context.shared_device()),
+            ..GpuConfig::default()
+        }
+    }
+
+    /// Renders owned GPU content through the engine's offscreen surface,
+    /// waiting for the frame.
+    ///
+    /// # Errors
+    /// When engine creation, rendering, or readback fails.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn render_content(
+        &self,
+        content: impl GpuContent,
+        size: OffscreenSize,
+        scale: f32,
+    ) -> Result<OffscreenImage, HostedLayerError> {
+        pollster::block_on(self.render_content_async(content, size, scale))
+    }
+
+    /// Renders owned GPU content through the engine's offscreen surface,
+    /// without blocking the calling thread.
+    ///
+    /// # Errors
+    /// When engine creation, rendering, or readback fails.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[expect(
+        clippy::future_not_send,
+        reason = "holds the !Send engine across its awaits; the future runs on the thread that owns the engine"
+    )]
+    pub async fn render_content_async(
+        &self,
+        content: impl GpuContent,
+        size: OffscreenSize,
+        scale: f32,
+    ) -> Result<OffscreenImage, HostedLayerError> {
+        self.render_content_inner(content, size, scale).await
+    }
+
+    /// Renders owned GPU content through the engine's offscreen surface.
+    ///
+    /// # Errors
+    /// When engine creation, rendering, or readback fails.
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+    )]
+    pub async fn render_content(
+        &self,
+        content: impl GpuContent,
+        size: OffscreenSize,
+        scale: f32,
+    ) -> Result<OffscreenImage, HostedLayerError> {
+        self.render_content_inner(content, size, scale).await
+    }
+
+    #[expect(
+        clippy::future_not_send,
+        reason = "holds the !Send engine across its awaits; the future runs on the thread that owns the engine"
+    )]
+    async fn render_content_inner(
+        &self,
+        content: impl GpuContent,
+        size: OffscreenSize,
+        scale: f32,
+    ) -> Result<OffscreenImage, HostedLayerError> {
+        let content = GpuContentView::new(content).take_engine_content();
+        // One frame, read back at once: no host loop exists to wake.
+        let mut renderer = GpuContentRenderer::new(
+            self,
+            self.context(),
+            content,
+            size,
+            RedrawHandle::new(|| {}),
+        )
+        .await?;
+        renderer
+            .render(
+                size,
+                Display {
+                    scale: f64::from(scale),
+                    headroom: 1.0,
+                },
+                FrameTime::now(),
+            )
+            .await?;
+        let readback = renderer.host.surface.readback();
+        #[cfg(target_arch = "wasm32")]
+        let readback = readback.await;
+        Ok(OffscreenImage::from_readback(&readback?))
+    }
+}
+
+/// The swapchain format a host configures for `capabilities`.
+///
+/// Prefers a 16-bit float format when the host asks for HDR and the surface
+/// offers one; otherwise the first 8-bit sRGB-encoded format, then the first
+/// format the surface offers at all.
+///
+/// `None` when the surface offers no format at all: it cannot present, and
+/// the host reports that as its own unsupported-surface error.
+#[must_use]
+pub fn preferred_surface_format(
+    capabilities: &wgpu::SurfaceCapabilities,
+    prefer_hdr: bool,
+) -> Option<TextureFormat> {
+    let formats = &capabilities.formats;
+    if prefer_hdr && let Some(f) = formats.iter().find(|f| **f == TextureFormat::Rgba16Float) {
+        return Some(*f);
+    }
+    formats
+        .iter()
+        .find(|f| f.is_srgb())
+        .or_else(|| formats.first())
+        .copied()
+}
+
+/// The engine, retained surface and presenter one hosted layer renders
+/// through, shared by [`GpuContentRenderer`] and [`ExternalFrameRenderer`].
+///
+/// Everything here is bound to the [`SharedGpuContext`] generation it was
+/// created under.
+struct LayerHost {
+    surface: Surface<Gpu>,
+    engine: Engine<Gpu>,
+    context: Shared<SharedGpuContext>,
+    textures: std::sync::mpsc::Receiver<wgpu::Texture>,
+    source: wgpu::Texture,
+    presenter: Presenter,
+}
+
+impl LayerHost {
+    /// Creates an engine and a retained surface on `context`, the one
+    /// generation the whole host is bound to. `redraw` is the host's frame
+    /// request: the surface wakes it for whatever its content asks for
+    /// between the host's frames.
+    ///
+    /// Neither waits on the render thread: both resolve on its replies.
+    ///
+    /// # Errors
+    /// When engine or surface creation fails.
+    #[expect(
+        clippy::future_not_send,
+        reason = "holds the !Send engine across its awaits; the future runs on the thread that owns the engine"
+    )]
+    async fn new(
+        runtime: &GpuRuntime,
+        context: Shared<SharedGpuContext>,
+        size: OffscreenSize,
+        redraw: RedrawHandle,
+    ) -> Result<Self, HostedLayerError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let engine = runtime.engine_on_async(&context).await?;
+        #[cfg(target_arch = "wasm32")]
+        let engine = runtime.engine_on(&context).await?;
+        let (target, textures) = TextureTarget::new((size.width(), size.height()));
+        let wake = move || redraw.request_redraw();
+        #[cfg(not(target_arch = "wasm32"))]
+        let surface = engine.surface_async(target, wake).await?;
+        #[cfg(target_arch = "wasm32")]
+        let surface = engine.surface(target, wake).await?;
+        Self::assemble(surface, engine, context, textures)
+    }
+
+    /// Assembles the host around a created engine and surface.
+    ///
+    /// # Errors
+    /// [`HostedLayerError::Engine`] when the presentation shader set fails to
+    /// build.
+    fn assemble(
+        surface: Surface<Gpu>,
+        engine: Engine<Gpu>,
+        context: Shared<SharedGpuContext>,
+        textures: std::sync::mpsc::Receiver<wgpu::Texture>,
+    ) -> Result<Self, HostedLayerError> {
+        let source = textures
+            .try_recv()
+            .expect("a TextureTarget publishes its texture when its surface is created");
+        let presenter = Presenter::new(
+            context.device(),
+            shader_delivery(context.adapter().get_info().backend, context.device())?,
+        );
+        Ok(Self {
+            surface,
+            engine,
+            context,
+            textures,
+            source,
+            presenter,
+        })
+    }
+
+    /// Resizes the surface to `size`, answering whether it changed.
+    ///
+    /// # Errors
+    /// When the engine rejects the size.
+    fn resize(&self, size: OffscreenSize) -> Result<bool, HostedLayerError> {
+        let pixels = (size.width(), size.height());
+        if self.surface.size() == pixels {
+            return Ok(false);
+        }
+        self.surface.resize(pixels)?;
+        Ok(true)
+    }
+
+    /// Submits one engine pass for `display` at `target_time` and returns
+    /// before the render thread runs it.
+    ///
+    /// # Errors
+    /// When display configuration or the submission fails.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn submit(
+        &self,
+        display: Display,
+        target_time: FrameTime,
+    ) -> Result<HostedFrame, HostedLayerError> {
+        self.surface.display(display)?;
+        Ok(HostedFrame {
+            frame: self.engine.submit(target_time)?,
+            generation: self.context.generation(),
+        })
+    }
+
+    /// Runs one engine pass for `display` at `target_time`, resolving when
+    /// the render thread finishes it.
+    ///
+    /// # Errors
+    /// When display configuration or rendering fails.
+    #[expect(
+        clippy::future_not_send,
+        reason = "holds the !Send engine across its awaits; the future runs on the thread that owns the engine"
+    )]
+    async fn render(
+        &self,
+        display: Display,
+        target_time: FrameTime,
+    ) -> Result<Next, HostedLayerError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let next = self.submit(display, target_time)?.await?.next;
+        #[cfg(target_arch = "wasm32")]
+        let next = {
+            self.surface.display(display)?;
+            self.engine.render(target_time).await?
+        };
+        Ok(next)
+    }
+
+    /// Composites the surface's texture into a native host's texture,
+    /// first picking up the texture a resize published: the render thread
+    /// publishes it before the reply of the frame that resized, so every
+    /// frame that resolved has its texture here. Float targets carry
+    /// extended linear Display P3; other targets carry sRGB.
+    fn composite(&mut self, target: &wgpu::Texture, display: Display) {
+        for texture in self.textures.try_iter() {
+            self.source = texture;
+        }
+        let source = self
+            .source
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        self.presenter.texture(
+            self.context.device(),
+            self.context.queue(),
+            &source,
+            TextureOutput {
+                texture: target,
+                color: if target.format() == TextureFormat::Rgba16Float {
+                    OutputColor::LinearDisplayP3
+                } else {
+                    OutputColor::Srgb
+                },
+                alpha: OutputAlpha::Premultiplied,
+                headroom: display.headroom,
+            },
+        );
+    }
+}
+
+/// The size of the host texture `present` renders for.
+fn target_size(target: &wgpu::Texture) -> Result<OffscreenSize, HostedLayerError> {
+    OffscreenSize::try_from_pixels(target.width(), target.height())
+        .ok_or(HostedLayerError::EmptyTarget)
+}
+
+/// A retained engine surface for GPU content presented by a native host.
+///
+/// The renderer is bound to the [`SharedGpuContext`] generation it was created
+/// under: [`generation`](Self::generation) reports it so the host can drop and
+/// recreate the renderer — engine, surface and presenter are all device-bound
+/// — when the runtime's context is rebuilt after device loss.
+pub struct GpuContentRenderer {
+    host: LayerHost,
+    producer: cherenkov::GpuProducer<Gpu>,
+}
+
+impl fmt::Debug for GpuContentRenderer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GpuContentRenderer").finish_non_exhaustive()
+    }
+}
+
+impl GpuContentRenderer {
+    /// Moves the producer to a retained engine layer on `context` — the one
+    /// generation the caller retains for the frame this renderer presents.
+    /// `redraw` wakes the host when the producer asks for a frame between
+    /// the host's own.
+    ///
+    /// Creation does not wait on the render thread: the engine and its
+    /// surface resolve on its replies.
+    ///
+    /// # Errors
+    /// When engine or surface creation fails.
+    #[expect(
+        clippy::future_not_send,
+        reason = "holds the !Send engine across its awaits; the future runs on the thread that owns the engine"
+    )]
+    pub async fn new(
+        runtime: &GpuRuntime,
+        context: Shared<SharedGpuContext>,
+        producer: GpuContentBox,
+        size: OffscreenSize,
+        redraw: RedrawHandle,
+    ) -> Result<Self, HostedLayerError> {
+        Ok(Self::install(
+            LayerHost::new(runtime, context, size, redraw).await?,
+            producer,
+            size,
+        ))
+    }
+
+    fn install(host: LayerHost, content: GpuContentBox, size: OffscreenSize) -> Self {
+        let pixels = (size.width(), size.height());
+        let producer = host.engine.gpu_producer(content);
+        host.surface.update(|tx| {
+            tx[host.surface.root()].content(producer.at(pixels));
+        });
+        Self { host, producer }
+    }
+
+    /// The context generation this renderer was built under.
+    ///
+    /// A renderer whose generation no longer matches
+    /// `runtime.context().generation()` is bound to a dead device; drop it and
+    /// create a new one on the rebuilt context.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.host.context.generation()
+    }
+
+    /// Resizes the retained attachment along with the surface.
+    ///
+    /// # Errors
+    /// When the engine rejects the size.
+    fn resize(&self, size: OffscreenSize) -> Result<(), HostedLayerError> {
+        if self.host.resize(size)? {
+            self.host.surface.update(|tx| {
+                tx[self.host.surface.root()]
+                    .content(self.producer.at((size.width(), size.height())));
+            });
+        }
+        Ok(())
+    }
+
+    /// Submits a frame at `size` for the host's display and returns before
+    /// the render thread runs it; [`composite`](Self::composite) the frame
+    /// once it resolves. Engine, surface, producer and context stay in the
+    /// renderer: dropping the [`HostedFrame`] — a detached or replaced
+    /// native surface — discards only that frame's presentation.
+    ///
+    /// # Errors
+    /// When resizing, display configuration, or the submission fails.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn submit(
+        &mut self,
+        size: OffscreenSize,
+        display: Display,
+        target_time: FrameTime,
+    ) -> Result<HostedFrame, HostedLayerError> {
+        let _frame = self.host.surface.begin_frame();
+        self.resize(size)?;
+        self.host.submit(display, target_time)
+    }
+
+    /// Composites the frame that resolved into a native host's texture.
+    /// Float targets carry extended linear Display P3; other targets carry
+    /// sRGB. A host composites each resolved frame before it submits the
+    /// next.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn composite(&mut self, _frame: &RenderedFrame, target: &wgpu::Texture, display: Display) {
+        self.host.composite(target, display);
+    }
+
+    /// Renders a frame at the current size for the host's display,
+    /// resolving when the render thread finishes it.
+    ///
+    /// # Errors
+    /// When resizing, display configuration, or rendering fails.
+    #[expect(
+        clippy::future_not_send,
+        reason = "holds the !Send engine across its awaits; the future runs on the thread that owns the engine"
+    )]
+    pub async fn render(
+        &mut self,
+        size: OffscreenSize,
+        display: Display,
+        target_time: FrameTime,
+    ) -> Result<Next, HostedLayerError> {
+        let _frame = self.host.surface.begin_frame();
+        self.resize(size)?;
+        self.host.render(display, target_time).await
+    }
+
+    /// Renders and composites into a native host's texture, resolving when
+    /// the render thread finishes the frame.
+    /// Float targets carry extended linear Display P3; other targets carry sRGB.
+    ///
+    /// # Errors
+    /// When rendering fails, or [`HostedLayerError::EmptyTarget`] when
+    /// `target` has a zero extent.
+    #[expect(
+        clippy::future_not_send,
+        reason = "holds the !Send engine across its awaits; the future runs on the thread that owns the engine"
+    )]
+    pub async fn present(
+        &mut self,
+        target: &wgpu::Texture,
+        display: Display,
+        target_time: FrameTime,
+    ) -> Result<Next, HostedLayerError> {
+        let next = self
+            .render(target_size(target)?, display, target_time)
+            .await?;
+        self.host.composite(target, display);
+        Ok(next)
+    }
+}
+
+/// A frame a hosted renderer handed to its engine's render thread.
+///
+/// [`GpuContentRenderer::submit`] and [`ExternalFrameRenderer::submit`]
+/// return it; it resolves on the thread that polls it once the render
+/// thread replies — the reply's own wake reaches the poll's waker, with no
+/// timer and no readback.
+///
+/// It holds no device resource: the renderer keeps the engine, surface,
+/// producer and context generation it was submitted under. Dropping it
+/// discards the frame's presentation without waiting on the render thread.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+#[must_use = "dropping a hosted frame discards its presentation"]
+pub struct HostedFrame {
+    frame: cherenkov::PendingFrame<Gpu>,
+    generation: u64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl HostedFrame {
+    /// The context generation the frame was submitted under — its
+    /// renderer's.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl core::future::Future for HostedFrame {
+    type Output = Result<RenderedFrame, HostedLayerError>;
+
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
+        let generation = self.generation;
+        core::pin::Pin::new(&mut self.frame).poll(cx).map(|next| {
+            Ok(RenderedFrame {
+                next: next?,
+                generation,
+            })
+        })
+    }
+}
+
+/// A [`HostedFrame`] that resolved: what the engine asks for next, ready to
+/// composite into the host's texture.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+pub struct RenderedFrame {
+    next: Next,
+    generation: u64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl RenderedFrame {
+    /// When the engine wants the next frame.
+    #[must_use]
+    pub const fn next(&self) -> &Next {
+        &self.next
+    }
+
+    /// The context generation the frame was rendered under.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+/// A retained engine surface whose layer shows the frames an
+/// [`ExternalFrameStream`] publishes, for a native host.
+///
+/// The frames are the content of a dedicated child layer of the surface's
+/// root — a plain layer with the default blend and no backdrop — stretched to
+/// the surface. Each pass drains the stream's mailbox before the engine
+/// renders, so a published frame reaches the screen without a view rebuild;
+/// its planes are sampled in place, never copied.
+///
+/// Like [`GpuContentRenderer`], the renderer is bound to the
+/// [`SharedGpuContext`] generation it was created under. Dropping it retires
+/// the output its source was started with; a replacement renderer on a
+/// rebuilt context starts the source again on the new device.
+pub struct ExternalFrameRenderer {
+    host: LayerHost,
+    layer: Layer,
+    producer: cherenkov::GpuProducer<Gpu>,
+    sink: cherenkov::FrameSink<Gpu>,
+    frames: FrameReceiver,
+    /// The plane size of the installed frame, in pixels.
+    frame_size: Option<(u32, u32)>,
+}
+
+impl fmt::Debug for ExternalFrameRenderer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExternalFrameRenderer")
+            .field("frame_size", &self.frame_size)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ExternalFrameRenderer {
+    /// Builds the layer on `context` — the one generation the caller retains
+    /// for the frame this renderer presents — and starts the stream's source
+    /// on that device. `redraw` wakes the host whenever the source publishes
+    /// a frame, and whenever the surface needs a frame between the host's
+    /// own.
+    ///
+    /// Creation does not wait on the render thread: the engine and its
+    /// surface resolve on its replies.
+    ///
+    /// # Errors
+    /// When engine or surface creation fails.
+    #[expect(
+        clippy::future_not_send,
+        reason = "holds the !Send engine across its awaits; the future runs on the thread that owns the engine"
+    )]
+    pub async fn new(
+        runtime: &GpuRuntime,
+        context: Shared<SharedGpuContext>,
+        stream: &ExternalFrameStream,
+        size: OffscreenSize,
+        redraw: RedrawHandle,
+    ) -> Result<Self, HostedLayerError> {
+        Ok(Self::install(
+            LayerHost::new(runtime, context, size, redraw.clone()).await?,
+            stream,
+            redraw,
+        ))
+    }
+
+    fn install(host: LayerHost, stream: &ExternalFrameStream, redraw: RedrawHandle) -> Self {
+        let layer = host.surface.layer();
+        let (producer, sink) = host.engine.frame_producer();
+        host.surface.update(|tx| {
+            tx[host.surface.root()].push(&layer);
+        });
+        let frames = stream.start(&host.context.shared_device(), redraw);
+        Self {
+            host,
+            layer,
+            producer,
+            sink,
+            frames,
+            frame_size: None,
+        }
+    }
+
+    /// The context generation this renderer was built under.
+    ///
+    /// A renderer whose generation no longer matches
+    /// `runtime.context().generation()` is bound to a dead device; drop it and
+    /// create a new one on the rebuilt context.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.host.context.generation()
+    }
+
+    /// Resizes the surface, reports the size it presents at for `display`
+    /// to the source, installs the newest published frame, and keeps the
+    /// frame stretched to the surface.
+    ///
+    /// # Errors
+    /// When the engine rejects the size.
+    fn prepare(&mut self, size: OffscreenSize, display: Display) -> Result<(), HostedLayerError> {
+        let resized = self.host.resize(size)?;
+        self.frames.report_presented(PresentedSize {
+            pixels: size,
+            scale: display.scale,
+        });
+        let frame = self.frames.take();
+        if frame.is_none() && !resized {
+            return Ok(());
+        }
+        let surface = &self.host.surface;
+        let layer = &self.layer;
+        let mut frame_size = self.frame_size;
+        if let Some(frame) = frame {
+            frame_size = Some(plane_size(&frame));
+            self.sink.submit(frame);
+        }
+        surface.update(|tx| {
+            if let Some((width, height)) = frame_size {
+                if frame_size != self.frame_size {
+                    tx[layer].content(self.producer.at((width, height)));
+                }
+                tx[layer].transform(Affine::scale_non_uniform(
+                    f64::from(size.width()) / f64::from(width),
+                    f64::from(size.height()) / f64::from(height),
+                ));
+            }
+        });
+        self.frame_size = frame_size;
+        Ok(())
+    }
+
+    /// Installs the newest published frame and submits a frame at `size`
+    /// for the host's display, returning before the render thread runs it;
+    /// [`composite`](Self::composite) the frame once it resolves. Engine,
+    /// surface, producer, the stream's output and the context stay in the
+    /// renderer: dropping the [`HostedFrame`] discards only that frame's
+    /// presentation.
+    ///
+    /// # Errors
+    /// When resizing, display configuration, or the submission fails.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn submit(
+        &mut self,
+        size: OffscreenSize,
+        display: Display,
+        target_time: FrameTime,
+    ) -> Result<HostedFrame, HostedLayerError> {
+        let _frame = self.host.surface.begin_frame();
+        self.prepare(size, display)?;
+        self.host.submit(display, target_time)
+    }
+
+    /// Composites the frame that resolved into a native host's texture.
+    /// Float targets carry extended linear Display P3; other targets carry
+    /// sRGB. A host composites each resolved frame before it submits the
+    /// next.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn composite(&mut self, _frame: &RenderedFrame, target: &wgpu::Texture, display: Display) {
+        self.host.composite(target, display);
+    }
+
+    /// Renders a frame at the current size for the host's display,
+    /// resolving when the render thread finishes it.
+    ///
+    /// # Errors
+    /// When resizing, display configuration, or rendering fails.
+    #[expect(
+        clippy::future_not_send,
+        reason = "holds the !Send engine across its awaits; the future runs on the thread that owns the engine"
+    )]
+    pub async fn render(
+        &mut self,
+        size: OffscreenSize,
+        display: Display,
+        target_time: FrameTime,
+    ) -> Result<Next, HostedLayerError> {
+        let _frame = self.host.surface.begin_frame();
+        self.prepare(size, display)?;
+        self.host.render(display, target_time).await
+    }
+
+    /// Renders and composites into a native host's texture, resolving when
+    /// the render thread finishes the frame.
+    /// Float targets carry extended linear Display P3; other targets carry sRGB.
+    ///
+    /// # Errors
+    /// When rendering fails, or [`HostedLayerError::EmptyTarget`] when
+    /// `target` has a zero extent.
+    #[expect(
+        clippy::future_not_send,
+        reason = "holds the !Send engine across its awaits; the future runs on the thread that owns the engine"
+    )]
+    pub async fn present(
+        &mut self,
+        target: &wgpu::Texture,
+        display: Display,
+        target_time: FrameTime,
+    ) -> Result<Next, HostedLayerError> {
+        let next = self
+            .render(target_size(target)?, display, target_time)
+            .await?;
+        self.host.composite(target, display);
+        Ok(next)
+    }
+}
+
+/// A frame's plane size in pixels: the luma plane for YUV, the plane for RGB
+/// — the size the engine emits the frame's quad at in layer space.
+fn plane_size(frame: &ExternalFrame) -> (u32, u32) {
+    let plane = match &frame.planes {
+        FramePlanes::Yuv { y, .. } => y,
+        FramePlanes::Rgb { plane, .. } => plane,
+        #[cfg(all(unix, not(target_vendor = "apple")))]
+        FramePlanes::Native(native) => return native.size(),
+    };
+    (plane.width(), plane.height())
+}

@@ -15,7 +15,7 @@
 )]
 
 use waterui::webview::{Json, serde};
-use waterui::{Binding, Computed, js_api};
+use waterui::{Binding, Computed, Signal, js_api};
 
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
 #[serde(crate = "waterui::webview::serde")]
@@ -57,7 +57,7 @@ impl App {
     /// Internal helpers stay internal.
     #[js(skip)]
     fn internal(&self, factor: u32) -> u32 {
-        self.count.get() * factor
+        self.count.snapshot() * factor
     }
 }
 
@@ -93,6 +93,12 @@ fn the_surface_describes_itself_in_typescript() {
     assert!(
         !declarations.contains("internal"),
         "#[js(skip)] must not appear in the declarations either"
+    );
+    // Mirrored values arrive with the page's first pull; the boundary it
+    // awaits before reading them is part of the surface.
+    assert!(
+        declarations.contains("readonly ready: Promise<void>;"),
+        "{declarations}"
     );
 }
 

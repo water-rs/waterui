@@ -1,15 +1,14 @@
 # Icons Example
 
-This example demonstrates WaterUI's comprehensive icon system with multiple icon libraries.
+This example demonstrates WaterUI's icon system with three icon packs.
 
-## Icon Libraries
+## Icon Packs
 
-| Library | Icons | License |
-|---------|-------|---------|
-| SF Symbols | 65+ | Apple (system) |
-| Material Design | 7,447 | Apache 2.0 |
-| Font Awesome 7 | 2,806 | CC BY 4.0 |
-| Native | 50+ | Cross-platform |
+| Pack | Crate | Rendering | License |
+|------|-------|-----------|---------|
+| SF Symbols | `waterui-icons-sf-symbol` | Native (Apple platforms only) | Apple (system) |
+| Material Design Icons | `waterui-icons-material-icon` | SVG | Apache 2.0 |
+| Lucide | `waterui-icons-lucide` | SVG | ISC |
 
 ## Features
 
@@ -21,26 +20,25 @@ This example demonstrates WaterUI's comprehensive icon system with multiple icon
 ## Usage
 
 ```rust
-use waterui_icons_sf_symbol as sf;
+use waterui_icons_lucide as lucide;
 use waterui_icons_material_icon as mdi;
-use waterui_icons_fontawesome7 as fa;
-use waterui_icons_native as icons;
+#[cfg(target_vendor = "apple")]
+use waterui_icons_sf_symbol as sf;
 
 // SF Symbols (Apple platforms)
-sf::HOUSE
-sf::GEAR
+sf::house_fill()
+sf::gearshape()
 
 // Material Design Icons
 mdi::home()
-mdi::settings()
+mdi::cog()
 
-// Font Awesome 7
-fa::solid::house()
-fa::brands::github()
+// Lucide
+lucide::house()
+lucide::settings()
 
-// Cross-platform native icons
-icons::HOME
-icons::SETTINGS
+// Tint and size
+mdi::heart().tint(Color::srgb_hex("#EF4444")).size(32.0, 32.0)
 ```
 
 ## Running
@@ -51,16 +49,7 @@ water run --platform ios
 water run --platform android
 ```
 
-## Platform Support
-
-| Icon Library | iOS/macOS | Android |
-|--------------|-----------|---------|
-| SF Symbols | Native | Placeholder |
-| Material Design | SVG | SVG |
-| Font Awesome 7 | SVG | SVG |
-| Native | SF Symbol | Placeholder |
-
 ## Attribution
 
 - Material Design Icons by [Pictogrammers](https://pictogrammers.com/) - Apache 2.0
-- Font Awesome Free by [Fonticons, Inc.](https://fontawesome.com/) - CC BY 4.0
+- Lucide by [Lucide Contributors](https://lucide.dev/) - ISC

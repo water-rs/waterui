@@ -68,13 +68,34 @@ fn codepoint_to_string(codepoint: char) -> Str {
 /// ```
 #[derive(Debug, Clone, Copy)]
 #[must_use = "an `IconGlyph` does nothing unless it is rendered as part of a view"]
+#[non_exhaustive]
 pub struct IconGlyph {
     /// The Unicode codepoint for this icon in the font.
-    pub codepoint: char,
+    codepoint: char,
     /// The font family name (e.g., "MaterialIcons-Regular", "FontAwesome7Free-Solid").
-    pub font_family: &'static str,
+    font_family: &'static str,
     /// The font size in points. Default is 24.0.
-    pub size: f32,
+    size: f32,
+}
+
+impl IconGlyph {
+    /// The Unicode codepoint for this icon in the font.
+    #[must_use]
+    pub const fn codepoint(&self) -> char {
+        self.codepoint
+    }
+
+    /// The font family name (e.g., "MaterialIcons-Regular", "FontAwesome7Free-Solid").
+    #[must_use]
+    pub const fn font_family(&self) -> &'static str {
+        self.font_family
+    }
+
+    /// The font size in points. Default is 24.0.
+    #[must_use]
+    pub const fn size(&self) -> f32 {
+        self.size
+    }
 }
 
 impl IconGlyph {

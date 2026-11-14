@@ -82,7 +82,7 @@ mod tests {
             ParseErrorKind::MissingHost,
             ParseErrorKind::InvalidPort,
         ] {
-            assert!(!ParseError::new(kind).to_string().is_empty());
+            assert_ne!(ParseError::new(kind).to_string(), "");
         }
     }
 

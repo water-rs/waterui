@@ -1,0 +1,3517 @@
+//! Lowering: a surface's layer tree and display lists become one flat list
+//! of rasterization [`Item`]s in device space.
+
+mod silhouette;
+
+use cherenkov::lowering::hidden::HiddenLayers;
+use cherenkov::lowering::{Realization, shape_outline};
+use std::sync::Arc;
+
+use rustc_hash::{FxHashMap, FxHashSet};
+
+use cherenkov::kurbo::{Affine, BezPath, PathEl, Point, Rect, Shape as _};
+use cherenkov::lowering::rounded_box::{BoxForm, RoundedBox, box_form};
+use cherenkov::{BlendMode, FillRule, FrameId, GlyphRun, GlyphStyle, ShapeData};
+
+use cherenkov::{LayerId, RenderError, SurfaceId, SurfaceTree};
+
+use super::filter::{Erased, Registry};
+use super::geometry::{Frame, GeometryCache, Offers, Resolved, same_linear};
+use super::intersect;
+use super::prepared::Op;
+use crate::names;
+use crate::render::paint::PaintData;
+use crate::render::raster::{Edge, coverage_mask};
+use crate::render::tiles::{EdgeScratch, EdgeTiles, Fixed, IntegerEdge};
+
+/// Curve-to-path and stroke tolerance in device pixels.
+pub const FLATTEN_TOL: f64 = 0.02;
+
+/// An integer device-space rectangle (x ∈ `[x0, x1)`, y ∈ `[y0, y1)`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IRect {
+    /// Left edge.
+    pub x0: i32,
+    /// Top edge.
+    pub y0: i32,
+    /// Right edge.
+    pub x1: i32,
+    /// Bottom edge.
+    pub y1: i32,
+}
+
+impl IRect {
+    /// This rectangle grown by `rx` on both x sides and `ry` on both y sides.
+    #[must_use]
+    pub const fn grow(self, rx: i32, ry: i32) -> Self {
+        Self {
+            x0: self.x0 - rx,
+            y0: self.y0 - ry,
+            x1: self.x1 + rx,
+            y1: self.y1 + ry,
+        }
+    }
+
+    /// The part shared with `other`; empty when they do not overlap.
+    #[must_use]
+    pub const fn intersect(self, other: Self) -> Self {
+        Self {
+            x0: if self.x0 > other.x0 {
+                self.x0
+            } else {
+                other.x0
+            },
+            y0: if self.y0 > other.y0 {
+                self.y0
+            } else {
+                other.y0
+            },
+            x1: if self.x1 < other.x1 {
+                self.x1
+            } else {
+                other.x1
+            },
+            y1: if self.y1 < other.y1 {
+                self.y1
+            } else {
+                other.y1
+            },
+        }
+    }
+
+    /// Whether the rectangle covers no pixel.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.x0 >= self.x1 || self.y0 >= self.y1
+    }
+
+    /// Width in pixels, 0 when empty.
+    #[must_use]
+    pub const fn width(self) -> usize {
+        if self.is_empty() {
+            0
+        } else {
+            (self.x1 - self.x0).cast_unsigned() as usize
+        }
+    }
+
+    /// Height in pixels, 0 when empty.
+    #[must_use]
+    pub const fn height(self) -> usize {
+        if self.is_empty() {
+            0
+        } else {
+            (self.y1 - self.y0).cast_unsigned() as usize
+        }
+    }
+}
+
+/// A draw's device-space bounding box within its raster target
+/// (x ∈ `[x0, x1)`, y ∈ `[y0, y1)`). A target is at most `MAX_SURFACE`
+/// (16384) texels on a side, so `u16` holds every edge, and the compact box
+/// leaves room in [`Item::Draw`] for its offset without growing [`Item`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DrawBox {
+    /// Left edge.
+    pub x0: u16,
+    /// Top edge.
+    pub y0: u16,
+    /// Right edge.
+    pub x1: u16,
+    /// Bottom edge.
+    pub y1: u16,
+}
+
+/// Retained clip geometry, rasterized only for the rows a consumer needs.
+#[derive(Debug)]
+pub enum ClipMask {
+    /// Axis-aligned rect with integer edges: coverage is 1 inside, 0
+    /// outside.
+    Rect(IRect),
+    /// Canonical filled boundaries. Draws intersect the operands before AA;
+    /// sampling consumers rasterize the resolved boundary by band.
+    Geometry {
+        /// Complete filled boundaries, with compatible winding directions.
+        operands: Vec<Arc<[intersect::Segment]>>,
+        /// Indexed intersection boundary for sampling consumers.
+        boundary: EdgeTiles,
+    },
+}
+
+impl PartialEq for ClipMask {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Rect(a), Self::Rect(b)) => a == b,
+            (Self::Geometry { operands: a, .. }, Self::Geometry { operands: b, .. }) => a == b,
+            _ => false,
+        }
+    }
+}
+
+/// A clip shared by items; cheap to clone.
+pub type ClipRef = Arc<ClipMask>;
+
+/// One rasterization item of a lowered frame.
+#[derive(Clone)]
+pub enum Item {
+    /// A filled, flattened polygon.
+    Draw {
+        /// Directed edges in the draw's translation-normalized frame
+        /// ([`Frame`]), retained tile-local: device space is the frame
+        /// moved by `offset`.
+        edges: EdgeTiles,
+        /// The device position of the frame's origin, added to every edge
+        /// coordinate.
+        offset: super::tiles::Fixed,
+        /// Device-space bounding box of the placed edges.
+        bbox: DrawBox,
+        /// The paint evaluator.
+        paint: PaintData,
+        /// The clip in force.
+        clip: Option<ClipRef>,
+    },
+    /// A Gaussian-blurred, axis-aligned rounded box.
+    Shadow {
+        /// The device-space axis-aligned rounded box half extents and
+        /// centre, `[cx, cy, hx, hy]`.
+        rbox: [f32; 4],
+        /// Per-corner radii.
+        radii: [f32; 4],
+        /// The effective blur sigma (`sqrt(sigma² + 1/6)`).
+        sigma_eff: f32,
+        /// Premultiplied colour.
+        color: [f32; 4],
+        /// Device-space bounding box.
+        bbox: IRect,
+        /// The clip in force.
+        clip: Option<ClipRef>,
+    },
+    /// A rasterized glyph mask instance.
+    Glyph {
+        /// The mask slot, filled before the band pass.
+        slot: crate::render::glyph::GlyphSlot,
+        /// The glyph's integer device origin (x).
+        x: i32,
+        /// The glyph's integer device origin (y).
+        y: i32,
+        /// The paint evaluator.
+        paint: PaintData,
+        /// The clip in force.
+        clip: Option<ClipRef>,
+    },
+    /// Owned convolved silhouette coverage: the mask covers the shadow's
+    /// footprint within the surface, positioned by its `left` and `top`.
+    Silhouette {
+        /// Completed immutable coverage, retained with its command.
+        slot: crate::render::glyph::GlyphSlot,
+        /// Premultiplied shadow colour.
+        paint: PaintData,
+        /// Clip applied after convolution.
+        clip: Option<ClipRef>,
+    },
+    /// Start a fresh transparent scratch layer. The level stores
+    /// premultiplied pixels in `space`: the isolate's declared
+    /// `blend_space` when it composites in isolation — semantically
+    /// isolated or translucent — or the enclosing level's space when it
+    /// is pass-through: a pass-through level shares the space it merges
+    /// back into.
+    PushIsolate {
+        /// The level's storage space.
+        space: cherenkov::BlendSpace,
+    },
+    /// Composite the scratch layer onto what lies below it.
+    PopIsolate {
+        /// The opacity multiplier.
+        opacity: f32,
+        /// Group compositing mode and working space.
+        blend: (BlendMode, cherenkov::BlendSpace),
+        /// The clip in force at the pop.
+        clip: Option<ClipRef>,
+    },
+    /// Start rendering a filtered scope with a vertical apron.
+    PushFilter {
+        /// The index of the paired [`Item::PopFilter`].
+        end: u32,
+        /// Rows of apron above and below each band.
+        apron: usize,
+        /// The scope's storage space: the isolate's declared
+        /// `blend_space` — members composite in it before the filter
+        /// sees the result.
+        space: cherenkov::BlendSpace,
+    },
+    /// Filter and composite the current scratch window.
+    PopFilter {
+        /// The filter and its sampled parameter values.
+        filter: FrameFilter,
+        /// The opacity multiplier.
+        opacity: f32,
+        /// Group compositing mode and working space.
+        blend: (BlendMode, cherenkov::BlendSpace),
+        /// The clip in force at the pop.
+        clip: Option<ClipRef>,
+    },
+    /// Capture the rows a backdrop group's members can sample: flatten
+    /// the trailing `flatten` looked-through isolation levels —
+    /// pass-through and translucent alike — over the nearest semantic
+    /// level's contents and run the group's chain on the copy. Boxed: a
+    /// capture is rare and large — it must not grow `Item`.
+    Capture(Box<CaptureItem>),
+    /// Composite a projective layer's local image, projected into this
+    /// raster through the anisotropic filter. Boxed: rare and large.
+    Project(Box<ProjectItem>),
+    /// Sample a group's captured backdrop as a member's bottom-most
+    /// content, inside the member's clip, over `bounds`.
+    Sample {
+        /// The group's renderer key (`BackdropId::raw()`).
+        group: u64,
+        /// The sampled rect: member ∩ region, in device pixels.
+        bounds: IRect,
+        /// The clip in force at the member.
+        clip: Option<ClipRef>,
+        /// What the sample becomes once composited.
+        effect: SampleEffect,
+        /// The union field the member folds into, when the group has one
+        /// (or the member draws an `outer` band on its own).
+        union: Option<UnionSample>,
+        /// The space the sample blends onto the canvas in: the group's
+        /// member blend space.
+        space: cherenkov::BlendSpace,
+    },
+}
+
+// LLVM inlines a fixed-size copy of at most 128 bytes; above that every
+// `Item` move becomes a `memcpy` call.
+const _: () = assert!(size_of::<Item>() <= 128);
+
+/// A member clip as the SDF reads evaluate it: its centred rounded box
+/// and the device → box-local affine that maps a sample point into it —
+/// the GPU's `clip_inv` and `Shape` pair.
+#[derive(Clone, Copy, Debug)]
+pub struct BoxClip {
+    /// Device → box-local affine in kurbo coefficient order
+    /// `(a, b, c, d, e, f)`: `x′ = a·x + c·y + e`,
+    /// `y′ = b·x + d·y + f`.
+    pub inv: [f32; 6],
+    /// The centred box.
+    pub shape: RoundedBox,
+}
+
+impl BoxClip {
+    /// The box `shape` placed by the clip-local `extra` under the
+    /// clip's `transform`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the engines evaluate SDF fields in f32"
+    )]
+    fn new(extra: Affine, shape: RoundedBox, transform: Affine) -> Self {
+        Self {
+            inv: (transform * extra).inverse().as_coeffs().map(|v| v as f32),
+            shape,
+        }
+    }
+}
+
+/// The union-field data a member's sample composites against: every
+/// member's clip box in paint order, the smoothing distance,
+/// this member's index and its `outer` extent.
+#[derive(Clone, Debug)]
+pub struct UnionSample {
+    /// Each member's clip box, in paint order. A lone `outer`-band
+    /// member of a non-union group is its own one-member list with
+    /// `k == 0`.
+    pub members: Arc<[BoxClip]>,
+    /// The group's smoothing distance `k`; `0` folds to the member's
+    /// own distance.
+    pub k: f32,
+    /// This member's index in `members`.
+    pub ord: u32,
+    /// The member's `outer` extent: the composite's coverage is the
+    /// antialiased ownership weight times the coverage of
+    /// `field < outer`.
+    pub outer: f32,
+}
+
+/// A projected composite's payload, boxed inside [`Item::Project`].
+#[derive(Clone)]
+pub struct ProjectItem {
+    /// The local image and its placement.
+    pub placed: crate::render::projective::Placed,
+    /// The opacity multiplier.
+    pub opacity: f32,
+    /// The ancestor clip in force; the layer's own clip is already in the
+    /// local image.
+    pub clip: Option<ClipRef>,
+}
+
+/// The capture item's payload, boxed inside [`Item::Capture`].
+#[derive(Clone)]
+pub struct CaptureItem {
+    /// The group's renderer key (`BackdropId::raw()`).
+    pub group: u64,
+    /// The capture scale `s`: `region` lies on the capture grid, whose
+    /// texel `i` covers the device interval `[i/s, (i+1)/s)`.
+    pub scale: cherenkov::CaptureScale,
+    /// The pyramid's level count: levels `1..n` reduce the filtered
+    /// level 0 by `pyramid`'s kernel.
+    pub levels: u32,
+    /// The kernel a level reduces its parent with: exact 2×2 boxes, or
+    /// the `[1, 5, 10, 10, 5, 1] / 32` binomial kernel centred on the same
+    /// boxes.
+    pub pyramid: cherenkov::CapturePyramid,
+    /// The group's working space (`BackdropSpec::blend_space`): the
+    /// capture's area mean, its chain, its pyramid and every member read
+    /// average premultiplied values in it, and reads return the linear
+    /// working space.
+    pub space: cherenkov::BlendSpace,
+    /// The capture rect in capture texels (`union ⊕ apron` on the grid,
+    /// clamped to the grid's extent).
+    pub region: IRect,
+    /// The members' union rows, clamped to the surface.
+    pub union: IRect,
+    /// The apron rows, in capture texels, the chain reads past the
+    /// sampled rows.
+    pub apron: usize,
+    /// Extra rows around each band the capture covers: the deepest
+    /// enclosing filter-scope apron plus effect sampling reach over the
+    /// group's members.
+    pub reach: usize,
+    /// Whether members displace their capture reads.
+    pub displaced: bool,
+    /// The prepared chain, when the group is filtered.
+    pub filter: Option<FrameFilter>,
+    /// Looked-through isolation levels on the stack flattened over the
+    /// nearest semantic level: pass-through and `opacity < 1` levels
+    /// alike, composited as though each were at full opacity.
+    pub flatten: usize,
+}
+
+/// How a backdrop sample composites into the member's layer. `None` is
+/// the plain sample; the rest are #116's per-member effects.
+#[derive(Clone, Debug)]
+pub enum SampleEffect {
+    /// Composite the captured rows unchanged under the member clip.
+    None,
+    /// A 3×4 premultiplied colour matrix (filtrate `ColorMatrix`
+    /// layout): `dot(row, c)` per channel, alpha passes through.
+    Color([f32; 12]),
+    /// An effect reading the member clip's signed distance.
+    Sdf(SdfEffect),
+    /// A registered backdrop effect shader. Boxed: rare, and `Item` stays
+    /// within its size budget.
+    #[cfg(feature = "shaders")]
+    Shader(Box<ShaderEffect>),
+}
+
+/// A backdrop effect shader bound to one member: the program, its
+/// uniforms, and the member inputs its `BackdropPixel` reads.
+#[cfg(feature = "shaders")]
+#[derive(Clone, Debug)]
+pub struct ShaderEffect {
+    pub program: Arc<super::shader::BackdropProgram>,
+    /// The uniforms packed four per `vec4`, zero-filled.
+    pub params: Arc<[f32; super::shader::PARAM_SLOTS]>,
+    /// The member's own clip, whose distance is `px.own_sdf` (and `px.sdf`
+    /// outside a union).
+    pub clip: Arc<BoxClip>,
+    /// Device → member-local affine in kurbo coefficient order:
+    /// `px.local`.
+    pub local: [f32; 6],
+    /// The member's unclipped device bounds size: `px.size`.
+    pub size: [f32; 2],
+    /// The member's recording scale: `px.scale`.
+    pub scale: f32,
+    /// The registered source's reach in device pixels.
+    pub reach: f32,
+}
+
+/// An SDF-reading member effect and the clip boundary it reads.
+#[derive(Clone, Debug)]
+pub struct SdfEffect {
+    /// The member clip the distance and normal are read from.
+    pub clip: Arc<BoxClip>,
+    /// Which effect the distance and normal feed.
+    pub kind: SdfKind,
+}
+
+/// The SDF effect evaluated per member pixel (the engine's
+/// [`cherenkov::Refraction`] and [`cherenkov::Rim`]).
+#[derive(Clone, Copy, Debug)]
+pub enum SdfKind {
+    /// `q = p - n · strength · t²` with `t = clamp(1 + d / depth, 0, 1)`.
+    Refraction {
+        /// Fade depth inside the edge, device pixels.
+        depth: f32,
+        /// Maximum displacement at the edge, device pixels.
+        strength: f32,
+    },
+    /// `c.rgb += color.rgb · color.a · gain · t²` with
+    /// `t = clamp(1 + d / width, 0, 1)`, alpha unchanged.
+    Rim {
+        /// Rim width inside the edge, device pixels.
+        width: f32,
+        /// Highlight colour, straight-alpha linear Display P3.
+        color: [f32; 4],
+        /// Highlight gain.
+        gain: f32,
+    },
+    /// The trilinear `backdrop_sample_level` at
+    /// `interior + (edge − interior)·t` with
+    /// `t = clamp(1 + d / depth, 0, 1)`.
+    Level {
+        /// Fade depth inside the edge, device pixels.
+        depth: f32,
+        /// Pyramid level at the clip's edge (`t = 1`).
+        edge: f32,
+        /// Pyramid level deep inside the clip (`t = 0`).
+        interior: f32,
+    },
+}
+
+pub(super) type FrameFilter = (Arc<dyn Erased + Send + Sync>, Arc<[f32]>);
+
+/// A layer's retained content and device output.
+pub type ContentData = cherenkov::lowering::Content<Op, Emission>;
+
+/// Per-operation device output under its sampled placement.
+pub enum Emission {
+    /// Rasterization items of a drawing operation.
+    Draw(DeviceData<Vec<Item>>),
+    /// Combined coverage of a clipping operation; None clips everything away.
+    Clip(DeviceData<Option<ClipRef>>),
+}
+
+/// Device placement paired with its realized output.
+pub struct DeviceData<T> {
+    transform: Affine,
+    clip: Option<ClipRef>,
+    size: (usize, usize),
+    output: T,
+}
+
+impl<T> DeviceData<T> {
+    /// Heap bytes: the placement's clip mask plus `inner` on the output.
+    pub fn heap_bytes(&self, inner: impl FnOnce(&T) -> u64) -> u64 {
+        self.clip.as_deref().map_or(0, clip_bytes) + inner(&self.output)
+    }
+}
+
+/// Heap bytes of retained clip operands and their sampling boundary.
+pub fn clip_bytes(clip: &ClipMask) -> u64 {
+    match clip {
+        ClipMask::Rect(_) => 0,
+        ClipMask::Geometry { operands, boundary } => {
+            (operands.capacity() * size_of::<Arc<[intersect::Segment]>>()
+                + operands.iter().map(|o| size_of_val(&**o)).sum::<usize>()) as u64
+                + boundary.heap_bytes()
+        }
+    }
+}
+
+/// A glyph mask request lowering emits: everything needed to rasterize
+/// the mask in parallel, plus the slot the [`Item::Glyph`] reads.
+pub struct GlyphReq {
+    /// The cache key.
+    pub key: crate::render::glyph::GlyphKey,
+    /// The engine font id.
+    pub font: u64,
+    /// The glyph index.
+    pub glyph_id: u32,
+    /// The run's size.
+    pub size: f32,
+    /// The quantized subpixel offset of the glyph origin.
+    pub subpixel: (f32, f32),
+    /// The device transform's 2x2 as f32.
+    pub matrix: [f32; 4],
+    /// The run's variation coordinates.
+    pub coords: std::sync::Arc<[i16]>,
+    /// The slot the emitted item reads.
+    pub slot: crate::render::glyph::GlyphSlot,
+}
+
+/// The union group's member cap: the per-pixel fold keeps every member's
+/// distance and gradient in registers, matching the GPU shader's arrays.
+const UNION_MAX_MEMBERS: usize = cherenkov::BackdropUnion::MAX_MEMBERS as usize;
+
+/// The plan for one backdrop group: the capture point (its first member
+/// in paint order), the capture rect and every member's device bounds for
+/// its sampling composite.
+struct BackdropPlan {
+    /// The first member layer in paint order — its entry emits the capture.
+    first: LayerId,
+    /// The union of members' clip bounds before the footprint apron.
+    union: Rect,
+    /// The union's device rows, clamped to the surface.
+    union_rows: (usize, usize),
+    /// The group's capture spec (scale and level count).
+    spec: cherenkov::BackdropSpec,
+    /// The capture rect in capture texels.
+    region: IRect,
+    /// The chain's apron in texel rows around the sampled rows.
+    apron: usize,
+    /// The device rows the capture's window reaches past the sampled
+    /// rows: `apron` for a 1:1 capture, the texel window mapped back to
+    /// device rows otherwise.
+    device_apron: usize,
+    /// Extra rows around each band the capture must cover: the deepest
+    /// member scope apron plus effect reach over the members.
+    reach: usize,
+    /// The prepared chain, when the group is filtered.
+    filter: Option<FrameFilter>,
+    /// Each member layer's plan entry, keyed by layer.
+    members: FxHashMap<LayerId, Member>,
+    /// The members' layers in paint order: the union fold and the
+    /// ownership tie-break are index-stable.
+    order: Vec<LayerId>,
+    /// The group's union smoothing distance; `0` when the group has no
+    /// union field.
+    union_k: f32,
+    /// Every member's clip box in `order`, when the group unions.
+    union_members: Arc<[BoxClip]>,
+    /// The innermost filter scope the capture item lands in.
+    scope: Option<LayerId>,
+}
+
+impl BackdropPlan {
+    /// A fresh plan for the group `first` joins: the member's bounds
+    /// seed the footprint union, the member's scope seeds the capture
+    /// scope, and every tracking map starts empty.
+    fn new(
+        first: LayerId,
+        member: Rect,
+        spec: cherenkov::BackdropSpec,
+        filter: Option<FrameFilter>,
+        scope: Option<LayerId>,
+    ) -> Self {
+        Self {
+            first,
+            union: member,
+            union_rows: (0, 0),
+            spec,
+            region: IRect {
+                x0: 0,
+                y0: 0,
+                x1: 0,
+                y1: 0,
+            },
+            apron: 0,
+            device_apron: 0,
+            reach: 0,
+            filter,
+            members: FxHashMap::default(),
+            order: Vec::new(),
+            union_k: 0.0,
+            union_members: Arc::from([]),
+            scope,
+        }
+    }
+
+    /// Places the capture on a `width × h` surface: the union's rows, and
+    /// the union on the capture grid inflated by the chain `footprint`'s
+    /// apron in texels — plus one texel for the bilinear taps of a reduced
+    /// capture, and on a levelled group every deeper level's read
+    /// footprint inflated by the apron — clamped to the grid's extent and
+    /// rounded out to whole texels.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "footprints are non-negative and bounded by the surface height"
+    )]
+    fn place(&mut self, footprint: filtrate_core::Footprint, (width, h): (usize, usize)) {
+        let (uw, uh) = (self.union.width(), self.union.height());
+        let y0 = self.union.y0.floor().max(0.0) as usize;
+        let y1 = (self.union.y1.ceil().min(h as f64) as usize).max(y0);
+        self.union_rows = (y0, y1.min(h));
+        if uw.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater)
+            || uh.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater)
+        {
+            return;
+        }
+        // The footprint resolves against the capture's size in texels.
+        let s = f64::from(self.spec.scale().get());
+        let levels = self.spec.levels().get();
+        let a = (f64::from(footprint.extent).mul_add(uw.max(uh) * s, f64::from(footprint.pixels))
+            / 2.0f64.mul_add(-f64::from(footprint.extent), 1.0))
+        .ceil();
+        // A reduced capture is sampled bilinearly at `p · s`: an edge
+        // pixel's second tap lies one texel past the union on the grid, so
+        // the region covers that texel too.
+        let taps = if self.spec.scale().is_full() {
+            0.0
+        } else {
+            1.0
+        };
+        // The capture grid's extent in texels: `⌈len · s⌉`.
+        let (gw, gh) = ((width as f64 * s).ceil(), (h as f64 * s).ceil());
+        let (mut x0, mut y0, mut x1, mut y1) = (
+            self.union.x0.mul_add(s, -a - taps).floor().max(0.0),
+            self.union.y0.mul_add(s, -a - taps).floor().max(0.0),
+            self.union.x1.mul_add(s, a + taps).ceil().min(gw),
+            self.union.y1.mul_add(s, a + taps).ceil().min(gh),
+        );
+        // Levels 1..n: a bilinear read at level `k` taps level-k texels
+        // `floor(q·s/2^k − 0.5)` through `+1`, and level-k texel `t`
+        // reduces capture texels `[2^k·t, 2^k·(t+1))`. Each level's read
+        // footprint is inflated by the chain's apron so every filtered
+        // texel it reduces is computed from uncut chain input: a member's
+        // result never depends on the other members.
+        for k in 1..levels {
+            let div = f64::from(1u32 << k);
+            x0 = x0
+                .min((self.union.x0 * s / div - 0.5).floor().mul_add(div, -a))
+                .max(0.0);
+            y0 = y0
+                .min((self.union.y0 * s / div - 0.5).floor().mul_add(div, -a))
+                .max(0.0);
+            x1 = x1
+                .max(((self.union.x1 * s / div - 0.5).floor() + 2.0).mul_add(div, a))
+                .min(gw);
+            y1 = y1
+                .max(((self.union.y1 * s / div - 0.5).floor() + 2.0).mul_add(div, a))
+                .min(gh);
+        }
+        // The region's origin sits on the deepest level's grid so level
+        // `k` texel `(i, j)` covers capture texels `[2^k·i, 2^k·(i+1))`;
+        // its far edge stays grid-clipped.
+        let grid = f64::from(1u32 << (levels - 1));
+        x0 = (x0 / grid).floor() * grid;
+        y0 = (y0 / grid).floor() * grid;
+        x1 = ((x1 / grid).ceil() * grid).min(gw);
+        y1 = ((y1 / grid).ceil() * grid).min(gh);
+        let region = IRect {
+            x0: x0 as i32,
+            y0: y0 as i32,
+            x1: x1 as i32,
+            y1: y1 as i32,
+        };
+        self.apron = a.min(gh) as usize;
+        self.device_apron = if self.spec.scale().is_full() && levels == 1 {
+            self.apron
+        } else {
+            // The texel window reaches `apron` texels past the kept
+            // texels, which reach the sampled rows' bilinear taps plus a
+            // margin and, on a levelled capture, the deepest level's
+            // parent rows (see `raster::capture_rows`). All within
+            // `(apron + margin + 2 + extra) / s` device rows of them.
+            //
+            // `extra` is 1.5 blocks: a deepest-level texel is a block of
+            // `B = 2^(n−1)` capture texels. A sample at capture row `p`
+            // sits at level row `p / B − 0.5`, so its bilinear taps are
+            // level rows `i = ⌊p / B − 0.5⌋` and `i + 1`, whose parent
+            // rows span `[i·B, (i + 2)·B)`. With `i ≥ p / B − 1.5` and
+            // `i + 2 ≤ p / B + 1.5`, that is within `1.5·B` capture rows
+            // of `p` on either side: the block plus the half-block the
+            // taps sit further out. A Gaussian pyramid's level-`k` texel
+            // also reads two more level-`k − 1` texels on each side of its
+            // box, so folding the kept rows down to level 0 adds
+            // `2·Σ 2^(k−1) = 2·(B − 1)` rows.
+            let extra = if levels > 1 {
+                let block = 1usize << (levels - 1);
+                let widening = match self.spec.capture_pyramid() {
+                    cherenkov::CapturePyramid::Box => 0,
+                    cherenkov::CapturePyramid::Gaussian => 2 * (block - 1),
+                };
+                block + block.div_ceil(2) + widening
+            } else {
+                0
+            };
+            (((self.apron + super::raster::SAMPLE_MARGIN + 2 + extra) as f64 / s).ceil() as usize)
+                .min(h)
+        };
+        if region.x0 < region.x1 && region.y0 < region.y1 {
+            self.region = region;
+        }
+    }
+}
+
+/// One backdrop member's plan entry.
+struct Member {
+    /// The member's device-space clip bounds.
+    bounds: Rect,
+    /// The member's draw bounds: `bounds` further inflated by the
+    /// union's `r(n)` and `outer` plus 1.5px of antialiasing, so bridge
+    /// pixels between members are captured and painted.
+    draw: Rect,
+    /// The member's effect sampling reach — it inflates the capture
+    /// footprint, never the draw bounds.
+    reach: f64,
+    /// The member's own clip's analytic box, when the group unions its
+    /// members or the member draws an `outer` band.
+    field: Option<BoxClip>,
+    /// The member's `outer` extent.
+    outer: f32,
+    /// The member's index in the group's paint order.
+    ord: u32,
+    /// The innermost enclosing filter scope.
+    scope: Option<LayerId>,
+    /// The member's resolved per-member effect; `None` when its clip
+    /// has no area and the member samples nothing.
+    effect: Option<SampleEffect>,
+}
+
+/// The lowering walk state for one surface frame.
+pub struct Lowering<'a, 'b> {
+    pub damage_layers: Vec<super::damage::Layer>,
+    pub damage_rows: Vec<(usize, usize)>,
+    content_damage: Option<std::ops::Range<usize>>,
+    items: &'a mut Vec<Item>,
+    filters: Option<&'a mut Registry>,
+    frame: FrameId,
+    used_filters: FxHashSet<u64>,
+    /// Backdrop groups referenced by members this frame.
+    used_groups: FxHashSet<u64>,
+    /// Glyph mask requests emitted during the walk.
+    pub glyphs: Vec<GlyphReq>,
+    pub glyphs_rasterized: u32,
+    fonts: &'b mut FxHashMap<u64, super::font::Font>,
+    bitmap_fonts: &'b FxHashMap<u64, Arc<super::bitmap::BitmapFont>>,
+    bitmap_cache: &'b mut super::bitmap::BitmapCache,
+    geometry: &'b mut GeometryCache,
+    /// Renderer-owned build scratch for retained geometry: persists
+    /// across frames so a built draw costs one allocation.
+    edge_scratch: &'b mut EdgeScratch,
+    width: usize,
+    height: usize,
+    transform: Affine,
+    /// Whether an enclosing layer's transform or scroll track is running;
+    /// content then snaps its translation to the ¼-pixel grid.
+    animating: bool,
+    clip: Option<ClipRef>,
+    /// Whether each open isolation level is looked through by a backdrop
+    /// capture (`true` when its blend is `Normal` in the linear space —
+    /// pass-through and translucent levels alike), in emission order.
+    iso_kinds: Vec<bool>,
+    /// The storage space of each open isolation level, in emission
+    /// order, parallel to [`Lowering::iso_kinds`].
+    iso_spaces: Vec<cherenkov::BlendSpace>,
+    /// The storage space of the raster the walk lowers onto: the
+    /// surface's storage space, or the linear space of a projective
+    /// layer's local image.
+    root_space: cherenkov::BlendSpace,
+    /// Backdrop groups planned before lowering, by group id.
+    backdrops: FxHashMap<u64, BackdropPlan>,
+    /// The apron rows each filtered layer's scope needs beyond its own
+    /// footprint, by layer: a scope that directly contains captures grows
+    /// to cover their `apron + reach`.
+    scope_aprons: FxHashMap<LayerId, usize>,
+    anchor_scratch: &'a mut AnchorScratch,
+    /// The planning walk's paint-order counter.
+    plan_order: usize,
+    /// Source commands resolved this frame.
+    pub commands_lowered: u32,
+    /// Content layers composed this frame.
+    pub layers_composed: u32,
+    /// The layer this lowering starts at: the tree root for a surface, or
+    /// a projective layer rendering its local image, with the transform
+    /// that replaces its placement (layer space to texels).
+    local: Option<(LayerId, Affine)>,
+    /// Projective layers' images placed in this raster, by layer.
+    projected: FxHashMap<LayerId, crate::render::projective::Placed>,
+    /// The host CPU's SIMD level the coverage passes dispatch under.
+    level: fearless_simd::Level,
+    /// The renderer's worker pool: the coverage masks and convolutions
+    /// below install their parallel work on it, never the global pool.
+    pool: &'a rayon::ThreadPool,
+    /// The registered shader paints a draw's shader leaf renders through;
+    /// `None` renders none (a shader leaf is then an error).
+    #[cfg(feature = "shaders")]
+    pub shader_paints: Option<&'a mut super::shader::ShaderPaints>,
+    /// Whether a draw this lowering realized renders an animated shader
+    /// paint: its surface then renders again every frame.
+    #[cfg(feature = "shaders")]
+    pub animated_shaders: bool,
+}
+
+/// Reusable state for anchor planning and capture emission, owned by the
+/// surface and lent to each lowering so its capacity carries across
+/// frames.
+#[derive(Default)]
+pub(super) struct AnchorScratch {
+    /// The layers the surface's groups anchor at.
+    refs: FxHashSet<LayerId>,
+    /// Each anchor's compositing canvas (its innermost semantic level),
+    /// paint-order index and innermost filter scope.
+    pos: FxHashMap<LayerId, (Option<LayerId>, usize, Option<LayerId>)>,
+    /// Each anchored group's members as `(group, canvas, paint order)`,
+    /// pushed in paint order.
+    members: Vec<(u64, Option<LayerId>, usize)>,
+    /// `(anchor, group)` capture links, sorted for range lookup.
+    links: Vec<(LayerId, u64)>,
+    /// The layers that show nothing, and which of them the walk skips.
+    hidden: HiddenLayers,
+}
+
+impl AnchorScratch {
+    fn clear(&mut self) {
+        self.refs.clear();
+        self.pos.clear();
+        self.members.clear();
+        self.links.clear();
+        self.hidden.clear();
+    }
+
+    pub(super) fn heap_bytes(&self) -> u64 {
+        (self.refs.capacity() * size_of::<LayerId>()
+            + self.pos.capacity()
+                * size_of::<(LayerId, (Option<LayerId>, usize, Option<LayerId>))>()
+            + self.members.capacity() * size_of::<(u64, Option<LayerId>, usize)>()
+            + self.links.capacity() * size_of::<(LayerId, u64)>()) as u64
+            + self.hidden.heap_bytes()
+    }
+}
+
+/// Binds the registered program of a `Shader` backdrop effect to its
+/// member: `reach` is the effect's sampling reach, `clip` the member
+/// clip's box (a path clip has none, the `backdrop-effect-sdf-path`
+/// error), `transform` the member layer's local-to-device transform and
+/// `bounds` its clip's device bounds.
+#[cfg(feature = "shaders")]
+fn shader_effect(
+    sample: &cherenkov::BackdropSample,
+    shader: &cherenkov::BackdropShaderEffect,
+    reach: f32,
+    clip: Option<BoxClip>,
+    registry: &Registry,
+    transform: Affine,
+    bounds: Rect,
+) -> Result<ShaderEffect, RenderError> {
+    let program = registry.backdrop_shader(shader.shader).ok_or_else(|| {
+        RenderError::Render(format!(
+            "backdrop shader {:?} is not registered",
+            shader.shader
+        ))
+    })?;
+    let mut params = [0.0; super::shader::PARAM_SLOTS];
+    params
+        .get_mut(..shader.uniforms.len())
+        .ok_or_else(|| {
+            RenderError::Render(format!(
+                "a backdrop shader takes at most {} uniforms, got {}",
+                super::shader::PARAM_SLOTS,
+                shader.uniforms.len()
+            ))
+        })?
+        .copy_from_slice(&shader.uniforms);
+    let clip = clip.ok_or(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH))?;
+    if transform.determinant().abs() < 1e-12 || !transform.is_finite() {
+        return Err(RenderError::Render(
+            "a backdrop shader member's transform is not invertible".into(),
+        ));
+    }
+    #[expect(clippy::cast_possible_truncation, reason = "shader inputs are f32")]
+    let local = transform.inverse().as_coeffs().map(|v| v as f32);
+    #[expect(clippy::cast_possible_truncation, reason = "shader inputs are f32")]
+    let size = [bounds.width() as f32, bounds.height() as f32];
+    Ok(ShaderEffect {
+        program: Arc::clone(program),
+        params: Arc::new(params),
+        clip: Arc::new(clip),
+        local,
+        size,
+        scale: sample.recording_scale().get(),
+        reach,
+    })
+}
+
+/// Resolves a member's engine effect into a [`SampleEffect`], also
+/// returning its sampling reach (the member's bounds grow by it).
+/// `clip` is the member clip's box; a path clip has none and gives SDF
+/// effects no analytic boundary — the same `backdrop-effect-sdf-path`
+/// error as the GPU slice. A `Shader` effect binds the registered program
+/// to the member through [`shader_effect`].
+fn member_effect(
+    sample: &cherenkov::BackdropSample,
+    clip: Option<BoxClip>,
+    registry: &Registry,
+    transform: Affine,
+    bounds: Rect,
+) -> Result<(SampleEffect, f64), RenderError> {
+    let Some(effect) = sample.effect() else {
+        return Ok((SampleEffect::None, 0.0));
+    };
+    let kind = match effect {
+        cherenkov::BackdropEffect::Color(m) => {
+            return if m.0.iter().all(|v| v.is_finite()) {
+                Ok((SampleEffect::Color(m.0), 0.0))
+            } else {
+                Err(RenderError::Render(
+                    "backdrop colour effect has a non-finite matrix entry".into(),
+                ))
+            };
+        }
+        cherenkov::BackdropEffect::Refraction(r) => {
+            if !(r.depth.is_finite()
+                && r.depth > 0.0
+                && r.strength.is_finite()
+                && r.strength >= 0.0)
+            {
+                return Err(RenderError::Render(
+                    "backdrop refraction needs depth > 0 and strength >= 0, finite".into(),
+                ));
+            }
+            SdfKind::Refraction {
+                depth: r.depth,
+                strength: r.strength,
+            }
+        }
+        cherenkov::BackdropEffect::Rim(r) => {
+            if !(r.width.is_finite()
+                && r.width > 0.0
+                && r.gain.is_finite()
+                && r.color.iter().all(|v| v.is_finite()))
+            {
+                return Err(RenderError::Render(
+                    "backdrop rim needs width > 0 and a finite colour and gain".into(),
+                ));
+            }
+            SdfKind::Rim {
+                width: r.width,
+                color: r.color,
+                gain: r.gain,
+            }
+        }
+        cherenkov::BackdropEffect::Level(r) => SdfKind::Level {
+            depth: r.depth(),
+            edge: r.edge(),
+            interior: r.interior(),
+        },
+        #[cfg(feature = "shaders")]
+        cherenkov::BackdropEffect::Shader(shader) => {
+            let effect = shader_effect(
+                sample,
+                shader,
+                effect.reach(),
+                clip,
+                registry,
+                transform,
+                bounds,
+            )?;
+            let reach = f64::from(effect.reach);
+            return Ok((SampleEffect::Shader(Box::new(effect)), reach));
+        }
+        #[cfg(not(feature = "shaders"))]
+        cherenkov::BackdropEffect::Shader(_) => {
+            let _ = (registry, transform, bounds);
+            return Err(RenderError::Unsupported(names::BACKDROP_SHADER));
+        }
+    };
+    let clip = clip.ok_or(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH))?;
+    Ok((
+        SampleEffect::Sdf(SdfEffect {
+            clip: Arc::new(clip),
+            kind,
+        }),
+        f64::from(effect.reach()),
+    ))
+}
+
+/// Flattens `path` (already in device space) into directed edges for
+/// coverage rasterization, implicit-close applied: horizontal edges
+/// carry no area and drop out.
+#[expect(clippy::cast_possible_truncation, reason = "geometry is f32")]
+fn flatten_edges(path: BezPath, tol: f64) -> Vec<Edge> {
+    let mut edges = Vec::new();
+    let mut cur = Point::ZERO;
+    let mut start = Point::ZERO;
+    let close = |edges: &mut Vec<Edge>, cur: Point, start: Point| {
+        // Fills implicitly close open subpaths.
+        if cur != start {
+            edges.push(Edge {
+                x0: cur.x as f32,
+                y0: cur.y as f32,
+                x1: start.x as f32,
+                y1: start.y as f32,
+            });
+        }
+    };
+    kurbo::flatten(path, tol, |el| match el {
+        PathEl::MoveTo(p) => {
+            close(&mut edges, cur, start);
+            cur = p;
+            start = p;
+        }
+        PathEl::LineTo(p) => {
+            edges.push(Edge {
+                x0: cur.x as f32,
+                y0: cur.y as f32,
+                x1: p.x as f32,
+                y1: p.y as f32,
+            });
+            cur = p;
+        }
+        PathEl::QuadTo(..) | PathEl::CurveTo(..) => {
+            // `kurbo::flatten` never emits curves.
+            debug_assert!(false, "flatten emits only lines");
+        }
+        PathEl::ClosePath => {
+            close(&mut edges, cur, start);
+            cur = start;
+        }
+    });
+    close(&mut edges, cur, start);
+    #[expect(clippy::float_cmp, reason = "horizontal edges carry no area")]
+    edges.retain(|e| e.y0 != e.y1);
+    edges
+}
+
+/// A complete, consistently directed filled boundary, including the
+/// horizontals that the area-only edge stream omits.
+fn boundary_edges(edges: &[Edge], rule: FillRule) -> Vec<intersect::Segment> {
+    intersect::filled_boundary(edges, rule)
+}
+
+/// A raw draw in its translation-normalized frame. The same construction
+/// feeds retained stroke geometry and, lazily, geometric clipping.
+fn draw_boundary(
+    shape: &ShapeData,
+    stroke: Option<&kurbo::Stroke>,
+    transform: Affine,
+    frame: &Frame,
+) -> Option<(Vec<Edge>, FillRule)> {
+    let tol_u = FLATTEN_TOL / transform.spectral_norm().max(1e-12);
+    let (path, rule) = if let Some(stroke) = stroke {
+        let path = match shape {
+            ShapeData::Line(l) => {
+                let mut p = BezPath::new();
+                p.move_to(l.p0);
+                p.line_to(l.p1);
+                p
+            }
+            shape => shape_outline(shape, tol_u)?.0,
+        };
+        (
+            cherenkov_stroke::stroke(frame.anchored(path), stroke, tol_u),
+            FillRule::NonZero,
+        )
+    } else {
+        let (path, rule) = shape_outline(shape, tol_u)?;
+        (frame.anchored(path), rule)
+    };
+    Some((flatten_edges(frame.map(path), FLATTEN_TOL), rule))
+}
+
+/// Exact stack boundary for sampling consumers. Filled draw boundaries
+/// join this intersection before their own antialiasing instead.
+fn clip_boundary(operands: &[Arc<[intersect::Segment]>]) -> EdgeTiles {
+    let Some((first, rest)) = operands.split_first() else {
+        return intersection_tiles(&[]);
+    };
+    let mut segments = first.to_vec();
+    for operand in rest {
+        segments = intersect::intersect_edges(&segments, FillRule::NonZero, operand);
+    }
+    intersection_tiles(&segments)
+}
+
+/// Beyond this band the draw's and clip's partial coverages cannot meet.
+const CLIP_REACH: f64 = 2.0;
+
+enum DrawClip {
+    Outside,
+    Inside,
+    /// A complete device-space boundary, consistently directed and filled
+    /// under `NonZero`, regardless of the original draw's fill rule.
+    Intersected(Vec<intersect::Segment>),
+}
+
+/// Resolve a draw against geometric operands only where their boundaries
+/// can share partial pixels. Retained geometry and integer placement stay
+/// untouched on the inside fast path.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "placement-grid coordinates fit within f64's integer precision"
+)]
+fn intersect_draw(
+    edges: &EdgeTiles,
+    offset: Fixed,
+    operands: &[Arc<[intersect::Segment]>],
+    boundary: impl FnOnce() -> Option<(Vec<Edge>, FillRule)>,
+) -> DrawClip {
+    let [ox, oy] = offset.units().map(|v| v as f64 / 65536.0);
+    let bounds = edges.bounds();
+    let mut boundary = Some(boundary);
+    let mut segments: Option<Vec<intersect::Segment>> = None;
+    for operand in operands {
+        let clip = operand.as_ref();
+        let (x0, y0, x1, y1) = segments.as_ref().map_or_else(
+            || {
+                (
+                    bounds[0] as f64 / 65536.0 + ox,
+                    bounds[1] as f64 / 65536.0 + oy,
+                    bounds[2] as f64 / 65536.0 + ox,
+                    bounds[3] as f64 / 65536.0 + oy,
+                )
+            },
+            |segments| {
+                segments.iter().fold(
+                    (
+                        f64::INFINITY,
+                        f64::INFINITY,
+                        f64::NEG_INFINITY,
+                        f64::NEG_INFINITY,
+                    ),
+                    |(x0, y0, x1, y1), &(ax, ay, bx, by)| {
+                        (
+                            x0.min(ax.min(bx)),
+                            y0.min(ay.min(by)),
+                            x1.max(ax.max(bx)),
+                            y1.max(ay.max(by)),
+                        )
+                    },
+                )
+            },
+        );
+        let bounds = (
+            x0 - CLIP_REACH,
+            y0 - CLIP_REACH,
+            x1 + CLIP_REACH,
+            y1 + CLIP_REACH,
+        );
+        if !intersect::boundary_touches(clip, bounds) {
+            if intersect::point_inside(clip, x0.midpoint(x1), y0.midpoint(y1)) {
+                continue;
+            }
+            return DrawClip::Outside;
+        }
+        let current = if let Some(segments) = segments.take() {
+            segments
+        } else {
+            let Some((full, rule)) = boundary.take().and_then(|b| b()) else {
+                return DrawClip::Outside;
+            };
+            boundary_edges(&full, rule)
+                .into_iter()
+                .map(|e| intersect::placed(e, ox, oy))
+                .collect()
+        };
+        let intersection = intersect::intersect_edges(&current, FillRule::NonZero, clip);
+        if intersection.is_empty() {
+            return DrawClip::Outside;
+        }
+        segments = Some(intersection);
+    }
+    segments.map_or(DrawClip::Inside, DrawClip::Intersected)
+}
+
+/// Transient intersections use the placement grid, not retained geometry's
+/// coarser tile quantization. Compile their visible intervals once, then
+/// let the unchanged sparse rasterizer integrate them.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "intersection coordinates are rounded to the placement grid"
+)]
+fn intersection_boundaries(segments: &[intersect::Segment]) -> Vec<IntegerEdge> {
+    let raw: Vec<_> = segments
+        .iter()
+        .map(|&(x0, y0, x1, y1)| {
+            let at = |v: f64| (v * 65536.0).round() as i64;
+            IntegerEdge::new(at(x0), at(y0), at(x1), at(y1))
+        })
+        .collect();
+    super::topology::Sweep::default().boundaries(&raw, FillRule::NonZero)
+}
+
+fn intersection_tiles(segments: &[intersect::Segment]) -> EdgeTiles {
+    EdgeTiles::from_boundaries(&intersection_boundaries(segments))
+}
+
+/// Stroke construction shared by realization and geometry-change benchmarks.
+fn compile_stroke(
+    geometry: &GeometryCache,
+    scratch: &mut EdgeScratch,
+    shape: &ShapeData,
+    stroke: &kurbo::Stroke,
+    transform: Affine,
+    frame: &Frame,
+) -> Option<Resolved> {
+    geometry.resolve(shape, Some(stroke), transform, scratch, || {
+        draw_boundary(shape, Some(stroke), transform, frame)
+    })
+}
+
+/// One retained stroke whose next realization changes its linear transform.
+#[cfg(any(test, feature = "testing"))]
+#[derive(Debug)]
+pub struct GeometryChange {
+    shape: ShapeData,
+    stroke: kurbo::Stroke,
+    retained: EdgeTiles,
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl GeometryChange {
+    /// Builds the initial realization outside the measured change.
+    ///
+    /// # Panics
+    /// Panics if the supplied benchmark path has no stroke outline.
+    #[must_use]
+    pub fn new(path: BezPath, stroke: kurbo::Stroke) -> Self {
+        let shape = ShapeData::Path {
+            elements: path.into_elements().into(),
+            rule: FillRule::NonZero,
+        };
+        let frame = Frame::new(&shape, Some(&stroke), Affine::IDENTITY);
+        let retained = compile_stroke(
+            &GeometryCache::default(),
+            &mut EdgeScratch::default(),
+            &shape,
+            &stroke,
+            Affine::IDENTITY,
+            &frame,
+        )
+        .expect("benchmark stroke has an outline")
+        .edges;
+        Self {
+            shape,
+            stroke,
+            retained,
+        }
+    }
+
+    /// Measures the production stroke, flatten, quantize and topology path,
+    /// including scratch allocation and replacement of the old boundary stream.
+    ///
+    /// # Panics
+    /// Panics if the transformed benchmark path has no stroke outline.
+    #[must_use]
+    pub fn recompile(mut self, transform: Affine) -> Self {
+        let frame = Frame::new(&self.shape, Some(&self.stroke), transform);
+        self.retained = compile_stroke(
+            &GeometryCache::default(),
+            &mut EdgeScratch::default(),
+            &self.shape,
+            &self.stroke,
+            transform,
+            &frame,
+        )
+        .expect("benchmark stroke has an outline")
+        .edges;
+        self
+    }
+}
+
+/// Offers a draw's geometry before its realization is dropped: a fill
+/// or a stroke realized as one draw.
+fn offer(offers: &mut Offers<'_>, op: &Op, data: &DeviceData<Vec<Item>>) {
+    // Intersected draws hold device geometry, not reusable frame geometry.
+    if matches!(data.clip.as_deref(), Some(ClipMask::Geometry { .. })) {
+        return;
+    }
+    let (local, shape, stroke) = match op {
+        Op::Fill { local, shape, .. } => (local, shape, None),
+        Op::Stroke {
+            local,
+            shape,
+            stroke,
+            ..
+        } => (local, shape, Some(stroke)),
+        _ => return,
+    };
+    if let [Item::Draw { edges, .. }] = data.output.as_slice() {
+        offers.offer(shape, stroke, data.transform * *local, edges);
+    }
+}
+
+/// Offers the geometry of every current realization of `content`,
+/// which is about to be dropped, to the next lowering.
+pub fn harvest(geometry: &mut GeometryCache, content: &ContentData) {
+    let Some((ops, _)) = content.current() else {
+        return;
+    };
+    let mut offers = geometry.offers(ops.len());
+    for (op, realization) in ops.iter().zip(content.realizations()) {
+        if realization.valid
+            && let Some(Emission::Draw(data)) = &realization.data
+        {
+            offer(&mut offers, op, data);
+        }
+    }
+}
+
+/// The bounding box of `edges` placed at `offset`, intersected with the
+/// `w` × `h` target. `edges` retains the decoded extrema, so the box is
+/// O(1).
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "clamped to the target, whose sides fit u16"
+)]
+fn bbox_of(edges: &EdgeTiles, offset: super::tiles::Fixed, w: usize, h: usize) -> DrawBox {
+    let [ox, oy] = offset.units();
+    let [x0, y0, x1, y1] = edges.bounds();
+    // Rounded addition is monotonic, so placing the extrema bounds every
+    // placed coordinate `e + offset`.
+    let (x0, y0, x1, y1) = (x0 + ox, y0 + oy, x1 + ox, y1 + oy);
+    let (w, h) = (w as i64, h as i64);
+    DrawBox {
+        x0: (x0 >> 16).clamp(0, w) as u16,
+        y0: (y0 >> 16).clamp(0, h) as u16,
+        x1: ((x1 + 65535) >> 16).clamp(0, w) as u16,
+        y1: ((y1 + 65535) >> 16).clamp(0, h) as u16,
+    }
+}
+
+/// Whether the transform's 2x2 is axis-aligned (`b == c == 0`, or a 90°
+/// rotation with `a == d == 0`).
+fn axis_aligned(transform: Affine) -> bool {
+    let [c0, c1, c2, c3, _, _] = transform.as_coeffs();
+    (c1 == 0.0 && c2 == 0.0) || (c0 == 0.0 && c3 == 0.0)
+}
+
+/// The device-space rectangle of a rect under an axis-aligned transform.
+fn device_rect(t: Affine, r: Rect) -> Rect {
+    let p0 = t * Point::new(r.x0, r.y0);
+    let p1 = t * Point::new(r.x1, r.y1);
+    Rect::new(
+        p0.x.min(p1.x),
+        p0.y.min(p1.y),
+        p0.x.max(p1.x),
+        p0.y.max(p1.y),
+    )
+}
+
+/// The device-space bounding box of `clip` under `transform` — the shape
+/// the merged clip machinery would clip against, any transform. A shape
+/// with no path (`Line`) has no bounds.
+fn clip_device_bounds(transform: Affine, clip: &ShapeData) -> Rect {
+    use kurbo::Shape as _;
+    let Some((path, _)) = shape_outline(clip, FLATTEN_TOL) else {
+        return Rect::ZERO;
+    };
+    let local = path.bounding_box();
+    let corners = [
+        Point::new(local.x0, local.y0),
+        Point::new(local.x1, local.y0),
+        Point::new(local.x0, local.y1),
+        Point::new(local.x1, local.y1),
+    ]
+    .map(|p| transform * p);
+    let (mut min, mut max) = (corners[0], corners[0]);
+    for p in &corners[1..] {
+        min.x = min.x.min(p.x);
+        min.y = min.y.min(p.y);
+        max.x = max.x.max(p.x);
+        max.y = max.y.max(p.y);
+    }
+    Rect::new(min.x, min.y, max.x, max.y)
+}
+
+/// Whether all four edges of `r` are within `1e-6` of integers.
+fn integer_edges(r: Rect) -> Option<IRect> {
+    let close = |v: f64| (v - v.round()).abs() <= 1e-6;
+    if close(r.x0) && close(r.y0) && close(r.x1) && close(r.y1) {
+        Some(IRect {
+            #[expect(clippy::cast_possible_truncation)]
+            x0: r.x0.round() as i32,
+            #[expect(clippy::cast_possible_truncation)]
+            y0: r.y0.round() as i32,
+            #[expect(clippy::cast_possible_truncation)]
+            x1: r.x1.round() as i32,
+            #[expect(clippy::cast_possible_truncation)]
+            y1: r.y1.round() as i32,
+        })
+    } else {
+        None
+    }
+}
+
+impl<'a, 'b> Lowering<'a, 'b> {
+    /// Starts a lowering for a `w` × `h` surface using its output and anchor buffers.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one lowering's inputs travel together"
+    )]
+    pub fn new(
+        buffers: (&'a mut Vec<Item>, &'a mut AnchorScratch),
+        size: (u32, u32),
+        filters: Option<&'a mut Registry>,
+        frame: FrameId,
+        fonts: &'b mut FxHashMap<u64, super::font::Font>,
+        bitmap_fonts: &'b FxHashMap<u64, Arc<super::bitmap::BitmapFont>>,
+        (bitmap_cache, geometry, edge_scratch): (
+            &'b mut super::bitmap::BitmapCache,
+            &'b mut GeometryCache,
+            &'b mut EdgeScratch,
+        ),
+        level: fearless_simd::Level,
+        pool: &'a rayon::ThreadPool,
+    ) -> Self {
+        let (items, anchor_scratch) = buffers;
+        anchor_scratch.clear();
+        Self {
+            items,
+            damage_layers: Vec::new(),
+            damage_rows: Vec::new(),
+            content_damage: Some(0..0),
+            filters,
+            frame,
+            used_filters: FxHashSet::default(),
+            used_groups: FxHashSet::default(),
+            glyphs: Vec::new(),
+            glyphs_rasterized: 0,
+            fonts,
+            bitmap_fonts,
+            bitmap_cache,
+            geometry,
+            edge_scratch,
+            width: size.0 as usize,
+            height: size.1 as usize,
+            transform: Affine::IDENTITY,
+            animating: false,
+            clip: None,
+            iso_kinds: Vec::new(),
+            iso_spaces: Vec::new(),
+            root_space: cherenkov::BlendSpace::Linear,
+            backdrops: FxHashMap::default(),
+            scope_aprons: FxHashMap::default(),
+            anchor_scratch,
+            plan_order: 0,
+            commands_lowered: 0,
+            layers_composed: 0,
+            local: None,
+            projected: FxHashMap::default(),
+            level,
+            pool,
+            #[cfg(feature = "shaders")]
+            shader_paints: None,
+            #[cfg(feature = "shaders")]
+            animated_shaders: false,
+        }
+    }
+
+    /// Renders the local image of projective layer `root` under
+    /// `transform` (layer space to texels) instead of the surface, and
+    /// places nested projective layers' images from `projected`. Without
+    /// a call, the lowering renders the surface from the tree root.
+    pub fn project(
+        &mut self,
+        local: Option<(LayerId, Affine)>,
+        projected: FxHashMap<LayerId, crate::render::projective::Placed>,
+    ) {
+        self.local = local;
+        self.projected = projected;
+    }
+
+    /// Lowers the surface onto a raster storing `space` (the surface's
+    /// storage space); a lowering not given one stores the linear space,
+    /// as a projective layer's local image does.
+    pub const fn storage_space(&mut self, space: cherenkov::BlendSpace) {
+        self.root_space = space;
+    }
+
+    /// The storage space of the level currently being lowered into.
+    fn current_space(&self) -> cherenkov::BlendSpace {
+        self.iso_spaces.last().copied().unwrap_or(self.root_space)
+    }
+
+    /// The layer the walk starts at.
+    fn start(&self, tree: &SurfaceTree) -> LayerId {
+        self.local.map_or_else(|| tree.root(), |(id, _)| id)
+    }
+
+    /// Whether `id` composes by projection into this raster: projective,
+    /// and not the layer whose local image this lowering renders.
+    fn projects(&self, id: LayerId, tree: &SurfaceTree) -> bool {
+        self.local.is_none_or(|(root, _)| root != id) && tree.projective_pose(id).is_some()
+    }
+
+    /// `(transform, content transform)` of `node` under `parent`: the
+    /// local root renders under its texel transform, never its pose.
+    fn placement(
+        &self,
+        id: LayerId,
+        node: &cherenkov::LayerNode,
+        parent: Affine,
+    ) -> (Affine, Affine) {
+        match self.local {
+            Some((root, local)) if root == id => {
+                (local, local * Affine::translate(-node.scroll_offset))
+            }
+            _ => (parent * node.transform, parent * node.content_transform()),
+        }
+    }
+
+    /// Lowers a surface's sampled [`SurfaceTree`]. `caches` holds each
+    /// layer's render-side content; the clear colour is applied by the
+    /// rasterizer, so the lowering emits only the layers' items. `fonts`
+    /// is mutable: lowering fills each font's `COLRv1` node-tree cache.
+    pub fn run(
+        &mut self,
+        surface: SurfaceId,
+        tree: &SurfaceTree,
+        caches: &mut FxHashMap<LayerId, ContentData>,
+        images: &FxHashMap<u64, Arc<super::image::CpuImage>>,
+        text: &cherenkov::TextLayouts,
+    ) -> Result<(), RenderError> {
+        let mut lowerer = super::prepared::Lowerer {
+            images,
+            fonts: &mut *self.fonts,
+            bitmap_fonts: self.bitmap_fonts,
+        };
+        for content in caches.values_mut() {
+            self.commands_lowered += content.prepare(&mut lowerer, text)?.commands;
+        }
+        // The registry borrow must leave `self` for the planning walk.
+        let mut filters = self.filters.take();
+        let planned = filters.as_deref_mut().map_or(Ok(()), |registry| {
+            self.plan_backdrops(tree, surface, registry)
+        });
+        self.filters = filters;
+        planned?;
+        let scratch = &mut *self.anchor_scratch;
+        scratch.hidden.resolve(&scratch.links);
+        self.layer(self.start(tree), tree, caches)
+    }
+
+    pub fn take_used_filters(&mut self) -> FxHashSet<u64> {
+        std::mem::take(&mut self.used_filters)
+    }
+
+    /// The backdrop groups members referenced this frame.
+    pub fn take_used_groups(&mut self) -> FxHashSet<u64> {
+        std::mem::take(&mut self.used_groups)
+    }
+
+    /// One layer of the backdrop planning walk, mirroring `layer`'s
+    /// transform math: the clip sits in `parent * node.transform` space,
+    /// children in `parent * node.content_transform()` space. `scopes`
+    /// holds the enclosing filtered layers, innermost last.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the walk threads both trees and the scope stack"
+    )]
+    fn plan_layer(
+        &mut self,
+        id: LayerId,
+        tree: &SurfaceTree,
+        groups: &mut FxHashMap<u64, super::filter::PreparedBackdrop>,
+        filters: &mut Registry,
+        surface: SurfaceId,
+        parent: Affine,
+        scopes: &mut Vec<LayerId>,
+        (canvas, space): (Option<LayerId>, cherenkov::BlendSpace),
+    ) -> Result<(), RenderError> {
+        let node = tree.layer(id);
+        if self.projects(id, tree) {
+            // Its members plan in its own local lowering; its image composes
+            // here, so the layers around it are walked.
+            self.anchor_scratch.hidden.keep();
+            return Ok(());
+        }
+        self.plan_order += 1;
+        let order = self.plan_order;
+        // A tree with no layer that shows nothing has none to plan.
+        let hiding = self.anchor_scratch.hidden.is_active();
+        if hiding {
+            // A local root's opacity and blend apply where its image composes.
+            let local_root = self.local.is_some_and(|(root, _)| root == id);
+            self.anchor_scratch
+                .hidden
+                .enter(id, !local_root && node.shows_nothing());
+        }
+        if !self.anchor_scratch.refs.is_empty() && self.anchor_scratch.refs.contains(&id) {
+            self.anchor_scratch
+                .pos
+                .insert(id, (canvas, order, scopes.last().copied()));
+            self.anchor_scratch.hidden.anchor(id);
+        }
+        let (transform, children) = self.placement(id, node, parent);
+        if let Some(sample) = &node.backdrop {
+            let gid = sample.group();
+            let g = gid.raw();
+            self.used_groups.insert(g);
+            let prepared = match groups.entry(g) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(filters.prepare_backdrop(surface, gid, self.frame).map_err(
+                        |error| match error {
+                            RenderError::Render(_) => RenderError::Render(format!(
+                                "layer {id:?} samples unknown backdrop group {gid:?}"
+                            )),
+                            other => other,
+                        },
+                    )?)
+                }
+            };
+            let clip = node
+                .clip
+                .as_ref()
+                .ok_or(RenderError::Unsupported(names::BACKDROP_UNCLIPPED))?;
+            self.plan_member(
+                id,
+                sample,
+                clip,
+                transform,
+                prepared,
+                scopes.last().copied(),
+                filters,
+            )?;
+            let anchored = prepared.spec.anchor_layer().is_some();
+            if anchored {
+                self.anchor_scratch.members.push((g, canvas, order));
+            }
+            let captures_here = !anchored && self.backdrops[&g].first == id;
+            self.anchor_scratch.hidden.member(g, captures_here);
+        }
+        // A semantically isolating layer — filtered, blended or in a
+        // space unlike its parent level's — is its children's compositing
+        // canvas; other layers share their parent's.
+        let own_space = node.blend_space.unwrap_or(space);
+        let canvas =
+            if node.filter.is_some() || node.blend != BlendMode::Normal || own_space != space {
+                Some(id)
+            } else {
+                canvas
+            };
+        if node.filter.is_some() {
+            scopes.push(id);
+        }
+        for child in &node.children {
+            self.plan_layer(
+                *child,
+                tree,
+                groups,
+                filters,
+                surface,
+                children,
+                scopes,
+                (canvas, own_space),
+            )?;
+        }
+        if node.filter.is_some() {
+            scopes.pop();
+        }
+        if hiding {
+            self.anchor_scratch.hidden.leave(id);
+        }
+        Ok(())
+    }
+
+    /// Plans layer `id`'s backdrop sample of group `prepared`: the member's
+    /// device clip bounds, its effect and, when the group unions its
+    /// members or the member draws an `outer` band, the clip's box its
+    /// field reads. `scope` is the innermost enclosing filtered layer.
+    ///
+    /// A clip without area — a line, or a circle or ellipse with a zero
+    /// radius — draws nothing, so the member keeps its place in the
+    /// group's paint order but samples nothing, as on the GPU; a union or
+    /// `outer` member needs its clip's box as its field and rejects it.
+    /// A path clip has no box: only a member that reads no distance may
+    /// use one.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the walk threads the member's layer state and the filter registry"
+    )]
+    fn plan_member(
+        &mut self,
+        id: LayerId,
+        sample: &cherenkov::BackdropSample,
+        clip: &ShapeData,
+        transform: Affine,
+        prepared: &super::filter::PreparedBackdrop,
+        scope: Option<LayerId>,
+        registry: &Registry,
+    ) -> Result<(), RenderError> {
+        let g = sample.group().raw();
+        let outer = sample.outer_extent().get();
+        let spec = prepared.spec;
+        let field_member = spec.union_field().is_some() || outer > 0.0;
+        let (field, effect, reach) = match box_form(clip) {
+            BoxForm::Empty if field_member => {
+                return Err(RenderError::Unsupported(
+                    names::BACKDROP_UNION_DEGENERATE_MEMBER,
+                ));
+            }
+            // The member still orders the group — the capture lands at
+            // the first member in paint order — but samples nothing.
+            BoxForm::Empty => (
+                None,
+                None,
+                sample.effect().map_or(0.0, |e| f64::from(e.reach())),
+            ),
+            form => {
+                let clip_box = match form {
+                    BoxForm::Box { extra, shape } => Some(BoxClip::new(extra, shape, transform)),
+                    _ => None,
+                };
+                let field = field_member
+                    .then(|| {
+                        clip_box.ok_or(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH))
+                    })
+                    .transpose()?;
+                let (effect, reach) = member_effect(
+                    sample,
+                    clip_box,
+                    registry,
+                    transform,
+                    clip_device_bounds(transform, clip),
+                )?;
+                (field, Some(effect), reach)
+            }
+        };
+        let member = clip_device_bounds(transform, clip);
+        let plan = self
+            .backdrops
+            .entry(g)
+            .or_insert_with(|| BackdropPlan::new(id, member, spec, prepared.filter.clone(), scope));
+        // The capture footprint inflates the clip bounds by the
+        // effect's reach — the union pad lands in `plan_union`.
+        plan.union = plan.union.union(member.inflate(reach, reach));
+        let ord =
+            u32::try_from(plan.order.len()).expect("a group's members never exceed MAX_MEMBERS");
+        plan.order.push(id);
+        plan.members.insert(
+            id,
+            Member {
+                bounds: member,
+                draw: member,
+                reach,
+                field,
+                outer,
+                ord,
+                scope,
+                effect,
+            },
+        );
+        Ok(())
+    }
+
+    /// Plans every backdrop group: a paint-order walk collecting each
+    /// member's device-space clip bounds, then the capture region — the
+    /// union on the capture grid inflated by the chain footprint's apron
+    /// in texels, intersected with the grid's extent and rounded outward
+    /// to whole texels.
+    ///
+    /// A member inside a filter scope samples rows within that scope's
+    /// window (`band ± apron`), and every member's samples reach its
+    /// effect's `reach` past the sampled pixel; each group's `reach` is
+    /// the deepest `apron + effect reach` over its members, and a scope
+    /// directly containing a capture grows its apron to `apron + reach`
+    /// so the capture's window fits. Both bounds are monotone in each
+    /// other and capped at the surface height, so the fixed point is
+    /// found by iteration.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "footprints are non-negative and bounded by the surface height"
+    )]
+    fn plan_backdrops(
+        &mut self,
+        tree: &SurfaceTree,
+        surface: SurfaceId,
+        filters: &mut Registry,
+    ) -> Result<(), RenderError> {
+        let mut groups = FxHashMap::default();
+        debug_assert!(
+            self.anchor_scratch.refs.is_empty(),
+            "`Lowering::new` clears the scratch"
+        );
+        self.anchor_scratch
+            .refs
+            .extend(filters.backdrop_anchors(surface));
+        self.anchor_scratch.hidden.begin(tree.has_hidden_layers());
+        self.backdrops.clear();
+        self.scope_aprons.clear();
+        self.plan_order = 0;
+        let start = self.start(tree);
+        self.plan_layer(
+            start,
+            tree,
+            &mut groups,
+            filters,
+            surface,
+            Affine::IDENTITY,
+            &mut Vec::new(),
+            (None, self.root_space),
+        )?;
+        if self.backdrops.is_empty() {
+            return Ok(());
+        }
+        let h = self.height;
+        // Union fields: inflate every member's draw bounds by `r(n) +
+        // outer` plus 1.5px of antialiasing so bridge pixels between
+        // members and the `outer` band are captured and drawn, then
+        // recompute the capture's union from the inflated bounds. The
+        // member clip boxes, in paint order, become the fold's operands.
+        for plan in self.backdrops.values_mut() {
+            Self::plan_union(plan)?;
+        }
+        for (gid, plan) in &mut self.backdrops {
+            let footprint = groups[gid].footprint;
+            if footprint.extent.partial_cmp(&0.5) != Some(std::cmp::Ordering::Less) {
+                return Err(RenderError::Unsupported(names::BACKDROP_FOOTPRINT));
+            }
+            plan.place(footprint, (self.width, h));
+        }
+        self.plan_anchors(tree)?;
+        // The apron a scope needs around each band — its own filter's
+        // footprint, or `capture apron + reach` for scopes a capture
+        // lands directly in.
+        let mut aprons: FxHashMap<LayerId, usize> = FxHashMap::default();
+        for plan in self.backdrops.values() {
+            for &scope in plan
+                .members
+                .values()
+                .filter_map(|m| m.scope.as_ref())
+                .chain(plan.scope.iter())
+            {
+                if let std::collections::hash_map::Entry::Vacant(e) = aprons.entry(scope) {
+                    let node = tree.layer(scope);
+                    let filter = node.filter.expect("a scope is a filtered layer");
+                    let (_, _, footprint) = filters.prepare(filter, self.frame, (self.width, h))?;
+                    if !footprint.is_finite() || footprint < 0.0 {
+                        return Err(RenderError::Render(format!(
+                            "filter {} has invalid CPU footprint {footprint}",
+                            filter.raw()
+                        )));
+                    }
+                    e.insert(if footprint >= h as f32 {
+                        h
+                    } else {
+                        footprint.ceil() as usize
+                    });
+                }
+            }
+        }
+        loop {
+            let mut changed = false;
+            for plan in self.backdrops.values_mut() {
+                let reach = plan
+                    .members
+                    .values()
+                    .map(|m| m.scope.map_or(0, |s| aprons[&s]) + m.reach.ceil() as usize)
+                    .fold(0, usize::max);
+                changed |= reach != plan.reach;
+                plan.reach = reach;
+            }
+            for plan in self.backdrops.values() {
+                if let Some(scope) = plan.scope {
+                    let needed = (plan.device_apron + plan.reach).min(h);
+                    let apron = aprons.get_mut(&scope).expect("capture scope registered");
+                    if *apron < needed {
+                        *apron = needed;
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        self.scope_aprons = aprons;
+        Ok(())
+    }
+
+    /// Validates every anchored group's member range and sets its capture
+    /// scope to the anchor's. A member can be any layer painting after the
+    /// anchor in the anchor's compositing canvas; anchored groups never
+    /// fall back to a capture at the member.
+    fn plan_anchors(&mut self, tree: &SurfaceTree) -> Result<(), RenderError> {
+        let result = self.plan_anchors_inner(tree);
+        if result.is_err() {
+            self.anchor_scratch.links.clear();
+        }
+        result
+    }
+
+    fn plan_anchors_inner(&mut self, tree: &SurfaceTree) -> Result<(), RenderError> {
+        let scratch = &mut *self.anchor_scratch;
+        // Groups in ascending id, each group's members in paint order:
+        // paint-order indices are unique, so the unstable sort is exact.
+        scratch
+            .members
+            .sort_unstable_by_key(|&(gid, _, order)| (gid, order));
+        let mut start = 0;
+        while let Some(&(gid, _, _)) = scratch.members.get(start) {
+            let end = start + scratch.members[start..].partition_point(|m| m.0 == gid);
+            let members = &scratch.members[start..end];
+            start = end;
+            let (anchor, anchor_scope) = {
+                let anchor = self.backdrops[&gid]
+                    .spec
+                    .anchor_layer()
+                    .expect("only anchored groups record members");
+                if anchor == tree.root() {
+                    return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_AT_ROOT));
+                }
+                if tree.projective_pose(anchor).is_some() {
+                    return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_PROJECTIVE));
+                }
+                let Some(&(anchor_canvas, anchor_order, anchor_scope)) = scratch.pos.get(&anchor)
+                else {
+                    // The anchor is outside this walk: inside another
+                    // projective image its members here are outside its
+                    // canvas; an `id` nothing carries names nothing.
+                    return Err(RenderError::Unsupported(
+                        if tree.layers().any(|(id, _)| id.raw() == anchor.raw()) {
+                            names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS
+                        } else {
+                            names::BACKDROP_UNKNOWN_ANCHOR
+                        },
+                    ));
+                };
+                for &(_, canvas, order) in members {
+                    if canvas == anchor_canvas && order > anchor_order {
+                        continue;
+                    }
+                    return Err(RenderError::Unsupported(if canvas == anchor_canvas {
+                        names::BACKDROP_MEMBER_BEFORE_ANCHOR
+                    } else {
+                        names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS
+                    }));
+                }
+                (anchor, anchor_scope)
+            };
+            let plan = self.backdrops.get_mut(&gid).expect("planned above");
+            // The capture lands at the anchor — its scope is the
+            // anchor's, not the first member's.
+            plan.scope = anchor_scope;
+            scratch.links.push((anchor, gid));
+        }
+        scratch
+            .links
+            .sort_unstable_by_key(|&(anchor, gid)| (anchor.raw(), gid));
+        Ok(())
+    }
+
+    /// Inflates a backdrop plan's members for the union field: draw bounds
+    /// grow by `r(n) + outer` plus 1.5px of antialiasing so bridge pixels
+    /// between members and the `outer` band are captured and drawn, and the
+    /// capture's union recomputes from the inflated bounds. The member
+    /// clip boxes, in paint order, become the fold's operands.
+    fn plan_union(plan: &mut BackdropPlan) -> Result<(), RenderError> {
+        let union_spec = plan.spec.union_field();
+        let needs_field = union_spec.is_some() || plan.members.values().any(|m| m.outer > 0.0);
+        if !needs_field {
+            return Ok(());
+        }
+        let n = plan.order.len();
+        if union_spec.is_some() && n > UNION_MAX_MEMBERS {
+            return Err(RenderError::Unsupported(names::BACKDROP_UNION_MEMBERS));
+        }
+        let k = union_spec.map_or(0.0, |u| f64::from(u.get()));
+        let r = union_spec.map_or(0.0, |u| u.inflation(n));
+        let mut union = Rect::new(
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        );
+        // Member clip boxes are fold operands, so they are collected only
+        // when the group has a union — a non-union member's outer band
+        // runs against its own field at raster time and no other
+        // member's box exists.
+        let mut members = Vec::new();
+        if union_spec.is_some() {
+            members.reserve_exact(n);
+        }
+        for &id in &plan.order {
+            let member = plan
+                .members
+                .get_mut(&id)
+                .expect("order lists planned members");
+            let pad = if union_spec.is_some() || member.outer > 0.0 {
+                r + f64::from(member.outer) + 1.5
+            } else {
+                // No field: the member is not inflated at all.
+                0.0
+            };
+            member.draw = member.bounds.inflate(pad, pad);
+            // The capture footprint carries the effect's reach too;
+            // the draw bounds do not.
+            union = union.union(
+                member
+                    .bounds
+                    .inflate(member.reach + pad, member.reach + pad),
+            );
+            if union_spec.is_some() {
+                members.push(member.field.expect("union members carry clip boxes"));
+            }
+        }
+        plan.union = union;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "smoothing distances fit in f32"
+        )]
+        if k > 0.0 {
+            plan.union_k = k as f32;
+            plan.union_members = members.into();
+        }
+        Ok(())
+    }
+
+    /// Emits the member's `Sample` item, covering the member's draw
+    /// bounds ∩ region, at full strength — the member's own scope
+    /// attenuates it at composite. A union member's item carries the
+    /// group's shared field and the ancestors-only clip (`ancestors`);
+    /// a non-union member's carries the clip in force, unchanged.
+    fn emit_backdrop_sample(&mut self, gid: u64, member: LayerId, ancestors: Option<&ClipRef>) {
+        let Some(plan) = self.backdrops.get(&gid) else {
+            return;
+        };
+        if plan.region.x0 >= plan.region.x1 || plan.region.y0 >= plan.region.y1 {
+            return;
+        }
+        let Some(entry) = plan.members.get(&member) else {
+            return;
+        };
+        let Some(effect) = entry.effect.clone() else {
+            return;
+        };
+        let bounds = entry.draw;
+        // The device rect the region's texels cover.
+        let s = f64::from(plan.spec.scale().get());
+        let region = Rect::new(
+            f64::from(plan.region.x0) / s,
+            f64::from(plan.region.y0) / s,
+            f64::from(plan.region.x1) / s,
+            f64::from(plan.region.y1) / s,
+        );
+        let bounds = bounds.intersect(region);
+        if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+            return;
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_possible_wrap,
+            reason = "bounds are finite and inside the surface"
+        )]
+        let bounds = IRect {
+            x0: (bounds.x0.floor() as i32).clamp(0, self.width as i32),
+            y0: (bounds.y0.floor() as i32).clamp(0, self.height as i32),
+            x1: (bounds.x1.ceil() as i32).clamp(0, self.width as i32),
+            y1: (bounds.y1.ceil() as i32).clamp(0, self.height as i32),
+        };
+        // The union-fold data and clip the item carries: a union member
+        // composites under the ancestors-only clip against the shared
+        // field; a lone `outer` member gets its own one-member field;
+        // anything else composes under the clip in force, as today.
+        let (clip, union) = if plan.union_k > 0.0 {
+            (
+                ancestors.cloned(),
+                Some(UnionSample {
+                    members: plan.union_members.clone(),
+                    k: plan.union_k,
+                    ord: entry.ord,
+                    outer: entry.outer,
+                }),
+            )
+        } else if entry.outer > 0.0 {
+            (
+                ancestors.cloned(),
+                Some(UnionSample {
+                    members: Arc::from([entry.field.expect("outer members carry clip boxes")]),
+                    k: 0.0,
+                    ord: 0,
+                    outer: entry.outer,
+                }),
+            )
+        } else {
+            (self.clip.clone(), None)
+        };
+        self.items.push(Item::Sample {
+            group: gid,
+            bounds,
+            clip,
+            effect,
+            union,
+            space: plan.spec.member_blend_space(),
+        });
+    }
+
+    /// A clip shape under the current transform becomes a [`ClipRef`],
+    /// intersected geometrically with the clip already in force.
+    fn make_clip(&self, shape: &ShapeData) -> Option<ClipRef> {
+        // The rect fast path: an axis-aligned rect with integer-ish edges.
+        let new_rect = match shape {
+            ShapeData::Rect(r) if axis_aligned(self.transform) => device_rect(self.transform, *r),
+            _ => Rect::ZERO, // sentinel: not applicable
+        };
+        let new_is_rect = matches!(shape, ShapeData::Rect(_))
+            && axis_aligned(self.transform)
+            && integer_edges(new_rect).is_some();
+        if let Some(current) = &self.clip {
+            if new_is_rect
+                && let ClipMask::Rect(cur) = current.as_ref()
+                && let Some(r) = integer_edges(new_rect)
+            {
+                return Some(Arc::new(ClipMask::Rect(cur.intersect(r))));
+            }
+        } else if new_is_rect {
+            return integer_edges(new_rect).map(|r| Arc::new(ClipMask::Rect(r)));
+        }
+        // Mixed and general stacks retain their filled operands. Their
+        // intersection is indexed once and rasterized on demand by band.
+        let sm = self.transform.spectral_norm().max(1e-12);
+        let tol_u = FLATTEN_TOL / sm;
+        let (path, rule) = shape_outline(shape, tol_u)?;
+        let edges = boundary_edges(&flatten_edges(self.transform * path, FLATTEN_TOL), rule);
+        if edges.is_empty() {
+            return None;
+        }
+        let mut operands = match self.clip.as_deref() {
+            None => Vec::new(),
+            Some(ClipMask::Geometry { operands, .. }) => operands.clone(),
+            Some(ClipMask::Rect(r)) => {
+                let rect = Rect::new(r.x0.into(), r.y0.into(), r.x1.into(), r.y1.into());
+                let edges = boundary_edges(
+                    &flatten_edges(rect.to_path(FLATTEN_TOL), FLATTEN_TOL),
+                    FillRule::NonZero,
+                );
+                vec![edges.into()]
+            }
+        };
+        operands.push(edges.into());
+        let boundary = clip_boundary(&operands);
+        Some(Arc::new(ClipMask::Geometry { operands, boundary }))
+    }
+
+    /// Applies `clip` around `body`: `None` passes through.
+    fn with_clip(
+        &mut self,
+        shape: Option<&ShapeData>,
+        body: impl FnOnce(&mut Self) -> Result<(), RenderError>,
+    ) -> Result<(), RenderError> {
+        let Some(shape_data) = shape else {
+            return body(self);
+        };
+        let Some(clip) = self.make_clip(shape_data) else {
+            // A clip path with no area clips everything away.
+            return Ok(());
+        };
+        let saved = self.clip.replace(clip);
+        let result = body(self);
+        self.clip = saved;
+        result
+    }
+
+    /// Emits the isolation pair around `body`.
+    fn isolate(
+        &mut self,
+        opacity: f32,
+        blend: (BlendMode, cherenkov::BlendSpace),
+        inner_clip: Option<ClipRef>,
+        outer_clip: Option<ClipRef>,
+        body: impl FnOnce(&mut Self) -> Result<(), RenderError>,
+    ) -> Result<(), RenderError> {
+        let saved = std::mem::replace(&mut self.clip, inner_clip);
+        // A backdrop capture looks through a level exactly when it is
+        // `Normal`-blended in the space it composites into: pass-through
+        // and `opacity < 1` levels alike. A cross-space isolate changes
+        // pixels even when fully transparent and normally blended: it
+        // stays semantic. Every level stores the space its members
+        // composite in, `blend.1` — the caller's resolved space.
+        let looked_through = blend.0 == BlendMode::Normal && blend.1 == self.current_space();
+        let space = blend.1;
+        self.iso_kinds.push(looked_through);
+        self.iso_spaces.push(space);
+        self.items.push(Item::PushIsolate { space });
+        let result = body(self);
+        self.iso_kinds.pop();
+        self.iso_spaces.pop();
+        self.clip = saved;
+        self.items.push(Item::PopIsolate {
+            opacity,
+            blend,
+            clip: outer_clip,
+        });
+        result
+    }
+
+    fn filter_isolate(
+        &mut self,
+        id: cherenkov::FilterId,
+        opacity: f32,
+        blend: (BlendMode, cherenkov::BlendSpace),
+        clip: Option<ClipRef>,
+        body: impl FnOnce(&mut Self) -> Result<(), RenderError>,
+        scope: Option<LayerId>,
+    ) -> Result<(), RenderError> {
+        let (filter, params, footprint) = self
+            .filters
+            .as_deref_mut()
+            .ok_or_else(|| RenderError::Render(format!("unregistered filter {}", id.raw())))?
+            .prepare(id, self.frame, (self.width, self.height))?;
+        if !footprint.is_finite() || footprint < 0.0 {
+            return Err(RenderError::Render(format!(
+                "filter {} has invalid CPU footprint {footprint}",
+                id.raw()
+            )));
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss,
+            reason = "the nonnegative footprint is compared with the bounded surface height first"
+        )]
+        let footprint_apron = if footprint >= self.height as f32 {
+            self.height
+        } else {
+            footprint.ceil() as usize
+        };
+        // A scope containing a backdrop capture grows to cover the
+        // capture's apron and reach, so its window always holds the rows
+        // the capture reads.
+        let apron = scope
+            .and_then(|id| self.scope_aprons.get(&id).copied())
+            .unwrap_or(0)
+            .max(footprint_apron);
+        self.used_filters.insert(id.raw());
+        let push = self.items.len();
+        // The scope stores its declared space: members composite in it
+        // and the filter sees the result.
+        self.items.push(Item::PushFilter {
+            end: 0,
+            apron,
+            space: blend.1,
+        });
+        // The scope's nested run gets a fresh isolation stack; the kinds
+        // and spaces stacks mirror it, seeded at the scope's own space.
+        let saved_kinds = std::mem::take(&mut self.iso_kinds);
+        let saved_spaces = std::mem::replace(&mut self.iso_spaces, vec![blend.1]);
+        let result = body(self);
+        self.iso_kinds = saved_kinds;
+        self.iso_spaces = saved_spaces;
+        let end = u32::try_from(self.items.len())
+            .map_err(|_| RenderError::Render(format!("filter {} scope is too large", id.raw())))?;
+        self.items[push] = Item::PushFilter {
+            end,
+            apron,
+            space: blend.1,
+        };
+        self.items.push(Item::PopFilter {
+            filter: (filter, params),
+            opacity,
+            blend,
+            clip,
+        });
+        result
+    }
+
+    /// A layer: push its transform, then clip, then isolate for opacity,
+    /// then content followed by children. The clip applies in `transform`
+    /// space; content and children draw in `content_transform` space,
+    /// which is where `scroll_offset` bites.
+    fn layer(
+        &mut self,
+        id: LayerId,
+        tree: &SurfaceTree,
+        caches: &mut FxHashMap<LayerId, ContentData>,
+    ) -> Result<(), RenderError> {
+        let start = self.items.len();
+        let start_row = self.damage_rows.len();
+        let parent_damage = self.content_damage.replace(start_row..start_row);
+        // A layer that shows nothing draws nothing beneath it, and no
+        // capture point a drawn member reads lies beneath it.
+        let result = if self.anchor_scratch.hidden.skips(id) {
+            Ok(())
+        } else {
+            self.layer_inner(id, tree, caches)
+        };
+        let changed_rows = std::mem::replace(&mut self.content_damage, parent_damage);
+        if self.local.is_none() {
+            self.damage_layers.push(super::damage::Layer {
+                id,
+                properties: if self.projects(id, tree) {
+                    tree.layer(id).revision().max(tree.content_stamp(id))
+                } else {
+                    tree.layer(id).property_revision()
+                },
+                commands: caches
+                    .get(&id)
+                    .map(|content| content.current().expect("content was prepared").0.len()),
+                changed_rows,
+                items: start..self.items.len(),
+            });
+        }
+        result
+    }
+
+    fn layer_inner(
+        &mut self,
+        id: LayerId,
+        tree: &SurfaceTree,
+        caches: &mut FxHashMap<LayerId, ContentData>,
+    ) -> Result<(), RenderError> {
+        let node = tree.layer(id);
+        if self.projects(id, tree) {
+            return self.projected_layer(id, node);
+        }
+        let local_root = self.local.is_some_and(|(root, _)| root == id);
+        // The space the layer's subtree composites in: its declared one,
+        // else the enclosing level's.
+        let parent_space = self.current_space();
+        let (opacity, blend) = if local_root {
+            // Outer opacity and blend apply when the image composes.
+            (1.0, (BlendMode::Normal, parent_space))
+        } else {
+            (
+                node.opacity,
+                (node.blend, node.blend_space.unwrap_or(parent_space)),
+            )
+        };
+        let backdrop = node.backdrop.as_ref().map(|sample| sample.group().raw());
+        let saved = self.transform;
+        let saved_animating = self.animating;
+        if !local_root {
+            self.animating |= node.animating();
+        }
+        let (transform, mut content_space) = self.placement(id, node, saved);
+        self.transform = transform;
+        if self.animating {
+            self.transform = cherenkov::snap_animating(self.transform);
+            content_space = cherenkov::snap_animating(content_space);
+        }
+        // An anchor's groups capture beneath it, before its own content
+        // and children.
+        self.emit_anchor_captures(id);
+        if let Some(gid) = backdrop {
+            self.emit_capture(gid, id);
+        }
+        let outer = self.clip.clone();
+        // A filtered member composites as a whole — its sample and its
+        // filtered content — with the member's opacity, blend and blend
+        // space. When the composite is not a no-op an outer member scope
+        // composites at (opacity, blend) under `composite_clip` below; the
+        // sample draws into it at full strength under the member clip,
+        // outside the filter, beside a nested filter scope at opacity 1,
+        // `Normal` blend over the items in the member's space.
+        let isolates_composite =
+            opacity < 1.0 || blend.0 != BlendMode::Normal || blend.1 != parent_space;
+        let member_scope = backdrop.zip(node.filter).filter(|_| isolates_composite);
+        let result = self.with_clip(node.clip.as_ref(), |s| {
+            s.transform = content_space;
+            // The composite's clip: for destructive operators the
+            // operator applies over the layer's effective clip, so the
+            // combined clip is the bound; for every other mode a
+            // transparent source leaves the destination unchanged, so
+            // the clip in force before the layer's own clip suffices —
+            // the layer clip's coverage is already on the content.
+            let composite_clip = if blend.0.is_destructive() {
+                s.clip.clone()
+            } else {
+                outer.clone()
+            };
+            match member_scope {
+                Some((gid, filter)) => {
+                    s.isolate(opacity, blend, s.clip.clone(), composite_clip, |s| {
+                        s.emit_backdrop_sample(gid, id, outer.as_ref());
+                        let clip = s.clip.clone();
+                        s.filter_isolate(
+                            filter,
+                            1.0,
+                            (BlendMode::Normal, blend.1),
+                            clip,
+                            |s| s.layer_items(id, node, tree, caches),
+                            Some(id),
+                        )
+                    })
+                }
+                None => {
+                    if let Some(filter) = node.filter {
+                        // Opaque `Normal`-blended member (or no member at all):
+                        // the sample lands in the enclosing plane before the
+                        // isolation — the filter never covers it.
+                        if let Some(gid) = backdrop {
+                            s.emit_backdrop_sample(gid, id, outer.as_ref());
+                        }
+                        let clip = s.clip.clone();
+                        s.filter_isolate(
+                            filter,
+                            opacity,
+                            blend,
+                            clip,
+                            |s| s.layer_items(id, node, tree, caches),
+                            Some(id),
+                        )
+                    } else if isolates_composite
+                        // The root already renders into the surface target, and a
+                        // local root into its image.
+                        || (id != s.start(tree) && node.blends_within())
+                    {
+                        // An unfiltered member's sample is its plane's
+                        // bottom-most content: the level's opacity and blend
+                        // apply to it exactly as to the member's items, once.
+                        s.isolate(opacity, blend, s.clip.clone(), composite_clip, |s| {
+                            if let Some(gid) = backdrop {
+                                s.emit_backdrop_sample(gid, id, outer.as_ref());
+                            }
+                            s.layer_items(id, node, tree, caches)
+                        })
+                    } else {
+                        if let Some(gid) = backdrop {
+                            // Nothing isolates: the member's content plane is
+                            // the enclosing one.
+                            s.emit_backdrop_sample(gid, id, outer.as_ref());
+                        }
+                        s.layer_items(id, node, tree, caches)
+                    }
+                }
+            }
+        });
+        self.transform = saved;
+        self.animating = saved_animating;
+        result
+    }
+
+    /// Emits every group's capture anchored at `id`, in group id order.
+    fn emit_anchor_captures(&mut self, id: LayerId) {
+        let start = self
+            .anchor_scratch
+            .links
+            .partition_point(|&(anchor, _)| anchor.raw() < id.raw());
+        let end = start
+            + self.anchor_scratch.links[start..]
+                .partition_point(|&(anchor, _)| anchor.raw() == id.raw());
+        for i in start..end {
+            let gid = self.anchor_scratch.links[i].1;
+            self.push_capture(gid);
+        }
+    }
+
+    /// Emits group `gid`'s capture when `id` is its capture point — its
+    /// first member for an unanchored group — and its region is
+    /// non-empty.
+    fn emit_capture(&mut self, gid: u64, id: LayerId) {
+        if self
+            .backdrops
+            .get(&gid)
+            .is_some_and(|plan| plan.spec.anchor_layer().is_none() && plan.first == id)
+        {
+            self.push_capture(gid);
+        }
+    }
+
+    /// Pushes group `gid`'s capture item at the current position.
+    fn push_capture(&mut self, gid: u64) {
+        // A group no drawn member samples is not captured.
+        if !self.anchor_scratch.hidden.captures(gid) {
+            return;
+        }
+        if let Some(plan) = self.backdrops.get(&gid)
+            && plan.region.x0 < plan.region.x1
+            && plan.region.y0 < plan.region.y1
+        {
+            let region = plan.region;
+            let union_rows = plan.union_rows;
+            let apron = plan.apron;
+            let reach = plan.reach;
+            let spec = plan.spec;
+            let filter = plan.filter.clone();
+            let displaced = plan.members.values().any(|member| member.reach > 0.0);
+            let flatten = self.iso_kinds.iter().rev().take_while(|&&k| k).count();
+            self.items.push(Item::Capture(Box::new(CaptureItem {
+                group: gid,
+                scale: spec.scale(),
+                levels: spec.levels().get(),
+                pyramid: spec.capture_pyramid(),
+                space: spec.member_blend_space(),
+                region,
+                union: IRect {
+                    x0: 0,
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_possible_wrap,
+                        reason = "union rows lie inside the surface"
+                    )]
+                    y0: union_rows.0 as i32,
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_possible_wrap,
+                        reason = "surface width is small"
+                    )]
+                    x1: self.width as i32,
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_possible_wrap,
+                        reason = "union rows lie inside the surface"
+                    )]
+                    y1: union_rows.1 as i32,
+                },
+                apron,
+                reach,
+                displaced,
+                filter,
+                flatten,
+            })));
+        }
+    }
+
+    /// A projective layer composes its completed local image: the image
+    /// already carries the layer's content, clip and filter, so the
+    /// projected sample is drawn under the ancestor clip only, and the
+    /// layer's opacity and blend apply once. A destructive blend keeps its
+    /// operator domain: the ancestor clip intersected with the projected
+    /// layer clip, never the image's alpha.
+    fn projected_layer(
+        &mut self,
+        id: LayerId,
+        node: &cherenkov::LayerNode,
+    ) -> Result<(), RenderError> {
+        // The local image is reconstructed in the linear working space;
+        // a projective layer composites in no other.
+        if node.blend_space == Some(cherenkov::BlendSpace::SrgbEncoded) {
+            return Err(RenderError::Unsupported(names::PROJECTIVE_BLEND_SPACE));
+        }
+        let Some(placed) = self.projected.get(&id).cloned() else {
+            // No area this frame: behind the viewer, edge-on or off the
+            // raster.
+            return Ok(());
+        };
+        let outer = self.clip.clone();
+        // Over a linear level the image composites straight into it;
+        // over an encoded one it is a linear island, isolated and
+        // composited across the spaces below.
+        if node.blend == BlendMode::Normal && self.current_space() == cherenkov::BlendSpace::Linear
+        {
+            self.items.push(Item::Project(Box::new(ProjectItem {
+                placed,
+                opacity: node.opacity,
+                clip: outer,
+            })));
+            return Ok(());
+        }
+        let composite_clip = if node.blend.is_destructive() {
+            let clip = node
+                .clip
+                .as_ref()
+                .expect("a planned projective layer has a clip");
+            #[expect(clippy::cast_precision_loss, reason = "raster sizes fit f64")]
+            let viewport =
+                Rect::new(0.0, 0.0, self.width as f64, self.height as f64).inflate(1.0, 1.0);
+            let (device, rule) = cherenkov::lowering::projective::project_clip(
+                &placed.to_parent,
+                clip,
+                FLATTEN_TOL / placed.density,
+                viewport,
+            )
+            .ok_or_else(|| {
+                RenderError::Render(format!("projective layer {id:?} clip has no outline"))
+            })?;
+            let saved = std::mem::replace(&mut self.transform, Affine::IDENTITY);
+            let clip = self.make_clip(&ShapeData::Path {
+                elements: device.elements().into(),
+                rule,
+            });
+            self.transform = saved;
+            // A projected clip with no area bounds the operator to nothing.
+            let Some(clip) = clip else { return Ok(()) };
+            Some(clip)
+        } else {
+            outer.clone()
+        };
+        self.isolate(
+            node.opacity,
+            (node.blend, cherenkov::BlendSpace::Linear),
+            outer.clone(),
+            composite_clip,
+            |s| {
+                s.items.push(Item::Project(Box::new(ProjectItem {
+                    placed,
+                    opacity: 1.0,
+                    clip: outer,
+                })));
+                Ok(())
+            },
+        )
+    }
+
+    /// Content first, then children — the engine's layer ordering.
+    fn layer_items(
+        &mut self,
+        id: LayerId,
+        node: &cherenkov::LayerNode,
+        tree: &SurfaceTree,
+        caches: &mut FxHashMap<LayerId, ContentData>,
+    ) -> Result<(), RenderError> {
+        if let Some(content) = caches.get_mut(&id) {
+            let (ops, emissions) = content.prepared();
+            let changed = self.ops(ops, emissions, 0, ops.len())?;
+            self.layers_composed += u32::from(changed);
+        }
+        for child in &node.children {
+            self.layer(*child, tree, caches)?;
+        }
+        Ok(())
+    }
+
+    /// Assemble scopes around retained draw instances under the layer state.
+    fn ops(
+        &mut self,
+        ops: &[Op],
+        emissions: &mut [Realization<Emission>],
+        mut i: usize,
+        end: usize,
+    ) -> Result<bool, RenderError> {
+        let mut changed = false;
+        while i < end {
+            match &ops[i] {
+                Op::BeginClip { local, shape, end } => {
+                    let saved = self.transform;
+                    self.transform = saved * *local;
+                    if !emissions[i].valid
+                        || !matches!(&emissions[i].data, Some(Emission::Clip(data)) if self.placement_matches(data))
+                    {
+                        self.content_damage = None;
+                    }
+                    let clip = self.cached_clip(shape, &mut emissions[i]);
+                    self.transform = saved;
+                    if let Some(clip) = clip {
+                        let outer = self.clip.replace(clip);
+                        changed |= self.ops(ops, emissions, i + 1, *end as usize)?;
+                        self.clip = outer;
+                    }
+                    self.transform = saved;
+                    i = *end as usize;
+                }
+                Op::BeginIsolate {
+                    filter,
+                    opacity,
+                    blend,
+                    space,
+                    end,
+                } => {
+                    if !emissions[i].valid {
+                        self.content_damage = None;
+                    }
+                    emissions[i].valid = true;
+                    let clip = self.clip.clone();
+                    let space = space.unwrap_or(self.current_space());
+                    if let Some(filter) = filter {
+                        self.filter_isolate(
+                            *filter,
+                            *opacity,
+                            (*blend, space),
+                            clip,
+                            |s| {
+                                changed |= s.ops(ops, emissions, i + 1, *end as usize)?;
+                                Ok(())
+                            },
+                            None,
+                        )?;
+                    } else {
+                        self.isolate(*opacity, (*blend, space), clip.clone(), clip, |s| {
+                            changed |= s.ops(ops, emissions, i + 1, *end as usize)?;
+                            Ok(())
+                        })?;
+                    }
+                    i = *end as usize;
+                }
+                Op::End => unreachable!("paired scope consumes its end"),
+                op => changed |= self.leaf(op, &mut emissions[i])?,
+            }
+            i += 1;
+        }
+        Ok(changed)
+    }
+
+    /// Key comparison uses Arc identity for retained masks, without scanning
+    /// their coverage on a cache hit.
+    fn placement_matches<T>(&self, data: &DeviceData<T>) -> bool {
+        data.transform == self.transform
+            && data.clip == self.clip
+            && data.size == (self.width, self.height)
+    }
+
+    fn device_data<T>(&self, output: T) -> DeviceData<T> {
+        DeviceData {
+            transform: self.transform,
+            clip: self.clip.clone(),
+            size: (self.width, self.height),
+            output,
+        }
+    }
+
+    fn cached_clip(&self, shape: &ShapeData, cache: &mut Realization<Emission>) -> Option<ClipRef> {
+        if cache.valid
+            && let Some(Emission::Clip(data)) = &cache.data
+            && self.placement_matches(data)
+        {
+            return data.output.clone();
+        }
+        let clip = self.make_clip(shape);
+        cache.data = Some(Emission::Clip(self.device_data(clip.clone())));
+        cache.valid = true;
+        clip
+    }
+
+    /// Reuse coverage until either its source command or device placement
+    /// changes. A fill or stroke whose new placement keeps the linear part
+    /// — a translation, a new clip or surface size — keeps its frame
+    /// geometry and is only placed again.
+    fn leaf(&mut self, op: &Op, cache: &mut Realization<Emission>) -> Result<bool, RenderError> {
+        if cache.valid
+            && let Some(Emission::Draw(data)) = &cache.data
+            && self.placement_matches(data)
+        {
+            self.items.extend_from_slice(&data.output);
+            return Ok(false);
+        }
+        if let Some(Emission::Draw(data)) = &cache.data {
+            super::damage::record_rows(
+                &mut self.damage_rows,
+                &mut self.content_damage,
+                &data.output,
+                self.height,
+            );
+        } else {
+            self.content_damage = None;
+        }
+        let (mut items, carried) = match cache.data.take() {
+            Some(Emission::Draw(data)) => {
+                let carried = match data.output.as_slice() {
+                    [Item::Draw { edges, .. }]
+                        if cache.valid
+                            && matches!(op, Op::Fill { .. } | Op::Stroke { .. })
+                            && same_linear(data.transform, self.transform)
+                            && !matches!(data.clip.as_deref(), Some(ClipMask::Geometry { .. })) =>
+                    {
+                        Some(Resolved {
+                            edges: edges.clone(),
+                        })
+                    }
+                    _ => None,
+                };
+                (data.output, carried)
+            }
+            None => (Vec::new(), None),
+            Some(Emission::Clip(_)) => unreachable!("structural changes replace the cache layout"),
+        };
+        items.clear();
+        let mut anchor_scratch = AnchorScratch::default();
+        let mut compose = Lowering::new(
+            (&mut items, &mut anchor_scratch),
+            (0, 0),
+            None,
+            FrameId::new(0),
+            &mut *self.fonts,
+            self.bitmap_fonts,
+            (
+                &mut *self.bitmap_cache,
+                &mut *self.geometry,
+                &mut *self.edge_scratch,
+            ),
+            self.level,
+            self.pool,
+        );
+        compose.width = self.width;
+        compose.height = self.height;
+        compose.transform = self.transform;
+        compose.clip = self.clip.clone();
+        #[cfg(feature = "shaders")]
+        {
+            compose.shader_paints = self.shader_paints.as_deref_mut();
+        }
+        compose.realize(op, carried)?;
+        self.glyphs.append(&mut compose.glyphs);
+        self.glyphs_rasterized += compose.glyphs_rasterized;
+        // An animated shader paint renders again next frame: its emission
+        // is never reused.
+        #[cfg(feature = "shaders")]
+        let reusable = !compose.animated_shaders;
+        #[cfg(not(feature = "shaders"))]
+        let reusable = true;
+        #[cfg(feature = "shaders")]
+        {
+            self.animated_shaders |= compose.animated_shaders;
+        }
+        self.items.extend_from_slice(&items);
+        super::damage::record_rows(
+            &mut self.damage_rows,
+            &mut self.content_damage,
+            &items,
+            self.height,
+        );
+        cache.data = Some(Emission::Draw(self.device_data(items)));
+        cache.valid = reusable;
+        Ok(true)
+    }
+
+    /// Realizes `op` under the current placement. `carried` is the frame
+    /// geometry of a fill's or stroke's previous realization under the
+    /// same linear part, placed instead of flattening again.
+    fn realize(&mut self, op: &Op, carried: Option<Resolved>) -> Result<(), RenderError> {
+        match op {
+            Op::Fill {
+                local,
+                shape,
+                paint,
+            } => {
+                self.transform *= *local;
+                #[cfg(feature = "shaders")]
+                let shaded = self.shaded(paint, || shape.bounds())?;
+                #[cfg(feature = "shaders")]
+                let paint = &*shaded;
+                self.fill(shape, paint, carried);
+                Ok(())
+            }
+            Op::Stroke {
+                local,
+                shape,
+                stroke,
+                paint,
+            } => {
+                self.transform *= *local;
+                // The GPU backend's stroke bounds: the shape's, grown by
+                // half the stroke width.
+                #[cfg(feature = "shaders")]
+                let shaded = {
+                    let half = stroke.width / 2.0;
+                    self.shaded(paint, || shape.bounds().inflate(half, half))?
+                };
+                #[cfg(feature = "shaders")]
+                let paint = &*shaded;
+                self.stroke(shape, stroke, paint, carried);
+                Ok(())
+            }
+            Op::Shadow {
+                local,
+                shape,
+                shadow,
+            } => {
+                self.transform *= *local;
+                self.shadow(shape, shadow)
+            }
+            Op::Glyphs { local, run, paint } => {
+                self.transform *= *local;
+                self.glyph_run(run, paint)
+            }
+            Op::BitmapGlyph {
+                local,
+                font,
+                glyph,
+                origin,
+                size,
+            } => {
+                self.transform *= *local;
+                self.bitmap_glyph(*font, *glyph, *origin, *size)
+            }
+            _ => unreachable!("scope is composed, never realized as a leaf"),
+        }
+    }
+
+    /// `paint` with its shader leaf rendered for a draw over shape-local
+    /// `bounds` under the current transform, through the registered
+    /// shader paints ([`PaintData::render_shaders`]). `bounds` runs only
+    /// for a paint with a shader: a path's bounding box costs a pass over
+    /// its segments, which a plain paint never needs.
+    #[cfg(feature = "shaders")]
+    fn shaded<'p>(
+        &mut self,
+        paint: &'p PaintData,
+        bounds: impl FnOnce() -> Rect,
+    ) -> Result<std::borrow::Cow<'p, PaintData>, RenderError> {
+        if !paint.has_shader() {
+            return Ok(std::borrow::Cow::Borrowed(paint));
+        }
+        let bounds = bounds();
+        let paints = self
+            .shader_paints
+            .as_deref_mut()
+            .ok_or(RenderError::Unsupported(names::SHADER))?;
+        let pool = self.pool;
+        let mut any_animated = false;
+        let rendered = paint.render_shaders(bounds, self.transform, &mut |leaf, size| {
+            let (image, animated) = paints.image(leaf.shader, &leaf.uniforms, size, pool)?;
+            any_animated |= animated;
+            Ok(image)
+        })?;
+        self.animated_shaders |= any_animated;
+        Ok(rendered.map_or(std::borrow::Cow::Borrowed(paint), std::borrow::Cow::Owned))
+    }
+
+    /// `paint` for a glyph run: a shader leaf covers the run's ink boxes,
+    /// as on the GPU backend ([`super::glyph::ink_bounds`]).
+    #[cfg(feature = "shaders")]
+    fn shaded_glyphs<'p>(
+        &mut self,
+        run: &GlyphRun,
+        paint: &'p PaintData,
+    ) -> Result<std::borrow::Cow<'p, PaintData>, RenderError> {
+        if !paint.has_shader() {
+            return Ok(std::borrow::Cow::Borrowed(paint));
+        }
+        let font = self
+            .fonts
+            .get(&run.font.raw())
+            .ok_or_else(|| RenderError::Font(format!("unregistered font {:?}", run.font)))?;
+        // A run without ink draws nothing: any bounds do.
+        let bounds = super::glyph::ink_bounds(&font.data, run, self.transform)?.unwrap_or_default();
+        self.shaded(paint, || bounds)
+    }
+
+    /// `Fill`: a flattened polygon of edges in the shape's frame, placed in
+    /// device space. `carried` replaces flattening and resolving.
+    fn fill(&mut self, shape: &ShapeData, paint: &PaintData, carried: Option<Resolved>) {
+        let transform = self.transform;
+        let frame = Frame::new(shape, None, transform);
+        let resolved = carried.or_else(|| {
+            self.geometry
+                .resolve(shape, None, transform, self.edge_scratch, || {
+                    let tol_u = FLATTEN_TOL / transform.spectral_norm().max(1e-12);
+                    let (path, rule) = shape_outline(shape, tol_u)?;
+                    Some((
+                        flatten_edges(frame.map(frame.anchored(path)), FLATTEN_TOL),
+                        rule,
+                    ))
+                })
+        });
+        self.place(&frame, resolved, paint, true, || {
+            draw_boundary(shape, None, transform, &frame)
+        });
+    }
+
+    /// `Stroke`: stroke the content-space path with `cherenkov_stroke::stroke`, map it into the
+    /// shape's frame, flatten and fill non-zero — dashes included, like
+    /// the oracle. `carried` replaces stroking, flattening and resolving.
+    fn stroke(
+        &mut self,
+        shape: &ShapeData,
+        stroke: &kurbo::Stroke,
+        paint: &PaintData,
+        carried: Option<Resolved>,
+    ) {
+        let transform = self.transform;
+        let frame = Frame::new(shape, Some(stroke), transform);
+        let resolved = carried.or_else(|| {
+            compile_stroke(
+                self.geometry,
+                self.edge_scratch,
+                shape,
+                stroke,
+                transform,
+                &frame,
+            )
+        });
+        self.place(&frame, resolved, paint, false, || {
+            draw_boundary(shape, Some(stroke), transform, &frame)
+        });
+    }
+
+    /// Places `resolved` frame geometry under the current transform as a
+    /// draw. With `cull`, a draw whose box misses the surface emits
+    /// nothing.
+    fn place(
+        &mut self,
+        frame: &Frame,
+        resolved: Option<Resolved>,
+        paint: &PaintData,
+        cull: bool,
+        boundary: impl FnOnce() -> Option<(Vec<Edge>, FillRule)>,
+    ) {
+        let Some(Resolved { mut edges }) = resolved else {
+            return;
+        };
+        if edges.is_empty() {
+            return;
+        }
+        let paint = paint.transformed(self.transform.inverse());
+        let mut offset = frame.offset;
+        let clip = match self.clip.as_deref() {
+            Some(ClipMask::Geometry { operands, .. }) => {
+                match intersect_draw(&edges, offset, operands, boundary) {
+                    DrawClip::Outside => return,
+                    DrawClip::Inside => {}
+                    DrawClip::Intersected(segments) => {
+                        edges = intersection_tiles(&segments);
+                        offset = Fixed::default();
+                        if edges.is_empty() {
+                            return;
+                        }
+                    }
+                }
+                None
+            }
+            _ => self.clip.clone(),
+        };
+        let bbox = bbox_of(&edges, offset, self.width, self.height);
+        if cull && (bbox.x0 >= bbox.x1 || bbox.y0 >= bbox.y1) {
+            return;
+        }
+        self.items.push(Item::Draw {
+            edges,
+            offset,
+            bbox,
+            paint,
+            clip,
+        });
+    }
+
+    /// `Shadow`: a Gaussian-blurred rounded box in device space.
+    ///
+    /// Only shapes whose corners are circular under the transform —
+    /// `Rect`, `RoundedRect`, `Circle` — under an axis-aligned
+    /// transform; other silhouettes use coverage convolution.
+    /// Radii are handled per corner (the closed form works per corner).
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::many_single_char_names,
+        reason = "shadow geometry is f32 and surface sizes fit i32"
+    )]
+    fn shadow(&mut self, shape: &ShapeData, shadow: &cherenkov::Shadow) -> Result<(), RenderError> {
+        cherenkov::lowering::shadow::check_sigma(shadow.sigma)?;
+        // The shape as a centred rect plus per-corner radii, in content
+        // space.
+        let (rect, radii) = match shape {
+            ShapeData::Rect(r) => (*r, [0.0; 4]),
+            ShapeData::RoundedRect(rr) => {
+                let r = rr.rect();
+                let limit = r.width().min(r.height()) / 2.0;
+                let radii = rr.radii();
+                (
+                    r,
+                    [
+                        radii.top_left.clamp(0.0, limit),
+                        radii.top_right.clamp(0.0, limit),
+                        radii.bottom_right.clamp(0.0, limit),
+                        radii.bottom_left.clamp(0.0, limit),
+                    ],
+                )
+            }
+            ShapeData::Circle(c) => (
+                Rect::from_center_size(c.center, (c.radius * 2.0, c.radius * 2.0)),
+                [c.radius; 4],
+            ),
+            ShapeData::Line(_) => return Err(RenderError::Unsupported(names::SHADOW)),
+            _ => return self.silhouette(shape, shadow),
+        };
+        if !axis_aligned(self.transform) {
+            return self.silhouette(shape, shadow);
+        }
+        let [a, b, c, d, _, _] = self.transform.as_coeffs();
+        let (sx, sy) = (a.hypot(b), c.hypot(d));
+        let smax = sx.max(sy).max(1e-12);
+        // The device-space box: transform the rect, offset by the linear
+        // part applied to the shadow offset.
+        let dr = device_rect(self.transform, rect);
+        let (cx, cy) = (
+            c.mul_add(
+                shadow.offset.y,
+                a.mul_add(shadow.offset.x, dr.x0.midpoint(dr.x1)),
+            ),
+            d.mul_add(
+                shadow.offset.y,
+                b.mul_add(shadow.offset.x, dr.y0.midpoint(dr.y1)),
+            ),
+        );
+        let spread = shadow.spread * smax;
+        let (hx, hy) = (
+            (dr.width() / 2.0 + spread).max(0.0),
+            (dr.height() / 2.0 + spread).max(0.0),
+        );
+        let limit = hx.min(hy);
+        let radii = radii.map(|r| {
+            if r > 0.0 {
+                r.mul_add(smax, spread).clamp(0.0, limit)
+            } else {
+                0.0
+            }
+        });
+        let sigma_eff =
+            ((shadow.sigma * smax).mul_add(shadow.sigma * smax, 1.0 / 6.0)).sqrt() as f32;
+        let margin = f64::from(sigma_eff).mul_add(3.0, 1.0);
+        let (w, h) = (self.width as i32, self.height as i32);
+        let bbox = IRect {
+            x0: ((cx - hx - margin).floor() as i32).clamp(0, w),
+            y0: ((cy - hy - margin).floor() as i32).clamp(0, h),
+            x1: ((cx + hx + margin).ceil() as i32).clamp(0, w),
+            y1: ((cy + hy + margin).ceil() as i32).clamp(0, h),
+        };
+        if bbox.x0 >= bbox.x1 || bbox.y0 >= bbox.y1 {
+            return Ok(());
+        }
+        let [r, g, bl, al] = shadow.color.components;
+        self.items.push(Item::Shadow {
+            rbox: [cx as f32, cy as f32, hx as f32, hy as f32],
+            radii: radii.map(|r| r as f32),
+            sigma_eff,
+            color: [r * al, g * al, bl * al, al],
+            bbox,
+            clip: self.clip.clone(),
+        });
+        Ok(())
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "glyph placement is represented at raster precision"
+    )]
+    fn bitmap_glyph(
+        &mut self,
+        font_id: u64,
+        glyph_id: u32,
+        origin: [f32; 2],
+        size: f32,
+    ) -> Result<(), RenderError> {
+        let bitmap_font = self
+            .bitmap_fonts
+            .get(&font_id)
+            .ok_or_else(|| RenderError::Font(format!("unregistered bitmap font {font_id}")))?;
+        let device_ppem = (f64::from(size) * self.transform.spectral_norm()) as f32;
+        let strike = bitmap_font.select(device_ppem);
+        let key = super::bitmap::BitmapKey {
+            font: font_id,
+            strike,
+            glyph: glyph_id,
+        };
+        let bitmap = if let Some(bitmap) = self.bitmap_cache.get(&key) {
+            bitmap
+        } else {
+            let font = self
+                .fonts
+                .get(&font_id)
+                .ok_or_else(|| RenderError::Font(format!("unregistered font {font_id}")))?;
+            let Some(decoded) = super::bitmap::decode(
+                &font.data.data,
+                font.data.index,
+                bitmap_font,
+                strike,
+                glyph_id,
+            )?
+            else {
+                return Ok(());
+            };
+            let bitmap = super::bitmap::cpu_bitmap(decoded)?;
+            self.bitmap_cache.insert(key, bitmap)?;
+            self.glyphs_rasterized += 1;
+            self.bitmap_cache
+                .get(&key)
+                .expect("inserted bitmap is present in the cache")
+        };
+        let rect = Rect::new(
+            f64::from(size).mul_add(bitmap.em.x0, f64::from(origin[0])),
+            f64::from(size).mul_add(bitmap.em.y0, f64::from(origin[1])),
+            f64::from(size).mul_add(bitmap.em.x1, f64::from(origin[0])),
+            f64::from(size).mul_add(bitmap.em.y1, f64::from(origin[1])),
+        );
+        let image_transform = Affine::translate((rect.x0, rect.y0))
+            * Affine::scale_non_uniform(
+                rect.width() / f64::from(bitmap.image.width),
+                rect.height() / f64::from(bitmap.image.height),
+            );
+        let paint = PaintData::bitmap(Arc::clone(&bitmap.image), image_transform);
+        self.fill(&ShapeData::Rect(rect), &paint, None);
+        Ok(())
+    }
+
+    /// `Glyphs`: one mask request per positioned glyph. Font lookup and
+    /// mask rasterization happen on the render thread before the band
+    /// pass; the slot is filled by then.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::many_single_char_names,
+        reason = "glyph device coordinates fit i32 on a real surface"
+    )]
+    fn glyph_run(&mut self, run: &GlyphRun, paint: &PaintData) -> Result<(), RenderError> {
+        if matches!(run.style, GlyphStyle::Stroke(_)) {
+            return Err(RenderError::Unsupported(names::GLYPH_STROKE));
+        }
+        #[cfg(feature = "shaders")]
+        let shaded = self.shaded_glyphs(run, paint)?;
+        #[cfg(feature = "shaders")]
+        let paint = &*shaded;
+        let paint = paint.transformed(self.transform.inverse());
+        let [a, b, c, d, ..] = self.transform.as_coeffs();
+        let matrix = [a as f32, b as f32, c as f32, d as f32];
+        let coords = run.coords.clone();
+        for glyph in run.glyphs.iter() {
+            if glyph.transform.is_some() {
+                return Err(RenderError::Unsupported("glyph-transform"));
+            }
+            let o = self.transform * Point::new(f64::from(glyph.x), f64::from(glyph.y));
+            let (ix, iy) = (o.x.floor(), o.y.floor());
+            let (fx, fy) = (o.x - ix, o.y - iy);
+            let subpixel = (fx as f32, fy as f32);
+            let key = crate::render::glyph::glyph_key(run, glyph.id, subpixel, self.transform);
+            let slot: crate::render::glyph::GlyphSlot =
+                std::sync::Arc::new(std::sync::OnceLock::new());
+            self.glyphs.push(GlyphReq {
+                key,
+                font: run.font.raw(),
+                glyph_id: glyph.id,
+                size: run.size,
+                subpixel,
+                matrix,
+                coords: coords.clone(),
+                slot: slot.clone(),
+            });
+            self.items.push(Item::Glyph {
+                slot,
+                x: ix as i32,
+                y: iy as i32,
+                paint: paint.clone(),
+                clip: self.clip.clone(),
+            });
+        }
+        Ok(())
+    }
+}
+/// Heap residency of completed silhouette coverage owned by this content.
+pub fn silhouette_bytes(content: &ContentData) -> u64 {
+    content
+        .realizations()
+        .iter()
+        .filter_map(|entry| entry.data.as_ref())
+        .map(|emission| {
+            let Emission::Draw(data) = emission else {
+                return 0;
+            };
+            data.output
+                .iter()
+                .filter_map(|item| {
+                    let Item::Silhouette { slot, .. } = item else {
+                        return None;
+                    };
+                    slot.get().map(|mask| {
+                        u64::try_from(mask.cov.capacity() * size_of::<f32>()).unwrap_or(u64::MAX)
+                    })
+                })
+                .sum::<u64>()
+        })
+        .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AnchorScratch, Emission, Item, Lowering, Op, Realization};
+    use crate::render::bitmap::BitmapCache;
+    use crate::render::geometry::GeometryCache;
+    use crate::render::paint::PaintData;
+    use crate::render::tiles::EdgeTiles;
+    use cherenkov::kurbo::{self, Affine, BezPath, Vec2};
+    use cherenkov::{FillRule, FrameId, LayerId, ShapeData};
+    use rustc_hash::FxHashMap;
+
+    /// A thick zigzag stroke at `at`: its outline overlaps itself at the
+    /// joins, so the winding sweep resolves it.
+    fn zigzag(at: Vec2) -> Op {
+        let mut path = BezPath::new();
+        path.move_to((6.0, 50.0));
+        path.line_to((30.0, 10.0));
+        path.line_to((34.0, 58.0));
+        path.line_to((58.0, 12.0));
+        path.apply_affine(Affine::translate(at));
+        Op::Stroke {
+            local: Affine::IDENTITY,
+            shape: ShapeData::Path {
+                elements: path.into_elements().into(),
+                rule: FillRule::NonZero,
+            },
+            stroke: kurbo::Stroke::new(9.0),
+            paint: PaintData::Solid([0.0, 0.0, 1.0, 1.0]),
+        }
+    }
+
+    /// `edges` decoded, as exact words.
+    fn bits(edges: &EdgeTiles) -> Vec<[u64; 5]> {
+        edges
+            .boundaries()
+            .iter()
+            .map(|e| {
+                [
+                    e.top().cast_unsigned(),
+                    e.bottom.cast_unsigned(),
+                    e.x.to_bits(),
+                    e.slope.to_bits(),
+                    u64::from(e.sign().cast_unsigned()),
+                ]
+            })
+            .collect()
+    }
+
+    /// The single draw `op` realizes into `cache` under `transform` on a
+    /// 64 × 64 target: its compiled boundaries, offset and box.
+    fn realize(
+        op: &Op,
+        transform: Affine,
+        cache: &mut Realization<Emission>,
+    ) -> (EdgeTiles, super::super::tiles::Fixed, super::DrawBox) {
+        let (mut items, mut scratch) = (Vec::new(), AnchorScratch::default());
+        let (mut fonts, bitmap_fonts) = (FxHashMap::default(), FxHashMap::default());
+        let (mut bitmaps, mut geometry) = (BitmapCache::new(0), GeometryCache::default());
+        let mut edge_scratch = crate::render::tiles::EdgeScratch::default();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("lowering test pool");
+        let mut lowering = Lowering::new(
+            (&mut items, &mut scratch),
+            (64, 64),
+            None,
+            FrameId::new(0),
+            &mut fonts,
+            &bitmap_fonts,
+            (&mut bitmaps, &mut geometry, &mut edge_scratch),
+            cherenkov_simd::detect(),
+            &pool,
+        );
+        lowering.transform = transform;
+        lowering.leaf(op, cache).expect("realize");
+        let Some(Emission::Draw(data)) = &cache.data else {
+            unreachable!("a stroke realizes a draw");
+        };
+        let [
+            Item::Draw {
+                edges,
+                offset,
+                bbox,
+                ..
+            },
+        ] = data.output.as_slice()
+        else {
+            unreachable!("the zigzag is one draw");
+        };
+        (edges.clone(), *offset, *bbox)
+    }
+
+    /// Translation does not change the compiled boundary intervals, even
+    /// around 2^20 pixels; moving back gives identical placed edges.
+    #[test]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "test offsets fit exactly in f64"
+    )]
+    fn resolved_geometry_does_not_depend_on_where_the_path_sits() {
+        let place = |at: Vec2| {
+            let (edges, offset, _) =
+                realize(&zigzag(at), Affine::IDENTITY, &mut Realization::default());
+            let offset = offset.units().map(|v| v as f64 / 65536.0);
+            let back = edges
+                .iter()
+                .map(|e| {
+                    [(e.x0, offset[0], at.x), (e.y0, offset[1], at.y)]
+                        .map(|(v, o, a)| (f64::from(v) + o - a).to_bits())
+                })
+                .collect::<Vec<_>>();
+            (edges, back)
+        };
+        let (near, near_back) = place(Vec2::new(3.25, 7.5));
+        let far_at = Vec2::new(f64::from(1u32 << 20) + 3.25, f64::from(1u32 << 20) + 7.5);
+        let (far, far_back) = place(far_at);
+        assert_eq!(
+            bits(&near),
+            bits(&far),
+            "frame geometry moved with the path"
+        );
+        assert_eq!(near_back, far_back, "translated back, the draws differ");
+    }
+
+    /// A placement that differs only by a translation keeps the
+    /// realization's resolved geometry and places it like a fresh
+    /// realization would; a change of scale resolves again.
+    #[test]
+    fn a_translated_placement_reuses_its_resolved_geometry() {
+        let op = zigzag(Vec2::ZERO);
+        let mut cache = Realization::default();
+        let (first, ..) = realize(&op, Affine::translate((1.25, -3.5)), &mut cache);
+        let moved = Affine::translate((-7.75, 4.0));
+        let (reused, offset, bbox) = realize(&op, moved, &mut cache);
+        assert_eq!(
+            first.identity(),
+            reused.identity(),
+            "a translation flattened and resolved the path again"
+        );
+        let fresh = realize(&op, moved, &mut Realization::default());
+        assert_eq!(
+            bits(&fresh.0),
+            bits(&reused),
+            "a fresh realization resolves differently"
+        );
+        assert_eq!((fresh.1, fresh.2), (offset, bbox));
+
+        let (scaled, ..) = realize(&op, Affine::scale(1.5), &mut cache);
+        assert_ne!(
+            first.identity(),
+            scaled.identity(),
+            "a new linear part reused geometry flattened at another scale"
+        );
+    }
+
+    #[test]
+    fn anchor_scratch_clear_retains_capacity_and_drops_old_links() {
+        let mut scratch = AnchorScratch::default();
+        assert_eq!(scratch.heap_bytes(), 0);
+        let first = LayerId::new(1);
+        scratch.refs.insert(first);
+        scratch.pos.insert(first, (None, 1, None));
+        scratch.members.push((7, None, 2));
+        scratch.links.push((first, 7));
+        let capacity = (
+            scratch.refs.capacity(),
+            scratch.pos.capacity(),
+            scratch.members.capacity(),
+            scratch.links.capacity(),
+        );
+        assert!(scratch.heap_bytes() > 0);
+
+        scratch.clear();
+        assert!(scratch.refs.is_empty());
+        assert!(scratch.pos.is_empty());
+        assert_eq!(scratch.members, [] as [(u64, Option<LayerId>, usize); 0]);
+        assert_eq!(scratch.links, [] as [(cherenkov::LayerId, u64); 0]);
+
+        let next = LayerId::new(2);
+        scratch.refs.insert(next);
+        scratch.pos.insert(next, (None, 2, None));
+        scratch.members.push((8, None, 3));
+        scratch.links.push((next, 8));
+        assert_eq!(scratch.links, [(next, 8)]);
+        assert_eq!(
+            (
+                scratch.refs.capacity(),
+                scratch.pos.capacity(),
+                scratch.members.capacity(),
+                scratch.links.capacity(),
+            ),
+            capacity
+        );
+    }
+
+    /// A silhouette's retained mask covers the shadow's footprint within the
+    /// surface, and a shadow that cannot reach the surface retains nothing.
+    #[test]
+    fn a_silhouette_mask_covers_only_the_shadow_footprint() {
+        let lower = |centre: (f64, f64)| {
+            let (mut items, mut scratch) = (Vec::new(), AnchorScratch::default());
+            let (mut fonts, bitmap_fonts) = (FxHashMap::default(), FxHashMap::default());
+            let (mut bitmaps, mut geometry) = (BitmapCache::new(0), GeometryCache::default());
+            let mut edge_scratch = crate::render::tiles::EdgeScratch::default();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .expect("lowering test pool");
+            let mut lowering = Lowering::new(
+                (&mut items, &mut scratch),
+                (1024, 1024),
+                None,
+                FrameId::new(0),
+                &mut fonts,
+                &bitmap_fonts,
+                (&mut bitmaps, &mut geometry, &mut edge_scratch),
+                cherenkov_simd::detect(),
+                &pool,
+            );
+            let shape = ShapeData::Ellipse(kurbo::Ellipse::new(centre, (20.0, 12.0), 0.0));
+            let shadow =
+                cherenkov::Shadow::new(2.0, cherenkov::WorkingColor::BLACK).offset((3.0, 4.0));
+            lowering.silhouette(&shape, &shadow).expect("silhouette");
+            items
+        };
+        let items = lower((512.0, 512.0));
+        let [Item::Silhouette { slot, .. }] = items.as_slice() else {
+            unreachable!("one silhouette");
+        };
+        let mask = slot.get().expect("mask is set");
+        let (left, top) = (i64::from(mask.left), i64::from(mask.top));
+        let (w, h) = (i64::from(mask.w), i64::from(mask.h));
+        assert!(left >= 0 && top >= 0 && left + w <= 1024 && top + h <= 1024);
+        assert!(left <= 495 && top <= 504 && left + w >= 535 && top + h >= 528);
+        let pad = 2 * (6 * 2 + 5);
+        assert!(w <= 40 + pad && h <= 24 + pad, "{w} x {h}");
+        assert_eq!(mask.cov.len(), mask.w as usize * mask.h as usize);
+        assert!(lower((-200.0, 512.0)).is_empty());
+    }
+}

@@ -1,5 +1,5 @@
 error: expected boolean literal
- --> tests/ui/include_web/fail_wrong_option_type.rs:2:62
+ --> tests/ui/include_web/fail_wrong_option_type.rs:2:73
   |
-2 |     let _ = waterui_assets_macros::include_web!("web", spa = "yes");
-  |                                                              ^^^^^
+2 |     let _ = waterui_assets_macros::include_web!(resources, "web", spa = "yes");
+  |                                                                         ^^^^^

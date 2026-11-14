@@ -1,516 +1,235 @@
 # AGENTS.md
 
-This file provides guidance to coding agents (Claude Code, Codex, and friends) when working with code in this repository. `CLAUDE.md` is a symlink to this file.
+Guidance for coding agents (Claude Code, Codex, and friends) working in this repository. `CLAUDE.md` is a symlink to this file. This file is the overview and holds every rule that spans directories; each large crate carries its own `AGENTS.md` for the rest (see **Repository map**), which applies on top of this one to every file under it.
 
 <important>
 
-**Finding a problem → GitHub issue. Solving a problem → pull request to `dev`.** Never push `dev` or `main` to origin. `main` is the release branch; `dev` is the integration branch; both require a pull request. Merging is the user's decision. Releasing is the user's decision too: never ask for a release, a tag, or a publish as a condition of your work — consume unreleased changes from another repository through a git pin to the exact commit on its `dev` (see **Repository Boundaries and Distribution**).
+**Finding a problem → GitHub issue. Solving a problem → pull request to `main`.** Never push `main` directly to origin; it takes changes only through pull requests on the single trunk. Merging and releasing are the user's decisions: never ask for a release, a tag, or a publish as a condition of your work — consume an unreleased change from another repository through a git dependency on its `main` branch, with the exact commit recorded by the committed `Cargo.lock` (see **Repository boundaries and distribution**).
 
+**A force-push without the user's authorization is forbidden.** `--force`, `--force-with-lease`, a `+refspec`, and anything else that moves a remote branch to a commit that does not descend from what it held discards what others put on that branch since. The only force-push an agent may make on its own is to a topic branch it created in the current task, that no other pull request uses as its base and nobody else has pushed to, with `--force-with-lease=<branch>:<the sha you last pushed>`; when the lease fails, build on what the other push added and never override it. Rewriting a branch that is another pull request's base, that another session works on, or that you did not create requires the user's explicit authorization in the current conversation; bring such a branch up to date by merging `main` into it.
 
-**A force-push without the user's authorization is forbidden.** `git push --force`, `--force-with-lease`, a `+refspec`, and anything else that moves a remote branch to a commit that does not descend from what it held all discard whatever another agent, another session, or the user put on that branch since — this is how a merged pull request was dropped from a stack base before the stack landed. The only force-push an agent may make on its own is to a topic branch it created in the current task, that no other pull request uses as its base, and that nobody else has pushed to, and it is made with `--force-with-lease=<branch>:<the sha you last pushed>` so it fails if that ever stops being true. When the lease fails, read what the other push added and build on it; never override it. Rewriting a branch that is the base of another pull request, a branch another session is working on, or any branch you did not create requires the user's explicit authorization in the current conversation. Bringing a branch up to date with `dev` in those situations means merging `dev` into it, which adds commits and never removes any.
+1. A problem you find — a bug, a broken gallery or snapshot, a rotting workflow, a missing primitive, a design gap — becomes a GitHub issue (`gh issue create`), never a chat-only note. Each issue is one self-contained technical task that can be understood, assigned, and merged on its own: no umbrella issues, roadmaps, or sequenced slices, and no "phase", "stage", "part N of M" or step numbering in title or body. The one exception is a request with genuinely separable parts: one parent issue carries its intent and only groups sub-issues, each of which lands through its own PR. Assign the earliest open version milestone unless the work clearly belongs to a later release.
+2. Land the fix on a topic branch, published with `git push -u origin <branch>`.
+3. Open the pull request with `gh pr create --base main`, linked with `Fixes #N`. One PR solves one issue.
 
-1. When you find a problem — a bug, a broken gallery or snapshot, a rotting workflow, a missing primitive, a design gap — open a GitHub issue with `gh issue create`. The issue is the source of truth; do not keep the finding as a chat-only note. Each issue is one self-contained technical task: a single defect or a single implementable change that can be understood, assigned, and merged on its own. Do not file umbrella issues, roadmaps, or sequenced slices. Do not use the word "phase" (or equivalents such as "stage", "part N of M", "step 1/2/3") in the title or body — an issue is not a chapter of a plan. The one exception is a request with genuinely separable parts: file one parent issue that carries the request's intent and exists only to group its sub-issues — no implementation hangs off the parent, and each leaf sub-issue is itself self-contained and lands through its own PR. Assign the earliest open version milestone to every issue you open, unless the work clearly belongs to a later release.
-2. Land the fix on a topic branch in its own git worktree (see the worktree bullet under Engagement Rules). Never `git push origin dev`. Publish the topic branch with `git push -u origin <branch>`.
-3. Open the pull request with `gh pr create --base dev` and link it to the issue (`Fixes #N`). One PR solves one issue.
+Releases are cut from certified commits on `main` through `release-plz` pull requests: merging a `release-plz` pull request (not a normal feature or fix PR) bumps crate versions and triggers crates.io publishing in `.github/workflows/release.yml`. Until 1.0 that boundary is the product's major-release step: a new `0.x` minor every three months, patch releases unbounded. `.github/workflows/version-boundary.yml` blocks a `release-plz` pull request that carries breaking changes (conventional-commit `!` markers or `BREAKING CHANGE` footers) unless it carries the `release` label, which records that a human intended that version boundary.
 
-A `dev` → `main` merge publishes everything `dev` has accumulated — including every breaking change — and each merge to `main` triggers a crates.io release. Never use a `dev` → `main` merge to transport a fix intended for the current release line (release plumbing, backend pins, scaffold versions): branch the fix off `main`, open the pull request back to `main`, then back-merge `main` into `dev` to keep `dev` in sync. A `dev` → `main` merge happens only at a deliberate version boundary, and only on explicit user instruction.
-
-Until 1.0, that boundary is the product's major-release step: a new `0.x` minor ships every three months, while patch releases are unbounded. `.github/workflows/version-boundary.yml` enforces the "explicit instruction" mechanically: a pull request to `main` that contains breaking changes (conventional-commit `!` markers or `BREAKING CHANGE` footers) is blocked unless it carries the `release` label, which records that a human intended this merge as the version boundary.
-
-Make sure no warnings or errors are introduced in the codebase. If you encounter a warning or error, fix it before committing. Do not ignore warnings or errors. Even though clippy warnings.
+Introduce no warnings or errors, clippy warnings included; fix any you encounter before committing.
 </important>
 
-## Framework Design Principles
+## Writing issues and pull requests
 
-These are constraints on every WaterUI feature, refactor, and review — not just the current task scope. They override convenience and they are not optional.
+Write issues, pull requests, reviews, and commit messages as an open-source maintainer does: for a contributor who has never seen the conversation, the session, or the branch history behind them.
 
-1. **Style is an attribute, not a separate component.** Toggle covers switch / checkbox; Picker covers menu / radio / wheel; List covers plain / inset-grouped / sidebar. Pick which visual via attribute (`.style(...)`, theme tokens, environment plugins, or backend platform default), never invent `CheckboxToggle` / `RadioPicker` / `GroupedList` parallel types. Semantic identity is fixed; visual presentation is a property of the surrounding context.
+- **Use the template.** `.github/ISSUE_TEMPLATE/` holds forms for a bug, a feature, a maintenance task, and a performance problem. `gh issue create` cannot fill a form, so write the body with the form's fields as `##` headings in the form's order, omit optional fields you have nothing for, and apply the form's label. Titles follow `<area>: <what>`. Pull request descriptions follow `.github/pull_request_template.md`.
+- **A bug issue is filed only with a minimal reproduction you verified yourself.** Reduce the defect to the smallest view code, test, or project that still shows it, run that reproduction, and confirm it exhibits the defect; the `Reproduction` field carries that verified artifact, never steps you did not run. If you cannot produce a reproduction, do not file the issue — report the finding to the user instead.
+- **An issue states the problem, not the work log:** what is wrong or missing, why it matters, the scope, and when it is done; a decided design may be stated as the proposal. No step lists, task checklists, agent instructions, review findings, measurement dumps, or progress reports — findings and results go in comments, the plan in the pull request, review conclusions in the review.
+- **A pull request explains the change to a reviewer:** what changes and why, `Fixes #N`, and a line or two per item on how it was verified. Link CI runs and captures instead of pasting logs; do not narrate commit by commit or restate the issue.
+- **Write as the project.** No assistant signatures, generated-by footers, session links, model or agent names, or narration of who delegated or approved what; no dates or plan labels the content does not need. Cite evidence by commit, run id, or issue number. Keep tool names and paths when they are the subject, and contributors' factual findings and verification results.
+- **Keep the record current.** Correct a stale issue description in place. Express structure with GitHub's relations — sub-issues, blocked-by/blocking, labels, milestones — not prose like "depends on #N".
 
-2. **Minimum FFI surface — compose in Rust before binding native.** Only widgets backed by a real platform primitive that cannot be expressed by composing existing primitives belong on the FFI. `Form`, `Card`, `Badge`, `LabeledContent`, `GroupBox` are intentionally Rust-side composers that reuse `vstack` / `hstack` / `padding` / theme tokens and ship zero new C-ABI types. Adding a new `waterui_*_id()` requires evidence that no Rust-side composition produces the same result.
+## Supported platforms
 
-3. **"Native" means platform-coupled, not merely system-preinstalled.** A native implementation projects WaterUI semantics directly into the target platform's canonical object model, lifecycle, accessibility, input, graphics, or media pipeline. It may come from an OS framework or from an official extension package that is inseparable from that platform: Android View-based Material Components / MD3 count as native because they are coupled to Android's View, resource, accessibility, and graphics pipelines. A package is not native when it supplies a largely self-contained engine or runtime that owns the domain instead of bridging WaterUI into the platform, is meaningfully portable to other platforms, and substantially expands the application dependency closure. ExoPlayer / Media3, WaterKit, Zenwave, Hydrolysis, FFmpeg, GStreamer, Flutter, and React Native are not native implementations. Classify each layer independently: native controls, decoders, surfaces, or platform services do not make an application-owned playback or rendering engine native. `NativeView` is an internal backend-leaf marker and is not evidence that a realization satisfies this definition.
+**Retired platforms are unsupported.** Do not add, restore, or retain support for one in code, dependencies, target selection, generated projects, packaging, CI, tests, or documentation; remove obsolete support paths instead of maintaining shims, and treat a failure on a retired target as a reason to remove it.
 
-4. **Bridge native first, then provide the cross-platform self-drawn realization.** For each semantic component, first implement a native bridge on every platform that has a suitable native primitive. Also implement the shared self-drawn realization when the component needs a portable backend. When a platform has no suitable native primitive, go directly to the self-drawn realization; do not introduce a third-party parallel engine and call it native. The self-drawn realization is a deliberate backend, never a runtime fallback for a failed native path. Particle systems and QR codes have no suitable platform primitive and therefore start as self-drawn components. For WaterUI's video-player contract, Apple platforms bridge AVPlayer / AVKit as the only approved native player; every non-Apple platform uses the WaterKit / GPU-surface player, without ExoPlayer / Media3. Native controls, codecs, protected surfaces, media sessions, and output devices may still be used as platform sublayers around that self-drawn player.
-   Map follows the same contract: Apple platforms bridge MapKit, while platforms
-   without a suitable platform map primitive use WaterUI's MapLibre-style,
-   Vello / wgpu vector realization. A bundled portable map engine is not a
-   native map. Native bridge failure is an error and must not silently switch
-   realization at runtime.
+Intel macOS (`x86_64-apple-darwin`) and Intel iOS simulators (`x86_64-apple-ios`) are retired. Apple support is ARM64-only: `aarch64-apple-darwin`, `aarch64-apple-ios`, `aarch64-apple-ios-sim`. Default target selection excludes Intel Apple targets, and an explicit request for one fails with a clear unsupported-target error. x86 stays supported on other operating systems.
 
-5. **Native bridges must preserve tree shaking and proportional package size.** A bridge may make only the platform code and narrowly scoped support code required by the selected WaterUI features reachable in the final artifact. Do not hide a complete third-party framework or engine behind FFI, reflection, service registration, umbrella dependencies, or broad keep rules and label the result "native"; those boundaries can root the entire dependency graph and defeat R8, linker dead stripping, Cargo feature pruning, and equivalent size optimizations. Unused WaterUI features must remove their Rust code, platform code, resources, and transitive dependencies from the packaged application. Backend dependencies must be feature-granular, and any new runtime dependency requires measured before/after release-artifact size evidence on every affected packaging format. Wrapping the complete ExoPlayer / Media3 stack as an Android native video player is explicitly forbidden for both architectural ownership and package-size reasons.
+- **Tier 1** — tested on real devices: macOS, iOS, Android.
+- **Tier 2** — built and tested in CI, failures fixed promptly: Windows, Linux. Windows does not support dynamic linking; development builds link statically.
+- **Tier 3** — experimental: the GTK, WinUI and TUI backends.
 
-6. **Cross-platform default appearance is the framework's job, not the view code's.** When a backend renders a primitive, it must read theme tokens (`Foreground` / `Background` / `Surface` / `SurfaceVariant` / `Border` / `Accent` / `MutedForeground` / `AccentForeground` / `AccentContainer` / `Tertiary` / `TertiaryContainer` / `SelectionContainer` / `SelectionForeground` / `Error` / `ErrorForeground`) instead of hard-coding `.label` / `.systemBackground` / `NSColor.windowBackgroundColor` / `UIColor.secondarySystemBackground`. View code calling `.foreground()`, `.background()`, `text("…")` etc. with no extra modifiers must produce platform-correct output. If view code has to reach into a backend to make defaults right, that is a backend bug — fix the backend, do not paper over it in user-facing code.
+GPU rendering on Linux and Android is Vulkan-only and on Windows DX12-only, to keep the package small: no other GPU backend is selected, enabled, compiled in or fallen back to there, and a GPU-only build fails on a device without that backend with a clear unsupported-device error; a Hydrolysis build with the CPU backend as well renders on the CPU there. GL serves only web browsers without WebGPU, for compatibility: it is not covered by the nightly end-to-end suite, gets no significant investment, and is removed once WebGPU is widespread.
 
-7. **Asymmetric primitives are documented, not faked.** When platform A has a primitive and platform B genuinely doesn't (e.g. SF Symbols on Apple vs no OS-supplied icon catalog on Android), the primitive is supported on A and **explicitly unsupported on B**. Do not bundle a Material font and pretend it is "system." For portable code, depend on a packaged icon-set crate (`waterui-icons-lucide`, `waterui-icons-material-icon`, `waterui-icons-fontawesome7`). Surfacing the asymmetry as documentation is the right answer; hiding it behind a fallback is not.
+ESP32 is not supported; water-rs/waterui#3060 tracks bringing it back.
 
-8. **Fine-grained reactivity is non-negotiable.** WaterUI uses precise per-`Binding` / `Computed` updates, not SwiftUI-style structural diff. APIs that would force a structural recompute on every state change (e.g. requiring rebuild of an entire subtree to update a single text value) are rejected. New API surfaces must accept signals (`impl IntoComputed<T>`, `impl Signal<Output = T>`, `Binding<T>`) rather than plain values when the underlying state is dynamic. Avoid `Dynamic::watch` / `watch(...)` as a default tool: it rebuilds and replaces the watched subtree, so any state owned inside that subtree is lost. Prefer Vue-like precise updates through signal-aware component inputs, metadata, modifiers, or explicit backend semantic objects.
+## Framework design principles
 
-9. **React-style local state slots are forbidden.** Do not introduce or depend on renderer-provided local state slot mechanisms such as `LocalStateScope`, `LocalStateStore`, `local_binding`, `with_local_binding_factory`, hook-like slot storage, body-position keys, or cursor-indexed state to preserve component-local state across body evaluation. WaterUI is not React: component identity and state must not be inferred from view body call order. Mutable UI state must be explicit `Binding` / `Computed` / `impl Signal` state owned at the correct semantic level and passed through the API or backend semantic object. If existing code needs renderer local slots to work, refactor that component/state model; do not add backend support for the slot mechanism.
+Constraints on every feature, refactor, and review, beyond the current task's scope. They override convenience.
 
-10. **Do not change WaterUI foundations without user approval.** Do not modify `core/`, foundational animation/reactivity/layout primitives, or shared backend contracts unless the user explicitly approves that foundation change in the current task. External references are evidence for values, semantics, and behavior; they are not permission to import another framework's abstraction model into WaterUI.
+1. **Style is an attribute, not a separate component.** Toggle covers switch / checkbox; Picker covers menu / radio / wheel; List covers plain / inset-grouped / sidebar. The visual is chosen by attribute (`.style(...)`, theme tokens, environment plugins, or the backend's platform default), never by parallel types like `CheckboxToggle` / `RadioPicker` / `GroupedList`. Semantic identity is fixed; presentation belongs to the surrounding context.
+2. **Every backend realizes a component with its platform's look.** A component's semantics and API are defined once in Rust. The Apple backend realizes them with AppKit and UIKit: the platform's control where it carries the whole semantic, otherwise a composition of AppKit or UIKit views written in Rust inside the backend. Hydrolysis, Android included, realizes them through the style package. A composition over `vstack` / `hstack` / `padding` / theme tokens shared by every backend serves only `Card`, `Badge`, `LabeledContent` and `GroupBox`.
 
-## Repository Boundaries and Distribution
+   This replaces the earlier rule "compose in Rust before binding native", which two backend designs no longer hold. The Apple backend was built on `waterui-ffi`, where every native component needed a hand-written binding, so each native port was a lasting cost and the framework composed existing components in Rust wherever it could; it now wraps UIKit and AppKit through objc2, and Rust composes native views freely, the way it composes GTK widgets. The Android backend was a set of hand-written Android View bindings; it is now self-drawn by Hydrolysis, because the Android View system is being phased out and Jetpack Compose itself draws its own UI.
+3. **"Native" means platform-coupled, not merely system-preinstalled.** A native implementation projects WaterUI semantics directly into the platform's canonical object model, lifecycle, accessibility, input, graphics, or media pipeline. It may come from the OS or from an official extension package inseparable from the platform. A package is not native when it supplies a largely self-contained engine or runtime that owns the domain, is meaningfully portable, and substantially expands the dependency closure: ExoPlayer / Media3, WaterKit, Zenwave, Hydrolysis, FFmpeg, GStreamer, Flutter, and React Native are not native. Classify each layer independently: native controls, decoders, surfaces, or services do not make an application-owned playback or rendering engine native. `NativeView` is an internal backend-leaf marker, not evidence that a realization is native.
+4. **Apple bridges native; Hydrolysis draws.** The Apple backend bridges AppKit and UIKit per Principle 2; Hydrolysis, Android included, is the self-drawn realization. Content that is drawn rather than controlled — particle systems, QR codes — is self-drawn on every backend, never handed to a third-party parallel engine called native. The self-drawn realization is a deliberate backend, never a runtime fallback; a native bridge failure is an error and never silently switches realization. Video: AVPlayer / AVKit on Apple platforms and the browser's `<video>` on the web, where video-gpu is not built; every other platform uses the WaterKit / GPU-surface player, without ExoPlayer / Media3, though native controls, codecs, protected surfaces, media sessions, and output devices may serve as sublayers around it. Map: Apple bridges MapKit; platforms without a suitable map primitive use WaterUI's MapLibre-style Cherenkov / wgpu vector realization; a bundled portable map engine is not a native map.
+5. **Native bridges preserve tree shaking and proportional package size.** A bridge makes reachable only the platform code and narrow support code the selected features need. Never hide a complete third-party framework or engine behind FFI, reflection, service registration, umbrella dependencies, or broad keep rules and call it native — those root the whole dependency graph and defeat R8, dead stripping, and Cargo feature pruning. An unused feature removes its Rust code, platform code, resources, and transitive dependencies from the package. Backend dependencies are feature-granular, and a new runtime dependency requires measured before/after release-artifact size on every affected packaging format.
+6. **Default appearance is the framework's job, not the view code's.** Backends read theme tokens (`Foreground` / `Background` / `Surface` / `SurfaceVariant` / `Border` / `Accent` / `MutedForeground` / `TertiaryForeground` / `DisabledForeground` / `AccentForeground` / `AccentContainer` / `Tertiary` / `TertiaryContainer` / `SelectionContainer` / `SelectionForeground` / `UnemphasizedSelection` / `Error` / `ErrorForeground`) instead of hard-coding `.label` / `.systemBackground` / `NSColor.windowBackgroundColor` / `UIColor.secondarySystemBackground`. View code with no extra modifiers produces platform-correct output; view code that must reach into a backend to get defaults right exposes a backend bug, fixed in the backend.
+7. **Unsupported means only the platform could supply it.** A capability is **explicitly unsupported** on a platform only when it depends on an asset or service that the platform alone can supply and that platform does not have — SF Symbols on Apple, with no OS icon catalog on Android. Never bundle a Material font and call it "system"; portable code depends on an icon-set crate (`waterui-icons-lucide`, `waterui-icons-material-icon`, `waterui-icons-fontawesome7`). A missing control, or a control lacking part of a semantic, is never such a case: the backend builds it per Principle 2. Each unsupported capability is documented, never hidden behind a fallback.
+8. **Fine-grained reactivity is non-negotiable.** Updates are precise per `Binding` / `Computed`, not SwiftUI-style structural diff; an API that forces a structural recompute per state change is rejected. An API over dynamic state accepts signals (`impl IntoComputed<T>`, `impl Signal<Output = T>`, `Binding<T>`) so callers never need `watch(...)`. Authoring against this model — `text!`, collections instead of `watch`, no `.snapshot()` in a body — is in the `waterui` skill.
+9. **React-style local state slots are forbidden.** Never introduce or depend on renderer-provided slot mechanisms (`LocalStateScope`, `LocalStateStore`, `local_binding`, `with_local_binding_factory`, hook-like slot storage, body-position keys, cursor-indexed state). Component identity and state are never inferred from body call order; mutable UI state is explicit `Binding` / `Computed` / `impl Signal` owned at the right semantic level and passed through the API or backend semantic object. Code that needs renderer slots is refactored, never served by teaching a backend the slot mechanism.
+10. **Foundations change only with user approval.** `core/`, the foundational animation, reactivity and layout primitives, and shared backend contracts change only when the user approves that change in the current task. External references are evidence for values, semantics, and behavior, not permission to import another framework's abstraction model.
 
-These are the target architecture and acceptance criteria for repository changes. Existing in-tree implementations and backend submodules are migration state, not exceptions to the boundary. A layout description below is not evidence that a migration or release has completed.
+## Repository boundaries and distribution
 
-- **WaterUI owns the foundations and the unified facade.** Core semantics, public backend contracts, and `waterui-graphics` APIs stay in the main repository. The `waterui` crate is a facade, like `crossbeam`: it re-exports independently maintained crates, including chart, rather than requiring every application to assemble the ecosystem manually. Use direct re-exports, not wrapper types or duplicate implementations. Keep heavyweight components optional through coherent Cargo features; disabling a feature must remove its dependency graph. Direct component imports and facade imports must expose the same types, including with dynamic linking.
-- **Self-drawn components are independent versioned crates, not submodules.** SVG, canvas, chart, particle, barcode, and similar components own their implementations, tests, releases, and CI in their own repositories. They consume public `waterui-graphics` APIs and the core/layout/reactivity crates they actually need. Stable integration uses published crate versions. They must not depend on another repository's checkout layout or reach into its source tree for implementation or test resources.
-- **`examples/` keeps only examples whose subject is a native widget or a core framework behavior.** The boundary is the same one the code follows: this repository keeps the native-widget core, self-drawn components live in their own repositories, and a self-drawn component's demonstration belongs to that component's repository too — the barcode demo lives in `water-rs/barcode`, the image demo in `water-rs/image`, not here. Move the complete example, assets, project configuration, and validation responsibility with the component; update workspace membership, CI paths, and links, and remove the main-repository copy once the standalone example works. Use the owning repository's component source and explicit compatible framework dependencies, without relying on the WaterUI checkout layout. `examples/filter` is the single documented exception: it stays because its subject is the framework contract of applying GPU filter effects to arbitrary views, including native widgets — a cross-layer interaction this repository is responsible for. And because that path is GPU-rendered, a backend's e2e suite must verify the filter example **visually, never by pixel-exact comparison**: GPU output is not pixel-stable across platforms, adapters, or execution paths.
-- **Normal dependencies flow from the facade to components to foundations.** A component re-exported by `waterui` must not normally depend back on `waterui`. A backend that consumes the facade cannot also be re-exported by it until that reverse dependency is removed. Repository independence does not itself require a facade re-export of every backend.
-- **Concrete backends also have an independent-repository boundary.** Apple, Android, GTK, Hydrolysis, and Dew own their platform implementations and CI; shared backend contracts remain in WaterUI. The Apple backend is distributed from `water-rs/apple-backend` as a remote Swift package pinned by `apple-backend-version` in the root manifest's `[package.metadata.waterui]` — the model other backends follow as they leave the tree. A local checkout is used instead of the pin through `[backends.apple] backend_path` in an app project's `Water.toml`; a playground rejects backend tables, so it picks up a local checkout only as `<waterui_path>/backends/apple` (a symlink to the checkout works). Rust backends are not exceptions: replace workspace-only assumptions, cross-directory fixtures, and CLI path assumptions with public package interfaces and explicit version metadata before switching consumers. Hydrolysis can remain the integration-test host as a versioned dependency. Preserve each backend's rendering model; extraction is not permission to redesign shared contracts.
-- **Keep local ecosystem checkouts together.** Independent component and backend repositories live under `~/Coding/water-rs/`, not as scattered siblings directly under `~/Coding/`. Create new extracted repositories there too. The WaterUI canonical checkout remains at `~/Coding/waterui`, and active agent workspace slots retain their existing paths. When relocating an existing checkout, preserve its entire Git directory, branches, staged and unstaged work, and update operational path references rather than cloning a second development line.
-- **Hydrolysis and its Material 3 theme are two independent repositories.** `hydrolysis` lives in water-rs/hydrolysis and `hydrolysis-m3` in water-rs/hydrolysis-m3; neither is nested in the other and neither is a WaterUI submodule. Each owns its implementation, dedicated examples, assets, tests, CI, and releases. Hydrolysis remains theme-independent and GPU-required; the MD3 package implements public widget/theme contracts without depending on renderer internals. WaterUI's CLI and integration tests select explicit compatible versions of both packages through channel metadata. A change to either is a pull request in its repository and a version bump here, never a crate in this tree.
-- **Reserve submodules for inseparable core dependencies such as nami.** Being first-party, needing independent CI, or being distributed from a Git repository is not sufficient reason to add a submodule. Independently distributed components and backends are consumed through explicit compatible package versions or source revisions, not brought back as submodules. Existing non-core gitlinks must be migrated deliberately, not removed before their replacements work.
-- **A split is complete only when both development lines are reconciled.** Compare the in-tree implementation with the standalone repository and the artifact actually consumed. Preserve unique fixes, tests, fixtures, documentation, and traceable source history from both sides. Account for local uncommitted work rather than silently overwriting or abandoning it. Verify the standalone build and the consuming framework together before removing the in-tree copy. If the required public foundation APIs are unreleased, prepare compatible foundation and component releases through the release workflow; do not consume an older artifact that loses functionality or maintain a second implementation to hide the mismatch.
+These are target architecture and acceptance criteria; in-tree code that does not match yet is migration state, not an exception, and no description here proves a migration or release has completed.
 
-## CI Ownership and Framework Channels
+- **This repository is the core, the first-party engine, the mainline backends, and the `water` CLI:** `waterui-core` and the reactive, layout and text foundations, `waterui-backend-core` (shared backend contracts, in `backends/core`), the Apple (`backends/apple`, AppKit and UIKit through objc2) and Hydrolysis (`backends/hydrolysis`, the self-drawn renderer and the Android backend) backends, the engine Hydrolysis renders through (`graphics/cherenkov/`, `graphics/filtrate/`), the components whose realization is a native primitive on each platform, and the CLI (`cli/`). Core semantics, public backend contracts, and `waterui-graphics` APIs stay here. An engine change and its consumers, and the framework and its backends, change together in one pull request; each backend keeps its native host code (Swift package, Kotlin host library) beside its crate. Preserve each backend's rendering model; moving a backend is not permission to redesign shared contracts.
+- **The `waterui` crate is a facade, like `crossbeam`:** it re-exports independently maintained crates, chart included, through direct re-exports, never wrapper types or duplicate implementations. Heavyweight components are optional Cargo features whose disabling removes their dependency graph, and direct and facade imports expose the same types, with dynamic linking too. Dependencies flow facade → components → foundations: a re-exported component does not normally depend back on `waterui`, and a backend that consumes the facade cannot be re-exported by it until that reverse dependency is removed. Repository independence does not itself require a facade re-export of every backend.
+- **Self-drawn components and style packages live in their own `water-rs` repositories** and own their implementations, examples, assets, tests, CI and releases: SVG, canvas, chart, particle, barcode, `waterui-svg`, `waterui-math`, `waterui-mermaid`, the other split components in `[workspace.dependencies]`, and `hydrolysis-m3` and every other style package (Hydrolysis is theme-independent; styles implement the public widget and theme contracts without renderer internals). They consume public `waterui-graphics` APIs and the foundations they need, never another repository's checkout layout or source tree. A change to one is a pull request in its repository, never a crate in this tree, and a new self-drawn component starts as its own repository. The experimental backends (GTK, WinUI, TUI) stay in their own repositories too.
+- **Before adding a component crate, check whether the workspace already depends on one:** split components come in from crates.io or a git pin and are invisible under `components/`. Read `[workspace.dependencies]` and `[patch.crates-io]` in the root `Cargo.toml`. Extending one is a change in its repository and a version bump here, never a second crate or a parallel type (Principle 1).
+- **Releases are the boundary's stable form.** A split repository depends on the published framework and this tree consumes it from crates.io, so a `[workspace.dependencies]` requirement names a published version. Between releases each side consumes the other's unreleased change through a `[patch.crates-io]` git entry on the other's `main` branch (`git = "https://github.com/water-rs/<repo>", branch = "main"`), never a `rev` or a `path` patch; the committed `Cargo.lock`, built with `--locked` in every CI job, records the exact commit, and moving it is `cargo update -p <crate>`, never a manifest edit. A framework pull request never carries split-repository code, and neither side blocks the other — the in-tree CLI and engine are the exceptions by construction, and the ones to keep unbroken. **Never ask the user to publish, release, tag, or bump a version as a prerequisite for your work**: unless the user has stated a release plan in the current task, the git dependency is the only way to consume an unreleased change, and "waiting for a release" is never a state a task ends in. When a pull request needs a scaffold pin such as `waterui-gtk-version` to move to a version that does not exist yet, record that once in the pull request for whoever cuts the release, and finish the work.
+- **`examples/` keeps only examples whose subject is a native widget or a core framework behavior.** A self-drawn component's demonstration lives in its repository (the barcode demo in `water-rs/barcode`, the image demo in `water-rs/image`); moving one moves the complete example, assets, configuration and validation, updates workspace membership, CI paths and links, and removes the copy here once the standalone one works. `examples/filter` is the single exception: its subject is applying GPU filter effects to arbitrary views, native widgets included, a cross-layer contract this repository owns. Being GPU-rendered, it is verified **visually, never by pixel-exact comparison**.
+- **Submodules are reserved for inseparable core dependencies.** Being first-party, needing independent CI, or living in a Git repository is not reason enough; independently distributed components and backends are consumed through explicit compatible package versions or source revisions.
+- **A split or merge is complete only when both development lines are reconciled:** compare the in-tree code, the standalone repository and the artifact actually consumed; preserve unique fixes, tests, fixtures, documentation, traceable history, and local uncommitted work; verify both sides together before removing either. If the needed foundation APIs are unreleased, prepare compatible releases through the release workflow rather than consume an older artifact that loses functionality or keep a second implementation.
+- **Keep top-level folders semantic and minimal.** No generic crate buckets (`crates/`), implementation-detail roots (`internal/`, `facade/`), or top-level folders holding a single manifest. Crates go under their domain folder (`components/`, `graphics/`, `utils/`, `backends/`, …; icon sets under `components/icon/`) or `src/` for the root package; a family sharing a non-`waterui` prefix shares one directory (`graphics/filtrate/`), not sibling folders.
+- No dependency, direct or transitive, comes from the Tauri project (crates published by tauri-apps); the capability is implemented in waterkit instead.
+- A platform capability comes from waterkit in preference to any other third-party crate; one waterkit lacks is added to waterkit.
 
-- **Repository boundaries also define CI ownership.** Each component/backend repository checks its own implementation and platform matrix, with triggers scoped to affected packages and paths. WaterUI checks its foundations, facade exports, and cross-repository integration. Do not recreate the monorepo by running every extracted crate's implementation suite as a WaterUI workspace member. A moved check must have a verified owner; no platform, feature combination, fixture, or correctness signal may disappear during extraction.
-- **CI capacity: the `water-rs` organization is on GitHub Team, with 60 concurrent jobs in total and 20 of them macOS.** Every workflow is designed against that budget, and efficiency and parallelism are a standing concern on every CI touch, not a cleanup for later. Independent work fans out: matrix shards for the example sweeps, one concurrency group per dispatched run (a group shared by unrelated runs serializes them behind each other while runners sit idle), no job waiting on another it does not consume. Measure wall-clock from the Actions run itself, setup and cache restore included. Redundancy — the same dependency graph compiled twice in one run, a cache entry that restores nothing, a job whose output nobody reads, a cold build where a warm one was available — and any run far slower than the work it does are defects: warn the user immediately with the measurement rather than absorbing the cost silently.
-- **The WaterUI dev-push gate is format plus compilation/lint checks, and must finish in under 10 minutes.** Full tests, doctests, examples, expensive platform/feature matrices, coverage, and other complex suites run nightly rather than on the dev-push critical path. Additional PR ABI/security checks remain explicit. Prioritize cache capacity for the frequent compilation gate. Prove the budget with actual Actions wall-clock measurements, including setup and cache overhead; setting a timeout or skipping correctness checks is not proof of success.
-- **Framework channels are not Rust toolchain channels.** The CLI must support the following framework selections:
+## CI
 
-  | Channel | Source and guarantee |
-  | --- | --- |
-  | `dev` | The integration `dev` branch, resolved to an exact commit; compilation-checked, not test-certified. |
-  | `nightly` | An immutable tagged revision whose complete required integration suite passed, with the tested dependency/backend combination. It is not a moving development branch or merely the latest commit of the day. |
-  | `stable` | Formal crates.io releases with compatible native-backend versions; publishing remains owned by release-plz. Scaffold packages whose workspace requirement is a git pin are experimental: the stable `framework.json` omits them from `scaffold` and records them under `experimental-packages`. |
+- **Repository boundaries define CI ownership.** Each external repository checks its own implementation and platform matrix, triggered by affected packages and paths. WaterUI checks its foundations, facade exports, mainline backends and cross-repository integration; its PR and push gate checks only the packages a diff affects plus their reverse dependencies. A check that moves needs a verified owner: no platform, feature combination, fixture, or correctness signal disappears in a move, and the full nightly suite and its failure reporting stay intact.
+- **Capacity: the `water-rs` organization has 60 concurrent jobs, 20 of them macOS.** Design every workflow against that budget; efficiency and parallelism are a standing concern on every CI touch. Independent work fans out (matrix shards, one concurrency group per dispatched run, no job waiting on one it does not consume). Measure wall-clock from the Actions run itself, setup and cache restore included. Redundancy — a dependency graph compiled twice in one run, a cache entry that restores nothing, a job whose output nobody reads, a cold build where a warm one was available — and any run far slower than its work are defects: warn the user immediately with the measurement.
+- **The `main`-push gate is format plus compilation and lint, under 10 minutes**, proven by actual Actions wall-clock including setup and cache. Full tests, doctests, examples, expensive matrices and coverage run in `nightly.yml`; explicit PR ABI/security checks remain. Cache capacity goes to the compilation gate first. A timeout or a skipped check is not proof of meeting the budget.
+- **Workflow edits.** A pure performance optimization that preserves coverage — cache keys and `save-if`/`cache-targets` tuning, job splitting or reordering, timeouts, runner sizing, moving a non-gating leg onto a schedule, a fast lane — needs no approval. Any degradation — removing or skipping tests, dropping a platform or feature combination, loosening a lint gate, disabling a check, trading correctness signal for speed — needs explicit authorization; ask when unsure. Workflows stay minimal and declarative: maintained community actions and purpose-built tools over hand-rolled scripts and orchestration in YAML. Repository-state problems are fixed at their source of truth, never patched with preflight scripts or CI workarounds. Validate workflow changes with `actionlint`, focused local checks, and actual runs, not a permanent CI self-test suite.
+- **Nightly certification drives releases.** `.github/workflows/nightly.yml` is the full-suite certification gate: by default it runs every night against the latest commit on `main`. When all required certification checks succeed on that commit, `promote` creates an immutable `nightly-*` prerelease (`framework.json` + `Cargo.lock`), closes any open failure issue, and `release-pr` opens or updates the `release-plz` pull request against that certified commit; when certification fails, `report` opens or updates the failure tracking issue and opens no release PR. To verify a specific commit or prepare a release during the day, manually trigger `nightly.yml` (`workflow_dispatch`, optionally passing the target commit on `main`): passing certification opens or updates the `release-plz` PR for that commit. Merging a `release-plz` pull request runs `release-plz release` in `.github/workflows/release.yml` to publish to crates.io, attach `framework.json` to facade releases via `.github/scripts/framework_manifest.py`, and build prebuilt CLI binaries with cargo-dist. Failed, cancelled, incomplete, or older nightly runs never replace or outrank a newer certified nightly.
+- **Distribution channels.** The `dev` channel resolves the `main` branch (`refs/heads/main`, gated by `ci.yml`); `nightly` resolves the latest certified `nightly-*` prerelease commit (`framework.json` + `Cargo.lock`); `stable` resolves published crates.io releases. Full channel rules live in [`cli/AGENTS.md`](cli/AGENTS.md).
+- **Apple and Hydrolysis, Android included, are the mainline backends.** Their required integration checks, with the CLI's and the framework's own, define the release contract and are the prerequisites checked by nightly certification before cutting a release. **TUI, GTK, and WinUI are experimental**, with no stability or completeness guarantee: their nightlies are informational, their failures never block mainline integration or releases, defects are recorded in their repository with the run ID and evidence, and no control runs are dispatched or debugging done for them on a release's critical path. They may ship in the satellite wave when ready but never hold the framework or other satellites back.
+- **Framework revisions own their minimum compatible CLI version**, a concrete SemVer under `[package.metadata.waterui].minimum-cli-version` in the root `Cargo.toml`, raised when a framework change requires newer CLI behavior, not for every CLI release. Every published `framework.json` carries the same declaration; the CLI's enforcement is in [`cli/AGENTS.md`](cli/AGENTS.md).
+- A CI failure is read in full and every problem it shows is fixed before pushing again; never push blindly to retrigger.
 
-- **Promote tested snapshots, never moving inputs.** A nightly run captures one framework commit, its dependency lock, and exact backend/core references. Only after every required check succeeds may the promotion workflow create an immutable nightly tag and GitHub prerelease. Failed, cancelled, incomplete, or older runs must not replace or outrank a newer certified nightly. Keep the last successful nightly usable. Nightly promotion must not publish to crates.io or invoke stable release automation.
-- **The CLI owns coherent version selection.** Resolve a channel on project creation or an explicit version change/update, then persist the channel and exact resolved versions. Normal build/run operations must not silently upgrade dependencies or mix a tested framework with independently advancing backend branches. Preserve the tested dependency lock for nightly rather than resolving newer compatible component releases. Stable uses published crates; local-checkout development remains explicit and must not override a requested channel implicitly. If no certified nightly exists, return an error rather than falling back to dev. Put resolution in the CLI library, not in terminal interaction wrappers.
+## Cross-platform behaviour
 
-- **Framework revisions own their minimum compatible CLI version.** Declare it in the root `Cargo.toml` under `[package.metadata.waterui].minimum-cli-version`, using a concrete SemVer version. Raise it when a framework change requires newer CLI behavior, not automatically for every CLI release. The library checks local source metadata, resolved `waterui` package metadata, and the requirement persisted with a channel before backend scaffolding or builds. Every published `framework.json` carries the same declaration. Rejection names the installed and required versions and gives an update command for the selected source; it never silently switches framework channels or upgrades the executable. Previously released CLIs without this check still need a one-time manual update.
+Layout and gestures behave identically on every backend. Layout is specified in [`docs/layout-spec.md`](docs/layout-spec.md). For gestures, the input a `Gesture` recognizes, its thresholds and timing, how composed and competing gestures resolve, and the event it delivers are the same everywhere; a backend whose native recognizer differs is non-conforming and fixed in the backend. Typesetting — shaping, line breaking, line metrics — belongs to the text leaf and each platform decides it; layout places the leaf at the size it reports.
 
-## Layout Is Frozen
+### Layout is frozen
 
-The layout system — the proposal protocol, `StretchAxis`, stack sizing and
-allocation, every container in `waterui-layout`, and the leaf contracts backends
-implement — is frozen as of 0.5.0. Its normative description is
-[`docs/layout-spec.md`](docs/layout-spec.md). Do not change the semantics that
-document describes, in `core/`, `components/foundation/layout/`, or a backend
-bridge, for any reason: not to fix a parity budget, not to make an example
-render, not because a reference framework does it differently. A difference
-between the document and the code is a bug in the code; a pull request that
-has to weaken a contract test or amend the document is rejected. The only path
-to a semantic change is a major-version decision recorded by the maintainer.
+The layout system — the proposal protocol, `StretchAxis`, stack sizing and allocation, every container in `waterui-layout`, and the leaf contracts backends implement — is frozen as of 0.5.0, normatively described by [`docs/layout-spec.md`](docs/layout-spec.md). Do not change those semantics in `core/`, `components/foundation/layout/`, or a backend bridge for any reason: not to fix a parity budget, not to make an example render, not because a reference framework differs. A difference between the document and the code is a bug in the code; a pull request that weakens a contract test or amends the document is rejected. A semantic change happens only through a major-version decision recorded by the maintainer.
 
-## Engagement Rules
+Backend conformance fixes — repairing a native bridge to implement the existing specification without changing shared algorithms or leaf contracts — are permitted implementation work and need neither the label nor foundation approval merely because they affect placement; the gate below covers its listed shared-layout paths, not backend files. Changing the shared algorithm, normative semantics, or a contract still requires the maintainer's decision.
 
-**Prefer a coherent design over a small diff.** Avoiding overengineering means avoiding unnecessary complexity, not avoiding substantial refactoring.
+`.github/workflows/layout-decision.yml` enforces this mechanically: a pull
+request fails until it carries the `layout-decision` label whenever it can
+change layout semantics — any edit to `docs/layout-spec.md`, a non-test Rust
+file added or deleted under `components/foundation/layout/src/` or at
+`core/src/ui/layout.rs`, or a change to such a file whose parsed syntax tree
+differs after comments, doc comments, lint attributes (`must_use`, `expect`,
+`allow`, `warn`, `deny`, `inline`, `doc`) and `#[cfg(test)]` items are removed;
+`.github/scripts/layout_gate.py` makes that comparison. Lint-only,
+documentation-only and test-only edits cannot change semantics, so they do
+not need the label. A change to layout source that leaves layout semantics
+unchanged gets the label from the agent itself, without asking. Any other
+change gets it only once the maintainer approves that specific change. The
+label then records that the change keeps the semantics, is a conformance fix
+(the code now matches the document), or is an approved amendment of the
+document.
 
-- When the existing structure or abstraction is the root cause, prefer replacing it with a sound design over accumulating local patches, special cases, or adapter layers. Update affected consumers and remove the superseded implementation rather than maintaining parallel paths.
-- Judge a solution by correctness, clarity, and long-term maintenance, not by lines changed. A broad refactor is preferable when it resolves the underlying problem more cleanly; a local fix is appropriate when the design itself is sound.
-- Prioritize the integrity of the overall design, including the abstractions and infrastructure it calls for. Avoid defensive programming: express invariants through clear contracts and types, and expose violations directly instead of layering speculative guards, retries, or fallbacks over them. Validate external inputs at real trust boundaries, but do not prematurely handle scenarios that have no plausible path to occurring.
-- Do not turn every concern or fix into another permanent regression test. Add durable tests selectively for meaningful, recurring failure risks; consider existing coverage, redundancy, maintenance burden, and cumulative suite runtime.
-- Keep clearly one-off diagnostic and validation tests temporary and out of the repository. Workflow configuration changes normally use `actionlint`, focused local checks, and actual Actions runs rather than a permanent CI self-test suite.
-- Preserve meaningful product coverage while keeping the suite effective. Prefer extending or consolidating existing tests when appropriate, rather than continually growing the suite with overlapping checks.
-- Keep the scope tied to the root problem, including the refactoring needed to solve it, rather than unrelated cleanup. Where architectural approval is required, propose the root redesign directly instead of substituting a patch.
+A case the document does not decide is not a licence to pick a behaviour in code; every freeze break so far came from one, found by a dogfood app. Record it as an issue with the code's current behaviour, the reference framework's behaviour, and a recommended rule, and let the maintainer decide.
 
-**A bug you find is a bug you fix, even when you did not introduce it.** Do not
-route around it, do not leave it for someone else, and do not merely mention it
-in chat and move on. Open a GitHub issue for the defect, then land the fix as a
-pull request targeting `dev`. This explicitly covers:
+## Engineering rules
 
-- latent failures your own fix unmasks, which is the common case — clearing one
-  blocker regularly exposes the next one that was hiding behind it;
-- infrastructure that rotted while nobody was looking (a script hardcoding a
-  layout that has since moved, a job that has not actually run in months, a
-  workflow that silently degraded);
-- defects in neighbouring code you had to read in order to do the task.
+**Prefer a coherent design over a small diff.** Avoiding overengineering means avoiding unnecessary complexity, not avoiding substantial refactoring. When the existing structure is the root cause, replace it with a sound design rather than accumulate patches, special cases, or adapter layers; update consumers and remove the superseded implementation. Judge a solution by correctness, clarity, and long-term maintenance, not lines changed. Keep the scope tied to the root problem, including the refactoring it needs, and where architectural approval is required, propose the root redesign rather than substitute a patch. Avoid defensive programming: express invariants through contracts and types and expose violations instead of layering speculative guards, retries, or fallbacks; validate external input at real trust boundaries only.
 
-Say plainly in the commit message, the issue, the PR, and to the user that the
-defect was pre-existing, so the diff stays understandable, then fix it. Scope the
-fix to the underlying problem, including redesigning the affected structure when
-that is the better solution; exclude unrelated changes, not necessary refactoring.
+**A bug you find is a bug you fix, even when you did not introduce it** — latent failures your fix unmasks, infrastructure that rotted unnoticed, defects in neighbouring code you had to read. Open an issue and land the fix as a pull request to `main`, saying plainly in the commit, issue, PR, and to the user that the defect was pre-existing. Scope the fix to the underlying problem, redesign included; exclude unrelated changes.
 
-**Fix the root. Never adjust your own code to avoid a bug you just found.** The
-tempting move — the one that must not happen — is to leave the defect standing
-and quietly steer around it: giving a view an explicit size because the
-container that should have sized it collapses, picking different inputs for a
-test because the honest ones trip the bug, adding a `.frame()`, a constant, a
-retry, a guard, or an extra argument whose only job is to keep the broken path
-from being taken. That is a workaround even when the resulting line looks
-idiomatic and even when it is one character long, and it is worse than leaving
-the bug alone, because the reproduction disappears with it: the next person sees
-green tests and working screens over a defect nobody can find any more. If you
-caught it, you are holding the only reproduction there is — keep it, and fix
-what it points at.
+**Fix the root. Never adjust your own code to avoid a bug you just found.** Steering around a defect — an explicit size because a container collapses, different test inputs because the honest ones trip the bug, a `.frame()`, constant, retry, guard, or argument whose only job is to avoid the broken path — is a workaround however idiomatic or small, and worse than leaving the bug, because the reproduction disappears with it. You hold the only reproduction; keep it and fix what it points at.
 
-Two consequences worth stating outright:
+- **A gallery, snapshot, or example that renders wrong is a bug report.** Never make it render right by construction; restore the honest version once the root is fixed and keep it as the regression test.
+- **"This needs approval" is not a place to stop working.** For a foundation change (Principle 10), present the diagnosis and the exact fix as the question it is, never as a footnote under a change that routed around the defect. Once the user says fix it, fix it at the root; a second workaround is a straight violation.
+- A genuinely large or architectural fix is surfaced with a concrete recommendation for the user to decide, neither silently expanded nor quietly abandoned.
+- Never hide a problem: do not revert, restore or delete code to make a failure disappear.
 
-- **A gallery, snapshot, or example that renders wrong is a bug report.** Do not
-  make it render right by construction. Restore the honest version once the root
-  is fixed, and keep it as the regression test.
-- **"This needs approval" is not a place to stop working.** Foundations
-  (Principle 10) still need the user's decision before you change them, so
-  present the diagnosis and the exact fix you propose and ask — but present it as
-  the question it is, never as a footnote under a change you shipped by routing
-  around the defect. If the user tells you to fix it, fix it at the root; a
-  second workaround after that answer is a straight violation.
-
-If the correct fix genuinely is large or architectural, surface it with a
-concrete recommendation and let the user decide, rather than either silently
-expanding the change or quietly abandoning it.
-
-Keep the change set strictly scoped to the task.
-
-- Keep top-level folders semantic and minimal. Do not add generic crate buckets (`crates/`), implementation-detail roots (`internal/`, `facade/`), or top-level folders whose only purpose is a single package manifest. Put crates under the existing domain folder (`components/`, `utils/`, `backends/`, `kit/`, etc. — icon sets live under `components/icon/`) or under `src/` when they describe the root `waterui` package itself. Crate families that share a non-`waterui` prefix belong under one family directory such as `utils/filtrate/`, not as repeated sibling folders like `filtrate-core` / `filtrate-derive`.
-
-- **This repository is the non-self-drawn core, and nothing else.** What stays here is the part of WaterUI that needs every native backend to cooperate: `waterui-core` and the reactive, layout and text foundations, the FFI contract and the Apple/Android/GTK bridges, `waterui-backend-core`, and the components whose realization is a native primitive on each platform. The `water` CLI is not part of it: it lives in water-rs/cli, pins the framework crates it links at one `water-rs/waterui` revision, and resolves everything else about the framework at run time through the channels below. Everything self-drawn — the renderers (`hydrolysis`, `hydrolysis_m3`, `waterui-dew`) and every component that paints its own pixels (`waterui-svg`, `waterui-math`, `waterui-mermaid`, the crates listed in the next bullet) — lives in its own repository under `water-rs` and iterates on its own schedule. Releases are the boundary's stable form: a split repository depends on the framework as published on crates.io, and this tree consumes the split repository from crates.io, so the `[workspace.dependencies]` requirement names a published version. Between releases the two sides move on git: an unreleased change in a split repository is consumed here through a `[patch.crates-io]` entry pinned to the exact commit on that repository's `dev` (`git = "https://github.com/water-rs/<repo>", rev = "<sha>"`, as the `hydrolysis` entries do), and an unreleased framework change is consumed there the same way against this repository's `dev`. Always a `rev`, never a moving `branch` and never a `path` patch, so the graph stays reproducible; the CLI's `dev` channel resolves the same way. A framework pull request never carries split-repository code, and neither repository blocks the other. **Never ask the user to publish, release, tag, or bump a version as a prerequisite for your work.** A release is the user's decision on the user's schedule; unless the user has stated a release plan in the current task, the only way to consume an unreleased change is the git pin above, and "waiting for a release" is never a state a task ends in. When a pull request needs a scaffold pin such as `hydrolysis-version` to move to a version that does not exist yet, record that fact once in the pull request for whoever cuts the release, and finish the work. A new self-drawn component starts as its own repository, created from the `hydrolysis` template, and is never added to this tree.
-- **Before adding a component crate, check whether the workspace already depends on one.** Several components were split into their own repositories and come back in from crates.io, so they are invisible when you search `components/` — `waterui-barcode` (QR and the other symbologies), `waterui-chart`, `waterui-map-gpu`, `waterui-canvas`, `waterui-particle`, `waterui-image`, `waterui-video-gpu`, `waterui-visualizer`, `waterui-math`, `filtrate`, `shaderloom`, `nami`, `merman`. `waterui-mermaid` lives in water-rs/mermaid too, but its merman fork dependencies are git-only, so nothing here can consume it from crates.io — a git dependency is the only way to reach it. Read `[workspace.dependencies]` in the root `Cargo.toml`; each entry names a component that already exists, and a split component's example lives in that component's repository rather than in `examples/`. Extending one of those means a change in its own repository and a version bump here, never a second crate in this tree — and a QR-only type beside `Barcode` would be the parallel-type mistake Principle 1 rules out, since the symbology is an attribute of one semantic component.
-- Prefer modern, cutting-edge tooling over legacy defaults when we choose or scaffold a toolchain — `bun` over `npm`/`yarn`, `uv` over `pip`/`pipenv`, and similarly for other categories. This is about the defaults we generate, never about overriding a project's declared toolchain: a lockfile or manifest in the user's project is the source of truth and is always respected.
-- Do not drag unrelated files into the diff.
-- Do not run workspace-wide formatters or refactors such as `cargo fmt --all`, bulk codemods, or broad search-replace when the task only targets a few files.
-- Prefer file-scoped formatting and verification on the exact files you intentionally changed. For direct Rust file formatting, never run bare `rustfmt`; pass the workspace edition explicitly, for example `rustfmt --edition 2024 path/to/file.rs`, so rustfmt does not parse this Rust 2024 workspace as Rust 2015 and does not module-walk into unrelated files.
-- Do not run multiple `cargo` commands in parallel. It only creates lock contention and provides no benefit in this repository.
-- Do not hardcode versions, repository URLs, package sources, filesystem paths, or other environment-derived constants just to ignore real complexity. If a value has a real source of truth, derive it from metadata, build inputs, repository structure, or runtime context instead of freezing a literal.
-- **Tooling we ship must never recover semantics from user source code — no extracting configuration, paths, flags, attribute usage, or any other meaning by text search, regex, or AST parsing (`syn`, `ast-grep`, tree-sitter, or any other parser). No exceptions, for any reason.** Source text is not ground truth: it cannot see through macro expansion, `cfg` resolution, generics, or indirection, so scanning it produces wrong answers exactly where the language is doing its job. This constrains implementation behavior — e.g. the `water` CLI locating a frontend project — not an agent's own code reading. Values reach tooling through channels designed to carry them — filesystem layout, a manifest the tool owns, environment variables — or through **compiler-produced artifacts**: a macro may emit a symbol or a generated file, and tooling may enumerate the compiled artifact's symbol table or read files it generated, because the artifact is ground truth that has already resolved macros, cfgs, and generics. When no such channel exists, design and build the channel; do not scrape user code for one.
-- **The canonical channel for a proc macro to convey metadata to the `water` CLI (or any tooling) is metadata symbols in the compiled artifact.** The macro emits a `#[used] static` whose item name starts with `waterui_meta_` and whose bytes carry the payload, and puts it behind `#[cfg(debug_assertions)]` — every such static, whatever consumes it. `#[used]` keeps the item in the object file and rlib so `object` plus `rustc-demangle` can enumerate it by prefix (the mangling contains the item path); never use `#[no_mangle]`/`#[export_name]`, which would put it in a cdylib's export table. Do not count on the final link to garbage-collect it: on Mach-O `#[used]` emits `no_dead_strip`, and a `#[used]` static in an app that shipped has been observed in the release executable. The debug gate is what makes the shipped binary carry zero bytes of it. This works because the CLI never reads metadata from the target build: it runs a dev-profile `cargo build --lib` of the user crate on the host and reads the resulting rlib (`build_host_rlib`), so packaging in release still sees every mount. Two consequences are part of the contract: the user crate must be a library (the CLI-generated FFI/bin wrapper is the leaf crate — a bin crate has no rlib to read), and a declaration behind a target-specific `cfg` (`#[cfg(target_os = "ios")] include_bundle!(..)`) is invisible to host discovery — declare mounts unconditionally. The artifact is ground truth that has already resolved macros, cfgs, and generics, so indirection that defeats source scanning cannot defeat this. Do not invent per-feature side channels — generated files, env hacks, source scraping; extend this one mechanism instead. Do not run external processes (bundlers, generators) inside a proc macro either: rust-analyzer re-expands macros on every edit, `cargo check`/`clippy` expand them too, and packaging builds several targets — expansion must stay a pure read; anything that runs a tool belongs to the CLI after the build.
-- Do not add blind timing workarounds such as fixed sleeps, fixed-duration `RunLoop` waits, or arbitrary retry delays to "probably" wait for readiness. Wire the code to the real readiness/completion signal. If synchronous code must bridge to async readiness, keep driving the relevant event loop only until that concrete readiness condition completes.
-- **Never wait silently for more than 1 hour.** The prompt cache TTL is 1 hour; a longer silent gap costs a full re-read of the session. Any waiter or monitor that can run past an hour must emit an event within ~50 minutes (a timeout it re-arms on, or a heartbeat line from the waiter itself), the same rule covers the end of a turn with work still pending, and every waiter is killed the moment its purpose is served.
-- **`std::thread::sleep` is banned in tests. There is no exception for "just advancing an animation".** The animation clock advances when frames are pumped, not when wall-clock time passes, so a bare sleep freezes it: every deferred step is then applied at once on the next snapshot, and a capture meant to show a transition mid-flight silently shows its end state. The test still passes and the PNG still looks plausible, which is what makes this one dangerous. To sample a phase, pump: `OffscreenApp::pump_for(Duration)`. To wait for a condition, wait on the condition (`Query::wait_for_existence` and friends). The only sleep that belongs anywhere is the per-frame pacing *inside* a pump loop.
-- Check `git status --short` before and after formatting or codegen steps. If unrelated files appear, stop and narrow the command instead of continuing with a polluted diff.
-- Only use repo-wide formatting or sweeping rewrites when the user explicitly asks for them or the task genuinely requires touching the whole workspace.
-- Follow **CI Ownership and Framework Channels** above, which supersedes the test-heavy dev gate from #379. The fast gate is tracked in #458; immutable nightly promotion and CLI channel selection are #460 and #461. Preserve the full nightly suite and failure reporting while moving implementation-specific checks to their owning repositories. Do not treat a scheduled workflow as a certified distribution until its promotion and version-locking contracts are implemented.
-- Workflow files under `.github/workflows/` may be changed WITHOUT asking when the change is a pure performance optimization that preserves coverage: cache keys and `save-if`/`cache-targets` tuning, job splitting or reordering, timeouts, runner sizing, moving a non-gating leg off the critical path onto a schedule, or adding a fast lane. A slow pipeline is a defect to fix, not a fact to endure. What still requires explicit authorization is any DEGRADATION: removing or skipping tests, dropping a platform or feature combination, loosening a lint gate, disabling a check, or trading correctness signal for speed. When in doubt about which side a change falls on, ask.
-- GitHub Actions workflows should stay minimal and declarative. Do not put heavy release logic, repository analysis, packaging validation, or hand-rolled orchestration scripts into workflow YAML when a maintained community tool can own that behavior.
-- Cross-Backend Regression is a CI pipeline concern, not user-facing README documentation. Keep references to it in CI/developer-maintainer context rather than public product docs.
-- Prefer maintained community actions and purpose-built tools over custom shell/Python scripts in workflows. Release publishing should be delegated to `release-plz`; the only extra workflow glue this repository carries is the `framework.json` attachment on a facade release.
-- A published CLI scaffolds projects against the `framework.json` that `.github/scripts/framework_manifest.py` certifies: the release job attaches it to each `v<version>` framework release, and `water channel nightly` reads the same shape from the last certified nightly prerelease. The manifest's scaffold table is derived from the framework, never from the CLI: extracted-crate requirements (`hydrolysis-version`, `waterui-gtk-version`, …) come from the root `Cargo.toml`'s `[workspace.dependencies]` — a requirement that is a git pin is experimental, so a `stable` manifest withholds its `{name}-*` entries and records the pin under `experimental-packages` while `nightly` carries it in `scaffold` like any other package — backend coordinates (`*-backend-url`, plus `{name}-backend-version` for a backend pinned by release rather than gitlink) and `minimum-cli-version` live in its `[package.metadata.waterui]` table — which the manifest also carries verbatim as `metadata` — and each gitlinked backend's pinned commit comes from the revision's submodule gitlinks. The only scaffold fact the CLI owns is `android-kotlin-version` in its own manifest's `[package.metadata.waterui-scaffold]` (water-rs/cli); its `build.rs` fails the build if a framework-owned key lands there. `water create` derives the same table from a `waterui_path` checkout's own root manifest, and `--framework-manifest <path>` pins a project to a certified manifest read from disk (release preflight uses it before the release exists). A CLI released with stale literals handing every new project an old framework (#548) is impossible because the CLI carries no framework literals at all.
-- Do not patch around repository-state problems by adding workflow preflight scripts or CI workarounds. Fix the source tree, manifests, submodules, or release configuration at the real source of truth.
-- Do not add crate-level, file-level, or module-level `allow` attributes to skip lint failures during cleanup. Treat lint as code-quality feedback and fix the underlying code, API shape, docs, or type invariants instead.
-- If a lint is a genuine false positive or conflicts with the intended architecture/readability, prefer a narrowly scoped item-level `allow`/`expect` with a concrete reason over contorting the code to satisfy the lint. WaterUI is a main-thread UI framework, so UI-local `spawn_local` futures that capture non-`Send` view state are a valid example. Do not use broad lint exceptions, and do not add exceptions without evidence.
-- Every task gets its own git worktree on a topic branch; the main checkout stays on `dev` and is not edited. `git worktree add -b <branch> ../waterui-wt-<task> origin/dev`. Warm the build with an APFS clone of a sibling checkout's build directory before the first cargo command — `cp -c -R <sibling>/target <worktree>/target` is instant and copy-on-write — and never set `CARGO_TARGET_DIR` or `build.target-dir`: the per-worktree `target/` plus the shared `sccache` is what keeps parallel worktrees from contending on Cargo locks. A backend change is a pull request in that backend's own repository; the framework then bumps its pin (`apple-backend-version` or `android-backend-revision` in `[package.metadata.waterui]`). Remove the worktree (`git worktree remove`) once its pull request has merged.
-- Use the `waterui` skill only when authoring WaterUI app/example code or checking public user-facing API usage.
-- **Building an app or example is also a framework audit.** While authoring app/example code, every point where a WaterUI component or feature does not exist and its absence costs developer experience or user experience — a primitive you had to hand-roll, a modifier that should be built in, a gap you worked around — is a GitHub issue on this repository, filed under the same rules as any other finding. Do not silently absorb the friction into the example; the example's job is to expose it.
-- The repo-local `.claude/skills/waterui/SKILL.md` is for WaterUI users. Update it only when a user-facing public authoring pattern, API usage rule, or app-level CLI usage changes.
-- **Agent-facing surface: stateful is MCP, stateless is skill + CLI.** When a capability is aimed at a coding agent, pick its shape by whether the operation is a step in a conversation with a live process or a pure function of its inputs. A live session — `water mcp`, the offscreen app the agent drives turn by turn — is an MCP server, because the connection is the session: the agent host owns the process lifetime, and a crash is a visible tool error instead of a silent restart with reset state. A pure function — `water build`, `water test`, `water package` — is a CLI command documented in the skill, which keeps shell composition (pipes, `xargs`, CI) that MCP loses. A stateless operation whose output is an image the model itself has to look at — `water preview` — gets both: the CLI for scripts, and an MCP tool returning the image as image content, since the shell round trip costs the agent an extra turn just to read the file. Do not wrap a genuinely stateful session in stateless CLI verbs with session ids: the daemon dying and coming back fresh is invisible to the agent. Scripted, repeatable stateful interaction is neither surface — it is a `#[waterui::test]`.
-- "Visual test" in this repository means the agent reads the generated image directly with its own vision capability. Heuristic image checks are forbidden, including changed-pixel counts, opaque-pixel thresholds, bbox approximations, dominant-color checks, brightness checks, non-uniform checks, and similar proxy code.
-- Before writing any new image/gallery/snapshot export code, search for and reuse the existing `waterui-testing`, preview, showcase, GPU snapshot, or filter gallery infrastructure. Do not add ad-hoc gallery examples, scripts, or binaries unless the user explicitly asks to create or extend that infrastructure.
-- For filter visual review images, the canonical reusable infrastructure is `cargo nextest run -p filtrate --lib -E 'test(gpu_export_filter_gallery_images)' --no-capture`, which exports PNG files to `/tmp/waterui_filter_gallery/`. Use this path to show filter outputs instead of creating a new gallery generator.
-- Keep operational agent guidance in this file, not in product documentation or public change narratives. Write issue, PR, and commit text directly as project statements: no assistant signatures, generated-by footers, session links, or third-person delegation/approval narration. Preserve technical tool names and paths when they are the actual subject, and preserve contributors' factual findings and verification results.
-- Keep `.claude/skills/waterui/SKILL.md` strictly user-facing. If information is primarily for agents or maintainers rather than app authors using WaterUI, it belongs in `AGENTS.md` or implementation docs, not in the user-facing skill.
-- `.claude/skills/waterui/skill_snippets/` is the compile gate for `.claude/skills/waterui`: every rust fence in the skill is transcribed there (verbatim modulo rustfmt, with loudly-marked glue) and CI compiles it. When you change a skill code snippet, regenerate the matching module following the conventions in that crate's README. Its `#[waterui::test]` / `#[waterui::bench]` transcriptions sit behind the non-default `compile-gate-tests` feature: CI compiles them with `cargo check -p skill_snippets --all-targets --features compile-gate-tests`, and they must never be executed — they address elements that do not exist, by design.
-- `waterui-testing` is based on the Hydrolysis accessibility tree, not native platform accessibility. Prefer `waterui-testing` for UI component coverage, and treat it as both an interaction test and an accessibility-correctness test.
-- Every UI component is expected to produce a meaningful accessibility tree. If a component cannot be covered by `waterui-testing`, treat that as a bug to fix rather than a gap to paper over.
-- `GpuSurface::new(renderer)` owns one `GpuView` instance for that surface lifetime. `GpuView::setup()` is where persistent GPU resources for that renderer instance belong. Do not move renderer state into hidden shared caches just to survive `GpuSurface` teardown or parent rebuild.
-- `GpuContext::redraw_handle` is how async work or an external event requests another frame for the same surface instance. A `GpuSurface` torn down by a parent rebuild takes its `GpuView` with it; that is the reconstruction contract, not a bug to route around with out-of-band renderer resurrection.
-- Prefer `#[waterui::test(view_fn)]` when a test only needs the default `UiTest::new().mount(view_fn)`; construct `UiTest` explicitly only for a custom viewport or environment. Verify layout through semantic children and bounds relationships in the Hydrolysis tree, never by attaching synthetic accessibility metadata to decorative fills.
-- Keep a component body's shape as simple and concrete as its semantics: do not wrap otherwise static content in a `Dynamic` because the body has a branch. `waterui_chart::Tooltip` only mounted cleanly once a `#[view_builder]` body branch was replaced by explicit `AnyView` branching.
-- For text APIs, use `text()` for static text and `text!` for reactive formatting. Do not use `watch()` to build reactive text when `text!` or signal-taking APIs already express the dependency directly.
-- A **dynamic set of views** is a collection, not a `watch`: render it with `ForEach`/`List` over a reactive collection (`nami::collection::List`, `Identifiable` items) so membership changes diff by id. `watch(binding_of_vec, …)` rebuilds and re-dispatches the whole subtree on every change (and may escalate to a full-window structural rebuild) — that is the watch-abuse Principle #8 forbids. Authoring layer uses `ForEach`/`List`; the backend has `get_id`/`watch`/`get_view` to render it incrementally.
-- A **window overlay layer** (snackbar/toast/dialog host) must fill the window — wrap it in `AbsoluteLayout` (`StretchAxis::Both`, hands every child the full window bounds), never a content-sized `ZStack`. The window root composes `zstack((content, overlay, …))` and places a content-sized overlay by its intrinsic size, so edge-anchored children only land correctly in a small window and mis-anchor/vanish when the window is large or resized. A constant-size full-window layer also keeps reactive membership updates from escalating to full-window rebuilds.
-- Do not write `waterui::text!`. Always import the macro first, then use the short `text!` form.
-- Do not inline absolute paths like `::waterui_core::views::ForEach` inside macro bodies or expanded code. Bring the names into scope with `use ...;` at the call site (or in the surrounding module) and reference them with bare identifiers — `ForEach`, `Collection`, `Identifiable`, `View`. The same applies to plain function/type usage: import first, use bare names. Long absolute paths add visual noise and break the look of declarative WaterUI code.
-- Do not add `anyhow` as a direct dependency in any `Cargo.toml` in this workspace. The error type is re-exported as `waterui_core::Error`; reach for that re-export when implementing traits whose associated error is `anyhow::Error` (e.g. `Extractor`). `thiserror` and other error-construction utilities are unaffected.
-- **Whoever owns the main loop supplies the `LocalExecutor`.** Every WaterUI host
-  already has one — winit (`WinitMainThreadExecutor`), GTK
-  (`GtkMainThreadExecutor`, via `glib::idle_add_local_once`), headless
-  (`HeadlessMainThreadExecutor`), dew (`embedded_executor::install()` plus a
-  per-frame `tick()`). Give `try_init_local_executor` an executor bound to that
-  loop; never hand it `native_executor::NativeExecutor`. On non-Apple targets
-  `NativeExecutor` delegates to the polyfill, whose `spawn_main_local` asserts it
-  runs on the thread registered by `start_main_executor` — a blocking, never-
-  returning entry point that a loop-owning host must not call, because it would
-  declare some unrelated thread "main" while `MainThreadBound`, layout and the
-  GPU surface all live on the loop thread. `NativeExecutor` remains correct for
-  `try_init_global_executor`, which needs no main-thread affinity. The mistake is
-  made at install time but only panics at the first `spawn_local`, so it is worth
-  checking explicitly whenever a new host or test harness is added.
-- Measurement caching is the `SubView`'s responsibility, never the `Layout`'s. The `Layout` trait deliberately has no cache — containers probe children freely with many proposals — so any caching (text shaping above all, which **must** cache) lives in the `SubView` implementation. Layout measurement is single-threaded by contract (running on whichever thread drives layout), so a `SubView` is neither `Send` nor `Sync` and its cache may be a plain `RefCell` (as in `MemoizedSubView`). Parallelism belongs in batched renderer pre-passes, not per-container measurement loops. Do not add caching to `Layout`.
+**Keep the change set clean.** No unrelated files in the diff. Never run workspace-wide formatters, bulk codemods, or broad search-replace unless the user asks or the task genuinely spans the workspace; format and verify the files you changed, and never run bare `rustfmt` — pass the edition (`rustfmt --edition 2024 path/to/file.rs`) so it neither parses this Rust 2024 workspace as 2015 nor walks into other modules. Check `git status --short` before and after formatting or codegen, and narrow the command if unrelated files appear.
 
 <important>
-    For rust: YOU CANNOT USE println, use tracing::debug!() instead for debug output.
-    For swift: YOU CANNOT USE print(), use Logger instead for debug output. It uses `dev.waterui` as the log subsystem.
-    For kotlin: YOU CANNOT USE println(), use Log.d() instead for debug output.
-
-    Note that debug output will only appear if the CLI is run with --logs debug flag.
-
-    For application creation, builds, previews, and execution, ALWAYS use the water CLI (water create, water build, water preview, water run, etc.). Do not bypass its application workflow with direct native-tool invocations.
-
-    Standalone crate/backend-package verification uses the package's own toolchain: Cargo for Rust, SwiftPM for Swift packages, and Gradle for Android packages. This does not authorize hand-scaffolding an application or bypassing water for application deployment. If an application workflow requires direct adb/xcodebuild/other tool use because water lacks the capability, propose adding that capability to the CLI.
-
-    Never hand-create or manually scaffold project/app structure. Always use `water create` (or existing generated project files) as the source of truth.
-    For monorepo examples/playgrounds in local dev mode, `Water.toml` must explicitly set `waterui_path = "../.."` to force local backend usage and avoid remote backend resolution.
+- Diagnostics never use `println!` (Rust), `print()` (Swift) or `println()` (Kotlin): use `tracing::debug!()`, `Logger` with the `dev.waterui` subsystem, and `Log.d()`. Debug output appears only when the CLI runs with `--logs debug`.
+- Applications are created, built, previewed, run and deployed only through the `water` CLI (`water create`, `build`, `preview`, `run`, `package`), never by hand-scaffolding or direct native-tool invocation; `water create` or existing generated project files are the source of truth for project structure. If an application workflow needs `adb`, `xcodebuild` or another tool directly because `water` lacks the capability, propose adding it to the CLI. Standalone crate or backend-package verification uses the package's own toolchain: Cargo, SwiftPM, or Gradle.
+- Monorepo examples set `waterui_path = "../.."` in `Water.toml` so they use the local backends.
+- Fail fast: an unexpected case surfaces early with a clear message. The framework, its backends and components run inside a user's application and never panic casually: a contract violation panics in a debug build and is logged through `tracing` in a release build. The CLI, tests and build scripts crash on it. No stubs, fallbacks, simplifications or patches, and no legacy code kept as a fallback: a deprecated feature loses all of its code.
+- Enforce invariants in the type system rather than at runtime; prefer structs, traits, and generics over enums and type erasure where they express the model.
+- A public struct is either fixed-shape plain data, with every field public and no `#[non_exhaustive]`, or keeps its fields private behind `Type::new`, getters and, where mutation is part of its contract, `set_*` setters. `#[non_exhaustive]` on a struct with public fields is banned: it exposes the representation while still forcing a constructor, as std never does.
+- Public traits expose the friendliest signature even when not object-safe (`-> impl Future`/`-> impl View`, generic methods, RPITIT). Dynamic dispatch goes through a private object-safe shim trait (`XxxImpl`) with a blanket `impl<T: Xxx> XxxImpl for T`, stored as `Box<dyn XxxImpl>` behind a public wrapper (`AnyXxx` / `ViewRenderer`-style); type erasure never shapes the public API (`core/src/ui/view_renderer.rs` is the canonical example).
+- Backend configuration types store **erased** selection and item state (`Binding<Id>`, `Binding<Option<Id>>`, `Computed<Vec<PickerItem<Id>>>`). That is deliberate at that layer: never report it as a flaw or make the configuration type generic. The public constructor stays generic over the app's type and erases through `Mapping<T>` (`core/src/foundation/id.rs`), which assigns stable `Id`s and maps back with `to_data`; canonical pairs are `Picker::new<T>` → `PickerConfig`, `NavigationSplitView::new<T>` → `NavigationSplitLayout`, `Tabs::new<T>` → `TabsLayout`. The real bug is a type that is both authoring API and raw view (`raw_view!` on the authoring struct), leaking `Id` into app code (`Id::try_from(1)`); fix it by adding the generic constructor.
+- `Type::new(...)` is the general constructor, accepting the most general shape the component renders; free functions such as `button(...)` are ergonomic entry points that may take narrower semantic inputs. `Button::new(...)` takes arbitrary label views while `button(...)` takes `IntoLabel`, so literals, i18n-friendly text and default accessibility semantics compose. Never add parallel constructors like `Type::custom(...)`. Semantic text and label APIs take `IntoText` / `IntoLabel`, not raw `impl View`, unless they are for arbitrary visual composition.
+- Shaders and large text assets live in separate files, never string literals.
+- No duplicated code; factor it into a shared function or module.
+- Import items with `use` and refer to them by their bare names wherever possible; spelled-out absolute paths belong only in macro-generated code.
+- Runtime render paths never read GPU render targets or textures back to CPU memory.
+- Import maintained third-party crates rather than write your own implementation.
+- `GpuContent`-based components are visually tested through `OffscreenRenderer`, which renders `GpuContent` and scenes without a surface.
 </important>
 
-<important>
-- Follow fast fail principle: if an unexpected case is encountered, crash early with a clear error message rather than fallback.
-- Utilize rust's type system to enforce invariants at compile time rather than runtime checks.
-- Prefer structs, traits, and generic abstractions over enums and type erasure when they express the intended model.
-- Public traits expose the friendliest signature even when it is not object-safe (`-> impl Future`/`-> impl View`, generic methods, RPITIT). When dynamic dispatch is needed internally, do NOT degrade the public trait: add a private object-safe shim trait (`XxxImpl`) with a blanket `impl<T: Xxx> XxxImpl for T`, and store `Box<dyn XxxImpl>` behind a public wrapper type (`AnyXxx` / `ViewRenderer`-style). Type erasure is an implementation detail, never the user-facing API shape (see `core/src/ui/view_renderer.rs` for the canonical example).
-- The C ABI cannot carry generics, so every native/config type stores **erased** selection and item state: `Binding<Id>`, `Binding<Option<Id>>`, `Computed<Vec<PickerItem<Id>>>`. That erasure is deliberate and correct at that layer — do NOT report it as a design flaw, and do NOT try to make the FFI representation generic. Keep it *below* the authoring layer instead: the public constructor stays generic over the app's own type and erases through `Mapping<T>` (`core/src/foundation/id.rs`), which assigns stable `Id`s and maps them back with `to_data`. Canonical pairs are `Picker::new<T>` → `PickerConfig`, `NavigationSplitView::new<T>` → `NavigationSplitLayout`, and `Tabs::new<T>` → `TabsLayout`. The bug to look for is the opposite one: a type that is simultaneously the authoring API and the raw view (`raw_view!` + `ffi_view!` on the same struct) leaks `Id` into app code and forces callers to write `Id::try_from(1)` (no current component has this defect). Fix that by adding the generic constructor, never by changing the FFI type.
-- Put shader to a separate file rather than embedding as string literal. Same for large text assets.
-- Do not write duplicated code. If you find yourself copying and pasting code, consider refactoring it into a shared function or module.
-- Preserve the selected renderer's contract: Hydrolysis is GPU-required; Dew deliberately uses CPU rasterization for constrained devices. Do not add a CPU fallback to Hydrolysis or force GPU dependencies into Dew's lean graph.
-- You are not allowed to revert or restore files or hide problems. If you find a bug, fix it properly rather than working around it.
-- Do not leave legacy code for fallback. If a feature is deprecated, remove all related code.
-- No simplify, no stub, no fallback, no patch.
-- Do not use `pkill` blindly in scripts, as it may kill other important processes. Instead, track PIDs of spawned processes and kill them specifically. For instance, `pkill -9 -f "WaterUIApp" 2>/dev/null` is not allowed.
-- Do not clean cache blindly
-- Never disable `sccache` under any circumstance (do not set `WATERUI_DISABLE_SCCACHE=1`, and do not bypass `sccache` via `RUSTC_WRAPPER=`), because disabling cache causes storage usage to explode.
-- Never read back GPU render targets/textures to CPU memory in runtime render paths. This violates GPU-first architecture and causes severe performance degradation.
-- Do not use `git checkout` to back out changes, as it can lead to loss of work
-- Import third-party crates instead of writing your own implementation. Less code is better.
-- Do not create custom Cargo target directories (for example, `CARGO_TARGET_DIR=/tmp/...`) in this monorepo. Always use the repository's default `target/` directory.
-- `GpuSurface` supports offload/offscreen rendering. When developing any `GpuRenderer`-based component, you must use offload/offscreen rendering for visual testing.
-- CI is expensive, please read full error message if CI fails. Do not blindly push commits to trigger CI again before fixing all problems you learnt.
-- For public API design, follow this repository style consistently: `Type::new(...)` is the general constructor, while free function constructors such as `button(...)` are ergonomic convenience entry points. Do not introduce parallel APIs like `Type::custom(...)` when `Type::new(...)` already covers the general case.
-- Keep the constructor split explicit in API design and documentation:
-  - `Type::new(...)` is the general constructor and should accept the most general shape that the component can render.
-  - Free function constructors like `button(...)` are ergonomic convenience entry points and may accept narrower semantic input types for better defaults.
-  - Example: `Button::new(...)` should remain the general constructor for arbitrary label views, while `button(...)` is the ergonomic constructor that accepts `IntoLabel` so literals, i18n-friendly text, and default accessibility semantics compose naturally.
-  - For semantic text and label APIs, prefer `IntoText` / `IntoLabel` over raw `impl View` so string literals naturally enter the i18n-aware semantic text pipeline. Only accept `impl View` when the API is intentionally for arbitrary visual composition rather than semantic text or labels.
-</important>
+- Never hardcode versions, repository URLs, package sources, paths, or other environment-derived constants to dodge real complexity; derive them from their source of truth (metadata, build inputs, repository structure, runtime context).
+- **Tooling we ship never recovers semantics from user source code** — no configuration, paths, flags, attribute usage, or other meaning extracted by text search, regex, or any parser (`syn`, `ast-grep`, tree-sitter). No exceptions. Source text cannot see through macro expansion, `cfg` resolution, generics, or indirection. This binds shipped behavior, not an agent's own code reading. Values reach tooling through channels built for them — filesystem layout, a manifest the tool owns, environment variables — or **compiler-produced artifacts**, which have already resolved macros, cfgs, and generics; when no channel exists, build one.
+- **The canonical channel for a proc macro to convey metadata to the `water` CLI (or any tooling) is a record in a dedicated linker section of the compiled artifact.** The macro emits a `static` whose item name starts with `waterui_meta_`, places it in the `.wmeta` section (`__DATA,__wmeta` for Apple debug builds, `__DWARF,__wmeta,regular,debug` for release-consumed Apple records in release builds), and makes its bytes a self-describing record: the item's name, NUL, the payload, NUL. The record format is the channel's whole contract and lives in `waterui-meta` (`utils/meta`), a zero-dependency `no_std` crate holding the section name, the record builders (`dir_entry`/`dir_record`) and the section walker (`dir_records`); emitters, decoders and the CLI all import it. A record is identified by its own name field, not by the symbol table, because a linked MSVC image keeps no COFF symbol table. Debug-only consumers keep `#[cfg(debug_assertions)]` so shipped binaries carry none of their records. Apple records use `#[used]` so private-scope records survive code generation into library archives; the final release link omits the tooling segment. The CLI reads the records from the project crate's library artifact of the build it just ran, so the user crate must be a library and a gated record reaches only debug builds. A record whose consumer also runs on release builds omits the debug gate, and its consumer reads the pre-link library artifact. Records use `#[used]` on every target: a staticlib gives a `pub static` internal linkage, so a release-consumed record without it is dropped on ELF and COFF. Metadata statics are never `#[no_mangle]`/`#[export_name]`, which would put them in a cdylib's export table; exports are reserved for entry points a host calls, such as `waterui_preview_*`. Do not invent per-feature side channels — generated files, environment variables, source scraping; extend this one mechanism. Do not run external processes inside a proc macro: rust-analyzer, `cargo check` and every packaged target re-expand macros, so expansion must stay a pure read, and anything that runs a tool belongs to the CLI after the build.
+- No blind timing workarounds — fixed sleeps, fixed-duration `RunLoop` waits, arbitrary retry delays. Wire code to the real readiness or completion signal; synchronous code bridging to async readiness drives the event loop only until that concrete condition completes.
+- No crate-, file- or module-level `allow` to silence lints; fix the code, API shape, docs, or type invariants. A genuine false positive or architectural conflict gets a narrowly scoped item-level `allow`/`expect` with a concrete reason and evidence — UI-local `spawn_local` futures capturing non-`Send` view state are a valid case in this main-thread UI framework.
+- No direct `anyhow` dependency in any `Cargo.toml`: the error type is the `waterui_core::Error` re-export, also for traits whose associated error is `anyhow::Error` (`Extractor`). Custom error enums derive `thiserror`.
+- Rust edition 2024; the toolchain floor is `rust-version` in the root manifest. Workspace lints are strict clippy, pedantic and nursery included.
+- Keep a component body's shape as simple and concrete as its semantics: never wrap otherwise static content in a `Dynamic` because the body branches.
+- Every UI component produces a meaningful accessibility tree; one `waterui-testing` cannot cover is a bug.
 
-## Build Commands
+## Testing
+
+- **Run tests with `cargo nextest run`, never `cargo test`** (install: `cargo install cargo-nextest --locked`): `--workspace`, `-p <crate>`, `-E 'test(<name>)'`; `--no-capture` shows output and forces serial execution, so scope it with `-E`. nextest runs each test in its own process: a test that relies on a sibling's process-global initialization is order-dependent and is fixed, not served by switching runners. `cargo test` is for doctests (`cargo test --doc --workspace`) and for `harness = false` native binaries that must own the process main thread (the CEF and WKWebView real-engine tests), with their explicit `cargo test -p <crate> --test <target>` and required features.
+- **`std::thread::sleep` is banned in tests, including "just advancing an animation".** The animation clock advances when frames are pumped, not with wall-clock time: a sleep freezes it, every deferred step lands at once on the next snapshot, and a mid-transition capture silently shows the end state while the test passes. Sample a phase with `OffscreenApp::pump_for(Duration)`; wait on a condition with `Query::wait_for_existence` and friends. The only sleep anywhere is per-frame pacing inside a pump loop.
+- **`waterui-testing`** drives UI through the Hydrolysis accessibility tree, not native accessibility; prefer it for component coverage, as an interaction and accessibility-correctness test. It is for the crates that consume it, never Hydrolysis itself: it depends on `hydrolysis`, so a Hydrolysis dev-dependency on it is a cycle that also links a second renderer copy into test binaries (water-rs/waterui#2447). Hydrolysis's own machinery — layout, dispatch, scroll, safe-area, accessibility plumbing — is tested with standard Rust tests under `backends/hydrolysis` against its own API: `SemanticRuntime`, `HeadlessRuntime`, and `hydrolysis::testing::TestStyle` for rendered mounts. Tests needing a real style package's metrics or pixels belong to that package's repository (`hydrolysis-m3` owns Material 3 evidence, water-rs/hydrolysis-m3#113).
+- **Rendered output is judged by visual equivalence, never byte-, bit-, ULP- or pixel-level identity** — for optimizations, fixes and new realizations, between backends, SIMD levels, routes and the oracle. A rendered-output test asserts a FLIP tolerance and a numeric kernel test a tolerance below what a viewer can see; replacing an exact or pixel assertion with one is not a weakening, and numerical differences alone never block a change.
+- **"Visual test" means the agent reads the generated image with its own vision.** Heuristic image checks are forbidden: changed-pixel counts, opaque-pixel thresholds, bbox approximations, dominant-color, brightness or non-uniform checks, and similar proxies.
+- Before writing image, gallery or snapshot export code, reuse the existing `waterui-testing`, preview, showcase, GPU snapshot, or filter gallery infrastructure; ad-hoc gallery examples, scripts, or binaries only when the user asks to create or extend that infrastructure. Filter review images come from `cargo nextest run -p filtrate --lib -E 'test(gpu_export_filter_gallery_images)' --no-capture`, which writes PNGs to `/tmp/waterui_filter_gallery/`.
+- **JavaScript suites Cargo does not discover:** `components/platform/webview/src/js/` (injected into pages by the backends) and `components/platform/ts/src/js/` (the JS engine's `waterui` virtual module). Touching either, or the bridge envelope/state protocol, means running `bun test components/platform/webview/tests/js/` or `bun test components/platform/ts/tests/js/`; Rust or real-engine tests do not replace them. Nightly runs both as required checks that block certified-version promotion.
+- Add durable tests selectively for meaningful, recurring failure risks, weighing existing coverage, redundancy, maintenance, and suite runtime; extend or consolidate existing tests over growing overlapping ones. One-off diagnostic and validation tests stay temporary and out of the repository.
+
+## Benchmarks
+
+Four layers, each measuring what the others cannot:
+
+| Layer | Measures | Where |
+| --- | --- | --- |
+| Micro-benchmarks | one function or kernel in isolation | `cargo bench` targets in each crate's `benches/`, on divan |
+| Engine | Cherenkov GPU and CPU against Skia and Vello on the same scenes, offscreen: stage times, completion latency, paced frame rate, energy, memory | `graphics/cherenkov/bench` (`cherenkov-bench`): its contract is [`graphics/cherenkov/AGENTS.md`](graphics/cherenkov/AGENTS.md), its usage the bench README |
+| App end-to-end | the same app built on WaterUI's backends (Hydrolysis, Apple) against Flutter, SwiftUI, Compose and the other contestants water-rs/waterui#1262 defines, on devices | the Android leg is `backends/hydrolysis/bench/android` |
+| `water bench` | a WaterUI view's per-frame cost, driven offscreen through Hydrolysis by `waterui-testing`, against frame-time and counter budgets (rebuild ratio, layer counts) | `#[waterui::bench]` functions, run by `water bench` |
+
+- Engine-layer device results and their history are recorded in [water-rs/cherenkov-benchmarks](https://github.com/water-rs/cherenkov-benchmarks); a claim about an engine's performance is read from it.
+- Wall-clock time and energy come only from quiet real devices; the device practice is in [`backends/hydrolysis/AGENTS.md`](backends/hydrolysis/AGENTS.md) and [`graphics/cherenkov/AGENTS.md`](graphics/cherenkov/AGENTS.md). Timing on shared CI runners never gates a merge: runner noise exceeds the effects measured. Only deterministic counts may gate — Callgrind instruction counts (`cherenkov-ir.yml`) and `water bench` counter budgets.
+- Build-time measurements cover only what users pay for: the cold build time, and the incremental compile and `water preview` time of a real app that depends on WaterUI — never the incremental build of WaterUI's own crates.
+
+## Agent-facing surface and skills
+
+- **Stateful is MCP, stateless is skill + CLI.** A live session the agent drives turn by turn (`water mcp`, the offscreen app) is an MCP server, because the connection is the session and a crash is a visible tool error. A pure function of its inputs (`water build`, `water bench`, `water package`) is a CLI command documented in the skill, keeping shell composition. A stateless operation whose output is an image the model must look at (`water preview`) gets both. Never wrap a stateful session in stateless CLI verbs with session ids. Scripted, repeatable stateful interaction is a `#[waterui::test]`.
+- Use the `waterui` skill only when authoring app or example code or checking public user-facing API usage. **Building an app or example is also a framework audit:** every missing component or feature whose absence costs developer or user experience — a hand-rolled primitive, a modifier that should be built in, a gap worked around — is an issue here, never friction absorbed into the example.
+- `.claude/skills/waterui/SKILL.md` is strictly user-facing, updated only when a public authoring pattern, API usage rule, or app-level CLI usage changes; agent and maintainer guidance belongs in `AGENTS.md` files or implementation docs, never in the skill, product documentation, or public change narratives.
+- `.claude/skills/waterui/skill_snippets/` is the skill's compile gate: every rust fence in the skill is transcribed there (verbatim modulo rustfmt, with loudly-marked glue) and CI compiles it. Changing a snippet means regenerating its module per that crate's README. Its `#[waterui::test]` / `#[waterui::bench]` transcriptions sit behind the non-default `compile-gate-tests` feature, compiled with `cargo check -p skill_snippets --all-targets --features compile-gate-tests` and never executed — they address elements that do not exist, by design.
+- Toolchain defaults we choose or scaffold are modern (`bun` over `npm`/`yarn`, `uv` over `pip`/`pipenv`, and so on in other categories); a user project's declared lockfile or manifest always wins.
+
+## Repository map
+
+WaterUI is a cross-platform reactive UI framework with native platform bridges and self-drawn backends; shared semantics and public rendering contracts are independent of the realization.
+
+```
+Rust view tree → backend contracts (waterui-backend-core)
+  → Apple backend   → AppKit / UIKit, driven through objc2
+  → Hydrolysis      → HWUI RenderNode display lists or
+                      Cherenkov (GPU, or CPU on microcontrollers)
+  → experimental backends (GTK, WinUI, TUI) in their own repositories
+```
+
+- `src/` — the `waterui` facade crate and its `prelude`
+- `core/` — `waterui-core`: `View`, `Environment`, `AnyView`, reactive primitives
+- `components/` — component crates by domain (`foundation/`, `visual/`, `multimedia/`, `platform/`, `devtools/`, `icon/`, …)
+- `backends/core` — shared backend contracts
+- `backends/apple` — the Apple backend · [`AGENTS.md`](backends/apple/AGENTS.md)
+- `backends/hydrolysis` — the self-drawn backend, Android included · [`AGENTS.md`](backends/hydrolysis/AGENTS.md)
+- `graphics/cherenkov/` — the 2D engine and its cross-engine bench · [`AGENTS.md`](graphics/cherenkov/AGENTS.md)
+- `graphics/filtrate/` — the filter library · [`AGENTS.md`](graphics/filtrate/AGENTS.md)
+- `cli/` — the `water` CLI (`waterui-cli`) · [`AGENTS.md`](cli/AGENTS.md)
+- `utils/`, `macros/`, `testing/` — supporting crates, the proc macros, `waterui-testing`
+
+The workspace members in the root `Cargo.toml` are the authoritative crate list. Every WaterUI project is entry-owning: WaterUI owns the program entry and the CLI generates and manages every backend project, so a project directory holds no Xcode or Gradle project to edit; `water create` produces exactly this shape, with no package types or modes to choose.
+
+## Commands
+
+Never clone or build source to obtain a binary the CI already produces: download the CI's artifact for that revision (the nightly uploads the release `water` CLI as `water-cli-<os>-<arch>`). Build it locally only when the revision has no artifact or the change under test is to that binary's own source.
 
 ```bash
-# Install the `water` CLI (required for `water run` to work). It lives in
-# water-rs/cli; a change to it is a pull request there, not here.
-cargo install waterui-cli
-# …or its integration branch:
-cargo install --locked --git https://github.com/water-rs/cli waterui-cli
-
-# Build entire workspace
+cargo install --path cli --locked        # this checkout's `water` CLI
 cargo build --workspace
-
-# Run tests (nextest is the default runner; see "Testing Patterns")
-cargo nextest run --workspace
-
-# Run tests for specific crate
-cargo nextest run -p waterui-core
-
-# Run workspace doctests separately from nextest
-cargo test --doc --workspace
-
-# The web view bridge's JavaScript unit suite is required by nightly.
-# Also run it locally after touching components/platform/webview/src/js/
-bun test components/platform/webview/tests/js/
-
-# Generate FFI C header (after modifying ffi/ APIs), never write C header by hand.
-# The generator is its own crate so building it costs cbindgen, not the framework.
-cargo +nightly run --manifest-path ffi/generator/Cargo.toml
-
-# Build Apple backend (its own repository — water-rs/apple-backend)
-cd ~/Coding/water-rs/apple-backend && swift build
-
-# Build Android runtime (its own repository — water-rs/android-backend;
-# `local.properties` is gitignored, so point Gradle at the SDK yourself)
-cd ~/Coding/water-rs/android-backend && ANDROID_HOME=$HOME/Library/Android/sdk ./gradlew runtime:assembleDebug
-
-# Run demo app (after creating a project)
-water run --platform ios
-water run --platform android
-water run --platform linux --backend hydrolysis
-
-# Create a playground for quick experimentation
-water create "My Playground" --mode playground
-
-# Preview a view function (renders to PNG without running full app)
+cargo nextest run --workspace            # or -p <crate>
+cargo test --doc --workspace             # doctests
+cargo build -p waterui-apple
+cargo build -p hydrolysis
+cargo clippy -p hydrolysis --target aarch64-linux-android
+water create "My App"
+water run --platform ios                 # android; linux --backend hydrolysis
 water preview my_view --platform macos --path ./app --output preview.png
 ```
-
-## Playground mode
-
-Playground mode allows CLI to delegate the detail of backend integration to the user, for instance, you cannot touch Xcode project directly in playground mode. Playground mode is recommended by default. All waterui project in this repo is in playground mode.
-
-## Preview System
-
-The `#[preview]` macro enables instant view rendering without running the full app:
-
-```rust
-#[preview]
-fn my_card() -> impl View {
-    text!("Hello Preview!")
-}
-```
-
-Symbol format: `waterui_preview_{crate_name}_{fn_name}` (crate name included to avoid conflicts).
-
-The preview system:
-1. Builds the project as a dylib
-2. Launches a preview app that loads the dylib
-3. Renders the view to PNG via native rendering pipeline
-4. Supports macOS, iOS Simulator, and Android
-
-## Architecture Overview
-
-WaterUI is a cross-platform reactive UI framework with both native platform bridges and self-drawn backends. Shared semantics and public rendering contracts are independent of the selected realization.
-
-### Core Data Flow
-
-```
-Rust View Tree → Public view/backend contracts
-  → FFI (C ABI / JNI) → Apple / Android native backend → Platform UI
-  → Rust backend → GTK native widgets or Hydrolysis GPU / Dew CPU rendering
-```
-
-### Crate Structure
-
-- **`waterui`** - Main crate, re-exports components and provides `prelude`
-- **`waterui-core`** - Foundation: `View` trait, `Environment`, `AnyView` type erasure, reactive primitives (`Binding`, `Computed`)
-- **`waterui-ffi`** - C FFI layer bridging Rust to native backends; `export!()` macro generates entry points
-
-### Component Libraries (`components/`)
-
-- `layout` - HStack, VStack, ZStack, ScrollView, Spacer
-- `controls` - Button, Toggle, Slider, Stepper, Picker, Progress
-- `text` - Text, styled text, fonts, markdown
-- `form` - Form builder with `#[form]` derive macro
-- `navigation` - Navigation containers, TabView
-- `media` - Video/audio playback
-- `graphics` - Canvas drawing primitives
-
-### Backends
-
-No native backend lives in this tree. Follow **Repository Boundaries and Distribution** when resolving their versions.
-
-- **Apple** - the remote Swift package `water-rs/apple-backend`, pinned by `apple-backend-version` in `[package.metadata.waterui]`
-- **Android** - the Gradle project `water-rs/android-backend` (Android Views + JNI), pinned by `android-backend-revision` in `[package.metadata.waterui]` and consumed through JitPack
-
-The high-end self-drawn renderer is not in this directory. `hydrolysis`
-(water-rs/hydrolysis, #480) and its Material 3 widget theme `hydrolysis-m3`
-(water-rs/hydrolysis-m3, #481) are consumed from crates.io. The GTK4 backend
-`waterui-gtk` (water-rs/gtk-backend, #612) is also an extracted crate consumed
-from crates.io. The versions the workspace builds against are the
-`[workspace.dependencies]` entries in the root manifest, and
-`[patch.crates-io]` there resolves the framework crates they name to this
-tree so the graph carries one copy of each.
-
-#### Rendering backend philosophy: Hydrolysis vs Dew (self-drawn renderers)
-
-WaterUI ships two self-drawn (non-native) renderers at deliberately opposite design points. They share `waterui-core`, reactivity, layout, and text, and diverge **only** in their render/flush strategy. Do not converge them, and do not port one's strategy onto the other — the divergence is the point. When touching either renderer, keep the change consistent with its half of this contract; a change that makes Hydrolysis frugal or Dew heavyweight is wrong by design.
-
-**Hydrolysis — the game-engine renderer (high-end, future-facing).**
-- GPU-first and GPU-required: rendering goes through Vello on `wgpu` with compute-shader support mandatory; there is no CPU rasterization path (`use_cpu: false`). Never add a CPU fallback or read GPU targets back to CPU in runtime rendering paths; offscreen test/snapshot export is a separate verification path.
-- Whole-scene redraw whenever it draws at all, like a game engine. There is intentionally **no** dirty-rectangle / partial-region / damage tracking, and there must not be. A frame is never partially redrawn: no region invalidation, no "only this widget changed so only repaint that rect", no damage accumulation. Do not add any of it.
-- The scope of a frame is all-or-nothing; *whether* to run one is a separate question, and Hydrolysis is free not to. The window pump is a two-state machine (`FrameMode` in the renderer's `src/runner/window.rs`): `Idle` does no work at all, and `Refresh` runs the full pass (relayouts the retained tree and re-encodes it). Every awake frame runs layout so the presented scene can never be stale against it. A window with nothing to show does not burn a frame. This is not damage tracking — every frame that *does* run still redraws the whole scene. Do not conflate the two: adding partial-region painting is forbidden, while skipping an idle frame is the design.
-- Targets high-end modern devices and high frame rates (120fps and above). High-refresh must be requested **explicitly** per platform (opt into ProMotion / high-refresh display links), not left to incidental vsync. Do not introduce a hard frame cap.
-- Designed to exploit modern hardware fully: modern GPU compute **and** multi-core CPU. Parallel scene building / rasterization across cores is part of the intended design; single-threaded execution is a gap to close, not the target. Do not assume or hard-wire single-threaded rendering.
-
-**Dew — the embedded renderer (constrained, resource-frugal).**
-- CPU-first; GPU is optional. The default and common path is pure-CPU rasterization (`vello_cpu` sparse-strip). It must run on MCU-class microcontrollers with no GPU and no full-resolution framebuffer.
-- Dirty-area rendering is the core architecture, not an optional optimization: only changed regions are re-rasterized, sliced into horizontal bands, so peak pixel memory is one band — never a full frame. Do not introduce full-frame redraw into Dew.
-- Modest, power-frugal frame rates: 30/60fps (the runtime ticks at ~16ms). Do not target 120fps here.
-- Lean, feature-gated dependency graph: firmware builds strip `gpu`/`widgets`/`gestures` and other heavy deps (`default-features = false`). Dew is `std`-based via its embedded RTOS, not bare-metal `no_std`. Do not pull GPU / `wgpu` / heavyweight crates into Dew's firmware graph.
-
-### CLI (water-rs/cli)
-
-The `water` CLI orchestrates builds across platforms and lives in its own repository, https://github.com/water-rs/cli, with its own `AGENTS.md`, CI, nightly end-to-end suite and release cadence:
-
-- `water create` - Scaffold new project (supports `--mode playground` for quick experiments)
-- `water run` - Build and deploy to device/simulator
-- `water build --platform <platform>` - Build the project for the selected platform and backend
-- `water package` - Package built artifacts for distribution
-- `water clean` - Remove build artifacts
-- `water doctor` - Check development environment
-- `water devices` - List available devices and simulators
-
-What this repository owns of that contract is the framework side: `[package.metadata.waterui]` in the root manifest (`minimum-cli-version`, backend coordinates, the Android API floor, `scaffold-packages`), the `framework.json` the release attaches, and the `waterui_meta_*` metadata symbols the macros emit for the CLI to read. A CLI defect is an issue in water-rs/cli; a fact the CLI cannot obtain from the framework is an issue here.
-
-### FFI Contract
-
-Native backends call into Rust via:
-
-1. `waterui_init()` - Initialize runtime, returns Environment pointer
-2. Theme installation (recommended):
-   - `waterui_theme_install_color_scheme()` (light/dark)
-   - `waterui_theme_install_color()` (slot-based colors)
-   - `waterui_theme_install_font()` (slot-based fonts)
-3. `waterui_app(env)` - Hand the environment to the app and get its root view tree
-4. Render loop: `waterui_view_id()` to identify view type, then either extract data (`waterui_force_as_*`) for raw views or recurse via `waterui_view_body()` for composite views
-
-Raw views are leaf components (Text, Button, etc.) that map to native widgets. Composite views have a `body()` returning other views.
-
-### Reactive System
-
-Uses `nami` crate for fine-grained reactivity:
-
-- `Binding<T>` - Mutable reactive state
-- `Computed<T>` - Derived reactive values
-- Views automatically update when reactive values change
-
-<important>
-    WaterUI uses precise fine-grained reactivity with Vue-like reconstruction semantics. A component's `.body` may be heavy and may perform one-time initialization for that component instance. After initialization, dynamic behavior is expected to be driven precisely through `Binding`, `Computed`, and other `impl Signal` inputs. `Dynamic::watch` / `watch(...)` directly replaces the watched subtree when the signal changes, which loses state owned by that subtree. Treat it as an exceptional primitive, not normal reactive UI authoring. Prefer signal-aware APIs, metadata, modifiers, or explicit backend semantic objects that update the exact dynamic field without recreating component identity. If a component is recreated by control flow such as `when(...)`, `watch(...)`, or other parent-driven reconstruction, losing that component instance's local state is expected and correct because a new instance is being initialized. Do not preserve component-local state across rebuilds unless that state is explicitly owned at the correct reactive level.
-</important>
-
-<important>
-    React-style local state slots are architecturally banned. Do not use `LocalStateScope`, `LocalStateStore`, `local_binding`, `with_local_binding_factory`, hook-like slot storage, body-position keys, or cursor-indexed state as a WaterUI component state model. Do not fix a crash by teaching a backend to support this mechanism. The correct fix is to move the state into explicit `Binding` / `Computed` / `impl Signal` inputs or into a backend-owned semantic object whose lifetime is independent of Rust body evaluation order.
-</important>
-
-<important>
-    You are not allowed to use `.get()` on Signals/Bindings directly in view body functions, as it breaks reactivity tracking. Instead, use zip and map combinators to derive new Computed values that depend on multiple signals.
-</important>
-
-### View Trait
-
-```rust
-pub trait View: 'static {
-    fn body(self, env: &Environment) -> impl View;
-}
-```
-
-### Application Entry Point Pattern
-
-```rust
-pub fn app(env: Environment) -> App {
-    App::new(main, env)
-}
-
-pub fn main() -> impl View {
-    // Return your root view
-}
-
-waterui_ffi::export!();  // Generates FFI entry points
-```
-
-## Key Development Notes
-
-- Rust edition 2024; the supported toolchain floor lives in `rust-version` in the root manifest, not here
-- Workspace lints enforce strict clippy rules including pedantic/nursery
-- One git worktree per task, as described under Engagement Rules.
-- The FFI header `ffi/waterui.h` is checked into version control; CI verifies it's up-to-date; **never write C header by hand**
-- Add FFI exports and native bridges only when a component requires a genuine native primitive. Pure Rust compositions and self-drawn components reuse existing public contracts without inventing new C-ABI types (Principles 2 and 4).
-
-### Testing Patterns
-
-- Most tests use `#[cfg(test)] mod tests` pattern
-- **Use `cargo nextest run`, not `cargo test`.** This workspace is large and
-  `cargo test`'s single-process-per-binary harness is painfully slow on it.
-  Install once with `cargo install cargo-nextest --locked`.
-  - Run workspace tests: `cargo nextest run --workspace`
-  - Run a specific crate: `cargo nextest run -p <crate-name>`
-  - Run one test: `cargo nextest run -p <crate-name> -E 'test(<name>)'`
-  - Show output from passing tests: `--no-capture` (nextest's spelling of
-    `-- --nocapture`; it forces serial execution, so scope it with `-E`)
-- **Use `cargo test` for doctests and custom main-thread harnesses.** Run
-  `cargo test --doc --workspace` for workspace doctests. A `harness = false`
-  native integration binary that must own the real process main thread, such
-  as the CEF or WKWebView real-engine tests, uses its explicit
-  `cargo test -p <crate> --test <target>` command and required features.
-- nextest runs **each test in its own process**. A test that relies on a
-  sibling's initialization of process-global state is order-dependent; fix
-  that assumption rather than switching runners to preserve shared state.
-- **The web view bridge has a JavaScript unit suite that Cargo does not discover.**
-  `components/platform/webview/src/js/{bridge,state,eval}.js` is injected into
-  pages by the backends. If you touch that directory or the bridge envelope/state
-  protocol, run:
-
-  ```bash
-  bun test components/platform/webview/tests/js/
-  ```
-
-  Nightly must run this suite as a required check, include failures in its
-  report, and prevent certified-version promotion when it fails (#466).
-  Keep the local check as well; moving webview to another repository must
-  preserve the suite and its CI ownership. Passing Rust tests or real-engine
-  integration tests does not replace this unit suite. It covers regressions
-  that previously shipped behind green Rust checks: replies crossing as
-  base64, a frozen `waterui` object breaking `state`/`watch`, and integers
-  past 2^53 losing low bits in either direction.
-- Use `tracing::debug!` and `water run --logs debug` for debugging runtime issues
-
-### Error Handling
-
-- Custom error enums use `thiserror` derive macro; the error type applications see is the `waterui_core::Error` re-export

@@ -1,0 +1,237 @@
+//! Metal↔wgpu format and texture bridging for the GPU surfaces.
+//!
+//! [`metal_to_wgpu_format`], [`wgpu_to_metal_format`], [`color_space`],
+//! [`shader_color`] and [`import_texture`] are the bridge a renderer living
+//! in wgpu uses to draw into a Metal texture it does not own. Presentation
+//! lives in [`crate::metal_presenter`].
+//!
+//! # Safety
+//!
+//! `unsafe` here is Metal object creation and `wgpu-hal`'s raw-texture
+//! import, whose caller contract is reproduced on each function's own
+//! `# Safety` section.
+
+use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
+use objc2_core_foundation::CFRetained;
+use objc2_core_graphics::{CGColorSpace, kCGColorSpaceExtendedLinearDisplayP3, kCGColorSpaceSRGB};
+use objc2_metal::{MTLPixelFormat, MTLTexture};
+use waterui_contract::contract_violation;
+
+/// The wgpu format matching `format`, or `None` for a Metal format wgpu
+/// presentation here has no use for.
+///
+/// Only the formats the presentation paths produce are mapped: the sRGB
+/// pair an ordinary surface uses and the half-float linear target an
+/// extended-range one does.
+#[must_use]
+pub const fn metal_to_wgpu_format(format: MTLPixelFormat) -> Option<wgpu::TextureFormat> {
+    match format {
+        MTLPixelFormat::BGRA8Unorm => Some(wgpu::TextureFormat::Bgra8Unorm),
+        MTLPixelFormat::BGRA8Unorm_sRGB => Some(wgpu::TextureFormat::Bgra8UnormSrgb),
+        MTLPixelFormat::RGBA16Float => Some(wgpu::TextureFormat::Rgba16Float),
+        _ => None,
+    }
+}
+
+/// The Metal format matching `format`.
+///
+/// A `format` other than `Bgra8Unorm`, `Bgra8UnormSrgb` and `Rgba16Float` has
+/// no Metal equivalent a presentation uses: that breaks the contract, is
+/// reported and answers [`MTLPixelFormat::Invalid`], which no texture is
+/// made in.
+#[must_use]
+pub fn wgpu_to_metal_format(format: wgpu::TextureFormat) -> MTLPixelFormat {
+    match format {
+        wgpu::TextureFormat::Bgra8Unorm => MTLPixelFormat::BGRA8Unorm,
+        wgpu::TextureFormat::Bgra8UnormSrgb => MTLPixelFormat::BGRA8Unorm_sRGB,
+        wgpu::TextureFormat::Rgba16Float => MTLPixelFormat::RGBA16Float,
+        _ => {
+            contract_violation!(
+                "{format:?} has no Metal equivalent a presentation uses; the Invalid pixel format is answered"
+            );
+            MTLPixelFormat::Invalid
+        }
+    }
+}
+
+/// Wraps a Metal texture a foreign pipeline renders into as a wgpu texture.
+///
+/// The Metal texture stays alive for the wgpu texture's lifetime — the caller
+/// retains it before calling and drops that retain only after the wgpu
+/// texture is gone.
+///
+/// # Safety
+///
+/// `device` must be a wgpu device created on the Metal backend whose HAL
+/// device produced `texture` — in practice the one `texture.device` reports.
+/// The HAL description `format`, `width` and `height` build must match the
+/// real texture: pass them as read off it.
+/// `initial_state` must describe the texture's actual state at handoff, not
+/// the union of its permitted usages. All prior writes must have completed
+/// before wgpu accesses it, and foreign access must be synchronized with wgpu.
+#[must_use]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the imported texture descriptor and explicit foreign handoff state form one unsafe boundary"
+)]
+pub unsafe fn import_texture(
+    device: &wgpu::Device,
+    texture: Retained<ProtocolObject<dyn MTLTexture>>,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+    usage: wgpu::TextureUsages,
+    initial_state: wgpu::TextureUses,
+    label: &str,
+) -> wgpu::Texture {
+    // SAFETY: `texture` is the retained Metal texture the caller handed in,
+    // and `format`/`width`/`height` describe it.
+    let hal_texture = unsafe {
+        <wgpu_hal::api::Metal as wgpu_hal::Api>::Device::texture_from_raw(
+            texture,
+            format,
+            objc2_metal::MTLTextureType::Type2D,
+            1,
+            1,
+            wgpu_hal::CopyExtent {
+                width,
+                height,
+                depth: 1,
+            },
+            None,
+        )
+    };
+    let descriptor = wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage,
+        view_formats: &[],
+    };
+    // SAFETY: the HAL texture above came from the same Metal device `device`
+    // wraps, and the caller supplies its synchronized handoff state.
+    unsafe {
+        device.create_texture_from_hal::<wgpu_hal::api::Metal>(
+            hal_texture,
+            &descriptor,
+            initial_state,
+        )
+    }
+}
+
+/// The colour space the compositor must read the surface in.
+///
+/// Core Animation has no other way to learn it: a plain `CALayer` carries no
+/// colour space of its own, so an extended-range surface left unlabelled is
+/// composited as if its values were display-referred sRGB and an HDR frame
+/// comes out clipped and dark.
+/// Half-float pixels use extended linear Display P3, matching the GPU
+/// presenter's output and the filter working space; 8-bit pixels use sRGB.
+///
+/// # Panics
+///
+/// Never in practice: `CGColorSpaceCreateWithName` resolves its own
+/// constants.
+#[must_use]
+pub fn color_space(format: MTLPixelFormat) -> CFRetained<CGColorSpace> {
+    let name = if format == MTLPixelFormat::RGBA16Float {
+        // SAFETY: the colorspace statics are system constants.
+        unsafe { kCGColorSpaceExtendedLinearDisplayP3 }
+    } else {
+        // SAFETY: see above.
+        unsafe { kCGColorSpaceSRGB }
+    };
+    CGColorSpace::with_name(Some(name))
+        .expect("CGColorSpaceCreateWithName names its own constants: both are system constants")
+}
+
+/// The primaries of the colour a texture of some format holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Primaries {
+    /// sRGB (BT.709) primaries, D65.
+    Srgb,
+    /// Display P3 primaries, D65.
+    DisplayP3,
+}
+
+/// The colour a shader sees when it samples a texture of some format, and
+/// must write for the store to hold that format's [`color_space`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShaderColor {
+    /// The primaries of the sampled values.
+    pub primaries: Primaries,
+    /// Whether the sampled values carry the sRGB transfer — `false` when
+    /// they are linear light.
+    pub encoded: bool,
+}
+
+/// The shader-side view of the colour space [`color_space`] tags `format` with.
+///
+/// Half-float pixels are linear extended Display P3. Plain 8-bit pixels
+/// hold sRGB-encoded values, sampled as stored. The `_sRGB` 8-bit formats
+/// hold the same sRGB-encoded bytes, but the texture unit decodes them on
+/// sample and encodes on store, so the shader sees linear sRGB.
+///
+/// A `format` that is not one a presentation or capture target uses breaks
+/// the contract: it is reported and the format is read as plain sRGB-encoded
+/// 8-bit pixels.
+#[must_use]
+pub fn shader_color(format: MTLPixelFormat) -> ShaderColor {
+    match format {
+        MTLPixelFormat::RGBA16Float => ShaderColor {
+            primaries: Primaries::DisplayP3,
+            encoded: false,
+        },
+        MTLPixelFormat::BGRA8Unorm | MTLPixelFormat::RGBA8Unorm => ShaderColor {
+            primaries: Primaries::Srgb,
+            encoded: true,
+        },
+        MTLPixelFormat::BGRA8Unorm_sRGB | MTLPixelFormat::RGBA8Unorm_sRGB => ShaderColor {
+            primaries: Primaries::Srgb,
+            encoded: false,
+        },
+        other => {
+            contract_violation!(
+                "{other:?} has no colour contract a presentation or capture uses; it is read as sRGB-encoded 8-bit pixels"
+            );
+            ShaderColor {
+                primaries: Primaries::Srgb,
+                encoded: true,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "no Metal equivalent"))]
+    fn an_unmapped_wgpu_format_answers_the_invalid_pixel_format() {
+        assert_eq!(
+            wgpu_to_metal_format(wgpu::TextureFormat::R8Unorm),
+            MTLPixelFormat::Invalid
+        );
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, should_panic(expected = "no colour contract"))]
+    fn an_unmapped_pixel_format_reads_as_srgb_encoded() {
+        assert_eq!(
+            shader_color(MTLPixelFormat::R8Unorm),
+            ShaderColor {
+                primaries: Primaries::Srgb,
+                encoded: true,
+            }
+        );
+    }
+}

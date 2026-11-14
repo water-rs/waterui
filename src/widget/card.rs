@@ -8,6 +8,7 @@ use waterui_text::{IntoText, font::Title};
 
 /// Visual style for a [`Card`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum CardStyle {
     /// Use the card style provided by the installed theme.
     #[default]
@@ -131,26 +132,24 @@ where
             return AnyView::new(vstack((self.title, self.subtitle, self.content)));
         };
         let tokens = theme.tokens(self.style);
+        let shape = FixedRoundedRectangle::new(tokens.corner_radius);
         let shadow = Shadow::new(
             tokens.shadow_color.clone(),
             Vector::new(0.0, tokens.shadow_offset_y),
             tokens.shadow_radius,
-            tokens.corner_radius,
+            shape,
         );
         let ambient_shadow = Shadow::new(
             tokens.ambient_shadow_color.clone(),
             Vector::new(0.0, tokens.ambient_shadow_offset_y),
             tokens.ambient_shadow_radius,
-            tokens.corner_radius,
+            shape,
         );
         AnyView::new(
             vstack((self.title, self.subtitle, self.content))
                 .spacing(theme.content_spacing)
                 .padding_with(theme.content_padding)
-                .background(
-                    FixedRoundedRectangle::new(tokens.corner_radius)
-                        .fill(tokens.container_color.clone()),
-                )
+                .background(shape.fill(tokens.container_color.clone()))
                 .border_with(
                     Border::new(tokens.outline_color.clone(), tokens.outline_width)
                         .corner_radius(tokens.corner_radius),

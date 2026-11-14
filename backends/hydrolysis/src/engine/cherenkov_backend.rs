@@ -1,0 +1,1163 @@
+//! The concrete Cherenkov GPU runtime (water-rs/hydrolysis#205, H1).
+//!
+//! One [`cherenkov::Engine<cherenkov_gpu::Gpu>`] per GPU device generation:
+//! the generation creates its engine when it opens and every surface on it
+//! renders through that engine. A window presents
+//! through one of two engine surface kinds. A host-presented window renders
+//! into a `TextureCherenkovSurface` — an engine `TextureTarget` whose
+//! premultiplied linear Display P3 texture the presenter converts into the
+//! host-acquired frame; acquisition stays host-owned: the provider acquires,
+//! the presenter blits, the provider presents exactly once per presented
+//! frame. The macOS winit window renders into a `WindowCherenkovSurface`,
+//! whose `WindowTarget` the engine presents itself, and the browser page
+//! into a `DomCherenkovSurface`, whose `DomTarget` the engine presents as
+//! canvases and hosted elements under the page's root element.
+//!
+//! The CPU painter renders the same engine front end on
+//! [`cherenkov::Engine<cherenkov_cpu::Raster>`]: one engine per offscreen
+//! runtime, and a `RasterCherenkovSurface` per window, an engine `Offscreen`
+//! framebuffer read back as the frame's pixels.
+
+use std::rc::{Rc, Weak};
+#[cfg(hydrolysis_gpu_painter)]
+use std::sync::mpsc;
+
+#[cfg(hydrolysis_gpu_painter)]
+use waterui_core::contract_violation;
+
+#[cfg(hydrolysis_gpu_painter)]
+use crate::platform::GpuUnavailable;
+
+/// Awaits `expr` on wasm32, where the Cherenkov engine lifecycle is async;
+/// evaluates it directly on native, where the same calls are synchronous —
+/// one code path, two compile modes (water-rs/hydrolysis#205).
+#[cfg(target_arch = "wasm32")]
+macro_rules! engine_await {
+    ($expr:expr) => {
+        $expr.await
+    };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+macro_rules! engine_await {
+    ($expr:expr) => {
+        $expr
+    };
+}
+
+// `macro_rules!` items have no visibility beyond the crate without
+// `#[macro_export]` — `pub(crate)` is the maximum legal re-export level.
+pub(crate) use engine_await;
+
+/// Declares one body `async fn` on wasm32 and `fn` on native: the async
+/// engine lifecycle the wasm build awaits forces the keyword onto every frame
+/// between the caller and an engine call; native keeps the synchronous
+/// signature so no second code path exists there.
+///
+/// The wasm futures this macro emits are intentionally `!Send`: wasm32 is
+/// single-threaded, the engine's `Rc`/`RefCell` handles and thread-local
+/// pools never cross a thread, and `future_not_send` exists to catch
+/// `Send`-promising public futures — which none of these are. The allow
+/// lives on the macro arm rather than per function so a future added to
+/// this list inherits the same justification.
+///
+/// Two forms: `fn name(args) -> ret { body }` shares the signature across
+/// targets; `fn name {native-args} {wasm-args} -> ret { body }` diverges the
+/// parameter lists where a callback becomes an `AsyncFn` on wasm. A third
+/// form, `impl Ty { fn ... }`, does the same for a method inside its `impl`.
+macro_rules! cfg_async_fn {
+    (impl $ty:ty {
+        $(#[$meta:meta])*
+        $vis:vis fn $name:ident $(<$($gen:ident $(: $bound:ident)?),* $(,)?>)? ($($args:tt)*) $(-> $ret:ty)? $body:block
+    }) => {
+        impl $ty {
+            #[cfg(not(target_arch = "wasm32"))]
+            $(#[$meta])* $vis fn $name $(<$($gen $(: $bound)?),*>)? ($($args)*) $(-> $ret)? $body
+            #[cfg(target_arch = "wasm32")]
+            #[allow(clippy::future_not_send, reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread")]
+            $(#[$meta])* $vis async fn $name $(<$($gen $(: $bound)?),*>)? ($($args)*) $(-> $ret)? $body
+        }
+    };
+    ($(#[$meta:meta])*
+     $vis:vis fn $name:ident $(<$($gen:ident $(: $bound:ident)?),* $(,)?>)? { $($native_args:tt)* } { $($wasm_args:tt)* }
+     $(-> $ret:ty)? $body:block) => {
+        #[cfg(not(target_arch = "wasm32"))]
+        $(#[$meta])* $vis fn $name $(<$($gen $(: $bound)?),*>)? ($($native_args)*) $(-> $ret)? $body
+        #[cfg(target_arch = "wasm32")]
+        #[allow(clippy::future_not_send, reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread")]
+        $(#[$meta])* $vis async fn $name $(<$($gen $(: $bound)?),*>)? ($($wasm_args)*) $(-> $ret)? $body
+    };
+    ($(#[$meta:meta])*
+     $vis:vis fn $name:ident $(<$($gen:ident $(: $bound:ident)?),* $(,)?>)? ($($args:tt)*) $(-> $ret:ty)? $body:block) => {
+        #[cfg(not(target_arch = "wasm32"))]
+        /// Generates the function twice: synchronously for native targets and `async` for wasm32.
+        $(#[$meta])* $vis fn $name $(<$($gen $(: $bound)?),*>)? ($($args)*) $(-> $ret)? $body
+        #[cfg(target_arch = "wasm32")]
+        #[allow(clippy::future_not_send, reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread")]
+        $(#[$meta])* $vis async fn $name $(<$($gen $(: $bound)?),*>)? ($($args)*) $(-> $ret)? $body
+    };
+}
+
+pub(crate) use cfg_async_fn;
+
+/// The output colour of a target whose colour space was not negotiated
+/// (`SurfaceColorSpace::Auto`, or an offscreen texture): a float format
+/// receives extended linear Display P3, every other format sRGB. A surface
+/// that negotiates its (format, colour space) pair presents the colour of
+/// that pair instead.
+#[cfg(hydrolysis_gpu_painter)]
+#[must_use]
+pub fn format_output_color(format: wgpu::TextureFormat) -> cherenkov_gpu::interop::OutputColor {
+    if matches!(
+        format.remove_srgb_suffix(),
+        wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+    ) {
+        cherenkov_gpu::interop::OutputColor::LinearDisplayP3
+    } else {
+        cherenkov_gpu::interop::OutputColor::Srgb
+    }
+}
+
+/// The GPU painter's engine: the concrete wgpu backend.
+#[cfg(hydrolysis_gpu_painter)]
+pub type GpuEngine = cherenkov::Engine<cherenkov_gpu::Gpu>;
+
+/// The CPU painter's engine: `cherenkov-cpu`'s banded rasterizer on a rayon
+/// pool sized to the host's available parallelism.
+#[cfg(hydrolysis_cpu_painter)]
+pub type RasterEngine = cherenkov::Engine<cherenkov_cpu::Raster>;
+
+/// The engine state of one GPU device generation: the `Rc<GpuEngine>`, the
+/// ONE `Rc<SceneResources>` registration table every window and capture
+/// mount on the generation's device shares, and how the device takes the
+/// engine's shaders. Retained `SceneContent` associates its engine-bound
+/// state with this table's identity, so the pair is created together and
+/// expires together — the generation that replaces a lost device opens a
+/// fresh pair.
+#[cfg(hydrolysis_gpu_painter)]
+pub struct SharedEngineState {
+    pub engine: Rc<GpuEngine>,
+    pub resources: Rc<crate::renderer::recording::SceneResources>,
+    /// The device's shader delivery, which every host-presented surface's
+    /// presenter takes.
+    shader_delivery: cherenkov_gpu::interop::ShaderDelivery,
+}
+
+/// The CPU painter's engine and the ONE registration table every window of
+/// an offscreen runtime mounts against — the `SharedEngineState` of the CPU
+/// backend. It has no device to lose, so it has no generations: the painter
+/// selection that chose the CPU creates it once and owns it, and hands it to
+/// each of its windows.
+#[cfg(hydrolysis_cpu_painter)]
+pub struct RasterEngineState {
+    pub engine: Rc<RasterEngine>,
+    pub resources: Rc<crate::renderer::recording::SceneResources>,
+}
+
+#[cfg(hydrolysis_cpu_painter)]
+impl RasterEngineState {
+    /// Starts the CPU engine's render thread and worker pool. Like a GPU
+    /// generation's engine, it is created when the painter is chosen, never
+    /// inside a frame.
+    ///
+    /// # Errors
+    /// The engine's [`cherenkov::EngineError`] when it cannot start its
+    /// render thread or worker pool — the CPU backend needs nothing else
+    /// from the host.
+    pub(crate) fn new() -> Result<Rc<Self>, cherenkov::EngineError> {
+        let engine = Rc::new(RasterEngine::new(cherenkov_cpu::RasterConfig::default())?);
+        let resources = Rc::new(crate::renderer::recording::SceneResources::new(&engine));
+        Ok(Rc::new(Self { engine, resources }))
+    }
+}
+
+#[cfg(hydrolysis_cpu_painter)]
+impl std::fmt::Debug for RasterEngineState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RasterEngineState").finish_non_exhaustive()
+    }
+}
+
+#[cfg(hydrolysis_gpu_painter)]
+cfg_async_fn! {
+    impl SharedEngineState {
+        /// Creates the engine of a device generation on `shared_device`,
+        /// configured by `config` with the device and the adapter's
+        /// pipeline cache filled in. Engine creation fails the same way on
+        /// every retry against one device, so it belongs to opening the
+        /// generation, never to a frame.
+        ///
+        /// Async on wasm32, where `Engine::new` awaits the browser's GPU
+        /// device.
+        ///
+        /// # Errors
+        /// [`GpuUnavailable::ShaderDelivery`] when the device cannot take
+        /// the engine's shaders, [`GpuUnavailable::Engine`] when the engine
+        /// cannot be created on the device.
+        pub(crate) fn new(
+            shared_device: cherenkov_gpu::interop::SharedDevice,
+            config: cherenkov_gpu::GpuConfig,
+        ) -> Result<Rc<Self>, GpuUnavailable> {
+            let adapter = shared_device.adapter.clone();
+            let backend = adapter.get_info().backend;
+            let shader_delivery =
+                cherenkov_gpu::interop::shader_delivery(backend, &shared_device.device)
+                    .map_err(|source| GpuUnavailable::ShaderDelivery { backend, source })?;
+            let config = cherenkov_gpu::GpuConfig {
+                device: Some(shared_device),
+                pipeline_cache: pipeline_cache_path(&adapter),
+                ..config
+            };
+            let engine = Rc::new(engine_await!(GpuEngine::new(config)).map_err(|source| {
+                GpuUnavailable::Engine {
+                    adapter: adapter.get_info().name,
+                    source,
+                }
+            })?);
+            let resources = Rc::new(crate::renderer::recording::SceneResources::new(&engine));
+            Ok(Rc::new(Self {
+                engine,
+                resources,
+                shader_delivery,
+            }))
+        }
+    }
+}
+
+/// The persistent pipeline-cache path for `adapter`, where the platform has a
+/// writable cache directory; the engine loads, feeds and persists it itself.
+#[cfg(all(hydrolysis_pipeline_cache, hydrolysis_gpu_painter))]
+fn pipeline_cache_path(adapter: &wgpu::Adapter) -> Option<std::path::PathBuf> {
+    crate::pipeline_cache::path(adapter)
+}
+
+/// No persistent pipeline cache exists on targets without a platform cache
+/// directory; the engine accepts `None` the same way.
+#[cfg(all(not(hydrolysis_pipeline_cache), hydrolysis_gpu_painter))]
+const fn pipeline_cache_path(_adapter: &wgpu::Adapter) -> Option<std::path::PathBuf> {
+    None
+}
+
+/// The engine surface every presentation kind wraps, on either Cherenkov
+/// backend, with the drawable size it was last resized to.
+pub struct SurfaceCore<B: cherenkov::Backend> {
+    engine: Rc<cherenkov::Engine<B>>,
+    surface: Rc<cherenkov::Surface<B>>,
+    size: (u32, u32),
+    /// The space the surface stores, which a host sampling its texture
+    /// presents from.
+    storage_space: cherenkov_record::BlendSpace,
+}
+
+impl<B: cherenkov::Backend> SurfaceCore<B> {
+    fn new(
+        engine: Rc<cherenkov::Engine<B>>,
+        surface: cherenkov::Surface<B>,
+        size: (u32, u32),
+    ) -> Self {
+        Self {
+            engine,
+            surface: Rc::new(surface),
+            size,
+            storage_space: cherenkov_record::BlendSpace::Linear,
+        }
+    }
+
+    /// The engine surface behind this output target — mount, edit and
+    /// transaction calls route through it.
+    pub fn engine_surface(&self) -> &cherenkov::Surface<B> {
+        &self.surface
+    }
+
+    /// The engine surface as the window's retained mount holds it: weak, so
+    /// the mount never extends the surface past its window.
+    pub fn engine_surface_weak(&self) -> Weak<cherenkov::Surface<B>> {
+        Rc::downgrade(&self.surface)
+    }
+
+    /// Opens the renderer's frame: while the scope is held, the edits it
+    /// makes to the surface before the frame's render wake no host, because
+    /// that render draws them.
+    #[must_use = "dropping the scope ends the frame; keep it until the frame's render"]
+    pub fn begin_frame(&self) -> cherenkov::FrameScope {
+        self.surface.begin_frame()
+    }
+
+    /// This surface's outcome of a render of the shared engine, which
+    /// renders every surface on it. A rejection that left out only other
+    /// surfaces belongs to them — each owner's own render reports it — and
+    /// this surface's frame stands.
+    fn own(
+        &self,
+        rendered: Result<cherenkov::Next, cherenkov::RenderError>,
+    ) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        match rendered {
+            Err(cherenkov::RenderError::Rejected { surfaces, next })
+                if surfaces
+                    .iter()
+                    .all(|rejection| rejection.surface != self.surface.id()) =>
+            {
+                Ok(next)
+            }
+            rendered => rendered,
+        }
+    }
+
+    /// Queues a resize when `size` changed.
+    ///
+    /// A size the engine refuses — beyond the device's texture limit, or
+    /// with the render thread gone — is logged once per requested size and
+    /// the engine surface keeps the size it had; a lost render thread is
+    /// reported again by the frame's render.
+    pub fn resize(&mut self, size: (u32, u32)) {
+        if self.size == size {
+            return;
+        }
+        self.size = size;
+        if let Err(error) = self.surface.resize(size) {
+            tracing::error!(
+                ?size,
+                %error,
+                "hydrolysis renderer: engine surface resize failed; the surface keeps its size"
+            );
+        }
+    }
+
+    /// The display's properties: `scale` is the logical-to-physical factor
+    /// applied exactly once at the surface root, `headroom` the HDR headroom
+    /// the display reaches.
+    ///
+    /// With the render thread gone the update is logged and dropped; the
+    /// frame's render reports the loss.
+    pub fn display(&self, display: cherenkov::Display) {
+        if let Err(error) = self.surface.display(display) {
+            tracing::error!(
+                %error,
+                "hydrolysis renderer: engine surface display update failed; the update is dropped"
+            );
+        }
+    }
+
+    /// The colour the surface clears to before content.
+    pub fn clear_color(&self, color: cherenkov_record::WorkingColor) {
+        self.surface.clear_color(color);
+    }
+
+    /// The space the surface stores and composites in:
+    /// [`cherenkov::Surface::storage_space`].
+    pub fn storage_space(&mut self, space: cherenkov_record::BlendSpace) {
+        self.storage_space = space;
+        self.surface.storage_space(space);
+    }
+
+    /// The space the surface stores, set by [`Self::storage_space`].
+    pub const fn stored_space(&self) -> cherenkov_record::BlendSpace {
+        self.storage_space
+    }
+}
+
+/// What the renderer's frame commit needs of a presentation kind: its
+/// engine surface. The kinds differ in how a rendered frame reaches the
+/// display, which stays on each concrete type.
+pub trait EngineSurface {
+    /// The Cherenkov backend the surface renders on.
+    type Backend: cherenkov::Backend;
+    /// The engine surface this kind wraps.
+    fn core(&self) -> &SurfaceCore<Self::Backend>;
+    /// The engine surface this kind wraps, for resizing.
+    fn core_mut(&mut self) -> &mut SurfaceCore<Self::Backend>;
+
+    /// The layer tracks the engine still ran when it last rendered the
+    /// surface.
+    fn running_tracks(&self) -> cherenkov_record::RunningTracks {
+        self.core().engine_surface().running_tracks()
+    }
+}
+
+/// Android presents retained buffers directly through the system compositor.
+#[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+pub struct AndroidCherenkovSurface {
+    core: SurfaceCore<cherenkov_gpu::Gpu>,
+}
+
+#[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+impl core::fmt::Debug for AndroidCherenkovSurface {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AndroidCherenkovSurface")
+            .field("size", &self.core.size)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+impl EngineSurface for AndroidCherenkovSurface {
+    type Backend = cherenkov_gpu::Gpu;
+
+    fn core(&self) -> &SurfaceCore<cherenkov_gpu::Gpu> {
+        &self.core
+    }
+
+    fn core_mut(&mut self) -> &mut SurfaceCore<cherenkov_gpu::Gpu> {
+        &mut self.core
+    }
+}
+
+#[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+impl AndroidCherenkovSurface {
+    /// Creates the engine surface presenting through a surface control
+    /// parented on `window`, at `size` (physical pixels).
+    ///
+    /// # Errors
+    /// [`FrameError::Compositor`](crate::renderer::FrameError::Compositor)
+    /// when the system cannot create the parent surface control,
+    /// [`FrameError::NoLooper`](crate::renderer::FrameError::NoLooper) when
+    /// the calling thread has no Looper (a host contract violation), and
+    /// [`FrameError::Surface`](crate::renderer::FrameError::Surface) when
+    /// the engine cannot create the surface.
+    pub(crate) fn new(
+        engine: Rc<GpuEngine>,
+        window: &ndk::native_window::NativeWindow,
+        size: (u32, u32),
+        wake: impl Fn() + Send + Sync + 'static,
+        transparent: bool,
+        band_commits: std::sync::mpsc::Sender<cherenkov_gpu::interop::android::BandCommit>,
+    ) -> Result<Self, crate::renderer::FrameError> {
+        use cherenkov_gpu::interop::android::{SurfaceControl, SurfaceControlTarget};
+        // SAFETY: the host holds the live SurfaceView's ANativeWindow lease.
+        let parent = unsafe { SurfaceControl::from_window(window.ptr(), c"Hydrolysis") }
+            .map_err(crate::renderer::FrameError::Compositor)?;
+        let Some(looper) = ndk::looper::ForeignLooper::for_thread() else {
+            contract_violation!(
+                "hydrolysis android: the engine surface is created off the host's Looper thread; the window cannot render"
+            );
+            return Err(crate::renderer::FrameError::NoLooper);
+        };
+        let surface = engine
+            .surface(
+                SurfaceControlTarget::new(parent, size, looper)
+                    .transparent(transparent)
+                    .band_commits(band_commits),
+                wake,
+            )
+            .map_err(crate::renderer::FrameError::Surface)?;
+        Ok(Self {
+            core: SurfaceCore::new(engine, surface, size),
+        })
+    }
+
+    /// The engine surface's identity — which window a band was delivered
+    /// to.
+    pub(crate) fn id(&self) -> cherenkov::SurfaceId {
+        self.core.surface.id()
+    }
+
+    /// Sets or clears the band above the embedded platform view whose
+    /// placement id is `view`: `target` is the swapchain window of the
+    /// band `View` the host stacks above it (water-rs/waterui#2225).
+    ///
+    /// # Errors
+    /// [`SurfaceError::Lost`] when the render thread is gone.
+    pub(crate) fn set_band(
+        &self,
+        view: u64,
+        target: Option<cherenkov_gpu::WindowTarget>,
+    ) -> Result<(), cherenkov::SurfaceError> {
+        self.core.engine.set_band(&self.core.surface, view, target)
+    }
+
+    pub(crate) fn render(
+        &self,
+        time: cherenkov::FrameTime,
+    ) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        self.core.own(self.core.engine.render(time))
+    }
+}
+
+/// A host-presented surface's engine output: an engine-owned
+/// `Rgba16Float` linear-P3 texture the host converts into each frame it
+/// acquires.
+#[cfg(hydrolysis_gpu_painter)]
+pub struct TextureCherenkovSurface {
+    core: SurfaceCore<cherenkov_gpu::Gpu>,
+    /// The texture notification channel: fires on creation and on every
+    /// resize; [`Self::render`] drains it before the presenter samples —
+    /// sampling post-resize without draining is the stale-attachment case
+    /// the plan bans.
+    textures: mpsc::Receiver<wgpu::Texture>,
+    ranges: mpsc::Receiver<cherenkov_gpu::interop::ColorRange>,
+    content_range: Option<cherenkov_gpu::interop::ColorRange>,
+    texture: Option<(wgpu::Texture, wgpu::TextureView)>,
+    presenter: cherenkov_gpu::interop::Presenter,
+}
+
+#[cfg(hydrolysis_gpu_painter)]
+impl core::fmt::Debug for TextureCherenkovSurface {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TextureCherenkovSurface")
+            .field("size", &self.core.size)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(hydrolysis_gpu_painter)]
+impl EngineSurface for TextureCherenkovSurface {
+    type Backend = cherenkov_gpu::Gpu;
+
+    fn core(&self) -> &SurfaceCore<cherenkov_gpu::Gpu> {
+        &self.core
+    }
+
+    fn core_mut(&mut self) -> &mut SurfaceCore<cherenkov_gpu::Gpu> {
+        &mut self.core
+    }
+}
+
+#[cfg(hydrolysis_gpu_painter)]
+impl TextureCherenkovSurface {
+    /// Creates the engine surface on `state`'s engine at `size` (physical
+    /// pixels) and takes the presenter for the generation's shader
+    /// delivery on `device`. `wake` is the host's display-link wake: the
+    /// surface calls it, from whichever thread the cause lands on, when its
+    /// content — a GPU producer, a filter, a submitted frame, a live
+    /// operand — asks for a frame between the renderer's own.
+    ///
+    /// # Errors
+    /// The engine's [`cherenkov::SurfaceError`] when it cannot create the
+    /// surface.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn new(
+        state: &SharedEngineState,
+        device: &wgpu::Device,
+        size: (u32, u32),
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Result<Self, cherenkov::SurfaceError> {
+        let (mut target, textures) = cherenkov_gpu::interop::TextureTarget::new(size);
+        let ranges = target.content_ranges();
+        let surface = state.engine.surface(target, wake)?;
+        Ok(Self::build(state, device, size, surface, textures, ranges))
+    }
+
+    /// [`Self::new`], async on wasm32 where `Engine::surface` awaits the
+    /// browser device.
+    ///
+    /// # Errors
+    /// As the native [`Self::new`].
+    #[cfg(target_arch = "wasm32")]
+    #[allow(
+        clippy::future_not_send,
+        reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
+    )]
+    pub(crate) async fn new(
+        state: &SharedEngineState,
+        device: &wgpu::Device,
+        size: (u32, u32),
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Result<Self, cherenkov::SurfaceError> {
+        let (mut target, textures) = cherenkov_gpu::interop::TextureTarget::new(size);
+        let ranges = target.content_ranges();
+        let surface = state.engine.surface(target, wake).await?;
+        Ok(Self::build(state, device, size, surface, textures, ranges))
+    }
+
+    /// The construction the sync native and async wasm32 [`Self::new`]
+    /// variants share past `Engine::surface`.
+    fn build(
+        state: &SharedEngineState,
+        device: &wgpu::Device,
+        size: (u32, u32),
+        surface: cherenkov::Surface<cherenkov_gpu::Gpu>,
+        textures: mpsc::Receiver<wgpu::Texture>,
+        ranges: mpsc::Receiver<cherenkov_gpu::interop::ColorRange>,
+    ) -> Self {
+        Self {
+            core: SurfaceCore::new(Rc::clone(&state.engine), surface, size),
+            textures,
+            ranges,
+            content_range: None,
+            texture: None,
+            presenter: cherenkov_gpu::interop::Presenter::new(device, state.shader_delivery),
+        }
+    }
+
+    /// Renders the committed change set at `at`, the frame instant the pump
+    /// runs, and drains texture notifications, returning the engine's
+    /// `Next` for the pump to schedule against.
+    ///
+    /// The rendered texture stays held in [`Self::texture`]; the presenter
+    /// samples it through [`Self::present_into`].
+    ///
+    /// Async on wasm32, where `Engine::render` awaits the browser device.
+    ///
+    /// # Errors
+    ///
+    /// Returns the engine's [`cherenkov::RenderError`] when the frame fails
+    /// to render.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn render(
+        &mut self,
+        at: cherenkov::FrameTime,
+    ) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        let next = self.core.own(self.core.engine.render(at))?;
+        Ok(self.render_inner(next))
+    }
+
+    /// [`Self::render`], async on wasm32 where `Engine::render` awaits the
+    /// browser device.
+    #[cfg(target_arch = "wasm32")]
+    #[allow(
+        clippy::future_not_send,
+        reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
+    )]
+    pub(crate) async fn render(
+        &mut self,
+        at: cherenkov::FrameTime,
+    ) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        let next = self.core.own(self.core.engine.render(at).await)?;
+        Ok(self.render_inner(next))
+    }
+
+    /// The texture-notification drain and `Next` plumbing the two
+    /// [`Self::render`] variants share past `Engine::render`.
+    fn render_inner(&mut self, next: cherenkov::Next) -> cherenkov::Next {
+        while let Ok(texture) = self.textures.try_recv() {
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.texture = Some((texture, view));
+        }
+        if self.texture.is_none() {
+            contract_violation!(
+                "the engine rendered a frame without producing a surface texture; the frame is not presented"
+            );
+        }
+        for range in self.ranges.try_iter() {
+            self.content_range = Some(range);
+        }
+        next
+    }
+
+    /// The colour range of the content the engine last rendered. A render
+    /// that reported none is an engine contract violation; the frame is
+    /// presented as [`ColorRange::Standard`](cherenkov_gpu::interop::ColorRange::Standard).
+    pub(crate) fn content_range(&self) -> cherenkov_gpu::interop::ColorRange {
+        self.content_range.unwrap_or_else(|| {
+            contract_violation!(
+                "the engine rendered a surface without reporting its content range; the frame is presented as standard range"
+            );
+            cherenkov_gpu::interop::ColorRange::Standard
+        })
+    }
+
+    /// Converts the rendered engine texture into `output` through the
+    /// presenter — the one presentation path the plan names. The host still
+    /// owns acquire and `present`; this writes into the acquired texture
+    /// exactly once.
+    pub(crate) fn present_into(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        output: &wgpu::Texture,
+        color: cherenkov_gpu::interop::OutputColor,
+        alpha: cherenkov_gpu::interop::OutputAlpha,
+        headroom: f32,
+    ) {
+        let Some((_, view)) = self.texture.as_ref() else {
+            contract_violation!(
+                "a frame is presented before the engine produced a texture; nothing is presented"
+            );
+            return;
+        };
+        self.presenter.texture_in(
+            device,
+            queue,
+            (view, self.core.stored_space()),
+            cherenkov_gpu::interop::TextureOutput {
+                texture: output,
+                color,
+                alpha,
+                headroom,
+            },
+        );
+    }
+}
+
+/// The CPU painter's engine output: an engine `Offscreen` framebuffer of
+/// premultiplied linear Display P3, read back after the render and presented
+/// to SDR sRGB bytes by `cherenkov-cpu`'s presentation pass.
+#[cfg(hydrolysis_cpu_painter)]
+pub struct RasterCherenkovSurface {
+    core: SurfaceCore<cherenkov_cpu::Raster>,
+    /// The host's SIMD level, selected once, that presentation runs under.
+    level: cherenkov_cpu::Level,
+}
+
+#[cfg(hydrolysis_cpu_painter)]
+impl core::fmt::Debug for RasterCherenkovSurface {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RasterCherenkovSurface")
+            .field("size", &self.core.size)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(hydrolysis_cpu_painter)]
+impl EngineSurface for RasterCherenkovSurface {
+    type Backend = cherenkov_cpu::Raster;
+
+    fn core(&self) -> &SurfaceCore<cherenkov_cpu::Raster> {
+        &self.core
+    }
+
+    fn core_mut(&mut self) -> &mut SurfaceCore<cherenkov_cpu::Raster> {
+        &mut self.core
+    }
+}
+
+#[cfg(hydrolysis_cpu_painter)]
+impl RasterCherenkovSurface {
+    /// Creates the engine framebuffer at `size` (physical pixels). `wake` is
+    /// the host's wake: the surface calls it, from whichever thread the
+    /// cause lands on, when its content — a filter, a live operand — asks for
+    /// a frame between the renderer's own.
+    ///
+    /// # Errors
+    /// The engine's [`cherenkov::SurfaceError`] when it refuses the
+    /// offscreen target.
+    pub(crate) fn new(
+        engine: Rc<RasterEngine>,
+        size: (u32, u32),
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Result<Self, cherenkov::SurfaceError> {
+        // `LinearF16` is the storage the engine's own offscreen consumers
+        // use: half floats carry the extended-range working space, and the
+        // single rounding happens where the presentation pass reads them.
+        let surface = engine.surface(
+            cherenkov::Offscreen::new(size, cherenkov::OffscreenFormat::LinearF16),
+            wake,
+        )?;
+        Ok(Self {
+            core: SurfaceCore::new(engine, surface, size),
+            level: cherenkov_cpu::Level::new(),
+        })
+    }
+
+    /// Renders the committed change set at `at`, the frame instant the pump
+    /// runs, returning the engine's `Next` for the pump to schedule against.
+    ///
+    /// # Errors
+    ///
+    /// Returns the engine's [`cherenkov::RenderError`] when the frame fails
+    /// to render.
+    pub(crate) fn render(
+        &self,
+        at: cherenkov::FrameTime,
+    ) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        self.core.own(self.core.engine.render(at))
+    }
+
+    /// The last rendered frame as sRGB RGBA8 rows in the `alpha`
+    /// convention, tone-mapped to `headroom` — the SDR ceiling an sRGB
+    /// destination caps at `1`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the engine's [`cherenkov::RenderError`] when the readback
+    /// fails.
+    pub(crate) fn readback_rgba8(
+        &self,
+        headroom: f32,
+        alpha: cherenkov::OutputAlpha,
+    ) -> Result<Vec<u8>, cherenkov::RenderError> {
+        let readback = self.core.surface.readback()?;
+        Ok(cherenkov_cpu::present_srgb8(
+            self.level,
+            headroom,
+            alpha,
+            &readback.pixels,
+        ))
+    }
+}
+
+/// The macOS winit window's engine output: the engine presents through
+/// `cherenkov_gpu::WindowTarget` inside `Engine::render`, so this kind has
+/// no texture to convert and nothing for the host to acquire or present.
+/// The host keeps the target's `DisplayProbe` and re-samples its headroom.
+#[cfg(all(target_os = "macos", hydrolysis_winit))]
+pub struct WindowCherenkovSurface {
+    core: SurfaceCore<cherenkov_gpu::Gpu>,
+    /// Whether the target was created transparent; the composite alpha is
+    /// fixed at creation, so a window whose transparency changes needs a
+    /// new target.
+    transparent: bool,
+    /// The channel `WindowTarget` pushes a `DisplayProbe` through per
+    /// output configuration; drained on main by [`Self::headroom`].
+    probe_rx: mpsc::Receiver<cherenkov_gpu::interop::DisplayProbe>,
+    /// The latest probe, kept and re-sampled every frame — headroom
+    /// follows brightness and display changes between pushes.
+    probe: Option<cherenkov_gpu::interop::DisplayProbe>,
+    /// The last headroom the probe reported; the engine's neutral
+    /// `Display::default().headroom` until one has. A `None` from
+    /// `tone_map_headroom` keeps it — SDR is never guessed.
+    last_headroom: f32,
+    /// The host wake the engine surface was created with.
+    wake: std::sync::Arc<dyn Fn() + Send + Sync>,
+}
+
+#[cfg(all(target_os = "macos", hydrolysis_winit))]
+impl core::fmt::Debug for WindowCherenkovSurface {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WindowCherenkovSurface")
+            .field("size", &self.core.size)
+            .field("transparent", &self.transparent)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(all(target_os = "macos", hydrolysis_winit))]
+impl EngineSurface for WindowCherenkovSurface {
+    type Backend = cherenkov_gpu::Gpu;
+
+    fn core(&self) -> &SurfaceCore<cherenkov_gpu::Gpu> {
+        &self.core
+    }
+
+    fn core_mut(&mut self) -> &mut SurfaceCore<cherenkov_gpu::Gpu> {
+        &mut self.core
+    }
+}
+
+#[cfg(all(target_os = "macos", hydrolysis_winit))]
+impl WindowCherenkovSurface {
+    /// Creates the engine surface presenting on `window` at `size`
+    /// (physical pixels), configured by the host's `output` request —
+    /// transparency, colour space and display sync through the same
+    /// `OutputRequest` every Hydrolysis host negotiates by (#2445).
+    /// `wake` is the host's display-link wake, as for the texture kind.
+    ///
+    /// # Errors
+    /// The engine's [`cherenkov::SurfaceError`] when it cannot create the
+    /// window's surface.
+    pub fn new(
+        engine: Rc<GpuEngine>,
+        window: std::sync::Arc<winit::window::Window>,
+        size: (u32, u32),
+        output: cherenkov_gpu::interop::OutputRequest,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Result<Self, cherenkov::SurfaceError> {
+        let mut target = cherenkov_gpu::WindowTarget::new(window, size)
+            .transparent(output.transparent)
+            .color_space(output.color_space)
+            .display_sync(output.sync);
+        let probe_rx = target.output_probe();
+        let wake: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(wake);
+        let engine_wake = std::sync::Arc::clone(&wake);
+        let surface = engine.surface(target, move || engine_wake())?;
+        Ok(Self {
+            core: SurfaceCore::new(engine, surface, size),
+            transparent: output.transparent,
+            probe_rx,
+            probe: None,
+            last_headroom: cherenkov::Display::default().headroom,
+            wake,
+        })
+    }
+
+    /// Whether the target was created transparent.
+    pub const fn transparent(&self) -> bool {
+        self.transparent
+    }
+
+    /// The display's headroom, re-sampled on main: the channel delivers
+    /// the newest `DisplayProbe`, the kept probe is asked for its
+    /// `tone_map_headroom`, and a `None` — no report for the current
+    /// output configuration — keeps the last known value rather than
+    /// guessing SDR. The flag says whether the value or the probe changed.
+    pub fn headroom(&mut self) -> (f32, bool) {
+        drain_and_sample(
+            &self.probe_rx,
+            &mut self.probe,
+            &mut self.last_headroom,
+            cherenkov_gpu::interop::DisplayProbe::tone_map_headroom,
+        )
+    }
+
+    /// Announces a display move the platform observed
+    /// (`NSWindowDidChangeScreenNotification`): the engine re-runs output
+    /// negotiation and pushes a fresh probe.
+    ///
+    /// With the render thread gone the announcement is logged and dropped;
+    /// the frame's render reports the loss.
+    pub fn display_moved(&self) {
+        if let Err(error) = self.core.surface.display_moved() {
+            tracing::error!(
+                %error,
+                "hydrolysis renderer: engine surface display move failed; the move is not announced"
+            );
+        }
+    }
+
+    /// Renders the committed change set at `at`, the frame instant the pump
+    /// runs; the engine presents the frame itself. Returns the engine's
+    /// `Next` for the pump to schedule against.
+    ///
+    /// Output negotiation runs inside the render, so the probe it pushes —
+    /// on the first frame, after a display move — is sampled here: a
+    /// changed headroom is announced to the surface and a frame requested,
+    /// since the frame just rendered used the previous value.
+    ///
+    /// # Errors
+    ///
+    /// Returns the engine's [`cherenkov::RenderError`] when the frame fails
+    /// to render.
+    pub fn render(
+        &mut self,
+        at: cherenkov::FrameTime,
+        scale: f64,
+    ) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        let next = self.core.own(self.core.engine.render(at))?;
+        let (headroom, changed) = self.headroom();
+        if changed {
+            self.core.display(cherenkov::Display { scale, headroom });
+            (self.wake)();
+        }
+        Ok(next)
+    }
+}
+
+/// The browser page's engine output: the engine presents through
+/// `cherenkov_gpu::interop::web::DomTarget` inside `Engine::render`,
+/// stacking its canvases and the page's hosted elements under the root
+/// element the surface was created on. Like the macOS window kind, there is
+/// nothing for the host to acquire or present.
+///
+/// Every canvas is SDR: an extended-range canvas puts Apple displays into
+/// EDR mode, which dims every screenshot of the page and draws more power,
+/// and no Hydrolysis host presents HDR. Display P3 keeps the wide gamut,
+/// and every browser that presents WebGPU offers it for a canvas.
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub struct DomCherenkovSurface {
+    core: SurfaceCore<cherenkov_gpu::Gpu>,
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+impl core::fmt::Debug for DomCherenkovSurface {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DomCherenkovSurface")
+            .field("size", &self.core.size)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+impl EngineSurface for DomCherenkovSurface {
+    type Backend = cherenkov_gpu::Gpu;
+
+    fn core(&self) -> &SurfaceCore<cherenkov_gpu::Gpu> {
+        &self.core
+    }
+
+    fn core_mut(&mut self) -> &mut SurfaceCore<cherenkov_gpu::Gpu> {
+        &mut self.core
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+impl DomCherenkovSurface {
+    /// Creates the engine surface presenting under `root` at `size`
+    /// (physical pixels). `wake` is the host's display-link wake, as for
+    /// the texture kind.
+    ///
+    /// # Errors
+    /// The engine's [`cherenkov::SurfaceError`] when it cannot create the
+    /// page's surface.
+    #[allow(
+        clippy::future_not_send,
+        reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
+    )]
+    pub(crate) async fn new(
+        engine: Rc<GpuEngine>,
+        root: web_sys::HtmlElement,
+        size: (u32, u32),
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Result<Self, cherenkov::SurfaceError> {
+        // The page asks for SDR: an extended-range canvas puts Apple
+        // displays into EDR mode, which dims every screenshot of the page
+        // and draws more power. The Standard..=WideGamut range keeps
+        // Display P3's wide gamut where the browser offers it and keeps
+        // every HDR space out (#2445).
+        let target = cherenkov_gpu::interop::web::DomTarget::new(root, size).color_space(
+            cherenkov_gpu::interop::ColorSpaceRequest::Range(
+                cherenkov_gpu::interop::ColorRangeInterval::new(
+                    cherenkov_gpu::interop::ColorRange::Standard,
+                    cherenkov_gpu::interop::ColorRange::WideGamut,
+                ),
+            ),
+        );
+        let surface = engine.surface(target, wake).await?;
+        Ok(Self {
+            core: SurfaceCore::new(engine, surface, size),
+        })
+    }
+
+    /// Renders the committed change set; the engine presents the frame
+    /// itself. Returns the engine's `Next` for the pump to schedule
+    /// against.
+    ///
+    /// # Errors
+    ///
+    /// Returns the engine's [`cherenkov::RenderError`] when the frame
+    /// fails to render.
+    #[allow(
+        clippy::future_not_send,
+        reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
+    )]
+    pub(crate) async fn render(
+        &self,
+        at: cherenkov::FrameTime,
+    ) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        self.core.own(self.core.engine.render(at).await)
+    }
+}
+
+/// Re-samples `probe`'s headroom into `last`: the newest probe on
+/// `receiver` replaces the kept one, the kept probe is never consumed, a
+/// `None` report keeps `last`, and `last` is the result either way. The
+/// flag reports a new probe or a changed value. Generic so a test can drive
+/// the state machine with a fake probe — a real `DisplayProbe` holds a live
+/// `wgpu::Surface`.
+#[cfg(all(target_os = "macos", hydrolysis_winit))]
+fn drain_and_sample<P>(
+    receiver: &mpsc::Receiver<P>,
+    slot: &mut Option<P>,
+    last: &mut f32,
+    headroom_of: impl Fn(&P) -> Option<f32>,
+) -> (f32, bool) {
+    let mut arrived = false;
+    while let Ok(probe) = receiver.try_recv() {
+        *slot = Some(probe);
+        arrived = true;
+    }
+    let previous = *last;
+    if let Some(headroom) = slot.as_ref().and_then(headroom_of) {
+        *last = headroom;
+    }
+    (*last, arrived || previous.to_bits() != last.to_bits())
+}
+
+#[cfg(all(test, target_os = "macos", hydrolysis_winit))]
+mod tests {
+    use std::cell::Cell;
+
+    use super::drain_and_sample;
+
+    /// A stand-in `DisplayProbe`: a real probe holds a live `wgpu::Surface`
+    /// and needs a window, so the test drives the sampling state machine
+    /// with a report it controls and a read counter it can assert on.
+    struct FakeProbe {
+        report: Cell<Option<f32>>,
+        reads: Cell<u32>,
+    }
+
+    impl FakeProbe {
+        fn headroom(&self) -> Option<f32> {
+            self.reads.set(self.reads.get() + 1);
+            self.report.get()
+        }
+    }
+
+    #[test]
+    fn the_probe_is_retained_and_resampled() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(FakeProbe {
+                report: Cell::new(Some(2.0)),
+                reads: Cell::new(0),
+            })
+            .unwrap();
+        let mut probe = None;
+        let mut last = 1.0;
+
+        // Every call re-samples the kept probe — the first report lands.
+        assert_eq!(
+            drain_and_sample(&receiver, &mut probe, &mut last, FakeProbe::headroom),
+            (2.0, true)
+        );
+        let kept = probe.take().expect("the probe is kept, not consumed");
+        assert_eq!(kept.reads.get(), 1);
+        // Let the display report a new headroom: the next sample follows it
+        // without a new probe arriving.
+        kept.report.set(Some(4.0));
+        probe = Some(kept);
+        assert_eq!(
+            drain_and_sample(&receiver, &mut probe, &mut last, FakeProbe::headroom),
+            (4.0, true)
+        );
+        assert_eq!(probe.take().expect("still kept").reads.get(), 2);
+    }
+
+    #[test]
+    fn a_none_report_keeps_the_last_headroom() {
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let mut probe = Some(FakeProbe {
+            report: Cell::new(None),
+            reads: Cell::new(0),
+        });
+        let mut last = 3.0;
+        assert_eq!(
+            drain_and_sample(&receiver, &mut probe, &mut last, FakeProbe::headroom),
+            (3.0, false)
+        );
+        assert_eq!(last.to_bits(), 3.0_f32.to_bits());
+        // And an empty slot — before the first probe lands — still never
+        // guesses SDR: it returns the initial `Display::default` value.
+        let mut empty: Option<FakeProbe> = None;
+        assert_eq!(
+            drain_and_sample(&receiver, &mut empty, &mut last, FakeProbe::headroom),
+            (3.0, false)
+        );
+    }
+
+    #[test]
+    fn a_newer_probe_replaces_the_kept_one() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut slot: Option<FakeProbe> = Some(FakeProbe {
+            report: Cell::new(Some(2.0)),
+            reads: Cell::new(0),
+        });
+        let mut last = 1.0;
+        // The drain loop delivers every queued probe: the newest replaces
+        // the kept one and is the only one sampled.
+        sender
+            .send(FakeProbe {
+                report: Cell::new(Some(4.0)),
+                reads: Cell::new(0),
+            })
+            .unwrap();
+        sender
+            .send(FakeProbe {
+                report: Cell::new(Some(5.0)),
+                reads: Cell::new(0),
+            })
+            .unwrap();
+        assert_eq!(
+            drain_and_sample(&receiver, &mut slot, &mut last, FakeProbe::headroom),
+            (5.0, true)
+        );
+    }
+
+    #[test]
+    fn first_probe_requests_an_update_even_when_headroom_is_unchanged() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(FakeProbe {
+                report: Cell::new(Some(2.0)),
+                reads: Cell::new(0),
+            })
+            .unwrap();
+        let mut probe = None;
+        let mut last = 2.0;
+
+        assert_eq!(
+            drain_and_sample(&receiver, &mut probe, &mut last, FakeProbe::headroom),
+            (2.0, true)
+        );
+    }
+}

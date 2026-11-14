@@ -1,0 +1,421 @@
+package dev.waterui.hydrolysis
+
+import android.content.Context
+import android.os.Looper
+import android.view.Surface
+
+/**
+ * JNI edge into the Hydrolysis runner. Every `external` name maps to a
+ * `Java_dev_waterui_hydrolysis_NativeBridge_*` export; the schema handshake in
+ * [load] refuses a native library built against a different edge so a stale
+ * `.so` fails loudly instead of misreading arguments.
+ */
+object NativeBridge {
+    /**
+     * Incremented in lock-step with `JNI_SCHEMA` in the Rust runner.
+     * 24 adds `DefineEffect` (`effect, stage_count, kind + 12 float` stages)
+     * for native `RenderEffect` chains (#1750).
+     * History: 1 = surface/input/IME events; 2 = `nativeSetVisible`
+     * (Activity `onStart`/`onStop` → pump visibility); 3 = the
+     * InputConnection range protocol (`nativeEditOp`/`nativeEditingState`,
+     * the `onNative*` editing pushes) and the `Context` handed to
+     * [nativeCreateSession]; 4 = `nativeAccessibilityAction` takes the
+     * accesskit action index plus selection-bounds, text and numeric
+     * payload channels; 5 = `onNativeAccessibilityTreeChanged` carries the
+     * diffed event-list JSON and [nativeAccessibilityHitTest] maps a point
+     * to the served virtual node for explore-by-touch; 6 = [nativeInit]
+     * carries the launch intent's `waterui.log.level` extra (the CLI's
+     * `--logs` level) and logging init moves out of the app cdylib's
+     * `JNI_OnLoad`; 7 = `nativeSetMetrics` carries the `ViewConfiguration`
+     * touch-scroll parameters (slop, min/max fling velocity, scroll
+     * friction); 8 = [nativeCreateSession] drops `sdkInt`. The API floor is
+     * 33, so `ANativeWindow_setFrameRate` is linked directly; 9 =
+     * [nativeBackEvent] and `onNativeBackAvailable` carry system back into
+     * the navigation stack and report whether a back target is registered;
+     * 10 = `nativeSetMetrics` splits the window insets into the container
+     * and keyboard regions of layout-spec.md §7.1, and the host's
+     * `WindowInsetsAnimationCompat` progress pushes each IME animation frame;
+     * 11 = [nativeUiThreadServices] creates the one executor per UI thread
+     * at load time, and [nativeCreateSession] takes its handle so every
+     * session shares it; 12 = `nativeSetHighRefresh` takes a typed `active`
+     * flag in place of the `-1f` sentinel float the native side decoded as a
+     * release, and [nativeSurfaceAttached] carries the display's peak
+     * refresh rate that flag asks for; 13 = a platform-view placement names
+     * either a factory `kind` or a registered `instance`, and the
+     * `HydrolysisWebView` natives join the edge; 14 =
+     * `nativePlatformViewFocus` reported whether a mounted platform-view
+     * child held UI focus; 15 = the focus report reads through the frame —
+     * [HydrolysisSession.onNativePlatformViewFocus] replaces the pushed
+     * native, which left with it; 16 = `onNativeFatalError` leaves the
+     * table — a lost GPU device is recreated instead of ending the
+     * session, and a recreation that exhausts its loss budget already
+     * reaches the host as the frame call's `IllegalStateException`;
+     * 17 = [nativeSetFrameDemand] separates continuous work and touch, and
+     * surface attachment carries the display's suggested ARR rates; 18 =
+     * the frame carries the HWUI command buffer (`src/hwui` on the Rust
+     * side, `dev.waterui.hydrolysis.hwui` here) decoded onto retained
+     * `RenderNode`s (water-rs/waterui#1811); 19 = the HWUI text wire
+     * carries a default-style row: row zero of every packed shape request
+     * is the paragraph's base paint; 20 = [nativeCreateSession] takes the
+     * session-owned painter and [nativeSetHostAttached] reports the host
+     * view's bind state; 21 = the BindPlatformView op binds a platform
+     * view inside its owner's RenderNode; 22 = [nativePlatformViewHitTest]
+     * answers the retained tree's platform view under a host pixel; 23 =
+     * [nativeCreateSession] carries the configuration's night-mode flag so
+     * the session's colour-scheme signal starts on the real `uiMode`, and
+     * [nativeSetColorScheme] reports every later change
+     * (water-rs/waterui#3544). 25 = the GPU band edge —
+     * [nativeBandAttached] / [nativeBandDetached] carry each band View's
+     * `ImageReader` surface, and `onNativeBandLatch` shows a band's newest
+     * image (water-rs/waterui#2225). 26 = the HWUI `DefineEffect` wire
+     * carries the overscroll stretch stage kind. 27 = [nativeSetMetrics]
+     * carries the `ViewConfiguration` double-tap timeout and slop, and
+     * [nativeOnFrame] carries the vsync callback's expected presentation
+     * time in place of the advisory vsync timestamp. 28 = the HWUI
+     * painter's hosted GPU-content edge: [nativeHostedSurfaceAttached] /
+     * [nativeHostedSurfaceResized] / [nativeHostedSurfaceDestroyed] carry
+     * the `Surface` of each GPU content view's `TextureView`
+     * (water-rs/waterui#1812). 29 = the GPU video player's decoder-plane
+     * edge: [nativeVideoPlaneAttached] / [nativeVideoPlaneSurfaceDestroyed].
+     */
+    private const val SCHEMA: Int = 29
+
+    /** [nativeBackEvent] phase: a predictive gesture began. */
+    const val BACK_STARTED: Int = 0
+
+    /** [nativeBackEvent] phase: the gesture's progress, in `0..1`. */
+    const val BACK_PROGRESSED: Int = 1
+
+    /** [nativeBackEvent] phase: the platform cancelled the gesture. */
+    const val BACK_CANCELLED: Int = 2
+
+    /** [nativeBackEvent] phase: the gesture committed, or a back button was pressed. */
+    const val BACK_INVOKED: Int = 3
+
+    /** The `System.loadLibrary` name [load] mounted, or null before it. */
+    private var loadedLibraryName: String? = null
+
+    /**
+     * Opaque handle for the UI-thread services the load hook created once:
+     * the executor every session shares, registered with the main looper.
+     * Sessions receive it explicitly — the native side keeps no global.
+     */
+    internal var uiThreadServices: Long = 0
+        private set
+
+    /**
+     * Loads the app's Hydrolysis-backed shared library and verifies the JNI
+     * schema. The application names its own `cdylib` — the host never picks
+     * one for it. `logLevel` is the `tracing` level name the launch intent's
+     * `waterui.log.level` extra carried, or null when the launch asked for
+     * no level — the native logging setup keeps its own default then.
+     */
+    @Synchronized
+    fun load(libraryName: String, logLevel: String?) {
+        check(Looper.myLooper() == Looper.getMainLooper()) {
+            "hydrolysis: load must run on the main thread, whose looper the executor registers with"
+        }
+        loadedLibraryName?.let { loaded ->
+            check(loaded == libraryName) {
+                "hydrolysis: the process already mounted '$loaded'; a second library '$libraryName' cannot share it"
+            }
+            return
+        }
+        System.loadLibrary(libraryName)
+        val nativeSchema = nativeInit(SCHEMA, logLevel)
+        check(nativeSchema == SCHEMA) {
+            "hydrolysis JNI schema mismatch: host expects $SCHEMA, native library reports $nativeSchema"
+        }
+        uiThreadServices = nativeUiThreadServices()
+        check(uiThreadServices != 0L) { "hydrolysis: the UI-thread executor was not created" }
+        loadedLibraryName = libraryName
+    }
+
+    @JvmStatic private external fun nativeInit(schema: Int, logLevel: String?): Int
+
+    /**
+     * Creates the one executor per UI thread — registered with the main
+     * looper through the same eventfd it writes — plus the process
+     * environment carrying the inspector. Called once from [load], which is
+     * why the executor exists for the process's life rather than per
+     * session. Returns the process-owned handle passed to
+     * [nativeCreateSession].
+     */
+    @JvmStatic private external fun nativeUiThreadServices(): Long
+
+    /**
+     * `context` is any `Context` of the app — the native side resolves its
+     * `Application` and publishes that, once per process, through
+     * `ndk_context` so service backends (clipboard) can resolve it.
+     * `uiThreadServices` is the handle [load] created — every session
+     * shares that executor rather than installing its own.
+     */
+    /**
+     * `painter` is the session-owned [SessionPainter] — null on the GPU
+     * backend, the HWUI painter object otherwise.
+     *
+     * `nightMode` is `Configuration.uiMode`'s night flag at the moment the
+     * session is created — the colour-scheme signal's initial value, so the
+     * theme tokens never start on a Light default corrected a frame later.
+     */
+    @JvmStatic
+    external fun nativeCreateSession(
+        session: HydrolysisSession,
+        context: Context,
+        painter: SessionPainter?,
+        uiThreadServices: Long,
+        nightMode: Boolean,
+    ): Long
+
+    @JvmStatic external fun nativeDestroySession(sessionPtr: Long)
+
+    /**
+     * The configuration's night-mode flag — pushed when a host view binds
+     * and on every `onConfigurationChanged`; the native side re-resolves
+     * the colour-scheme signal only when the value moved.
+     */
+    @JvmStatic external fun nativeSetColorScheme(sessionPtr: Long, nightMode: Boolean)
+
+    /**
+     * The host bound (`true`) or unbound (`false`) its view — the session's
+     * attach gate; called from [HydrolysisSession.bind] / `unbind`.
+     */
+    @JvmStatic external fun nativeSetHostAttached(sessionPtr: Long, attached: Boolean)
+
+    /**
+     * The retained tree's platform view under host pixel (`x`, `y`) — the
+     * HWUI painter's ordered hit test. `0` means no view is drawn there or
+     * an interactive target painted above it takes the point; any other
+     * value is a placement id.
+     */
+    @JvmStatic external fun nativePlatformViewHitTest(sessionPtr: Long, x: Float, y: Float): Long
+
+    @JvmStatic
+    external fun nativeSetMetrics(
+        sessionPtr: Long,
+        widthPx: Int,
+        heightPx: Int,
+        density: Float,
+        fontScale: Float,
+        refreshHz: Float,
+        insetLeft: Int,
+        insetTop: Int,
+        insetRight: Int,
+        insetBottom: Int,
+        imeLeft: Int,
+        imeTop: Int,
+        imeRight: Int,
+        imeBottom: Int,
+        touchSlopPx: Float,
+        minFlingVelocityPx: Float,
+        maxFlingVelocityPx: Float,
+        scrollFriction: Float,
+        doubleTapTimeoutMs: Int,
+        doubleTapSlopPx: Float,
+    )
+
+    /**
+     * The frame transaction. Returns a bitmask: 1 = wants another vsync frame,
+     * 2 = window requested close, 4 = a fallback deadline is available through
+     * [nativeFrameDeadlineInNanos]. `hasPresentation` is set for a frame a
+     * vsync callback started, and `presentationNanos` is then its expected
+     * presentation time on the `System.nanoTime` clock; a delayed deadline
+     * frame has none.
+     */
+    @JvmStatic
+    external fun nativeOnFrame(
+        sessionPtr: Long,
+        hasPresentation: Boolean,
+        presentationNanos: Long,
+    ): Long
+
+    @JvmStatic external fun nativeFrameDeadlineInNanos(sessionPtr: Long): Long
+
+    /**
+     * A band surface was created. `peakRefreshHz` is the highest rate the
+     * band's display offers at its current resolution. Normal and high
+     * rates are the ARR suggestions, or the peak on a non-ARR display.
+     */
+    @JvmStatic
+    external fun nativeSurfaceAttached(
+        sessionPtr: Long,
+        surface: Surface,
+        peakRefreshHz: Float,
+        normalRefreshHz: Float,
+        highRefreshHz: Float,
+        width: Int,
+        height: Int,
+        generation: Long,
+    ): Boolean
+
+    @JvmStatic
+    external fun nativeSurfaceChanged(
+        sessionPtr: Long,
+        width: Int,
+        height: Int,
+        generation: Long,
+    )
+
+    @JvmStatic external fun nativeSurfaceDestroyed(sessionPtr: Long, generation: Long)
+
+    /**
+     * A band View created the `ImageReader` it shows — `surface` is the
+     * reader's, which the engine presents the self-drawn content above the
+     * platform view whose placement id is `view` into. A resize creates a
+     * new reader under a new [generation][nativeBandDetached]; the base
+     * band's attachment drives the frame cadence.
+     */
+    @JvmStatic
+    external fun nativeBandAttached(
+        sessionPtr: Long,
+        view: Long,
+        surface: Surface,
+        width: Int,
+        height: Int,
+        generation: Long,
+    )
+
+    /** The reader `generation` of the band above `view` is about to close. */
+    @JvmStatic
+    external fun nativeBandDetached(sessionPtr: Long, view: Long, generation: Long)
+
+    /**
+     * The Activity's started state (`onStart`/`onStop`) — drives the frame
+     * pump's hidden flag together with the surface's attach/detach.
+     */
+    @JvmStatic external fun nativeSetVisible(sessionPtr: Long, visible: Boolean)
+
+    /**
+     * Continuous work and touch demand, combined with the engine's content
+     * range on the native side. The demand survives surface re-creation.
+     */
+    @JvmStatic
+    external fun nativeSetFrameDemand(sessionPtr: Long, continuous: Boolean, touching: Boolean)
+
+    /**
+     * One system-back phase. `phase` is a `BACK_*` constant. `edge` is
+     * [androidx.activity.BackEventCompat.EDGE_LEFT] or `EDGE_RIGHT` and is
+     * read only for [BACK_STARTED]. `progress` is the platform's `0..1` report.
+     */
+    @JvmStatic
+    external fun nativeBackEvent(sessionPtr: Long, phase: Int, edge: Int, progress: Double)
+
+    @JvmStatic
+    external fun nativePointerEvent(
+        sessionPtr: Long,
+        action: Int,
+        pointerId: Int,
+        x: Float,
+        y: Float,
+        toolType: Int,
+        button: Int,
+    )
+
+    @JvmStatic
+    external fun nativeScrollEvent(sessionPtr: Long, x: Float, y: Float, dx: Float, dy: Float)
+
+    @JvmStatic
+    external fun nativeKeyEvent(
+        sessionPtr: Long,
+        key: String,
+        pressed: Boolean,
+        shift: Boolean,
+        ctrl: Boolean,
+        alt: Boolean,
+        meta: Boolean,
+    )
+
+    /**
+     * One `InputConnection` mutator, dispatched onto the session's editing
+     * state machine. `op` is an `EDIT_OP_*` constant from
+     * [HydrolysisInputConnection]; `text` is the CharSequence argument where
+     * the op carries one. Returns false for a stale `editorId` (a connection
+     * whose editor lost focus) — the mirror must not move then.
+     */
+    @JvmStatic
+    external fun nativeEditOp(
+        sessionPtr: Long,
+        editorId: Long,
+        op: Int,
+        arg1: Int,
+        arg2: Int,
+        text: String,
+    ): Boolean
+
+    /**
+     * The authoritative editing state as JSON, pulled synchronously when a
+     * connection binds — its `editor_id` is the connection's generation
+     * token. Pushes arrive later as `onNativeEditingState`.
+     */
+    @JvmStatic external fun nativeEditingState(sessionPtr: Long): String?
+
+    /** Serialized accesskit TreeUpdate, or null when nothing changed. */
+    @JvmStatic external fun nativeAccessibilityTree(sessionPtr: Long): String?
+
+    /**
+     * The served virtual node under (`x`, `y`) in logical units, or -1 —
+     * the hit test the host's `dispatchHoverEvent` consults for
+     * explore-by-touch.
+     */
+    @JvmStatic
+    external fun nativeAccessibilityHitTest(
+        sessionPtr: Long,
+        x: Float,
+        y: Float,
+    ): Long
+
+    /**
+     * An accessibility action on a virtual node. `action` is the *accesskit*
+     * action index (not an Android constant); `arg1`/`arg2` carry the
+     * `SetTextSelection` UTF-16 bounds (-1 = none), `text` the `SetValue`/
+     * `ReplaceSelectedText` string (empty = none), and `numeric` the
+     * `NumericValue`/`CustomAction` payload (NaN = none). Text actions on an
+     * editable node run over the session's editing protocol — the same
+     * writer the `InputConnection` mirror uses.
+     */
+    @JvmStatic
+    external fun nativeAccessibilityAction(
+        sessionPtr: Long,
+        virtualViewId: Long,
+        action: Int,
+        arg1: Int,
+        arg2: Int,
+        text: String,
+        numeric: Double,
+    ): Boolean
+
+    /** Platform-view placement frame set, or null when unchanged. */
+    @JvmStatic external fun nativePlatformViewFrames(sessionPtr: Long): String?
+
+    /**
+     * The `TextureView` mounted for GPU content placement [view] has a
+     * [surface] of `width` by `height` pixels the session presents frames
+     * into (HWUI painter with GPU content, water-rs/waterui#1812).
+     */
+    @JvmStatic
+    external fun nativeHostedSurfaceAttached(
+        sessionPtr: Long,
+        view: Long,
+        surface: Surface,
+        width: Int,
+        height: Int,
+    )
+
+    /** The hosted [view]'s surface changed size. */
+    @JvmStatic
+    external fun nativeHostedSurfaceResized(sessionPtr: Long, view: Long, width: Int, height: Int)
+
+    /** The hosted [view]'s surface is being released; the swapchain drops before this returns. */
+    @JvmStatic external fun nativeHostedSurfaceDestroyed(sessionPtr: Long, view: Long)
+
+    /**
+     * The [host] object of the GPU video player's decoder plane [plane]
+     * exists: the session hands it to the player, which calls
+     * `acquireVideoSurface` / `deactivateVideoSurface` on it.
+     */
+    @JvmStatic external fun nativeVideoPlaneAttached(sessionPtr: Long, plane: Long, host: Any)
+
+    /** The decoder plane [plane]'s `Surface` was destroyed by the platform. */
+    @JvmStatic external fun nativeVideoPlaneSurfaceDestroyed(sessionPtr: Long, plane: Long)
+
+}

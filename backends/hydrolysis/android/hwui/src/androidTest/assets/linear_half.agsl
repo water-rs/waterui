@@ -1,0 +1,7 @@
+uniform shader inputImage;
+half4 main(float2 position) {
+    half4 c = inputImage.eval(position);
+    if (c.a == 0.0) return half4(0.0);
+    float3 linear = toLinearSrgb(c.rgb / c.a);
+    return half4(fromLinearSrgb(linear * 0.5) * c.a, c.a);
+}

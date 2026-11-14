@@ -2,6 +2,12 @@ name: WebView JavaScript
 
 on:
   workflow_call:
+    inputs:
+      ref:
+        description: Commit or ref to test (defaults to caller HEAD)
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
 
 permissions:
@@ -14,11 +20,16 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: ./.github/actions/checkout-browsers
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.4"
       - name: Run JavaScript bridge tests
         id: suite
+        env:
+          WATERUI_BROWSER_WPE_DIR: ${{ github.workspace }}/browsers/browser-wpe
         run: bun test components/platform/webview/tests/js/ --reporter=junit --reporter-outfile=webview-js.xml
       - name: Upload JavaScript test results
         if: always()

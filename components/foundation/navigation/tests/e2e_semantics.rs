@@ -20,22 +20,16 @@ enum TestRoute {
     Second,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum TestTab {
-    Home,
-    Settings,
-}
-
 fn tabs_view() -> impl View {
-    let selection = Binding::container(TestTab::Home);
+    let selection = Binding::container(0usize);
 
     Tabs::new(
         &selection,
         vec![
-            Tab::new(TestTab::Home, "Home Tab", || {
+            Tab::new("Home Tab", || {
                 NavigationView::new("Home", Text::new("home content"))
             }),
-            Tab::new(TestTab::Settings, "Settings Tab", || {
+            Tab::new("Settings Tab", || {
                 NavigationView::new("Settings", Text::new("settings content"))
             }),
         ],
@@ -206,12 +200,12 @@ fn split_view() -> impl View {
 /// tab-scoped push navigation: pushing inside one tab must leave the other
 /// tab's stack where the user left it.
 fn tabs_with_stacks_view() -> impl View {
-    let selection = Binding::container(TestTab::Home);
+    let selection = Binding::container(0usize);
 
     Tabs::new(
         &selection,
         vec![
-            Tab::new(TestTab::Home, "Home Tab", || {
+            Tab::new("Home Tab", || {
                 NavigationView::new(
                     "Home",
                     NavigationStack::new(NavigationView::new(
@@ -223,7 +217,7 @@ fn tabs_with_stacks_view() -> impl View {
                 )
                 .navigation_bar_visibility(false)
             }),
-            Tab::new(TestTab::Settings, "Settings Tab", || {
+            Tab::new("Settings Tab", || {
                 NavigationView::new(
                     "Settings",
                     NavigationStack::new(NavigationView::new(
@@ -387,7 +381,7 @@ fn a_builder_link_in_a_path_stack_pops_without_touching_the_path(ui: UiBuilder) 
         ) == waterui_testing::WaitResult::Completed,
         "the root must return after popping the builder entry"
     );
-    assert!(path.snapshot().is_empty());
+    assert_eq!(path.snapshot(), []);
 }
 
 /// With a builder entry stacked on top of a route, Back must unwind them in
@@ -440,7 +434,7 @@ fn a_builder_link_above_a_route_unwinds_in_order(ui: UiBuilder) {
         ) == waterui_testing::WaitResult::Completed,
         "the second pop must reach the explicit path"
     );
-    assert!(path.snapshot().is_empty());
+    assert_eq!(path.snapshot(), []);
 }
 
 #[waterui::test()]

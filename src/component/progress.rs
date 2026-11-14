@@ -51,20 +51,81 @@ fn progress_value_label(value: &Computed<f64>) -> Computed<String> {
 #[derive(Debug)]
 pub struct ProgressConfig {
     /// The label displayed alongside the progress indicator.
-    pub label: AnyView,
+    label: AnyView,
     /// The label displaying the numerical value of the progress.
-    pub value_label: AnyView,
+    value_label: AnyView,
     /// The computed progress value between 0.0 and 1.0.
-    pub value: Computed<f64>,
+    value: Computed<f64>,
     /// The visual style of the progress indicator (linear or circular).
-    pub style: ProgressStyle,
+    style: ProgressStyle,
     /// Whether indeterminate progress uses the Material four-color cycle.
-    pub four_color: bool,
+    four_color: bool,
+}
+
+impl ProgressConfig {
+    /// Takes the value apart into its fields, in declaration order.
+    pub fn into_parts(self) -> (AnyView, AnyView, Computed<f64>, ProgressStyle, bool) {
+        (
+            self.label,
+            self.value_label,
+            self.value,
+            self.style,
+            self.four_color,
+        )
+    }
+
+    /// Creates a `ProgressConfig` from its parts.
+    #[must_use]
+    pub const fn new(
+        label: AnyView,
+        value_label: AnyView,
+        value: Computed<f64>,
+        style: ProgressStyle,
+        four_color: bool,
+    ) -> Self {
+        Self {
+            label,
+            value_label,
+            value,
+            style,
+            four_color,
+        }
+    }
+
+    /// The label displayed alongside the progress indicator.
+    #[must_use]
+    pub const fn label(&self) -> &AnyView {
+        &self.label
+    }
+
+    /// The label displaying the numerical value of the progress.
+    #[must_use]
+    pub const fn value_label(&self) -> &AnyView {
+        &self.value_label
+    }
+
+    /// The computed progress value between 0.0 and 1.0.
+    #[must_use]
+    pub const fn value(&self) -> &Computed<f64> {
+        &self.value
+    }
+
+    /// The visual style of the progress indicator (linear or circular).
+    #[must_use]
+    pub const fn style(&self) -> ProgressStyle {
+        self.style
+    }
+
+    /// Whether indeterminate progress uses the Material four-color cycle.
+    #[must_use]
+    pub const fn four_color(&self) -> bool {
+        self.four_color
+    }
 }
 
 /// Visual style options for progress indicators.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProgressStyle {
     /// A circular spinner-style progress indicator.
     Circular,
@@ -282,18 +343,24 @@ mod tests {
 
     #[test]
     fn progress_value_label_formats_fraction_as_percent() {
-        assert_eq!(progress_value_label(&Computed::constant(0.42)).get(), "42%");
         assert_eq!(
-            progress_value_label(&Computed::constant(0.755)).get(),
+            progress_value_label(&Computed::constant(0.42)).snapshot(),
+            "42%"
+        );
+        assert_eq!(
+            progress_value_label(&Computed::constant(0.755)).snapshot(),
             "76%"
         );
     }
 
     #[test]
     fn progress_value_label_clamps_to_valid_progress_range() {
-        assert_eq!(progress_value_label(&Computed::constant(-0.25)).get(), "0%");
         assert_eq!(
-            progress_value_label(&Computed::constant(1.25)).get(),
+            progress_value_label(&Computed::constant(-0.25)).snapshot(),
+            "0%"
+        );
+        assert_eq!(
+            progress_value_label(&Computed::constant(1.25)).snapshot(),
             "100%"
         );
     }

@@ -1,0 +1,68 @@
+[package]
+name = "cherenkov-cpu"
+version = "0.0.0"
+description = "CPU raster backend for the Cherenkov 2D rendering engine"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../README.md"
+keywords = ["graphics", "2d", "rasterizer", "embedded", "cpu"]
+categories = ["graphics", "rendering", "embedded"]
+
+# Bench and test access to the span kernels, the pattern `cherenkov`'s
+# `testing` feature uses: `testing::kernels`, no public API.
+[features]
+testing = []
+# Firmware rasterization trades geometry rescans for band-bounded bin scratch.
+bounded-bins = []
+# Shader paints, backdrop effect shaders and filters without a CPU kernel
+# (`CpuEffect`), run on `cherenkov-shader`'s lane executor. It brings naga's
+# WGSL front end and filtrate's stage planner, so firmware builds that draw
+# no user shaders leave it out.
+shaders = ["dep:cherenkov-shader", "dep:filtrate"]
+
+[dependencies]
+cherenkov-shader = { version = "0.0.0", path = "../shader", features = ["lanes"], optional = true }
+filtrate = { version = "0.2.1", path = "../../filtrate", default-features = false, features = ["lanes"], optional = true }
+arrayvec = "0.7"
+cherenkov = { version = "0.0.0", path = "..", features = ["workers"] }
+cherenkov-stroke = { version = "0.0.0", path = "../stroke" }
+fearless_simd = { version = "1.1", default-features = false, features = ["std"] }
+filtrate-core = { version = "0.2.0", path = "../../filtrate/core" }
+kurbo = "0.13"
+skrifa = "0.48"
+png = "0.18"
+half = "2"
+rayon = "1"
+rustc-hash = "2"
+tracing = "0.1"
+waterui-contract.workspace = true
+cherenkov-simd = { version = "0.0.0", path = "../simd", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+cherenkov = { path = "..", features = ["testing"] }
+cherenkov-oracle = { path = "../oracle", features = ["testing"] }
+cherenkov-scene = { path = "../scene" }
+cherenkov-shader = { path = "../shader", features = ["eval"] }
+filtrate = { path = "../../filtrate" }
+nami = { version = "0.13", default-features = false, features = ["std", "kurbo"] }
+divan = "0.1"
+# The scalar `Fallback` level, the precision reference several kernel tests check against.
+fearless_simd = { version = "1.1", default-features = false, features = ["force_support_fallback"] }
+
+# gungraun's Callgrind runner does not compile for wasm32.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+gungraun = "=0.20.0"
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "kernels_wall"
+harness = false
+required-features = ["testing"]
+
+[[bench]]
+name = "kernels_ir"
+harness = false
+required-features = ["testing"]

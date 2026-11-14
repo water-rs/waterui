@@ -8,8 +8,11 @@ use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
+#[cfg(feature = "widgets")]
+use sha2::Digest as _;
 use std::collections::HashMap;
 use syn::{Data, DeriveInput, Fields, ItemFn, Meta, parse_macro_input};
+mod apple_available;
 mod identifiable;
 mod locale;
 mod state;
@@ -36,8 +39,48 @@ fn waterui_crate_path() -> syn::Result<TokenStream2> {
     }
 }
 
+/// The crate a macro expansion names its framework items through: `waterui-core`
+/// when the crate depends on it, else the `waterui` facade. Both expose the
+/// items such expansions use at the same paths; core is tried first because a
+/// component crate may list the facade only as a dev-dependency, which
+/// `proc_macro_crate` also reports but the library build cannot link.
+fn core_or_facade_path(macro_name: &str) -> syn::Result<TokenStream2> {
+    view_builder::dependency_path("waterui-core")
+        .or_else(|| view_builder::dependency_path("waterui"))
+        .ok_or_else(|| {
+            syn::Error::new(
+                Span::call_site(),
+                format!(
+                    "{macro_name} requires the `waterui` or `waterui-core` crate as a dependency"
+                ),
+            )
+        })
+}
+
+/// Selects between two realizations of a component by Apple OS version.
+///
+/// `apple_available!(27.0)` is `objc2::available!` with that one version for
+/// iOS, macOS, tvOS, watchOS and visionOS: Apple OS versions are unified across
+/// them since 26, so one number covers every platform and none can be left
+/// out. The version must be one the framework gates (`waterui-apple-os` lists
+/// them); an unknown version does not compile.
+///
+/// When the build's Apple deployment target already meets the version the
+/// check is statically `true`, and the call site gets a `#[deprecated]`
+/// warning: the older realization is dead and is deleted when the framework
+/// floor reaches the version.
+///
+/// The crate using it depends on `waterui-apple-os`, and only builds for Apple
+/// targets.
+#[proc_macro]
+pub fn apple_available(input: TokenStream) -> TokenStream {
+    apple_available::expand(input.into()).into()
+}
+
 mod javascript;
 mod js_api;
+mod ts;
+mod tsx;
 
 /// Exposes an `impl` block to the page.
 ///
@@ -244,8 +287,8 @@ pub fn view_builder(args: TokenStream, input: TokenStream) -> TokenStream {
     view_builder::expand_attribute(args, &input)
 }
 
-/// Marks an owned `Clone` type as an [`Extractor`](waterui::extract::Extractor)
-/// over the `.state(&value)` injection channel.
+/// Marks an owned `Clone` type as a `waterui::extract::Extractor` over the
+/// `.state(&value)` injection channel.
 ///
 /// `State<T>` is the wrapper for a type the app cannot implement traits for —
 /// `Binding<Str>`, a third-party value. Naming it for a type the app *does*
@@ -272,7 +315,7 @@ pub fn view_builder(args: TokenStream, input: TokenStream) -> TokenStream {
 /// ```
 ///
 /// The generated `Extractor` implementation delegates to
-/// [`State<Self>`](waterui::extract::State), so `.state(&value)` remains the
+/// `waterui::extract::State<Self>`, so `.state(&value)` remains the
 /// injection mechanism and a bare `T` parameter shares extraction positions
 /// with `State<T>` parameters of the same type — the first `.state()` call
 /// feeds the first parameter of that type.
@@ -281,7 +324,7 @@ pub fn view_builder(args: TokenStream, input: TokenStream) -> TokenStream {
 /// attribute so a missing `Clone` reports here rather than inside the
 /// expansion. For an owned type that should read a value installed directly in
 /// the environment instead of through `.state()`, use
-/// [`impl_extractor!`](waterui::impl_extractor).
+/// `waterui::impl_extractor!`.
 #[proc_macro_attribute]
 pub fn state(args: TokenStream, input: TokenStream) -> TokenStream {
     state::expand(args, input)
@@ -577,6 +620,7 @@ use syn::{Expr, Token, Type, parse::Parse, punctuated::Punctuated};
 /// # Examples
 ///
 /// ```rust
+/// use waterui::Signal;
 /// use waterui::reactive::{Binding, binding, project::Project};
 /// use waterui_macros::Project;
 ///
@@ -595,7 +639,7 @@ use syn::{Expr, Token, Type, parse::Parse, punctuated::Punctuated};
 /// projected.name.set("Bob".to_string());
 /// projected.age.set(25u32);
 ///
-/// let person = person_binding.get();
+/// let person = person_binding.snapshot();
 /// assert_eq!(person.name, "Bob");
 /// assert_eq!(person.age, 25);
 /// ```
@@ -682,10 +726,24 @@ fn derive_project_struct(
     }
     let (impl_generics_with_static, _, _) = generics_with_static.split_for_impl();
 
+    // The projection mirrors its source field for field, so it is exactly as
+    // visible and as exhaustive as the struct it projects.
+    let visibility = &input.vis;
+    let exhaustiveness = if input
+        .attrs
+        .iter()
+        .any(|attr| attr.path().is_ident("non_exhaustive"))
+    {
+        quote! { #[non_exhaustive] }
+    } else {
+        quote! {}
+    };
+
     let expanded = quote! {
         /// Projected version of #struct_name with each field wrapped in a Binding.
         #[derive(Debug)]
-        pub struct #projected_struct_name #ty_generics #where_clause {
+        #exhaustiveness
+        #visibility struct #projected_struct_name #ty_generics #where_clause {
             #(#projected_fields,)*
         }
 
@@ -824,7 +882,7 @@ fn derive_project_unit_struct(input: &DeriveInput, waterui: &TokenStream2) -> To
 ///
 /// For example, `card` in `my-crate` becomes `waterui_preview_my_crate_card`.
 ///
-/// This symbol can be loaded by the preview support app to render the view.
+/// This symbol is what a generated preview binary resolves to render the view.
 ///
 /// # Symbol Naming
 ///
@@ -938,6 +996,9 @@ pub fn preview(args: TokenStream, input: TokenStream) -> TokenStream {
     // at compile time using CARGO_PKG_NAME
     let expanded = quote! {
         #(#fn_attrs)*
+        // The preview export is gated on `debug_assertions` (the gate the
+        // `waterui_meta_*` records use); a release build has no preview host,
+        // so without the export the function is dead code there.
         #[cfg_attr(not(debug_assertions), allow(dead_code))]
         #fn_vis #fn_sig #fn_block
 
@@ -966,6 +1027,607 @@ impl Parse for PreviewArg {
         let value: Expr = input.parse()?;
         Ok(Self { name, value })
     }
+}
+
+/// The `WidgetKit` families a `#[widget]` may declare — the serialized
+/// `WidgetFamily` spellings the extension renders.
+#[cfg(feature = "widgets")]
+const WIDGET_FAMILIES: &[&str] = &[
+    "systemSmall",
+    "systemMedium",
+    "systemLarge",
+    "systemExtraLarge",
+    "accessoryCircular",
+    "accessoryRectangular",
+    "accessoryInline",
+];
+
+/// A single `#[widget]` argument: `name = "…"`, `description = "…"`,
+/// `kind = "…"`, or `families = [systemSmall, …]`.
+#[cfg(feature = "widgets")]
+struct WidgetArg {
+    name: syn::Ident,
+    value: Expr,
+}
+
+#[cfg(feature = "widgets")]
+impl Parse for WidgetArg {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let name: syn::Ident = input.parse()?;
+        input.parse::<Token![=]>()?;
+        let value: Expr = input.parse()?;
+        Ok(Self { name, value })
+    }
+}
+
+#[cfg(feature = "widgets")]
+fn widget_arg_string(arg: &WidgetArg) -> syn::Result<String> {
+    if let Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Str(lit),
+        ..
+    }) = &arg.value
+    {
+        Ok(lit.value())
+    } else {
+        Err(syn::Error::new_spanned(
+            &arg.value,
+            format!("`#[widget]`'s `{}` must be a string literal", arg.name),
+        ))
+    }
+}
+
+/// Declares a `WidgetKit` widget: `#[waterui::widget(name = "…", description = "…")]`.
+///
+/// The attributed function produces the widget's timeline — either a
+/// `Timeline`/`TimelineEntry` directly or any `WidgetContent`, which becomes
+/// a single dated entry. It may take one `WidgetContext` parameter (the
+/// family and display size `WidgetKit` hands the provider). Only the
+/// `waterui::widgets` schema nodes are widget content; a `WaterUI` view in
+/// that position is a compile-time error — `WidgetKit` renders the extension
+/// from the serialized snapshot, and representable embedding cannot cross
+/// its process boundary.
+///
+/// ```rust,ignore
+/// use waterui::widgets::*;
+///
+/// #[waterui::widget(name = "Steps", description = "Today's step count")]
+/// fn steps(context: WidgetContext) -> impl WidgetContent {
+///     vstack((text("Steps"), text("6,241")))
+/// }
+/// ```
+///
+/// `kind` (the `WidgetConfiguration` kind) defaults to the function name;
+/// `families` defaults to `[systemSmall, systemMedium, systemLarge]`.
+///
+/// The attribute emits the function's `waterui_widget_<crate>_<fn>` C
+/// export and the `waterui_meta_widget_<crate>_<fn>` declaration record the
+/// `water` CLI reads while it generates and packages the extension.
+#[cfg(feature = "widgets")]
+#[proc_macro_attribute]
+pub fn widget(args: TokenStream, input: TokenStream) -> TokenStream {
+    let input_fn = parse_macro_input!(input as ItemFn);
+    let waterui = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.into_compile_error().into(),
+    };
+    let args = parse_macro_input!(args with Punctuated::<WidgetArg, Token![,]>::parse_terminated);
+
+    let fn_name = &input_fn.sig.ident;
+    let fn_vis = &input_fn.vis;
+    let fn_attrs = &input_fn.attrs;
+    let fn_sig = &input_fn.sig;
+    let fn_block = &input_fn.block;
+    let fn_name_str = fn_name.to_string();
+
+    let params = match widget_params(&args) {
+        Ok(params) => params,
+        Err(error) => return error.to_compile_error().into(),
+    };
+    let context_mode = match widget_context_mode(&input_fn.sig) {
+        Ok(mode) => mode,
+        Err(error) => return error.to_compile_error().into(),
+    };
+
+    let call_expr = match context_mode {
+        WidgetContextMode::None => quote! { #fn_name() },
+        WidgetContextMode::ByValue => quote! { #fn_name(__wui_context) },
+        WidgetContextMode::ByRef => quote! { #fn_name(&__wui_context) },
+    };
+    // A context-free function still decodes — the extension always sends a
+    // context, and validating the wire form keeps the contract exercised —
+    // but the binding stays unnamed so nothing warns on it.
+    let context_binding = if matches!(context_mode, WidgetContextMode::None) {
+        quote! {
+            let _ = #waterui::widgets::ffi::decode_context(
+                __wui_context_ptr,
+                __wui_context_len,
+            );
+        }
+    } else {
+        quote! {
+            let __wui_context: #waterui::widgets::WidgetContext =
+                #waterui::widgets::ffi::decode_context(
+                    __wui_context_ptr,
+                    __wui_context_len,
+                );
+        }
+    };
+
+    let payload = widget_payload(&fn_name_str, &params);
+    let payload_lit = syn::LitStr::new(&payload, Span::call_site());
+
+    let expanded = quote! {
+        #(#fn_attrs)*
+        #fn_vis #fn_sig #fn_block
+
+        #waterui::widgets::__export_widget!(
+            #fn_name_str,
+            #payload_lit,
+            [__wui_context_ptr, __wui_context_len, __wui_out] => {
+                #context_binding
+                let __wui_timeline = #waterui::widgets::IntoTimeline::into_timeline(#call_expr);
+                #waterui::widgets::ffi::Buffer::from_timeline(&__wui_timeline)
+            }
+        );
+    };
+
+    TokenStream::from(expanded)
+}
+
+/// The parsed `#[widget]` arguments after defaults.
+#[cfg(feature = "widgets")]
+struct WidgetParams {
+    display_name: String,
+    description: String,
+    kind: String,
+    families: Vec<String>,
+}
+
+/// A `#[widget]` function's `WidgetContext` parameter shape.
+#[cfg(feature = "widgets")]
+enum WidgetContextMode {
+    None,
+    ByValue,
+    ByRef,
+}
+
+/// Validates the `#[widget]` attribute's arguments.
+#[cfg(feature = "widgets")]
+fn widget_params(args: &Punctuated<WidgetArg, Token![,]>) -> syn::Result<WidgetParams> {
+    let mut display_name: Option<String> = None;
+    let mut description: Option<String> = None;
+    let mut kind: Option<String> = None;
+    let mut families: Option<Vec<String>> = None;
+    for arg in args {
+        match arg.name.to_string().as_str() {
+            "name" | "description" | "kind" => {
+                let value = widget_arg_string(arg)?;
+                let slot = match arg.name.to_string().as_str() {
+                    "name" => &mut display_name,
+                    "description" => &mut description,
+                    _ => &mut kind,
+                };
+                if slot.replace(value).is_some() {
+                    return Err(syn::Error::new_spanned(
+                        &arg.name,
+                        format!("duplicate `#[widget]` argument `{}`", arg.name),
+                    ));
+                }
+            }
+            "families" => {
+                let Expr::Array(array) = &arg.value else {
+                    return Err(syn::Error::new_spanned(
+                        &arg.value,
+                        "`#[widget]`'s `families` must be a list like [systemSmall, systemMedium]",
+                    ));
+                };
+                if array.elems.is_empty() {
+                    return Err(syn::Error::new_spanned(
+                        array,
+                        "`#[widget]` requires at least one supported family",
+                    ));
+                }
+                let mut parsed = Vec::with_capacity(array.elems.len());
+                for element in &array.elems {
+                    let Some(name) = widget_family_name(element) else {
+                        return Err(syn::Error::new_spanned(
+                            element,
+                            "`#[widget]` families are `WidgetFamily` case names like `systemSmall`",
+                        ));
+                    };
+                    parsed.push(name);
+                }
+                if families.replace(parsed).is_some() {
+                    return Err(syn::Error::new_spanned(
+                        &arg.name,
+                        "duplicate `#[widget]`'s `families`",
+                    ));
+                }
+            }
+            other => {
+                return Err(syn::Error::new_spanned(
+                    &arg.name,
+                    format!(
+                        "unknown `#[widget]` argument `{other}`; expected `name`, `description`, `kind` or `families`"
+                    ),
+                ));
+            }
+        }
+    }
+
+    let Some(display_name) = display_name else {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            "`#[widget]` requires `name = \"…\"` — the title the widget gallery shows",
+        ));
+    };
+    let Some(description) = description else {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            "`#[widget]` requires `description = \"…\"` — the subtitle the widget gallery shows",
+        ));
+    };
+    Ok(WidgetParams {
+        display_name,
+        description,
+        kind: kind.unwrap_or_default(),
+        families: families.unwrap_or_else(|| {
+            ["systemSmall", "systemMedium", "systemLarge"]
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        }),
+    })
+}
+
+/// One `families` element: an ident naming a known `WidgetFamily` case.
+#[cfg(feature = "widgets")]
+fn widget_family_name(element: &Expr) -> Option<String> {
+    let Expr::Path(path) = element else {
+        return None;
+    };
+    let name = path.path.get_ident().map(ToString::to_string)?;
+    WIDGET_FAMILIES.contains(&name.as_str()).then_some(name)
+}
+
+/// The function may take no parameter or one `WidgetContext` parameter (by
+/// value or by reference).
+#[cfg(feature = "widgets")]
+fn widget_context_mode(sig: &syn::Signature) -> syn::Result<WidgetContextMode> {
+    let is_widget_context = |ty: &Type| {
+        if let Type::Path(path) = ty
+            && let Some(segment) = path.path.segments.last()
+        {
+            return segment.ident == "WidgetContext";
+        }
+        false
+    };
+    match sig.inputs.len() {
+        0 => Ok(WidgetContextMode::None),
+        1 => {
+            let Some(arg) = sig.inputs.iter().next() else {
+                unreachable!("the signature's input count was checked above");
+            };
+            let syn::FnArg::Typed(pat_type) = arg else {
+                return Err(syn::Error::new_spanned(
+                    arg,
+                    "`#[widget]` can only be applied to free functions",
+                ));
+            };
+            match &*pat_type.ty {
+                ty if is_widget_context(ty) => Ok(WidgetContextMode::ByValue),
+                Type::Reference(reference) if is_widget_context(&reference.elem) => {
+                    Ok(WidgetContextMode::ByRef)
+                }
+                _ => Err(syn::Error::new_spanned(
+                    &pat_type.ty,
+                    "a `#[widget]` function takes at most one `WidgetContext` parameter",
+                )),
+            }
+        }
+        _ => Err(syn::Error::new_spanned(
+            &sig.inputs,
+            "a `#[widget]` function takes at most one `WidgetContext` parameter",
+        )),
+    }
+}
+
+/// The `waterui_meta_widget_*` record's JSON payload, assembled at
+/// expansion time — a literal the declaration macro parks in `.wmeta`.
+#[cfg(feature = "widgets")]
+fn widget_payload(fn_name: &str, params: &WidgetParams) -> String {
+    let kind = if params.kind.is_empty() {
+        fn_name
+    } else {
+        params.kind.as_str()
+    };
+    serde_json::json!({
+        "fn": fn_name,
+        "kind": kind,
+        "displayName": params.display_name,
+        "description": params.description,
+        "families": params.families,
+    })
+    .to_string()
+}
+
+#[cfg(all(test, feature = "widgets"))]
+mod widget_tests {
+    use super::*;
+    use syn::parse::Parser as _;
+
+    #[test]
+    fn widget_payload_preserves_declaration_strings() {
+        let title = "quote\"\\\n\u{1}日本語";
+        let params = WidgetParams {
+            display_name: title.to_owned(),
+            description: "line\nnext".to_owned(),
+            kind: "fixture".to_owned(),
+            families: vec!["systemSmall".to_owned()],
+        };
+        let payload: serde_json::Value =
+            serde_json::from_str(&widget_payload("snapshot", &params)).unwrap();
+        assert_eq!(payload["fn"], "snapshot");
+        assert_eq!(payload["displayName"], title);
+        assert_eq!(payload["description"], params.description);
+        assert_eq!(payload["families"][0], "systemSmall");
+    }
+
+    #[test]
+    fn widget_declaration_requires_a_family() {
+        let args = Punctuated::<WidgetArg, Token![,]>::parse_terminated
+            .parse2(quote!(
+                name = "Example",
+                description = "A widget",
+                families = []
+            ))
+            .unwrap();
+        let error = widget_params(&args).err().expect("empty families fail");
+
+        assert!(error.to_string().contains("at least one supported family"));
+    }
+
+    #[test]
+    fn widget_intent_validator_accepts_a_concrete_type() {
+        let input: syn::DeriveInput = syn::parse_quote!(
+            struct Record {
+                value: String,
+            }
+        );
+        let ident = validate_widget_intent_type(&input).expect("a concrete type accepts");
+        assert_eq!(ident, "Record");
+    }
+
+    #[test]
+    fn widget_intent_validator_rejects_a_generic_type() {
+        let input: syn::DeriveInput = syn::parse_quote!(
+            struct Record<T> {
+                value: T,
+            }
+        );
+        let error = validate_widget_intent_type(&input).err().unwrap();
+        assert!(error.to_string().contains("concrete"));
+    }
+
+    #[test]
+    fn widget_intent_params_rejects_invalid_arguments() {
+        let parse = |source: &str| {
+            Punctuated::<WidgetArg, Token![,]>::parse_terminated
+                .parse_str(source)
+                .expect("the argument list parses")
+        };
+        // `name` is required.
+        assert!(
+            widget_intent_params(&parse("kind = \"mark-done\""))
+                .err()
+                .expect("a missing name fails")
+                .to_string()
+                .contains("name")
+        );
+        // Duplicate arguments are rejected.
+        assert!(
+            widget_intent_params(&parse("name = \"a\", name = \"b\""))
+                .err()
+                .expect("a duplicate name fails")
+                .to_string()
+                .contains("duplicate")
+        );
+        // An explicit `kind` must not be empty.
+        assert!(
+            widget_intent_params(&parse("name = \"a\", kind = \"\""))
+                .err()
+                .expect("an empty kind fails")
+                .to_string()
+                .contains("kind")
+        );
+        // Unknown arguments are rejected.
+        assert!(
+            widget_intent_params(&parse("name = \"a\", bogus = \"x\""))
+                .err()
+                .expect("an unknown argument fails")
+                .to_string()
+                .contains("bogus")
+        );
+    }
+}
+
+/// The parsed `#[widget_intent]` arguments after defaults.
+#[cfg(feature = "widgets")]
+struct WidgetIntentParams {
+    display_name: String,
+    kind: Option<String>,
+    description: Option<String>,
+}
+
+/// Validates `#[widget_intent]`'s `name = "…"`, `kind = "…"`,
+/// `description = "…"` arguments.
+#[cfg(feature = "widgets")]
+fn widget_intent_params(
+    args: &Punctuated<WidgetArg, Token![,]>,
+) -> syn::Result<WidgetIntentParams> {
+    let mut display_name: Option<String> = None;
+    let mut kind: Option<String> = None;
+    let mut description: Option<String> = None;
+    for arg in args {
+        let target = match arg.name.to_string().as_str() {
+            "name" => &mut display_name,
+            "kind" => &mut kind,
+            "description" => &mut description,
+            other => {
+                return Err(syn::Error::new_spanned(
+                    &arg.name,
+                    format!(
+                        "unknown `#[widget_intent]` argument `{other}`; expected `name`, `kind` or `description`"
+                    ),
+                ));
+            }
+        };
+        if target.is_some() {
+            return Err(syn::Error::new_spanned(
+                &arg.name,
+                format!("duplicate `#[widget_intent]` argument `{}`", arg.name),
+            ));
+        }
+        *target = Some(widget_arg_string(arg)?);
+    }
+    let Some(display_name) = display_name else {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            "`#[widget_intent]` requires `name = \"…\"` — the intent's display title",
+        ));
+    };
+    if kind.as_deref().is_some_and(str::is_empty) {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            "`#[widget_intent]`'s `kind` must not be empty — it is the intent's identifier",
+        ));
+    }
+    Ok(WidgetIntentParams {
+        display_name,
+        kind,
+        description,
+    })
+}
+
+/// Validates `#[widget_intent]`'s type declaration — a concrete struct or
+/// enum — returning its ident for the default kind.
+#[cfg(feature = "widgets")]
+fn validate_widget_intent_type(input: &syn::DeriveInput) -> syn::Result<&syn::Ident> {
+    if !input.generics.params.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &input.generics,
+            "`#[widget_intent]` requires a concrete action type — a generic type cannot declare one intent kind",
+        ));
+    }
+    Ok(&input.ident)
+}
+
+/// Declares a `WidgetKit` intent: `#[waterui::widget_intent(name = "…")]`
+/// on the action's type declaration. `impl WidgetIntent for T` — the
+/// action's `perform` — is written separately.
+///
+/// The attribute derives `Serialize`/`Deserialize` for the type through
+/// `waterui::widgets::serde`, so the application needs no `serde`
+/// dependency of its own; keeps the type intact; implements
+/// `DeclaredWidgetIntent` for it (a hidden trait carrying the declared
+/// kind); and emits the `waterui_intent_<crate>_<hash>` C export plus the
+/// `waterui_meta_intent_<crate>_<hash>` record `water` reads while it
+/// generates the extension's `AppIntent` conformers — `hash` is the
+/// declared kind's `SHA-256` hex digest, so the generated `Swift` type
+/// identity is stable across record ordering.
+///
+/// `kind` defaults to the type's ident; an explicit `kind` disambiguates
+/// actions whose type names would collide across modules.
+///
+/// # Panics
+///
+/// The declaration's `serde_json` record always serializes.
+#[cfg(feature = "widgets")]
+#[proc_macro_attribute]
+pub fn widget_intent(args: TokenStream, input: TokenStream) -> TokenStream {
+    let input_type = parse_macro_input!(input as syn::DeriveInput);
+    let waterui = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.into_compile_error().into(),
+    };
+    let args = parse_macro_input!(args with Punctuated::<WidgetArg, Token![,]>::parse_terminated);
+
+    let type_ident = match validate_widget_intent_type(&input_type) {
+        Ok(ident) => ident.clone(),
+        Err(error) => return error.to_compile_error().into(),
+    };
+    let params = match widget_intent_params(&args) {
+        Ok(params) => params,
+        Err(error) => return error.to_compile_error().into(),
+    };
+    let kind = params.kind.unwrap_or_else(|| type_ident.to_string());
+    let description = params
+        .description
+        .unwrap_or_else(|| params.display_name.clone());
+
+    // The declared kind's stable hash — the `Swift` type name and the C
+    // export/record suffix all derive from it, not from record ordering.
+    let hash = {
+        use std::fmt::Write as _;
+        sha2::Sha256::digest(kind.as_bytes()).iter().fold(
+            String::with_capacity(64),
+            |mut acc, byte| {
+                write!(acc, "{byte:02x}").expect("writing to a String never fails");
+                acc
+            },
+        )
+    };
+    let record = serde_json::json!({
+        "kind": kind,
+        "displayName": params.display_name,
+        "description": description,
+        "swiftType": format!("WUIIntent_{hash}"),
+    })
+    .to_string();
+    let record_lit = syn::LitStr::new(&record, Span::call_site());
+    let hash_lit = syn::LitStr::new(&hash, Span::call_site());
+    let kind_lit = syn::LitStr::new(&kind, Span::call_site());
+    // `serde(crate = "...")` takes a string literal — the same resolved
+    // `waterui` path, without the token stream's spacing.
+    let serde_crate = syn::LitStr::new(
+        &format!("{}::widgets::serde", waterui.to_string().replace(' ', "")),
+        Span::call_site(),
+    );
+
+    let expanded = quote! {
+        #[derive(#waterui::widgets::serde::Serialize, #waterui::widgets::serde::Deserialize)]
+        #[serde(crate = #serde_crate)]
+        #input_type
+
+        #waterui::widgets::__export_intent!(
+            #hash_lit,
+            #record_lit,
+            [__wui_intent_ptr, __wui_intent_len] => {
+                let __wui_action: #type_ident = match #waterui::widgets::serde_json::from_slice(
+                    unsafe {
+                        ::core::slice::from_raw_parts(
+                            __wui_intent_ptr,
+                            __wui_intent_len,
+                        )
+                    },
+                ) {
+                    ::core::result::Result::Ok(action) => action,
+                    ::core::result::Result::Err(error) => {
+                        #waterui::log::error!(
+                            "a widget intent's payload failed to decode: {error}; the intent is not performed"
+                        );
+                        return;
+                    }
+                };
+                <#type_ident as #waterui::widgets::WidgetIntent>::perform(__wui_action);
+            }
+        );
+
+        impl #waterui::widgets::DeclaredWidgetIntent for #type_ident {
+            const KIND: &'static str = #kind_lit;
+        }
+    };
+    TokenStream::from(expanded)
 }
 
 fn testing_crate_path() -> syn::Result<proc_macro2::TokenStream> {
@@ -1286,7 +1948,7 @@ fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTyp
 ///     let value_for_view = value.clone();
 ///     let mut app = ui.mount(move || stepper("Limited", &value_for_view));
 ///     app.query().label("Limited").increment();
-///     assert_eq!(value.get(), 3);
+///     assert_eq!(value.snapshot(), 3);
 /// }
 /// # fn main() {}
 /// ```
@@ -1630,23 +2292,27 @@ pub fn bench(args: TokenStream, input: TokenStream) -> TokenStream {
     }
     builder = quote! { #builder.perf_config(__waterui_bench_config) };
 
-    let budget_fields = bench_args.budgets.iter().map(|(name, value)| {
-        let field = syn::Ident::new(name, Span::call_site());
-        value.as_ref().map_or_else(
-            || quote! { #field: ::core::option::Option::None },
-            |expr| quote! { #field: ::core::option::Option::Some(#expr) },
-        )
+    let budget_setters = bench_args.budgets.iter().filter_map(|(name, value)| {
+        let setter = syn::Ident::new(&format!("with_{name}"), Span::call_site());
+        value
+            .as_ref()
+            .map(|expr| quote! { .#setter(::core::option::Option::Some(#expr)) })
     });
     let budgets = quote! {
-        #testing_path::bench::BenchBudgets { #(#budget_fields),* }
+        #testing_path::bench::BenchBudgets::default() #(#budget_setters)*
     };
 
     let run_closure = bench_args.view.as_ref().map_or_else(
         || {
+            // The manual form's declared return type is the report's type, so
+            // the import the author's signature names is the one in use.
+            let syn::ReturnType::Type(_, report_type) = &input_fn.sig.output else {
+                unreachable!("validate_bench_fn rejects a manual bench that returns nothing");
+            };
             quote! {
                 |__waterui_bench_config| {
                     let #arg_pattern: #arg_type = #builder;
-                    let __waterui_bench_report: #testing_path::PerfReport = #fn_body;
+                    let __waterui_bench_report: #report_type = #fn_body;
                     __waterui_bench_report
                 }
             }
@@ -1677,4 +2343,129 @@ pub fn bench(args: TokenStream, input: TokenStream) -> TokenStream {
     };
 
     TokenStream::from(expanded)
+}
+
+/// Derives the TypeScript projection of a struct or enum.
+///
+/// The projection is an associated `const SCHEMA` built from the field types'
+/// own schemas, so aliases, generic arguments and `cfg`s are resolved by the
+/// compiler rather than by reading how a type is spelled. A struct becomes an
+/// object type and needs named fields; an enum whose variants are all unit
+/// variants becomes a union of string literals, and an enum carrying data
+/// becomes a tagged object.
+///
+/// Use it for the types nested inside a props struct; the root props struct
+/// derives [`macro@TsProps`], which also emits the artifact metadata.
+///
+/// When the TypeScript runtime is reachable — the expansion resolves through
+/// `waterui` or `waterui-ts` — the derive also emits the `IntoJs` and `FromJs`
+/// conversions that carry a value of the type across the seam, because a
+/// nested data type travels both ways: out as a props field, back in as a
+/// callback argument. A type that carries a value which only travels
+/// outwards — a callback, which the bridge registers rather than reads —
+/// declares `#[ts(one_way)]` and gets `IntoJs` alone. A crate that depends on
+/// `waterui-ts-schema` alone gets the schema and nothing else.
+///
+/// A field whose TypeScript property is spelled differently from its Rust name
+/// says so with `#[ts(rename = "onTap")]`. The rename travels through the
+/// schema and both conversions at once, so a JSX attribute in the case
+/// TypeScript writes — `onTap`, `minLength`, `a11yLabel` — still comes from
+/// one declaration in one place.
+#[proc_macro_derive(TsType, attributes(ts))]
+pub fn derive_ts_type(input: TokenStream) -> TokenStream {
+    ts::derive_ts_type(input)
+}
+
+/// Derives the props contract of a TypeScript view module's root props struct.
+///
+/// Emits everything [`macro@TsType`] does, plus the contract's encoded form,
+/// its hash, and a `#[cfg(debug_assertions)] #[used] static` named
+/// `waterui_meta_tsprops_<Type>` parked in the `.wmeta` (`__DATA,__wmeta` on
+/// Apple targets) section and holding a self-describing record — the name,
+/// NUL, the encoding, NUL. That record is how the contract reaches the
+/// `water` CLI: `#[used]` keeps it in the object file, the rlib, and the
+/// linked image, and a linked image need not keep a symbol table to name a
+/// static — a linked PE keeps none — so the CLI walks the section's records
+/// out of a dev-profile host build instead of parsing source. The encoding
+/// happens entirely during const evaluation, and the debug gate keeps the
+/// bytes out of shipped binaries.
+///
+/// The record name carries the type name alone, so one binary may hold only
+/// one props type of a given name.
+///
+/// When the TypeScript runtime is reachable the derive also emits `IntoJs`,
+/// and only `IntoJs`: props are handed to a module, and nothing reads a props
+/// struct back out of JavaScript — requiring it to be readable would rule out
+/// the callbacks and views props exist to carry.
+#[proc_macro_derive(TsProps, attributes(ts))]
+pub fn derive_ts_props(input: TokenStream) -> TokenStream {
+    ts::derive_ts_props(input)
+}
+
+/// Mounts a TypeScript view module as a `WaterUI` view.
+///
+/// ```text
+/// use waterui::{View, tsx};
+///
+/// #[derive(waterui::TsProps)]
+/// struct PromoProps {
+///     headline: String,
+///     unread: waterui::Binding<u32>,
+/// }
+///
+/// fn promo(unread: waterui::Binding<u32>) -> impl View {
+///     tsx!("./promo.tsx", PromoProps { headline: "Welcome".into(), unread })
+/// }
+/// ```
+///
+/// The example is not compiled as a doctest: a doctest has no source file
+/// inside the crate, and the path below is resolved relative to the file the
+/// macro is written in.
+///
+/// # The module path and the module id
+///
+/// The path is written relative to the Rust file that mounts the module, so a
+/// `.tsx` beside its view code is `"./promo.tsx"`. The **module id** — the key
+/// the bundle publishes that module under, and what a mount failure names — is
+/// that file's path relative to the crate's `CARGO_MANIFEST_DIR`, with forward
+/// slashes and the extension kept: `src/views/promo.tsx`. The crate directory
+/// is the root the CLI's bundler resolves modules against, so a module outside
+/// it, an absolute path, or a file that does not exist is a compile error
+/// naming the path.
+///
+/// "The file that mounts the module" is the file the path literal is written
+/// in, as it is for `include_str!`: a `macro_rules!` that expands to a `tsx!`
+/// with a literal of its own resolves that literal beside the file defining
+/// the `macro_rules!`, not beside its caller. A wrapper macro that takes the
+/// path from its caller passes the caller's literal through and resolves it
+/// beside the caller.
+///
+/// # Props
+///
+/// The props argument is a struct literal, which is what names the props type
+/// at the mount site: `tsx!("./promo.tsx", PromoProps { … })` expands to
+/// `Mount::new::<PromoProps>("src/views/promo.tsx", PromoProps { … })`. A
+/// value prepared elsewhere goes in with struct update syntax,
+/// `PromoProps { ..props }`. A module that takes no props is written
+/// `tsx!("./promo.tsx")` and is typed against `waterui::ts::NoProps`, the empty
+/// contract — still a contract the bundle declares a hash for, rather than a
+/// special case that skips the check.
+///
+/// The props type must derive [`macro@TsProps`]; a type that does not is a
+/// compile error naming it.
+///
+/// # What reaches the CLI
+///
+/// The expansion emits a `#[cfg(debug_assertions)] #[used] static` named
+/// `waterui_meta_tsx_<id>` carrying the module id, the props struct's name and
+/// its contract hash, so the `water` CLI learns from the compiled artifact
+/// which modules the binary mounts and which schema each one must be typed
+/// against. The expansion is a pure read: the macro stats the file to check it
+/// exists and never opens it. Whether the module has a default export is the
+/// bundler's question, because the bundler has already resolved the module
+/// graph; a module the bundle does not carry is a typed error at mount naming
+/// the id and the ids the bundle does have.
+#[proc_macro]
+pub fn tsx(input: TokenStream) -> TokenStream {
+    tsx::tsx(input)
 }

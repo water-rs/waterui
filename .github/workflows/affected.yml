@@ -1,0 +1,163 @@
+name: Affected scope
+
+# Computes what the PR/push gate must compile for a diff: the workspace
+# packages the shared `lexoliu/affected-crates` tool (the determinator,
+# guppy's diff-driven package selection, comparing the base and head
+# package graphs) marks as changed plus every reverse dependency a change
+# could reach, resolved through the rules in .github/affected-rules.toml.
+# Prose selects nothing; an outside-package path no rule names selects
+# everything; uncertainty
+# always widens the gate instead of narrowing it.
+#
+# Callers pass the comparison base — a pull request's base branch as
+# fetched by the full checkout (`origin/<base>`), or a push's `before` sha.
+# The diff runs from its merge-base with `HEAD`. Empty means "no diff": the
+# whole workspace is in scope.
+
+on:
+  workflow_call:
+    inputs:
+      base:
+        description: >
+          Revision the diff is measured from, through its merge-base with
+          HEAD (`origin/<base branch>` for a pull request, the push's
+          `before` sha). Empty selects the whole workspace.
+        type: string
+        required: false
+        default: ""
+    outputs:
+      packages:
+        description: Space-separated package names, `workspace`, or empty.
+        value: ${{ jobs.scope.outputs.packages }}
+      package-args:
+        description: The affected packages rendered as cargo `-p` flags.
+        value: ${{ jobs.scope.outputs.package-args }}
+      linux-package-args:
+        description: >
+          `package-args` without the crates the Linux lint never compiles
+          (waterui-apple, cocoa-ui).
+        value: ${{ jobs.scope.outputs.linux-package-args }}
+      workspace-wide:
+        description: >
+          `true` when the scope is `workspace` or the affected packages are
+          at least 70% of the Linux-linted workspace members (#3229, #3246).
+        value: ${{ jobs.scope.outputs.workspace-wide }}
+      comment-only:
+        description: >
+          `true` when every changed .rs file's syntax tree is unchanged
+          after comments, doc comments and doc attributes are removed.
+        value: ${{ jobs.scope.outputs.comment-only }}
+      msrv:
+        description: >
+          `true` when the diff can move the toolchain floor — a
+          rust-version key, a dependency section, or Cargo.lock.
+        value: ${{ jobs.scope.outputs.msrv }}
+      scene-assets:
+        description: >
+          `true` when cherenkov-oracle, cherenkov-gpu, or cherenkov-cpu is
+          in scope — the packages whose `--all-targets` compile
+          `include_bytes!`s the generated Cherenkov scene fonts — so the
+          fonts must exist before the check.
+        value: ${{ jobs.scope.outputs.scene-assets }}
+      apple-legs:
+        description: >
+          JSON list of test.yml's `macos` matrix entries — the Apple lint
+          targets with an Apple-gated crate in scope — or `[]`.
+        value: ${{ jobs.scope.outputs.apple-legs }}
+      wasm:
+        description: >
+          `true` when a package with a wasm32 lint leg (`wasm_gated.py`) is
+          in scope.
+        value: ${{ jobs.scope.outputs.wasm }}
+
+jobs:
+  scope:
+    name: Affected scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      packages: ${{ steps.compute.outputs.packages }}
+      package-args: ${{ steps.compute.outputs.package-args }}
+      linux-package-args: ${{ steps.compute.outputs.linux-package-args }}
+      workspace-wide: ${{ steps.compute.outputs.workspace-wide }}
+      comment-only: ${{ steps.compute.outputs.comment-only }}
+      msrv: ${{ steps.compute.outputs.msrv }}
+      scene-assets: ${{ steps.compute.outputs.scene-assets }}
+      apple-legs: ${{ steps.compute.outputs.apple-legs }}
+      wasm: ${{ steps.compute.outputs.wasm }}
+    steps:
+      - uses: actions/checkout@v4
+        # The diff and the base revision's package graph both need the
+        # history, so the checkout is complete.
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job (lint in test.yml); read-only lanes never save. The
+      # `cargo-home-*` rust-cache family this replaced had no writer at
+      # all — every restore was a guaranteed miss on content identical to
+      # this archive (#1441).
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      # The `nextest-fixtures` checker is in-tree, so no prebuilt release
+      # exists. Cache the built binary the way install-tool caches
+      # downloaded ones: an exact key on everything it is built from, and no
+      # restore-keys, because a stale binary under a changed tool is worse
+      # than a rebuild.
+      - uses: actions/cache@v4
+        id: nextest-fixtures-tool
+        with:
+          path: .github/tools/nextest-fixtures/target/release/nextest-fixtures
+          key: nextest-fixtures-tool-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/tools/nextest-fixtures/Cargo.lock', '.github/tools/nextest-fixtures/Cargo.toml', '.github/tools/nextest-fixtures/src/**') }}
+      - name: Build the nextest fixtures checker
+        if: steps.nextest-fixtures-tool.outputs.cache-hit != 'true'
+        run: cargo build --timings --locked --release --manifest-path .github/tools/nextest-fixtures/Cargo.toml
+      # The `test-fonts` nextest setup script names the packages it serves
+      # (.config/nextest.toml); the set is a fact of the package graph, so
+      # the rule fails here, naming each package, as soon as it drifts.
+      - name: Check the nextest fixture rules against the package graph
+        run: .github/tools/nextest-fixtures/target/release/nextest-fixtures
+      - uses: astral-sh/setup-uv@v6
+      # A failed step leaves `report` empty, and affected.py then widens to
+      # the whole workspace instead of failing the gate.
+      - name: Select the affected packages
+        id: shared
+        if: inputs.base != ''
+        continue-on-error: true
+        uses: lexoliu/affected-crates@v0.0.1
+        with:
+          base: ${{ inputs.base }}
+          rules: .github/affected-rules.toml
+          locked: "true"
+      - name: Compute the affected set
+        id: compute
+        run: |
+          if [ -z "${{ inputs.base }}" ]; then
+            # No base to diff against: the whole workspace is in scope,
+            # and MSRV keeps its signal rather than guessing it away.
+            {
+              echo "packages=workspace"
+              echo "package-args="
+              echo "linux-package-args="
+              echo "workspace-wide=true"
+              echo "comment-only=false"
+              echo "msrv=true"
+              echo "scene-assets=true"
+              echo "apple-legs=$(python3 .github/scripts/apple_gated.py --legs workspace)"
+              echo "wasm=true"
+            } >> "$GITHUB_OUTPUT"
+          else
+            # Write the JSON report to disk instead of passing it via env so
+            # large diffs cannot overflow Linux MAX_ARG_STRLEN (#4591).
+            report_file="${RUNNER_TEMP}/affected-report.json"
+            cat <<'__WATERUI_AFFECTED_REPORT__' > "${report_file}"
+          ${{ steps.shared.outputs.report }}
+          __WATERUI_AFFECTED_REPORT__
+            uv run .github/scripts/affected.py --base "${{ inputs.base }}" --report-file "${report_file}"
+          fi
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: affected-scope

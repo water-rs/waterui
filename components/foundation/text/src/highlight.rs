@@ -15,8 +15,8 @@ use syntect::{
 #[cfg(feature = "highlight")]
 use two_face::syntax::extra_newlines;
 #[cfg(feature = "highlight")]
-use waterui_graphics::color::ColorScheme;
-use waterui_graphics::color::Srgb;
+use waterui_color::ColorScheme;
+use waterui_color::Srgb;
 
 use crate::styled::{Style, StyledStr};
 
@@ -45,6 +45,18 @@ pub fn highlight_text(
         })
 }
 
+/// Lowercases an ASCII identifier at compile time.
+const fn ascii_lowercase<const N: usize>(s: &str) -> [u8; N] {
+    let bytes = s.as_bytes();
+    let mut out = [0; N];
+    let mut i = 0;
+    while i < N {
+        out[i] = bytes[i].to_ascii_lowercase();
+        i += 1;
+    }
+    out
+}
+
 macro_rules! languages {
     ($($ident:ident => $ext:literal),* $(,)?) => {
         /// Supported programming languages for syntax highlighting.
@@ -71,8 +83,12 @@ macro_rules! languages {
             pub const fn token(&self) -> &'static str {
                 match self {
                     $(Self::$ident => const {
-                        const fn to_lower(s: &str) -> &str { s }
-                        to_lower(stringify!($ident))
+                        const BYTES: [u8; stringify!($ident).len()] =
+                            ascii_lowercase(stringify!($ident));
+                        match core::str::from_utf8(&BYTES) {
+                            Ok(token) => token,
+                            Err(_) => panic!("ASCII-lowercased identifier is valid UTF-8"),
+                        }
                     },)*
                 }
             }
@@ -156,6 +172,7 @@ impl_constant!(Language);
 
 /// Error returned when a language token cannot be parsed.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ParseLanguageError;
 
 impl Display for ParseLanguageError {
@@ -214,7 +231,7 @@ impl DefaultHighlighter {
             .settings
             .foreground
             .map(|color| Srgb::new_u8(color.r, color.g, color.b))
-            .expect("syntect theme declares no default foreground");
+            .expect("syntect's bundled base16-ocean themes declare a default foreground");
         Self {
             syntax_set,
             theme,
@@ -238,7 +255,9 @@ impl Highlighter for DefaultHighlighter {
         let mut h = HighlightLines::new(syntax, &self.theme);
         let mut chunks = Vec::new();
 
-        for line in text.lines() {
+        // The syntax set is in newlines mode: each line keeps its ending so
+        // scopes that close at the newline (line comments) do not leak.
+        for line in text.split_inclusive('\n') {
             let Ok(ranges) = h.highlight_line(line, &self.syntax_set) else {
                 // Fallback: return the whole line with default color
                 chunks.push(HighlightChunk {
@@ -256,22 +275,6 @@ impl Highlighter for DefaultHighlighter {
                     color,
                 });
             }
-
-            // Add newline back (syntect strips it)
-            if text.contains('\n') {
-                chunks.push(HighlightChunk {
-                    text: "\n",
-                    color: self.foreground,
-                });
-            }
-        }
-
-        // Handle trailing content without newline
-        if !text.ends_with('\n')
-            && let Some(last) = chunks.last_mut()
-            && last.text == "\n"
-        {
-            chunks.pop();
         }
 
         chunks
@@ -280,11 +283,26 @@ impl Highlighter for DefaultHighlighter {
 
 /// A chunk of highlighted text with an associated color.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct HighlightChunk<'a> {
     /// The text content.
-    pub text: &'a str,
+    text: &'a str,
     /// The color for this chunk.
-    pub color: Srgb,
+    color: Srgb,
+}
+
+impl<'a> HighlightChunk<'a> {
+    /// The text content.
+    #[must_use]
+    pub const fn text(&self) -> &'a str {
+        self.text
+    }
+
+    /// The color for this chunk.
+    #[must_use]
+    pub const fn color(&self) -> Srgb {
+        self.color
+    }
 }
 
 impl HighlightChunk<'_> {

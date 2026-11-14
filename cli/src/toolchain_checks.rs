@@ -1,0 +1,498 @@
+//! Shared toolchain checks for the terminal commands and the `water mcp`
+//! `preview` tool.
+
+use std::path::{Path, PathBuf};
+
+use eyre::{Result, bail};
+use target_lexicon::Triple;
+
+use crate::{
+    android::{
+        AndroidBuildTools, AndroidNdk, AndroidPlatformTools, AndroidRustTargets, AndroidSdk,
+        AndroidSdkPlatforms, Java, Kotlin, KotlinToolchain,
+        platform::{ALL_ABIS, AndroidAbi},
+    },
+    apple::toolchain::{AppleSdk, Xcode},
+    gtk4::toolchain::Gtk4Toolchain,
+    platform::TargetPlatform,
+    toolchain::{
+        Host, Installation, Toolchain, ToolchainError,
+        cmake::Cmake,
+        doctor::{CheckStatus, doctor, ids},
+        dxc::Dxc,
+        linux::LinuxSystemToolchain,
+        msvc::MsvcBuildTools,
+        rust::SelectedToolchainTargets,
+        web::web_toolchain,
+        windows_arm64_llvm::WindowsArm64LlvmToolchain,
+    },
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AndroidCheckScope {
+    BuildOrPackage,
+    Run,
+}
+
+pub(crate) fn toolchain_check_message<I: Installation>(
+    component: &str,
+    error: &ToolchainError<I>,
+) -> String {
+    match error {
+        ToolchainError::Fixable(_) => format!(
+            "{component} toolchain check failed: missing dependencies can be fixed automatically with `water doctor --fix`."
+        ),
+        ToolchainError::Unfixable(unfixable) => {
+            format!("{component} toolchain check failed: {unfixable}")
+        }
+    }
+}
+
+fn android_doctor_item_in_scope(id: &str, scope: AndroidCheckScope) -> bool {
+    match id {
+        ids::ANDROID_SDK
+        | ids::ANDROID_SDK_PLATFORMS
+        | ids::ANDROID_BUILD_TOOLS
+        | ids::ANDROID_NDK
+        | ids::ANDROID_RUST_TARGETS
+        | ids::CMAKE
+        | ids::JAVA
+        | ids::KOTLIN => true,
+        ids::ANDROID_PLATFORM_TOOLS => scope == AndroidCheckScope::Run,
+        _ => false,
+    }
+}
+
+fn format_path_or_missing(label: &str, path: Option<&Path>) -> String {
+    path.map_or_else(
+        || format!("- {label}: <not detected>"),
+        |path| format!("- {label}: {}", path.display()),
+    )
+}
+
+async fn android_detection_summary(host: &Host) -> String {
+    let sdk_root = AndroidSdk::detect_path(host);
+    let d8_jar = AndroidSdk::d8_jar_path(host);
+    let ndk_root = AndroidNdk::detect_path(host);
+    let java_bin: Option<PathBuf> = Java::detect_path(host).await;
+    let java_home: Option<PathBuf> = Java::detect_home(host).await;
+
+    [
+        "Detected Android/JDK configuration:".to_string(),
+        format_path_or_missing("Android SDK root", sdk_root.as_deref()),
+        format_path_or_missing("Android build-tools d8.jar", d8_jar.as_deref()),
+        format_path_or_missing("Android NDK root", ndk_root.as_deref()),
+        format_path_or_missing("Java executable", java_bin.as_deref()),
+        format_path_or_missing("JAVA_HOME", java_home.as_deref()),
+    ]
+    .join("\n")
+}
+
+fn format_doctor_missing_item(
+    name: &'static str,
+    message: Option<String>,
+    is_fixable: bool,
+) -> String {
+    let mode = if is_fixable { "fixable" } else { "manual" };
+    message.map_or_else(
+        || format!("- {name} [{mode}]"),
+        |message| format!("- {name} [{mode}]: {message}"),
+    )
+}
+
+async fn android_doctor_summary(host: &Host, scope: AndroidCheckScope) -> String {
+    let mut lines = vec!["Relevant doctor diagnostics:".to_string()];
+
+    for item in doctor(host).await {
+        if item.status() != CheckStatus::Missing || !android_doctor_item_in_scope(item.id(), scope)
+        {
+            continue;
+        }
+        let is_fixable = item.is_fixable();
+        let message = item.message().map(ToOwned::to_owned);
+        lines.push(format_doctor_missing_item(item.name(), message, is_fixable));
+    }
+
+    if lines.len() == 1 {
+        lines.push("- No additional Android diagnostics were reported by doctor.".to_string());
+    }
+
+    lines.join("\n")
+}
+
+async fn android_failure_message<I: Installation>(
+    host: &Host,
+    component: &str,
+    error: &ToolchainError<I>,
+    scope: AndroidCheckScope,
+) -> String {
+    [
+        toolchain_check_message(component, error),
+        android_detection_summary(host).await,
+        android_doctor_summary(host, scope).await,
+        "Next steps: run `water doctor` for full diagnostics, then `water doctor --fix` to auto-install fixable dependencies.".to_string(),
+    ]
+    .join("\n")
+}
+
+/// Verify Xcode and the requested Apple SDK are installed.
+///
+/// # Errors
+/// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
+pub async fn check_apple(host: &Host, sdk: AppleSdk) -> Result<()> {
+    let xcode = Xcode;
+    if let Err(e) = xcode.check(host).await {
+        bail!("{}", toolchain_check_message("Xcode", &e));
+    }
+    if let Err(e) = sdk.check(host).await {
+        bail!("{}", toolchain_check_message(&sdk.to_string(), &e));
+    }
+    Ok(())
+}
+
+/// Verify the toolchain the in-process Apple preview binary for `platform`
+/// needs on this Mac.
+///
+/// The binary is built and exec'd here whatever its target, so Xcode and
+/// the macOS SDK are required — Mac Catalyst links the iOS frameworks the
+/// macOS SDK ships under `System/iOSSupport`. A target other than the
+/// host's (`aarch64-apple-ios-macabi`) also needs its rustup target, which
+/// the doctor's Apple Rust targets item installs.
+///
+/// # Errors
+/// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
+pub async fn check_apple_preview(host: &Host, platform: TargetPlatform) -> Result<()> {
+    check_apple(host, AppleSdk::Macos).await?;
+    let triple = platform.triple();
+    if triple == Triple::host() {
+        return Ok(());
+    }
+    let component = format!("Rust target {triple}");
+    if let Err(e) = SelectedToolchainTargets::new(vec![triple.to_string()])
+        .check(host)
+        .await
+    {
+        bail!("{}", toolchain_check_message(&component, &e));
+    }
+    Ok(())
+}
+
+/// Verify the Android toolchain covers building and packaging for all ABIs.
+///
+/// Returns the Kotlin toolchain the check resolved — the build consumes it
+/// instead of probing `kotlinc` again for the same invocation.
+///
+/// # Errors
+/// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
+pub async fn check_android_build_or_package(host: &Host) -> Result<KotlinToolchain> {
+    check_android_build_or_package_for_abis(host, ALL_ABIS).await
+}
+
+/// Verify the Android toolchain covers building and packaging for `required_abis`.
+///
+/// Returns the Kotlin toolchain the check resolved — the build consumes it
+/// instead of probing `kotlinc` again for the same invocation.
+///
+/// # Errors
+/// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
+pub async fn check_android_build_or_package_for_abis(
+    host: &Host,
+    required_abis: &[AndroidAbi],
+) -> Result<KotlinToolchain> {
+    let sdk = AndroidSdk;
+    if let Err(e) = sdk.check(host).await {
+        bail!(
+            "{}",
+            android_failure_message(host, "Android SDK", &e, AndroidCheckScope::BuildOrPackage)
+                .await
+        );
+    }
+    let platforms = AndroidSdkPlatforms;
+    if let Err(e) = platforms.check(host).await {
+        bail!(
+            "{}",
+            android_failure_message(
+                host,
+                "Android SDK Platforms",
+                &e,
+                AndroidCheckScope::BuildOrPackage
+            )
+            .await
+        );
+    }
+    let build_tools = AndroidBuildTools;
+    if let Err(e) = build_tools.check(host).await {
+        bail!(
+            "{}",
+            android_failure_message(
+                host,
+                "Android SDK Build-Tools (d8)",
+                &e,
+                AndroidCheckScope::BuildOrPackage
+            )
+            .await
+        );
+    }
+    let ndk = AndroidNdk;
+    if let Err(e) = ndk.check(host).await {
+        bail!(
+            "{}",
+            android_failure_message(host, "Android NDK", &e, AndroidCheckScope::BuildOrPackage)
+                .await
+        );
+    }
+    let cmake = Cmake::default();
+    if let Err(e) = cmake.check(host).await {
+        bail!(
+            "{}",
+            android_failure_message(host, "Host CMake", &e, AndroidCheckScope::BuildOrPackage)
+                .await
+        );
+    }
+    let java = Java;
+    if let Err(e) = java.check(host).await {
+        bail!(
+            "{}",
+            android_failure_message(host, "Java", &e, AndroidCheckScope::BuildOrPackage).await
+        );
+    }
+    let rust_targets = AndroidRustTargets::for_abis(required_abis);
+    if let Err(e) = rust_targets.check(host).await {
+        bail!(
+            "{}",
+            android_failure_message(
+                host,
+                "Android Rust Targets",
+                &e,
+                AndroidCheckScope::BuildOrPackage
+            )
+            .await
+        );
+    }
+    let kotlin = match Kotlin::verify(host).await {
+        Ok(kotlin) => kotlin,
+        Err(e) => bail!(
+            "{}",
+            android_failure_message(host, "Kotlin", &e, AndroidCheckScope::BuildOrPackage).await
+        ),
+    };
+    Ok(kotlin)
+}
+
+/// Verify the Android toolchain covers running an app (adds `adb` to the build requirements).
+///
+/// Returns the Kotlin toolchain the check resolved — the build consumes it
+/// instead of probing `kotlinc` again for the same invocation.
+///
+/// # Errors
+/// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
+pub async fn check_android_run(host: &Host) -> Result<KotlinToolchain> {
+    let kotlin = check_android_build_or_package(host).await?;
+    let platform_tools = AndroidPlatformTools;
+    if let Err(e) = platform_tools.check(host).await {
+        bail!(
+            "{}",
+            android_failure_message(host, "Android Platform-Tools", &e, AndroidCheckScope::Run)
+                .await
+        );
+    }
+    Ok(kotlin)
+}
+
+/// Verify the Linux system packages and native modules the project at
+/// `project_root` builds against — the check `water doctor` runs. Always
+/// passes off Linux.
+///
+/// The project's dependency graph selects the optional native bindings, so it
+/// is resolved at `project_root`, never at the process's working directory.
+///
+/// # Errors
+/// Returns an error naming the missing packages and the command that installs
+/// them, or why the check could not run.
+pub async fn check_linux_system_packages(host: &Host, project_root: &Path) -> Result<()> {
+    let host = host.clone().with_cwd(project_root);
+    match LinuxSystemToolchain.check(&host).await {
+        Ok(()) => Ok(()),
+        Err(ToolchainError::Fixable(installation)) => bail!(
+            "Linux system packages toolchain check failed: missing packages for {}: {}. Install command: {}. `water doctor --fix` installs them.",
+            installation.package_manager_name(),
+            installation.missing_packages().join(", "),
+            installation.install_command_hint(),
+        ),
+        Err(error @ ToolchainError::Unfixable(_)) => {
+            bail!(
+                "{}",
+                toolchain_check_message("Linux system packages", &error)
+            )
+        }
+    }
+}
+
+/// Verify the GTK4 toolchain is installed.
+///
+/// # Errors
+/// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
+pub async fn check_gtk4(host: &Host, project_root: &Path) -> Result<()> {
+    check_linux_system_packages(host, project_root).await?;
+    let toolchain = Gtk4Toolchain;
+    if let Err(e) = toolchain.check(host).await {
+        bail!("{}", toolchain_check_message("GTK4", &e));
+    }
+    Ok(())
+}
+
+/// Verify the `WinUI` toolchain is installed.
+///
+/// # Errors
+/// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
+pub async fn check_winui(host: &Host) -> Result<()> {
+    let toolchain = crate::winui::toolchain::WinUiToolchain;
+    if let Err(e) = toolchain.check(host).await {
+        bail!("{}", toolchain_check_message("WinUI", &e));
+    }
+    Ok(())
+}
+
+/// Verify the host toolchain components Hydrolysis builds need.
+///
+/// # Errors
+/// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
+pub async fn check_hydrolysis(host: &Host, project_root: &Path) -> Result<()> {
+    check_linux_system_packages(host, project_root).await?;
+    let llvm = WindowsArm64LlvmToolchain;
+    if let Err(e) = llvm.check(host).await {
+        bail!(
+            "{}",
+            toolchain_check_message("Windows ARM64 LLVM toolchain", &e)
+        );
+    }
+    if cfg!(target_os = "windows") {
+        if let Err(e) = MsvcBuildTools.check(host).await {
+            bail!("{}", toolchain_check_message("MSVC C++ build tools", &e));
+        }
+        if let Err(e) = Dxc.check(host).await {
+            bail!(
+                "{}",
+                toolchain_check_message("DirectX Shader Compiler (dxc)", &e)
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Verify the web toolchain is installed.
+///
+/// # Errors
+/// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
+pub async fn check_web(host: &Host) -> Result<()> {
+    if let Err(error) = web_toolchain().check(host).await {
+        bail!(
+            "Web toolchain check failed: {error}. Run `water doctor --fix` to install fixable components."
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_apple_preview;
+    use crate::platform::TargetPlatform;
+    use crate::toolchain::testing::TestMachine;
+
+    /// A Mac with Xcode, the macOS SDK and rustup — the Rust targets each
+    /// test installs are its own.
+    fn apple_machine(installed_targets: &[&str]) -> TestMachine {
+        let machine = TestMachine::new();
+        machine.install("xcodebuild");
+        machine.install("xcode-select");
+        machine.install("xcrun");
+        machine.respond("XCRUN_SDK_PATH", "/fake/SDKs/MacOSX.sdk\n");
+        machine.install("rustup");
+        machine.respond(
+            "RUSTUP_ACTIVE_TOOLCHAIN",
+            "stable-aarch64-apple-darwin (default)",
+        );
+        machine.respond("RUSTUP_INSTALLED_TARGETS", &installed_targets.join("\n"));
+        machine
+    }
+
+    /// An apt host with none of the Linux system packages installed.
+    #[cfg(target_os = "linux")]
+    fn bare_apt_machine() -> TestMachine {
+        let machine = TestMachine::new();
+        machine.install("apt-get");
+        machine.install("dpkg-query");
+        machine
+    }
+
+    /// The desktop Hydrolysis gate `build`, `run` and `package` share runs
+    /// the Linux system package check `water doctor` runs, and fails before
+    /// the build with the missing packages and the install command.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hydrolysis_gate_reports_missing_linux_system_packages() {
+        let machine = bare_apt_machine();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let error = smol::block_on(super::check_hydrolysis(&host, machine.root()))
+            .expect_err("missing system packages must fail the Hydrolysis gate");
+        let message = error.to_string();
+        assert!(message.contains("apt-get"), "{message}");
+        assert!(message.contains("libclang-dev"), "{message}");
+        assert!(message.contains("Install command"), "{message}");
+    }
+
+    /// The GTK4 gate runs the same package check before its own probe.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn gtk4_gate_reports_missing_linux_system_packages() {
+        let machine = bare_apt_machine();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let error = smol::block_on(super::check_gtk4(&host, machine.root()))
+            .expect_err("missing system packages must fail the GTK4 gate");
+        assert!(error.to_string().contains("libclang-dev"), "{error}");
+    }
+
+    /// The dependency graph resolves at the project root the command was
+    /// given, not at the process's working directory: the host's directory
+    /// holds no project, while `project/` holds a `Water.toml` whose graph
+    /// cannot resolve on a host without `cargo`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_system_check_resolves_the_graph_at_the_project_root() {
+        let machine = bare_apt_machine();
+        machine.file("project/Water.toml", "");
+        let host = machine.host(Vec::<(String, String)>::new());
+
+        let outside = smol::block_on(super::check_linux_system_packages(&host, machine.root()))
+            .expect_err("the bare host lacks packages")
+            .to_string();
+        assert!(outside.contains("Install command"), "{outside}");
+
+        let project = smol::block_on(super::check_linux_system_packages(
+            &host,
+            &machine.root().join("project"),
+        ))
+        .expect_err("the project's graph cannot resolve without cargo")
+        .to_string();
+        assert!(project.contains("dependency graph"), "{project}");
+    }
+
+    /// `water preview --platform ios` builds for Mac Catalyst: a missing
+    /// `aarch64-apple-ios-macabi` target fails before the build and names
+    /// the `water doctor --fix` remedy.
+    #[test]
+    fn catalyst_preview_requires_the_macabi_target() {
+        let machine = apple_machine(&["aarch64-apple-darwin", "aarch64-apple-ios"]);
+        let host = machine.host(Vec::<(String, String)>::new());
+        let error = smol::block_on(check_apple_preview(&host, TargetPlatform::MacCatalyst))
+            .expect_err("a missing macabi target must fail the check");
+        let message = error.to_string();
+        assert!(message.contains("aarch64-apple-ios-macabi"), "{message}");
+        assert!(message.contains("water doctor --fix"), "{message}");
+
+        let machine = apple_machine(&["aarch64-apple-darwin", "aarch64-apple-ios-macabi"]);
+        let host = machine.host(Vec::<(String, String)>::new());
+        smol::block_on(check_apple_preview(&host, TargetPlatform::MacCatalyst))
+            .expect("an installed macabi target satisfies the check");
+    }
+}

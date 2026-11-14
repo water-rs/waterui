@@ -19,7 +19,7 @@ the control means.
 
 The crate is `no_std` (it needs only `alloc`) and holds no rendering code of its
 own. Every control lowers to a configuration struct that a backend projects onto
-a real platform widget — UIKit/AppKit on Apple, Android Views on Android — or
+a real platform widget — UIKit/AppKit on Apple — or
 draws itself in the Hydrolysis and Dew renderers.
 
 ## Installation
@@ -314,12 +314,12 @@ fn file_menu(dirty: &Binding<bool>) -> Menu {
         (
             Command::builder("Save")
                 .action(|| {})
-                .shortcut(Shortcut::new("s").command())
+                .shortcut(Shortcut::new('s').command())
                 .disabled(dirty.clone().not()),
             Divider,
             Command::builder("Close")
                 .action(|| {})
-                .shortcut(Shortcut::new("w").command().shift()),
+                .shortcut(Shortcut::new('w').command().shift()),
         ),
     )
 }
@@ -376,7 +376,7 @@ fn note(value: &Binding<Str>) -> impl View {
 - `ButtonStyle` — `Automatic`, `Plain`, `Link`, `Borderless`, `Bordered`,
   `BorderedProminent`. Also a `Plugin`: install it on a subtree to set the default
   for buttons that did not pick one.
-- `button::ButtonSize` — `ExtraSmall`, `Small`, `Medium`, `Large`, `ExtraLarge`;
+- `ControlSize` — `ExtraSmall`, `Small`, `Medium`, `Large`, `ExtraLarge`, shared by buttons and sliders;
   scales height, padding, icon size, and corner shape together.
 - `ToggleStyle` — `Automatic`, `Switch`, `Checkbox`.
 - `text_field::KeyboardType` — `Text`, `Email`, `URL`, `Number`, `PhoneNumber`.

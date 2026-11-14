@@ -10,7 +10,26 @@ else
   echo "::error::no Ubuntu archive source file on this runner"
   exit 1
 fi
-sudo apt-get update \
+# The hosted runner's mirror list selects Azure's archive, whose cold
+# downloads have held setup for over 40 minutes (#3439). Resolve both the
+# index and package archives through Ubuntu's official HTTPS endpoints.
+sudo sed -i \
+  -e 's|mirror+file:/etc/apt/apt-mirrors-security.txt|https://security.ubuntu.com/ubuntu|g' \
+  -e 's|mirror+file:/etc/apt/apt-mirrors.txt|https://archive.ubuntu.com/ubuntu|g' \
+  -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+  -e 's|https://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+  "$list"
+# A stalled mirror connection otherwise holds the step until the job's own
+# timeout; each fetch gives up after 30 s and the whole refresh after 5 min.
+# `--error-on=any` fails the refresh when an index cannot be fetched; apt
+# otherwise exits 0 with an empty index, and the job dies later at the
+# install with "Unable to locate package".
+if ! timeout 300 sudo apt-get update --error-on=any \
   -o Acquire::Retries=10 \
+  -o Acquire::http::Timeout=30 \
+  -o Acquire::https::Timeout=30 \
   -o Dir::Etc::SourceList="$list" \
-  -o Dir::Etc::SourceParts=/dev/null
+  -o Dir::Etc::SourceParts=/dev/null; then
+  echo "::error::refreshing the Ubuntu apt index failed or exceeded its 5 minute deadline"
+  exit 1
+fi

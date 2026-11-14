@@ -225,6 +225,22 @@ mod tests {
     }
 
     #[test]
+    fn localized_argument_shows_non_finite_floats_as_rust_prints_them() {
+        assert_eq!(
+            LocalizedArgument::new(&f64::NAN, &locales::EN).to_string(),
+            "\u{2068}NaN\u{2069}"
+        );
+        assert_eq!(
+            LocalizedArgument::new(&f64::INFINITY, &locales::EN).to_string(),
+            "\u{2068}inf\u{2069}"
+        );
+        assert_eq!(
+            LocalizedArgument::new(&f64::NEG_INFINITY, &locales::EN).to_string(),
+            "\u{2068}-inf\u{2069}"
+        );
+    }
+
+    #[test]
     fn localized_argument_accepts_non_static_borrowed_text() {
         let owned = String::from("مرحبا");
         let borrowed = owned.as_str();

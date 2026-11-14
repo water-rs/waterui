@@ -11,13 +11,49 @@ use waterui_graphics::color::Color;
 /// Configuration for the `ColorPicker` component.
 pub struct ColorPickerConfig {
     /// The label of the color picker.
-    pub label: Label,
+    label: Label,
     /// The binding to the color value.
-    pub value: Binding<Color>,
+    value: Binding<Color>,
     /// Whether to support alpha channel selection.
-    pub support_alpha: bool,
+    support_alpha: bool,
     /// Whether to support HDR color selection.
-    pub support_hdr: bool,
+    support_hdr: bool,
+}
+
+impl ColorPickerConfig {
+    /// The label of the color picker.
+    #[must_use]
+    pub const fn label(&self) -> &Label {
+        &self.label
+    }
+
+    /// Sets the `label`.
+    pub fn set_label(&mut self, label: Label) {
+        self.label = label;
+    }
+
+    /// The label displayed for the control, for editing it in place.
+    pub const fn label_mut(&mut self) -> &mut Label {
+        &mut self.label
+    }
+
+    /// The binding to the color value.
+    #[must_use]
+    pub const fn value(&self) -> &Binding<Color> {
+        &self.value
+    }
+
+    /// Whether to support alpha channel selection.
+    #[must_use]
+    pub const fn support_alpha(&self) -> bool {
+        self.support_alpha
+    }
+
+    /// Whether to support HDR color selection.
+    #[must_use]
+    pub const fn support_hdr(&self) -> bool {
+        self.support_hdr
+    }
 }
 
 configurable!(
@@ -41,7 +77,8 @@ configurable!(
     //
     ColorPicker,
     ColorPickerConfig,
-    resolve |config, env| config.resolve(env)
+    resolve | config,
+    env | config.resolve(env)
 );
 
 impl ColorPickerConfig {

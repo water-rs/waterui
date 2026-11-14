@@ -8,15 +8,24 @@
 //! ## Native vs self-rendered playback
 //!
 //! The same SDR and HDR10 sources exercise either the platform-native player or
-//! WaterUI's self-rendered pipeline (`GpuSurface` + `waterkit-codec`), depending
+//! `WaterUI`'s self-rendered pipeline (`GpuContentView` + `waterkit-codec`), depending
 //! on the selected backend/runtime policy.
 
+use std::cell::RefCell;
+use std::fmt;
+use std::rc::Rc;
+
+use waterui::ContentLedger;
 use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::grid::{grid as layout_grid, row as grid_row};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
+use waterui::video::{
+    MediaItem, MediaItemId, PlaybackSession, PlayerController, Playlist, Url, VideoPlayer,
+};
+use waterui::widget::condition::when;
 
 /// A selectable video source.
 #[derive(Clone, Copy)]
@@ -58,6 +67,10 @@ const SAMPLES: &[Sample] = &[
 ];
 
 /// Self-contained entry: builds the player, status, and source selector.
+///
+/// # Panics
+///
+/// Panics if a built-in sample URL does not parse or the sample list is empty.
 pub fn demo() -> impl View {
     let status: Binding<Str> = binding("Idle");
     let is_buffering = binding(false);
@@ -65,7 +78,7 @@ pub fn demo() -> impl View {
         .iter()
         .map(|sample| MediaItem::from(Url::parse(sample.url).expect("sample URL should be valid")))
         .collect::<Vec<_>>();
-    let item_ids = items.iter().map(|item| item.id).collect::<Vec<_>>();
+    let item_ids = items.iter().map(MediaItem::get_id).collect::<Vec<_>>();
     let session = PlaybackSession::new(Playlist::new(items[0].clone(), items.into_iter().skip(1)));
     let controller = session.controller();
     let selected = controller.current_item_index();
@@ -77,17 +90,13 @@ pub fn demo() -> impl View {
             let status = status.clone();
             let is_buffering = is_buffering.clone();
             move |event| match event {
-                video::Event::ReadyToPlay => {
+                video::Event::ReadyToPlay | video::Event::BufferingEnded => {
                     is_buffering.set(false);
                     status.set(Str::from_static("Ready"));
                 }
                 video::Event::Buffering => {
                     is_buffering.set(true);
                     status.set(Str::from_static("Buffering..."));
-                }
-                video::Event::BufferingEnded => {
-                    is_buffering.set(false);
-                    status.set(Str::from_static("Ready"));
                 }
                 video::Event::PlaybackStateChanged { playing } => {
                     status.set(if playing {
@@ -119,8 +128,6 @@ pub fn demo() -> impl View {
                 video::Event::OfflineDrmKeySetChanged { .. } => {
                     status.set(Str::from_static("Offline DRM Key Updated"));
                 }
-                video::Event::BufferLevel { .. } | video::Event::PlaybackMetrics { .. } => {}
-                video::Event::NextRequested | video::Event::PreviousRequested => {}
                 video::Event::Ended => {
                     is_buffering.set(false);
                     status.set(Str::from_static("Ended"));
@@ -129,65 +136,126 @@ pub fn demo() -> impl View {
                     is_buffering.set(false);
                     status.set(format!("Error: {message}").into());
                 }
+                // Buffer levels, metrics and next/previous requests leave the status line unchanged.
+                _ => {}
             }
         });
 
     player_shell(
         player,
-        selected,
-        status,
+        &selected,
+        &status,
         is_buffering,
         Some((controller, item_ids)),
     )
 }
 
-/// Static preview frame — keeps `water preview` and Hydrolysis perf tests off the network.
+/// Real player for the first sample URL.
+///
+/// The capture waits until the player reports ready, so the image shows the
+/// player, its controls, and its first frame.
 #[preview]
 fn video_player_preview() -> impl View {
-    let selected = Binding::usize(0);
-    let status: Binding<Str> = binding("Preview ready");
-    let is_buffering = binding(false);
-    let frame = zstack((
-        Srgb::BLACK,
-        vstack((
-            text("Video Preview").title().foreground(Srgb::WHITE),
-            text("Static preview frame")
-                .caption()
-                .foreground(Srgb::WHITE.with_opacity(0.8)),
-        ))
-        .spacing(12.0),
-    ));
-    player_shell(frame, selected.computed(), status, is_buffering, None)
+    PreviewPlayer
 }
 
+/// The player a preview mounts, opened from [`SAMPLES`] rather than a stand-in.
+struct PreviewPlayer;
+
+impl View for PreviewPlayer {
+    fn body(self, env: &Environment) -> impl View {
+        let url = Url::parse(SAMPLES[0].url).expect("sample URL should be valid");
+        let status: Binding<Str> = binding("Opening");
+        let owed = Rc::new(RefCell::new(ContentLedger::owe::<Self>(
+            env,
+            url.as_str().to_owned(),
+        )));
+        let player = VideoPlayer::new(PlaybackSession::new(Playlist::single(url)))
+            .show_controls(true)
+            .content_mode(video::ContentMode::Fit)
+            .on_event({
+                let status = status.clone();
+                move |event| match event {
+                    video::Event::ReadyToPlay => {
+                        if let Some(owed) = owed.borrow_mut().take() {
+                            owed.fulfil();
+                        }
+                        status.set(Str::from_static("Ready"));
+                    }
+                    video::Event::Error { message } => {
+                        if let Some(owed) = owed.borrow_mut().take() {
+                            owed.fail(PlaybackFailed(message.clone()));
+                        }
+                        status.set(format!("Error: {message}").into());
+                    }
+                    video::Event::Buffering => {
+                        status.set(Str::from_static("Buffering..."));
+                    }
+                    video::Event::BufferingEnded => {
+                        status.set(Str::from_static("Ready"));
+                    }
+                    video::Event::PlaybackStateChanged { playing } => {
+                        status.set(if playing {
+                            Str::from_static("Playing")
+                        } else {
+                            Str::from_static("Paused")
+                        });
+                    }
+                    _ => {}
+                }
+            });
+
+        // The buffering overlay is a repeating animation. A capture cannot
+        // settle while one is mounted, so the preview leaves it off and
+        // reports buffering through the status line.
+        let selected = Binding::usize(0).computed();
+        player_shell(player, &selected, &status, binding(false), None)
+    }
+}
+
+/// Playback error reported to a capture when the sample fails to open.
+#[derive(Debug)]
+struct PlaybackFailed(String);
+
+impl fmt::Display for PlaybackFailed {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for PlaybackFailed {}
+
 /// Shared layout: title, player with a buffering overlay, status line, and source pills.
-fn player_shell(
-    player: impl View,
-    selected: Computed<usize>,
-    status: Binding<Str>,
+fn player_shell<V: View>(
+    player: V,
+    selected: &Computed<usize>,
+    status: &Binding<Str>,
     is_buffering: Binding<bool>,
     playlist: Option<(PlayerController, Vec<MediaItemId>)>,
-) -> impl View {
-    let title = selected.clone().map(|index| SAMPLES[index].title);
-    let profile = selected.clone().map(|index| SAMPLES[index].profile);
+) -> impl View + use<V> {
+    let title = selected.map(|index| SAMPLES[index].title);
+    let profile = selected.map(|index| SAMPLES[index].profile);
 
-    let buffering_overlay = vstack((loading(), text("Buffering...").foreground(Srgb::WHITE)))
-        .spacing(12.0)
-        .background(Srgb::BLACK.with_opacity(0.8))
-        .visible(is_buffering.clone());
+    // Mount the indicator only while buffering. `.visible(false)` would keep
+    // the indeterminate animation running, and a capture cannot settle on it.
+    let buffering_overlay = when(is_buffering, || {
+        vstack((loading(), text("Buffering...").foreground(Srgb::WHITE)))
+            .spacing(12.0)
+            .background(Srgb::BLACK.with_opacity(0.8))
+    });
 
     let source_grid = playlist.map(|(controller, ids)| {
         layout_grid(
             3,
             [
                 grid_row((
-                    pill_button(SAMPLES[0].title, 0, ids[0], &selected, &controller),
-                    pill_button(SAMPLES[1].title, 1, ids[1], &selected, &controller),
-                    pill_button(SAMPLES[2].title, 2, ids[2], &selected, &controller),
+                    pill_button(SAMPLES[0].title, 0, ids[0], selected, &controller),
+                    pill_button(SAMPLES[1].title, 1, ids[1], selected, &controller),
+                    pill_button(SAMPLES[2].title, 2, ids[2], selected, &controller),
                 )),
                 grid_row((
-                    pill_button(SAMPLES[3].title, 3, ids[3], &selected, &controller),
-                    pill_button(SAMPLES[4].title, 4, ids[4], &selected, &controller),
+                    pill_button(SAMPLES[3].title, 3, ids[3], selected, &controller),
+                    pill_button(SAMPLES[4].title, 4, ids[4], selected, &controller),
                 )),
             ],
         )
@@ -198,7 +266,9 @@ fn player_shell(
         text("WaterUI Video Player").headline(),
         text!("Now Playing: {title}").body(),
         text!("Source Profile: {profile}").footnote(),
-        overlay(player, buffering_overlay).height(360.0),
+        // A `Fit` player is as tall as its source's aspect ratio makes it at
+        // the width it is given.
+        overlay(player, buffering_overlay).max_width(640.0),
         text!("Status: {status}").footnote(),
         source_grid,
     ))
@@ -216,7 +286,7 @@ fn pill_button(
 ) -> impl View {
     let is_selected = selected.clone().equal_to(index);
     let controller = controller.clone();
-    let selected_bg_opacity = is_selected.clone().select(1.0, 0.0);
+    let selected_bg_opacity = is_selected.select(1.0, 0.0);
     let idle_bg_opacity = is_selected.select(0.0, 1.0);
 
     zstack((
@@ -230,6 +300,7 @@ fn pill_button(
     ))
 }
 
+/// Builds the video player example app.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

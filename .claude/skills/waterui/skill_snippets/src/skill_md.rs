@@ -5,19 +5,18 @@
 use waterui::prelude::*;
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "## Quick start" — rust block 8/16
+// SKILL.md § "## Quick start" — rust block 8/18
 //
 // At module scope because the skill presents these as the imports later
 // snippets in the same file rely on.
 // ---------------------------------------------------------------------------
-use waterui::Identifiable; // the derive macro
+use waterui::Identifiable; // the trait the derive implements
 use waterui::animation::Animation; // animation curves
 use waterui::component::lazy::Lazy; // reactive stacks over a collection
 use waterui::cursor::CursorStyle;
-use waterui::drag_drop::DragData;
+use waterui::drag_drop::{Files, Transferable};
 use waterui::env::with; // scope a value to a subtree
 use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
-use waterui::reactive::binding; // the general Binding constructor
 use waterui::reactive::collection::List as ReactiveList;
 use waterui::task::{sleep, spawn_local}; // async utilities
 use waterui::views::ForEach; // the collection itself
@@ -39,10 +38,10 @@ fn glue_row_view(row: GlueRow) -> ListItem {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### 1. Pass the signal, never a snapshot of it" — rust block 1/16
+// SKILL.md § "### 1. Pass the signal, never a snapshot of it" — rust block 1/18
 // Listing: four independent one-line examples.
 // ---------------------------------------------------------------------------
-// `fade.get()` is SKILL.md's deliberate broken line — the section teaches that
+// `fade.snapshot()` is SKILL.md's deliberate broken line — the section teaches that
 // passing a snapshot freezes the view while still compiling.
 #[allow(unknown_lints, signal_get_in_view)]
 pub fn skill_block_01() {
@@ -57,7 +56,7 @@ pub fn skill_block_01() {
     };
     let view = Divider;
     let _ = {
-        view.opacity(fade.get()) // frozen forever — a plain f32
+        view.opacity(fade.snapshot()) // frozen forever — a plain f32
     };
     let _ = {
         Photo::new(url).blur(blur.clone()) // reacts
@@ -69,7 +68,7 @@ pub fn skill_block_01() {
 
 // ---------------------------------------------------------------------------
 // SKILL.md § "### 2. `watch` is not the reactive primitive — it is the escape
-// hatch" — rust block 2/16
+// hatch" — rust block 2/18
 // Listing: three independent replacements for `watch`.
 // ---------------------------------------------------------------------------
 pub fn skill_block_02() {
@@ -91,7 +90,7 @@ pub fn skill_block_02() {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### 3. Inject handler state with `.state()`" — rust block 3/16
+// SKILL.md § "### 3. Inject handler state with `.state()`" — rust block 3/18
 // ---------------------------------------------------------------------------
 pub fn skill_block_03() -> impl View {
     let count = Binding::i32(0);
@@ -102,7 +101,7 @@ pub fn skill_block_03() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### 3. Inject handler state with `.state()`" — rust block 4/16
+// SKILL.md § "### 3. Inject handler state with `.state()`" — rust block 4/18
 // ---------------------------------------------------------------------------
 pub fn skill_block_04() -> impl View {
     let query = Binding::container(Str::from(""));
@@ -111,7 +110,7 @@ pub fn skill_block_04() -> impl View {
     button("Search")
         .action(
             |State(q): State<Binding<Str>>, State(hist): State<Binding<Vec<Str>>>| {
-                hist.get_mut().push(q.get());
+                hist.with_mut(|h| h.push(q.snapshot()));
             },
         )
         .state(&query) // -> first parameter
@@ -119,7 +118,7 @@ pub fn skill_block_04() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### 3. Inject handler state with `.state()`" — rust block 5/16
+// SKILL.md § "### 3. Inject handler state with `.state()`" — rust block 5/18
 // ---------------------------------------------------------------------------
 pub mod skill_block_05 {
     use super::{GlueRow as Row, ReactiveList, glue_row_view as row_view};
@@ -155,13 +154,13 @@ pub mod skill_block_05 {
 
 // ---------------------------------------------------------------------------
 // SKILL.md § "### 4. A changing set of views is a collection, not a `watch`"
-// — rust block 6/16
+// — rust block 6/18
 // Prefix is a real statement sequence; the last two lines are a listing.
 // ---------------------------------------------------------------------------
 pub fn skill_block_06() {
     use waterui::Identifiable;
     use waterui::component::lazy::Lazy;
-    use waterui::reactive::collection::List as ReactiveList; // the derive is NOT in the prelude
+    use waterui::reactive::collection::List as ReactiveList; // the trait the derive implements is NOT in the prelude
 
     #[derive(Clone, Identifiable)]
     struct Row {
@@ -175,7 +174,7 @@ pub fn skill_block_06() {
         title: Str::from("Hello"),
     }];
 
-    let rows = ReactiveList::from(seed_rows); // bulk-seed; .push/.insert/.remove diff by id
+    let rows = ReactiveList::from(seed_rows); // bulk-seed; .push/.insert/.remove (&mut self) diff by id
 
     let _ = {
         Lazy::for_each(rows.clone(), |row| text(row.title)) // reactive sequence in a stack
@@ -187,7 +186,7 @@ pub fn skill_block_06() {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "## Quick start" — rust block 7/16
+// SKILL.md § "## Quick start" — rust block 7/18
 // ---------------------------------------------------------------------------
 pub mod skill_block_07 {
     use waterui::app::App;
@@ -212,7 +211,7 @@ pub mod skill_block_07 {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### Views" — rust block 9/16
+// SKILL.md § "### Views" — rust block 9/18
 // ---------------------------------------------------------------------------
 pub fn skill_block_09() -> impl View {
     fn card(title: &'static str) -> impl View {
@@ -223,7 +222,7 @@ pub fn skill_block_09() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### Views" — rust block 10/16
+// SKILL.md § "### Views" — rust block 10/18
 // ---------------------------------------------------------------------------
 pub mod skill_block_10 {
     use waterui::prelude::*;
@@ -240,7 +239,7 @@ pub mod skill_block_10 {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### State" — rust block 11/16
+// SKILL.md § "### State" — rust block 11/18
 // ---------------------------------------------------------------------------
 pub fn skill_block_11() {
     use waterui::media::media_picker::Selected;
@@ -269,7 +268,7 @@ pub fn skill_block_11() {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### Text" — rust block 12/16
+// SKILL.md § "### Text" — rust block 12/18
 // Listing: four independent one-line examples.
 // ---------------------------------------------------------------------------
 pub fn skill_block_12() {
@@ -306,7 +305,20 @@ pub fn skill_block_12() {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### Layout" — rust block 13/16
+// SKILL.md § "### Text" — (prose) `s!("{name}-{count}")` from `waterui::reactive::s`
+// Prose naming an API, not counted among the file's rust blocks.
+// ---------------------------------------------------------------------------
+pub fn prose_s_macro() {
+    use waterui::reactive::s;
+
+    let name = Binding::container(Str::from("inbox"));
+    let count = Binding::i32(3);
+
+    let _ = s!("{name}-{count}");
+}
+
+// ---------------------------------------------------------------------------
+// SKILL.md § "### Layout" — rust block 13/18
 // Listing: six one-line examples plus one `let`.
 // ---------------------------------------------------------------------------
 pub fn skill_block_13() {
@@ -338,7 +350,7 @@ pub fn skill_block_13() {
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### Conditionals" — rust block 14/16
+// SKILL.md § "### Conditionals" — rust block 14/18
 // Listing: independent conditional forms.
 // ---------------------------------------------------------------------------
 #[expect(
@@ -370,11 +382,19 @@ pub fn skill_block_14() {
     fn new_marker() -> impl View {
         text("new")
     }
+    fn summary(_items: Binding<Vec<Str>>) -> impl View {
+        text("summary")
+    }
+    fn empty() -> impl View {
+        text("empty")
+    }
 
     let row = RowFlags { flagged: true };
     let logged_in = Binding::bool(false);
     let state = Binding::i32(0);
     let is_new = Binding::bool(true);
+    let loaded = Binding::bool(true);
+    let items = Binding::container(Vec::<Str>::new());
 
     use waterui::widget::condition::when; // not in the prelude
 
@@ -392,10 +412,32 @@ pub fn skill_block_14() {
     let _ = {
         new_marker().visible(is_new.clone()) // keep the view, drive its visibility
     };
+
+    // Real payloads capture state: the closure is an `Fn` builder, so clone inside it
+    let _ = { when(loaded.clone(), move || summary(items.clone())).otherwise(|| empty()) };
+
+    // Branches of different view types: #[view_builder] (or a view! { .. } block)
+    #[waterui::view_builder]
+    fn gate(logged_in: Binding<bool>) -> impl View {
+        if logged_in { dashboard() } else { login() }
+    }
+
+    #[waterui::view_builder]
+    fn page(tab: Binding<i32>) -> impl View {
+        match tab {
+            0 => loading(),
+            1 => ready(),
+            _ => error(),
+        }
+    }
+
+    // Glue: call both so the nested items are used.
+    let _ = gate(logged_in.clone());
+    let _ = page(state.clone());
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### Modifiers" — rust block 15/16
+// SKILL.md § "### Modifiers" — rust block 15/18
 //
 // A signature listing: every line is a `/`-separated set of alternatives, each
 // a bare method fragment. Each fragment is applied to a fresh receiver so the
@@ -408,7 +450,7 @@ pub fn skill_block_14() {
 pub fn skill_block_15() {
     use waterui::accessibility::AccessibilityRole;
     use waterui::gesture::Gesture;
-    use waterui::layout::EdgeSet;
+    use waterui::layout::{EdgeSet, SafeAreaRegions};
 
     let (w, h) = (100.0_f32, 40.0_f32);
     let (x, y) = (1.5_f32, 2.5_f32);
@@ -432,6 +474,9 @@ pub fn skill_block_15() {
     let color = Color::srgb_hex("#3B82F6");
     let view = Divider;
     let _ = { view.foreground(color) };
+    let color = Color::srgb_hex("#3B82F6");
+    let view = Divider;
+    let _ = { view.tint(color) };
     let overlaid = text("overlay");
     let view = Divider;
     let _ = { view.overlay(overlaid) };
@@ -549,10 +594,16 @@ pub fn skill_block_15() {
     let _ = { view.ignore_safe_area(EdgeSet::ALL) };
     let view = Divider;
     let _ = { view.floating() };
+    let view = Divider;
+    let _ = {
+        view.secure() // .secure(): no screenshots
+    };
+    let view = Divider;
+    let _ = { view.ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM)) };
 }
 
 // ---------------------------------------------------------------------------
-// SKILL.md § "### The Environment" — rust block 16/16
+// SKILL.md § "### The Environment" — rust block 16/18
 // Listing: seeding alternatives, then three independent reading examples.
 // ---------------------------------------------------------------------------
 pub mod skill_block_16 {
@@ -637,7 +688,8 @@ pub fn skill_block_08_imports_are_live() {
     let _ = LongPressGesture::new(500);
     let _ = TapGesture::new();
     let _ = CursorStyle::Arrow;
-    let _ = DragData::text("payload");
+    let _ = Files::new([waterui::Url::from("file:///tmp/payload")]);
+    let _ = text("tab").draggable(GlueTab);
     let _ = Animation::default();
     let _ = ForEach::new(ReactiveList::<GlueRow>::new(), glue_row_view);
     let _ = binding::<i32>(0);
@@ -645,3 +697,9 @@ pub fn skill_block_08_imports_are_live() {
     let _ = with(text("x"), 1_i32);
     spawn_local(async { sleep(core::time::Duration::from_millis(1)).await }).detach();
 }
+
+/// Glue: an app type made transferable, as the block 8 import implies.
+#[derive(Debug, Clone)]
+struct GlueTab;
+impl Transferable for GlueTab {}
+waterui::reactive::impl_constant!(GlueTab);

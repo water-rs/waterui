@@ -31,8 +31,10 @@ use mdi::pencil;
 use mdi::view_gallery;
 use waterui::Identifiable;
 use waterui::app::App;
-use waterui::component::list::{List, ListDelete, ListItem, ListMove, Section, row};
-use waterui::id::Id;
+use waterui::component::list::{
+    List, ListContent, ListDelete, ListItem, ListMove, Section, SectionScope, TaggedBy, row,
+};
+use waterui::id::{Id, SelfId};
 use waterui::navigation::{NavigationSplitView, NavigationView, Navigator};
 use waterui::prelude::theme_color::{Accent, Foreground, SurfaceVariant};
 use waterui::prelude::*;
@@ -40,6 +42,7 @@ use waterui::preview;
 use waterui::reactive::binding;
 use waterui::reactive::collection::SignalCollection;
 use waterui::shape::{Circle, RoundedRectangle};
+use waterui::views::ForEach;
 use waterui_icons_material_icon as mdi;
 
 // ---------------------------------------------------------------------------
@@ -196,7 +199,10 @@ impl Mail {
     fn unread_count(&self) -> Computed<i32> {
         self.messages
             .clone()
-            .map(|messages| messages.iter().filter(|message| message.unread).count() as i32)
+            .map(|messages| {
+                let unread = messages.iter().filter(|message| message.unread).count();
+                i32::try_from(unread).expect("a mailbox holds fewer than 2^31 unread messages")
+            })
             .computed()
     }
 
@@ -263,35 +269,47 @@ pub fn library_pane() -> impl View {
     library_split()
 }
 
+/// The navigation tour: an inbox, a library, a gallery and settings, each in its own tab.
+///
+/// # Panics
+///
+/// Panics if the tab collection has no tab for one of the four panes. The tabs and
+/// the pane ids are built from the same four panes, so this cannot happen.
 #[preview]
 pub fn demo() -> impl View {
     let mail = Mail::new();
     let pane = binding(Pane::Inbox);
 
-    Tabs::new(
-        &pane,
-        vec![
-            Tab::container(Pane::Inbox, label("Inbox").icon(inbox()), {
+    let tabs = std::collections::BTreeMap::from([
+        (
+            Pane::Inbox,
+            Tab::container(label("Inbox").icon(inbox()), {
                 let mail = mail.clone();
                 move || inbox_stack(mail.clone())
             })
             .badge(mail.unread_count()),
-            Tab::container(
-                Pane::Library,
-                label("Library").icon(image_album()),
-                library_split,
-            ),
-            Tab::container(
-                Pane::Gallery,
-                label("Gallery").icon(view_gallery()),
-                gallery_stack,
-            ),
-            Tab::container(
-                Pane::Settings,
-                label("Settings").icon(cog()),
-                settings_stack,
-            ),
-        ],
+        ),
+        (
+            Pane::Library,
+            Tab::container(label("Library").icon(image_album()), library_split),
+        ),
+        (
+            Pane::Gallery,
+            Tab::container(label("Gallery").icon(view_gallery()), gallery_stack),
+        ),
+        (
+            Pane::Settings,
+            Tab::container(label("Settings").icon(cog()), settings_stack),
+        ),
+    ]);
+    let panes = [Pane::Inbox, Pane::Library, Pane::Gallery, Pane::Settings].map(SelfId::new);
+    Tabs::new(
+        &pane,
+        ForEach::new(panes.to_vec(), move |pane: SelfId<Pane>| {
+            tabs.get(&pane.into_inner())
+                .expect("a keyed tab collection reports a tab for every id")
+                .clone()
+        }),
     )
     // A tab bar on a phone, a sidebar or navigation rail on a large window: the
     // backend decides from the platform and the current window size.
@@ -303,19 +321,17 @@ pub fn demo() -> impl View {
 // ---------------------------------------------------------------------------
 
 fn inbox_stack(mail: Mail) -> impl View {
-    NavigationStack::with_path(NavigationPath::<MailRoute>::new(), inbox_root(mail.clone()))
-        .destination(move |route| match route {
-            MailRoute::Message(id) => message_detail(mail.clone(), id),
-            MailRoute::Compose => compose_page(mail.clone()),
-        })
+    NavigationStack::with_path(NavigationPath::<MailRoute>::new(), inbox_root(&mail)).destination(
+        move |route| match route {
+            MailRoute::Message(id) => message_detail(&mail, id),
+            MailRoute::Compose => compose_page(&mail),
+        },
+    )
 }
 
-fn inbox_root(mail: Mail) -> NavigationView {
+fn inbox_root(mail: &Mail) -> NavigationView {
     let unread = mail.unread_count();
-    let edit_title = mail
-        .editing
-        .clone()
-        .select(Str::from("Done"), Str::from("Edit"));
+    let edit_title = mail.editing.select(Str::from("Done"), Str::from("Edit"));
 
     message_list(mail.clone())
         .title("Inbox")
@@ -350,8 +366,8 @@ fn inbox_root(mail: Mail) -> NavigationView {
                     NavigationToolbarPlacement::BottomBar,
                     button("Mark All Read")
                         .style(ButtonStyle::Plain)
-                        .action(mark_all_read)
-                        .state(&mail),
+                        .action(|mail: Mail| mark_all_read(&mail))
+                        .state(mail),
                 ))
                 .item(NavigationToolbarItem::new(
                     NavigationToolbarPlacement::Status,
@@ -360,7 +376,7 @@ fn inbox_root(mail: Mail) -> NavigationView {
         )
 }
 
-fn mark_all_read(mail: Mail) {
+fn mark_all_read(mail: &Mail) {
     for message in mail.messages.get_mut().iter_mut() {
         message.unread = false;
     }
@@ -373,9 +389,9 @@ fn message_list(mail: Mail) -> impl View {
         let mail = mail.clone();
         move |message| message_row(&mail, message)
     })
-    .editing(mail.editing.clone())
-    .on_delete(delete_message)
-    .on_move(move_message)
+    .editing(mail.editing)
+    .on_delete(|delete: ListDelete, mail: Mail| delete_message(delete, &mail))
+    .on_move(|list_move: ListMove, mail: Mail| move_message(list_move, &mail))
 }
 
 fn message_row(mail: &Mail, message: Message) -> ListItem {
@@ -434,17 +450,17 @@ fn message_row(mail: &Mail, message: Message) -> ListItem {
     ))
 }
 
-fn delete_message(ListDelete(index): ListDelete, mail: Mail) {
-    let Some(id) = visible_id(&mail, index) else {
+fn delete_message(ListDelete(index): ListDelete, mail: &Mail) {
+    let Some(id) = visible_id(mail, index) else {
         return;
     };
     mail.messages.get_mut().retain(|message| message.id != id);
 }
 
-fn move_message(ListMove(movement): ListMove, mail: Mail) {
+fn move_message(ListMove(movement): ListMove, mail: &Mail) {
     let (Some(moved), Some(target)) = (
-        visible_id(&mail, movement.from()),
-        visible_id(&mail, movement.to()),
+        visible_id(mail, movement.from()),
+        visible_id(mail, movement.to()),
     ) else {
         return;
     };
@@ -462,23 +478,18 @@ fn move_message(ListMove(movement): ListMove, mail: Mail) {
 /// Rows are addressed by position in the *filtered* list, so an edit maps back
 /// through the same filter the user is looking at.
 fn visible_id(mail: &Mail, index: usize) -> Option<u64> {
-    let messages = mail.messages.get();
-    let query = mail.query.get();
+    let messages = mail.messages.snapshot();
+    let query = mail.query.snapshot();
     let visible = filter_messages(&messages, &query);
     visible.as_slice().get(index).map(|message| message.id)
 }
 
-fn message_detail(mail: Mail, id: u64) -> NavigationView {
+fn message_detail(mail: &Mail, id: u64) -> NavigationView {
     let message = mail.message(id);
-    let subject = message
-        .clone()
-        .map(|message| message.map_or_else(Str::default, |message| message.subject));
-    let sender = message
-        .clone()
-        .map(|message| message.map_or_else(Str::default, |message| message.sender));
-    let body = message
-        .clone()
-        .map(|message| message.map_or_else(Str::default, |message| message.preview));
+    let subject =
+        message.map(|message| message.map_or_else(Str::default, |message| message.subject));
+    let sender = message.map(|message| message.map_or_else(Str::default, |message| message.sender));
+    let body = message.map(|message| message.map_or_else(Str::default, |message| message.preview));
     let flagged = message.map(|message| message.is_some_and(|message| message.flagged));
     let flag_title = flagged.select(Str::from("Unflag"), Str::from("Flag"));
 
@@ -502,7 +513,7 @@ fn message_detail(mail: Mail, id: u64) -> NavigationView {
                 .action(move |mail: Mail| {
                     mail.update(id, |message| message.flagged = !message.flagged);
                 })
-                .state(&mail),
+                .state(mail),
         )),
     )
     // Opening the message is what marks it read: a destination lifecycle event,
@@ -515,7 +526,7 @@ fn message_detail(mail: Mail, id: u64) -> NavigationView {
 
 /// An editing flow: confirmation and cancellation are semantic placements, and
 /// the platform's own back gesture is refused while the draft is dirty.
-fn compose_page(mail: Mail) -> NavigationView {
+fn compose_page(mail: &Mail) -> NavigationView {
     let is_empty = mail.draft_is_empty();
 
     vstack((
@@ -539,16 +550,20 @@ fn compose_page(mail: Mail) -> NavigationView {
                 NavigationToolbarPlacement::Confirmation,
                 button("Send")
                     .style(ButtonStyle::BorderedProminent)
-                    .action(send_draft)
-                    .state(&mail)
+                    .action(|mail: Mail, navigator: Navigator<MailRoute>| {
+                        send_draft(&mail, &navigator);
+                    })
+                    .state(mail)
                     .disabled(is_empty.clone()),
             ))
             .item(NavigationToolbarItem::new(
                 NavigationToolbarPlacement::Cancellation,
                 button("Cancel")
                     .style(ButtonStyle::Plain)
-                    .action(cancel_draft)
-                    .state(&mail),
+                    .action(|mail: Mail, navigator: Navigator<MailRoute>| {
+                        cancel_draft(&mail, &navigator);
+                    })
+                    .state(mail),
             )),
     )
     .navigation_pop_enabled(is_empty)
@@ -557,8 +572,8 @@ fn compose_page(mail: Mail) -> NavigationView {
     })
 }
 
-fn send_draft(mail: Mail, navigator: Navigator<MailRoute>) {
-    let messages = mail.messages.get();
+fn send_draft(mail: &Mail, navigator: &Navigator<MailRoute>) {
+    let messages = mail.messages.snapshot();
     let next_id = messages
         .as_slice()
         .iter()
@@ -571,8 +586,8 @@ fn send_draft(mail: Mail, navigator: Navigator<MailRoute>) {
         Message {
             id: next_id,
             sender: Str::from("Me"),
-            subject: mail.draft_subject.get(),
-            preview: mail.draft_body.get(),
+            subject: mail.draft_subject.snapshot(),
+            preview: mail.draft_body.snapshot(),
             unread: false,
             flagged: false,
         },
@@ -581,7 +596,7 @@ fn send_draft(mail: Mail, navigator: Navigator<MailRoute>) {
     let _ = navigator.pop();
 }
 
-fn cancel_draft(mail: Mail, navigator: Navigator<MailRoute>) {
+fn cancel_draft(mail: &Mail, navigator: &Navigator<MailRoute>) {
     mail.discard_draft();
     let _ = navigator.pop();
 }
@@ -596,7 +611,7 @@ fn library_split() -> impl View {
 
     NavigationSplitView::new(
         &selection,
-        move || album_sidebar(sidebar_selection.clone()),
+        move || album_sidebar(&sidebar_selection),
         album_detail,
     )
     .sidebar_width(ColumnWidth::new(220.0, 280.0, 360.0))
@@ -614,21 +629,26 @@ fn placeholder() -> impl View {
     .spacing(6.0)
 }
 
-fn album_sidebar(selection: Binding<Option<Album>>) -> impl View {
+fn album_sidebar(selection: &Binding<Option<Album>>) -> impl View + use<> {
     List::content((Section::new("Albums").content((
-        album_row(Album::Recents, &selection),
-        album_row(Album::Favorites, &selection),
-        album_row(Album::Shared, &selection),
+        album_row(Album::Recents),
+        album_row(Album::Favorites),
+        album_row(Album::Shared),
     )),))
+    // Each row is tagged with its album, so the selection is the album
+    // itself. The framework writes the binding on pointer, keyboard and
+    // accessibility input; the platform draws its own selection chrome for
+    // the row.
+    .selection(selection)
 }
 
 /// Static list content is built from row *builders*, so the platform list can
-/// rematerialize a row whenever it scrolls back into view.
-fn album_row(album: Album, selection: &Binding<Option<Album>>) -> impl Fn() -> ListItem + 'static {
+/// rematerialize a row whenever it scrolls back into view. The tag is the
+/// value that selects the row.
+fn album_row(album: Album) -> impl ListContent<SectionScope> + TaggedBy<Album> {
     let count = album.count();
-    let selection = selection.clone();
 
-    move || {
+    (move || {
         ListItem::new(
             hstack((
                 album_icon().size(20.0, 20.0).foreground(Accent),
@@ -637,16 +657,10 @@ fn album_row(album: Album, selection: &Binding<Option<Album>>) -> impl Fn() -> L
                 text!("{count}").caption().muted(),
             ))
             .spacing(10.0)
-            .padding_with((10.0, 12.0))
-            .on_tap(move |State(selection): State<Binding<Option<Album>>>| {
-                selection.set(Some(album));
-            })
-            .state(&selection),
+            .padding_with((10.0, 12.0)),
         )
-        // The platform draws its own selection chrome; the row only derives
-        // its flag from the state that owns selection.
-        .selected(selection.clone().equal_to(Some(album)))
-    }
+    })
+    .tag(album)
 }
 
 fn album_detail(album: Album) -> NavigationView {
@@ -793,9 +807,7 @@ fn settings_link(title: &'static str, route: SettingsRoute) -> ListItem {
 }
 
 fn appearance_page(compact: Binding<bool>) -> NavigationView {
-    let density = compact
-        .clone()
-        .select(Str::from("Compact"), Str::from("Comfortable"));
+    let density = compact.select(Str::from("Compact"), Str::from("Comfortable"));
 
     List::content((Section::new("Density")
         .footer("The row height the message list uses.")
@@ -827,6 +839,7 @@ fn about_page() -> NavigationView {
     .inline_title()
 }
 
+/// Builds the navigation tour app around [`demo`].
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }
