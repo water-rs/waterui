@@ -128,11 +128,15 @@ hydrolysis-android-host-subdirectory = "backends/hydrolysis/android"
 # `[workspace.dependencies]` below. `hydrolysis` is absent deliberately: it
 # is an in-tree member resolved through `hydrolysis-path`, not a scaffold
 # package with a requirement of its own.
+#
+# A package absent from `[workspace.dependencies]` because no member links
+# it takes its requirement from `scaffold-pins` below.
 scaffold-packages = [
     "hydrolysis-m3",
     "waterui-gtk",
     "waterui-winui",
 ]
+
 # Third-party crates the facade re-exports into its public API, mapped to
 # the facade path the re-export answers at. A project that also depends on
 # one of these directly must resolve the same package the framework does:
@@ -141,6 +145,18 @@ scaffold-packages = [
 # never name a version. The `water` CLI fails on that divergence before it
 # reaches the compiler.
 reexported-dependencies = { anyhow = "waterui::Error", bytemuck = "waterui::graphics::gpu::bytemuck", cherenkov = "waterui::graphics::backend::cherenkov", cherenkov-cpu = "waterui::graphics::backend::cherenkov_cpu", cherenkov-gpu = "waterui::graphics::backend::cherenkov_gpu", cherenkov-record = "waterui::graphics::backend::draw", color = "waterui::graphics::Color", executor-core = "waterui::task", filtrate = "waterui::graphics::backend::filtrate", filtrate-core = "waterui::media::Filter", keyboard-types = "waterui::graphics::input", nami = "waterui::reactive", nami-core = "waterui::reactive", native-executor = "waterui::task", pastey = "waterui::pastey", serde = "waterui::webview::serde", serde_json = "waterui::webview::serde_json", suiteki = "waterui::Str", tracing = "waterui::log", url = "waterui::media::Url", waterkit-haptic = "waterui::Intensity", wgpu = "waterui::graphics::gpu::wgpu" }
+
+# Nothing in this workspace links the GTK or WinUI backends: the `water`
+# CLI reads these pins to scaffold a launcher crate. Each pins the
+# backend's nami-migration head — the published releases still require the
+# pre-rename nami line (`^0.11.2` and peers) — so `dev`, `nightly` and
+# local-checkout scaffolds declare the commit directly while `stable`
+# withholds the packages under `experimental-packages`. All three heads are
+# on nami 0.12 (water-rs/gtk-backend#144 and water-rs/waterui-winui#84).
+# Drop the `git`/`rev` half once each backend releases a migrated version.
+[package.metadata.waterui.scaffold-pins]
+waterui-gtk = { version = "0.2.1", git = "https://github.com/water-rs/gtk-backend", rev = "0173db0e8e066305ff49bc4e12197c1056321831" }
+waterui-winui = { version = "0.1.0", git = "https://github.com/water-rs/waterui-winui", rev = "4c8c82bb133940d1d2671c1d29c5b448ad035255" }
 
 [lib]
 path = "facade.rs"
@@ -158,6 +174,8 @@ keywords = ["ui", "framework", "rust", "gui", "water"]
 categories = ["gui"]
 
 [workspace.lints]
+# Cargo's own unused-dependency lint replaces the `cargo-machete` CI step.
+cargo.unused_dependencies = "deny"
 rust.missing_docs = "warn"
 rust.missing_debug_implementations = "warn"
 clippy.all = "warn"
@@ -301,16 +319,6 @@ waterui-assets-macros = { version = "0.5.1", path = "components/assets/macros" }
 waterui-inspector-protocol = { version = "0.5.1", path = "components/devtools/inspector/protocol" }
 waterui-preview-protocol = { version = "0.5.1", path = "components/devtools/preview/protocol" }
 waterui-mcp-protocol = { version = "0.5.1", path = "components/devtools/mcp/protocol" }
-# Nothing in this workspace links the GTK or WinUI backends: the `water`
-# CLI reads these entries to scaffold a launcher crate. Each pins the
-# backend's nami-migration head — the published releases still require the
-# pre-rename nami line (`^0.11.2` and peers) — so `dev`, `nightly` and
-# local-checkout scaffolds declare the commit directly while `stable`
-# withholds the packages under `experimental-packages`. All three heads are
-# on nami 0.12 (water-rs/gtk-backend#144 and water-rs/waterui-winui#84).
-# Drop the `git`/`rev` half once each backend releases a migrated version.
-waterui-gtk = { version = "0.2.1", git = "https://github.com/water-rs/gtk-backend", rev = "0173db0e8e066305ff49bc4e12197c1056321831" }
-waterui-winui = { version = "0.1.0", git = "https://github.com/water-rs/waterui-winui", rev = "4c8c82bb133940d1d2671c1d29c5b448ad035255" }
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.5.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.5.1", path = "utils/dylib", default-features = false }

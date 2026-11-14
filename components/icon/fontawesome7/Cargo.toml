@@ -21,11 +21,6 @@ webfont = ["dep:waterui-icon"]
 waterui-svg = { workspace = true, optional = true }
 waterui-icon = { workspace = true, optional = true }
 
-# cargo-machete does not follow build.rs, so the build-script dependencies
-# are listed here, as in the sibling icon crates.
-[package.metadata.cargo-machete]
-ignored = ["dirs", "hex", "serde", "serde_json", "sha2", "ureq", "waterui-icons-codegen", "zip"]
-
 [build-dependencies]
 dirs = "7"
 hex = "0.4"

@@ -37,5 +37,3 @@ waterui-testing = { path = "../../../testing" }
 
 [lints]
 workspace = true
-[package.metadata.cargo-machete]
-ignored = ["waterui-macros"]

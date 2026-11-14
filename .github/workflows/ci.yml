@@ -303,15 +303,6 @@ jobs:
       - name: License and ban check
         if: needs.changes.outputs.deps == 'true'
         run: cargo deny check licenses bans
-      - uses: ./.github/actions/install-tool
-        if: needs.changes.outputs.deps == 'true'
-        with:
-          tool: cargo-machete@0.9.2
-          path: ~/.cargo/bin/cargo-machete*
-      - name: Unused dependencies
-        if: needs.changes.outputs.deps == 'true'
-        run: |
-          cargo machete --with-metadata
 
   # gpu-allocator's `windows >=0.53, <=0.62` requirement admits every windows
   # line the lockfile already carries, so a partial lock re-resolution can

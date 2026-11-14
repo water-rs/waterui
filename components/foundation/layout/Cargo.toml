@@ -32,7 +32,3 @@ waterui-testing = { path = "../../../testing" }
 
 [lints]
 workspace = true
-
-# The facade is used by the crate's compiled rustdoc examples; cargo-machete does not scan those imports.
-[package.metadata.cargo-machete]
-ignored = ["waterui"]

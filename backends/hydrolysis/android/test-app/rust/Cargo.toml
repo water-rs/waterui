@@ -11,11 +11,6 @@ crate-type = ["cdylib"]
 name = "hydrolysis_test_app"
 
 [dependencies]
-# `testing` for `hydrolysis::testing::TestStyle`: the debug app exercises the
-# host, not a style package, so it mounts the in-tree test theme.
-hydrolysis = { workspace = true, default-features = false, features = ["accessibility", "testing"] }
-waterui = { workspace = true, default-features = false }
-waterui-core.workspace = true
 waterui-map = { workspace = true, optional = true }
 waterui-map-gpu = { workspace = true, optional = true }
 waterui-url = { workspace = true, optional = true }
@@ -34,7 +29,13 @@ stretch-probe = ["probe"]
 gpu-video-probe = ["probe", "gpu", "hydrolysis/video-gpu", "waterui/video-gpu", "waterui/remote"]
 gpu-map-probe = ["probe", "gpu", "dep:waterui-map", "dep:waterui-map-gpu", "dep:waterui-url"]
 
+# The whole crate is `cfg(target_os = "android")`, so these are named only there.
 [target.'cfg(target_os = "android")'.dependencies]
+# `testing` for `hydrolysis::testing::TestStyle`: the debug app exercises the
+# host, not a style package, so it mounts the in-tree test theme.
+hydrolysis = { workspace = true, default-features = false, features = ["accessibility", "testing"] }
+waterui = { workspace = true, default-features = false }
+waterui-core.workspace = true
 jni.workspace = true
 
 [lints]

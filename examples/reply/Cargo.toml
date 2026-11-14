@@ -19,7 +19,7 @@ workspace = true
 [dependencies]
 waterui = { workspace = true, features = ["media", "remote", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 waterui-icons-material-icon.workspace = true
-hydrolysis-m3.workspace = true
 
 [dev-dependencies]
 waterui-testing.workspace = true
+hydrolysis-m3.workspace = true

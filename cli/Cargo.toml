@@ -7,7 +7,6 @@ rust-version.workspace = true
 license.workspace = true
 readme = "README.md"
 repository.workspace = true
-homepage = "https://github.com/water-rs/waterui"
 description = "Cross-platform tooling for WaterUI applications"
 keywords = ["ui", "framework", "rust", "gui", "water"]
 categories = ["gui"]
@@ -241,7 +240,3 @@ workspace = true
 
 [dev-dependencies]
 syn = { version = "3.0.9", default-features = false, features = ["parsing", "full"] }
-
-# `waterui-git-head` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
-[package.metadata.cargo-machete]
-ignored = ["roxmltree", "waterui-git-head"]
