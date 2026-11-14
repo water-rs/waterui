@@ -1,6 +1,6 @@
 //! Experimental terminal (TUI) backend support.
 //!
-//! The renderer lives in the standalone `water-rs/tui` repository — the CLI
+//! The renderer lives in the standalone `water-rs/tui-backend` repository — the CLI
 //! only generates a thin launcher crate under the project's managed build cache
 //! and hands the invoking terminal to the built binary. The backend is opt-in
 //! through `water run --tui` alone: it is not a managed [`crate::backend::Backend`],
@@ -11,7 +11,7 @@
 //! framework mode: a `waterui_path` checkout supplies path dependencies and the
 //! checkout's `[patch]` table, a channel supplies the resolved framework's
 //! `[patch]` table, and a stable project resolves everything from the registry.
-//! The `waterui-tui` crate itself comes from `WATERUI_TUI_PATH`, a `water-rs/tui`
+//! The `waterui-tui` crate itself comes from `WATERUI_TUI_PATH`, a `water-rs/tui-backend`
 //! checkout beside a local `waterui_path`, or the pinned
 //! [`crate::build_info::TUI_BACKEND`] revision, in that order.
 

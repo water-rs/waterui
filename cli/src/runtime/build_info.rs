@@ -23,6 +23,6 @@ pub struct BackendReference {
 /// source literal rather than a build-script value — bump `revision` when the
 /// CLI starts depending on a newer `waterui-tui` API.
 pub const TUI_BACKEND: BackendReference = BackendReference {
-    repository_url: "https://github.com/water-rs/tui",
+    repository_url: "https://github.com/water-rs/tui-backend",
     revision: "4782df8a39626a9f24fd27b909d884924e2bce95",
 };

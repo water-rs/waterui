@@ -479,9 +479,9 @@ fn kotlin_string_literal(value: &str) -> String {
 /// in place of the backend's published coordinate.
 #[derive(Debug, Clone, Default)]
 pub struct BackendDevCheckouts {
-    /// `WATERUI_WINUI_PATH`: a `water-rs/waterui-winui` checkout.
+    /// `WATERUI_WINUI_PATH`: a `water-rs/winui-backend` checkout.
     pub winui: Option<PathBuf>,
-    /// `WATERUI_TUI_PATH`: a `water-rs/tui` checkout.
+    /// `WATERUI_TUI_PATH`: a `water-rs/tui-backend` checkout.
     pub tui: Option<PathBuf>,
 }
 
@@ -6094,7 +6094,7 @@ pub mod winui {
     /// The `waterui-winui` dependency the launcher resolves, paired with the
     /// `gpu-allocator` patch entry the same source carries:
     /// `WATERUI_WINUI_PATH` when set (the escape hatch for developing the
-    /// backend itself), a `water-rs/waterui-winui` checkout beside a local
+    /// backend itself), a `water-rs/winui-backend` checkout beside a local
     /// `waterui_path`, and the framework-declared backend coordinate otherwise.
     ///
     /// `waterui-winui` keeps a vendored `gpu-allocator` workspace member that
@@ -6114,7 +6114,7 @@ pub mod winui {
             .and_then(|root| dunce::canonicalize(root).ok())
             && let Some(sibling) = root
                 .parent()
-                .map(|parent| parent.join("water-rs/waterui-winui"))
+                .map(|parent| parent.join("water-rs/winui-backend"))
             && sibling.join("Cargo.toml").is_file()
         {
             return Ok((
@@ -7111,7 +7111,7 @@ pub mod tui {
 
     /// The `waterui-tui` dependency the launcher resolves:
     /// `WATERUI_TUI_PATH` when set (the escape hatch for developing the backend
-    /// itself), a `water-rs/tui` checkout beside a local `waterui_path`, and
+    /// itself), a `water-rs/tui-backend` checkout beside a local `waterui_path`, and
     /// the pinned backend revision otherwise.
     fn tui_backend_dependency(ctx: &TemplateContext) -> io::Result<Dependency> {
         if let Some(path) = ctx.backend_checkouts.tui.as_deref() {
@@ -7120,7 +7120,9 @@ pub mod tui {
         if let Some(root) = ctx
             .waterui_workspace_root()
             .and_then(|root| dunce::canonicalize(root).ok())
-            && let Some(sibling) = root.parent().map(|parent| parent.join("water-rs/tui"))
+            && let Some(sibling) = root
+                .parent()
+                .map(|parent| parent.join("water-rs/tui-backend"))
             && sibling.join("Cargo.toml").is_file()
         {
             return Ok(path_dependency(&sibling));

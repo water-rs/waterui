@@ -206,7 +206,7 @@ pub struct Args {
     ///
     /// The terminal becomes the application surface: `water` hands the TTY to
     /// the built launcher binary, so device and log streaming flags do not
-    /// apply. The backend is pinned to a fixed `water-rs/tui` revision; set
+    /// apply. The backend is pinned to a fixed `water-rs/tui-backend` revision; set
     /// `WATERUI_TUI_PATH` to a local checkout when developing the backend.
     #[arg(
         long,
