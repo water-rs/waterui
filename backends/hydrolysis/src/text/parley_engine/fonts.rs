@@ -278,7 +278,9 @@ pub(super) fn is_font_file(path: &std::path::Path) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 fn staged_fonts_dir(resources: &waterui_core::ResourceContext) -> std::path::PathBuf {
     #[cfg(target_os = "android")]
-    return resources.assets().join(waterui_assets::STAGED_FONTS_DIR);
+    return resources
+        .assets()
+        .join(waterui_assets_core::STAGED_FONTS_DIR);
     #[cfg(not(target_os = "android"))]
     resources.fonts().to_path_buf()
 }

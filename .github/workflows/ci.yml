@@ -332,7 +332,7 @@ jobs:
       - name: Restore Cargo sources
         uses: ./.github/actions/cargo-sources
       - name: Compile the DX12 backend against the committed lockfile
-        run: cargo check --timings --locked --profile ci-check -p waterui-graphics --no-default-features --features wgpu/dx12 --target x86_64-pc-windows-msvc
+        run: cargo check --timings --locked --profile ci-check -p waterui-graphics --lib --no-default-features --features wgpu/dx12 --target x86_64-pc-windows-msvc
       - uses: ./.github/actions/upload-cargo-timings
         if: always()
         with:
