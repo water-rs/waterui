@@ -215,3 +215,76 @@ fn paint_frame(
         WorkingColor::new([0.0, 0.8, 0.1, 0.6]),
     );
 }
+
+#[test]
+fn partial_clear_preserves_srgb_encoded_background() -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::{BlendSpace, Color, Srgb};
+
+    let diagnostics = super::super::composition::Sink::new();
+    let engine = Engine::<Gpu>::new(GpuConfig {
+        composition_diag: Some(diagnostics.clone()),
+        ..GpuConfig::default()
+    })?;
+    let size = (64, 64);
+    for background in [
+        Color::<Srgb>::new([254.0 / 255.0, 247.0 / 255.0, 1.0, 1.0]).to_working(),
+        WorkingColor::new([0.2, 0.3, 0.4, 0.5]),
+    ] {
+        let (target, _textures) = TextureTarget::new(size);
+        let retained = engine.surface(target, || {})?;
+        retained.storage_space(BlendSpace::SrgbEncoded);
+        retained.clear_color(background);
+        retained.update(|tx| {
+            tx[retained.root()].content(retained.record(|r| {
+                r.fill(Rect::new(8.0, 8.0, 20.0, 20.0), WorkingColor::BLACK);
+            }));
+        });
+        engine.render(FrameTime::now())?;
+        let _ = diagnostics.take();
+
+        // Removing the rect damages only its region and triggers partial clear.
+        let (ref_target, _ref_textures) = TextureTarget::new(size);
+        let reference = engine.surface(ref_target, || {})?;
+        reference.storage_space(BlendSpace::SrgbEncoded);
+        reference.clear_color(background);
+        retained.update(|tx| {
+            tx[retained.root()].content(retained.record(|_| {}));
+        });
+        engine.render(FrameTime::now())?;
+
+        let reports = diagnostics.take();
+        let report = reports
+            .iter()
+            .find(|r| r.surface == retained.id().raw())
+            .expect("partial repaint report");
+        assert!(
+            report.repaint_pixels > 0
+                && report.repaint_pixels < u64::from(size.0) * u64::from(size.1),
+            "expected partial repaint, got {} pixels",
+            report.repaint_pixels
+        );
+
+        let actual = retained.readback()?;
+        let expected = reference.readback()?;
+        let repaired = actual.pixels[14 * size.0 as usize + 14];
+        let untouched = actual.pixels[2 * size.0 as usize + 2];
+        for (a, b) in repaired.into_iter().zip(untouched) {
+            assert!(
+                (a - b).abs() < 1e-4,
+                "partial clear {repaired:?} != full clear {untouched:?}"
+            );
+        }
+        let actual = cherenkov_oracle::F32Image {
+            width: actual.width,
+            height: actual.height,
+            pixels: actual.pixels,
+        };
+        let expected = cherenkov_oracle::F32Image {
+            width: expected.width,
+            height: expected.height,
+            pixels: expected.pixels,
+        };
+        cherenkov_oracle::metrics::assert_images_match(&expected, &actual);
+    }
+    Ok(())
+}
