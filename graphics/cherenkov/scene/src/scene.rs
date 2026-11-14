@@ -52,8 +52,9 @@ pub enum Feature {
     ShaderPaint,
     /// A non-trivial blend mode (the payload is the mode).
     Blend(BlendMode),
-    /// A group or layer compositing in a non-linear space (the payload is
-    /// the space).
+    /// A surface storing a non-linear space, or a group or layer
+    /// compositing in a space unlike its parent level's (the payload is the
+    /// space).
     BlendSpace(crate::BlendSpace),
     /// Layer clips.
     Clip,
@@ -160,6 +161,12 @@ pub struct Scene {
     /// Each measured run traverses zero to this offset after its own warmup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scroll_extent: Option<kurbo::Vec2>,
+    /// The space the surface's root canvas stores its pixels in, which
+    /// every layer and group declaring no `blend_space` composites in:
+    /// `linear` (the default, left out of `scene.json`) or `srgb-encoded`.
+    /// Output is the linear working space either way.
+    #[serde(default, skip_serializing_if = "crate::backdrop::is_linear")]
+    pub storage_space: crate::BlendSpace,
     /// The features this scene uses.
     pub features: BTreeSet<Feature>,
     /// The backdrop groups member layers sample (`Layer::backdrop`).
@@ -180,6 +187,7 @@ impl Scene {
             clear,
             present_headroom: Self::default_present_headroom(),
             scroll_extent: None,
+            storage_space: crate::BlendSpace::Linear,
             features: BTreeSet::new(),
             backdrop_groups: Vec::new(),
             root: Layer::default(),
@@ -214,6 +222,9 @@ impl Scene {
         if self.clear.is_wide_gamut() {
             f.insert(Feature::WideGamut);
         }
+        if self.storage_space != crate::BlendSpace::Linear {
+            f.insert(Feature::BlendSpace(self.storage_space));
+        }
         for group in &self.backdrop_groups {
             if group.scale < 1.0 {
                 f.insert(Feature::BackdropScale);
@@ -244,7 +255,7 @@ impl Scene {
                 }
             }
         }
-        collect_layer_features(&self.root, &mut f);
+        collect_layer_features(&self.root, self.storage_space, &mut f);
         self.features = f;
     }
 
@@ -322,7 +333,7 @@ impl Scene {
         fn plain_glyph_group(group: &crate::Group) -> bool {
             group.opacity == 1.0
                 && group.blend == crate::BlendMode::Normal
-                && group.blend_space == crate::BlendSpace::Linear
+                && matches!(group.blend_space, None | Some(crate::BlendSpace::Linear))
                 && group.filter.is_none()
                 && group
                     .items
@@ -875,28 +886,45 @@ fn collect_draw_features(draw: &Draw, f: &mut BTreeSet<Feature>) {
     }
 }
 
-fn collect_group_features(group: &crate::Group, f: &mut BTreeSet<Feature>) {
+/// Records [`Feature::BlendSpace`] for a level that declares a space unlike
+/// `parent`, the space of the level it composites onto, and returns the
+/// level's resolved space.
+fn collect_space(
+    declared: Option<crate::BlendSpace>,
+    parent: crate::BlendSpace,
+    f: &mut BTreeSet<Feature>,
+) -> crate::BlendSpace {
+    let space = declared.unwrap_or(parent);
+    if space != parent {
+        f.insert(Feature::BlendSpace(space));
+    }
+    space
+}
+
+fn collect_group_features(
+    group: &crate::Group,
+    parent: crate::BlendSpace,
+    f: &mut BTreeSet<Feature>,
+) {
     if group.opacity < 1.0 {
         f.insert(Feature::Opacity);
     }
     if group.blend != BlendMode::Normal {
         f.insert(Feature::Blend(group.blend));
     }
-    if group.blend_space != crate::BlendSpace::Linear {
-        f.insert(Feature::BlendSpace(group.blend_space));
-    }
+    let space = collect_space(group.blend_space, parent, f);
     if group.filter.is_some() {
         f.insert(Feature::Filter);
     }
     for item in &group.items {
         match item {
             crate::GroupItem::Draw(d) => collect_draw_features(d, f),
-            crate::GroupItem::Group(g) => collect_group_features(g, f),
+            crate::GroupItem::Group(g) => collect_group_features(g, space, f),
         }
     }
 }
 
-fn collect_layer_features(layer: &Layer, f: &mut BTreeSet<Feature>) {
+fn collect_layer_features(layer: &Layer, parent: crate::BlendSpace, f: &mut BTreeSet<Feature>) {
     if layer.clip.is_some() {
         f.insert(Feature::Clip);
     }
@@ -909,9 +937,7 @@ fn collect_layer_features(layer: &Layer, f: &mut BTreeSet<Feature>) {
     if layer.blend != BlendMode::Normal {
         f.insert(Feature::Blend(layer.blend));
     }
-    if layer.blend_space != crate::BlendSpace::Linear {
-        f.insert(Feature::BlendSpace(layer.blend_space));
-    }
+    let space = collect_space(layer.blend_space, parent, f);
     if layer.scroll_offset != kurbo::Vec2::ZERO {
         f.insert(Feature::Scroll);
     }
@@ -935,9 +961,9 @@ fn collect_layer_features(layer: &Layer, f: &mut BTreeSet<Feature>) {
     }
     for item in &layer.items {
         match item {
-            Item::Layer(l) => collect_layer_features(l, f),
+            Item::Layer(l) => collect_layer_features(l, space, f),
             Item::Draw(d) => collect_draw_features(d, f),
-            Item::Group(g) => collect_group_features(g, f),
+            Item::Group(g) => collect_group_features(g, space, f),
         }
     }
 }

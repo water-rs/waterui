@@ -215,11 +215,14 @@ fn lower_floating(look: &ButtonLook, style: &FloatingStyle) -> ButtonLook {
         label = label.font(font.clone());
     }
     let group_opacity = look.get_group_opacity().clone();
-    ButtonLook::new(chrome, label)
+    let built = ButtonLook::new(chrome, label)
         .padding(style.content_inset_x, style.content_inset_y)
         .minimum_size(kurbo::Size::new(style.minimum_width, style.minimum_height))
-        .group_opacity(group_opacity)
-        .group_blend_space(look.get_group_blend_space())
+        .group_opacity(group_opacity);
+    match look.get_group_blend_space() {
+        Some(space) => built.group_blend_space(space),
+        None => built,
+    }
 }
 
 /// The spec of a `style` button of `size` in `env`.

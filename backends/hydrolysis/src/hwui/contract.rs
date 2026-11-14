@@ -89,6 +89,7 @@ fn stops() -> Vec<ColorStop> {
 fn changes(ops: Vec<TreeOp<HwuiTarget>>) -> ChangeSet<HwuiTarget> {
     ChangeSet {
         clear: Some(color(1.0, 1.0, 1.0, 1.0)),
+        storage_space: None,
         ops,
         recycled: Vec::new(),
         animating: false,

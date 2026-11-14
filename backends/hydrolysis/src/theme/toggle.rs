@@ -128,7 +128,7 @@ struct ControlParts {
     motion: Motion,
     hit: HitRegion,
     group_opacity: Driven<f32, bool>,
-    group_blend_space: BlendSpace,
+    group_blend_space: Option<BlendSpace>,
     /// The parts recorded below the backdrop, bottom first; every part when
     /// the control has no backdrop.
     below: Vec<Rc<dyn CustomPart<bool>>>,
@@ -178,7 +178,7 @@ impl ToggleControl {
             motion,
             hit: HitRegion::NONE,
             group_opacity: Driven::constant(1.0),
-            group_blend_space: BlendSpace::Linear,
+            group_blend_space: None,
             below: Vec::new(),
             backdrop: None,
             above: Vec::new(),
@@ -207,10 +207,11 @@ impl ToggleControl {
 
     /// The space the group of [`Self::group_opacity`] composites in:
     /// its parts composite with each other in it, and the group fades onto
-    /// what lies beneath in it. [`BlendSpace::Linear`] by default.
+    /// what lies beneath in it. With none set, the group composites in the
+    /// space of the level beneath it.
     #[must_use]
     pub fn group_blend_space(mut self, space: BlendSpace) -> Self {
-        self.parts_mut().group_blend_space = space;
+        self.parts_mut().group_blend_space = Some(space);
         self
     }
 
@@ -310,9 +311,9 @@ impl ToggleControl {
         &self.0.group_opacity
     }
 
-    /// The space the group composites in.
+    /// The space the group composites in, when one is set.
     #[must_use]
-    pub fn get_group_blend_space(&self) -> BlendSpace {
+    pub fn get_group_blend_space(&self) -> Option<BlendSpace> {
         self.0.group_blend_space
     }
 

@@ -2161,9 +2161,11 @@ fn kept_rows(union: &IRect, reach: usize, band: (usize, usize), h: usize) -> (us
 }
 
 /// A band's working background; the public output remains linear P3.
-/// When every root composite is normal sRGB, keep that working space
-/// through the band instead of converting the destination at every group.
-/// Backdrop captures and filter windows retain their linear root canvas.
+/// A surface storing sRGB-encoded values keeps that space through the
+/// band. A linear surface whose every root composite is normal sRGB
+/// keeps that working space too, instead of converting the destination
+/// at every group; there, backdrop captures and filter windows retain
+/// their linear root canvas.
 #[derive(Clone, Copy)]
 struct Background {
     color: [f32; 4],
@@ -2171,13 +2173,23 @@ struct Background {
 }
 
 impl Background {
+    /// The background of a surface cleared to premultiplied linear
+    /// `clear` and storing `storage`.
     fn new(
         level: fearless_simd::Level,
         items: &[Item],
-        clear: [f32; 4],
+        (clear, storage): ([f32; 4], cherenkov::BlendSpace),
         has_backdrop: bool,
     ) -> Self {
         use cherenkov::{BlendMode, BlendSpace};
+        let encoded = || Self {
+            color: cherenkov_simd::dispatch!(level, simd =>
+                move_space(simd, clear, BlendSpace::Linear, BlendSpace::SrgbEncoded)),
+            space: BlendSpace::SrgbEncoded,
+        };
+        if storage == BlendSpace::SrgbEncoded {
+            return encoded();
+        }
         let linear = Self {
             color: clear,
             space: BlendSpace::Linear,
@@ -2205,11 +2217,7 @@ impl Background {
                 _ => {}
             }
         }
-        Self {
-            color: cherenkov_simd::dispatch!(level, simd =>
-                move_space(simd, clear, BlendSpace::Linear, BlendSpace::SrgbEncoded)),
-            space: BlendSpace::SrgbEncoded,
-        }
+        encoded()
     }
 }
 
@@ -2278,7 +2286,7 @@ fn shade(
             level,
             items,
             index,
-            background.color,
+            background,
             slice,
             w,
             surface,
@@ -2448,7 +2456,7 @@ fn shade_windowed(
     level: fearless_simd::Level,
     items: &[Item],
     index: &FrameIndex,
-    clear: [f32; 4],
+    background: Background,
     slice: &mut [[f32; 4]],
     w: usize,
     surface: (usize, usize),
@@ -2463,12 +2471,12 @@ fn shade_windowed(
     let win1 = win1.min(h);
     let rows = win1 - win0;
     let mut window = scratch.buffers.take_color(w * rows);
-    window.fill(clear);
+    window.fill(background.color);
     let mut band = Band {
         fb: &mut window,
         w,
         y0: win0,
-        space: cherenkov::BlendSpace::Linear,
+        space: background.space,
     };
     // The window's item selection lives in the depth-0 slot; the run
     // and its nested scopes take slots 1 and deeper.
@@ -2515,7 +2523,7 @@ fn shade_windowed(
         fb: slice,
         w,
         y0,
-        space: cherenkov::BlendSpace::Linear,
+        space: background.space,
     };
     // The aligned band's bins, restricted to the items after the last
     // top-level capture.
@@ -2662,7 +2670,7 @@ pub fn render_bands(
     level: fearless_simd::Level,
     items: &[Item],
     index: &mut FrameIndex,
-    clear: [f32; 4],
+    clear: ([f32; 4], cherenkov::BlendSpace),
     fb: &mut [[f32; 4]],
     w: usize,
     h: usize,
@@ -2714,7 +2722,7 @@ pub fn render_bands_f16(
     level: fearless_simd::Level,
     items: &[Item],
     index: &mut FrameIndex,
-    clear: [f32; 4],
+    clear: ([f32; 4], cherenkov::BlendSpace),
     out: &mut [[half::f16; 4]],
     w: usize,
     h: usize,
@@ -2773,7 +2781,7 @@ pub fn render_bands_f16(
 pub fn render_bands_stream(
     level: fearless_simd::Level,
     items: &[Item],
-    clear: [f32; 4],
+    clear: ([f32; 4], cherenkov::BlendSpace),
     size: (usize, usize),
     emit: &mut Vec<[half::f16; 4]>,
     format: OffscreenFormat,

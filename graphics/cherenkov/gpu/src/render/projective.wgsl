@@ -127,8 +127,12 @@ fn fs_projective(fragment: VsOut) -> @location(0) vec4<f32> {
     let sample = projected(i, in.device);
     let inside = clamp(clip_mask_coverage(in), 0.0, 1.0);
     let mode = (in.meta_.w >> 16u) & 0xffu;
+    // The space the image stores: linear for a projective layer's local
+    // image, encoded for a retained picture realized in an encoded pass.
+    let flags = (in.meta_.w >> 24u) & 0xffu;
+    let sspace = select(SPACE_LINEAR, SPACE_SRGB, (flags & FLAG_TEX_SRGB) != 0u);
     if mode == 0u {
-        return move_space(sample * (inside * in.params.y), SPACE_LINEAR, globals.space);
+        return move_space(sample * (inside * in.params.y), sspace, globals.space);
     }
     // A blended composite reads the target's prior contents from the
     // backdrop copy of the region and writes the result verbatim.
@@ -136,7 +140,7 @@ fn fs_projective(fragment: VsOut) -> @location(0) vec4<f32> {
     if blend_is_destructive(mode) {
         // The operator applies over its whole domain: a transparent
         // source still replaces the destination there.
-        return mix(cb, composite_space(mode, SPACE_LINEAR, cb, sample * in.params.y), inside);
+        return mix(cb, composite_space(mode, sspace, cb, sample * in.params.y), inside);
     }
-    return composite_space(mode, SPACE_LINEAR, cb, sample * (inside * in.params.y));
+    return composite_space(mode, sspace, cb, sample * (inside * in.params.y));
 }

@@ -152,9 +152,13 @@ impl Lowering<'_> {
         let Some(context) = self.pictures.as_ref() else {
             return Ok(None);
         };
-        if self.depth != 0 || self.current_space() != cherenkov::BlendSpace::Linear {
+        if self.depth != 0 {
             return Ok(None);
         }
+        // The image stores the space of the pass it composites into: its
+        // commands blend with each other there, and the image composites
+        // source-over there, exactly as the commands drawn inline would.
+        let space = self.current_space();
         if self.clip.is_some_and(|clip| {
             clip.mask.is_some()
                 || clip
@@ -288,7 +292,7 @@ impl Lowering<'_> {
                 bounds.y1 as u32,
             ],
         };
-        let cache = Key::new(&image, 0, context.inputs.replacements);
+        let cache = Key::new(&image, space, 0, context.inputs.replacements);
         let current = pending.is_some()
             || (!context.inputs.stale.contains(&key)
                 && entry.is_some_and(|entry| entry.key == Some(cache)));
@@ -417,6 +421,7 @@ impl Lowering<'_> {
                 self.clip,
                 self.member_outer_clip,
                 self.root_target,
+                self.root_space,
                 self.semantic_target,
                 self.animating,
             );
@@ -425,6 +430,7 @@ impl Lowering<'_> {
             self.set_clip(None);
             self.member_outer_clip = None;
             self.root_target = Target::Projected(key);
+            self.root_space = cache.space;
             self.semantic_target = self.root_target;
             self.transform = image.local_to_texel * local.inverse();
             self.animating = false;
@@ -445,6 +451,7 @@ impl Lowering<'_> {
                 _,
                 self.member_outer_clip,
                 self.root_target,
+                self.root_space,
                 self.semantic_target,
                 self.animating,
             ) = saved;
@@ -478,6 +485,7 @@ impl Lowering<'_> {
             },
             1.0,
             cherenkov::BlendMode::Normal,
+            cache.space,
         );
         Ok(Some(!current))
     }

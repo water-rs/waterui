@@ -1145,7 +1145,7 @@ impl Presenter {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         window: &WindowSurface,
-        source: &wgpu::TextureView,
+        source: (&wgpu::TextureView, cherenkov::BlendSpace),
         headroom: f32,
     ) -> Result<bool, RenderError> {
         let Some(frame) = self.prepare(device, queue, window, source, headroom)? else {
@@ -1166,16 +1166,16 @@ impl Presenter {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         window: &WindowSurface,
-        source: &wgpu::TextureView,
+        (source, space): (&wgpu::TextureView, cherenkov::BlendSpace),
         headroom: f32,
     ) -> Result<Option<wgpu::SurfaceTexture>, RenderError> {
         let Some(frame) = window.acquire(device)? else {
             return Ok(None);
         };
-        self.texture(
+        self.texture_in(
             device,
             queue,
-            source,
+            (source, space),
             window.output(&frame.texture, headroom),
         );
         Ok(Some(frame))
@@ -1200,13 +1200,32 @@ impl Presenter {
         self.texture_timed(device, queue, source, output, None);
     }
 
-    /// Derive source headroom in the caller's native submission.
+    /// [`Self::texture`] for a source storing premultiplied pixels in
+    /// `space`: an engine surface's output stores its
+    /// [storage space](cherenkov::Surface::storage_space), and the blit
+    /// returns sRGB-encoded values to the working space before encoding
+    /// the destination.
+    ///
+    /// # Panics
+    /// As [`Self::texture`].
+    pub fn texture_in(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        (source, space): (&wgpu::TextureView, cherenkov::BlendSpace),
+        output: TextureOutput<'_>,
+    ) {
+        self.blit(device, queue, (source, space), output, None);
+    }
+
+    /// Derive source headroom in the caller's native submission from
+    /// `source`: a texture and the space it stores.
     #[cfg(target_os = "android")]
     pub(crate) fn source_headroom(
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
-        source: &wgpu::TextureView,
+        source: (&wgpu::TextureView, cherenkov::BlendSpace),
         size: (u32, u32),
     ) -> Result<super::headroom::Readback, cherenkov::RenderError> {
         self.headroom
@@ -1234,7 +1253,9 @@ impl Presenter {
             alpha: OutputAlpha::Premultiplied,
             headroom: 1.0,
         };
-        let mut uniform = Self::uniform_bytes(&output);
+        // A static layer's capture stores the linear space whatever the
+        // surface stores.
+        let mut uniform = Self::uniform_bytes(&output, cherenkov::BlendSpace::Linear);
         uniform[..4].copy_from_slice(&10_u32.to_ne_bytes());
         queue.write_buffer(&self.uniform, 0, &uniform);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1257,7 +1278,7 @@ impl Presenter {
         let staging = reducer.encode(
             device,
             &mut encoder,
-            source,
+            (source, cherenkov::BlendSpace::Linear),
             (target.width(), target.height()),
         )?;
         queue.submit([encoder.finish()]);
@@ -1278,7 +1299,25 @@ impl Presenter {
         output: TextureOutput<'_>,
         timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) {
-        queue.write_buffer(&self.uniform, 0, &Self::uniform_bytes(&output));
+        self.blit(
+            device,
+            queue,
+            (source, cherenkov::BlendSpace::Linear),
+            output,
+            timestamps,
+        );
+    }
+
+    /// One blit of `source`, stored in `space`, into `output`.
+    fn blit(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        (source, space): (&wgpu::TextureView, cherenkov::BlendSpace),
+        output: TextureOutput<'_>,
+        timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>,
+    ) {
+        queue.write_buffer(&self.uniform, 0, &Self::uniform_bytes(&output, space));
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("present"),
         });
@@ -1312,15 +1351,19 @@ impl Presenter {
         })
     }
 
-    /// The uniform contents a blit into `output` reads: `{ encode, alpha,
-    /// headroom, pad }`, see `Present` in `present.wgsl`.
+    /// The uniform contents a blit of a source storing `source` into
+    /// `output` reads: `{ encode, alpha, headroom, source_space }`, see
+    /// `Present` in `present.wgsl`.
     ///
     /// # Contract
     /// Extended or linear output into an sRGB texture format is a contract
     /// violation; the blit encodes as requested and the texture's hardware
     /// sRGB encode applies on top.
     #[must_use]
-    pub(crate) fn uniform_bytes(output: &TextureOutput<'_>) -> [u8; 16] {
+    pub(crate) fn uniform_bytes(
+        output: &TextureOutput<'_>,
+        source: cherenkov::BlendSpace,
+    ) -> [u8; 16] {
         let format = output.texture.format();
         if matches!(
             output.color,
@@ -1368,6 +1411,11 @@ impl Presenter {
         bytes[0..4].copy_from_slice(&encode.to_ne_bytes());
         bytes[4..8].copy_from_slice(&alpha.to_ne_bytes());
         bytes[8..12].copy_from_slice(&headroom.to_bits().to_ne_bytes());
+        let source_space: u32 = match source {
+            cherenkov::BlendSpace::Linear => 0,
+            cherenkov::BlendSpace::SrgbEncoded => 1,
+        };
+        bytes[12..16].copy_from_slice(&source_space.to_ne_bytes());
         bytes
     }
 

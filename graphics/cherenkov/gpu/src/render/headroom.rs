@@ -1,4 +1,5 @@
-//! Source headroom of premultiplied linear-P3 images.
+//! Source headroom of premultiplied images stored in linear P3 or in
+//! encoded sRGB.
 
 use cherenkov::RenderError;
 use wgpu::hal::Device as _;
@@ -11,7 +12,12 @@ type NativeApi = wgpu::hal::vulkan::Api;
 #[derive(Debug)]
 pub struct Reducer {
     layout: wgpu::BindGroupLayout,
+    /// The reduction over working-space texels: every level after the
+    /// first, and the first of a linear capture.
     pipeline: wgpu::RenderPipeline,
+    /// The first reduction of a capture stored in encoded sRGB, which
+    /// decodes each texel to the working space before taking its peak.
+    decode: wgpu::RenderPipeline,
 }
 
 impl Reducer {
@@ -29,27 +35,39 @@ impl Reducer {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = super::projective::quad_pipeline(
-            device,
-            &pipeline_layout,
-            &delivery.headroom_program(device),
-            wgpu::TextureFormat::R32Float,
-            None,
-            cache,
-        );
-        Self { layout, pipeline }
+        let [linear, decode] = delivery.headroom_programs(device).map(|program| {
+            super::projective::quad_pipeline(
+                device,
+                &pipeline_layout,
+                &program,
+                wgpu::TextureFormat::R32Float,
+                None,
+                cache,
+            )
+        });
+        Self {
+            layout,
+            pipeline: linear,
+            decode,
+        }
     }
 
+    /// Reduces `source`, which stores `space`, to its peak straight
+    /// working-space component.
     pub fn encode(
         &self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
-        source: &wgpu::TextureView,
+        (source, space): (&wgpu::TextureView, cherenkov::BlendSpace),
         size: (u32, u32),
     ) -> Result<Readback, RenderError> {
         let mut source = source.clone();
         let (mut width, mut height) = size;
         let staging = Readback::new(device)?;
+        let mut pipeline = match space {
+            cherenkov::BlendSpace::Linear => &self.pipeline,
+            cherenkov::BlendSpace::SrgbEncoded => &self.decode,
+        };
         loop {
             width = width.div_ceil(16);
             height = height.div_ceil(16);
@@ -95,7 +113,7 @@ impl Reducer {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                pass.set_pipeline(&self.pipeline);
+                pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, &group, &[]);
                 pass.draw(0..3, 0..1);
             }
@@ -119,6 +137,8 @@ impl Reducer {
                 return Ok(staging);
             }
             source = view;
+            // Every later level holds working-space peaks.
+            pipeline = &self.pipeline;
         }
     }
 }
@@ -188,5 +208,100 @@ impl Drop for Readback {
             let buffer = self.gpu.as_hal::<NativeApi>().expect("native buffer");
             device.unmap_buffer(&buffer);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cherenkov::{BlendSpace, Draw, Engine, FrameTime, WorkingColor, kurbo::Rect};
+
+    use super::Reducer;
+    use crate::{
+        Gpu, GpuConfig,
+        interop::{SharedDevice, TextureTarget, shader_delivery},
+    };
+
+    /// The straight peak the test content reaches: its HDR rectangle's red
+    /// channel, in the working space.
+    const PEAK: f32 = 3.0;
+
+    /// The measured headroom of the same content is the same on a surface
+    /// storing the working space and on one storing encoded sRGB, and only
+    /// the decoding reduction recovers it from the encoded store.
+    #[test]
+    fn headroom_is_independent_of_the_storage_space() -> Result<(), Box<dyn std::error::Error>> {
+        let shared = SharedDevice::create(&GpuConfig::default())?;
+        let device = shared.device.clone();
+        let queue = shared.queue.clone();
+        let delivery = shader_delivery(shared.adapter.get_info().backend, &device)?;
+        let engine = Engine::<Gpu>::new(GpuConfig {
+            device: Some(shared),
+            ..GpuConfig::default()
+        })?;
+        let size = (96, 40);
+        let mut textures = Vec::new();
+        let mut surfaces = Vec::new();
+        for space in [BlendSpace::Linear, BlendSpace::SrgbEncoded] {
+            let (target, receiver) = TextureTarget::new(size);
+            let surface = engine.surface(target, || {})?;
+            surface.storage_space(space);
+            surface.clear_color(WorkingColor::new([0.1, 0.1, 0.1, 1.0]));
+            surface.update(|tx| {
+                tx[surface.root()].content(surface.record(|r| {
+                    r.fill(
+                        Rect::new(4.0, 4.0, 36.0, 36.0),
+                        WorkingColor::new([PEAK, 0.5, 0.25, 1.0]),
+                    );
+                    r.fill(
+                        Rect::new(48.0, 4.0, 92.0, 36.0),
+                        WorkingColor::new([0.2, 0.4, 0.8, 0.5]),
+                    );
+                }));
+            });
+            textures.push((receiver, space));
+            surfaces.push(surface);
+        }
+        engine.render(FrameTime::now())?;
+        let reducer = Reducer::new(&device, delivery, &super::super::PipelineCache::default());
+        let measure = |texture: &wgpu::Texture,
+                       space: BlendSpace|
+         -> Result<f32, Box<dyn std::error::Error>> {
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("headroom test"),
+            });
+            let readback = reducer.encode(&device, &mut encoder, (&view, space), size)?;
+            let submission = queue.submit([encoder.finish()]);
+            device.poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })?;
+            // SAFETY: the wait above completed the submission that wrote
+            // the readback, and nothing writes it again.
+            Ok(unsafe { readback.read() })
+        };
+        let mut rendered = Vec::new();
+        for (receiver, space) in &textures {
+            rendered.push((receiver.try_recv()?, *space));
+        }
+        let [(linear, _), (encoded, encoded_space)] = &rendered[..] else {
+            unreachable!("two surfaces were rendered");
+        };
+        let linear_peak = measure(linear, BlendSpace::Linear)?;
+        let encoded_peak = measure(encoded, *encoded_space)?;
+        // The encoded store holds half-float encoded values; the decode
+        // recovers the peak to within that store's precision.
+        assert!((linear_peak - PEAK).abs() < 1e-3, "linear {linear_peak}");
+        assert!(
+            (encoded_peak - linear_peak).abs() < 1e-2,
+            "linear {linear_peak}, encoded {encoded_peak}"
+        );
+        let undecoded = measure(encoded, BlendSpace::Linear)?;
+        assert!(
+            (undecoded - linear_peak).abs() > 0.5,
+            "the encoded store read as linear reports {undecoded}"
+        );
+        drop(surfaces);
+        Ok(())
     }
 }

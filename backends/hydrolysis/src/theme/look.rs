@@ -1194,7 +1194,7 @@ pub struct ButtonLook {
     padding: Vec2,
     minimum: Size,
     group_opacity: Driven<f32>,
-    group_blend_space: BlendSpace,
+    group_blend_space: Option<BlendSpace>,
 }
 
 impl ButtonLook {
@@ -1208,7 +1208,7 @@ impl ButtonLook {
             padding: Vec2::ZERO,
             minimum: Size::ZERO,
             group_opacity: Driven::constant(1.0),
-            group_blend_space: BlendSpace::Linear,
+            group_blend_space: None,
         }
     }
 
@@ -1239,10 +1239,11 @@ impl ButtonLook {
 
     /// The space the group of [`Self::group_opacity`] composites in:
     /// its parts composite with each other in it, and the group fades onto
-    /// what lies beneath in it. [`BlendSpace::Linear`] by default.
+    /// what lies beneath in it. With none set, the group composites in the
+    /// space of the level beneath it.
     #[must_use]
     pub const fn group_blend_space(mut self, space: BlendSpace) -> Self {
-        self.group_blend_space = space;
+        self.group_blend_space = Some(space);
         self
     }
 
@@ -1276,9 +1277,9 @@ impl ButtonLook {
         &self.group_opacity
     }
 
-    /// The space the group composites in.
+    /// The space the group composites in, when one is set.
     #[must_use]
-    pub const fn get_group_blend_space(&self) -> BlendSpace {
+    pub const fn get_group_blend_space(&self) -> Option<BlendSpace> {
         self.group_blend_space
     }
 
@@ -1613,7 +1614,7 @@ pub struct SliderLook {
     parts: Vec<Rc<dyn CustomPart<f64>>>,
     indicator: Option<ValueIndicator>,
     group_opacity: Driven<f32>,
-    group_blend_space: BlendSpace,
+    group_blend_space: Option<BlendSpace>,
 }
 
 impl core::fmt::Debug for SliderLook {
@@ -1656,7 +1657,7 @@ impl SliderLook {
             parts: Vec::new(),
             indicator: None,
             group_opacity: Driven::constant(1.0),
-            group_blend_space: BlendSpace::Linear,
+            group_blend_space: None,
         }
     }
 
@@ -1688,10 +1689,11 @@ impl SliderLook {
 
     /// The space the group of [`Self::group_opacity`] composites in:
     /// its parts composite with each other in it, and the group fades onto
-    /// what lies beneath in it. [`BlendSpace::Linear`] by default.
+    /// what lies beneath in it. With none set, the group composites in the
+    /// space of the level beneath it.
     #[must_use]
     pub const fn group_blend_space(mut self, space: BlendSpace) -> Self {
-        self.group_blend_space = space;
+        self.group_blend_space = Some(space);
         self
     }
 
@@ -1731,9 +1733,9 @@ impl SliderLook {
         &self.group_opacity
     }
 
-    /// The space the group composites in.
+    /// The space the group composites in, when one is set.
     #[must_use]
-    pub const fn get_group_blend_space(&self) -> BlendSpace {
+    pub const fn get_group_blend_space(&self) -> Option<BlendSpace> {
         self.group_blend_space
     }
 

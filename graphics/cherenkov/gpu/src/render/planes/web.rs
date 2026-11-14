@@ -735,7 +735,7 @@ impl SystemPlanes for DomPlanes {
                 composition.device,
                 composition.queue,
                 &canvas.surface,
-                part.view,
+                (part.view, composition.storage_space),
                 composition.display.headroom,
             )?;
         }

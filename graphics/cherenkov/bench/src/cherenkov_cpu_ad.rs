@@ -466,7 +466,7 @@ struct PrepLayer {
     /// Blend onto the parent.
     blend: cherenkov::BlendMode,
     /// The space the layer composites in.
-    blend_space: cherenkov::BlendSpace,
+    blend_space: Option<cherenkov::BlendSpace>,
     /// Registered layer filter.
     filter: Option<cherenkov::Filter>,
     /// Scroll offset applied to content and children.
@@ -1020,7 +1020,7 @@ fn prep_layer(
             .map(|s| shape_kind(s, cherenkov::FillRule::NonZero)),
         opacity: layer.opacity,
         blend: engine_blend(layer.blend),
-        blend_space: engine_blend_space(layer.blend_space),
+        blend_space: layer.blend_space.map(engine_blend_space),
         filter: layer
             .filter
             .as_deref()
@@ -1242,7 +1242,11 @@ fn build_layer(
         edit.scroll_offset(prep.scroll_offset);
         edit.opacity(prep.opacity as f32);
         edit.blend(prep.blend);
-        edit.blend_space(prep.blend_space);
+        if let Some(space) = prep.blend_space {
+            edit.blend_space(space);
+        } else {
+            edit.clear_blend_space();
+        }
         if let Some(filter) = &prep.filter {
             edit.filter(filter.id());
         }
@@ -1467,6 +1471,7 @@ impl Engine for Cherenkov {
             )
             .map_err(|e| BenchError::Gpu(format!("cherenkov surface: {e}")))?;
         surface.clear_color(working(&input.scene.clear));
+        surface.storage_space(engine_blend_space(input.scene.storage_space));
         register_fonts(
             &mut self.fonts,
             &self.engine,
