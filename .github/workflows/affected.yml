@@ -133,8 +133,6 @@ jobs:
           locked: "true"
       - name: Compute the affected set
         id: compute
-        env:
-          AFFECTED_REPORT: ${{ steps.shared.outputs.report }}
         run: |
           if [ -z "${{ inputs.base }}" ]; then
             # No base to diff against: the whole workspace is in scope,
@@ -151,7 +149,13 @@ jobs:
               echo "wasm=true"
             } >> "$GITHUB_OUTPUT"
           else
-            uv run .github/scripts/affected.py --base "${{ inputs.base }}"
+            # Write the JSON report to disk instead of passing it via env so
+            # large diffs cannot overflow Linux MAX_ARG_STRLEN (#4591).
+            report_file="${RUNNER_TEMP}/affected-report.json"
+            cat <<'__WATERUI_AFFECTED_REPORT__' > "${report_file}"
+          ${{ steps.shared.outputs.report }}
+          __WATERUI_AFFECTED_REPORT__
+            uv run .github/scripts/affected.py --base "${{ inputs.base }}" --report-file "${report_file}"
           fi
       - uses: ./.github/actions/upload-cargo-timings
         if: always()

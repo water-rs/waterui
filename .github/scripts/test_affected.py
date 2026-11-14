@@ -24,6 +24,7 @@ from affected import (
     is_prose,
     is_workspace_wide,
     linux_package_args,
+    load_report,
     manifest_tables,
     msrv_relevant,
 )
@@ -470,3 +471,22 @@ def test_wasm_scope_selects_only_the_affected_packages_legs():
 def test_wasm_scope_without_a_wasm_package_runs_nothing():
     assert wasm_legs_in_scope("waterui-core") == []
     assert wasm_legs_in_scope("") == []
+
+
+def test_load_report_reads_large_file_without_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("AFFECTED_REPORT", raising=False)
+    owners = {f"crates/pkg-{i}/src/lib.rs": f"pkg-{i}" for i in range(4000)}
+    payload = {"workspace": False, "affected": ["waterui-core"], "members": [], "owners": owners}
+    report_path = tmp_path / "affected-report.json"
+    serialized = json.dumps(payload)
+    assert len(serialized) > 131072
+    report_path.write_text(serialized, encoding="utf-8")
+
+    loaded = load_report(str(report_path))
+    assert loaded["affected"] == ["waterui-core"]
+    assert len(loaded["owners"]) == 4000
+
+
+def test_load_report_falls_back_to_env(monkeypatch):
+    monkeypatch.setenv("AFFECTED_REPORT", '{"workspace":true}')
+    assert load_report(None) == {"workspace": True}
