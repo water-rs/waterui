@@ -10,7 +10,8 @@
 Reads the diff between the given base revision and `HEAD`, takes the shared
 `lexoliu/affected-crates` tool's report of it (run with
 `.github/affected-rules.toml`; it supplies `workspace`, `affected`,
-`members` and `owners`) from the `AFFECTED_REPORT` environment variable, then
+`members` and `owners`) from `--report-file` or the `AFFECTED_REPORT`
+environment variable, then
 writes `GITHUB_OUTPUT` keys:
 
 - `packages` — the crates the gate checks and lints: space-separated
@@ -208,9 +209,23 @@ def emit(outputs):
                 handle.write(f"{key}={value}\n")
 
 
+def load_report(report_file: str | None) -> dict:
+    """Load the affected-crates JSON report from `--report-file` or `AFFECTED_REPORT`."""
+    raw = (
+        Path(report_file).read_text(encoding="utf-8")
+        if report_file is not None
+        else os.environ["AFFECTED_REPORT"]
+    )
+    return json.loads(raw)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True, help="base revision or sha")
+    parser.add_argument(
+        "--report-file",
+        help="path to the affected-crates JSON report (defaults to AFFECTED_REPORT)",
+    )
     args = parser.parse_args()
     head = "HEAD"
 
@@ -259,7 +274,7 @@ def main():
 
         # The shared tool's `owners` map is the only path→crate mapper (the
         # comment-only lane reads it); a missing report widens below.
-        report = json.loads(os.environ["AFFECTED_REPORT"]) if entries else None
+        report = load_report(args.report_file) if entries else None
 
         def scene_assets_for(names):
             return "true" if SCENE_ASSET_OWNERS & set(names) else "false"
