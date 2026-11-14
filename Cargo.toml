@@ -276,8 +276,8 @@ waterui-navigation = { version = "0.5.1", path = "components/foundation/navigati
 waterui-webview = { version = "0.5.1", path = "components/platform/webview" }
 waterui-widgets = { version = "0.5.1", path = "components/platform/widgets" }
 waterui-chromium = { version = "0.5.1", path = "components/platform/chromium" }
-waterui-browser-cef = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "dev", default-features = false }
-waterui-browser-wpe = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "dev", default-features = false }
+waterui-browser-cef = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "main", default-features = false }
+waterui-browser-wpe = { version = "0.1.0", git = "https://github.com/water-rs/browsers", branch = "main", default-features = false }
 wgpu-external-frame = "0.4.0"
 waterui-icon = { version = "0.5.1", path = "components/foundation/icon" }
 waterui-icons-sf-symbol = { version = "0.5.1", path = "components/icon/sf_symbol" }
@@ -618,7 +618,7 @@ waterui-watcher-set = { path = "utils/watcher-set" }
 # and the split tabs-bar surface and divider calls (#1982). Drop the git pin
 # once a release has these changes.
 hydrolysis = { path = "backends/hydrolysis" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "dev" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "main" }
 # The waterkit family follows waterkit's `dev` so the framework consumes its
 # unreleased changes; the patches apply only while the `[workspace.dependencies]`
 # requirements admit `dev`'s version (0.2). Every waterkit crate the
@@ -688,14 +688,14 @@ wgpu-types = { git = "https://github.com/water-rs/wgpu", branch = "fix/metal-sha
 wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame", branch = "main" }
 
 # Split component repositories, the waterkit family and suiteki follow their
-# `dev` branch; `Cargo.lock` records the exact commit.
-waterui-barcode = { git = "https://github.com/water-rs/barcode", branch = "dev" }
-waterui-chart = { git = "https://github.com/water-rs/chart", branch = "dev" }
-waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "dev" }
-waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "dev" }
-waterui-particle = { git = "https://github.com/water-rs/particle", branch = "dev" }
-waterui-image = { git = "https://github.com/water-rs/image", branch = "dev" }
-waterui-svg = { git = "https://github.com/water-rs/svg", branch = "dev" }
+# `main` branch; `Cargo.lock` records the exact commit.
+waterui-barcode = { git = "https://github.com/water-rs/barcode", branch = "main" }
+waterui-chart = { git = "https://github.com/water-rs/chart", branch = "main" }
+waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "main" }
+waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "main" }
+waterui-particle = { git = "https://github.com/water-rs/particle", branch = "main" }
+waterui-image = { git = "https://github.com/water-rs/image", branch = "main" }
+waterui-svg = { git = "https://github.com/water-rs/svg", branch = "main" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", branch = "main" }
 waterkit-camera = { git = "https://github.com/water-rs/waterkit", branch = "main" }
 waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", branch = "main" }
@@ -714,7 +714,7 @@ waterkit-video-container = { git = "https://github.com/water-rs/waterkit", branc
 waterkit-video-core = { git = "https://github.com/water-rs/waterkit", branch = "main" }
 waterkit-video-player = { git = "https://github.com/water-rs/waterkit", branch = "main" }
 waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", branch = "main" }
-waterui-math = { git = "https://github.com/water-rs/math", branch = "dev" }
+waterui-math = { git = "https://github.com/water-rs/math", branch = "main" }
 # suiteki 0.1.1 on crates.io implements nami-core 0.3's `Signal`; suiteki's
 # `dev` implements 0.5's (water-rs/suiteki#29). Drop once a release carries
 # it.
