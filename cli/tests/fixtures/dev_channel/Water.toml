@@ -42,7 +42,7 @@ waterui-mcp-version = "0.5.1"
 waterui-preview-protocol-version = "0.5.1"
 waterui-testing-version = "0.5.1"
 waterui-version = "0.5.2"
-waterui-winui-git = "https://github.com/water-rs/waterui-winui"
+waterui-winui-git = "https://github.com/water-rs/winui-backend"
 waterui-winui-rev = "4c8c82bb133940d1d2671c1d29c5b448ad035255"
 waterui-winui-version = "0.1.0"
 
@@ -90,7 +90,7 @@ rev = "896613fec9202cc9e9fd7cc7dc4b06afa54cce50"
 
 [framework.packages.waterui-winui]
 version = "^0.1.0"
-git = "https://github.com/water-rs/waterui-winui"
+git = "https://github.com/water-rs/winui-backend"
 rev = "4c8c82bb133940d1d2671c1d29c5b448ad035255"
 
 [framework.patches.crates-io.block]

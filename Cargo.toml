@@ -156,7 +156,7 @@ reexported-dependencies = { anyhow = "waterui::Error", bytemuck = "waterui::grap
 # Drop the `git`/`rev` half once each backend releases a migrated version.
 [package.metadata.waterui.scaffold-pins]
 waterui-gtk = { version = "0.2.1", git = "https://github.com/water-rs/gtk-backend", rev = "0173db0e8e066305ff49bc4e12197c1056321831" }
-waterui-winui = { version = "0.1.0", git = "https://github.com/water-rs/waterui-winui", rev = "4c8c82bb133940d1d2671c1d29c5b448ad035255" }
+waterui-winui = { version = "0.1.0", git = "https://github.com/water-rs/winui-backend", rev = "4c8c82bb133940d1d2671c1d29c5b448ad035255" }
 
 [lib]
 path = "facade.rs"

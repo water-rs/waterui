@@ -3508,7 +3508,7 @@ pub(crate) mod test_fixtures {
             ),
             (
                 "waterui-winui".to_owned(),
-                experimental("0.1.0", "https://github.com/water-rs/waterui-winui", 'e'),
+                experimental("0.1.0", "https://github.com/water-rs/winui-backend", 'e'),
             ),
         ])
     }
@@ -6018,7 +6018,7 @@ mod tests {
             ("waterui-winui-version".to_owned(), "0.1.0".to_owned()),
             (
                 "waterui-winui-git".to_owned(),
-                "https://github.com/water-rs/waterui-winui".to_owned(),
+                "https://github.com/water-rs/winui-backend".to_owned(),
             ),
             ("waterui-winui-rev".to_owned(), "e".repeat(40)),
         ]);
@@ -6999,7 +6999,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
                 ),
                 (
                     "waterui-winui-git".to_owned(),
-                    "https://github.com/water-rs/waterui-winui".to_owned()
+                    "https://github.com/water-rs/winui-backend".to_owned()
                 ),
                 (
                     "waterui-winui-rev".to_owned(),
