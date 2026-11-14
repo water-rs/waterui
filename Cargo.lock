@@ -10119,7 +10119,7 @@ dependencies = [
 [[package]]
 name = "shaderloom"
 version = "0.2.1"
-source = "git+https://github.com/water-rs/shaderloom?branch=dev#0fe16ec3fb7329e6f24a39c4d466f5f2ff21f12d"
+source = "git+https://github.com/water-rs/shaderloom?branch=main#0fe16ec3fb7329e6f24a39c4d466f5f2ff21f12d"
 dependencies = [
  "naga",
  "prettyplease 0.3.0",
@@ -10598,6 +10598,11 @@ dependencies = [
 name = "suiteki"
 version = "0.1.1"
 source = "git+https://github.com/water-rs/suiteki?branch=dev#3ba2ad03ccc9379b9fe836dca89875a89d8e0684"
+
+[[package]]
+name = "suiteki"
+version = "0.1.1"
+source = "git+https://github.com/water-rs/suiteki?branch=main#3ba2ad03ccc9379b9fe836dca89875a89d8e0684"
 dependencies = [
  "nami-core",
  "serde",
@@ -12226,7 +12231,7 @@ dependencies = [
 [[package]]
 name = "waterkit-audio"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "async-channel",
  "block2 0.6.2",
@@ -12273,7 +12278,7 @@ dependencies = [
 [[package]]
 name = "waterkit-build"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "futures-channel",
  "jni 0.22.4",
@@ -12284,7 +12289,7 @@ dependencies = [
 [[package]]
 name = "waterkit-camera"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "async-channel",
  "core-graphics-types 0.2.0",
@@ -12312,7 +12317,7 @@ dependencies = [
  "waterkit-video-container",
  "waterkit-video-core",
  "wgpu",
- "wgpu-external-frame",
+ "wgpu-external-frame 0.4.0 (git+https://github.com/water-rs/wgpu-external-frame?branch=main)",
  "yuv",
 ]
 
@@ -12332,7 +12337,7 @@ dependencies = [
 [[package]]
 name = "waterkit-clipboard"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "async-channel",
  "block2 0.6.2",
@@ -12364,7 +12369,7 @@ dependencies = [
 [[package]]
 name = "waterkit-codec"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "avif-parse",
  "cfg_aliases",
@@ -12404,7 +12409,7 @@ dependencies = [
 [[package]]
 name = "waterkit-core"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "dispatch2",
  "executor-core",
@@ -12420,7 +12425,7 @@ dependencies = [
 [[package]]
 name = "waterkit-deeplink"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "async-channel",
  "block2 0.6.2",
@@ -12444,7 +12449,7 @@ dependencies = [
 [[package]]
 name = "waterkit-dialog"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "block2 0.6.2",
  "dispatch2",
@@ -12467,7 +12472,7 @@ dependencies = [
 [[package]]
 name = "waterkit-fs"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "async-fs",
  "dirs 7.0.0",
@@ -12485,7 +12490,7 @@ dependencies = [
 [[package]]
 name = "waterkit-haptic"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "block2 0.6.2",
  "futures",
@@ -12506,7 +12511,7 @@ dependencies = [
 [[package]]
 name = "waterkit-location"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "async-channel",
  "dispatch2",
@@ -12531,7 +12536,7 @@ dependencies = [
 [[package]]
 name = "waterkit-menu"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "async-channel",
  "futures",
@@ -12546,7 +12551,7 @@ dependencies = [
 [[package]]
 name = "waterkit-permission"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "async-channel",
  "async-io",
@@ -12584,7 +12589,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "waterkit-video-container",
  "waterkit-video-core",
@@ -12595,7 +12600,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-container"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "broadcast-common",
  "byteorder",
@@ -12610,7 +12615,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-core"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -12618,7 +12623,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-player"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "aes",
  "async-channel",
@@ -12653,7 +12658,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-streaming"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=dev#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
 dependencies = [
  "async-fs",
  "base64 0.23.1",
@@ -12852,7 +12857,7 @@ dependencies = [
  "objc2-security",
  "serde",
  "serde_json",
- "suiteki",
+ "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=dev)",
  "thiserror 2.0.21",
  "tracing",
  "waterui-chromium",
@@ -12862,7 +12867,7 @@ dependencies = [
  "waterui-watcher-set",
  "waterui-webview",
  "wgpu",
- "wgpu-external-frame",
+ "wgpu-external-frame 0.4.0 (git+https://github.com/water-rs/wgpu-external-frame?branch=dev)",
 ]
 
 [[package]]
@@ -12881,7 +12886,7 @@ dependencies = [
  "num-traits",
  "serde",
  "serde_json",
- "suiteki",
+ "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=dev)",
  "tracing",
  "waterui-core",
  "waterui-graphics",
@@ -12889,7 +12894,7 @@ dependencies = [
  "waterui-watcher-set",
  "waterui-webview",
  "wgpu",
- "wgpu-external-frame",
+ "wgpu-external-frame 0.4.0 (git+https://github.com/water-rs/wgpu-external-frame?branch=dev)",
  "xkeysym",
 ]
 
@@ -13074,7 +13079,7 @@ dependencies = [
  "num-traits",
  "serde",
  "smallvec",
- "suiteki",
+ "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
  "thiserror 2.0.21",
  "waterui-contract",
  "waterui-easing",
@@ -13161,14 +13166,14 @@ dependencies = [
  "waterui-testing",
  "waterui-text",
  "wgpu",
- "wgpu-external-frame",
+ "wgpu-external-frame 0.4.0 (git+https://github.com/water-rs/wgpu-external-frame?branch=main)",
 ]
 
 [[package]]
 name = "waterui-icon"
 version = "0.5.1"
 dependencies = [
- "suiteki",
+ "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
  "waterui",
  "waterui-core",
  "waterui-graphics",
@@ -13231,7 +13236,7 @@ dependencies = [
 name = "waterui-icons-native"
 version = "0.5.1"
 dependencies = [
- "suiteki",
+ "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
  "waterui-icon",
 ]
 
@@ -13239,7 +13244,7 @@ dependencies = [
 name = "waterui-icons-sf-symbol"
 version = "0.5.1"
 dependencies = [
- "suiteki",
+ "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
  "waterui-icon",
 ]
 
@@ -13307,7 +13312,7 @@ dependencies = [
  "object 0.40.0",
  "pastey 0.2.3",
  "pulldown-cmark",
- "suiteki",
+ "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
@@ -13380,7 +13385,7 @@ dependencies = [
  "nami",
  "num-traits",
  "serde",
- "suiteki",
+ "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
  "sys-locale",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
@@ -13414,7 +13419,7 @@ name = "waterui-map"
 version = "0.5.1"
 dependencies = [
  "nami",
- "suiteki",
+ "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
  "waterkit-location",
  "waterui-core",
 ]
@@ -13469,7 +13474,7 @@ dependencies = [
  "pulldown-latex",
  "quick-xml 0.42.0",
  "serde",
- "suiteki",
+ "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
  "thiserror 2.0.21",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
@@ -13599,7 +13604,7 @@ name = "waterui-svg"
 version = "0.4.0"
 source = "git+https://github.com/water-rs/svg?branch=dev#75b85fbb0e7f2add26bf598ef34fba497f56d84d"
 dependencies = [
- "suiteki",
+ "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
  "tracing",
  "usvg",
  "waterui-core",
@@ -13641,7 +13646,7 @@ dependencies = [
  "parley 0.12.0",
  "pulldown-cmark",
  "smallvec",
- "suiteki",
+ "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
  "syntect",
  "tracing",
  "two-face",
@@ -13671,7 +13676,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "suiteki",
+ "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
@@ -13721,7 +13726,7 @@ dependencies = [
  "object 0.40.0",
  "serde",
  "serde_json",
- "suiteki",
+ "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
  "thiserror 2.0.21",
  "waterui-core",
  "waterui-macros",
@@ -13742,7 +13747,7 @@ dependencies = [
  "nami",
  "nami-core",
  "sha2",
- "suiteki",
+ "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
  "tracing",
  "waterui-contract",
  "zenwave 0.7.1",
@@ -13806,7 +13811,7 @@ dependencies = [
  "percent-encoding",
  "serde",
  "serde_json",
- "suiteki",
+ "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
  "tempfile",
  "thiserror 2.0.21",
  "tiny_http",
@@ -13829,7 +13834,7 @@ dependencies = [
  "pastey 0.2.3",
  "serde",
  "serde_json",
- "suiteki",
+ "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
  "waterui-contract",
  "waterui-meta",
  "waterui-text",
@@ -14134,6 +14139,24 @@ dependencies = [
 name = "wgpu-external-frame"
 version = "0.4.0"
 source = "git+https://github.com/water-rs/wgpu-external-frame?branch=dev#b8c085500813e034306afbcaa23b9a0f77392f41"
+dependencies = [
+ "ash",
+ "libc",
+ "ndk",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-io-surface",
+ "objc2-metal 0.3.2",
+ "sync_wrapper",
+ "thiserror 2.0.21",
+ "wgpu",
+ "windows",
+]
+
+[[package]]
+name = "wgpu-external-frame"
+version = "0.4.0"
+source = "git+https://github.com/water-rs/wgpu-external-frame?branch=main#b8c085500813e034306afbcaa23b9a0f77392f41"
 dependencies = [
  "ash",
  "libc",
