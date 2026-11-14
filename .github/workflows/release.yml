@@ -3,19 +3,13 @@ name: Release
 on:
   # crates.io trusted publishing rejects OIDC tokens minted under
   # `workflow_run`, so publishing runs on the `main` push itself — which
-  # can only come from a merged pull request (conventionally the dev ->
-  # main release PR) whose required checks already passed on the same
-  # tree. `release-pr` still waits for CI via `workflow_run`.
+  # publishes only crates whose versions changed (when a nightly-certified
+  # `release-plz` pull request lands). `nightly.yml` owns `release-pr`.
   push:
     branches: [main]
-  workflow_run:
-    workflows: ["CI"]
-    branches: [main]
-    types: [completed]
 
 permissions:
   contents: write
-  pull-requests: write
   id-token: write
   actions: write
 
@@ -489,7 +483,7 @@ jobs:
           mv "$formula.patched" "$formula"
           ruby -c "$formula"
 
-      # The tap's `dev` is ruled like every other branch in the organisation:
+      # The tap's `main` is ruled like every other branch in the organisation:
       # changes arrive through a pull request and commits carry a verified
       # signature. This job can satisfy neither directly — a commit made on a
       # runner is unsigned, and `HOMEBREW_PAT` may write contents there but
@@ -515,38 +509,3 @@ jobs:
           fi
           git commit -m "water ${version}"
           git push --force origin "HEAD:refs/heads/water-${version}"
-
-  release-pr:
-    name: Prepare the next release
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
-    concurrency:
-      group: release-plz-${{ github.event.workflow_run.head_branch }}
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-      - uses: ./.github/actions/setup-rust
-        with:
-          cache: "false"
-      # The same native libraries as above: computing the next versions also
-      # builds the workspace's metadata against every crate's dependencies.
-      - uses: ./.github/actions/setup-linux-deps
-      - uses: ./.github/actions/release-plz
-        id: release_plz
-        with:
-          command: release-pr
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # The workflow token's pull request triggers no workflow, so its
-      # required gate is dispatched on the release branch here. The report
-      # lists the release pull request release-plz created or updated, if any.
-      - name: Pass the release pull request's gate
-        if: fromJSON(steps.release_plz.outputs.report).prs[0] != null
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HEAD_BRANCH: ${{ fromJSON(steps.release_plz.outputs.report).prs[0].head_branch }}
-        run: gh workflow run pr-base-gate.yml --repo "${GITHUB_REPOSITORY}" --ref "${HEAD_BRANCH}"

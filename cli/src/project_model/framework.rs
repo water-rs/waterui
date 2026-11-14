@@ -26,8 +26,8 @@ use git_tree::FrameworkTree;
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum FrameworkChannel {
-    /// The integration branch, resolved to an exact compilation-checked
-    /// commit; the Apple backend's `dev` HEAD resolves the same way.
+    /// The `main` branch (`dev` channel), resolved to an exact compilation-checked
+    /// commit.
     Dev,
     /// An immutable revision certified by the complete nightly suite,
     /// including the backend pin the suite's certification records.
@@ -3778,14 +3778,14 @@ pub(crate) mod test_fixtures {
 }
 
 async fn resolve_dev(host: &Host, repository: &str, slug: &str) -> Result<String> {
-    gated_dev_head(host, repository, slug, "dev.yml", "framework").await
+    gated_dev_head(host, repository, slug, "ci.yml", "framework").await
 }
 
 /// A `dev` selection pinned to an exact commit: `rev` names a commit of the
-/// integration branch's own history, verified against the branch's head
-/// through the fetched git history. Anything
-/// else — a fork commit, another branch's tip, a commit `dev` never merged —
-/// is not dev history and cannot stand in for the channel.
+/// `main` trunk history, verified against `main`'s head through the fetched git
+/// history. Anything else — a fork commit, another branch's tip, a commit
+/// `main` never merged — is not trunk history and cannot stand in for the
+/// channel.
 async fn resolve_dev_at(
     host: &Host,
     repository: &str,
@@ -3796,7 +3796,7 @@ async fn resolve_dev_at(
     let tree = FrameworkTree::fetch(host, repository, rev).await?;
     tree.ensure_dev_ancestor(host).await?;
     let revision = &tree.revision;
-    if !gate_passed(host, slug, "dev.yml", revision).await? {
+    if !gate_passed(host, slug, "ci.yml", revision).await? {
         bail!("no successful dev gate run exists for --rev {revision}");
     }
     Ok(tree)
@@ -3812,10 +3812,10 @@ fn validate_rev(rev: &str) -> Result<()> {
     Ok(())
 }
 
-/// The `dev` branch head of `repository` — the tip `git ls-remote` reports.
+/// The `main` branch head of `repository` — the tip `git ls-remote` reports.
 async fn remote_dev_head(host: &Host, repository: &str, what: &str) -> Result<String> {
     let output = git::command(host)?
-        .args(["ls-remote", repository, "refs/heads/dev"])
+        .args(["ls-remote", repository, "refs/heads/main"])
         .output()
         .await?;
     if !output.status.success() {
@@ -3827,20 +3827,20 @@ async fn remote_dev_head(host: &Host, repository: &str, what: &str) -> Result<St
     let revision = std::str::from_utf8(&output.stdout)?
         .split_whitespace()
         .next()
-        .ok_or_else(|| eyre!("{what} repository has no dev branch"))?
+        .ok_or_else(|| eyre!("{what} repository has no main branch"))?
         .to_owned();
     validate_revision(&revision)?;
     Ok(revision)
 }
 
-/// Whether `revision` carries a successful `gate` run on `dev` — the query
-/// behind the channel's promise that a resolved commit passed its
+/// Whether `revision` carries a successful `gate` run on `main` — the query
+/// behind the `dev` channel's promise that a resolved commit passed its
 /// compilation gate. `event=push` scopes the run to the branch itself: a
 /// pull-request run on the same commit is not the gate.
 async fn gate_passed(host: &Host, slug: &str, gate: &str, revision: &str) -> Result<bool> {
     let response = fetch(
         host,
-        &format!("https://api.github.com/repos/{slug}/actions/workflows/{gate}/runs?branch=dev&head_sha={revision}&status=success&event=push&per_page=1"),
+        &format!("https://api.github.com/repos/{slug}/actions/workflows/{gate}/runs?branch=main&head_sha={revision}&status=success&event=push&per_page=1"),
     )
     .await?;
     let runs: serde_json::Value = serde_json::from_slice(&response)?;
@@ -3856,9 +3856,8 @@ fn gate_run_succeeded(runs: &serde_json::Value, revision: &str) -> bool {
     })
 }
 
-/// The `dev` HEAD of `repository`, held to the channel's promise that the
-/// resolved commit passed `gate` — the workflow file gating `dev` in that
-/// repository: `dev.yml` for the framework, `ci.yml` for a backend.
+/// The `main` HEAD of `repository`, held to the `dev` channel's promise that
+/// the resolved commit passed `gate` (`ci.yml`).
 async fn gated_dev_head(
     host: &Host,
     repository: &str,
@@ -7478,7 +7477,7 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
 
     fn gate_url() -> String {
         format!(
-            "https://api.github.com/repos/water-rs/waterui/actions/workflows/dev.yml/runs?branch=dev&head_sha={}&status=success&event=push&per_page=1",
+            "https://api.github.com/repos/water-rs/waterui/actions/workflows/ci.yml/runs?branch=main&head_sha={}&status=success&event=push&per_page=1",
             "a".repeat(40)
         )
     }

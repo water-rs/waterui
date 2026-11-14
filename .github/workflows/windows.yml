@@ -2,7 +2,7 @@ name: Windows
 
 # The Windows test leg is split out of `test.yml` because it needs platform-
 # specific exclusions and compile-only coverage. It is a nightly platform
-# (#379): `nightly.yml` calls it once a day against `dev`, beside the full
+# (#379): `nightly.yml` calls it once a day against `main`, beside the full
 # `test.yml` matrix.
 # It left the pull-request path because its three jobs were 43-65 minutes of
 # cold build on the scarcest runners for every change, whatever it touched.
@@ -10,11 +10,17 @@ name: Windows
 # Windows is tier 2, so the leg is informational in the nightly: each job is
 # `continue-on-error`, which keeps a failure from failing the run or blocking
 # certification (a job that calls a reusable workflow cannot set it, so it
-# lives here), and its last step files one tracking issue on `dev`. The jobs
+# lives here), and its last step files one tracking issue on `main`. The jobs
 # still show as failed on the run.
 
 on:
   workflow_call:
+    inputs:
+      ref:
+        description: Commit or ref to test (defaults to caller HEAD)
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
 
 permissions:
@@ -61,6 +67,8 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       # Nightly lanes restore caches but do not write target archives: the
       # 10 GB budget belongs to the PR/dev-push gate (#1441). The one
       # exception is the shared Cargo sources archive — every family a job
@@ -167,7 +175,7 @@ jobs:
       # then retire the generation it supersedes — so a restorable
       # `cargo-sources-Windows` exists at every moment.
       - name: Sweep superseded cache generations
-        if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+        if: ${{ github.ref == 'refs/heads/main' }}
         uses: ./.github/actions/retire-cargo-caches
         with:
           primary-keys: ${{ steps.cargo-sources.outputs.cache-primary-key }}
@@ -175,7 +183,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Save Cargo sources
         id: save-sources
-        if: ${{ (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.cargo-sources.outputs.cache-hit != 'true' }}
+        if: ${{ github.ref == 'refs/heads/main' && steps.cargo-sources.outputs.cache-hit != 'true' }}
         uses: ./.github/actions/cargo-sources
         with:
           operation: save
@@ -184,14 +192,14 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       # A save the headroom check skipped (no room) keeps the old generation.
       - name: Retire superseded cache generations
-        if: ${{ (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.save-sources.outputs.saved != 'false' }}
+        if: ${{ github.ref == 'refs/heads/main' && steps.save-sources.outputs.saved != 'false' }}
         uses: ./.github/actions/retire-cargo-caches
         with:
           families: cargo-sources-${{ runner.os }}-
           primary-keys: ${{ steps.cargo-sources.outputs.cache-primary-key }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Report failure
-        if: failure() && github.ref == 'refs/heads/dev'
+        if: failure() && github.ref == 'refs/heads/main'
         uses: ./.github/actions/nightly-failure-issue
         with:
           template: .github/WINDOWS_FAILURE.md
@@ -233,6 +241,8 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: ./.github/actions/setup-rust
         with:
           targets: wasm32-unknown-unknown
@@ -296,7 +306,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - name: Report failure
-        if: failure() && github.ref == 'refs/heads/dev'
+        if: failure() && github.ref == 'refs/heads/main'
         uses: ./.github/actions/nightly-failure-issue
         with:
           template: .github/WINDOWS_FAILURE.md
@@ -315,6 +325,8 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       # Restore-only like the rest of this leg (#1441): nightly saves no
       # cache entries of its own; the 10 GB budget belongs to the gate. This
       # block used to save a 2.2 GB target tarball on every pull request
@@ -346,7 +358,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --timings --locked --profile ci-check --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --all-targets -- -D warnings
       - name: Report failure
-        if: failure() && github.ref == 'refs/heads/dev'
+        if: failure() && github.ref == 'refs/heads/main'
         uses: ./.github/actions/nightly-failure-issue
         with:
           template: .github/WINDOWS_FAILURE.md

@@ -6,32 +6,31 @@ permissions:
   # dorny/paths-filter lists a pull request's changed files.
   pull-requests: read
 
-# The pull-request gate (#379); dev pushes use the lint-only dev.yml (#458).
+# The pull-request and main-push gate (#379).
 # It is a compile-check gate, not a test-certifying one: format and
 # default-features clippy on Linux, plus the checks a change can break, chosen
 # per change by the `changes` job below. Running anything is `test.yml` with
 # `full: false`, and every job in that workflow except `lint` and the
 # scoped Apple and wasm32 lint legs is gated on `full`, so no test executes
-# here — that is the #458 decision, "dev is the compile-checked, not
-# test-certified channel". The tests themselves, every
+# here — that is the #458 decision, "`dev` (the `main` trunk) is the
+# compile-checked, not test-certified channel". The tests themselves, every
 # other clippy shape, macOS and Windows, the all-features runs, the macOS
-# suites, the examples, coverage and the `cargo hack` sweep are `nightly.yml`,
-# once a day against `dev` (#923). The backend e2e nightlies in the backend
-# repositories drive every example on their platform; they do not run the
-# framework's suite.
+# suites, the examples, coverage and the `cargo hack` sweep live in
+# `nightly.yml`, which certifies commits on `main` and opens `release-plz`
+# pull requests. The backend e2e nightlies in the backend repositories drive
+# every example on their platform; they do not run the framework's suite.
 #
 # So a green gate here says the change compiles and lints, and says nothing
 # about whether it works. A change whose correctness matters is run locally by
-# whoever writes it, and the nightly is what certifies `dev`; a release
-# (a pull request into `main`) requires that certification below.
+# whoever writes it, and `nightly.yml` certifies commits on `main` before
+# `release-plz` prepares a release pull request.
 on:
-  # Integration branches only: a branch that also has a PR would otherwise run
-  # the whole gate twice for one commit. On dev pushes every job skips itself;
-  # the dev-push lint signal stays with dev.yml.
+  # Single trunk only: a topic branch that also has a PR would otherwise run
+  # the whole gate twice for one commit.
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
-    branches: ["**"]
+    branches: [main, dev]
     # No `edited`: a run on the same commit replaces the one before it in
     # the required-check verdict, so a run started by a title or description
     # edit would hide the source run's results and block the merge (#3825).
@@ -75,6 +74,17 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # release-plz pull requests only bump versions and changelogs on top of a
+  # nightly-certified commit, so they skip redundant compilation/lint jobs while
+  # required check contexts still report success.
+  bump:
+    name: Not a release bump
+    if: ${{ github.event_name != 'pull_request' || !startsWith(github.head_ref, 'release-plz-') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo "checking code changes"
+
   # Which checks this change can reach. `code` is any changed file that is
   # not prose or repository metadata; `deps` is what the audit, license and
   # unused-dependency checks read; `android` is the CLI's Android paths and
@@ -93,9 +103,8 @@ jobs:
   # the checkout below fetches.
   changes:
     name: Changes
-    # The compile-check gate does not run on dev pushes (dev.yml owns that
-    # signal); every job below either needs this one or skips itself.
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    needs: bump
+    if: needs.bump.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -176,7 +185,8 @@ jobs:
   # branch and the merge commit is the tip the head was merged into.
   scope:
     name: Affected scope
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    needs: bump
+    if: needs.bump.result == 'success'
     uses: ./.github/workflows/affected.yml
     with:
       base: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
@@ -189,52 +199,53 @@ jobs:
   # steps so out-of-scope source changes still report the required context.
   scripts:
     name: Release scripts
-    needs: changes
-    if: always() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
+    needs: [bump, changes]
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Require successful scope discovery
+        if: needs.bump.result == 'success'
         env:
           CHANGES: ${{ needs.changes.result }}
         run: test "$CHANGES" = success
       - uses: actions/checkout@v4
-        if: needs.changes.outputs.scripts == 'true'
+        if: needs.bump.result == 'success' && needs.changes.outputs.scripts == 'true'
       - uses: astral-sh/setup-uv@v6
-        if: needs.changes.outputs.scripts == 'true'
+        if: needs.bump.result == 'success' && needs.changes.outputs.scripts == 'true'
       # The tool-backed tests skip when a binary is absent: the shared
       # affected-crates release built from source, and the
       # nextest fixtures checker built under the same cache key.
       - uses: ./.github/actions/setup-rust
-        if: needs.changes.outputs.scripts == 'true'
+        if: needs.bump.result == 'success' && needs.changes.outputs.scripts == 'true'
         with:
           cache: "false"
       - name: Restore Cargo sources
-        if: needs.changes.outputs.scripts == 'true'
+        if: needs.bump.result == 'success' && needs.changes.outputs.scripts == 'true'
         uses: ./.github/actions/cargo-sources
       # The tests run the shared tool at synthetic commits, so they need
       # its binary rather than the action; build the pinned release.
       - name: Install the shared affected-crates tool
-        if: needs.changes.outputs.scripts == 'true'
+        if: needs.bump.result == 'success' && needs.changes.outputs.scripts == 'true'
         run: |
           cargo install --timings --locked --git https://github.com/lexoliu/affected-crates --tag v0.0.1 --root "$RUNNER_TEMP/affected-crates" affected-crates
           echo "AFFECTED_CRATES=$RUNNER_TEMP/affected-crates/bin/affected-crates" >> "$GITHUB_ENV"
       - uses: actions/cache@v4
         id: nextest-fixtures-tool
-        if: needs.changes.outputs.scripts == 'true'
+        if: needs.bump.result == 'success' && needs.changes.outputs.scripts == 'true'
         with:
           path: .github/tools/nextest-fixtures/target/release/nextest-fixtures
           key: nextest-fixtures-tool-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/tools/nextest-fixtures/Cargo.lock', '.github/tools/nextest-fixtures/Cargo.toml', '.github/tools/nextest-fixtures/src/**') }}
       - name: Build the nextest fixtures checker
-        if: needs.changes.outputs.scripts == 'true' && steps.nextest-fixtures-tool.outputs.cache-hit != 'true'
+        if: needs.bump.result == 'success' && needs.changes.outputs.scripts == 'true' && steps.nextest-fixtures-tool.outputs.cache-hit != 'true'
         run: cargo build --timings --locked --release --manifest-path .github/tools/nextest-fixtures/Cargo.toml
       - name: Manifest derivation tests
-        if: needs.changes.outputs.scripts == 'true'
+        if: needs.bump.result == 'success' && needs.changes.outputs.scripts == 'true'
         run: >
           uv run --with pytest --with 'tree-sitter==0.26.0'
           --with 'tree-sitter-rust==0.24.2' pytest .github/scripts
       - uses: ./.github/actions/upload-cargo-timings
-        if: always() && needs.changes.outputs.scripts == 'true'
+        if: always() && needs.bump.result == 'success' && needs.changes.outputs.scripts == 'true'
         with:
           name: ci-scripts
 
@@ -245,37 +256,38 @@ jobs:
   # them sequentially pays that fixed cost once instead of three times.
   hygiene:
     name: Hygiene
-    needs: changes
-    if: always() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
+    needs: [bump, changes]
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Require successful scope discovery
+        if: needs.bump.result == 'success'
         env:
           CHANGES: ${{ needs.changes.result }}
         run: test "$CHANGES" = success
       - uses: actions/checkout@v4
-        if: needs.changes.outputs.deps == 'true'
+        if: needs.bump.result == 'success' && needs.changes.outputs.deps == 'true'
       # Restore-only: this job and Features share `ci-ubuntu`, and two jobs
       # saving the same key race for the reservation, so one of them always
       # loses and uploads nothing. Features owns the write because it builds
       # the larger graph.
       - uses: ./.github/actions/setup-rust
-        if: needs.changes.outputs.deps == 'true'
+        if: needs.bump.result == 'success' && needs.changes.outputs.deps == 'true'
         with:
           cache: "false"
       # Reads the shared `cargo-sources` archive owned by this OS's single
       # writer job; read-only lanes never save, so they cannot evict caches.
       - name: Restore Cargo sources
-        if: needs.changes.outputs.deps == 'true'
+        if: needs.bump.result == 'success' && needs.changes.outputs.deps == 'true'
         uses: ./.github/actions/cargo-sources
       # Only the license check below needs a native dependency (nasm, for a
       # build script) and it never runs a GUI/audio/video stack, so this job
       # does not need the full setup-linux-deps package list.
       - uses: ./.github/actions/refresh-apt-index
-        if: needs.changes.outputs.deps == 'true'
+        if: needs.bump.result == 'success' && needs.changes.outputs.deps == 'true'
       - run: sudo apt-get -o Acquire::Retries=10 install -y nasm
-        if: needs.changes.outputs.deps == 'true'
+        if: needs.bump.result == 'success' && needs.changes.outputs.deps == 'true'
       # The audit and deny checks run against the COMMITTED Cargo.lock — the
       # dependency set the workspace actually builds. A `cargo generate-lockfile`
       # step used to precede them; it silently re-resolved everything to the
@@ -288,20 +300,20 @@ jobs:
       # cargo-audit from a fresh resolution on every run, which put a broken,
       # newly published dependency of the *tool* on our critical path (#316).
       - uses: ./.github/actions/install-tool
-        if: needs.changes.outputs.deps == 'true'
+        if: needs.bump.result == 'success' && needs.changes.outputs.deps == 'true'
         with:
           tool: cargo-audit@0.22.2
           path: ~/.cargo/bin/cargo-audit*
       - name: Security audit
-        if: needs.changes.outputs.deps == 'true'
+        if: needs.bump.result == 'success' && needs.changes.outputs.deps == 'true'
         run: cargo audit
       - uses: ./.github/actions/install-tool
-        if: needs.changes.outputs.deps == 'true'
+        if: needs.bump.result == 'success' && needs.changes.outputs.deps == 'true'
         with:
           tool: cargo-deny@0.20.2
           path: ~/.cargo/bin/cargo-deny*
       - name: License and ban check
-        if: needs.changes.outputs.deps == 'true'
+        if: needs.bump.result == 'success' && needs.changes.outputs.deps == 'true'
         run: cargo deny check licenses bans
 
   # gpu-allocator's `windows >=0.53, <=0.62` requirement admits every windows
@@ -315,8 +327,8 @@ jobs:
   # it does not alter Cargo's resolution.
   windows-dx12:
     name: Windows DX12 deps
-    needs: changes
-    if: needs.changes.outputs.deps == 'true'
+    needs: [bump, changes]
+    if: needs.bump.result == 'success' && needs.changes.outputs.deps == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -344,8 +356,8 @@ jobs:
   # moves, it does not disappear.
   msrv:
     name: MSRV
-    needs: [changes, scope]
-    if: always() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
+    needs: [bump, changes, scope]
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # An ordinary job, not a workflow_call: `MSRV` is a required status
@@ -354,16 +366,17 @@ jobs:
     # `.github/actions/msrv` composite.
     steps:
       - name: Require successful scope discovery
+        if: needs.bump.result == 'success'
         env:
           CHANGES: ${{ needs.changes.result }}
           SCOPE: ${{ needs.scope.result }}
         run: test "$CHANGES" = success && test "$SCOPE" = success
       - uses: actions/checkout@v4
-        if: needs.scope.outputs.msrv == 'true'
+        if: needs.bump.result == 'success' && needs.scope.outputs.msrv == 'true'
       - uses: ./.github/actions/msrv
-        if: needs.scope.outputs.msrv == 'true'
+        if: needs.bump.result == 'success' && needs.scope.outputs.msrv == 'true'
       - uses: ./.github/actions/upload-cargo-timings
-        if: always() && needs.scope.outputs.msrv == 'true'
+        if: always() && needs.bump.result == 'success' && needs.scope.outputs.msrv == 'true'
         with:
           name: ci-msrv
 
@@ -377,8 +390,8 @@ jobs:
   # `cli-e2e` legs run the same cycle unconditionally.
   android-package:
     name: Android package
-    needs: changes
-    if: needs.changes.outputs.android == 'true'
+    needs: [bump, changes]
+    if: needs.bump.result == 'success' && needs.changes.outputs.android == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -460,8 +473,8 @@ jobs:
 
   test:
     name: Test
-    needs: [changes, scope]
-    if: needs.changes.outputs.code == 'true'
+    needs: [bump, changes, scope]
+    if: needs.bump.result == 'success' && needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/test.yml
     # The lint job's cache-retirement step needs actions:write on its own
     # families; nothing else in the called workflow gains a broader token.
@@ -486,18 +499,27 @@ jobs:
   # on anything else, including a failed `changes` job.
   test-result:
     name: Test result
-    needs: [changes, scope, test, windows-dx12]
-    if: always() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
+    needs: [bump, changes, scope, test, windows-dx12]
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require Test to have passed or been skipped by the path filter
         env:
+          BUMP: ${{ needs.bump.result }}
           CHANGES: ${{ needs.changes.result }}
           SCOPE: ${{ needs.scope.result }}
           TEST: ${{ needs.test.result }}
           DX12: ${{ needs.windows-dx12.result }}
         run: |
+          if [ "$BUMP" = skipped ]; then
+            echo "release-plz pull request; code checks skipped"
+            exit 0
+          fi
+          if [ "$BUMP" != success ]; then
+            echo "::error::Not a release bump finished as $BUMP"
+            exit 1
+          fi
           if [ "$CHANGES" != success ]; then
             echo "::error::Changes finished as $CHANGES, so the Test selection is unknown"
             exit 1
@@ -526,20 +548,14 @@ jobs:
               ;;
           esac
 
-  # The nightly is the only run of the full suite, so its result gates the
-  # release: a pull request into `main` merges only a certified `dev`.
-  # `nightly.yml`'s promote job records a green run as an immutable
-  # `nightly-*` prerelease at the tested commit, which makes certification a
-  # git fact — the newest completed nightly run on dev is healthy exactly
-  # when a `nightly-*` tag points at its head, and the line being released is
-  # certified when that tag's commit is an ancestor of it.
-  #
-  # Only `main` is gated. A red nightly is fixed by ordinary pull requests
-  # into `dev`, which this check never blocks, so it cannot deadlock its own
-  # repair; what it blocks is publishing a `dev` the nightly has not passed.
+  # `nightly.yml` certifies `main` commits as immutable `nightly-*` prereleases
+  # and opens the `release-plz-*` PR from that certified commit.
+  # Regular PRs into `main` skip this gate so a red nightly never deadlocks its
+  # own fix; `release-plz-*` PRs verify that their commit descends from a
+  # certified `nightly-*` prerelease on `main`.
   nightly-healthy:
     name: Nightly healthy
-    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -550,38 +566,28 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+        if: startsWith(github.head_ref, 'release-plz-')
         with:
           fetch-depth: 0
-      # dev is fetched so the latest nightly run's head and the tag targets
-      # resolve even when this pull request's own history does not reach them.
-      - name: Fetch tags and the dev line
-        run: git fetch --tags --quiet origin dev
+      # main and tags are fetched so the certified nightly tag targets resolve
+      # cleanly against the release PR's base commit.
+      - name: Fetch tags and the main line
+        if: startsWith(github.head_ref, 'release-plz-')
+        run: git fetch --tags --quiet origin main
       - name: Require a certified line
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
 
-          # Which line is being published decides what certifies it. `dev` is
-          # certified by the nightly, and that is what the rest of this step
-          # checks. The release line is not: a `hotfix/*` branch cut from
-          # `main`, and the release-plz bump that follows it, publish `main` —
-          # already certified when it was released — plus their own delta,
-          # which their own checks gate. They can never descend from a
-          # certification recorded on `dev`, so holding them to one does not
-          # make them safer, it makes them impossible. Hold them to descending
-          # from `main` instead, which is what stops this exit from being used
-          # to route code onto the release line around `dev`.
-          if [ "${HEAD_REF}" != "dev" ]; then
-            if ! git merge-base --is-ancestor "${BASE_SHA}" "${HEAD_SHA}"; then
-              echo "::error::${HEAD_SHA} publishes the release line but does not descend from main (${BASE_SHA}); cut it from main"
-              exit 1
-            fi
-            echo "release line: ${HEAD_SHA} descends from main (${BASE_SHA}); the nightly certifies dev, not this"
-            exit 0
-          fi
+          case "${HEAD_REF}" in
+            release-plz-*) ;;
+            *)
+              echo "non-release pull request (${HEAD_REF}); nightly certification is gated on release-plz PRs"
+              exit 0
+              ;;
+          esac
 
           # The newest certification, selected the way promote records it in
           # .github/scripts/framework_manifest.py: among published non-draft
@@ -591,25 +597,29 @@ jobs:
                 and (.tag_name | test("^nightly-[0-9]{8}-[0-9a-f]{12}$"))) ]
             | max_by(.published_at).tag_name // empty')"
           if [ -z "${tag}" ]; then
-            echo "::error::no nightly certification exists; nothing is released until the nightly matrix produces one"
+            echo "::error::no nightly certification exists; nothing is released until nightly.yml certifies a commit"
             exit 1
           fi
           certified="$(git rev-parse "${tag}^{commit}")"
 
-          # The line being released (the pull request head, normally the dev
-          # tip) must contain the last certification; main itself only gains
-          # certification through this merge.
+          # A release PR opened by nightly certification commits its version/
+          # changelog bump directly on top of the certified commit (`HEAD_SHA~1`),
+          # which carries a `nightly-*` tag. When manually updated or rebased,
+          # it still descends from the latest certified commit while nightly
+          # on `main` is certified.
+          parent_tags="$(git tag --points-at "$(git rev-parse "${HEAD_SHA}~1")" --list 'nightly-*')"
+          if [ -n "${parent_tags}" ]; then
+            echo "nightly line healthy: release PR parent carries certification (${parent_tags})"
+            exit 0
+          fi
+
           if ! git merge-base --is-ancestor "${certified}" "${HEAD_SHA}"; then
             echo "::error::${HEAD_SHA} does not descend from the last certified commit ${certified} (${tag})"
             exit 1
           fi
 
-          # A certification only counts while the nightly still says so: the
-          # newest completed nightly run on dev must carry a `nightly-*` tag
-          # at the commit it tested. A red or cancelled run certifies
-          # nothing, so the line stays uncertified until a run goes green.
           run="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/nightly.yml/runs?branch=dev&status=completed&per_page=1" \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/nightly.yml/runs?branch=main&status=completed&per_page=1" \
             --jq 'if (.workflow_runs | length) == 0 then "" else .workflow_runs[0] | .head_sha + " " + .html_url end')"
           if [ -z "${run}" ] || [ -z "$(git tag --points-at "${run%% *}" --list 'nightly-*')" ]; then
             issue="$(gh api "repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100" --jq '

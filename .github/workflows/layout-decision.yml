@@ -13,7 +13,7 @@ name: Layout decision
 
 on:
   pull_request:
-    branches: [dev, main]
+    branches: [main, dev]
     # `labeled`/`unlabeled` are not in the default trigger set; they must be
     # listed so that applying the label re-runs this check.
     types: [opened, edited, synchronize, reopened, labeled, unlabeled]
