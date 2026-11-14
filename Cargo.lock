@@ -4739,7 +4739,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#3227b961336f446dcba61eeff6a6c9f7024c531a"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#bc70ebf7f19c44272430b6b9822c45a4a188a390"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -10598,11 +10598,6 @@ dependencies = [
 [[package]]
 name = "suiteki"
 version = "0.1.1"
-source = "git+https://github.com/water-rs/suiteki?branch=dev#3ba2ad03ccc9379b9fe836dca89875a89d8e0684"
-
-[[package]]
-name = "suiteki"
-version = "0.1.1"
 source = "git+https://github.com/water-rs/suiteki?branch=main#3ba2ad03ccc9379b9fe836dca89875a89d8e0684"
 dependencies = [
  "nami-core",
@@ -12318,7 +12313,7 @@ dependencies = [
  "waterkit-video-container",
  "waterkit-video-core",
  "wgpu",
- "wgpu-external-frame 0.4.0 (git+https://github.com/water-rs/wgpu-external-frame?branch=main)",
+ "wgpu-external-frame",
  "yuv",
 ]
 
@@ -12821,7 +12816,7 @@ dependencies = [
 [[package]]
 name = "waterui-barcode"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/barcode?branch=dev#cd32426e732eb4d7075e0006fa4b49ac30928e24"
+source = "git+https://github.com/water-rs/barcode?branch=main#43c3018566525c3894038b0fc04f17c77c11d70c"
 dependencies = [
  "barcoders",
  "fast_qr",
@@ -12834,7 +12829,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-cef"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=dev#b0f696e92cd9a5aeec15b053cc4ab01f4f3cda0d"
+source = "git+https://github.com/water-rs/browsers?branch=main#f3637e7d6017d44a755040132fd361446ed65114"
 dependencies = [
  "async-channel",
  "base64 0.23.1",
@@ -12858,7 +12853,7 @@ dependencies = [
  "objc2-security",
  "serde",
  "serde_json",
- "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=dev)",
+ "suiteki",
  "thiserror 2.0.21",
  "tracing",
  "waterui-chromium",
@@ -12868,13 +12863,13 @@ dependencies = [
  "waterui-watcher-set",
  "waterui-webview",
  "wgpu",
- "wgpu-external-frame 0.4.0 (git+https://github.com/water-rs/wgpu-external-frame?branch=dev)",
+ "wgpu-external-frame",
 ]
 
 [[package]]
 name = "waterui-browser-wpe"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=dev#b0f696e92cd9a5aeec15b053cc4ab01f4f3cda0d"
+source = "git+https://github.com/water-rs/browsers?branch=main#f3637e7d6017d44a755040132fd361446ed65114"
 dependencies = [
  "cookie",
  "executor-core",
@@ -12887,7 +12882,7 @@ dependencies = [
  "num-traits",
  "serde",
  "serde_json",
- "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=dev)",
+ "suiteki",
  "tracing",
  "waterui-core",
  "waterui-graphics",
@@ -12895,14 +12890,14 @@ dependencies = [
  "waterui-watcher-set",
  "waterui-webview",
  "wgpu",
- "wgpu-external-frame 0.4.0 (git+https://github.com/water-rs/wgpu-external-frame?branch=dev)",
+ "wgpu-external-frame",
  "xkeysym",
 ]
 
 [[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?branch=dev#313e0ad99e1c1fd99f19a7f97f56ed97072cafe5"
+source = "git+https://github.com/water-rs/chart?branch=main#eb21d2101128d7d4e6a0e6ebbd85323e70bfbbde"
 dependencies = [
  "bytemuck",
  "nami",
@@ -13080,7 +13075,7 @@ dependencies = [
  "num-traits",
  "serde",
  "smallvec",
- "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
+ "suiteki",
  "thiserror 2.0.21",
  "waterui-contract",
  "waterui-easing",
@@ -13167,14 +13162,14 @@ dependencies = [
  "waterui-testing",
  "waterui-text",
  "wgpu",
- "wgpu-external-frame 0.4.0 (git+https://github.com/water-rs/wgpu-external-frame?branch=main)",
+ "wgpu-external-frame",
 ]
 
 [[package]]
 name = "waterui-icon"
 version = "0.5.1"
 dependencies = [
- "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
+ "suiteki",
  "waterui",
  "waterui-core",
  "waterui-graphics",
@@ -13237,7 +13232,7 @@ dependencies = [
 name = "waterui-icons-native"
 version = "0.5.1"
 dependencies = [
- "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
+ "suiteki",
  "waterui-icon",
 ]
 
@@ -13245,14 +13240,14 @@ dependencies = [
 name = "waterui-icons-sf-symbol"
 version = "0.5.1"
 dependencies = [
- "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
+ "suiteki",
  "waterui-icon",
 ]
 
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?branch=dev#338c20da3ce03d20186e947de41e1443d33d7673"
+source = "git+https://github.com/water-rs/image?branch=main#0988ed3225cb941672deb7881665b81182ee50af"
 dependencies = [
  "half",
  "image",
@@ -13313,7 +13308,7 @@ dependencies = [
  "object 0.40.0",
  "pastey 0.2.3",
  "pulldown-cmark",
- "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
+ "suiteki",
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
@@ -13386,7 +13381,7 @@ dependencies = [
  "nami",
  "num-traits",
  "serde",
- "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
+ "suiteki",
  "sys-locale",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
@@ -13420,7 +13415,7 @@ name = "waterui-map"
 version = "0.5.1"
 dependencies = [
  "nami",
- "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
+ "suiteki",
  "waterkit-location",
  "waterui-core",
 ]
@@ -13428,7 +13423,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?branch=dev#4a3f25f3955530f87086200d46ed3ba9d713daf3"
+source = "git+https://github.com/water-rs/map-gpu?branch=main#243bbd7ab2cb7598e05123decd62b8f176d6a4dc"
 dependencies = [
  "arc-swap",
  "blocking",
@@ -13466,7 +13461,7 @@ dependencies = [
 [[package]]
 name = "waterui-math"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/math?branch=dev#4f4e006ebd8015a721cc7579b768e87e3b581a23"
+source = "git+https://github.com/water-rs/math?branch=main#dd1aa5784ead6eb13e68b2a32a4d3533838e4f37"
 dependencies = [
  "kurbo",
  "mathcat",
@@ -13475,7 +13470,7 @@ dependencies = [
  "pulldown-latex",
  "quick-xml 0.42.0",
  "serde",
- "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
+ "suiteki",
  "thiserror 2.0.21",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
@@ -13569,7 +13564,7 @@ dependencies = [
 [[package]]
 name = "waterui-particle"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/particle?branch=dev#804d940be1d050c10923a83daa94977e82a65408"
+source = "git+https://github.com/water-rs/particle?branch=main#d0c256d437a4141b94d202e550c42fd0cb8a7cb5"
 dependencies = [
  "bytemuck",
  "encase",
@@ -13603,9 +13598,9 @@ dependencies = [
 [[package]]
 name = "waterui-svg"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/svg?branch=dev#75b85fbb0e7f2add26bf598ef34fba497f56d84d"
+source = "git+https://github.com/water-rs/svg?branch=main#ad60d37ecb46b15f8d4eb29e83cbf6211ed57e9b"
 dependencies = [
- "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
+ "suiteki",
  "tracing",
  "usvg",
  "waterui-core",
@@ -13647,7 +13642,7 @@ dependencies = [
  "parley 0.12.0",
  "pulldown-cmark",
  "smallvec",
- "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
+ "suiteki",
  "syntect",
  "tracing",
  "two-face",
@@ -13677,7 +13672,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
+ "suiteki",
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
@@ -13727,7 +13722,7 @@ dependencies = [
  "object 0.40.0",
  "serde",
  "serde_json",
- "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
+ "suiteki",
  "thiserror 2.0.21",
  "waterui-core",
  "waterui-macros",
@@ -13748,7 +13743,7 @@ dependencies = [
  "nami",
  "nami-core",
  "sha2",
- "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
+ "suiteki",
  "tracing",
  "waterui-contract",
  "zenwave 0.7.1",
@@ -13769,7 +13764,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=dev#5a9a47c9df0c6c19e27dfc35c6d930b894668bc5"
+source = "git+https://github.com/water-rs/video-gpu?branch=main#d33791afe1201e598e584c9db1a4142d15f04585"
 dependencies = [
  "async-channel",
  "executor-core",
@@ -13812,7 +13807,7 @@ dependencies = [
  "percent-encoding",
  "serde",
  "serde_json",
- "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
+ "suiteki",
  "tempfile",
  "thiserror 2.0.21",
  "tiny_http",
@@ -13835,7 +13830,7 @@ dependencies = [
  "pastey 0.2.3",
  "serde",
  "serde_json",
- "suiteki 0.1.1 (git+https://github.com/water-rs/suiteki?branch=main)",
+ "suiteki",
  "waterui-contract",
  "waterui-meta",
  "waterui-text",
@@ -14134,24 +14129,6 @@ version = "30.0.1"
 source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#9e0ab702c11f5db7b62670eaf9aeaf8a2f8ff7b5"
 dependencies = [
  "wgpu-hal",
-]
-
-[[package]]
-name = "wgpu-external-frame"
-version = "0.4.0"
-source = "git+https://github.com/water-rs/wgpu-external-frame?branch=dev#b8c085500813e034306afbcaa23b9a0f77392f41"
-dependencies = [
- "ash",
- "libc",
- "ndk",
- "objc2 0.6.5",
- "objc2-core-foundation",
- "objc2-io-surface",
- "objc2-metal 0.3.2",
- "sync_wrapper",
- "thiserror 2.0.21",
- "wgpu",
- "windows",
 ]
 
 [[package]]
