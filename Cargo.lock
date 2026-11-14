@@ -4691,6 +4691,7 @@ dependencies = [
  "waterkit-menu",
  "waterui",
  "waterui-assets",
+ "waterui-assets-core",
  "waterui-backend-core",
  "waterui-controls",
  "waterui-core",

@@ -79,6 +79,7 @@ fn main() -> impl View {
     vstack((conversation(), composer(draft)))
 }
 
+/// Builds the keyboard panel example app around [`main`].
 pub fn app(env: Environment) -> App {
     App::new(main, env)
 }

@@ -29,14 +29,16 @@ hydrolysis-path = "backends/hydrolysis"
 hydrolysis-android-host-subdirectory = "backends/hydrolysis/android"
 scaffold-packages = ["hydrolysis-m3", "waterui-gtk", "waterui-winui"]
 
+[package.metadata.waterui.scaffold-pins]
+waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "3162043e618e759bea6d6e52ec75c6ee1273c080", version = "0.2.0" }
+waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", version = "0.1.0" }
+
 [workspace]
 members = ["backends/apple", "backends/hydrolysis"]
 
 [workspace.dependencies]
 hydrolysis = { version = "0.2.1", path = "backends/hydrolysis", default-features = false }
 hydrolysis-m3 = "0.2.1"
-waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "3162043e618e759bea6d6e52ec75c6ee1273c080", version = "0.2.0" }
-waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", version = "0.1.0" }
 
 [patch.crates-io]
 hydrolysis = { path = "backends/hydrolysis" }

@@ -2,7 +2,7 @@
 
 The manifest records the worktree's lockfile hash, the scaffold table the root manifest's `[package.metadata.waterui]` declares, and
 that metadata table verbatim. A scaffold package whose
-`[workspace.dependencies]` requirement is a git pin (`git` + `rev`) is not one
+requirement is a git pin (`git` + `rev`) is not one
 the stable channel distributes, whatever the registry holds for that name, so
 a `stable` manifest withholds its entries from `scaffold` and records the pin
 under `experimental-packages` instead; `nightly` carries it in `scaffold` like any
@@ -53,7 +53,8 @@ def lockfile_hashes():
 
 def framework_scaffold(framework):
     """The scaffold table the framework manifest itself declares: each
-    `scaffold-packages` entry's `[workspace.dependencies]` requirement —
+    `scaffold-packages` entry's requirement — its `scaffold-pins` entry, else
+    its `[workspace.dependencies]` one —
     `{name}-version`, plus `{name}-git` and `{name}-rev` when the requirement
     pins a repository — and every backend coordinate — `{name}-backend-url`,
     plus the `{name}-backend-version` of a backend pinned by release or the
@@ -66,9 +67,11 @@ def framework_scaffold(framework):
     Identical to `framework_scaffold` in the CLI for the same tree."""
     metadata = framework["package"]["metadata"]["waterui"]
     workspace = framework["workspace"]["dependencies"]
+    pins = metadata.get("scaffold-pins", {})
     scaffold = {}
     for name in metadata["scaffold-packages"]:
-        dependency = workspace[name]
+        # A package no member links is declared only as a pin.
+        dependency = pins[name] if name in pins else workspace[name]
         scaffold[f"{name}-version"] = (
             dependency if isinstance(dependency, str) else dependency["version"]
         )
@@ -81,7 +84,7 @@ def framework_scaffold(framework):
                 r"[0-9a-fA-F]{40}", revision
             ):
                 raise RuntimeError(
-                    f"workspace.dependencies.{name} must pin an immutable Git revision"
+                    f"{name} must pin an immutable Git revision"
                 )
             scaffold[f"{name}-git"] = dependency["git"]
             scaffold[f"{name}-rev"] = revision

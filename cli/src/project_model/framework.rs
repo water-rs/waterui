@@ -2809,7 +2809,8 @@ fn framework_metadata(manifest: &toml::Value) -> Result<toml::Table> {
 }
 
 /// The scaffold facts the framework manifest itself declares: each
-/// `scaffold-packages` entry's requirement from `[workspace.dependencies]` —
+/// `scaffold-packages` entry's requirement — its `scaffold-pins` entry, else
+/// its `[workspace.dependencies]` one —
 /// `{name}-version`, plus `{name}-git` and `{name}-rev` when the requirement
 /// pins a repository — and every backend coordinate — `{name}-backend-url`,
 /// plus the `{name}-backend-version` of a backend pinned by release or the
@@ -2828,6 +2829,9 @@ fn framework_scaffold(manifest: &toml::Value) -> Result<BTreeMap<String, String>
         .and_then(|workspace| workspace.get("dependencies"))
         .and_then(toml::Value::as_table)
         .ok_or_else(|| eyre!("framework manifest has no [workspace.dependencies]"))?;
+    let pins = metadata
+        .get("scaffold-pins")
+        .and_then(toml::Value::as_table);
     let packages = metadata
         .get("scaffold-packages")
         .and_then(toml::Value::as_array)
@@ -2839,13 +2843,22 @@ fn framework_scaffold(manifest: &toml::Value) -> Result<BTreeMap<String, String>
         let name = package.as_str().ok_or_else(|| {
             eyre!("package.metadata.waterui.scaffold-packages entries must be crate names")
         })?;
-        let dependency = workspace.get(name).ok_or_else(|| {
-            eyre!("scaffold package {name} has no [workspace.dependencies] requirement")
-        })?;
+        // A package no member links is declared only as a pin.
+        let dependency = pins
+            .and_then(|pins| pins.get(name))
+            .or_else(|| workspace.get(name))
+            .ok_or_else(|| {
+                eyre!(
+                    "scaffold package {name} has no scaffold-pins or [workspace.dependencies] \
+                     requirement"
+                )
+            })?;
         let requirement = dependency
             .as_str()
             .or_else(|| dependency.get("version").and_then(toml::Value::as_str))
-            .ok_or_else(|| eyre!("workspace.dependencies.{name} declares no version"))?;
+            .ok_or_else(|| {
+                eyre!("the requirement of scaffold package {name} declares no version")
+            })?;
         scaffold.insert(format!("{name}-version"), requirement.to_owned());
         // A scaffold package pinned from git keeps that source: a bare
         // `{name}-version` cannot express the commit the framework builds
@@ -2854,11 +2867,8 @@ fn framework_scaffold(manifest: &toml::Value) -> Result<BTreeMap<String, String>
             let revision = dependency
                 .get("rev")
                 .and_then(toml::Value::as_str)
-                .ok_or_else(|| {
-                    eyre!("workspace.dependencies.{name} must pin an immutable Git revision")
-                })?;
-            validate_revision(revision)
-                .wrap_err_with(|| format!("workspace.dependencies.{name}.rev"))?;
+                .ok_or_else(|| eyre!("{name} must pin an immutable Git revision"))?;
+            validate_revision(revision).wrap_err_with(|| format!("{name} rev"))?;
             scaffold.insert(format!("{name}-git"), git.to_owned());
             scaffold.insert(format!("{name}-rev"), revision.to_owned());
         }
@@ -6957,7 +6967,10 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
         .unwrap();
         let scaffold = framework_scaffold(&root).unwrap();
         let workspace = |name: &str| {
-            let dependency = &root["workspace"]["dependencies"][name];
+            let pins = &root["package"]["metadata"]["waterui"]["scaffold-pins"];
+            let dependency = pins
+                .get(name)
+                .unwrap_or_else(|| &root["workspace"]["dependencies"][name]);
             dependency
                 .as_str()
                 .or_else(|| dependency.get("version").and_then(toml::Value::as_str))
@@ -7011,7 +7024,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             "../../tests/fixtures/framework_checkout_manifest.toml"
         ))
         .unwrap();
-        let gtk = &mut root["workspace"]["dependencies"]["waterui-gtk"];
+        let gtk = &mut root["package"]["metadata"]["waterui"]["scaffold-pins"]["waterui-gtk"];
         gtk.as_table_mut()
             .unwrap()
             .insert("branch".to_owned(), toml::Value::String("dev".to_owned()));

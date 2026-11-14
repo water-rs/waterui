@@ -1,3 +1,5 @@
+//! Reminders example: smart-list tiles, user lists and a searchable reminder list.
+
 use mdi::bell_alert;
 use mdi::calendar_clock;
 use mdi::calendar_today;
@@ -102,7 +104,7 @@ impl SidebarDestination {
 
 /// Static user lists shown under "My Lists", mirroring the official app's
 /// colored-badge rows.
-fn user_lists() -> [(&'static str, i32, Srgb); 3] {
+const fn user_lists() -> [(&'static str, i32, Srgb); 3] {
     [
         ("Reminders", 37, Srgb::from_hex("#F28A34")),
         ("Best Shot", 2, Srgb::from_hex("#4A84F6")),
@@ -110,7 +112,9 @@ fn user_lists() -> [(&'static str, i32, Srgb); 3] {
     ]
 }
 
-fn reminders_for(dest: SidebarDestination) -> (&'static [ReminderRow], &'static [ReminderRow]) {
+const fn reminders_for(
+    dest: SidebarDestination,
+) -> (&'static [ReminderRow], &'static [ReminderRow]) {
     match dest {
         SidebarDestination::Today => (
             &[
@@ -227,6 +231,7 @@ fn matching_reminder_count(rows: &[ReminderRow], normalized_query: &str) -> usiz
         .count()
 }
 
+/// The reminders example page: a smart-list sidebar and a searchable detail column.
 #[preview]
 pub fn demo() -> impl View {
     let selection = Binding::container(Some(SidebarDestination::Today));
@@ -237,25 +242,28 @@ pub fn demo() -> impl View {
         {
             let selection = selection.clone();
             let search = search.clone();
-            move || sidebar(selection.clone(), search.clone())
+            move || sidebar(&selection, &search)
         },
         {
-            let search = search.clone();
-            move |dest| detail_view(dest, search.clone())
+            let search = search;
+            move |dest| detail_view(dest, &search)
         },
     )
     .sidebar_width(ColumnWidth::new(240.0, 300.0, 420.0))
     .placeholder(placeholder_view)
 }
 
-fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>) -> impl View {
+fn sidebar(
+    selection: &Binding<Option<SidebarDestination>>,
+    search: &Binding<Str>,
+) -> impl View + use<> {
     use waterui::layout::grid::{grid, row};
 
     let query = search
         .clone()
         .map(|value| normalized_search_query(&value))
         .computed();
-    let tile = |dest: SidebarDestination| destination_tile(dest, selection.clone(), query.clone());
+    let tile = |dest: SidebarDestination| destination_tile(dest, selection, &query);
 
     vstack((
         // The official app presents the smart lists as a colored tile grid,
@@ -299,18 +307,20 @@ fn sidebar(selection: Binding<Option<SidebarDestination>>, search: Binding<Str>)
 /// exactly the geometry the official Reminders sidebar uses.
 fn destination_tile(
     dest: SidebarDestination,
-    selection: Binding<Option<SidebarDestination>>,
-    query: Computed<Option<String>>,
-) -> impl View {
-    let is_selected = selection.clone().equal_to(Some(dest));
-    let count = query.map(move |query| {
-        if let Some(query) = query.as_deref() {
-            let (today_rows, upcoming_rows) = reminders_for(dest);
-            (matching_reminder_count(today_rows, query)
-                + matching_reminder_count(upcoming_rows, query)) as i32
-        } else {
-            dest.count()
-        }
+    selection: &Binding<Option<SidebarDestination>>,
+    query: &Computed<Option<String>>,
+) -> impl View + use<> {
+    let is_selected = selection.equal_to(Some(dest));
+    let count = query.clone().map(move |query| {
+        query.as_deref().map_or_else(
+            || dest.count(),
+            |query| {
+                let (today_rows, upcoming_rows) = reminders_for(dest);
+                let matches = matching_reminder_count(today_rows, query)
+                    + matching_reminder_count(upcoming_rows, query);
+                i32::try_from(matches).expect("a reminder count fits in i32")
+            },
+        )
     });
     let bg = is_selected
         .select(dest.selected_color(), dest.color())
@@ -337,7 +347,7 @@ fn destination_tile(
             selection.set(Some(dest));
         },
     )
-    .state(&selection)
+    .state(selection)
 }
 
 /// A "My Lists" row: colored circular badge, name, trailing count.
@@ -358,17 +368,17 @@ fn user_list_row(name: &'static str, count: i32, color: Srgb) -> impl View {
     .padding_with((4.0, 8.0))
 }
 
-fn detail_view(dest: SidebarDestination, search: Binding<Str>) -> NavigationView {
+fn detail_view(dest: SidebarDestination, search: &Binding<Str>) -> NavigationView {
     let (today_rows, upcoming_rows) = reminders_for(dest);
 
     vstack((
         content_header(dest),
         Divider,
-        reminder_list(today_rows, upcoming_rows, &search),
+        reminder_list(today_rows, upcoming_rows, search),
     ))
     .background(Material::Regular)
     .title(dest.title())
-    .searchable(&search, "Search reminders")
+    .searchable(search, "Search reminders")
     .navigation_toolbar(NavigationToolbar::new(vec![NavigationToolbarItem::action(
         NavigationToolbarPlacement::PrimaryAction,
         label("").icon(plus()),
@@ -426,7 +436,7 @@ fn matching_rows(
 // `row.flagged` is immutable fixture data: the `&'static [ReminderRow]` rows
 // never change, so reading the field in the row builder cannot go stale.
 #[allow(unknown_lints, collection_item_snapshot)]
-fn reminder_item(row: ReminderRow) -> ListItem {
+fn reminder_item(row: &ReminderRow) -> ListItem {
     ListItem::new(
         hstack((
             circle_outline().size(16.0, 16.0).muted(),
@@ -453,17 +463,17 @@ fn reminder_list(
     search: &Binding<Str>,
 ) -> impl View {
     List::content((
-        Section::new("Today").content(ForEach::new(
-            matching_rows(today_rows, search),
-            reminder_item,
-        )),
-        Section::new("Upcoming").content(ForEach::new(
-            matching_rows(upcoming_rows, search),
-            reminder_item,
-        )),
+        Section::new("Today").content(ForEach::new(matching_rows(today_rows, search), |row| {
+            reminder_item(&row)
+        })),
+        Section::new("Upcoming")
+            .content(ForEach::new(matching_rows(upcoming_rows, search), |row| {
+                reminder_item(&row)
+            })),
     ))
 }
 
+/// Builds the reminders example app.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

@@ -53,5 +53,3 @@ hydrolysis-m3.workspace = true
 
 [lints]
 workspace = true
-[package.metadata.cargo-machete]
-ignored = ["bitflags", "executor-core"]

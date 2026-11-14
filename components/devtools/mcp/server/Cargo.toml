@@ -33,7 +33,3 @@ hydrolysis-m3.workspace = true
 
 [lints]
 workspace = true
-
-# `waterui-controls` is declared only to enable its `serde` feature.
-[package.metadata.cargo-machete]
-ignored = ["waterui-controls"]

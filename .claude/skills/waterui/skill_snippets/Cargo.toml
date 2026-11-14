@@ -21,6 +21,10 @@ dev = ["waterui/dynamic_linking"]
 # `cargo check -p skill_snippets --all-targets --features compile-gate-tests`.
 compile-gate-tests = []
 
+# Its own table, empty on purpose: the snippets are transcribed verbatim from the
+# skill and compile under Rust's and clippy's default levels, not the workspace's.
+[lints]
+
 [dependencies]
 # `ts` is what SKILL.md's "TypeScript views" snippets compile against:
 # `tsx!`, `TsProps`, and `waterui::ts::schema` exist only under it.

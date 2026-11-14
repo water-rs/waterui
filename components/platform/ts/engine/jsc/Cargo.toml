@@ -10,18 +10,16 @@ description = "JavaScriptCore implementation of the WaterUI JavaScript runtime c
 keywords = ["typescript", "javascript", "javascriptcore", "waterui", "gui"]
 categories = ["gui"]
 
-[dependencies]
-waterui-ts-engine.workspace = true
-
 # The system JavaScriptCore exists on every Apple platform except watchOS. On
 # other targets this crate compiles to an empty library.
 [target.'cfg(target_vendor = "apple")'.dependencies]
+waterui-ts-engine.workspace = true
 objc2.workspace = true
 objc2-foundation.workspace = true
 objc2-javascript-core.workspace = true
 block2.workspace = true
 
-[dev-dependencies]
+[target.'cfg(target_vendor = "apple")'.dev-dependencies]
 waterui-ts-engine = { workspace = true, features = ["conformance"] }
 
 [lints]

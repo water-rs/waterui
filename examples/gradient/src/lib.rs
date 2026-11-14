@@ -1,4 +1,4 @@
-//! Gradient Example - Demonstrates WaterUI's gradient system
+//! Gradient Example - Demonstrates `WaterUI`'s gradient system
 //!
 //! This example showcases the gradient views:
 //! - A mesh gradient whose colours follow a signal
@@ -43,26 +43,31 @@ fn compute_animated_colors(time: f32) -> [WorkingColor; 9] {
 
     for (i, base) in base_colors.iter().enumerate() {
         // Each vertex has unique phase offsets for organic movement
-        let phase = (i as f32) * 0.7;
-        let x = (i % 3) as f32;
-        let y = (i / 3) as f32;
+        let index = u8::try_from(i).expect("the mesh gradient has 9 vertices");
+        let phase = f32::from(index) * 0.7;
+        let x = f32::from(index % 3);
+        let y = f32::from(index / 3);
 
         // Multiple sine waves at different frequencies for complex motion
-        let wave1 = (time * 0.5 + phase).sin() * 0.15;
-        let wave2 = (time * 0.3 + x * 0.5).sin() * 0.1;
-        let wave3 = (time * 0.7 + y * 0.8).cos() * 0.08;
+        let wave1 = time.mul_add(0.5, phase).sin() * 0.15;
+        let wave2 = x.mul_add(0.5, time * 0.3).sin() * 0.1;
+        let wave3 = y.mul_add(0.8, time * 0.7).cos() * 0.08;
 
         // Apply waves to each color channel with different phases
         colors[i] = color(
-            (base[0] + wave1 + wave2 * 0.5).clamp(0.0, 1.0),
-            (base[1] + wave2 + wave3 * 0.5).clamp(0.0, 1.0),
-            (base[2] + wave3 + wave1 * 0.5).clamp(0.0, 1.0),
+            wave2.mul_add(0.5, base[0] + wave1).clamp(0.0, 1.0),
+            wave3.mul_add(0.5, base[1] + wave2).clamp(0.0, 1.0),
+            wave1.mul_add(0.5, base[2] + wave3).clamp(0.0, 1.0),
         );
     }
 
     colors
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "UI animation task runs on the main thread"
+)]
 async fn animate_mesh_colors(colors: Binding<[WorkingColor; 9]>) {
     // `std::time::Instant` panics on wasm32-unknown-unknown; web-time is the
     // same clock natively and `performance.now()` in a browser.
@@ -99,7 +104,7 @@ fn animated_background_section() -> impl View {
     ))
     .spacing(12.0)
     .padding()
-    .task(animate_mesh_colors(colors.clone()))
+    .task(animate_mesh_colors(colors))
 }
 
 /// Demo: mesh gradient animated by the canvas clock (no per-frame CPU updates)
@@ -488,6 +493,7 @@ pub fn demo() -> impl View {
     )
 }
 
+/// Builds the gradient example app around [`demo`].
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

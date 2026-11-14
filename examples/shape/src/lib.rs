@@ -1,12 +1,12 @@
-//! Shape Example - Demonstrates WaterUI's Shape system
+//! Shape Example - Demonstrates `WaterUI`'s Shape system
 //!
 //! This example showcases:
-//! - FilledShape: Shapes filled with color using `.fill()` method
-//! - ClipShape: Clipping views to shapes using `.clip()` method
-//! - Built-in shapes: Circle, Ellipse, Capsule, Rectangle, RoundedRectangle
+//! - `FilledShape`: Shapes filled with color using `.fill()` method
+//! - `ClipShape`: Clipping views to shapes using `.clip()` method
+//! - Built-in shapes: Circle, Ellipse, Capsule, Rectangle, `RoundedRectangle`
 //! - Custom paths: Using Path builder for arbitrary shapes
 //!
-//! Shapes in WaterUI have the same layout behavior as SwiftUI:
+//! Shapes in `WaterUI` have the same layout behavior as `SwiftUI`:
 //! - They fill all available space (like Color)
 //! - Use `.frame()` or container constraints to size them
 
@@ -227,8 +227,8 @@ fn hdr_shapes() -> impl View {
 /// Demo: HDR shapes
 fn hdr_shape_demo(show_hdr: &Binding<bool>) -> impl View {
     let show_hdr = show_hdr.clone();
-    let hdr_opacity = show_hdr.clone().select(1.0, 0.0);
-    let sdr_opacity = show_hdr.clone().select(0.0, 1.0);
+    let hdr_opacity = show_hdr.select(1.0, 0.0);
+    let sdr_opacity = show_hdr.select(0.0, 1.0);
 
     vstack((
         text("HDR Shapes").size(18.0),
@@ -248,21 +248,21 @@ fn hdr_shape_demo(show_hdr: &Binding<bool>) -> impl View {
 }
 
 /// Helper: Create a star path
-fn create_star(points: usize, inner_ratio: f32) -> Path {
+fn create_star(points: u16, inner_ratio: f32) -> Path {
     let mut path = Path::new();
     let outer_radius = 0.5;
     let inner_radius = outer_radius * inner_ratio;
     let center = 0.5;
 
     for i in 0..(points * 2) {
-        let angle = (i as f32) * PI / (points as f32) - FRAC_PI_2;
+        let angle = f32::from(i) * PI / f32::from(points) - FRAC_PI_2;
         let radius = if i % 2 == 0 {
             outer_radius
         } else {
             inner_radius
         };
-        let x = center + radius * angle.cos();
-        let y = center + radius * angle.sin();
+        let x = f32::mul_add(radius, angle.cos(), center);
+        let y = f32::mul_add(radius, angle.sin(), center);
 
         if i == 0 {
             path = path.move_to(x, y);
@@ -321,10 +321,10 @@ fn create_hexagon() -> Path {
     let center = 0.5;
     let radius = 0.5;
 
-    for i in 0..6 {
-        let angle = (i as f32) * PI / 3.0 - FRAC_PI_2;
-        let x = center + radius * angle.cos();
-        let y = center + radius * angle.sin();
+    for i in 0_u16..6 {
+        let angle = f32::from(i) * PI / 3.0 - FRAC_PI_2;
+        let x = f32::mul_add(radius, angle.cos(), center);
+        let y = f32::mul_add(radius, angle.sin(), center);
 
         if i == 0 {
             path = path.move_to(x, y);
@@ -384,6 +384,7 @@ fn morph_demo() -> impl View {
     .padding()
 }
 
+/// The shape demo: filled shapes, clipping to shapes and custom paths.
 #[preview]
 pub fn demo() -> impl View {
     let show_hdr = binding(true);
@@ -430,6 +431,7 @@ pub fn demo() -> impl View {
     )
 }
 
+/// Builds the example app, showing the shape demo.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

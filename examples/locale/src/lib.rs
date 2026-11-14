@@ -1,4 +1,4 @@
-//! Locale Example - Demonstrates WaterUI's i18n capabilities with a world fair kiosk
+//! Locale Example - Demonstrates `WaterUI`'s i18n capabilities with a world fair kiosk
 //!
 //! This example showcases:
 //! - Translation files in `i18n/` folder (TOML format)
@@ -7,7 +7,7 @@
 //! - Language variant fallback (zh-TW vs zh-HK vs zh-CN)
 //! - CLDR plural rules
 //! - Date and unit formatting
-//! - Interactive locale switching via WaterUI regional runtime callbacks
+//! - Interactive locale switching via `WaterUI` regional runtime callbacks
 //!
 //! ## How i18n Works
 //!
@@ -50,7 +50,6 @@ fn available_locales() -> [PickerItem<&'static str>; 11] {
 fn locale_from_code(code: &str) -> Locale {
     match code {
         "en" => locales::EN,
-        "en-US" => locales::EN_US,
         "en-GB" => locales::EN_GB,
         "zh" => locales::ZH_CN,
         "zh-TW" => locales::ZH_TW,
@@ -61,19 +60,16 @@ fn locale_from_code(code: &str) -> Locale {
         "fr" => locales::FR,
         "es" => locales::ES,
         "ru" => locales::RU,
+        // "en-US" and any unsupported code fall back to US English.
         _ => locales::EN_US,
     }
 }
 
 /// Locale picker section
-fn locale_picker_section(selection: &Binding<&'static str>, system_locale: &Locale) -> impl View {
+fn locale_picker_section(selection: &Binding<&'static str>, detected: String) -> impl View {
     vstack((
         text!("Language Booth").size(16.0).bold(),
-        hstack((
-            text!("Detected Locale:"),
-            spacer(),
-            text(system_locale.to_string()),
-        )),
+        hstack((text!("Detected Locale:"), spacer(), text(detected))),
         hstack((
             text!("Chosen Language:"),
             spacer(),
@@ -108,7 +104,7 @@ fn paragraph_section() -> impl View {
 }
 
 /// Date formatting section
-fn date_section(locale: Computed<Locale>) -> impl View {
+fn date_section(locale: &Computed<Locale>) -> impl View {
     let date_short = locale
         .clone()
         .map(|locale| format_date(&locale, &SimpleDate::new(2006, 3, 20), DateStyle::Short))
@@ -159,7 +155,7 @@ fn plural_section() -> impl View {
 }
 
 /// Unit formatting section
-fn unit_section(locale: Computed<Locale>) -> impl View {
+fn unit_section(locale: &Computed<Locale>) -> impl View {
     let distance = locale
         .clone()
         .map(|locale| Length::<Meter>::new(1500.0).to_localized_string(&locale))
@@ -191,19 +187,28 @@ fn localized_content() -> impl View {
 }
 
 /// Date/unit sections need the locale value for formatting APIs
-fn formatted_content(locale: Computed<Locale>) -> impl View {
-    let unit_locale = locale.clone();
-    vstack((date_section(locale), Divider, unit_section(unit_locale)))
+fn formatted_content(locale: &Computed<Locale>) -> impl View {
+    vstack((date_section(locale), Divider, unit_section(locale)))
 }
 
-fn scene(system_locale: Locale) -> impl View {
+fn scene(system_locale: &Locale) -> impl View + use<> {
     // Determine initial locale code from system locale
     let initial_code: &'static str = match system_locale.language.as_str() {
-        "en" => match system_locale.region.as_ref().map(|r| r.as_str()) {
+        "en" => match system_locale
+            .region
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref()
+        {
             Some("GB") => "en-GB",
             _ => "en-US", // Default to US English
         },
-        "zh" => match system_locale.region.as_ref().map(|r| r.as_str()) {
+        "zh" => match system_locale
+            .region
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref()
+        {
             Some("TW") => "zh-TW",
             Some("HK") => "zh-HK",
             _ => "zh",
@@ -221,6 +226,7 @@ fn scene(system_locale: Locale) -> impl View {
     let selection = Binding::container(initial_code);
     // Initialize shared runtime locale from the picker's initial value.
     set_locale_tag(initial_code).expect("picker locale tag must be valid");
+    let formatted_locale = selection.clone().map(locale_from_code).computed();
 
     scroll(
         vstack((
@@ -229,7 +235,7 @@ fn scene(system_locale: Locale) -> impl View {
             text!("Live translations for a tiny world-fair kiosk").size(14.0),
             Divider,
             // Locale picker
-            locale_picker_section(&selection, &system_locale),
+            locale_picker_section(&selection, system_locale.to_string()),
             Divider,
             // Localized content - text! macros react to regional locale updates
             // No watch() needed for these!
@@ -237,7 +243,7 @@ fn scene(system_locale: Locale) -> impl View {
             Divider,
             // Formatting APIs receive a computed locale, so only their text
             // leaves update when the selection changes.
-            formatted_content(selection.clone().map(locale_from_code).computed()),
+            formatted_content(&formatted_locale),
         ))
         .padding_with(16.0),
     )
@@ -250,14 +256,13 @@ fn scene(system_locale: Locale) -> impl View {
 /// runtime locale. Used for embedding (gallery) and `water preview`.
 #[preview]
 pub fn demo() -> impl View {
-    scene(locales::EN_US.clone())
+    scene(&locales::EN_US)
 }
 
+/// Builds the locale example app, starting from the environment's locale.
+#[must_use]
 pub fn app(env: Environment) -> App {
-    let system_locale = env
-        .get::<Locale>()
-        .cloned()
-        .unwrap_or_else(|| locales::EN.clone());
+    let system_locale = env.get::<Locale>().cloned().unwrap_or(locales::EN);
 
-    App::new(move || scene(system_locale.clone()), env)
+    App::new(move || scene(&system_locale), env)
 }

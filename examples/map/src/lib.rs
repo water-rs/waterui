@@ -1,10 +1,10 @@
-//! Map Example - Demonstrates WaterUI's Map component
+//! Map Example - Demonstrates `WaterUI`'s Map component
 //!
 //! This example showcases:
 //! - Displaying a vector map centered on Manhattan
 //! - Zoom controls with reactive updates
 //! - Native-first map configuration with a GPU provider for self-drawn backends
-//! - WaterKit location permission and reactive user-location display
+//! - `WaterKit` location permission and reactive user-location display
 
 use lucide::locate_fixed;
 use lucide::minus;
@@ -152,6 +152,11 @@ fn content(state: MapExampleState) -> impl View {
         // Ambient theme data: a theme that styles floating surfaces supplies
         // these, and the framework default applies on backends that do not.
         let style = env.get::<FloatingStyle>().cloned().unwrap_or_default();
+        // A theme point size (44.0 by default); `f32` represents it exactly.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the theme point size is a small finite width that f32 holds exactly"
+        )]
         let control_width = style.minimum_width as f32;
         let zoom_controls = vstack((zoom_in, Divider, zoom_out))
             .width(control_width)
@@ -170,6 +175,7 @@ fn content(state: MapExampleState) -> impl View {
     absolute((map.pin(PinConstraints::all(0.0)), status_panel, controls))
 }
 
+/// The map demo: a full-screen map with a status panel and zoom and location controls.
 #[preview]
 pub fn demo() -> impl View {
     content(MapExampleState::new())
@@ -182,6 +188,7 @@ pub fn demo() -> impl View {
 /// it. Apple platforms bridge `MapKit`, so nothing is installed there and the
 /// same `Map` view above draws through the native bridge. Every other platform
 /// draws the map itself, and the tile source below is what it draws from.
+#[must_use]
 pub fn app(mut env: Environment) -> App {
     env.insert(MapGpuOptions::new(Url::new(
         "https://tiles.openfreemap.org/styles/positron",

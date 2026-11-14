@@ -18,7 +18,6 @@ testing = ["dep:cherenkov-oracle"]
 arc-swap = "1"
 cherenkov-oracle = { path = "oracle", optional = true }
 cherenkov-record = { version = "0.0.0", path = "record", features = ["serde"] }
-crossbeam-channel.workspace = true
 web-time = "1"
 filtrate-core = { version = "0.2.0", path = "../filtrate/core" }
 kurbo = { version = "0.13.1", features = ["serde"] }
@@ -34,6 +33,7 @@ waterui-contract.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 async-channel = { workspace = true, default-features = false, features = ["std"] }
+crossbeam-channel.workspace = true
 # `Stream` polls a pending frame's reply channel from its owned future, and
 # `block_on` is the synchronous entry points' wait on the same futures: its
 # parker and waker are cached per thread, so a frame's wait allocates nothing.

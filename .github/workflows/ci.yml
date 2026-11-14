@@ -303,15 +303,6 @@ jobs:
       - name: License and ban check
         if: needs.changes.outputs.deps == 'true'
         run: cargo deny check licenses bans
-      - uses: ./.github/actions/install-tool
-        if: needs.changes.outputs.deps == 'true'
-        with:
-          tool: cargo-machete@0.9.2
-          path: ~/.cargo/bin/cargo-machete*
-      - name: Unused dependencies
-        if: needs.changes.outputs.deps == 'true'
-        run: |
-          cargo machete --with-metadata
 
   # gpu-allocator's `windows >=0.53, <=0.62` requirement admits every windows
   # line the lockfile already carries, so a partial lock re-resolution can
@@ -341,7 +332,7 @@ jobs:
       - name: Restore Cargo sources
         uses: ./.github/actions/cargo-sources
       - name: Compile the DX12 backend against the committed lockfile
-        run: cargo check --timings --locked --profile ci-check -p waterui-graphics --no-default-features --features wgpu/dx12 --target x86_64-pc-windows-msvc
+        run: cargo check --timings --locked --profile ci-check -p waterui-graphics --lib --no-default-features --features wgpu/dx12 --target x86_64-pc-windows-msvc
       - uses: ./.github/actions/upload-cargo-timings
         if: always()
         with:

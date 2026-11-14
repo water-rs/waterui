@@ -14,21 +14,20 @@ categories = ["gui", "graphics"]
 [dependencies]
 waterui-core.workspace = true
 thiserror.workspace = true
-waterui-assets.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 nami.workspace = true
 waterui-icon.workspace = true
 waterui-shape.workspace = true
-waterui-map.workspace = true
-waterui-webview.workspace = true
+waterui-map = { workspace = true, optional = true }
+waterui-webview = { workspace = true, optional = true }
 # Hosted content follows the occlusion rects through a watcher set.
-waterui-watcher-set.workspace = true
+waterui-watcher-set = { workspace = true, optional = true }
 waterui-layout.workspace = true
 waterui-controls.workspace = true
 waterui-form.workspace = true
-waterui-backend-core = { workspace = true, features = ["gestures", "overlay", "log"] }
-waterkit-clipboard.workspace = true
+waterui-backend-core = { workspace = true, optional = true, features = ["gestures", "overlay", "log"] }
+waterkit-clipboard = { workspace = true, optional = true }
 waterui-locale.workspace = true
 # `std` for `Url::from_file_path`, the OS file-drop path.
 waterui-url = { workspace = true, features = ["std"] }
@@ -42,7 +41,7 @@ getrandom = { workspace = true, optional = true }
 # packages record through it, never through a render engine.
 cherenkov-record.workspace = true
 kurbo.workspace = true
-peniko = "0.6"
+peniko = { version = "0.6", optional = true }
 # `imageops::resize` fits a decoded image to the engine's image limits
 # before registration (water-rs/waterui#1806): the decode-quality resample
 # belongs to the ingest path, not the engine. Pixel ops only — no codecs.
@@ -50,7 +49,7 @@ image = { version = "0.25", default-features = false }
 # The HWUI target reads a registered font's bounds and variation axes
 # (`head`, `fvar`, `avar`) without the shaping engine skrifa carries.
 read-fonts = { version = "0.45.1", default-features = false, features = ["std"], optional = true }
-lru.workspace = true
+lru = { workspace = true, optional = true }
 executor-core.workspace = true
 rustc-hash.workspace = true
 unicode-segmentation = "1.13"
@@ -114,6 +113,7 @@ accesskit_winit = { version = "0.34.1", optional = true }
 # Decodes the CLI-staged window icon (always written as 8-bit RGBA PNG) —
 # only the winit runner reads one.
 png = { version = "0.18", optional = true }
+waterui-assets = { workspace = true, optional = true }
 
 [build-dependencies]
 cfg_aliases = "0.2.2"
@@ -309,7 +309,8 @@ waterui-video-gpu = { workspace = true, optional = true }
 # HWUI, the GPU crates stand by for hosted GPU content).
 # `raw-window-handle` is only the GPU attachment's `AndroidDisplay` impl.
 raw-window-handle = { version = "0.6", optional = true }
-android_logger = "0.15"
+android_logger = { version = "0.15", optional = true }
+waterui-assets-core = { workspace = true, optional = true }
 tracing-log = "0.2"
 # The accessibility tree publish and the platform-view placement set cross JNI
 # as JSON.
@@ -442,11 +443,20 @@ frame-profile = ["gpu"]
 # it, while `hwui` + `gpu` keeps the HWUI painter with the GPU crates present
 # for hosted content (water-rs/waterui#1812).
 gpu = [
+    "dep:android_logger",
     "dep:cherenkov",
     "dep:cherenkov-gpu",
+    "dep:lru",
+    "dep:peniko",
     "dep:wgpu",
     "dep:pollster",
     "dep:raw-window-handle",
+    "dep:waterkit-clipboard",
+    "dep:waterui-assets-core",
+    "dep:waterui-backend-core",
+    "dep:waterui-map",
+    "dep:waterui-watcher-set",
+    "dep:waterui-webview",
     "waterui/gpu",
     "waterui-graphics/gpu",
     "dep:parley",
@@ -467,7 +477,14 @@ gpu = [
 cpu = [
     "dep:cherenkov",
     "dep:cherenkov-cpu",
+    "dep:lru",
+    "dep:peniko",
     "cherenkov-cpu/shaders",
+    "dep:waterkit-clipboard",
+    "dep:waterui-assets-core",
+    "dep:waterui-backend-core",
+    "dep:waterui-map",
+    "dep:waterui-webview",
     "waterui-graphics/cpu",
     "dep:parley",
     "dep:skrifa",
@@ -481,7 +498,16 @@ inspector-signals = ["waterui/inspector-signals"]
 # text laid out and drawn by the platform's `StaticLayout`
 # (water-rs/waterui#1811). On other targets the feature selects nothing; the
 # subsystem still compiles for tests.
-hwui = ["dep:read-fonts"]
+hwui = [
+    "dep:android_logger",
+    "dep:lru",
+    "dep:peniko",
+    "dep:read-fonts",
+    "dep:waterkit-clipboard",
+    "dep:waterui-backend-core",
+    "dep:waterui-map",
+    "dep:waterui-webview",
+]
 # The Android realization of the GPU video player's decoder plane
 # (`AndroidVideoSurfaceHost`), for an application that links
 # `waterui-video-gpu`. The CLI enables it for such an application; elsewhere
@@ -510,6 +536,7 @@ winit = [
     "dep:accesskit_winit",
     "dep:ctrlc",
     "dep:png",
+    "dep:waterui-assets",
     "dep:signal-hook",
     "dep:libc",
     "dep:objc2",
@@ -551,15 +578,9 @@ web = [
     "dep:futures",
     "dep:wasm-bindgen",
     "dep:wasm-bindgen-futures",
+    "dep:waterui-watcher-set",
     "dep:web-sys",
 ]
 
 [lints]
 workspace = true
-
-# cargo-machete: these entries exist to switch features on, not to be named
-# in code — `waterui-url/std` exposes `Url::from_file_path` for the OS
-# file-drop tests, and `icu_provider/logging` routes ICU4X data warnings
-# through `log`.
-[package.metadata.cargo-machete]
-ignored = ["cfg_aliases", "waterui-url", "icu_provider"]

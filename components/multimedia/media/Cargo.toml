@@ -69,5 +69,3 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 
 [lints]
 workspace = true
-[package.metadata.cargo-machete]
-ignored = ["waterui-macros"]

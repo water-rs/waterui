@@ -18,6 +18,9 @@ dev = ["waterui/dynamic_linking"]
 # so its package stages one browser runtime rather than two.
 wpe = ["dep:waterui-browser-wpe"]
 
+[lints]
+workspace = true
+
 [dependencies]
 waterui = { workspace = true, features = ["webview", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 

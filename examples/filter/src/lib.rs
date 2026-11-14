@@ -1,4 +1,4 @@
-//! Filter Example - Demonstrates WaterUI's visual filter system
+//! Filter Example - Demonstrates `WaterUI`'s visual filter system
 //!
 //! This example showcases visual filters that can be applied to any view:
 //! - Blur - Gaussian blur effect
@@ -12,6 +12,7 @@
 //! All filters support reactive values and can be animated using
 //! the `.with(Animation::...)` modifier.
 
+use core::future::ready;
 use core::time::Duration;
 use waterui::animation::Animation;
 use waterui::app::App;
@@ -23,12 +24,21 @@ use waterui::graphics::gpu::wgpu;
 use waterui::prelude::slider::slider;
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::reactive::Binding;
+use waterui::reactive::{Binding, Signal};
 
 fn set_f64_button(label: &'static str, value: f64, binding: &Binding<f64>) -> impl View {
     button(label)
         .action(move |State(current): State<Binding<f64>>| current.set(value))
         .state(binding)
+}
+
+/// Reads a slider's `f64` binding as the `f32` a filter modifier takes, animated.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "slider bindings are f64 while filter modifiers take f32; every value here is UI-scale, far inside f32's range"
+)]
+fn animated_filter_value(value: &Binding<f64>, animation: Animation) -> impl Signal<Output = f32> {
+    value.clone().map(|v| v as f32).with(animation)
 }
 
 /// Sample content for demonstrating filters
@@ -53,10 +63,10 @@ fn sample_content() -> impl View {
 
 /// Demo: Blur filter - Gaussian blur effect
 fn blur_section(blur_radius: &Binding<f64>) -> impl View {
-    let animated_blur = blur_radius
-        .clone()
-        .map(|v| v as f32)
-        .with(Animation::ease_in_out(Duration::from_millis(300)));
+    let animated_blur = animated_filter_value(
+        blur_radius,
+        Animation::ease_in_out(Duration::from_millis(300)),
+    );
 
     vstack((
         text("Blur").headline(),
@@ -77,10 +87,10 @@ fn blur_section(blur_radius: &Binding<f64>) -> impl View {
 
 /// Demo: Brightness filter - lighten or darken
 fn brightness_section(brightness: &Binding<f64>) -> impl View {
-    let animated_brightness = brightness
-        .clone()
-        .map(|v| v as f32)
-        .with(Animation::ease_in_out(Duration::from_millis(300)));
+    let animated_brightness = animated_filter_value(
+        brightness,
+        Animation::ease_in_out(Duration::from_millis(300)),
+    );
 
     vstack((
         text("Brightness").headline(),
@@ -103,10 +113,10 @@ fn brightness_section(brightness: &Binding<f64>) -> impl View {
 
 /// Demo: Saturation filter - color intensity
 fn saturation_section(saturation: &Binding<f64>) -> impl View {
-    let animated_saturation = saturation
-        .clone()
-        .map(|v| v as f32)
-        .with(Animation::ease_in_out(Duration::from_millis(300)));
+    let animated_saturation = animated_filter_value(
+        saturation,
+        Animation::ease_in_out(Duration::from_millis(300)),
+    );
 
     vstack((
         text("Saturation").headline(),
@@ -129,10 +139,8 @@ fn saturation_section(saturation: &Binding<f64>) -> impl View {
 
 /// Demo: Contrast filter
 fn contrast_section(contrast: &Binding<f64>) -> impl View {
-    let animated_contrast = contrast
-        .clone()
-        .map(|v| v as f32)
-        .with(Animation::ease_in_out(Duration::from_millis(300)));
+    let animated_contrast =
+        animated_filter_value(contrast, Animation::ease_in_out(Duration::from_millis(300)));
 
     vstack((
         text("Contrast").headline(),
@@ -153,10 +161,8 @@ fn contrast_section(contrast: &Binding<f64>) -> impl View {
 
 /// Demo: Hue rotation filter - shift colors
 fn hue_rotation_section(hue: &Binding<f64>) -> impl View {
-    let animated_hue = hue
-        .clone()
-        .map(|v| v as f32)
-        .with(Animation::ease_in_out(Duration::from_millis(400)));
+    let animated_hue =
+        animated_filter_value(hue, Animation::ease_in_out(Duration::from_millis(400)));
 
     vstack((
         text("Hue Rotation").headline(),
@@ -177,10 +183,10 @@ fn hue_rotation_section(hue: &Binding<f64>) -> impl View {
 
 /// Demo: Grayscale filter
 fn grayscale_section(grayscale: &Binding<f64>) -> impl View {
-    let animated_grayscale = grayscale
-        .clone()
-        .map(|v| v as f32)
-        .with(Animation::ease_in_out(Duration::from_millis(300)));
+    let animated_grayscale = animated_filter_value(
+        grayscale,
+        Animation::ease_in_out(Duration::from_millis(300)),
+    );
 
     vstack((
         text("Grayscale").headline(),
@@ -200,10 +206,8 @@ fn grayscale_section(grayscale: &Binding<f64>) -> impl View {
 
 /// Demo: Opacity filter
 fn opacity_section(opacity: &Binding<f64>) -> impl View {
-    let animated_opacity = opacity
-        .clone()
-        .map(|v| v as f32)
-        .with(Animation::ease_in_out(Duration::from_millis(300)));
+    let animated_opacity =
+        animated_filter_value(opacity, Animation::ease_in_out(Duration::from_millis(300)));
 
     vstack((
         text("Opacity").headline(),
@@ -239,18 +243,13 @@ fn combined_section(
         saturation: combined_saturation.clone(),
         hue: combined_hue.clone(),
     };
-    let animated_blur = combined_blur
-        .clone()
-        .map(|v| v as f32)
-        .with(Animation::spring(200.0, 15.0));
-    let animated_saturation = combined_saturation
-        .clone()
-        .map(|v| v as f32)
-        .with(Animation::spring(200.0, 15.0));
-    let animated_hue = combined_hue
-        .clone()
-        .map(|v| v as f32)
-        .with(Animation::ease_in_out(Duration::from_millis(500)));
+    let animated_blur = animated_filter_value(combined_blur, Animation::spring(200.0, 15.0));
+    let animated_saturation =
+        animated_filter_value(combined_saturation, Animation::spring(200.0, 15.0));
+    let animated_hue = animated_filter_value(
+        combined_hue,
+        Animation::ease_in_out(Duration::from_millis(500)),
+    );
 
     vstack((
         text("Combined Filters").headline(),
@@ -376,8 +375,8 @@ struct FillEffect {
 }
 
 impl Effect for FillEffect {
-    async fn setup(&mut self, _ctx: &EffectContext<'_>) -> EffectSetupResult {
-        Ok(())
+    fn setup(&mut self, _ctx: &EffectContext<'_>) -> impl Future<Output = EffectSetupResult> {
+        ready(Ok(()))
     }
 
     fn encode_render(
@@ -476,6 +475,7 @@ fn filter_preview() -> impl View {
     .padding()
 }
 
+/// Builds the example app, showing the filter demo.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

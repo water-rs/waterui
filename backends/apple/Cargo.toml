@@ -303,11 +303,6 @@ objc2-core-image = { version = "0.3", default-features = false, features = [
     "objc2-metal",
 ], optional = true }
 
-# cargo-machete: `cfg_aliases` and `waterkit-build` are named only in
-# `build.rs`, which the analysis does not read.
-[package.metadata.cargo-machete]
-ignored = ["cfg_aliases", "waterkit-build"]
-
 [dev-dependencies]
 block2 = { workspace = true }
 divan = "0.1"

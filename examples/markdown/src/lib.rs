@@ -1,4 +1,4 @@
-//! Markdown example for WaterUI.
+//! Markdown example for `WaterUI`.
 //!
 //! The document sits under a search panel — opened by the Find control above
 //! it — that demonstrates key bubbling: `on_key_press` on the bar owns Escape
@@ -14,7 +14,7 @@ use waterui::widget::condition::when;
 const DOCUMENT: &str = include_str!("example.md");
 
 /// Byte offsets where `needle` occurs in `DOCUMENT`, case-insensitive.
-fn match_offsets(needle: Str) -> Vec<usize> {
+fn match_offsets(needle: &Str) -> Vec<usize> {
     if needle.is_empty() {
         return Vec::new();
     }
@@ -38,6 +38,7 @@ fn excerpt(offset: usize) -> String {
     DOCUMENT[start..end].to_string()
 }
 
+/// The markdown demo: a document under a search panel with match navigation.
 #[preview]
 pub fn demo() -> impl View {
     let open: Binding<bool> = binding(false);
@@ -45,7 +46,7 @@ pub fn demo() -> impl View {
     let current: Binding<usize> = Binding::container(0);
     let focus: Binding<Option<&'static str>> = Binding::default();
 
-    let matches = query.map(match_offsets).computed();
+    let matches = query.map(|needle| match_offsets(&needle)).computed();
     let status = matches
         .zip(&current)
         .map(|(matches, current)| {
@@ -124,6 +125,7 @@ pub fn demo() -> impl View {
     .state(&focus)
 }
 
+/// Builds the example app, showing the markdown demo.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

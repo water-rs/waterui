@@ -13,6 +13,9 @@ publish = false
 [features]
 dev = ["waterui/dynamic_linking"]
 
+[lints]
+workspace = true
+
 [dependencies]
 waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 waterkit-camera.workspace = true
@@ -24,7 +27,3 @@ wgpu.workspace = true
 
 [build-dependencies]
 shaderloom = { workspace = true, features = ["build"] }
-
-# `shaderloom` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
-[package.metadata.cargo-machete]
-ignored = ["shaderloom"]

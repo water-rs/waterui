@@ -7620,10 +7620,27 @@ fn local_checkout_dependency(
     let manifest_path = root.join("Cargo.toml");
     let manifest = parse_cargo_manifest(&manifest_path)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let declared = manifest
-        .workspace
+    // A package no member links is declared as a `scaffold-pins` entry of the
+    // framework metadata instead of a `[workspace.dependencies]` one.
+    let pinned = manifest
+        .package
         .as_ref()
-        .and_then(|workspace| workspace.dependencies.get(crate_name));
+        .and_then(|package| package.metadata.as_ref())
+        .and_then(|metadata| metadata.get("waterui"))
+        .and_then(|metadata| metadata.get("scaffold-pins"))
+        .and_then(|pins| pins.get(crate_name))
+        .map(|pin| {
+            pin.clone()
+                .try_into::<cargo_toml::Dependency>()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        })
+        .transpose()?;
+    let declared = pinned.as_ref().or_else(|| {
+        manifest
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.dependencies.get(crate_name))
+    });
     let patch = manifest
         .patch
         .get("crates-io")

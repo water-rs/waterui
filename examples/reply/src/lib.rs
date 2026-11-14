@@ -1,4 +1,4 @@
-//! Reply — a list-detail mail client built only from standard WaterUI
+//! Reply — a list-detail mail client built only from standard `WaterUI`
 //! components.
 //!
 //! `Tabs` carries the destinations, a `NavigationSplitView` pairs the inbox
@@ -55,7 +55,7 @@ struct Message {
     avatar_asset: &'static str,
 }
 
-#[derive(Clone, PartialEq, Identifiable)]
+#[derive(Clone, Copy, PartialEq, Identifiable)]
 struct Thread {
     #[id]
     id: u64,
@@ -156,7 +156,7 @@ fn matching_threads(query: &str) -> Vec<Thread> {
                 .iter()
                 .any(|field| field.to_lowercase().contains(&query))
         })
-        .cloned()
+        .copied()
         .collect()
 }
 
@@ -298,9 +298,9 @@ fn empty_destination(name: &'static str) -> impl View {
     text(name).title()
 }
 
-fn reply(selected: Binding<Option<u64>>, destination: Binding<usize>) -> impl View {
+fn reply(selected: Binding<Option<u64>>, destination: &Binding<usize>) -> impl View + use<> {
     Tabs::new(
-        &destination,
+        destination,
         vec![
             Tab::container(label("Mail").icon(email_outline()), move || {
                 mail(selected.clone())
@@ -323,11 +323,13 @@ fn reply(selected: Binding<Option<u64>>, destination: Binding<usize>) -> impl Vi
 /// Self-contained entry for previews and embedding.
 #[preview]
 pub fn demo() -> impl View {
-    reply(binding(Some(2u64)), binding(0usize))
+    reply(binding(Some(2u64)), &binding(0usize))
 }
 
+/// Builds the Reply example app around the inbox and the tab container.
+#[must_use]
 pub fn app(env: Environment) -> App {
     let selected = binding(Some(2u64));
     let destination = binding(0usize);
-    App::new(move || reply(selected.clone(), destination.clone()), env)
+    App::new(move || reply(selected.clone(), &destination), env)
 }
