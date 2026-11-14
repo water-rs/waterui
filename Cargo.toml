@@ -615,7 +615,7 @@ lto = "thin"
 # xcb 1.7.0 still builds with vulnerable quick-xml 0.30. Upstream has migrated
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
-shaderloom = { git = "https://github.com/water-rs/shaderloom", branch = "dev" }
+shaderloom = { git = "https://github.com/water-rs/shaderloom", branch = "main" }
 # Extracted crates on crates.io (waterui-chart #188, …) depend on the
 # registry `waterui-core` and `waterui-graphics`; the workspace must resolve
 # those to its own copies or the graph carries two of each and every `View`
@@ -726,7 +726,7 @@ wgpu-types = { git = "https://github.com/water-rs/wgpu", branch = "fix/metal-sha
 # wgpu-external-frame hands wgpu-hal's GLES textures to its own glow context, so
 # it must link the glow 0.18 the branch above carries; its crates.io 0.4.0 links
 # 0.17 (water-rs/wgpu-external-frame#43). Drop it with the wgpu entries.
-wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame", branch = "dev" }
+wgpu-external-frame = { git = "https://github.com/water-rs/wgpu-external-frame", branch = "main" }
 
 # Split component repositories, the waterkit family and suiteki follow their
 # `dev` branch; `Cargo.lock` records the exact commit.
@@ -737,29 +737,29 @@ waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "d
 waterui-particle = { git = "https://github.com/water-rs/particle", branch = "dev" }
 waterui-image = { git = "https://github.com/water-rs/image", branch = "dev" }
 waterui-svg = { git = "https://github.com/water-rs/svg", branch = "dev" }
-waterkit-build = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-camera = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-deeplink = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-dialog = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-fs = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-haptic = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-location = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-menu = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-permission = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-audio = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-codec = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-core = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-video = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-video-container = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-video-core = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-video-player = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
+waterkit-build = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-camera = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-deeplink = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-dialog = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-fs = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-haptic = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-location = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-menu = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-permission = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-audio = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-codec = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-core = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-video = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-video-container = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-video-core = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-video-player = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", branch = "main" }
 waterui-math = { git = "https://github.com/water-rs/math", branch = "dev" }
 # suiteki 0.1.1 on crates.io implements nami-core 0.3's `Signal`; suiteki's
 # `dev` implements 0.5's (water-rs/suiteki#29). Drop once a release carries
 # it.
-suiteki = { git = "https://github.com/water-rs/suiteki", branch = "dev" }
+suiteki = { git = "https://github.com/water-rs/suiteki", branch = "main" }
 # `homedir` (via axoupdater) and `clipboard-rs` (via waterkit-clipboard) pin
 # `windows` 0.61 and 0.59 — both inside gpu-allocator's `>=0.58, <=0.62`
 # range, so any relock can settle gpu-allocator on a different `windows`
