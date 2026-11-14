@@ -241,6 +241,12 @@ fn a3a() -> impl View {
     .spacing(4.0)
 }
 
+// The fixture is one layout tree whose shape the twin comparison depends on, so it
+// stays in one function rather than being split into parts.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the fixture is one layout tree whose shape the twin comparison depends on"
+)]
 fn a3b() -> impl View {
     vstack((
         // ZStack member
@@ -420,8 +426,8 @@ fn a11() -> impl View {
 // A12 — root-level fixtures; selected by TWINS_CASE because they need the
 // window proposal and the real safe-area insets at the app root.
 // ---------------------------------------------------------------------------
-fn a12_root(case: String) -> impl View {
-    match case.as_str() {
+fn a12_root(case: &str) -> impl View + use<> {
+    match case {
         "a12.ignore" => scroll(r("twins.a12.content", 60.0, 300.0))
             .a11y_label("twins.a12.scroll")
             .ignore_safe_area(EdgeSet::ALL)
@@ -510,8 +516,8 @@ fn d() -> impl View {
     .spacing(4.0)
 }
 
-fn root_case(case: String) -> impl View {
-    match case.as_str() {
+fn root_case(case: &str) -> impl View + use<> {
+    match case {
         "a12.scroll" | "a12.ignore" | "a12.bar" => a12_root(case).anyview(),
         _ => scroll(
             vstack((
@@ -527,8 +533,9 @@ fn root_case(case: String) -> impl View {
     }
 }
 
+/// Builds the layout twins app; the `TWINS_CASE` variable selects a fixture group.
 #[must_use]
 pub fn app(env: Environment) -> App {
     let case = std::env::var("TWINS_CASE").unwrap_or_else(|_| "all".to_string());
-    App::new(move || root_case(case.clone()), env)
+    App::new(move || root_case(&case), env)
 }

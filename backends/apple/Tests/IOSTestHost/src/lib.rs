@@ -80,6 +80,7 @@ fn inbox() -> impl View {
     ))
 }
 
+/// Builds the test host app around [`inbox`].
 pub fn app(env: Environment) -> App {
     App::new(inbox, env)
 }

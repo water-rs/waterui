@@ -71,6 +71,11 @@ fn localized_panel(
     )
 }
 
+/// The typography and bidirectional layout demo: type scale, CJK specimens and RTL panels.
+///
+/// # Panics
+///
+/// Panics if the Hebrew locale tag `"he"` fails to parse, which a valid BCP 47 tag never does.
 #[preview]
 pub fn typography_and_rtl() -> impl View {
     scroll(
@@ -115,6 +120,7 @@ pub fn typography_and_rtl() -> impl View {
     )
 }
 
+/// Builds the example app, showing the typography and bidirectional layout demo.
 pub fn app(env: Environment) -> App {
     App::new(typography_and_rtl, env)
 }

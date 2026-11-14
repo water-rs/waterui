@@ -22,6 +22,7 @@ use waterui::window::{
     conditional_window,
 };
 
+/// The multi-window example page: one window per window style, each with its state.
 #[preview]
 pub fn demo() -> impl View {
     // Reactive state to track window states. `WindowState::default()` is
@@ -334,6 +335,7 @@ fn material_item(name: &'static str, description: &'static str) -> impl View {
     .padding_vertical(4.0)
 }
 
+/// Builds the multi-window example app.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

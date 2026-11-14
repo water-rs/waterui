@@ -67,6 +67,10 @@ const SAMPLES: &[Sample] = &[
 ];
 
 /// Self-contained entry: builds the player, status, and source selector.
+///
+/// # Panics
+///
+/// Panics if a built-in sample URL does not parse or the sample list is empty.
 pub fn demo() -> impl View {
     let status: Binding<Str> = binding("Idle");
     let is_buffering = binding(false);
@@ -74,10 +78,7 @@ pub fn demo() -> impl View {
         .iter()
         .map(|sample| MediaItem::from(Url::parse(sample.url).expect("sample URL should be valid")))
         .collect::<Vec<_>>();
-    let item_ids = items
-        .iter()
-        .map(waterui::component::MediaItem::get_id)
-        .collect::<Vec<_>>();
+    let item_ids = items.iter().map(MediaItem::get_id).collect::<Vec<_>>();
     let session = PlaybackSession::new(Playlist::new(items[0].clone(), items.into_iter().skip(1)));
     let controller = session.controller();
     let selected = controller.current_item_index();
@@ -89,17 +90,13 @@ pub fn demo() -> impl View {
             let status = status.clone();
             let is_buffering = is_buffering.clone();
             move |event| match event {
-                video::Event::ReadyToPlay => {
+                video::Event::ReadyToPlay | video::Event::BufferingEnded => {
                     is_buffering.set(false);
                     status.set(Str::from_static("Ready"));
                 }
                 video::Event::Buffering => {
                     is_buffering.set(true);
                     status.set(Str::from_static("Buffering..."));
-                }
-                video::Event::BufferingEnded => {
-                    is_buffering.set(false);
-                    status.set(Str::from_static("Ready"));
                 }
                 video::Event::PlaybackStateChanged { playing } => {
                     status.set(if playing {
@@ -131,8 +128,6 @@ pub fn demo() -> impl View {
                 video::Event::OfflineDrmKeySetChanged { .. } => {
                     status.set(Str::from_static("Offline DRM Key Updated"));
                 }
-                video::Event::BufferLevel { .. } | video::Event::PlaybackMetrics { .. } => {}
-                video::Event::NextRequested | video::Event::PreviousRequested => {}
                 video::Event::Ended => {
                     is_buffering.set(false);
                     status.set(Str::from_static("Ended"));
@@ -141,14 +136,15 @@ pub fn demo() -> impl View {
                     is_buffering.set(false);
                     status.set(format!("Error: {message}").into());
                 }
+                // Buffer levels, metrics and next/previous requests leave the status line unchanged.
                 _ => {}
             }
         });
 
     player_shell(
         player,
-        selected,
-        status,
+        &selected,
+        &status,
         is_buffering,
         Some((controller, item_ids)),
     )
@@ -212,13 +208,8 @@ impl View for PreviewPlayer {
         // The buffering overlay is a repeating animation. A capture cannot
         // settle while one is mounted, so the preview leaves it off and
         // reports buffering through the status line.
-        player_shell(
-            player,
-            Binding::usize(0).computed(),
-            status,
-            binding(false),
-            None,
-        )
+        let selected = Binding::usize(0).computed();
+        player_shell(player, &selected, &status, binding(false), None)
     }
 }
 
@@ -235,13 +226,13 @@ impl fmt::Display for PlaybackFailed {
 impl std::error::Error for PlaybackFailed {}
 
 /// Shared layout: title, player with a buffering overlay, status line, and source pills.
-fn player_shell(
-    player: impl View,
-    selected: Computed<usize>,
-    status: Binding<Str>,
+fn player_shell<V: View>(
+    player: V,
+    selected: &Computed<usize>,
+    status: &Binding<Str>,
     is_buffering: Binding<bool>,
     playlist: Option<(PlayerController, Vec<MediaItemId>)>,
-) -> impl View {
+) -> impl View + use<V> {
     let title = selected.map(|index| SAMPLES[index].title);
     let profile = selected.map(|index| SAMPLES[index].profile);
 
@@ -258,13 +249,13 @@ fn player_shell(
             3,
             [
                 grid_row((
-                    pill_button(SAMPLES[0].title, 0, ids[0], &selected, &controller),
-                    pill_button(SAMPLES[1].title, 1, ids[1], &selected, &controller),
-                    pill_button(SAMPLES[2].title, 2, ids[2], &selected, &controller),
+                    pill_button(SAMPLES[0].title, 0, ids[0], selected, &controller),
+                    pill_button(SAMPLES[1].title, 1, ids[1], selected, &controller),
+                    pill_button(SAMPLES[2].title, 2, ids[2], selected, &controller),
                 )),
                 grid_row((
-                    pill_button(SAMPLES[3].title, 3, ids[3], &selected, &controller),
-                    pill_button(SAMPLES[4].title, 4, ids[4], &selected, &controller),
+                    pill_button(SAMPLES[3].title, 3, ids[3], selected, &controller),
+                    pill_button(SAMPLES[4].title, 4, ids[4], selected, &controller),
                 )),
             ],
         )
@@ -309,6 +300,7 @@ fn pill_button(
     ))
 }
 
+/// Builds the video player example app.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

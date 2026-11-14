@@ -73,7 +73,7 @@ pub fn demo() -> impl View {
         state.reconnect_ticket.clone(),
         state.preview_status.clone(),
     );
-    camera_filter_lab(preview, state)
+    camera_filter_lab(preview, &state)
 }
 
 #[preview]
@@ -81,10 +81,10 @@ fn camera_filter_lab_preview() -> impl View {
     let state = CameraLabState::preview();
     let preview =
         synthetic_camera_surface(state.active_filter.clone(), state.filter_strength.clone());
-    camera_filter_lab(preview, state)
+    camera_filter_lab(preview, &state)
 }
 
-fn camera_filter_lab(preview: impl View, state: CameraLabState) -> impl View {
+fn camera_filter_lab<V: View>(preview: V, state: &CameraLabState) -> impl View + use<V> {
     let filter_label = state.active_filter.map(filter_name);
     let filter_strength = state.filter_strength.clone();
     let preview_status = state.preview_status.clone();
@@ -149,7 +149,7 @@ fn camera_filter_lab(preview: impl View, state: CameraLabState) -> impl View {
                 .await;
             })
             .bordered_prominent()
-            .state(&state),
+            .state(state),
     ))
     .spacing(8.0);
 
@@ -290,7 +290,7 @@ impl SyntheticCameraPreviewRenderer {
                 .expect("synthetic preview uniform mailbox poisoned") =
                 FilterUniforms(filter_params(
                     bridge.active_filter.snapshot(),
-                    bridge.filter_strength.snapshot() as f32,
+                    strength_uniform(bridge.filter_strength.snapshot()),
                 ));
         })
     }
@@ -381,7 +381,7 @@ impl CameraFilterRenderer {
             let mut shared = self.shared.lock().expect("camera mailbox poisoned");
             shared.uniforms = FilterUniforms(filter_params(
                 self.active_filter.snapshot(),
-                self.filter_strength.snapshot() as f32,
+                strength_uniform(self.filter_strength.snapshot()),
             ));
             shared.gpu_handles.clone()
         };
@@ -666,6 +666,18 @@ impl GpuContent for CameraFilterContent {
     }
 }
 
+/// Narrows the slider's filter strength to the shader's `f32` uniform.
+///
+/// The strength is a slider fraction in `0.0..=1.0`, which `f32` holds to far
+/// more precision than the filter uses.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the filter strength is a 0.0..=1.0 slider fraction, which f32 represents"
+)]
+const fn strength_uniform(strength: f64) -> f32 {
+    strength as f32
+}
+
 fn filter_params(filter_kind: usize, strength: f32) -> [f32; 5] {
     match filter_kind {
         // Cinematic
@@ -713,6 +725,10 @@ fn filter_params(filter_kind: usize, strength: f32) -> [f32; 5] {
     }
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "camera permission and feed task runs on the UI thread"
+)]
 async fn sync_waterkit_camera(
     status: Binding<Str>,
     permission: Binding<Str>,
@@ -824,6 +840,7 @@ const fn filter_name(index: usize) -> &'static str {
 const CAMERA_FILTER_SHADER: CompiledShader =
     include!(concat!(env!("OUT_DIR"), "/camera_filter.rs"));
 
+/// Builds the camera filter lab app around [`demo`].
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

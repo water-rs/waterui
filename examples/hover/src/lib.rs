@@ -179,6 +179,7 @@ fn interactive_buttons_section() -> impl View {
     .padding()
 }
 
+/// The hover demo: hover events and static and reactive cursor styles.
 #[preview]
 pub fn demo() -> impl View {
     let hover_count = binding(0);
@@ -206,6 +207,7 @@ pub fn demo() -> impl View {
     )
 }
 
+/// Builds the example app, showing the hover demo.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

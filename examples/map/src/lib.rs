@@ -152,6 +152,11 @@ fn content(state: MapExampleState) -> impl View {
         // Ambient theme data: a theme that styles floating surfaces supplies
         // these, and the framework default applies on backends that do not.
         let style = env.get::<FloatingStyle>().cloned().unwrap_or_default();
+        // A theme point size (44.0 by default); `f32` represents it exactly.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the theme point size is a small finite width that f32 holds exactly"
+        )]
         let control_width = style.minimum_width as f32;
         let zoom_controls = vstack((zoom_in, Divider, zoom_out))
             .width(control_width)
@@ -170,6 +175,7 @@ fn content(state: MapExampleState) -> impl View {
     absolute((map.pin(PinConstraints::all(0.0)), status_panel, controls))
 }
 
+/// The map demo: a full-screen map with a status panel and zoom and location controls.
 #[preview]
 pub fn demo() -> impl View {
     content(MapExampleState::new())

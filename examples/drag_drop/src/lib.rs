@@ -42,9 +42,9 @@ fn fruit_card(emoji: &'static str, label: &'static str, color: Color) -> impl Vi
 
 /// Animated basket that collects dropped items
 fn fruit_basket(
-    is_hovering: Binding<bool>,
-    collected: Binding<Vec<String>>,
-    bounce: Binding<f32>,
+    is_hovering: &Binding<bool>,
+    collected: &Binding<Vec<String>>,
+    bounce: &Binding<f32>,
 ) -> impl View {
     // Scale up when hovering (SignalExt methods take &self and clone internally)
     let hover_scale = is_hovering
@@ -118,11 +118,12 @@ fn fruit_basket(
             .detach();
         },
     )
-    .drop_hover(&is_hovering)
-    .state(&collected)
-    .state(&bounce)
+    .drop_hover(is_hovering)
+    .state(collected)
+    .state(bounce)
 }
 
+/// The drag-and-drop demo: draggable fruit cards and a basket that collects them.
 #[preview]
 pub fn demo() -> impl View {
     let is_hovering = Binding::bool(false);
@@ -157,7 +158,7 @@ pub fn demo() -> impl View {
             .padding(),
             spacer().height(32.0),
             // Drop basket
-            fruit_basket(is_hovering, collected.clone(), bounce),
+            fruit_basket(&is_hovering, &collected, &bounce),
             spacer().height(16.0),
             // Reset button
             button("Clear Basket")
@@ -169,6 +170,7 @@ pub fn demo() -> impl View {
     )
 }
 
+/// Builds the drag-and-drop app around [`demo`].
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

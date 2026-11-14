@@ -99,6 +99,7 @@ fn manual_anchor() -> impl View {
         )
 }
 
+/// The anchored overlay demo: one anchor per edge, alignment and dismissal mode.
 #[preview]
 pub fn demo() -> impl View {
     vstack((
@@ -138,6 +139,7 @@ pub fn demo() -> impl View {
     .padding()
 }
 
+/// Builds the example app, showing the anchored overlay demo.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

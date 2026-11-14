@@ -46,14 +46,14 @@ struct AppSettings {
 }
 
 fn scene(
-    settings: Binding<AppSettings>,
-    registration: Binding<RegistrationForm>,
-    custom_name: Binding<Str>,
-    custom_bio: Binding<Str>,
-    custom_enabled: Binding<bool>,
-    custom_count: Binding<i32>,
-    custom_slider: Binding<f64>,
-) -> impl View {
+    settings: &Binding<AppSettings>,
+    registration: &Binding<RegistrationForm>,
+    custom_name: &Binding<Str>,
+    custom_bio: &Binding<Str>,
+    custom_enabled: &Binding<bool>,
+    custom_count: &Binding<i32>,
+    custom_slider: &Binding<f64>,
+) -> impl View + use<> {
     scroll(
         vstack((
             // Header
@@ -65,7 +65,7 @@ fn scene(
             vstack((
                 text("Registration Form").sub_headline(),
                 "Using #[form] derive macro",
-                form(&registration),
+                form(registration),
                 Divider,
                 // Live preview of form data
                 text("Live Preview:").bold(),
@@ -86,7 +86,7 @@ fn scene(
             vstack((
                 text("App Settings").sub_headline(),
                 "Another form with different field types",
-                form(&settings),
+                form(settings),
                 Divider,
                 text("Current Settings:").bold(),
                 hstack((
@@ -107,17 +107,17 @@ fn scene(
                 text("Manual Form Controls").sub_headline(),
                 "Building forms manually with individual controls",
                 // TextField with label and placeholder
-                TextField::new("Username", &custom_name).prompt("Enter your username"),
+                TextField::new("Username", custom_name).prompt("Enter your username"),
                 // Multi-line text field
-                TextField::new("Bio", &custom_bio)
+                TextField::new("Bio", custom_bio)
                     .prompt("Tell us about yourself")
                     .line_limit(NonZeroUsize::new(3).unwrap()),
                 // Toggle with label
-                Toggle::new("Enable Feature", &custom_enabled),
+                Toggle::new("Enable Feature", custom_enabled),
                 // Stepper with custom range
-                stepper("Item Count", &custom_count).range(0..=100).step(5),
+                stepper("Item Count", custom_count).range(0..=100).step(5),
                 // Slider with label
-                slider("Progress", &custom_slider),
+                slider("Progress", custom_slider),
                 // Progress bar showing slider value
                 progress(custom_slider.clone()),
                 Divider,
@@ -136,6 +136,7 @@ fn scene(
     )
 }
 
+/// Builds the form example app: a theme driven by the settings form, and the three forms.
 #[must_use]
 pub fn app(mut env: Environment) -> App {
     let settings = AppSettings::binding();
@@ -165,13 +166,13 @@ pub fn app(mut env: Environment) -> App {
     App::new(
         move || {
             scene(
-                settings.clone(),
-                registration.clone(),
-                custom_name.clone(),
-                custom_bio.clone(),
-                custom_enabled.clone(),
-                custom_count.clone(),
-                custom_slider.clone(),
+                &settings,
+                &registration,
+                &custom_name,
+                &custom_bio,
+                &custom_enabled,
+                &custom_count,
+                &custom_slider,
             )
         },
         env,
@@ -195,12 +196,12 @@ fn sample_card() -> impl View {
 #[preview]
 pub fn demo() -> impl View {
     scene(
-        AppSettings::binding(),
-        RegistrationForm::binding(),
-        binding(""),
-        binding(""),
-        binding(false),
-        binding(5),
-        binding(0.5),
+        &AppSettings::binding(),
+        &RegistrationForm::binding(),
+        &binding(""),
+        &binding(""),
+        &binding(false),
+        &binding(5),
+        &binding(0.5),
     )
 }

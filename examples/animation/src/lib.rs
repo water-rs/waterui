@@ -472,6 +472,7 @@ fn custom_gpu_animation_section() -> impl View {
     .padding()
 }
 
+/// The animation examples page, with one section per animation topic.
 #[preview]
 pub fn demo() -> impl View {
     // State for transform sections
@@ -531,6 +532,7 @@ pub fn demo() -> impl View {
     )
 }
 
+/// Builds the animation example app.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

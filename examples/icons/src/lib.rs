@@ -97,6 +97,7 @@ fn all_demos() -> impl View {
     icon_demos()
 }
 
+/// The icons example page, listing the icon packs available on this platform.
 #[preview]
 pub fn demo() -> impl View {
     scroll(
@@ -110,6 +111,7 @@ pub fn demo() -> impl View {
     )
 }
 
+/// Builds the icons example app.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

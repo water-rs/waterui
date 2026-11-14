@@ -373,7 +373,7 @@ fn quit_section(quit_answer: &Binding<String>) -> impl View {
     .padding()
 }
 
-fn scene(toolbar_status: Binding<String>, quit_answer: Binding<String>) -> impl View {
+fn scene(toolbar_status: &Binding<String>, quit_answer: &Binding<String>) -> impl View + use<> {
     let menu_selected = Binding::container(String::from("None"));
     let styled_action = Binding::container(String::from("No action yet"));
     let context_action = Binding::container(String::from("No action yet"));
@@ -406,9 +406,9 @@ fn scene(toolbar_status: Binding<String>, quit_answer: Binding<String>) -> impl 
             )),
             Divider,
             vstack((
-                toolbar_scene_section(&toolbar_status),
+                toolbar_scene_section(toolbar_status),
                 Divider,
-                quit_section(&quit_answer),
+                quit_section(quit_answer),
             )),
             spacer().height(40.0),
         ))
@@ -421,8 +421,8 @@ fn scene(toolbar_status: Binding<String>, quit_answer: Binding<String>) -> impl 
 #[preview]
 pub fn demo() -> impl View {
     scene(
-        Binding::container(String::from("No toolbar action yet")),
-        Binding::container(String::from("No quit asked yet")),
+        &Binding::container(String::from("No toolbar action yet")),
+        &Binding::container(String::from("No quit asked yet")),
     )
 }
 
@@ -438,6 +438,7 @@ fn quit_menu(refuse_quit: &Binding<bool>) -> Menu {
     )
 }
 
+/// Builds the menu example app: menu bar, toolbar and the quit-refusal window.
 #[must_use]
 pub fn app(env: Environment) -> App {
     let toolbar_status = Binding::container(String::from("No toolbar action yet"));
@@ -449,7 +450,7 @@ pub fn app(env: Environment) -> App {
     App::new_with_windows(
         [
             Window::new("WaterUI Menu Examples", binding(Normal), move || {
-                scene(content_toolbar_status.clone(), content_quit_answer.clone())
+                scene(&content_toolbar_status, &content_quit_answer)
             })
             .toolbar(window_toolbar(&toolbar_status)),
         ],

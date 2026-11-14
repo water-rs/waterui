@@ -43,9 +43,10 @@ fn compute_animated_colors(time: f32) -> [WorkingColor; 9] {
 
     for (i, base) in base_colors.iter().enumerate() {
         // Each vertex has unique phase offsets for organic movement
-        let phase = (i as f32) * 0.7;
-        let x = (i % 3) as f32;
-        let y = (i / 3) as f32;
+        let index = u8::try_from(i).expect("the mesh gradient has 9 vertices");
+        let phase = f32::from(index) * 0.7;
+        let x = f32::from(index % 3);
+        let y = f32::from(index / 3);
 
         // Multiple sine waves at different frequencies for complex motion
         let wave1 = time.mul_add(0.5, phase).sin() * 0.15;
@@ -63,6 +64,10 @@ fn compute_animated_colors(time: f32) -> [WorkingColor; 9] {
     colors
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "UI animation task runs on the main thread"
+)]
 async fn animate_mesh_colors(colors: Binding<[WorkingColor; 9]>) {
     // `std::time::Instant` panics on wasm32-unknown-unknown; web-time is the
     // same clock natively and `performance.now()` in a browser.
@@ -488,6 +493,7 @@ pub fn demo() -> impl View {
     )
 }
 
+/// Builds the gradient example app around [`demo`].
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

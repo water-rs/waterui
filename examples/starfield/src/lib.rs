@@ -10,6 +10,7 @@ use waterui::graphics::shader;
 use waterui::prelude::*;
 use waterui::preview;
 
+/// The starfield demo: an animated shader surface under a title and a caption.
 #[preview]
 pub fn demo() -> impl View {
     vstack((
@@ -28,6 +29,7 @@ pub fn demo() -> impl View {
     .padding()
 }
 
+/// Builds the starfield example app around [`demo`].
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

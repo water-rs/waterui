@@ -248,14 +248,14 @@ fn hdr_shape_demo(show_hdr: &Binding<bool>) -> impl View {
 }
 
 /// Helper: Create a star path
-fn create_star(points: usize, inner_ratio: f32) -> Path {
+fn create_star(points: u16, inner_ratio: f32) -> Path {
     let mut path = Path::new();
     let outer_radius = 0.5;
     let inner_radius = outer_radius * inner_ratio;
     let center = 0.5;
 
     for i in 0..(points * 2) {
-        let angle = (i as f32) * PI / (points as f32) - FRAC_PI_2;
+        let angle = f32::from(i) * PI / f32::from(points) - FRAC_PI_2;
         let radius = if i % 2 == 0 {
             outer_radius
         } else {
@@ -321,8 +321,8 @@ fn create_hexagon() -> Path {
     let center = 0.5;
     let radius = 0.5;
 
-    for i in 0..6 {
-        let angle = (i as f32) * PI / 3.0 - FRAC_PI_2;
+    for i in 0_u16..6 {
+        let angle = f32::from(i) * PI / 3.0 - FRAC_PI_2;
         let x = f32::mul_add(radius, angle.cos(), center);
         let y = f32::mul_add(radius, angle.sin(), center);
 
@@ -384,6 +384,7 @@ fn morph_demo() -> impl View {
     .padding()
 }
 
+/// The shape demo: filled shapes, clipping to shapes and custom paths.
 #[preview]
 pub fn demo() -> impl View {
     let show_hdr = binding(true);
@@ -430,6 +431,7 @@ pub fn demo() -> impl View {
     )
 }
 
+/// Builds the example app, showing the shape demo.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }

@@ -27,6 +27,7 @@ enum DisplayState {
 
 impl_constant!(DisplayState);
 
+/// The media picker example page: one picker button per media kind.
 #[preview]
 pub fn demo() -> impl View {
     // Single state binding for cleaner reactivity
@@ -70,6 +71,7 @@ pub fn demo() -> impl View {
     ))
 }
 
+/// Builds the media picker example app.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }
@@ -96,7 +98,7 @@ fn picker_button(
 
                 let media = selected.load();
                 tracing::debug!("Loaded media: {:?}", media);
-                match validate_media_result(&media, &filter) {
+                match validate_media_result(&media, filter) {
                     Ok(()) => state.set(DisplayState::Loaded(media)),
                     Err(message) => {
                         tracing::error!("{message}");
@@ -168,7 +170,7 @@ fn live_photo_view(source: LivePhotoSource) -> impl View {
     ))
 }
 
-fn validate_media_result(media: &Media, expected_filter: &MediaFilter) -> Result<(), String> {
+fn validate_media_result(media: &Media, expected_filter: MediaFilter) -> Result<(), String> {
     // Sanity check: if native says "image" but returns a video file URL, that's a bug.
     if let Media::Image(url) = media
         && looks_like_video_url(url)

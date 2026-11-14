@@ -180,6 +180,11 @@ fn on_tap_section(tap_count: &Binding<i32>) -> impl View {
     .padding()
 }
 
+/// The gesture example page: tap, double-tap, long-press, drag and chained gestures.
+///
+/// # Panics
+///
+/// Panics if the tab list no longer fits in `u32` ids.
 #[preview]
 pub fn demo() -> impl View {
     let tap_count = Binding::i32(0);
@@ -193,7 +198,7 @@ pub fn demo() -> impl View {
             .iter()
             .enumerate()
             .map(|(id, title)| TabChip {
-                id: id as u32,
+                id: u32::try_from(id).expect("the tab list has four entries"),
                 title,
             })
             .collect::<Vec<_>>(),
@@ -227,6 +232,7 @@ pub fn demo() -> impl View {
     )
 }
 
+/// Builds the gesture example app.
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
 }
