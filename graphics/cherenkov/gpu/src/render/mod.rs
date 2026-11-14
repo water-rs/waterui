@@ -284,9 +284,24 @@ fn readback_pitch(format: wgpu::TextureFormat, width: u32) -> u32 {
 }
 
 /// The pixels of a mapped readback of a `size` surface stored in
-/// `format`, `pitch` bytes apart: f16 texels widen exactly, f32 texels
-/// are taken as stored.
+/// `format`, `pitch` bytes apart, in the linear working space: f16 texels
+/// widen exactly, f32 texels are taken as stored, and a surface storing
+/// sRGB-encoded values decodes from `storage`.
 fn decode_readback(
+    data: &[u8],
+    (format, storage): (wgpu::TextureFormat, cherenkov::BlendSpace),
+    (width, height): (u32, u32),
+    pitch: u32,
+) -> Vec<[f32; 4]> {
+    let mut pixels = decode_texels(data, format, (width, height), pitch);
+    if storage == cherenkov::BlendSpace::SrgbEncoded {
+        filtrate_core::space::from_srgb(&mut pixels);
+    }
+    pixels
+}
+
+/// The texels of a mapped readback, as stored.
+fn decode_texels(
     data: &[u8],
     format: wgpu::TextureFormat,
     (width, height): (u32, u32),
@@ -432,6 +447,10 @@ struct SurfaceState {
     /// Surface-level dependencies absent from the layer tree's stamps.
     plane_clear: cherenkov::WorkingColor,
     plane_size: (u32, u32),
+    /// The space the surface's parts store their pixels in — the latest
+    /// lowered frame's storage space, which every blit and readback of
+    /// a part decodes from.
+    storage_space: cherenkov::BlendSpace,
     /// Source observations and immutable captures for recorded planes.
     static_layers: FxHashMap<LayerId, planes::static_layer::Observation>,
     static_walk: Vec<(LayerId, kurbo::Affine)>,
@@ -626,6 +645,7 @@ impl SurfaceState {
             plane_resources: (0, 0, 0),
             plane_clear: cherenkov::WorkingColor::TRANSPARENT,
             plane_size: (0, 0),
+            storage_space: cherenkov::BlendSpace::Linear,
             static_layers: FxHashMap::default(),
             static_walk: Vec::new(),
             plan_dirty: false,
@@ -4733,6 +4753,7 @@ impl Renderer for GpuRenderer {
         };
         let (w, h) = state.size;
         let format = state.format;
+        let storage = state.storage_space;
         diag::set_surface(Some(surface.raw()));
         diag::set_phase("readback");
         let bytes_per_row = readback_pitch(format, w);
@@ -4778,7 +4799,7 @@ impl Renderer for GpuRenderer {
         let data = slice
             .get_mapped_range()
             .expect("buffer range is mapped and not overlapping");
-        let pixels = decode_readback(&data, format, (w, h), bytes_per_row);
+        let pixels = decode_readback(&data, (format, storage), (w, h), bytes_per_row);
         drop(data);
         buf.unmap();
         diag::retire(
@@ -4812,6 +4833,7 @@ impl Renderer for GpuRenderer {
         };
         let (w, h) = state.size;
         let format = state.format;
+        let storage = state.storage_space;
         diag::set_surface(Some(surface.raw()));
         diag::set_phase("readback");
         let bytes_per_row = readback_pitch(format, w);
@@ -4858,7 +4880,7 @@ impl Renderer for GpuRenderer {
         let data = slice
             .get_mapped_range()
             .expect("buffer range is mapped and not overlapping");
-        let pixels = decode_readback(&data, format, (w, h), bytes_per_row);
+        let pixels = decode_readback(&data, (format, storage), (w, h), bytes_per_row);
         drop(data);
         buf.unmap();
         diag::retire(
@@ -6796,7 +6818,7 @@ impl GpuRenderer {
                             &self.device,
                             &self.queue,
                             self.presenter.as_mut().expect("checked above"),
-                            &surface.view,
+                            (&surface.view, surface.storage_space),
                             sf.display.headroom,
                         )
                     })
@@ -6922,6 +6944,7 @@ impl GpuRenderer {
                         size: surface.size,
                         display: sf.display,
                         parts: &parts,
+                        storage_space: surface.storage_space,
                         planes: &stack,
                     },
                 )
@@ -6938,7 +6961,7 @@ impl GpuRenderer {
                     device,
                     queue,
                     surface.window.as_ref().expect("pending window"),
-                    &surface.view,
+                    (&surface.view, surface.storage_space),
                     sf.display.headroom,
                 )? {
                     planes::Presentation::Presented
@@ -7440,6 +7463,7 @@ impl GpuRenderer {
             return planes::frames_only::<planes::Platform>(
                 &surface.plan,
                 sf.tree,
+                sf.storage_space,
                 &self.candidates,
                 &self.ready,
                 frames,
@@ -7448,6 +7472,7 @@ impl GpuRenderer {
         }
         if surface.plan.planes.is_empty()
             || (surface.plane_clear, surface.plane_size) != (sf.clear, sf.size)
+            || surface.storage_space != sf.storage_space
             || surface.display.scale.to_bits() != sf.display.scale.to_bits()
             || surface.plan.planes.iter().any(|plane| {
                 !self.candidates.contains_key(&plane.layer)
@@ -7463,6 +7488,7 @@ impl GpuRenderer {
         }
         planes::plan_with::<planes::Platform>(
             sf.tree,
+            sf.storage_space,
             &self.candidates,
             &self.ready,
             &mut self.plan_scratch,
@@ -7610,7 +7636,7 @@ impl GpuRenderer {
         let mut candidates = FxHashMap::default();
         surf.plan = if surf.promotes {
             plane_candidates(surf, frame.tree, resources.producers, &mut candidates);
-            planes::plan::<planes::Platform>(frame.tree, &candidates, ready)
+            planes::plan::<planes::Platform>(frame.tree, frame.storage_space, &candidates, ready)
         } else {
             planes::Plan::default()
         };
@@ -7631,6 +7657,7 @@ impl GpuRenderer {
             .composition_stamp(|layer| surf.plan.planes.iter().any(|plane| plane.layer == layer));
         surf.plane_clear = frame.clear;
         surf.plane_size = frame.size;
+        surf.storage_space = frame.storage_space;
         // Lowering borrows `layers` immutably while mutating `frame`;
         // taking the map out keeps the two borrows disjoint.
         let mut layers = std::mem::take(&mut surf.layers);
@@ -7697,7 +7724,7 @@ impl GpuRenderer {
                     lowering.run(
                         frame.tree,
                         &mut layers,
-                        frame.clear,
+                        (frame.clear, frame.storage_space),
                         &glyphs,
                         groups,
                         placed,
@@ -7766,7 +7793,7 @@ impl GpuRenderer {
         let result = lowering.run(
             frame.tree,
             layers,
-            frame.clear,
+            (frame.clear, frame.storage_space),
             glyphs,
             groups,
             placed,
@@ -7809,8 +7836,12 @@ impl GpuRenderer {
                 picture: None,
                 bucket: projective::bucket(image.density),
             };
-            let cache =
-                projective::Key::new(&image, tree.content_stamp(plan.layer), inputs.replacements);
+            let cache = projective::Key::new(
+                &image,
+                cherenkov::BlendSpace::Linear,
+                tree.content_stamp(plan.layer),
+                inputs.replacements,
+            );
             let current = !inputs.stale.contains(&key)
                 && retained.get(&plan.layer).is_some_and(|entries| {
                     entries

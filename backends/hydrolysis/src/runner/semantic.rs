@@ -771,9 +771,9 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
 /// requests raised along the way become the window's refresh flag.
 fn advance_semantic_window(window: &mut SemanticWindow, env: &Environment, now: Instant) {
     window.core.set_frame_instant(now);
-    if window.core.handle_gesture_tick(now, env) {
-        window.refresh_requested = true;
-    }
+    // A recognizer's action fired on its deadline marks what it changed
+    // itself; the marks below raise the refresh flag.
+    let _fired = window.core.handle_gesture_tick(now, env);
     if window.core.tick_smooth_scrolls(now) {
         window.refresh_requested = true;
     }

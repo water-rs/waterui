@@ -2134,13 +2134,16 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                             .is_empty()
                         })
             };
-        let gesture_changed = gesture_button(button).is_some_and(|mapped| {
-            !context_menu_claims_secondary
-                && self.with_unoccluded_gesture_targets(point, |engine| {
-                    engine.handle_pointer_down(point, at, mapped, env)
-                })
-        });
-        refresh_requested |= gesture_changed;
+        // A fired gesture action is an activation, not a layout input: what it
+        // writes reaches the frame through its readers' marks and live
+        // operands, exactly as a tap action's does.
+        if let Some(mapped) = gesture_button(button)
+            && !context_menu_claims_secondary
+        {
+            let _fired = self.with_unoccluded_gesture_targets(point, |engine| {
+                engine.handle_pointer_down(point, at, mapped, env)
+            });
+        }
         // A touch or pen primary press on a `.context_menu` region is a
         // pending press-and-hold, armed exactly where a secondary press
         // would resolve a menu: an embedded surface yields only to a menu
@@ -2673,17 +2676,18 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let press_clear = self.hit_test.interaction.clear_all_presses(at);
         self.hit_test.interaction.mark_press_clear(&press_clear);
         changed |= press_clear.visual_changed || press_clear.chrome_changed;
-        let gesture_changed = gesture_button(button).is_some_and(|mapped| {
+        // A fired gesture action marks what it changed itself; it adds
+        // nothing to the release's `changed`.
+        let gesture_fired = gesture_button(button).is_some_and(|mapped| {
             self.gesture_engine
                 .handle_pointer_up(point, at, mapped, env)
         });
-        changed |= gesture_changed;
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             x,
             y,
             changed,
-            gesture_changed,
+            gesture_fired,
             "pointer up handled"
         );
         changed
@@ -2769,13 +2773,16 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             .active_pointer_button
             .and_then(gesture_button)
             .unwrap_or(WuiPointerButton::Primary);
-        let gesture_changed = self
+        // A drag tracking the pointer fires its action every move; what the
+        // action writes marks its own readers or moves live operands, so a
+        // fired action alone asks for no refresh.
+        let gesture_fired = self
             .gesture_engine
             .handle_pointer_move(point, at, move_button, env);
         if self.handle_embedded_pointer_move(point) {
             return true;
         }
-        let mut refresh_requested = gesture_changed;
+        let mut refresh_requested = false;
         let mut drag_changed = false;
         if let Some(index) = self.text_editing.selection_drag_index() {
             let text_drag_changed = self.update_text_selection_drag(index, point);
@@ -2816,7 +2823,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             y,
             changed = refresh_requested,
             drag_changed,
-            gesture_changed,
+            gesture_fired,
             hover_visual = hover.visual_changed,
             dragging = self.hit_test.active_pointer_drag_target.is_some(),
             gesture_active = self.gesture_engine.has_active_recognizer(),
@@ -3941,18 +3948,22 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// secondary press takes, and consumes the press: pending recognizers
     /// fail as on a cancel, the captured pointer target drops, and a tap no
     /// longer fires on release.
+    ///
+    /// Returns whether the window must refresh: a recognizer's action that
+    /// fired on its deadline marks what it changed itself, so only an opened
+    /// hold menu counts.
     pub fn handle_gesture_tick(&mut self, at: Instant, env: &Environment) -> bool {
         self.registries();
-        let gesture_changed = self.core.handle_gesture_tick(at, env);
+        let _fired = self.core.handle_gesture_tick(at, env);
         let Some(hold) = self.hit_test.pending_context_menu_hold else {
-            return gesture_changed;
+            return false;
         };
         if at.duration_since(hold.started_at) < CONTEXT_MENU_HOLD_DURATION {
-            return gesture_changed;
+            return false;
         }
         self.hit_test.pending_context_menu_hold = None;
         if !self.open_context_menu_at(hold.point, env) {
-            return gesture_changed;
+            return false;
         }
         self.consume_active_press(at, env);
         true
@@ -4096,11 +4107,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.hit_test.interaction.mark_press_clear(&press_clear);
         refresh_requested |= press_clear.chrome_changed;
         let frame_instant = self.core.frame_instant;
-        let gesture_changed = self
+        // A cancelled drag's action marks what it changed itself.
+        let _fired = self
             .core
             .gesture_engine
             .handle_pointer_cancel(frame_instant, env);
-        refresh_requested |= gesture_changed;
         refresh_requested |= self.end_hover(env);
         refresh_requested
     }

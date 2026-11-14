@@ -237,6 +237,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
                 &target,
                 Arc::clone(&self.applied_filter_metrics),
                 Rc::clone(&self.material_registry),
+                self.theme.blend_space(),
             ));
         }
         let mut window = self
@@ -300,6 +301,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
                 target,
                 Arc::clone(&self.applied_filter_metrics),
                 Rc::clone(&self.material_registry),
+                self.theme.blend_space(),
             ));
         }
         let mut window = window_slot
@@ -359,6 +361,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
                 target,
                 Arc::clone(&self.applied_filter_metrics),
                 Rc::clone(&self.material_registry),
+                self.theme.blend_space(),
             ));
         }
         let window = window_slot
@@ -444,6 +447,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
                 target,
                 Arc::clone(&self.applied_filter_metrics),
                 Rc::clone(&self.material_registry),
+                self.theme.blend_space(),
             ));
         }
         let mut window = window_slot
@@ -600,6 +604,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
                 surface,
                 Rc::clone(state),
                 &self.material_registry,
+                self.theme.blend_space(),
             ));
         }
         let mut window = self
@@ -657,12 +662,15 @@ impl<E: crate::text::TextEngine> RasterWindow<E> {
     /// material registry: attaching this window's engine registers every
     /// shader it names, as on the GPU target (water-rs/waterui#1788). A
     /// rejected source is reported at attach, naming the key, and the chrome
-    /// that names it is not drawn.
+    /// that names it is not drawn. The surface stores `blend_space`, the
+    /// theme's [`WidgetTheme::blend_space`](crate::theme::WidgetTheme::blend_space).
     fn new(
-        surface: crate::engine::RasterCherenkovSurface,
+        mut surface: crate::engine::RasterCherenkovSurface,
         state: Rc<crate::engine::RasterEngineState>,
         materials: &Rc<cherenkov_record::MaterialRegistry>,
+        blend_space: cherenkov_record::BlendSpace,
     ) -> Self {
+        crate::engine::EngineSurface::core_mut(&mut surface).storage_space(blend_space);
         let core = crate::engine::EngineSurface::core(&surface);
         let mount = mount::Mount::new(Rc::clone(&core.engine_surface().shared), materials);
         let host = mount::target::RasterHost {
@@ -775,14 +783,18 @@ impl<S: crate::engine::EngineSurface<Backend = cherenkov_gpu::Gpu>, E: crate::te
     /// material registry: attaching this window's engine registers every
     /// shader it names, so a chrome member's group binds an engine handle
     /// (water-rs/waterui#1788). A rejected source is reported at attach,
-    /// naming the key, and the chrome that names it is not drawn.
+    /// naming the key, and the chrome that names it is not drawn. The
+    /// surface stores `blend_space`, the theme's
+    /// [`WidgetTheme::blend_space`](crate::theme::WidgetTheme::blend_space).
     fn new(
-        surface: S,
+        mut surface: S,
         target: &FrameRenderTarget<'_>,
         metrics: Arc<crate::renderer::effects::AppliedFilterMetrics>,
         materials: Rc<cherenkov_record::MaterialRegistry>,
+        blend_space: cherenkov_record::BlendSpace,
     ) -> Self {
         let state = Rc::clone(target.engine);
+        surface.core_mut().storage_space(blend_space);
         let core = surface.core();
         let mount = mount::Mount::new(Rc::clone(&core.engine_surface().shared), &materials);
         let host = mount::CherenkovHost {

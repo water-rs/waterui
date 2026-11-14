@@ -1397,6 +1397,26 @@ impl Corpus {
         });
     }
 
+    /// Like [`Corpus::scene_setup`] on a surface storing `storage`, with the
+    /// blobs its `resources/` needs.
+    fn scene_stored(
+        &mut self,
+        name: impl Into<String>,
+        (w, h, clear): (u32, u32, Color),
+        storage: BlendSpace,
+        f: impl FnOnce(&mut SceneBuilder),
+        blobs: Vec<Vec<u8>>,
+    ) {
+        let mut builder = Scene::builder(w, h).clear(clear).storage_space(storage);
+        f(&mut builder);
+        let scene = builder.build();
+        self.entries.push(Entry {
+            name: name.into(),
+            body: EntryBody::Scene(Box::new(scene)),
+            blobs,
+        });
+    }
+
     /// Queue a scene whose `scene.json` is already rendered text (the
     /// hand-authored scenes in `authored`).
     fn push_json(&mut self, name: &str, text: String, blobs: Vec<Vec<u8>>) {
@@ -6453,7 +6473,7 @@ fn run(root: &Path) -> Result<(), SceneError> {
                 items,
                 opacity: 0.82,
                 blend: BlendMode::Normal,
-                blend_space: BlendSpace::SrgbEncoded,
+                blend_space: Some(BlendSpace::SrgbEncoded),
                 filter: None,
             });
         });
@@ -8021,7 +8041,7 @@ fn run(root: &Path) -> Result<(), SceneError> {
                     items: cell(x0, y0),
                     opacity: 1.0,
                     blend: BlendMode::Normal,
-                    blend_space,
+                    blend_space: Some(blend_space),
                     filter: Some(Box::new(filter)),
                 });
             }
@@ -8064,7 +8084,7 @@ fn run(root: &Path) -> Result<(), SceneError> {
                 ],
                 opacity: 1.0,
                 blend: BlendMode::Normal,
-                blend_space: BlendSpace::SrgbEncoded,
+                blend_space: Some(BlendSpace::SrgbEncoded),
                 filter: None,
             }
         };
@@ -8086,7 +8106,7 @@ fn run(root: &Path) -> Result<(), SceneError> {
             items: vec![GroupItem::Group(encoded(128.0, 0.0))],
             opacity: 1.0,
             blend: BlendMode::Normal,
-            blend_space: BlendSpace::Linear,
+            blend_space: None,
             filter: None,
         });
         l.layer(|outer| {
@@ -8110,6 +8130,131 @@ fn run(root: &Path) -> Result<(), SceneError> {
             m.group(encoded(128.0, 128.0));
         });
     });
+
+    // An sRGB-encoded surface: every level that declares no space blends
+    // in encoded values. The left column is Material's on-surface colour
+    // (#1D1B20) over its surface (#FEF7FF) at the disabled-container 4%
+    // and the state-layer 8%, 10% and 38% opacities, which land on the
+    // encoded blends the specification gives; the right column paints the
+    // same overlays inside a translucent layer, which inherits the
+    // encoded space. A P3-only bar and an HDR bar check that presentation
+    // returns the encoded store to the working space.
+    corpus.scene_stored(
+        "storage-encoded-overlay",
+        (256, 256, srgb(0.996, 0.969, 1.0)),
+        BlendSpace::SrgbEncoded,
+        |b| {
+            let on_surface = |alpha: f32| solid(srgba(0.114, 0.106, 0.125, alpha));
+            let l = &mut b.root();
+            for (i, alpha) in [0.04, 0.08, 0.1, 0.38].into_iter().enumerate() {
+                let y = 16.0 + 48.0 * f64::from(u8::try_from(i).expect("four rows"));
+                l.fill(
+                    Shape::rounded_rect(16.0, y, 104.0, 40.0, 4.0),
+                    on_surface(alpha),
+                );
+            }
+            l.layer(|m| {
+                m.opacity(0.7);
+                for (i, alpha) in [0.04, 0.08, 0.1, 0.38].into_iter().enumerate() {
+                    let y = 16.0 + 48.0 * f64::from(u8::try_from(i).expect("four rows"));
+                    m.fill(
+                        Shape::rounded_rect(136.0, y, 104.0, 40.0, 4.0),
+                        on_surface(alpha),
+                    );
+                }
+            });
+            l.fill(
+                Shape::rect(16.0, 208.0, 224.0, 12.0),
+                solid(p3(0.0, 0.85, 0.05)),
+            );
+            l.fill(
+                Shape::rect(16.0, 228.0, 224.0, 12.0),
+                solid(hdr(2.5, 2.2, 1.8)),
+            );
+        },
+        Vec::new(),
+    );
+
+    // A linear island on an encoded surface: the same translucent image
+    // and translucent fill are painted directly on the encoded root (top)
+    // and inside a layer declaring the linear space (bottom), which
+    // isolates them, blends them linearly and composites the result
+    // across the spaces, so the two rows' edges and mixes differ.
+    corpus.scene_stored(
+        "storage-encoded-linear-island",
+        (256, 256, srgb(0.2, 0.25, 0.3)),
+        BlendSpace::SrgbEncoded,
+        |b| {
+            let row = |l: &mut LayerBuilder, y: f64| {
+                l.fill(
+                    Shape::rect(16.0, y + 8.0, 224.0, 24.0),
+                    solid(srgb(0.95, 0.9, 0.2)),
+                );
+                l.image(
+                    ResourceHash::of(&grad_img),
+                    Rect::new(24.0, y, 120.0, y + 96.0),
+                    Sampling::Bilinear,
+                );
+                l.fill(
+                    Shape::circle(184.0, y + 48.0, 44.0),
+                    solid(srgba(0.1, 0.3, 0.95, 0.5)),
+                );
+            };
+            let l = &mut b.root();
+            row(l, 16.0);
+            l.layer(|m| {
+                m.blend_space(BlendSpace::Linear);
+                m.opacity(0.9);
+                row(m, 136.0);
+            });
+        },
+        vec![grad_img.clone()],
+    );
+
+    // A glass member over an encoded surface: the capture reads the
+    // encoded store back to the working space before it blurs, so the
+    // member's darkened sample, edge and translucent tint sit over the
+    // stripes and the P3 and HDR bars exactly as on a linear surface,
+    // while the tint itself blends encoded.
+    corpus.scene_stored(
+        "storage-encoded-glass",
+        (256, 256, white),
+        BlendSpace::SrgbEncoded,
+        |b| {
+            b.backdrop_group(BackdropGroup::new(
+                1,
+                vec![BackdropFilter::GaussianBlur { sigma: 6.0 }],
+                1.0,
+                1,
+            ));
+            let l = &mut b.root();
+            backdrop_background(l);
+            l.fill(Shape::circle(128.0, 72.0, 36.0), solid(p3(0.0, 0.85, 0.05)));
+            l.fill(
+                Shape::rect(16.0, 176.0, 224.0, 24.0),
+                solid(hdr(2.5, 2.2, 1.8)),
+            );
+            l.layer(|m| {
+                m.clip(Shape::RoundedRect(RoundedRect::new(
+                    40.0, 40.0, 216.0, 216.0, 24.0,
+                )));
+                m.backdrop(1);
+                m.backdrop_outer(8.0);
+                m.backdrop_effect(BackdropEffectSpec::ColorMatrix {
+                    matrix: [
+                        0.6, 0.0, 0.0, 0.0, //
+                        0.0, 0.6, 0.0, 0.0, //
+                        0.0, 0.0, 0.6, 0.0,
+                    ],
+                });
+                m.fill(
+                    Shape::rect(40.0, 40.0, 176.0, 176.0),
+                    solid(srgba(1.0, 1.0, 1.0, 0.15)),
+                );
+            });
+        },
+        Vec::new(),
+    );
 
     // The #211 dense city map: a 1600×1200 frame whose live coverage
     // exceeds one atlas page. Its output is generated — never committed.

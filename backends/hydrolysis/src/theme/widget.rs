@@ -1,17 +1,15 @@
 //! The widget chrome half of the theme contract: [`WidgetTheme`] and the
 //! token tables, state snapshots and presentation plugins it names.
 
-use cherenkov_record::{MaterialRegistry, Recorder};
+use cherenkov_record::{BlendSpace, MaterialRegistry};
 use core::time::Duration;
-use kurbo::{Point, Rect};
+use kurbo::Point;
 use nami::signal::IntoComputed;
 use waterui_core::animation::Animation;
 use waterui_core::handler::SharedAction;
 use waterui_core::interaction::InteractionState;
 use waterui_core::plugin::Plugin;
 use waterui_core::{Binding, Computed, Environment, Signal};
-use waterui_graphics::color::Color;
-use waterui_text::font::Font;
 
 /// Publishes whether an interactive subtree owns keyboard focus.
 #[derive(Debug, Clone)]
@@ -432,21 +430,6 @@ impl ListSectionMetrics {
     }
 }
 
-/// Layout metrics for dividers.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DividerMetrics {
-    /// Divider stroke thickness.
-    pub thickness: f64,
-}
-
-impl DividerMetrics {
-    /// Create divider layout metrics.
-    #[must_use]
-    pub const fn new(thickness: f64) -> Self {
-        Self { thickness }
-    }
-}
-
 /// Layout metrics for badges.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BadgeMetrics {
@@ -519,7 +502,7 @@ pub struct TableMetrics {
 /// animates it with the theme's motion policies, and records its chrome by
 /// calling the theme's `draw_*` methods with the widget's bounds and the
 /// renderer-resolved [`WidgetInteractionState`]. Every draw method records
-/// into a `cherenkov-record` [`Recorder`], the render-target-neutral
+/// into a `cherenkov-record` [`Recorder`](cherenkov_record::Recorder), the render-target-neutral
 /// vocabulary every Hydrolysis render target consumes, so a theme never
 /// names a render engine. A theme becomes a runnable style by also
 /// implementing [`Style`](crate::Style).
@@ -532,7 +515,7 @@ pub trait WidgetTheme {
     /// [`BackdropShaderSource`]) and the capture classes ([`CaptureClass`]
     /// keys, each with its [`MaterialCapture`] group parameters) that the
     /// theme's chrome names when it records a backdrop material with
-    /// [`Recorder::backdrop_material`].
+    /// [`Recorder::backdrop_material`](cherenkov_record::Recorder::backdrop_material).
     ///
     /// [`MaterialShader`]: cherenkov_record::MaterialShader
     /// [`BackdropShaderSource`]: cherenkov_record::BackdropShaderSource
@@ -556,6 +539,20 @@ pub trait WidgetTheme {
     /// holds no engine handles. The default registers nothing, which is
     /// right for a theme that records no backdrop material.
     fn register_backdrop_shaders(&self, _registry: &mut MaterialRegistry) {}
+
+    /// The space the window surface stores and composites in: every level
+    /// that declares no space of its own blends in it. A theme whose
+    /// design tokens are specified as blends of encoded sRGB values, as
+    /// Material's translucent state layers and disabled containers are,
+    /// returns [`BlendSpace::SrgbEncoded`] so a 4% overlay lands where the
+    /// specification puts it. Content that must blend linearly — images,
+    /// video, GPU content — records as a linear island inside it.
+    ///
+    /// Hydrolysis applies it to the window surface once, when it mounts the
+    /// theme. The default is [`BlendSpace::Linear`].
+    fn blend_space(&self) -> BlendSpace {
+        BlendSpace::Linear
+    }
 
     /// The look of `glass` behind content; `None` draws no glass (the
     /// default).
@@ -586,7 +583,7 @@ pub trait WidgetTheme {
     /// that is not interactive reads the inputs at rest.
     ///
     /// The tint is [`Glass::tint_color`](waterui::background::Glass::tint_color),
-    /// a live [`Color`] the look resolves through `env` (`Color::resolve`);
+    /// a live [`Color`](waterui_graphics::color::Color) the look resolves through `env` (`Color::resolve`);
     /// the backend does nothing with it.
     ///
     /// Material-bearing parts need the theme's shaders and capture classes
@@ -750,75 +747,25 @@ pub trait WidgetTheme {
     /// selection change moves the highlight's operands and records nothing.
     fn tabs(&self, spec: &super::TabsSpec, env: &Environment) -> super::TabsLook;
 
-    /// Draw a scroll indicator.
-    fn draw_scroll_indicator(&self, recorder: &mut Recorder, bounds: Rect);
-
-    /// Return divider layout metrics.
-    fn divider_metrics(&self) -> DividerMetrics;
-    /// Draw a divider.
-    fn draw_divider(&self, recorder: &mut Recorder, bounds: Rect);
-
-    /// Return badge layout metrics.
-    fn badge_metrics(&self) -> BadgeMetrics;
-    /// Return badge label foreground color.
-    fn badge_label_color(&self) -> Color;
-    /// Return badge label font.
-    fn badge_label_font(&self) -> Font;
-    /// Draw a small dot badge.
-    fn draw_badge_small(&self, recorder: &mut Recorder, bounds: Rect);
-    /// Draw a large labeled badge.
-    fn draw_badge_large(&self, recorder: &mut Recorder, bounds: Rect);
-
-    /// Return list layout metrics.
-    fn list_metrics(&self) -> ListMetrics;
-    /// Draw a list row background.
-    fn draw_list_row_background(&self, recorder: &mut Recorder, bounds: Rect, alternate: bool);
-    /// Draw a list move affordance.
-    fn draw_list_move_control(&self, recorder: &mut Recorder, bounds: Rect);
-    /// Draw a list move affordance state layer.
-    fn draw_list_move_control_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _state: WidgetInteractionState,
-    ) {
-    }
-    /// Draw a list delete affordance.
-    fn draw_list_delete_control(&self, recorder: &mut Recorder, bounds: Rect);
-    /// Draw a list delete affordance state layer.
-    fn draw_list_delete_control_state_layer(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _state: WidgetInteractionState,
-    ) {
-    }
-    /// Draw the background revealed behind a row that is being swiped away.
+    /// The look of the thumb a scrolling surface draws.
     ///
-    /// `progress` runs `0.0..=1.0` toward the dismiss threshold, and
-    /// `toward_start` is `true` while the row travels toward the leading edge,
-    /// so a theme can anchor its icon on the side the row is uncovering.
-    fn draw_list_swipe_dismiss_background(
-        &self,
-        _recorder: &mut Recorder,
-        _bounds: Rect,
-        _progress: f64,
-        _toward_start: bool,
-    ) {
-    }
-    /// Draw the lifted treatment for a row being dragged to a new position.
-    fn draw_list_row_lifted(&self, _recorder: &mut Recorder, _bounds: Rect, _elevation: f64) {}
-    /// Draw a list separator.
-    fn draw_list_separator(&self, recorder: &mut Recorder, bounds: Rect);
+    /// Hydrolysis sizes and places the thumb from the returned look's
+    /// geometry and records it from its part.
+    fn scroll_indicator(&self, env: &Environment) -> super::ScrollIndicatorLook;
 
-    /// Return table layout metrics.
-    fn table_metrics(&self) -> TableMetrics;
-    /// Draw a table background.
-    fn draw_table_background(&self, recorder: &mut Recorder, bounds: Rect);
-    /// Draw a table header background.
-    fn draw_table_header_background(&self, recorder: &mut Recorder, bounds: Rect);
-    /// Draw a table cell border.
-    fn draw_table_cell_border(&self, recorder: &mut Recorder, bounds: Rect);
-    /// Draw a table column separator.
-    fn draw_table_column_separator(&self, recorder: &mut Recorder, from: Point, to: Point);
+    /// The look of a badge: a small dot for a count of zero, a count pill
+    /// for anything else.
+    fn badge(&self, env: &Environment) -> super::BadgeLook;
+
+    /// The look of a list.
+    ///
+    /// Hydrolysis measures, places and hit-tests a list from the returned
+    /// look's metrics, records its rows, separators and dismiss background
+    /// from its parts, realizes its controls' chrome and moves a row under
+    /// a swipe or a reorder drag as a live operand, and requests the look
+    /// again only when `spec` changes.
+    fn list(&self, spec: &super::ListSpec, env: &Environment) -> super::ListLook;
+
+    /// The look of a table.
+    fn table(&self, env: &Environment) -> super::TableLook;
 }

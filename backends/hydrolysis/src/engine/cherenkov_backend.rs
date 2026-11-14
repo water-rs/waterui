@@ -244,6 +244,9 @@ pub struct SurfaceCore<B: cherenkov::Backend> {
     engine: Rc<cherenkov::Engine<B>>,
     surface: Rc<cherenkov::Surface<B>>,
     size: (u32, u32),
+    /// The space the surface stores, which a host sampling its texture
+    /// presents from.
+    storage_space: cherenkov_record::BlendSpace,
 }
 
 impl<B: cherenkov::Backend> SurfaceCore<B> {
@@ -256,6 +259,7 @@ impl<B: cherenkov::Backend> SurfaceCore<B> {
             engine,
             surface: Rc::new(surface),
             size,
+            storage_space: cherenkov_record::BlendSpace::Linear,
         }
     }
 
@@ -337,6 +341,18 @@ impl<B: cherenkov::Backend> SurfaceCore<B> {
     /// The colour the surface clears to before content.
     pub fn clear_color(&self, color: cherenkov_record::WorkingColor) {
         self.surface.clear_color(color);
+    }
+
+    /// The space the surface stores and composites in:
+    /// [`cherenkov::Surface::storage_space`].
+    pub fn storage_space(&mut self, space: cherenkov_record::BlendSpace) {
+        self.storage_space = space;
+        self.surface.storage_space(space);
+    }
+
+    /// The space the surface stores, set by [`Self::storage_space`].
+    pub const fn stored_space(&self) -> cherenkov_record::BlendSpace {
+        self.storage_space
     }
 }
 
@@ -649,10 +665,10 @@ impl TextureCherenkovSurface {
             );
             return;
         };
-        self.presenter.texture(
+        self.presenter.texture_in(
             device,
             queue,
-            view,
+            (view, self.core.stored_space()),
             cherenkov_gpu::interop::TextureOutput {
                 texture: output,
                 color,

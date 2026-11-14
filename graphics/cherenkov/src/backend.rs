@@ -497,6 +497,9 @@ pub struct SurfaceFrame<'a> {
     pub display: Display,
     /// The clear colour.
     pub clear: WorkingColor,
+    /// The space the surface's root canvas stores its pixels in
+    /// ([`Surface::storage_space`](crate::Surface::storage_space)).
+    pub storage_space: crate::BlendSpace,
     /// Whether a property op, a content op or an animation step touched the
     /// surface since the last render.
     pub changed: bool,

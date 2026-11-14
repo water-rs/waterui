@@ -92,7 +92,11 @@ fn retained_present_preserves_pixels_and_full_texture_coordinates()
     let complete = reference.readback()?;
     let before = destination.readback()?;
     let uniform = Presenter::uniform(&device);
-    queue.write_buffer(&uniform, 0, &Presenter::uniform_bytes(&texture));
+    queue.write_buffer(
+        &uniform,
+        0,
+        &Presenter::uniform_bytes(&texture, cherenkov::BlendSpace::Linear),
+    );
     let mut repair = Region::new(size);
     for step in 0..3 {
         match step {
@@ -149,12 +153,15 @@ fn extended_output_into_an_srgb_texture_encodes_as_requested() {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });
-    let bytes = Presenter::uniform_bytes(&TextureOutput {
-        texture: &texture,
-        color: OutputColor::ExtendedSrgb,
-        alpha: OutputAlpha::Opaque,
-        headroom: 2.0,
-    });
+    let bytes = Presenter::uniform_bytes(
+        &TextureOutput {
+            texture: &texture,
+            color: OutputColor::ExtendedSrgb,
+            alpha: OutputAlpha::Opaque,
+            headroom: 2.0,
+        },
+        cherenkov::BlendSpace::Linear,
+    );
     assert_eq!(
         bytes[0..4],
         6_u32.to_ne_bytes(),

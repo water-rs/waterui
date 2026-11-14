@@ -273,6 +273,21 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         clip: kurbo::Rect,
         f: impl FnOnce(&mut Self),
     ) {
+        self.open_live_scope(key, operands, clip);
+        f(self);
+        self.close_scope();
+    }
+
+    /// Opens the named scope `key` clipped to `clip` whose layer follows
+    /// `operands`, through this context's transform; [`Self::close_scope`]
+    /// closes it. For a scope a body too long to wrap in a closure records
+    /// through.
+    pub(crate) fn open_live_scope(
+        &mut self,
+        key: crate::renderer::mount::ScopeKey,
+        operands: crate::renderer::frame::ScopeOperands,
+        clip: kurbo::Rect,
+    ) {
         self.renderer.open_live_scope(
             key,
             operands,
@@ -280,19 +295,18 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
             Some(&crate::renderer::frame::ScopeClip::Rect(clip)),
             crate::renderer::ScopeDelta::RECORD_SPACE,
         );
-        f(self);
-        self.close_scope();
     }
 
     /// Runs `f` inside a control's group `key`, clipped to `clip`: its
-    /// layer fades at `opacity` and composites in `blend_space`. A live
-    /// opacity always groups, following the operand between renders; a
-    /// fixed one groups only when it fades.
+    /// layer fades at `opacity` and composites in `blend_space`, or with
+    /// none in the space of the level beneath it. A live opacity always
+    /// groups, following the operand between renders; a fixed one groups
+    /// only when it fades.
     pub(crate) fn with_group_scope(
         &mut self,
         key: crate::renderer::mount::ScopeKey,
         opacity: crate::renderer::GroupOpacity,
-        blend_space: cherenkov_record::BlendSpace,
+        blend_space: Option<cherenkov_record::BlendSpace>,
         clip: kurbo::Rect,
         f: impl FnOnce(&mut Self),
     ) {

@@ -78,8 +78,8 @@ struct LayerProps {
     transform: kurbo::Affine,
     opacity: f32,
     /// The space the layer's subtree composites in and the layer fades
-    /// onto its parent in.
-    blend_space: BlendSpace,
+    /// onto its parent in; `None` inherits the parent's space.
+    blend_space: Option<BlendSpace>,
     clip: Option<ShapeData>,
     filter: Option<FilterId>,
     scroll: kurbo::Vec2,
@@ -147,7 +147,7 @@ impl LayerProps {
     const DEFAULT: Self = Self {
         transform: kurbo::Affine::IDENTITY,
         opacity: 1.0,
-        blend_space: BlendSpace::Linear,
+        blend_space: None,
         clip: None,
         filter: None,
         scroll: kurbo::Vec2::ZERO,
@@ -265,7 +265,10 @@ fn write_props<T: LayerTarget<E>, E: crate::text::TextEngine>(
     }
     let edit = &mut tx[layer];
     if written.blend_space != props.blend_space {
-        edit.blend_space(props.blend_space);
+        match props.blend_space {
+            Some(space) => edit.blend_space(space),
+            None => edit.clear_blend_space(),
+        };
     }
     if written.clip != props.clip {
         match &props.clip {
@@ -1650,6 +1653,14 @@ fn mount_scene<T: LayerTarget<E>, E: crate::text::TextEngine>(
     Some(names.finish())
 }
 
+/// The space a GPU producer's or external source's install layer
+/// composites in: their frames are linear content, so on a surface storing
+/// another space they composite as a linear island — the way a system
+/// compositor plane shows them — and on a linear surface the declaration
+/// isolates nothing.
+#[cfg(hydrolysis_gpu)]
+const INSTALL_SPACE: Option<BlendSpace> = Some(BlendSpace::Linear);
+
 /// Ensures the node's install layer; returns whether it was just created.
 #[cfg_attr(not(hydrolysis_gpu), expect(dead_code))]
 fn ensure_install<T: LayerTarget<E>, E: crate::text::TextEngine>(
@@ -1729,6 +1740,7 @@ fn mount_gpu<T: LayerTarget<E>, E: crate::text::TextEngine>(
         props,
         LayerProps {
             transform: install_transform(bounds, pixels),
+            blend_space: INSTALL_SPACE,
             ..LayerProps::DEFAULT
         },
     );
@@ -1781,6 +1793,7 @@ fn mount_external<T: LayerTarget<E>, E: crate::text::TextEngine>(
             props,
             LayerProps {
                 transform: install_transform(bounds, pixels),
+                blend_space: INSTALL_SPACE,
                 ..LayerProps::DEFAULT
             },
         );

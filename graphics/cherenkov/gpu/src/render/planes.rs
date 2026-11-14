@@ -322,13 +322,15 @@ impl Plan {
 /// Whether a layer composites its subtree through an offscreen: the rule the
 /// lowering applies (`Lowering::layer`). A projective layer's subtree renders
 /// into its local image — the same offscreen isolation — and the root renders
-/// into the surface target and never isolates for blended children.
-fn isolates(tree: &SurfaceTree, id: LayerId) -> bool {
+/// into the surface target and never isolates for blended children. A
+/// layer whose space differs from its parent level's isolates too.
+fn isolates(tree: &SurfaceTree, visit: &Visit) -> bool {
+    let id = visit.id;
     let node = tree.layer(id);
     node.filter.is_some()
         || node.opacity < 1.0
         || node.blend != BlendMode::Normal
-        || node.blend_space != BlendSpace::Linear
+        || visit.space.island()
         || tree.projective_pose(id).is_some()
         || (id != tree.root() && node.blends_within())
 }
@@ -336,20 +338,21 @@ fn isolates(tree: &SurfaceTree, id: LayerId) -> bool {
 /// Whether the lowering splits the layer's isolation at a host-window
 /// mark: the layer filters its subtree by a pure coordinate remap
 /// ([`cherenkov::FilterId::is_coordinate_remap`]) and composites it at
-/// full opacity with the `Normal` blend in linear space, unprojected, and
-/// no descendant
+/// full opacity with the `Normal` blend in its parent level's space,
+/// unprojected, and no descendant
 /// blends within it (a blended child would read only its own region's
 /// content). Each region of the subtree then renders into its own
 /// offscreen under the same device-space filter and composes in paint
 /// order, which is the filtered whole up to the sampler's edge filtering
 /// (water-rs/waterui#2225).
-fn splits(tree: &SurfaceTree, id: LayerId) -> bool {
+fn splits(tree: &SurfaceTree, visit: &Visit) -> bool {
+    let id = visit.id;
     let node = tree.layer(id);
     node.filter
         .is_some_and(cherenkov::FilterId::is_coordinate_remap)
         && node.opacity >= 1.0
         && node.blend == BlendMode::Normal
-        && node.blend_space == BlendSpace::Linear
+        && !visit.space.island()
         && tree.projective_pose(id).is_none()
         && (id == tree.root() || !node.blends_within())
 }
@@ -359,6 +362,25 @@ struct Visit {
     id: LayerId,
     /// The index in `order` of each ancestor, root first.
     ancestors: Vec<usize>,
+    /// The spaces the layer and its parent level composite in.
+    space: Spaces,
+}
+
+/// A layer's resolved blend space and its parent level's: a layer that
+/// declares no space composites in its parent's, and the root's parent
+/// is the surface's storage space.
+#[derive(Clone, Copy)]
+struct Spaces {
+    parent: BlendSpace,
+    own: BlendSpace,
+}
+
+impl Spaces {
+    /// Whether the layer composites in a space unlike its parent's, which
+    /// the lowering isolates.
+    fn island(self) -> bool {
+        self.own != self.parent
+    }
 }
 
 /// A visit's device-space footprint: the content-space transform
@@ -390,9 +412,10 @@ pub struct PlanScratch {
 
 /// Every layer in paint order: a layer's content, then its children —
 /// into `order`, whose per-visit `ancestors` buffers are recycled through
-/// `pool` from the last call.
+/// `pool` from the last call. `storage` is the surface's storage space,
+/// the root's parent level.
 fn paint_order<'a>(
-    tree: &SurfaceTree,
+    (tree, storage): (&SurfaceTree, BlendSpace),
     order: &'a mut Vec<Visit>,
     pool: &mut Vec<Vec<usize>>,
     stack: &mut Vec<(LayerId, usize)>,
@@ -406,11 +429,22 @@ fn paint_order<'a>(
         let index = order.len();
         let mut ancestors = pool.pop().unwrap_or_default();
         ancestors.clear();
-        if parent != usize::MAX {
+        let parent_space = if parent == usize::MAX {
+            storage
+        } else {
             ancestors.extend_from_slice(&order[parent].ancestors);
             ancestors.push(parent);
-        }
-        order.push(Visit { id, ancestors });
+            order[parent].space.own
+        };
+        let space = Spaces {
+            parent: parent_space,
+            own: tree.layer(id).blend_space.unwrap_or(parent_space),
+        };
+        order.push(Visit {
+            id,
+            ancestors,
+            space,
+        });
         for &child in tree.layer(id).children.iter().rev() {
             stack.push((child, index));
         }
@@ -493,10 +527,7 @@ fn suffixes(
         } else {
             backdrop_above[i + 1]
         };
-        let at_surface = visit
-            .ancestors
-            .iter()
-            .all(|&a| !isolates(tree, order[a].id));
+        let at_surface = visit.ancestors.iter().all(|&a| !isolates(tree, &order[a]));
         blend_above[i] = if at_surface && node.blend != BlendMode::Normal {
             Some(visit.id)
         } else {
@@ -585,7 +616,7 @@ fn verdicts<'a, C: Compositor>(
 
 /// Decides which of `candidates` (layer to content size) the platform
 /// reports `ready` are promoted this frame on a surface realized by
-/// compositor `C`.
+/// compositor `C`, whose storage space is `storage`.
 ///
 /// Eligible mandatory candidates receive the budget first, then external
 /// frames, then recorded captures; ties within each class use paint order.
@@ -593,12 +624,14 @@ fn verdicts<'a, C: Compositor>(
 #[must_use]
 pub fn plan<C: Compositor>(
     tree: &SurfaceTree,
+    storage: BlendSpace,
     candidates: &FxHashMap<LayerId, Candidate>,
     ready: &FxHashSet<LayerId>,
 ) -> Plan {
     let mut result = Plan::default();
     plan_with::<C>(
         tree,
+        storage,
         candidates,
         ready,
         &mut PlanScratch::default(),
@@ -610,6 +643,7 @@ pub fn plan<C: Compositor>(
 /// Rebuild a plan while retaining its workspace and placement-path buffers.
 pub fn plan_with<C: Compositor>(
     tree: &SurfaceTree,
+    storage: BlendSpace,
     candidates: &FxHashMap<LayerId, Candidate>,
     ready: &FxHashSet<LayerId>,
     scratch: &mut PlanScratch,
@@ -631,7 +665,7 @@ pub fn plan_with<C: Compositor>(
         device,
         decisions,
     } = scratch;
-    let order = paint_order(tree, order, pool, stack);
+    let order = paint_order((tree, storage), order, pool, stack);
     suffixes(tree, order, backdrop_above, blend_above);
     devices(tree, order, device);
     let mut promoted = 0;
@@ -707,6 +741,7 @@ fn placement_eq(
 fn same_plan<C: Compositor>(
     committed: &Plan,
     tree: &SurfaceTree,
+    storage: BlendSpace,
     candidates: &FxHashMap<LayerId, Candidate>,
     ready: &FxHashSet<LayerId>,
     scratch: &mut PlanScratch,
@@ -726,7 +761,7 @@ fn same_plan<C: Compositor>(
         device,
         decisions,
     } = scratch;
-    let order = paint_order(tree, order, pool, stack);
+    let order = paint_order((tree, storage), order, pool, stack);
     suffixes(tree, order, backdrop_above, blend_above);
     devices(tree, order, device);
     let mut planes = committed.planes.iter();
@@ -805,8 +840,8 @@ fn mandatory_plane<C: Compositor>(
     // ([`splits`]) does not keep it from the surface level.
     let cuts = C::HOST_WINDOW_BANDS && source == Source::HostWindow;
     if let Some(&a) = visit.ancestors.iter().find(|&&a| {
-        let id = order[a].id;
-        isolates(tree, id) && !(cuts && splits(tree, id))
+        let ancestor = &order[a];
+        isolates(tree, ancestor) && !(cuts && splits(tree, ancestor))
     }) {
         return Err(Ineligible::Isolated(order[a].id));
     }
@@ -816,7 +851,10 @@ fn mandatory_plane<C: Compositor>(
     if node.blend != BlendMode::Normal || node.blends_within() {
         return Err(Ineligible::Blend);
     }
-    if node.blend_space != BlendSpace::Linear {
+    // The system compositor blends linearly: a layer compositing in
+    // another space cannot be shown on a plane. A linear island over an
+    // encoded level composites linearly, as a plane does.
+    if visit.space.own != BlendSpace::Linear {
         return Err(Ineligible::BlendSpace);
     }
     if node.backdrop.is_some() {
@@ -994,6 +1032,7 @@ fn placement(
 pub fn frames_only<C: Compositor>(
     plan: &Plan,
     tree: &SurfaceTree,
+    storage: BlendSpace,
     candidates: &FxHashMap<LayerId, Candidate>,
     ready: &FxHashSet<LayerId>,
     layers: &FxHashSet<LayerId>,
@@ -1003,7 +1042,7 @@ pub fn frames_only<C: Compositor>(
         && layers
             .iter()
             .all(|layer| plan.planes.iter().any(|plane| plane.layer == *layer))
-        && same_plan::<C>(plan, tree, candidates, ready, scratch)
+        && same_plan::<C>(plan, tree, storage, candidates, ready, scratch)
 }
 
 /// The content a plane shows.
@@ -1180,6 +1219,9 @@ pub struct Composition<'a> {
     pub display: Display,
     /// The engine parts, bottom first.
     pub parts: &'a [Part<'a>],
+    /// The space every engine part stores its pixels in, the surface's
+    /// storage space: a blit of a part decodes from it.
+    pub storage_space: cherenkov::BlendSpace,
     /// The promoted planes, bottom first.
     pub planes: &'a [Plane<'a>],
 }

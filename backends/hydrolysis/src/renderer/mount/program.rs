@@ -78,8 +78,9 @@ pub struct ScopeProps {
     pub clip: Option<ShapeData>,
     pub alpha: f32,
     /// The space the scope's members composite in and its layer composites
-    /// onto the owning layer in.
-    pub blend_space: BlendSpace,
+    /// onto the owning layer in; `None` composites them in the owning
+    /// layer's space.
+    pub blend_space: Option<BlendSpace>,
     pub live: ScopeLive,
 }
 

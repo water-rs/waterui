@@ -966,6 +966,7 @@ impl Planes {
             queue,
             presenter,
             display,
+            storage_space,
             ..
         } = composition;
         self.collect_releases();
@@ -1199,12 +1200,27 @@ impl Planes {
             label: Some("plane present"),
         });
         let mut headrooms = Vec::new();
+        // An engine part stores the surface's storage space; a static
+        // layer's capture stores the linear space.
         let mut sources = stack.iter().filter_map(|entry| match entry {
-            Entry::Engine { view, color, .. } => Some((*view, *color)),
+            Entry::Engine {
+                view,
+                color,
+                raster,
+                ..
+            } => Some((
+                *view,
+                *color,
+                if raster.is_some() {
+                    cherenkov::BlendSpace::Linear
+                } else {
+                    storage_space
+                },
+            )),
             Entry::Frame(_) | Entry::Hosted { .. } => None,
         });
         for (part, &at) in chosen.iter().enumerate() {
-            let (source, color) = sources.next().expect("one source per part");
+            let (source, color, space) = sources.next().expect("one source per part");
             let Some(at) = at else {
                 continue;
             };
@@ -1215,13 +1231,18 @@ impl Planes {
                 headroom: display.headroom,
             };
             let source = source.expect("a new native buffer has engine pixels");
-            let mut uniform = Presenter::uniform_bytes(&output);
+            let mut uniform = Presenter::uniform_bytes(&output, space);
             if self.parts[part].format == wgpu::TextureFormat::Rgba16Float {
                 // Scene-referred linear P3; SurfaceFlinger maps it to the display.
                 uniform[..4].copy_from_slice(&10_u32.to_ne_bytes());
                 headrooms.push((
                     part,
-                    presenter.source_headroom(device, &mut blits, source, self.parts[part].size)?,
+                    presenter.source_headroom(
+                        device,
+                        &mut blits,
+                        (source, space),
+                        self.parts[part].size,
+                    )?,
                 ));
             }
             queue.write_buffer(&self.parts[part].uniform, 0, &uniform);
@@ -1251,10 +1272,10 @@ impl Planes {
             // writing.
             for (window, part, image) in band_images {
                 let band = self.bands.get_mut(&window).expect("acquired above");
-                presenter.texture(
+                presenter.texture_in(
                     device,
                     queue,
-                    composition.parts[part].view,
+                    (composition.parts[part].view, storage_space),
                     band.window.output(&image.texture, display.headroom),
                 );
                 queue.present(image);

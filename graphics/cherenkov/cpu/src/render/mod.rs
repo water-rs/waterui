@@ -971,7 +971,7 @@ impl RasterRenderer {
         surf.record_uses(used);
         let (w, h) = (surf.size.0 as usize, surf.size.1 as usize);
         let [r, g, b, a] = sf.clear.components;
-        let clear = [r * a, g * a, b * a, a];
+        let clear = ([r * a, g * a, b * a, a], sf.storage_space);
         surf.damage
             .prepare(&items, h, clear, self.image_replacements, filter_changed);
         let pool = &self.pool;
@@ -1103,6 +1103,7 @@ impl RasterRenderer {
             }
             lowering.project(local, projected);
             if local.is_none() {
+                lowering.storage_space(sf.storage_space);
                 lowering.damage_layers = std::mem::take(&mut surf.damage.layers);
                 lowering.damage_layers.clear();
                 lowering.damage_rows = std::mem::take(&mut surf.damage.command_rows);
@@ -1222,7 +1223,8 @@ impl RasterRenderer {
                         self.level,
                         &items,
                         index,
-                        [0.0; 4],
+                        // A local image stores the linear working space.
+                        ([0.0; 4], cherenkov::BlendSpace::Linear),
                         &mut base,
                         w,
                         h,

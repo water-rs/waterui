@@ -656,7 +656,7 @@ impl LiveSegmented {
     }
 
     /// The space the picker's group composites in.
-    pub(crate) const fn group_blend_space(&self) -> cherenkov_record::BlendSpace {
+    pub(crate) const fn group_blend_space(&self) -> Option<cherenkov_record::BlendSpace> {
         self.look.get_group_blend_space()
     }
 

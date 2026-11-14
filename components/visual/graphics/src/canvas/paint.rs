@@ -829,8 +829,9 @@ pub struct Layer {
     pub opacity: f32,
     /// How the group blends onto what lies beneath it.
     pub blend: BlendMode,
-    /// The space it blends in.
-    pub blend_space: BlendSpace,
+    /// The space its members blend in with each other; `None` blends them
+    /// in the space of the level the layer composites onto.
+    pub blend_space: Option<BlendSpace>,
 }
 
 impl Layer {
@@ -840,7 +841,7 @@ impl Layer {
         Self {
             opacity,
             blend: BlendMode::Normal,
-            blend_space: BlendSpace::Linear,
+            blend_space: None,
         }
     }
 
@@ -854,7 +855,7 @@ impl Layer {
     /// Sets the blend space.
     #[must_use]
     pub const fn blend_space(mut self, space: BlendSpace) -> Self {
-        self.blend_space = space;
+        self.blend_space = Some(space);
         self
     }
 
@@ -863,8 +864,9 @@ impl Layer {
             opacity: self.opacity,
             blend: self.blend.lower(),
             blend_space: match self.blend_space {
-                BlendSpace::Linear => draw::BlendSpace::Linear,
-                BlendSpace::Encoded => draw::BlendSpace::SrgbEncoded,
+                None => None,
+                Some(BlendSpace::Linear) => Some(draw::BlendSpace::Linear),
+                Some(BlendSpace::Encoded) => Some(draw::BlendSpace::SrgbEncoded),
             },
             filter: None,
         }

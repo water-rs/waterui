@@ -290,7 +290,7 @@ pub struct SegmentedLook {
     segment: Vec<Rc<dyn CustomPart<Segment>>>,
     above: Vec<Rc<dyn CustomPart<SegmentedValue>>>,
     group_opacity: Driven<f32>,
-    group_blend_space: BlendSpace,
+    group_blend_space: Option<BlendSpace>,
 }
 
 impl core::fmt::Debug for SegmentedLook {
@@ -336,7 +336,7 @@ impl SegmentedLook {
             segment: Vec::new(),
             above: Vec::new(),
             group_opacity: Driven::constant(1.0),
-            group_blend_space: BlendSpace::Linear,
+            group_blend_space: None,
         }
     }
 
@@ -435,11 +435,11 @@ impl SegmentedLook {
 
     /// The space the group of [`Self::group_opacity`] composites in:
     /// its parts and labels composite with each other in it, and the group
-    /// fades onto what lies beneath in it. [`BlendSpace::Linear`] by
-    /// default.
+    /// fades onto what lies beneath in it. With none set, the group
+    /// composites in the space of the level beneath it.
     #[must_use]
     pub const fn group_blend_space(mut self, space: BlendSpace) -> Self {
-        self.group_blend_space = space;
+        self.group_blend_space = Some(space);
         self
     }
 
@@ -473,9 +473,9 @@ impl SegmentedLook {
         &self.group_opacity
     }
 
-    /// The space the group composites in.
+    /// The space the group composites in, when one is set.
     #[must_use]
-    pub const fn get_group_blend_space(&self) -> BlendSpace {
+    pub const fn get_group_blend_space(&self) -> Option<BlendSpace> {
         self.group_blend_space
     }
 

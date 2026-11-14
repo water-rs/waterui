@@ -773,8 +773,9 @@ pub enum Op {
         blend: BlendMode,
         /// The group's declared compositing space: members composite
         /// with each other in it, then the group blends onto the
-        /// backdrop in it.
-        space: BlendSpace,
+        /// backdrop in it. `None` resolves to the enclosing level's
+        /// space when the op lowers.
+        space: Option<BlendSpace>,
         /// Filter over the captured group.
         filter: Option<cherenkov::FilterId>,
         /// Op index of the matching `End` op.
@@ -888,18 +889,21 @@ impl cherenkov::lowering::Compiler for Lowerer<'_> {
         group: &cherenkov::Group,
         isolate: bool,
     ) -> Result<Option<Op>, RenderError> {
+        // A declared space isolates: the content compiles before it knows
+        // the space of the level it will composite into, and an isolation
+        // in that same space composites exactly like a pass-through.
         Ok((isolate
             || group.filter.is_some()
             || group.opacity < 1.0
             || group.blend != BlendMode::Normal
-            || group.blend_space != BlendSpace::Linear)
-            .then_some(Op::BeginIsolate {
-                opacity: group.opacity,
-                blend: group.blend,
-                space: group.blend_space,
-                filter: group.filter,
-                end: 0,
-            }))
+            || group.blend_space.is_some())
+        .then_some(Op::BeginIsolate {
+            opacity: group.opacity,
+            blend: group.blend,
+            space: group.blend_space,
+            filter: group.filter,
+            end: 0,
+        }))
     }
     fn picture(
         &mut self,

@@ -127,18 +127,27 @@ pub struct Key {
     stamp: u64,
     /// The renderer's image-replacement count.
     replacements: u64,
+    /// The space the image stores its pixels in: linear for a projective
+    /// layer's local image, the realizing level's for a retained picture.
+    pub space: cherenkov::BlendSpace,
 }
 
 impl Key {
-    /// The key of `image` at content stamp `stamp` after `replacements`
-    /// image replacements.
+    /// The key of `image`, stored in `space`, at content stamp `stamp`
+    /// after `replacements` image replacements.
     #[must_use]
-    pub const fn new(image: &LocalImage, stamp: u64, replacements: u64) -> Self {
+    pub const fn new(
+        image: &LocalImage,
+        space: cherenkov::BlendSpace,
+        stamp: u64,
+        replacements: u64,
+    ) -> Self {
         Self {
             local_to_texel: image.local_to_texel.as_coeffs(),
             size: image.size,
             stamp,
             replacements,
+            space,
         }
     }
 

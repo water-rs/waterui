@@ -14,16 +14,6 @@ use waterui_core::contract_violation;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize};
 use waterui_layout::scroll::{Axis as ScrollAxis, ScrollView};
 
-/// Width of the grabbable scrollbar gutter along the viewport edge, in logical
-/// pixels. Wider than the drawn thumb so the bar is comfortable to pick up.
-const SCROLL_INDICATOR_GUTTER: f64 = 12.0;
-/// Drawn thumb thickness at rest.
-const SCROLL_INDICATOR_THICKNESS: f64 = 2.5;
-/// Drawn thumb thickness while the thumb is being dragged.
-const SCROLL_INDICATOR_DRAG_THICKNESS: f64 = 6.5;
-/// Inset of the thumb from the viewport edge.
-const SCROLL_INDICATOR_EDGE_INSET: f64 = 1.5;
-
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ScrollView> {
     fn intrinsic(
         state: &mut HydroState<E>,
@@ -156,11 +146,12 @@ fn indicator_geometry(
     content_extent: f64,
     max_offset: f64,
     offset: f64,
+    min_extent: f64,
 ) -> Option<IndicatorGeometry> {
     if max_offset <= 0.0 {
         return None;
     }
-    let min_thumb = track.min(12.0);
+    let min_thumb = track.min(min_extent);
     let thumb_extent = (track * (viewport_extent / content_extent)).clamp(min_thumb, track);
     let travel = track - thumb_extent;
     // A touch gesture can hold the offset past an edge while it rubber-
@@ -183,7 +174,7 @@ fn indicator_geometry(
 )]
 pub fn draw_scroll_indicators<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
-    _env: &Environment,
+    env: &Environment,
     viewport: kurbo::Rect,
     metrics: crate::scroll::ScrollMetrics,
     axis: ScrollAxis,
@@ -197,12 +188,15 @@ pub fn draw_scroll_indicators<E: crate::text::TextEngine>(
     let visible_viewport_width = (metrics.viewport_width - extension.horizontal()).max(0.0);
     let key = handle.cache_key();
     let dragging = ctx.renderer_mut().scrollbar_drag_active(key);
+    let look = ctx.theme().scroll_indicator(env);
     let thickness = if dragging {
-        SCROLL_INDICATOR_DRAG_THICKNESS
+        look.get_drag_thickness()
     } else {
-        SCROLL_INDICATOR_THICKNESS
+        look.get_thickness()
     };
-    let theme = ctx.theme();
+    let edge_inset = look.get_edge_inset();
+    let min_extent = look.get_min_extent();
+    let gutter_width = look.get_gutter();
     let vertical = matches!(axis, ScrollAxis::Vertical | ScrollAxis::All)
         .then(|| {
             indicator_geometry(
@@ -211,6 +205,7 @@ pub fn draw_scroll_indicators<E: crate::text::TextEngine>(
                 metrics.content_height,
                 metrics.max_y,
                 metrics.offset_y,
+                min_extent,
             )
         })
         .flatten();
@@ -222,42 +217,41 @@ pub fn draw_scroll_indicators<E: crate::text::TextEngine>(
                 metrics.content_width,
                 metrics.max_x,
                 metrics.offset_x,
+                min_extent,
             )
         })
         .flatten();
 
-    {
-        ctx.draw_context(|draw| {
-            if let Some(geometry) = &vertical {
-                let thumb_y = viewport.y0 + geometry.thumb_offset;
-                theme.draw_scroll_indicator(
-                    &mut *draw,
-                    kurbo::Rect::new(
-                        viewport.x1 - SCROLL_INDICATOR_EDGE_INSET - thickness,
-                        thumb_y,
-                        viewport.x1 - SCROLL_INDICATOR_EDGE_INSET,
-                        thumb_y + geometry.thumb_extent,
-                    ),
-                );
-            }
-            if let Some(geometry) = &horizontal {
-                let thumb_x = viewport.x0 + geometry.thumb_offset;
-                theme.draw_scroll_indicator(
-                    &mut *draw,
-                    kurbo::Rect::new(
-                        thumb_x,
-                        viewport.y1 - SCROLL_INDICATOR_EDGE_INSET - thickness,
-                        thumb_x + geometry.thumb_extent,
-                        viewport.y1 - SCROLL_INDICATOR_EDGE_INSET,
-                    ),
-                );
-            }
-        });
-    }
+    ctx.draw_context(|draw| {
+        if let Some(geometry) = &vertical {
+            let thumb_y = viewport.y0 + geometry.thumb_offset;
+            look.record_thumb(
+                &mut *draw,
+                kurbo::Rect::new(
+                    viewport.x1 - edge_inset - thickness,
+                    thumb_y,
+                    viewport.x1 - edge_inset,
+                    thumb_y + geometry.thumb_extent,
+                ),
+            );
+        }
+        if let Some(geometry) = &horizontal {
+            let thumb_x = viewport.x0 + geometry.thumb_offset;
+            look.record_thumb(
+                &mut *draw,
+                kurbo::Rect::new(
+                    thumb_x,
+                    viewport.y1 - edge_inset - thickness,
+                    thumb_x + geometry.thumb_extent,
+                    viewport.y1 - edge_inset,
+                ),
+            );
+        }
+    });
 
     if vertical.is_some_and(|geometry| geometry.travel > 0.0) {
         let gutter = kurbo::Rect::new(
-            viewport.x1 - SCROLL_INDICATOR_GUTTER,
+            viewport.x1 - gutter_width,
             viewport.y0,
             viewport.x1,
             viewport.y1,
@@ -279,6 +273,7 @@ pub fn draw_scroll_indicators<E: crate::text::TextEngine>(
                     metrics.content_height,
                     metrics.max_y,
                     metrics.offset_y,
+                    min_extent,
                 ) else {
                     return false;
                 };
@@ -308,7 +303,7 @@ pub fn draw_scroll_indicators<E: crate::text::TextEngine>(
     if horizontal.is_some_and(|geometry| geometry.travel > 0.0) {
         let gutter = kurbo::Rect::new(
             viewport.x0,
-            viewport.y1 - SCROLL_INDICATOR_GUTTER,
+            viewport.y1 - gutter_width,
             viewport.x1,
             viewport.y1,
         );
@@ -324,6 +319,7 @@ pub fn draw_scroll_indicators<E: crate::text::TextEngine>(
                     metrics.content_width,
                     metrics.max_x,
                     metrics.offset_x,
+                    min_extent,
                 ) else {
                     return false;
                 };

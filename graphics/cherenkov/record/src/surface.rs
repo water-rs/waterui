@@ -210,6 +210,8 @@ pub struct Shared<T: Target> {
     sizes: FxHashMap<LayerId, LayoutSize>,
     /// Pending clear colour.
     clear: Option<WorkingColor>,
+    /// Pending storage space.
+    storage_space: Option<BlendSpace>,
     /// The vectors an outermost commit moves its replaced and removed
     /// contents out of the surface borrow in, handed back after their
     /// drops run: reused across commits so a steady-state commit
@@ -334,6 +336,7 @@ impl<T: Target> Shared<T> {
             hierarchy: Hierarchy::default(),
             sizes: FxHashMap::default(),
             clear: None,
+            storage_space: None,
             spare_replaced: Vec::new(),
             spare_removed: Vec::new(),
             next_layer: Cell::new(1),
@@ -374,6 +377,15 @@ impl<T: Target> Shared<T> {
     /// Queues the clear colour into the pending change set.
     pub fn set_clear(&mut self, color: WorkingColor) {
         self.clear = Some(color);
+        self.flush();
+    }
+
+    /// Queues the surface's storage space into the pending change set:
+    /// the space its root canvas stores premultiplied pixels in, which
+    /// every layer and group declaring no space of its own composites
+    /// in. [`BlendSpace::Linear`] until set.
+    pub fn set_storage_space(&mut self, space: BlendSpace) {
+        self.storage_space = Some(space);
         self.flush();
     }
 
@@ -502,14 +514,16 @@ impl<T: Target> Shared<T> {
             }
         }
         let clear = self.clear.take();
+        let storage_space = self.storage_space.take();
         if sampling.is_some() && !animating {
             // Nothing sampled this pass: the flag stays down until an
             // animated change pokes it up again.
             self.animated.set(false);
         }
-        if clear.is_some() || !ops.is_empty() || !recycled.is_empty() {
+        if clear.is_some() || storage_space.is_some() || !ops.is_empty() || !recycled.is_empty() {
             Some(ChangeSet {
                 clear,
+                storage_space,
                 ops,
                 recycled,
                 animating,
@@ -1895,12 +1909,21 @@ impl<T: Target> LayerEdit<T> {
         self
     }
 
-    /// Sets the blend space, [`BlendSpace::Linear`] until set, with the
-    /// meaning of [`Group::blend_space`](crate::Group::blend_space): the
-    /// layer's content and children composite with each other in this
-    /// space, and the layer composites onto its parent in it.
+    /// Sets the blend space, with the meaning of
+    /// [`Group::blend_space`](crate::Group::blend_space): the layer's
+    /// content and children composite with each other in this space, and
+    /// the layer composites onto its parent in it. A space unlike its
+    /// parent level's isolates the layer. Until set, or once
+    /// [cleared](Self::clear_blend_space), the layer composites in its
+    /// parent's space.
     pub fn blend_space(&mut self, space: BlendSpace) -> &mut Self {
-        self.queue(Op::Layer(LayerOp::BlendSpace(self.layer, space)));
+        self.queue(Op::Layer(LayerOp::BlendSpace(self.layer, Some(space))));
+        self
+    }
+
+    /// Clears the blend space: the layer composites in its parent's.
+    pub fn clear_blend_space(&mut self) -> &mut Self {
+        self.queue(Op::Layer(LayerOp::BlendSpace(self.layer, None)));
         self
     }
 
