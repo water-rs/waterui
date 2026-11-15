@@ -426,6 +426,7 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
 /// sub-view — it flushes unsuppressed in the rendered path, so it emits its
 /// own nodes here too.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_date_picker_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<DatePickerRenderState<E>>>,

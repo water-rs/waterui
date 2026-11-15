@@ -519,6 +519,7 @@ pub fn measure_stepper_intrinsic<E: crate::text::TextEngine>(
 /// same node `stepper_accessibility` registers, with no bounds. The label
 /// sub-view flushes visual-only, so there is nothing else to emit.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_stepper_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<StepperRenderState<E>>>,

@@ -19,6 +19,7 @@ use waterui_core::handler::ReportExtraction as _;
 /// post-walk single-child collapse. An explicit `a11y_role` claim is the
 /// element the author declared, so it never collapses.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub(super) struct GestureA11yClaim {
     /// The registered claim node.
     pub(super) node_id: AccessibilityNodeId,
@@ -299,6 +300,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// wiring over the text-input and surface targets the semantic walk
     /// registered, with no renderer in hand.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(super) fn apply_focused_semantic(
         renderer: &mut SemanticCore<E>,
         value: &Focused,
@@ -697,6 +699,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// When a scope exists that the tap did not claim, the activation is
     /// delegated to the scope's representative instead, and `None` returns.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(super) fn emit_gesture_observer_accessibility(
         renderer: &mut SemanticCore<E>,
         env: &Environment,

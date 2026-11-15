@@ -3180,6 +3180,7 @@ fn row_content_anchor(env: &Environment) -> UnitPoint {
 /// Emits a retained list's accessibility tree for the semantic walk — the same
 /// nodes `list_accessibility` registers, with no bounds and every row present.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_list_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<ListRenderState<E>>>,

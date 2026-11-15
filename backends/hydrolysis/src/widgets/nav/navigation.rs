@@ -3322,6 +3322,7 @@ pub fn render_navigation_stack_parts<E: crate::text::TextEngine>(
 /// subtitle sub-views flush under suppression (their semantics live on the
 /// bar's own nodes), so they emit nothing here.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_navigation_view_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<NavigationViewRenderState<E>>>,
@@ -3371,6 +3372,7 @@ pub fn emit_navigation_view_accessibility<E: crate::text::TextEngine>(
 /// its subtree retires and never reaches the accessibility tree, exactly as
 /// in the rendered path.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_navigation_split_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<NavigationSplitRenderState<E>>>,
@@ -3482,6 +3484,7 @@ pub fn emit_navigation_split_accessibility<E: crate::text::TextEngine>(
 /// when the stack is empty, the topmost pushed destination otherwise.
 /// Transition scenes are presentation and emit nothing.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_navigation_stack_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<NavigationStackRenderState<E>>>,

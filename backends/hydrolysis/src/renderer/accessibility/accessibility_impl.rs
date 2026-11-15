@@ -2134,6 +2134,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// the same scope logic with no rect — a semantic container has no
     /// zero-extent case to suppress, and its node carries no bounds.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn begin_accessibility_container_semantic(
         &mut self,
         env: &Environment,

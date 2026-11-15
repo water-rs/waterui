@@ -891,6 +891,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// produce, and every registration goes through the no-bounds semantic
     /// path.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn emit_accessibility(&self, renderer: &mut SemanticCore<E>, env: &Environment) {
         renderer.with_reader(self.core(), ReaderPhase::Record, |renderer| {
             self.emit_accessibility_inner(renderer, env);
@@ -906,6 +907,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         clippy::option_if_let_else,
         reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
     )]
+    #[cfg(hydrolysis_cherenkov)]
     fn emit_accessibility_inner(&self, renderer: &mut SemanticCore<E>, env: &Environment) {
         match self {
             // A color fill carries no semantics.

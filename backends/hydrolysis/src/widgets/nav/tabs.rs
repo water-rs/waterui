@@ -1102,6 +1102,7 @@ fn tabs_label_rect(
 /// the selected tab's content subtree — it flushes unsuppressed in the
 /// rendered path, so it emits its own nodes here too.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_tabs_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<TabsRenderState<E>>>,
