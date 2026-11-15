@@ -233,6 +233,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
             hydrolysis_loader_search_paths(platform),
         )
         .with_envs(llvm_envs)
+        .with_features(options.app_features(project))
         .with_envs(options.cargo_envs().iter().cloned())
         .with_envs(extra_envs.iter().cloned());
     let widget_features = assets::widget_features(
@@ -290,6 +291,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
         &backend_path,
         &built_target.app_symbols().await?,
         options.uses_dev_server(),
+        &built_target.features,
     )
     .await?;
 
@@ -413,7 +415,8 @@ pub async fn package_hydrolysis(
     built: Option<&BuiltTarget>,
 ) -> eyre::Result<Artifact> {
     if platform == TargetPlatform::Web {
-        let site_root = package_hydrolysis_web_site(project, options.is_debug(), false).await?;
+        let site_root =
+            package_hydrolysis_web_site(project, options.is_debug(), false, &[]).await?;
         return Ok(Artifact::new(project.bundle_identifier(), site_root));
     }
 
@@ -441,6 +444,7 @@ pub async fn package_hydrolysis(
         &backend_path,
         &built.app_symbols().await?,
         options.uses_dev_server(),
+        &built.features,
     )
     .await?;
 
@@ -708,16 +712,18 @@ async fn copy_assets_and_fonts(
     backend_path: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
+    features: &[String],
 ) -> eyre::Result<()> {
     let resources_dir = backend_path.join("resources");
     fs::create_dir_all(&resources_dir).await?;
     let manifest =
         assets::stage_project_assets_for_gtk(project, &resources_dir, symbols, dev_server).await?;
 
-    let font_declarations = assets::scan_fonts(
+    let font_declarations = assets::scan_fonts_with_features(
         project,
         &backend_path.join("Cargo.toml"),
         &[platform.font_platform()],
+        features,
     )
     .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
@@ -737,8 +743,11 @@ async fn copy_assets_and_fonts(
 ///
 /// # Errors
 /// Returns an error if the web site cannot be packaged.
-pub async fn prepare_hydrolysis_web_dev_site(project: &Project) -> eyre::Result<PathBuf> {
-    package_hydrolysis_web_site(project, true, true).await
+pub async fn prepare_hydrolysis_web_dev_site(
+    project: &Project,
+    features: &[String],
+) -> eyre::Result<PathBuf> {
+    package_hydrolysis_web_site(project, true, true, features).await
 }
 
 /// A lightweight static-file server for packaged Hydrolysis web output.
@@ -820,10 +829,15 @@ impl Drop for HydrolysisWebDevServer {
     }
 }
 
-async fn package_hydrolysis_web_site(
+/// Build a web site with the same explicit Cargo features used by native builds.
+///
+/// # Errors
+/// Returns an error if building or staging the web site fails.
+pub async fn package_hydrolysis_web_site(
     project: &Project,
     debug: bool,
     dev_site: bool,
+    features: &[String],
 ) -> eyre::Result<PathBuf> {
     let backend_path = project.backend_path::<HydrolysisBackend>();
     let cargo_toml = backend_path.join("Cargo.toml");
@@ -857,9 +871,9 @@ async fn package_hydrolysis_web_site(
     fs::create_dir_all(&site_root).await?;
 
     // The shell is written after the bundle so the page knows the wasm size.
-    build_hydrolysis_web_bundle(project, &backend_path, &site_root, debug).await?;
+    build_hydrolysis_web_bundle(project, &backend_path, &site_root, debug, features).await?;
     super::web_launch::write_web_shell(project, &site_root).await?;
-    copy_web_assets_and_fonts(project, &backend_path, &site_root).await?;
+    copy_web_assets_and_fonts(project, &backend_path, &site_root, features).await?;
 
     Ok(site_root)
 }
@@ -869,6 +883,7 @@ async fn build_hydrolysis_web_bundle(
     backend_path: &Path,
     site_root: &Path,
     debug: bool,
+    features: &[String],
 ) -> eyre::Result<()> {
     let host = project.host();
     let wasm_pack = host
@@ -913,6 +928,10 @@ async fn build_hydrolysis_web_bundle(
     }
     wasm_pack_cmd.arg("--").arg("--target-dir").arg(&target_dir);
 
+    if !features.is_empty() {
+        wasm_pack_cmd.arg("--features").arg(features.join(","));
+    }
+
     let output = wasm_pack_cmd.output().await?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -936,9 +955,10 @@ async fn copy_web_assets_and_fonts(
     project: &Project,
     backend_path: &Path,
     site_root: &Path,
+    features: &[String],
 ) -> eyre::Result<()> {
     assets::stage_project_assets_for_web(project, site_root).await?;
-    assets::stage_hydrolysis_web_fonts(project, backend_path, site_root).await?;
+    assets::stage_hydrolysis_web_fonts(project, backend_path, site_root, features).await?;
     Ok(())
 }
 
@@ -1386,7 +1406,7 @@ mod tests {
             .expect("backend manifest");
             std::fs::write(backend_path.join("src/lib.rs"), "").expect("backend lib");
 
-            let site_root = super::package_hydrolysis_web_site(&project, false, false)
+            let site_root = super::package_hydrolysis_web_site(&project, false, false, &[])
                 .await
                 .expect("web packaging succeeds");
 

@@ -730,13 +730,15 @@ pub async fn rendered_android_outputs(
 /// the staging call cheap.
 pub(crate) async fn resolve_declared_fonts(
     project: &Project,
+    features: &[String],
 ) -> eyre::Result<Vec<assets::ResolvedFont>> {
-    let declarations = assets::scan_fonts(
+    let declarations = assets::scan_fonts_with_features(
         project,
         &project
             .backend_path::<HydrolysisBackend>()
             .join("Cargo.toml"),
         &[waterui_assets_planner::FontPlatform::Android],
+        features,
     )
     .await?;
     assets::resolve_fonts(project.host(), declarations).await
@@ -777,7 +779,7 @@ pub async fn build(
     options: BuildOptions,
     kotlin: &KotlinToolchain,
 ) -> eyre::Result<BuiltTarget> {
-    prepare_for_build(project).await?;
+    prepare_for_build(project, &options.app_features(project).collect::<Vec<_>>()).await?;
     Ok(
         build_prepared_into_jni_libs(project, abi, painter, options, kotlin)
             .await?
@@ -824,7 +826,7 @@ pub async fn build_with_features(
     features: &[&str],
     kotlin: &KotlinToolchain,
 ) -> eyre::Result<HydrolysisAndroidBuild> {
-    prepare_for_build(project).await?;
+    prepare_for_build(project, &options.app_features(project).collect::<Vec<_>>()).await?;
     build_prepared(project, abi, painter, options, features, kotlin).await
 }
 
@@ -837,7 +839,7 @@ pub async fn build_with_features(
 ///
 /// Returns an error when the app links an engine this pair cannot host, the
 /// launcher crate has not been generated or the font resolution fails.
-pub(crate) async fn prepare_for_build(project: &Project) -> eyre::Result<()> {
+pub(crate) async fn prepare_for_build(project: &Project, features: &[String]) -> eyre::Result<()> {
     // Validate the engine plan for this pair before any work runs: the same
     // bound the desktop `hydrolysis::backend` enforces on its own path.
     project
@@ -857,7 +859,7 @@ pub(crate) async fn prepare_for_build(project: &Project) -> eyre::Result<()> {
             backend_path.display()
         );
     }
-    resolve_declared_fonts(project).await.map(drop)
+    resolve_declared_fonts(project, features).await.map(drop)
 }
 
 /// [`build_with_features`] for a caller that already ran
@@ -909,6 +911,7 @@ pub(crate) async fn build_prepared(
         .with_rustc_flag(ANDROID_MAX_PAGE_SIZE_LINK_ARG)
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
         .with_features(std::iter::once(painter.name()).chain(features.iter().copied()))
+        .with_features(options.app_features(project))
         .with_envs(options.cargo_envs().iter().cloned())
         .with_envs(resolve_windows_arm64_llvm_envs(host).await?);
     let launcher_manifest = backend_path.join("Cargo.toml");
@@ -1037,9 +1040,10 @@ async fn copy_assets(
     project: &Project,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
+    features: &[String],
 ) -> eyre::Result<()> {
     let android_dir = android_dir(&project.backend_path::<HydrolysisBackend>());
-    let fonts = resolve_declared_fonts(project).await?;
+    let fonts = resolve_declared_fonts(project, features).await?;
     assets::stage_project_assets_for_android(project, &android_dir, symbols, dev_server, &fonts)
         .await?;
     Ok(())
@@ -1085,6 +1089,7 @@ pub async fn package_with_abis(
         project,
         &built.app_symbols().await?,
         options.uses_dev_server(),
+        &built.features,
     )
     .await?;
 
