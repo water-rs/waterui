@@ -1061,7 +1061,10 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
         let m = inst.affine[0];
         let r = vec2<f32>(s.half.x, s.half.x * s.aspect);
         let h = 0.5 * device_grad_scale(inst.affine) * vec2<f32>(abs(m.w) + abs(m.z), abs(m.y) + abs(m.x));
-        let margin = length(h) / min(r.x, r.y);
+        // Bound the pixel in normalized ellipse space. Scaling each axis
+        // by its own radius keeps the bound conservative without widening
+        // the costly rim to the shortest radius on both axes.
+        let margin = length(h / r);
         out.affine1.z = max(1.0 - margin, 0.0) * max(1.0 - margin, 0.0);
         out.affine1.w = (1.0 + margin) * (1.0 + margin);
     }

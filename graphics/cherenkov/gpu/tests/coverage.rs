@@ -171,6 +171,7 @@ split_test! {
 /// the same class of accuracy the circular arcs reach.
 fn elliptical_and_lame_rims_get_their_exact_area() -> Result<(), Box<dyn std::error::Error>> {
     use cherenkov::{ContinuousRect, kurbo::Ellipse};
+    use core::f64::consts::FRAC_PI_6;
     // (shape name, draw fn, inside indicator).
     type Case = (
         &'static str,
@@ -207,6 +208,23 @@ fn elliptical_and_lame_rims_get_their_exact_area() -> Result<(), Box<dyn std::er
     }
     let cases: Vec<Case> = vec![
         ("ellipse 14x6", draw_ellipse, Box::new(inside_ellipse)),
+        (
+            "rotated ellipse 14x1.5",
+            |c| {
+                c.fill(
+                    Ellipse::new((16.0, 16.0), (14.0, 1.5), FRAC_PI_6),
+                    WorkingColor::WHITE,
+                );
+            },
+            Box::new(|px, py| {
+                let (sin, cos) = FRAC_PI_6.sin_cos();
+                let dx = px - 16.0;
+                let dy = py - 16.0;
+                let ux = (dx * cos + dy * sin) / 14.0;
+                let uy = (dy * cos - dx * sin) / 1.5;
+                ux.mul_add(ux, uy * uy) - 1.0
+            }),
+        ),
         (
             "continuous n=3 r=12",
             |c| draw_lame(c, 0.5),

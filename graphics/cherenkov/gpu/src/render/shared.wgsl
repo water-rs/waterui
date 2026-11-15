@@ -363,12 +363,7 @@ fn lame_point(r: vec2<f32>, n: f32, w: f32) -> LamePoint {
     }
     let p = w * wm2;
     let one = 1.0 + w * p;
-    var s: f32;
-    if n == 2.0 {
-        s = inverseSqrt(one);
-    } else {
-        s = pow(one, -1.0 / n);
-    }
+    let s = pow(one, -1.0 / n);
     return LamePoint(r * vec2<f32>(1.0, w) * s, vec2<f32>(r.y, r.x * p), wm2, s, one);
 }
 
@@ -484,13 +479,7 @@ fn lame_corner(q_in: vec2<f32>, r_in: vec2<f32>, n: f32) -> vec4<f32> {
         } else {
             hi = w;
         }
-        let next = select(0.5 * (lo + hi), clamp(w - f / df, lo, hi), df < 0.0);
-        // A fixed point repeats the same geometry and bracket on every
-        // remaining iteration; the final evaluation already uses it.
-        if next == w {
-            break;
-        }
-        w = next;
+        w = select(0.5 * (lo + hi), clamp(w - f / df, lo, hi), df < 0.0);
     }
     let pt = lame_point(r, n, w);
     let qc = q - pt.c;
