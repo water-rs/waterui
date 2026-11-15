@@ -35,15 +35,36 @@ class InstrumentationResultTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             args = argparse.Namespace(serial="device", fixture="list", klass="StartupBenchmark#cold",
                                       extra_arg=["ready_text=100,000-row lazy List"], out=directory)
-            with patch.object(run.metrics, "adb_out", return_value=b"OK (1 test)\n") as adb, patch.object(
+            output = (
+                b"INSTRUMENTATION_STATUS: additionalTestOutputFile_trace=/sdcard/current.perfetto-trace\n"
+                b"INSTRUMENTATION_STATUS: additionalTestOutputFile_trace=/sdcard/current.perfetto-trace\n"
+                b"INSTRUMENTATION_RESULT: additionalTestOutputFile_json=/sdcard/current.json\n"
+                b"OK (1 test)\n"
+            )
+            with patch.object(run.metrics, "adb_out", return_value=output) as adb, patch.object(
                 run.subprocess, "run"
             ) as pull:
                 self.assertEqual(run.cmd_instrument(args), 0)
             command = shlex.split(adb.call_args.args[2])
             self.assertIn("100,000-row lazy List", command)
             self.assertEqual(command[-1], "dev.waterui.android.macrobenchmark/androidx.test.runner.AndroidJUnitRunner")
+            self.assertIn("androidx.benchmark.macro.junit4.InstrumentationResultsRunListener", command)
+            self.assertIn("-r", command)
+            self.assertEqual([call.args[0][4] for call in pull.call_args_list],
+                             ["/sdcard/current.perfetto-trace", "/sdcard/current.json"])
+            self.assertTrue(all(call.kwargs["check"] for call in pull.call_args_list))
+
+    def test_success_without_json_preserves_trace_and_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = argparse.Namespace(serial="device", fixture="list", klass="EnergyBenchmark",
+                                      extra_arg=None, out=directory)
+            output = (b"INSTRUMENTATION_STATUS: additionalTestOutputFile_trace=/sdcard/current.perfetto-trace\n"
+                      b"OK (1 test)\n")
+            with patch.object(run.metrics, "adb_out", return_value=output), patch.object(
+                run.subprocess, "run"
+            ) as pull, self.assertRaisesRegex(RuntimeError, "no JSON summary"):
+                run.cmd_instrument(args)
             pull.assert_called_once()
-            self.assertTrue(pull.call_args.kwargs["check"])
 
     def test_failed_measurement_preserves_reported_trace(self):
         with tempfile.TemporaryDirectory() as directory:

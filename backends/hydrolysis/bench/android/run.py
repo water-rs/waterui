@@ -873,13 +873,14 @@ def cmd_instrument(args: argparse.Namespace) -> int:
     serial = args.serial or metrics.detect_serial()
     test_pkg = "dev.waterui.android.macrobenchmark"
     instr_args = {
+        "listener": "androidx.benchmark.macro.junit4.InstrumentationResultsRunListener",
         "fixture": args.fixture,
         "class": (
             "dev.waterui.android.macrobenchmark." + args.klass
         ),
         **dict(a.split("=", 1) for a in (args.extra_arg or [])),
     }
-    cmd = ["am", "instrument", "-w"]
+    cmd = ["am", "instrument", "-w", "-r"]
     for k, v in instr_args.items():
         cmd += ["-e", k, str(v)]
     cmd.append(f"{test_pkg}/androidx.test.runner.AndroidJUnitRunner")
@@ -889,18 +890,24 @@ def cmd_instrument(args: argparse.Namespace) -> int:
     # Failed measurements may still emit the trace needed to diagnose them.
     if not succeeded and "additionalTestOutputFile_" not in out:
         raise RuntimeError("Macrobenchmark instrumentation failed or ran no tests")
-    # Pull the benchmark result payloads the test wrote to device media.
-    media_dir = Path(args.out) / "benchmark-results"
+    # AndroidX reports traces per test and its JSON summary at run end.
+    # Pull only this invocation's files; historical traces grow with every round.
+    reported_files = dict.fromkeys(re.findall(
+        r"INSTRUMENTATION_(?:STATUS|RESULT): additionalTestOutputFile_[^=\r\n]+=([^\r\n]+)",
+        out,
+    ))
+    if not reported_files:
+        raise RuntimeError("Macrobenchmark instrumentation reported no result files")
+    media_dir = Path(args.out) / "benchmark-results" / test_pkg
     media_dir.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            "adb", "-s", serial, "pull",
-            f"/sdcard/Android/media/{test_pkg}",
-            str(media_dir),
-        ],
-        capture_output=True, check=True,
-    )
+    for remote_file in reported_files:
+        subprocess.run(
+            ["adb", "-s", serial, "pull", remote_file, str(media_dir)],
+            capture_output=True, check=True,
+        )
     print(f"results pulled -> {media_dir}")
+    if succeeded and not any(path.endswith(".json") for path in reported_files):
+        raise RuntimeError("Macrobenchmark instrumentation reported no JSON summary")
     if not succeeded:
         raise RuntimeError("Macrobenchmark instrumentation failed; diagnostic artifacts were saved")
     return 0
