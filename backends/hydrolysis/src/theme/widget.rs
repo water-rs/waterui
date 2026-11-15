@@ -508,7 +508,24 @@ pub struct TableMetrics {
 /// implementing [`Style`](crate::Style).
 pub trait WidgetTheme {
     /// Return motion policy for interactive widget chrome.
-    fn interaction_motion(&self) -> InteractionMotion;
+    fn interaction_motion(&self) -> InteractionMotion {
+        InteractionMotion {
+            hover_opacity: 0.0,
+            focus_opacity: 0.0,
+            pressed_opacity: 0.0,
+            dragged_opacity: 0.0,
+            hover_enter: Animation::default(),
+            hover_exit: Animation::default(),
+            focus_enter: Animation::default(),
+            focus_exit: Animation::default(),
+            press_fade_in: Animation::default(),
+            press_fade_out: Animation::default(),
+            press_grow: Animation::default(),
+            press_shape: Animation::default(),
+            minimum_press_duration: Duration::ZERO,
+            touch_delay: Duration::ZERO,
+        }
+    }
 
     /// Declare the theme's backdrop materials in `registry`: both the
     /// backdrop shaders ([`MaterialShader`] keys, each with its
