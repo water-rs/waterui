@@ -501,8 +501,12 @@ impl AndroidHostWindow {
     /// Host-side `MotionEvent` coordinates arrive in physical pixels while the
     /// retained scene is laid out in logical units — the boundary converts,
     /// exactly as the winit runner's `PhysicalPosition::to_logical` does.
-    pub(crate) fn push_event(&mut self, mut event: InputEvent) {
-        let density = crate::num_cast::f64_as_f32(self.metrics.density);
+    pub(crate) fn push_event(&mut self, event: InputEvent) {
+        self.push_event_with_density(event, self.metrics.density);
+    }
+
+    pub(super) fn push_event_with_density(&mut self, mut event: InputEvent, density: f64) {
+        let density = crate::num_cast::f64_as_f32(density);
         match &mut event {
             InputEvent::PointerDown { x, y, .. }
             | InputEvent::PointerUp { x, y, .. }

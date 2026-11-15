@@ -1260,7 +1260,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePointerEve
             _ => InputEvent::PointerCancel { id, kind },
         };
         initializing!(session_ptr, pending, {
-            pending.events.push(event);
+            pending.push_event(event);
             return Ok(());
         });
         session!(session_ptr).runtime.platform.push_event(event);
@@ -1310,7 +1310,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeBackEvent<
         };
         let event = InputEvent::BackNavigation(event);
         initializing!(session_ptr, pending, {
-            pending.events.push(event);
+            pending.push_event(event);
             return Ok(());
         });
         session!(session_ptr).runtime.platform.push_event(event);
@@ -1337,7 +1337,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeScrollEven
             is_line_delta: false,
         };
         initializing!(session_ptr, pending, {
-            pending.events.push(event);
+            pending.push_event(event);
             return Ok(());
         });
         session!(session_ptr).runtime.platform.push_event(event);
@@ -1367,7 +1367,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeKeyEvent<'
         };
         let event = super::ime::ImeBridge::key_input(&key, pressed, modifiers);
         initializing!(session_ptr, pending, {
-            pending.events.push(event);
+            pending.push_event(event);
             return Ok(());
         });
         session!(session_ptr).runtime.platform.push_event(event);

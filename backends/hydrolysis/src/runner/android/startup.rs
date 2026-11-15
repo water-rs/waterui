@@ -29,7 +29,7 @@ pub(super) struct Startup {
     pub attached: bool,
     pub surface: Option<Attachment>,
     pub demand: (bool, bool),
-    pub events: Vec<InputEvent>,
+    events: Vec<(InputEvent, f64)>,
 }
 
 impl Startup {
@@ -57,6 +57,12 @@ impl Startup {
             demand: (false, false),
             events: Vec::new(),
         }
+    }
+
+    /// Input coordinates belong to the density at arrival, even if a later
+    /// configuration update changes the metrics before mounting completes.
+    pub fn push_event(&mut self, event: InputEvent) {
+        self.events.push((event, self.metrics.density));
     }
 
     pub fn mount(
@@ -90,8 +96,11 @@ impl Startup {
         session
             .set_frame_demand(self.demand.0, self.demand.1)
             .map_err(JniError)?;
-        for event in self.events {
-            session.runtime.platform.push_event(event);
+        for (event, density) in self.events {
+            session
+                .runtime
+                .platform
+                .push_event_with_density(event, density);
         }
         Ok(*session)
     }
