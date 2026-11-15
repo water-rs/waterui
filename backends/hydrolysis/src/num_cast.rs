@@ -277,13 +277,10 @@ pub const fn u64_as_i64(v: u64) -> i64 {
     clippy::cast_possible_wrap,
     reason = "the offsets wrapped for JNI are far below i64::MAX"
 )]
-#[cfg_attr(
-    not(any(target_os = "android", all(test, not(target_arch = "wasm32")))),
-    allow(
-        dead_code,
-        reason = "read by the Android editing session and its tests"
-    )
-)]
+#[cfg(all(
+    any(target_os = "android", all(test, not(target_arch = "wasm32"))),
+    any(feature = "text-field", feature = "secure-field")
+))]
 pub const fn usize_as_i64(v: usize) -> i64 {
     v as i64
 }
@@ -294,13 +291,13 @@ pub const fn usize_as_i64(v: usize) -> i64 {
     clippy::cast_sign_loss,
     reason = "callers clamp the JNI value with max(0) before converting"
 )]
-#[cfg_attr(
-    not(any(target_os = "android", all(test, not(target_arch = "wasm32")))),
-    allow(
-        dead_code,
-        reason = "read by the Android editing session and its tests"
-    )
-)]
+#[cfg(any(
+    all(
+        any(target_os = "android", all(test, not(target_arch = "wasm32"))),
+        any(feature = "text-field", feature = "secure-field")
+    ),
+    all(target_os = "linux", hydrolysis_winit)
+))]
 pub const fn i32_as_usize(v: i32) -> usize {
     v as usize
 }

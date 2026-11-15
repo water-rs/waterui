@@ -1122,6 +1122,26 @@ fn install_view_renderer(env: &mut Environment, theme: &Rc<dyn WidgetTheme>) {
     env.insert(waterui_core::ViewRenderer::new(renderer));
 }
 
+/// Installs the platform-view sink and the surface producers that publish into it.
+fn install_platform_view_surfaces(env: &mut Environment) -> crate::platform_view::PlatformViewSink {
+    // The platform-view sink `PlatformView` leaves record their frames
+    // into; the published table is what `nativePlatformViewFrames` serves.
+    let platform_views = crate::platform_view::PlatformViewSink::new();
+    env.insert(platform_views.clone());
+    // GPU content under the HWUI painter: each view's own platform surface,
+    // placed through the same sink (water-rs/waterui#1812).
+    #[cfg(hydrolysis_hwui_gpu)]
+    env.insert(Rc::new(super::hosted_gpu::HostedGpu::new(
+        platform_views.clone(),
+    )));
+    // The GPU video player's decoder planes, placed through the same sink.
+    #[cfg(hydrolysis_video_plane)]
+    env.insert(Rc::new(super::video_plane::VideoPlanes::new(
+        platform_views.clone(),
+    )));
+    platform_views
+}
+
 /// What `create` wires into the platform host and the session: the one
 /// window the app registered, its environment, theme and fonts, the
 /// window's registry id, and the bindings and sinks the host later drives.
@@ -1233,21 +1253,7 @@ fn session_mounts(
     env.insert(crate::platform::WindowSafeArea(safe_area.clone()));
     let keyboard_area = nami::binding(waterui_layout::padding::EdgeInsets::default());
     env.insert(crate::platform::WindowKeyboardArea(keyboard_area.clone()));
-    // The platform-view sink `PlatformView` leaves record their frames
-    // into; the published table is what `nativePlatformViewFrames` serves.
-    let platform_views = crate::platform_view::PlatformViewSink::new();
-    env.insert(platform_views.clone());
-    // GPU content under the HWUI painter: each view's own platform surface,
-    // placed through the same sink (water-rs/waterui#1812).
-    #[cfg(hydrolysis_hwui_gpu)]
-    env.insert(Rc::new(super::hosted_gpu::HostedGpu::new(
-        platform_views.clone(),
-    )));
-    // The GPU video player's decoder planes, placed through the same sink.
-    #[cfg(hydrolysis_video_plane)]
-    env.insert(Rc::new(super::video_plane::VideoPlanes::new(
-        platform_views.clone(),
-    )));
+    let platform_views = install_platform_view_surfaces(&mut env);
     // The session-wide "focus sits inside a platform-view container"
     // state the Kotlin registry reports through
     // `onNativePlatformViewFocus`: while a mounted child holds the IME,

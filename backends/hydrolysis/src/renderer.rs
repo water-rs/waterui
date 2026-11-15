@@ -597,7 +597,10 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// layout would have seen. Renderers no runner claimed keep
     /// `Rect::ZERO` — below every compact threshold, the "smallest window"
     /// presentation.
-    #[cfg(feature = "accessibility")]
+    #[cfg(all(
+        feature = "accessibility",
+        any(hydrolysis_cherenkov, feature = "navigation")
+    ))]
     window_frame: kurbo::Rect,
     render_depth: usize,
     /// The retained nodes whose subtrees are currently flushing, innermost
@@ -995,7 +998,10 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             popup_menu: PopupMenuState::default(),
             window_id: WindowId::Orphan,
             window_closable: true,
-            #[cfg(feature = "accessibility")]
+            #[cfg(all(
+                feature = "accessibility",
+                any(hydrolysis_cherenkov, feature = "navigation")
+            ))]
             window_frame: kurbo::Rect::ZERO,
             render_depth: 0,
             owner_stack: Vec::new(),

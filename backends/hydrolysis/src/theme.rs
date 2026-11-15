@@ -58,6 +58,8 @@ mod list;
 #[cfg(hydrolysis_runtime)]
 pub(crate) mod live;
 mod look;
+#[cfg(feature = "slider")]
+pub use look::{DragMapping, Knob, SliderLayout, SliderLook, SliderSpec, ValueIndicator};
 #[cfg(feature = "menu")]
 mod menu;
 #[cfg(feature = "navigation")]
@@ -433,6 +435,3 @@ mod tests {
         assert_eq!(resolved::<Background>(&env), bits(color(DARK.background)));
     }
 }
-
-#[cfg(feature = "slider")]
-pub use look::{DragMapping, Knob, SliderLayout, SliderLook, SliderSpec, ValueIndicator};

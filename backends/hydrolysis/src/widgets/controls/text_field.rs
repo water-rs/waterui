@@ -7,6 +7,8 @@ use crate::renderer::{
     TextInputTargetRegistration, TextSelectionSlot, WidgetRenderContext, clamp_to_char_boundary,
     measure_label_intrinsic, transformed_rect,
 };
+#[cfg(feature = "secure-field")]
+use crate::renderer::{measure_secure_field_intrinsic, measure_secure_field_size_with_label_size};
 #[cfg(feature = "text-field")]
 use crate::renderer::{measure_text_field_intrinsic, measure_text_field_size_with_label_size};
 use crate::text::{TextLayout as _, TextPosition};
@@ -1513,6 +1515,3 @@ mod tests {
         approx::assert_relative_eq!(cursor.y1, text.y0 + 25.0);
     }
 }
-
-#[cfg(feature = "secure-field")]
-use crate::renderer::{measure_secure_field_intrinsic, measure_secure_field_size_with_label_size};

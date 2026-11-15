@@ -98,6 +98,7 @@ enum Op {
         rect: Computed<Rect>,
         color: Computed<WorkingColor>,
     },
+    #[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
     Fill {
         transform: Affine,
         brush: peniko::Brush,
@@ -636,6 +637,7 @@ impl SceneResources {
     ///
     /// The engine's [`ResourceError`] when it does not register the
     /// brush's image; see [`image`](Self::image).
+    #[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
     pub(crate) fn transformed_paint(
         &self,
         names: &mut LoweringNames<'_>,
@@ -666,6 +668,7 @@ impl Recording {
     }
 
     /// Fills `shape` under `transform` with `brush`.
+    #[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
     pub(crate) fn fill<S: Shape + 'static>(
         &mut self,
         rule: Fill,
@@ -870,8 +873,9 @@ impl Recording {
     pub(crate) fn append(&mut self, other: &Self, placement: Affine) {
         self.ops.extend(other.ops.iter().cloned().map(|mut op| {
             match &mut op {
+                #[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
+                Op::Fill { transform, .. } => *transform = placement * *transform,
                 Op::LiveRect { transform, .. }
-                | Op::Fill { transform, .. }
                 | Op::FillPaint { transform, .. }
                 | Op::StrokePaint { transform, .. }
                 | Op::Glyphs { transform, .. }
@@ -988,6 +992,7 @@ impl Recording {
         self.ops
             .iter()
             .filter_map(|op| match op {
+                #[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
                 Op::Fill {
                     brush: peniko::Brush::Solid(color),
                     ..
@@ -1048,6 +1053,7 @@ impl Recording {
         let mut rects = Vec::new();
         for op in &self.ops {
             let (transform, color, rect) = match op {
+                #[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
                 Op::Fill {
                     transform,
                     brush: peniko::Brush::Solid(color),
@@ -1193,6 +1199,7 @@ fn lower(
             } => {
                 recorder.transform(*transform, |r| r.fill(rect.clone(), color.clone()));
             }
+            #[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
             Op::Fill {
                 transform,
                 brush,

@@ -2839,7 +2839,10 @@ mod tests {
             backend_widget_features(&graph, &["hydrolysis", "hydrolysis-m3"]),
             ["hydrolysis/slider", "hydrolysis/list", "hydrolysis-m3/list"]
         );
-        assert!(backend_widget_features(&graph, &["older-backend"]).is_empty());
+        assert_eq!(
+            backend_widget_features(&graph, &["older-backend"]),
+            [] as [std::string::String; 0]
+        );
     }
 
     #[test]
