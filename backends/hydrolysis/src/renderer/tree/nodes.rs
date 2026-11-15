@@ -416,6 +416,7 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
     /// layout and no encode — the sub-view emits exactly the nodes it would
     /// under a rendered flush, minus bounds.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn emit_accessibility(&mut self, renderer: &mut SemanticCore<E>, env: &Environment) {
         self.ensure_built(renderer, env);
         let built = self.expect_built_mut("emit_accessibility");
@@ -463,6 +464,7 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
     /// bounds move so its response, children and drawing land at `anchor`
     /// ([`RenderNode::layout_in`]). Set before placing; a change re-lays the
     /// sub-view out.
+    #[cfg(feature = "list")]
     pub(crate) fn set_content_anchor(&mut self, anchor: UnitPoint) {
         let built = self.expect_built_mut("set_content_anchor");
         if built.content_anchor != Some(anchor) {
@@ -621,6 +623,7 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
     /// gesture registered inside the sub-view is a strict descendant of it and
     /// one attached to the root itself is not. `None` when the root carries no
     /// identity; running before build panics, a caller ordering bug.
+    #[cfg(feature = "list")]
     pub(crate) fn root_accessibility_identity(&self) -> Option<Rc<()>> {
         self.expect_built("root_accessibility_identity")
             .node
@@ -669,6 +672,7 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
 
     /// Builds, lays out and records a navigation page into the open page
     /// scope, anchored at the scope's placement.
+    #[cfg(feature = "navigation")]
     pub(crate) fn record_built_page(
         &mut self,
         renderer: &mut HydrolysisRenderer<E>,
@@ -910,6 +914,7 @@ pub trait WidgetBehavior<E: crate::text::TextEngine> {
     /// Claims the transition declared on the root of this leaf's page
     /// content, for the navigation stack that owns the leaf as a page
     /// (layout-spec.md §4.5). `None` for every leaf that is not a page.
+    #[cfg(feature = "navigation")]
     fn claim_page_transition(&self) -> Option<waterui_core::transition::TransitionSpec> {
         None
     }
@@ -919,6 +924,7 @@ pub trait WidgetBehavior<E: crate::text::TextEngine> {
     /// no draw or hit-target work. The default emits nothing: leaves with no
     /// semantics (spacer, divider, gradient, …) need no override.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     fn emit_accessibility(self: Rc<Self>, _renderer: &mut SemanticCore<E>, _env: &Environment) {}
 }
 
@@ -983,7 +989,9 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// the subtree reaches through the ignored zones and stops at the
     /// nearest unignored one (layout-spec.md §7.1).
     IgnoreSafeArea(IgnoreSafeArea),
+    #[cfg(feature = "navigation")]
     NavigationTransitionSource(RawId),
+    #[cfg(feature = "navigation")]
     NavigationTransitionDestination(RawId),
     Clip(ClipShape),
     Border(Border),
@@ -994,6 +1002,7 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// the drag begins.
     Draggable(Rc<Draggable>),
     DropDestination(DropDestinationHandles),
+    #[cfg(feature = "menu")]
     ContextMenu(ContextMenuEffect<E>),
     /// Conditional hit-testing: renders the child, then truncates the interaction
     /// targets it registered when disabled. The bookkeeping counts targets across
@@ -1034,6 +1043,7 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// fill (water-rs/hydrolysis#200): the panel of the theme's `MenuLook`,
     /// and the look's selected-row part over the rect, in the panel's own
     /// space, of a picker popup's selected row.
+    #[cfg(feature = "menu")]
     PopupMenuSurface(Option<kurbo::Rect>),
     /// A within-window `Material` background (water-rs/waterui#1854): every
     /// flush closes the scene segment painted so far — the content behind
@@ -1075,13 +1085,16 @@ impl<E: crate::text::TextEngine> WrapperEffect<E> {
     /// in (water-rs/waterui#1292), and a handler wrapper is itself transparent
     /// to that resolution when it sits in an outer handler's modifier chain.
     pub(super) const fn captures_environment(&self) -> bool {
+        #[cfg(feature = "menu")]
+        if matches!(self, Self::ContextMenu(_)) {
+            return true;
+        }
         matches!(
             self,
             Self::OnEvent(_)
                 | Self::OnChange { .. }
                 | Self::GestureObserver(_)
                 | Self::DropDestination(_)
-                | Self::ContextMenu(_)
                 | Self::AnchoredOverlay(_)
                 | Self::Dialog(_)
                 | Self::LifeCycle(_)
@@ -1144,6 +1157,7 @@ pub struct DialogEffect<E: crate::text::TextEngine> {
 /// across the rest of the tree's lifetime exactly like a widget's label
 /// sub-view — built lazily at the first open, patched and re-flushed per frame
 /// while presented.
+#[cfg(feature = "menu")]
 pub struct ContextMenuEffect<E: crate::text::TextEngine> {
     /// The resolved menu items the popup is built from.
     pub(crate) items: nami::Computed<Vec<ResolvedMenuItem>>,

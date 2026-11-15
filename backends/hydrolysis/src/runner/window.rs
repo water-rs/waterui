@@ -1357,6 +1357,7 @@ pub(super) fn pump_window_scene<P: PlatformWindow, E: crate::text::TextEngine>(
     let mut built = false;
     match runtime.mode {
         FrameMode::Idle => {
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             runtime
                 .renderer
                 .record_text_input_overlay(env, kurbo::Affine::IDENTITY);
@@ -2243,10 +2244,19 @@ pub(super) fn handle_input_events<P: PlatformWindow, E: crate::text::TextEngine>
     env: &Environment,
 ) -> bool {
     handle_input_events_with(runtime, env, |runtime, env| {
-        env.extending(runtime_window_origin(runtime))
+        #[cfg(any(feature = "menu", feature = "color-picker"))]
+        {
+            env.extending(runtime_window_origin(runtime))
+        }
+        #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+        {
+            let _ = runtime;
+            env.clone()
+        }
     })
 }
 
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 pub(super) fn runtime_window_origin<P: PlatformWindow, E: crate::text::TextEngine>(
     runtime: &RuntimeWindow<P, E>,
 ) -> HydrolysisWindowOrigin {
@@ -2582,8 +2592,16 @@ where
             }
             InputEvent::TextInput { text } => {
                 let changed = !ime_owned
-                    && (runtime.renderer.handle_embedded_text_input(text.as_str())
-                        || runtime.renderer.handle_text_input(text.as_str()));
+                    && (runtime.renderer.handle_embedded_text_input(text.as_str()) || {
+                        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+                        {
+                            runtime.renderer.handle_text_input(text.as_str())
+                        }
+                        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+                        {
+                            false
+                        }
+                    });
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "text_input",
@@ -2599,8 +2617,16 @@ where
             InputEvent::KeyText { text } => {
                 let changed = !ime_owned
                     && !key_consumed
-                    && (runtime.renderer.handle_embedded_text_input(text.as_str())
-                        || runtime.renderer.handle_text_input(text.as_str()));
+                    && (runtime.renderer.handle_embedded_text_input(text.as_str()) || {
+                        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+                        {
+                            runtime.renderer.handle_text_input(text.as_str())
+                        }
+                        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+                        {
+                            false
+                        }
+                    });
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "text_input",
@@ -2667,7 +2693,16 @@ where
                 let changed = runtime
                     .renderer
                     .handle_embedded_ime_preedit(text.as_str(), caret)
-                    || runtime.renderer.handle_ime_preedit(text.as_str(), caret);
+                    || {
+                        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+                        {
+                            runtime.renderer.handle_ime_preedit(text.as_str(), caret)
+                        }
+                        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+                        {
+                            false
+                        }
+                    };
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "ime_preedit",
@@ -2678,8 +2713,16 @@ where
                 schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::ImeCommit { text } => {
-                let changed = runtime.renderer.handle_embedded_ime_commit(text.as_str())
-                    || runtime.renderer.handle_ime_commit(text.as_str());
+                let changed = runtime.renderer.handle_embedded_ime_commit(text.as_str()) || {
+                    #[cfg(any(feature = "text-field", feature = "secure-field"))]
+                    {
+                        runtime.renderer.handle_ime_commit(text.as_str())
+                    }
+                    #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+                    {
+                        false
+                    }
+                };
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "ime_commit",
@@ -2690,8 +2733,16 @@ where
                 schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::ImeDisabled => {
-                let changed = runtime.renderer.handle_embedded_ime_disabled()
-                    || runtime.renderer.handle_ime_disabled();
+                let changed = runtime.renderer.handle_embedded_ime_disabled() || {
+                    #[cfg(any(feature = "text-field", feature = "secure-field"))]
+                    {
+                        runtime.renderer.handle_ime_disabled()
+                    }
+                    #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+                    {
+                        false
+                    }
+                };
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
                     event = "ime_disabled",
@@ -2792,6 +2843,9 @@ where
                 let changed = runtime.renderer.handle_file_hover_cancelled(&event_env);
                 schedule_redraw_or_refresh(runtime, changed);
             }
+            #[cfg(not(feature = "navigation"))]
+            InputEvent::BackNavigation(_) => {}
+            #[cfg(feature = "navigation")]
             InputEvent::BackNavigation(navigation) => {
                 let event_env = input_env(runtime, env);
                 let changed = runtime
@@ -2878,8 +2932,11 @@ pub(super) fn advance_runtime<P: PlatformWindow, E: crate::text::TextEngine>(
     // A gesture tick can mount a popup window — an armed context-menu hold
     // fires here — and the popup anchors in absolute coordinates through
     // `HydrolysisWindowOrigin`, the same extension pointer dispatch gets.
-    let gesture_env = env.extending(runtime_window_origin(runtime));
-    if runtime.renderer.handle_gesture_tick(now, &gesture_env) {
+    #[cfg(any(feature = "menu", feature = "color-picker"))]
+    let gesture_env = &env.extending(runtime_window_origin(runtime));
+    #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+    let gesture_env = &env;
+    if runtime.renderer.handle_gesture_tick(now, gesture_env) {
         tracing::debug!("wake cause: context-menu hold opened");
         runtime.request_refresh();
     }
@@ -2913,6 +2970,7 @@ pub(super) fn advance_runtime<P: PlatformWindow, E: crate::text::TextEngine>(
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
     }
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     if runtime.renderer.advance_text_caret_animation(now) {
         tracing::debug!("wake cause: text caret animation");
         runtime.renderer.request_redraw();

@@ -9,12 +9,14 @@ pub mod badge;
 pub mod focus;
 pub mod lazy;
 pub mod link;
+#[cfg(feature = "list")]
 pub mod list;
 
 pub mod progress;
 #[doc(inline)]
 pub use progress::{Progress, loading, progress};
 
+#[cfg(feature = "table")]
 pub mod table;
 
 #[doc(inline)]

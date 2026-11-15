@@ -1365,7 +1365,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeKeyEvent<'
             alt,
             super_key: meta,
         };
-        let event = super::ime::ImeBridge::key_input(&key, pressed, modifiers);
+        let event = super::ime::key_input(&key, pressed, modifiers);
         initializing!(session_ptr, pending, {
             pending.push_event(event);
             return Ok(());
@@ -1392,14 +1392,24 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeEditOp<'lo
     text: JString<'local>,
 ) -> jboolean {
     guard_val(&mut env, false, |env| {
-        let text = get_string(env, &text)?;
-        Ok(session!(session_ptr).edit_op(
-            crate::num_cast::i64_as_u64(editor_id),
-            op,
-            arg1,
-            arg2,
-            &text,
-        ))
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        {
+            let text = get_string(env, &text)?;
+            Ok(session!(session_ptr).edit_op(
+                crate::num_cast::i64_as_u64(editor_id),
+                op,
+                arg1,
+                arg2,
+                &text,
+            ))
+        }
+        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+        {
+            let _ = (env, session_ptr, editor_id, op, arg1, arg2, text);
+            Err(JniError(
+                "hydrolysis android: editing requires text-field or secure-field capability".into(),
+            ))
+        }
     })
 }
 
@@ -1413,13 +1423,21 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeEditingSta
     session_ptr: jlong,
 ) -> JString<'local> {
     guard_string(&mut env, |_env| {
-        let json = super::ime::editing_state_json(&session!(session_ptr).ime.session.state())
-            .map_err(|error| {
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        {
+            let json = super::ime::editing_state_json(&session!(session_ptr).ime.session.state())
+                .map_err(|error| {
                 JniError(format!(
                     "hydrolysis android: editing state serialization failed: {error}"
                 ))
             })?;
-        Ok(Some(json))
+            Ok(Some(json))
+        }
+        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+        {
+            let _ = session_ptr;
+            Ok(None)
+        }
     })
 }
 

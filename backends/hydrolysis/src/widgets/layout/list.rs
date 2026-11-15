@@ -1505,6 +1505,7 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                     .or_insert_with(ScopedAccessibilitySemantics::new)
                     .clone();
                 subtree_env.insert(scope);
+                #[cfg(hydrolysis_cherenkov)]
                 if ctx.is_none() {
                     // Emit the row content's own semantics under the row's node:
                     // every text, control and image in the row becomes a child
@@ -1843,6 +1844,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
     // The keyboard-moving clearance runs before the rows paint: while the
     // host's keyboard animation is in flight the offset follows it frame by
     // frame, so this flush paints the field already clear.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     state
         .borrow()
         .surface
@@ -2613,6 +2615,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
 
     // The focused-field clearance runs after recording, over the retained
     // input targets (§7.1).
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     state
         .borrow()
         .surface
@@ -3178,6 +3181,7 @@ fn row_content_anchor(env: &Environment) -> UnitPoint {
 /// Emits a retained list's accessibility tree for the semantic walk — the same
 /// nodes `list_accessibility` registers, with no bounds and every row present.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_list_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<ListRenderState<E>>>,

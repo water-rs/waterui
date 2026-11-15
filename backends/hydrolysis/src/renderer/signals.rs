@@ -304,6 +304,7 @@ impl<T: 'static, G> SubscribedSnapshot<T, G> {
 impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// The frame triggers, for a watcher that outlives the read and only
     /// needs to wake the pump without re-encoding the tree.
+    #[cfg(any(feature = "picker", feature = "slider"))]
     pub(crate) fn frame_signals(&self) -> FrameSignals {
         self.signals.clone()
     }
@@ -462,6 +463,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         signal.snapshot()
     }
 
+    #[cfg(any(feature = "picker", feature = "list"))]
     pub(crate) fn read_resolved_text_styled(
         &mut self,
         text: &Text,
@@ -522,7 +524,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         )
     }
 
-    fn navigation_animating(&self, now: Instant) -> bool {
+    #[cfg(feature = "navigation")]
+    fn navigation_animating(&self) -> bool {
+        let now = self.frame_instant;
         self.navigation.slots.values().any(|slot| {
             slot.transition
                 .as_ref()
@@ -540,7 +544,16 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(crate) fn animation_refresh_range(&self) -> Option<cherenkov_record::RefreshRange> {
         let now = self.frame_instant;
         if self.has_pending_interaction_releases(now)
-            || self.navigation_animating(now)
+            || {
+                #[cfg(feature = "navigation")]
+                {
+                    self.navigation_animating()
+                }
+                #[cfg(not(feature = "navigation"))]
+                {
+                    false
+                }
+            }
             || self.has_gliding_smooth_scrolls()
             || self.has_active_touch_fling()
         {
@@ -559,7 +572,16 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let ticked = self.animation_controller.tick(now);
         // Scene content that asked for this frame presents in it.
         let scenes = self.scene_frames.mark_owners();
-        ticked || pending_releases || scenes || self.navigation_animating(now)
+        ticked || pending_releases || scenes || {
+            #[cfg(feature = "navigation")]
+            {
+                self.navigation_animating()
+            }
+            #[cfg(not(feature = "navigation"))]
+            {
+                false
+            }
+        }
     }
 
     /// Whether scene content asked for the next frame at the last commit,
@@ -590,9 +612,16 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// so the answer does not depend on whether perpetual work counts.
     pub fn animations_active(&self) -> bool {
         let now = self.frame_instant;
-        self.animation_controller.has_active()
-            || self.has_pending_interaction_releases(now)
-            || self.navigation_animating(now)
+        self.animation_controller.has_active() || self.has_pending_interaction_releases(now) || {
+            #[cfg(feature = "navigation")]
+            {
+                self.navigation_animating()
+            }
+            #[cfg(not(feature = "navigation"))]
+            {
+                false
+            }
+        }
     }
 
     /// Whether a wrapper's engine-run motion still runs at the frame clock.

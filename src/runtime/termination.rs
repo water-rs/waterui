@@ -31,6 +31,7 @@ use core::future::Future;
 use core::pin::Pin;
 
 use executor_core::AnyLocalExecutorTask;
+#[cfg(feature = "menu")]
 use waterui_controls::menu::{CommandExt as _, ResolvedCommand, Shortcut};
 use waterui_core::{Environment, impl_extractor};
 
@@ -386,6 +387,7 @@ impl Quit {
     /// termination machine installs one — and the item is then omitted.
     #[doc(hidden)]
     #[must_use]
+    #[cfg(feature = "menu")]
     pub fn command(&self, env: &Environment) -> ResolvedCommand {
         let quit = self.clone();
         // "Exit" is the Windows menu convention; "Quit" is macOS's and what
@@ -473,6 +475,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "menu")]
     fn the_quit_command_files_a_cancellable_request() {
         install_executor();
         let log = Log::default();

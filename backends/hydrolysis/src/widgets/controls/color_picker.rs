@@ -394,6 +394,7 @@ pub fn render_color_picker_parts<E: crate::text::TextEngine>(
 /// the same node `color_picker_accessibility` registers, with no bounds. The
 /// label sub-view flushes visual-only, so there is nothing else to emit.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_color_picker_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<ColorPickerRenderState<E>>>,

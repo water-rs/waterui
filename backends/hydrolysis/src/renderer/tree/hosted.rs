@@ -80,6 +80,7 @@ impl<E: crate::text::TextEngine> WidgetBehavior<E> for HostedNode {
     }
 
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     fn emit_accessibility(self: Rc<Self>, renderer: &mut SemanticCore<E>, env: &Environment) {
         emit_graphics_image_accessibility(renderer, None, env, None, None, true);
     }

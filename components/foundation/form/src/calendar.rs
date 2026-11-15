@@ -527,6 +527,7 @@ fn single_day_cell_content(
     }
 }
 
+#[cfg(feature = "multi-date-picker")]
 pub(crate) fn multi_day_cell_content(
     cell: DayCell,
     range: &RangeInclusive<Date>,

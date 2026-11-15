@@ -1,5 +1,5 @@
 use hydrolysis::HeadlessRuntime;
-use waterui::component::text_field::ContentType;
+use waterui::component::input::ContentType;
 
 use crate::app::SemanticApp;
 use crate::driver::RuntimeDriver;

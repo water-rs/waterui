@@ -18,4 +18,4 @@ workspace = true
 
 [dependencies]
 # `include_markdown!` and `RichText` live behind `flow-markdown`.
-waterui = { workspace = true, features = ["flow-markdown", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
+waterui = { workspace = true, features = ["flow-markdown", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list", "text-field"] }

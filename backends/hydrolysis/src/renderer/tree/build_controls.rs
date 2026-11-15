@@ -14,6 +14,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::button::emit_button_accessibility
 );
+#[cfg(feature = "toggle")]
 impl_widget_behavior!(
     crate::widgets::controls::toggle::ToggleRenderState<E>,
     crate::widgets::controls::toggle::render_toggle_node,
@@ -21,6 +22,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::toggle::emit_toggle_accessibility
 );
+#[cfg(feature = "slider")]
 impl_widget_behavior!(
     crate::widgets::controls::slider::SliderRenderState<E>,
     crate::widgets::controls::slider::render_slider_node,
@@ -28,6 +30,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::slider::emit_slider_accessibility
 );
+#[cfg(feature = "stepper")]
 impl_widget_behavior!(
     crate::widgets::controls::stepper::StepperRenderState<E>,
     crate::widgets::controls::stepper::render_stepper_node,
@@ -42,6 +45,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::progress::emit_progress_accessibility
 );
+#[cfg(feature = "menu")]
 impl_widget_behavior!(
     crate::widgets::controls::button::MenuRenderState<E>,
     crate::widgets::controls::button::render_menu_node,
@@ -50,6 +54,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::button::emit_menu_accessibility
 );
+#[cfg(feature = "date-picker")]
 impl_widget_behavior!(
     crate::widgets::controls::date_picker::DatePickerRenderState<E>,
     crate::widgets::controls::date_picker::render_date_picker_node,
@@ -57,6 +62,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::date_picker::emit_date_picker_accessibility
 );
+#[cfg(feature = "color-picker")]
 impl_widget_behavior!(
     crate::widgets::controls::color_picker::ColorPickerRenderState<E>,
     crate::widgets::controls::color_picker::render_color_picker_node,
@@ -64,6 +70,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::color_picker::emit_color_picker_accessibility
 );
+#[cfg(feature = "picker")]
 impl_widget_behavior!(
     crate::widgets::controls::picker::PickerRenderState<E>,
     crate::widgets::controls::picker::render_picker_node,
@@ -71,6 +78,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::picker::emit_picker_accessibility
 );
+#[cfg(feature = "text-field")]
 impl_widget_behavior!(
     crate::widgets::controls::text_field::TextFieldRenderState<E>,
     crate::widgets::controls::text_field::render_text_field_node,
@@ -78,6 +86,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::text_field::emit_text_field_accessibility
 );
+#[cfg(feature = "secure-field")]
 impl_widget_behavior!(
     crate::widgets::controls::text_field::SecureFieldRenderState<E>,
     crate::widgets::controls::text_field::render_secure_field_node,
@@ -182,6 +191,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// or a hidden label is content-sized. A stretched hidden-label toggle
     /// would report a frame the label's dead zone inflates past the control,
     /// and taps inside it would hit nothing (water-rs/waterui#2241).
+    #[cfg(feature = "toggle")]
     pub(super) fn build_toggle(
         config: ToggleConfig,
         env: &Environment,
@@ -205,6 +215,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// `AnyView`s, so they are pre-built into [`RetainedSubview`]s (the measure
     /// path has only `&mut HydroState`, no renderer to build on); the `value`
     /// binding is read through `read_signal` so a change schedules a frame.
+    #[cfg(feature = "slider")]
     pub(super) fn build_slider(
         config: SliderConfig,
         env: &Environment,
@@ -234,6 +245,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// label is content-sized — a stretched hidden-label stepper would report
     /// a frame inflated past the buttons that accepts no input
     /// (water-rs/waterui#2364).
+    #[cfg(feature = "stepper")]
     pub(super) fn build_stepper(
         config: StepperConfig,
         env: &Environment,
@@ -279,6 +291,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// Build a persistent menu node: its trigger label is a move-only `AnyView`
     /// pre-built into a [`RetainedSubview`]; its `accessibility_label` and `items`
     /// signals are read through `read_signal` so a change schedules a frame.
+    #[cfg(feature = "menu")]
     pub(super) fn build_menu(
         renderer: &SemanticCore<E>,
         menu: ResolvedMenu,
@@ -297,6 +310,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// to build on); the cloneable config drives the field + accessibility, and its
     /// value is read through `read_signal` so a change schedules a frame. Stretch is
     /// content-sized (read from the config).
+    #[cfg(feature = "date-picker")]
     pub(super) fn build_date_picker(
         config: DatePickerConfig,
         env: &Environment,
@@ -321,6 +335,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// to build on); the cloneable config drives the swatch + accessibility, and its
     /// value is read through `read_signal` so a change schedules a frame. Stretch is
     /// content-sized (read from the config).
+    #[cfg(feature = "color-picker")]
     pub(super) fn build_color_picker(
         config: ColorPickerConfig,
         env: &Environment,
@@ -347,6 +362,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// `read_signal` each frame so a membership or selection change schedules a
     /// frame. The node's stretch is the payload's own axis: `Horizontal` for a
     /// segmented picker, content-sized otherwise.
+    #[cfg(feature = "picker")]
     pub(super) fn build_picker(
         config: PickerConfig,
         env: &Environment,
@@ -374,6 +390,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// change schedules a frame. The node re-runs the same text-input target
     /// registration each flush, so cursor/focus/IME state is preserved. Stretch is
     /// horizontal (read from the config).
+    #[cfg(feature = "text-field")]
     pub(super) fn build_text_field(
         config: ResolvedTextFieldConfig,
         env: &Environment,
@@ -400,6 +417,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// frame so typing or a binding change schedules a frame and the masked display
     /// updates. The node re-runs the same text-input target registration each flush,
     /// preserving cursor/focus/IME state. Stretch is horizontal (read from the config).
+    #[cfg(feature = "secure-field")]
     pub(super) fn build_secure_field(
         config: SecureFieldConfig,
         env: &Environment,

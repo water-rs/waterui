@@ -366,40 +366,28 @@ impl<P: PlatformText> crate::text::TextLayout for HwuiTextLayout<P> {
         &self,
         anchor: crate::text::TextPosition,
         focus: crate::text::TextPosition,
-    ) -> crate::text::TextSelection {
+    ) -> TextSelection {
         Self::selection(self, anchor, focus)
     }
     fn hit_test(&self, x: f32, y: f32) -> crate::text::TextPosition {
         Self::hit_test(self, x, y)
     }
-    fn word_at(&self, x: f32, y: f32) -> crate::text::TextSelection {
+    fn word_at(&self, x: f32, y: f32) -> TextSelection {
         Self::word_at(self, x, y)
     }
-    fn line_at(&self, x: f32, y: f32) -> crate::text::TextSelection {
+    fn line_at(&self, x: f32, y: f32) -> TextSelection {
         Self::line_at(self, x, y)
     }
     fn caret_rect(&self, at: crate::text::TextPosition) -> kurbo::Rect {
         Self::caret_rect(self, at)
     }
-    fn selection_rects(
-        &self,
-        selection: crate::text::TextSelection,
-        each: impl FnMut(kurbo::Rect),
-    ) {
+    fn selection_rects(&self, selection: TextSelection, each: impl FnMut(kurbo::Rect)) {
         Self::selection_rects(self, selection, each);
     }
-    fn previous_visual(
-        &self,
-        selection: crate::text::TextSelection,
-        extend: bool,
-    ) -> crate::text::TextSelection {
+    fn previous_visual(&self, selection: TextSelection, extend: bool) -> TextSelection {
         Self::previous_visual(self, selection, extend)
     }
-    fn next_visual(
-        &self,
-        selection: crate::text::TextSelection,
-        extend: bool,
-    ) -> crate::text::TextSelection {
+    fn next_visual(&self, selection: TextSelection, extend: bool) -> TextSelection {
         Self::next_visual(self, selection, extend)
     }
 }

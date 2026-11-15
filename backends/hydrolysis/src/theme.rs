@@ -53,18 +53,26 @@
 mod badge;
 mod chrome;
 mod glass;
+#[cfg(feature = "list")]
 mod list;
 #[cfg(hydrolysis_runtime)]
 pub(crate) mod live;
 mod look;
+#[cfg(feature = "slider")]
+pub use look::{DragMapping, Knob, SliderLayout, SliderLook, SliderSpec, ValueIndicator};
+#[cfg(feature = "menu")]
 mod menu;
+#[cfg(feature = "navigation")]
 mod navigation;
 mod picker;
 mod progress;
 mod scroll_indicator;
+#[cfg(feature = "picker")]
 mod segmented;
 mod stepper;
+#[cfg(feature = "table")]
 mod table;
+#[cfg(feature = "navigation")]
 mod tabs;
 mod text_field;
 mod toggle;
@@ -76,15 +84,17 @@ pub use chrome::{
     Ripple, StateLayer, Surface, Wash,
 };
 pub use glass::GlassLook;
+#[cfg(feature = "list")]
 pub use list::{ListControls, ListGestures, ListLook, ListSpec};
 pub use look::{
-    ButtonLook, ButtonSpec, Custom, DragMapping, Driven, DrivenSet, HitRegion, Inputs, Knob, Label,
-    Motion, SliderLayout, SliderLook, SliderSpec, SpecTint, Transition, ValueIndicator,
-    ValueMotion,
+    ButtonLook, ButtonSpec, Custom, Driven, DrivenSet, HitRegion, Inputs, Label, Motion, SpecTint,
+    Transition, ValueMotion,
 };
 #[cfg(hydrolysis_runtime)]
 pub(crate) use look::{Change, CustomPart, LayerRotation, LiveDriven, RealizedCustom, Retarget};
+#[cfg(feature = "menu")]
 pub use menu::{MenuLayout, MenuLook, MenuSpec};
+#[cfg(feature = "navigation")]
 pub use navigation::{
     BarSurface, NavigationBarLook, NavigationMetrics, NavigationMotion, NavigationSpec,
 };
@@ -93,15 +103,20 @@ pub use progress::{
     IndicatorLook, LinearLayout, LinearProgressLook, ProgressControl, ProgressSpec,
 };
 pub use scroll_indicator::ScrollIndicatorLook;
+#[cfg(feature = "picker")]
 pub use segmented::{
     Segment, SegmentLabel, SegmentedDrag, SegmentedLayout, SegmentedLook, SegmentedSpec,
     SegmentedValue,
 };
 pub use stepper::{StepperLook, StepperSpec};
+#[cfg(feature = "table")]
 pub use table::TableLook;
+#[cfg(feature = "navigation")]
 pub use tabs::{TabItem, TabItemGeometry, TabItemLayout, TabsLook, TabsMetrics, TabsSpec};
 pub use text_field::{Caret, FloatingLabel, TextFieldLook, TextFieldSpec};
-pub use toggle::{CheckboxLook, SwitchDrag, SwitchLook, ToggleBackdrop, ToggleControl, ToggleSpec};
+#[cfg(feature = "toggle")]
+pub use toggle::ToggleSpec;
+pub use toggle::{CheckboxLook, SwitchDrag, SwitchLook, ToggleBackdrop, ToggleControl};
 pub use widget::{
     BadgeMetrics, InputFieldMetrics, InteractionFocusBinding, InteractionMotion,
     ListDividerMetrics, ListMetrics, ListRowMetrics, ListSectionMetrics,

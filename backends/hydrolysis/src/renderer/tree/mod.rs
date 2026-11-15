@@ -74,6 +74,7 @@ macro_rules! impl_widget_behavior {
 
             $(
                 #[cfg(feature = "accessibility")]
+                #[cfg(hydrolysis_cherenkov)]
                 fn emit_accessibility(
                     self: Rc<Self>,
                     renderer: &mut SemanticCore<E>,

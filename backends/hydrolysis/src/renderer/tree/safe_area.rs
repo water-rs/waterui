@@ -15,13 +15,17 @@
 //! bounds layout computed once, and the focused-field state the flush
 //! drives.
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use core::cell::RefCell;
+
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-use core::cell::{Cell, RefCell};
+use core::cell::Cell;
 use core::ops::Range;
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use waterui_core::animation::Animation;
 use waterui_core::contract_violation;
 use waterui_core::layout::{LayoutDirection, Rect, Size};
@@ -29,6 +33,7 @@ use waterui_layout::padding::EdgeInsets;
 use waterui_layout::safe_area::{EdgeSet, IgnoreSafeArea, SafeAreaRegions};
 use waterui_layout::scroll::Axis as ScrollAxis;
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::scroll::ScrollRunOutcome;
 
 /// One of the four edges §7.1's regions sit on.
@@ -82,6 +87,7 @@ impl Edge {
     /// The edge across the window from this one — the boundary a bar docked
     /// at `self` can never touch: a top bar reaches top, leading and
     /// trailing, never the bottom edge.
+    #[cfg(feature = "navigation")]
     pub const fn opposite(self) -> Self {
         match self {
             Self::Top => Self::Bottom,
@@ -174,6 +180,7 @@ impl Edge {
     /// never does. The band's thickness clamps to the span `position`
     /// leaves to `bounds`' far edge, so a band docked outside `bounds`
     /// keeps `extent` instead of squashing against it.
+    #[cfg(feature = "navigation")]
     pub(crate) fn split_band(
         self,
         bounds: kurbo::Rect,
@@ -217,6 +224,7 @@ impl Edge {
 
     /// The band edge facing the hosted content — the counterpart of
     /// [`Self::frame_edge`] on the other side of a docked band.
+    #[cfg(feature = "navigation")]
     pub(crate) const fn inner_edge(self, band: kurbo::Rect) -> f64 {
         match self {
             Self::Top => band.y1,
@@ -292,10 +300,12 @@ pub enum EdgeBoundary {
     /// nested chrome container lays out on the same edge lands on, so
     /// nested chrome stacks on the outer bar instead of floating free of
     /// it — or riding onto the keyboard the outer bar ducked under.
+    #[cfg(feature = "navigation")]
     Docked { edge_at: f64, inner: f64 },
     /// No boundary: a hosted subtree's edge that does not touch the host's
     /// boundary is covered — nothing inside can touch, release or extend
     /// past it (§7.1: hosted content inherits, never reseeds).
+    #[cfg(feature = "navigation")]
     Covered,
 }
 
@@ -305,6 +315,7 @@ impl EdgeBoundary {
     const fn released(&self) -> ReleasedRegions {
         match self {
             Self::Reachable { released, .. } => *released,
+            #[cfg(feature = "navigation")]
             Self::Docked { .. } | Self::Covered => ReleasedRegions {
                 container: false,
                 keyboard: false,
@@ -314,6 +325,7 @@ impl EdgeBoundary {
 
     /// The window-space position a `Reachable` boundary records — `None`
     /// for edges a bar's band or a host's coverage owns.
+    #[cfg(feature = "navigation")]
     const fn position(&self) -> Option<f64> {
         match self {
             Self::Reachable { position, .. } => Some(*position),
@@ -349,6 +361,7 @@ impl EdgeOffsets {
     /// `self` with `edge` zeroed — the mask a chrome surface applies so a
     /// bar only ever extends through the edges its docking can touch, even
     /// when a clamped frame lands its inner edge on the opposite boundary.
+    #[cfg(feature = "navigation")]
     pub const fn cleared(mut self, edge: Edge) -> Self {
         self.set(edge, 0.0);
         self
@@ -494,6 +507,7 @@ impl SafeAreaLayout {
     /// other edge is `Covered` — nothing inside can touch, release or
     /// extend past it, so chrome content never reseeds a band the host
     /// did not leave on the boundary.
+    #[cfg(feature = "navigation")]
     pub fn hosted(&self, frame: kurbo::Rect) -> Self {
         let mut next = self.with_frame(frame);
         for edge in EDGES {
@@ -516,6 +530,7 @@ impl SafeAreaLayout {
     /// one content context — [`Self::hosted`] on the content's frame with
     /// each bar's edge `Docked` on its band's inner edge.
     #[must_use]
+    #[cfg(feature = "navigation")]
     pub fn chrome_splits<const N: usize>(
         &self,
         bounds: kurbo::Rect,
@@ -563,6 +578,7 @@ impl SafeAreaLayout {
     /// context with the keyboard region released on `edge`, so the bar's
     /// fills and extensions still reach the window edge through both
     /// regions.
+    #[cfg(feature = "navigation")]
     fn bar_split(
         &self,
         bounds: kurbo::Rect,
@@ -586,6 +602,7 @@ impl SafeAreaLayout {
     /// on it stacks on it (§7.1). Module-internal: `Docked` boundaries
     /// are minted only by [`Self::chrome_splits`], never forged.
     #[must_use]
+    #[cfg(feature = "navigation")]
     fn chrome_content_area(
         &self,
         frame: kurbo::Rect,
@@ -616,6 +633,7 @@ impl SafeAreaLayout {
     /// it from f64 inset depths (the module seeds boundaries from f32
     /// frames on purpose).
     #[must_use]
+    #[cfg(feature = "navigation")]
     fn releasing_keyboard(&self, edge: Edge) -> Self {
         let mut next = self.clone();
         let EdgeBoundary::Reachable { released, .. } = self.boundary(edge) else {
@@ -655,6 +673,7 @@ impl SafeAreaLayout {
     /// space through [`Self::hosted_frame`]'s offset. `None` on an edge
     /// this context's frame does not touch and does not end at a dock on:
     /// the band keeps `bounds`' edge.
+    #[cfg(feature = "navigation")]
     fn docked_bar_position(&self, bar_area: &Self, bounds: kurbo::Rect, edge: Edge) -> Option<f64> {
         let position = match self.boundary(edge) {
             EdgeBoundary::Docked { inner, .. } if self.touches_dock(edge) => Some(inner),
@@ -716,8 +735,10 @@ impl SafeAreaLayout {
     /// the same touch to the eye; comparing exactly would flip the answer
     /// frame to frame while a keyboard animation resizes the window.
     fn touches(&self, edge: Edge) -> bool {
-        let EdgeBoundary::Reachable { position, .. } = self.boundary(edge) else {
-            return false;
+        let position = match self.boundary(edge) {
+            EdgeBoundary::Reachable { position, .. } => position,
+            #[cfg(feature = "navigation")]
+            EdgeBoundary::Docked { .. } | EdgeBoundary::Covered => return false,
         };
         (edge.frame_edge(self.frame) - position).abs() < self.touch_tolerance(edge)
     }
@@ -727,6 +748,7 @@ impl SafeAreaLayout {
     /// the hosted content edge the dock was built for. A `Docked` boundary
     /// answers to frames that end where the dock was established and stays
     /// inert under any other frame (`hosted` covers it there).
+    #[cfg(feature = "navigation")]
     fn touches_dock(&self, edge: Edge) -> bool {
         let EdgeBoundary::Docked { edge_at, .. } = self.boundary(edge) else {
             return false;
@@ -833,7 +855,9 @@ impl SafeAreaLayout {
     pub fn surface_facts(&self) -> ScrollSurfaceFacts {
         ScrollSurfaceFacts {
             extension: self.touched_edge_offsets(),
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             window_frame: self.frame,
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             keyboard_top: self.window.y1 - f64::from(self.keyboard.bottom()),
         }
     }
@@ -852,9 +876,11 @@ pub struct ScrollSurfaceFacts {
     pub extension: EdgeOffsets,
     /// The surface's laid-out frame in window space — the clearance
     /// bound's lower term and the taller-field clamp.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub window_frame: kurbo::Rect,
     /// The keyboard region's top edge in window space — the clearance
     /// bound's upper term.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub keyboard_top: f64,
 }
 
@@ -862,6 +888,7 @@ pub struct ScrollSurfaceFacts {
 /// subtree lays out against, and the dock it hands the composed content
 /// context. Band and context live in one type so a bar's surface or
 /// placed views can never be paired with another bar's context.
+#[cfg(feature = "navigation")]
 pub struct ChromeBar {
     /// The `bounds` the split ran on — the space `band`, `rest` and
     /// [`Self::bar_area_for`]'s `rect` live in.
@@ -886,6 +913,7 @@ pub struct ChromeBar {
     bar_area: Option<SafeAreaLayout>,
 }
 
+#[cfg(feature = "navigation")]
 impl ChromeBar {
     /// A bar with no §7.1 context — the shape a context-free chrome
     /// container's split takes: the band keeps `bounds`' own edge, the
@@ -958,6 +986,7 @@ impl ChromeBar {
 /// content context — [`SafeAreaLayout::hosted`] on the content's frame
 /// plus every bar's `Docked` boundary. A one-bar container calls it as
 /// `chrome_splits::<1>` — the single content rect is then `bars[0].rest`.
+#[cfg(feature = "navigation")]
 pub struct ChromeSplits<const N: usize> {
     /// Each bar's share of the split, in the order `chrome_splits` took
     /// the edges.
@@ -1019,17 +1048,21 @@ pub struct ScrollSurfaceArea {
     pub facts: Cell<Option<ScrollSurfaceFacts>>,
     /// The field the clearance last handled: its window-space rect and the
     /// scroll offset it was captured at — the early pass's starting point.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     cleared: RefCell<Option<ClearedField>>,
     /// The keyboard top the last early pass saw — a change re-runs the
     /// clearance before the content paints.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     keyboard_top: Cell<Option<f64>>,
     /// Whether the keyboard top moved in this flush's early pass — selects
     /// the direct (not eased) scroll for a focus landing now.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     keyboard_moved: Cell<bool>,
 }
 
 /// One cleared field's identity and last observed geometry.
 #[derive(Clone)]
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 struct ClearedField {
     /// The field's stable target identity — a different key means the
     /// focus moved, which re-runs the clearance.
@@ -1104,6 +1137,7 @@ impl ScrollSurfaceArea {
     /// offset follows each frame directly — the host's own animation is
     /// the pacing, never an eased chase — using the previous frame's
     /// stored field rect, so the content paints already clear.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub fn begin_flush<E: crate::text::TextEngine>(
         &self,
         renderer: &HydrolysisRenderer<E>,
@@ -1123,6 +1157,7 @@ impl ScrollSurfaceArea {
     /// ([`HydrolysisRenderer::clear_focused_fields`]). The registration is
     /// retained: a clean surface that does not record keeps it, so a field
     /// gaining focus under it is still scrolled clear.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub fn register_clearance<E: crate::text::TextEngine>(
         self: &std::rc::Rc<Self>,
         renderer: &HydrolysisRenderer<E>,
@@ -1161,6 +1196,7 @@ impl ScrollSurfaceArea {
     /// [`HydrolysisRenderer::focused_field_frame_in_scope`] reads the
     /// focused field out of the buckets the cells under this surface's own
     /// record wrote, so it answers exactly dev's set.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     fn clear_focused_field<E: crate::text::TextEngine>(
         &self,
         renderer: &HydrolysisRenderer<E>,
@@ -1207,6 +1243,7 @@ impl ScrollSurfaceArea {
     /// it back. This assumes the field did not move inside the content
     /// between frames — a relayout that moves it re-captures through
     /// `clear_focused_field` before the next keyboard-moving pass reads it.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     fn field_window_rect(&self, offset_y: f64) -> Option<kurbo::Rect> {
         self.cleared
             .borrow()
@@ -1218,6 +1255,7 @@ impl ScrollSurfaceArea {
     /// `min(keyboard top, surface bottom)`; a field taller than the
     /// surface clamps the distance so its top stays inside the surface's
     /// frame.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     fn scroll_field_clear<E: crate::text::TextEngine>(
         renderer: &HydrolysisRenderer<E>,
         handle: &ScrollHandle,
@@ -1271,6 +1309,7 @@ pub fn released_size(size: Size, released: EdgeOffsets) -> Size {
     )
 }
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// The frame's post-record focus clearance (§B step 7): every live
     /// registered surface clears the focused field its subtree holds,

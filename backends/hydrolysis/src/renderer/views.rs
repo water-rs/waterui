@@ -5,15 +5,19 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::renderer::recording::transform_paint;
+#[cfg(feature = "menu")]
 use waterui::app::Quit;
-use waterui_core::handler::ReportExtraction as _;
 
+#[cfg(feature = "menu")]
+use waterui_core::handler::ReportExtraction as _;
+#[cfg(feature = "slider")]
 pub fn slider_value_epsilon(span: f64, track_width: f64) -> f64 {
     (span / track_width).abs().max(f64::EPSILON)
 }
 
 /// Runs `action` for its effect: a result is discarded, and an action whose
 /// parameters cannot be extracted does not run and is reported.
+#[cfg(feature = "menu")]
 pub fn call_action_discarding_result<T: 'static>(action: &SharedAction<T>, env: &Environment) {
     action.call(env).report_extraction();
 }
@@ -24,6 +28,7 @@ pub fn call_action_discarding_result<T: 'static>(action: &SharedAction<T>, env: 
 /// `MenuItem::CloseWindow` becomes the row [`close_window_command`] builds
 /// — disabled for a non-closable `owner_closable` — and is omitted where
 /// the host's windows cannot be closed.
+#[cfg(feature = "menu")]
 pub fn popup_menu_nodes(
     items: &[ResolvedMenuItem],
     env: &Environment,
@@ -36,6 +41,7 @@ pub fn popup_menu_nodes(
         .collect()
 }
 
+#[cfg(feature = "menu")]
 fn popup_menu_node(
     item: ResolvedMenuItem,
     env: &Environment,
@@ -74,6 +80,7 @@ fn popup_menu_node(
     clippy::option_if_let_else,
     reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
 )]
+#[cfg(feature = "menu")]
 fn command_node(command: ResolvedCommand) -> PopupMenuNode {
     let mut styled = command.label.content().snapshot();
     if command.selected.snapshot() {
@@ -393,6 +400,7 @@ pub fn render_str_parts<E: crate::text::TextEngine>(
 /// Emits a retained `Str` leaf's accessibility node for the semantic walk —
 /// the same node `str_accessibility` registers, with no bounds.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_str_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     text: &Rc<RefCell<Str>>,
@@ -405,6 +413,7 @@ pub fn emit_str_accessibility<E: crate::text::TextEngine>(
 /// walk — the same node `graphics_image_accessibility` registers, with no
 /// bounds.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_graphics_leaf_accessibility<T, E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     _state: &Rc<RefCell<T>>,

@@ -25,9 +25,14 @@ pub use compositor::RasterWindow;
 pub use compositor::{CherenkovWindow, FrameRenderTarget};
 pub use measurement::*;
 pub use measurement_cache::{MeasurementCaches, MemoGate, NodeMeasureEntry};
+#[cfg(feature = "navigation")]
+pub use render_context::ChromeGroup;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+pub use render_context::HydrolysisTextContextMenuMode;
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+pub use render_context::HydrolysisWindowOrigin;
 pub use render_context::RenderContext;
-pub use render_context::{ChromeGroup, WidgetRenderContext, bounded_proposal};
-pub use render_context::{HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};
+pub use render_context::{WidgetRenderContext, bounded_proposal};
 pub use state::HydroState;
 pub use subview::HydroSubview;
 pub use view_helpers::*;

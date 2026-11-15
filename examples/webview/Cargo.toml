@@ -22,7 +22,7 @@ wpe = ["dep:waterui-browser-wpe"]
 workspace = true
 
 [dependencies]
-waterui = { workspace = true, features = ["webview", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
+waterui = { workspace = true, features = ["webview", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list", "text-field", "toggle"] }
 
 # The page API's types; the web build has no page API (a cross-origin frame
 # cannot be scripted).

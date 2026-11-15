@@ -14,6 +14,13 @@ use crate::renderer::mount::RetainedScopes;
 /// the same refresh.
 #[derive(Clone)]
 pub struct RetainedIdentity {
+    #[cfg_attr(
+        not(feature = "navigation"),
+        expect(
+            dead_code,
+            reason = "the strong lease must retain the allocation even when no navigation slot queries its reference count"
+        )
+    )]
     owner: Rc<dyn Any>,
     address: usize,
 }
@@ -41,6 +48,7 @@ impl RetainedIdentity {
     ///
     /// This requires that the renderer hold no strong reference to the object
     /// beyond the single lease stored in the map.
+    #[cfg(feature = "navigation")]
     pub(crate) fn is_retained_elsewhere(&self) -> bool {
         Rc::strong_count(&self.owner) > 1
     }

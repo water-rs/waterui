@@ -41,6 +41,7 @@ use waterui_layout::{
     padding::{EdgeInsets, Padding},
     stack::Alignment,
 };
+#[cfg(feature = "navigation")]
 use waterui_navigation::NavigationView;
 
 use crate::{
@@ -195,6 +196,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `title` - The semantic title for the navigation view
+    #[cfg(feature = "navigation")]
     fn title(self, title: impl crate::text::IntoText) -> NavigationView {
         NavigationView::new(title, self)
     }
@@ -1196,6 +1198,7 @@ pub trait ViewExt: View + Sized {
     ///         "Paste".action(|| {}),
     ///     ]);
     /// ```
+    #[cfg(feature = "menu")]
     fn context_menu(
         self,
         menu: impl crate::metadata::context_menu::IntoContextMenu,
@@ -1286,6 +1289,7 @@ pub trait ViewExt: View + Sized {
     /// ))
     /// .list_min_row_height(0.0);
     /// ```
+    #[cfg(feature = "list")]
     fn list_min_row_height(
         self,
         height: f32,

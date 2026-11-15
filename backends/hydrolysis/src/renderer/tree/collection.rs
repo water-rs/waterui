@@ -556,6 +556,7 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
     /// ghosts are not entries, so a removed item leaves the tree the moment
     /// the membership change lands, exactly as §4.5 requires.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(super) fn emit_accessibility(&self, renderer: &mut SemanticCore<E>) {
         let container_scope = self.accessibility_container_env.as_ref().map(|env| {
             renderer.push_accessibility_owner(&self.accessibility_identity);
@@ -850,6 +851,7 @@ impl<T: View, E: crate::text::TextEngine> LazyTransitions<E, T> {
 
     /// The row display position `display` shows — or, for a removal ghost,
     /// the row the ghost sits before.
+    #[cfg(feature = "list")]
     pub(crate) fn row_at(&self, display: usize) -> usize {
         match self.slot_at(display) {
             LazySlot::Row(row) => row,
@@ -1694,6 +1696,7 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
     /// whole collection, so every item materializes its node rather than only
     /// the visible window. Removal ghosts left the tree with their rows.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(super) fn emit_accessibility(&self, renderer: &mut SemanticCore<E>) {
         let snapshot = self.snapshot.borrow().clone();
         let count = snapshot.len();

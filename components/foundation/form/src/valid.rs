@@ -393,6 +393,7 @@ impl Validatable for TextField {
     }
 }
 
+#[cfg(feature = "stepper")]
 impl Validatable for waterui_controls::Stepper {
     type Value = i32;
 
@@ -401,6 +402,7 @@ impl Validatable for waterui_controls::Stepper {
     }
 }
 
+#[cfg(feature = "slider")]
 impl Validatable for waterui_controls::Slider {
     type Value = f64;
 

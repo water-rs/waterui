@@ -608,6 +608,7 @@ fn left_to_right_bounds(
 /// same node `toggle_accessibility` registers, with no bounds. The label
 /// sub-view flushes visual-only, so there is nothing else to emit.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_toggle_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<ToggleRenderState<E>>>,

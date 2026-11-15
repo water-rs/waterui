@@ -11,12 +11,11 @@ use crate::renderer::{
 use crate::renderer::{InteractionKey, Track, TrackAction, measure_segmented_intrinsic, menu_look};
 #[cfg(feature = "accessibility")]
 use crate::renderer::{picker_menu_panel_height, picker_menu_row_rect};
-use crate::theme::Label as LookLabel;
 use crate::theme::{
     Chrome, Inputs, MenuLayout, MenuPickerLayout, MenuPickerLook, PickerSpec, RadioGroupLook,
     RadioLayout, Segment, SegmentedLayout, SegmentedLook, SegmentedSpec, SpecTint, WidgetTheme,
 };
-use crate::widgets::controls::button::styled_with_default_foreground;
+use crate::widgets::controls::button::label_styled;
 use crate::widgets::util::mirrored_in;
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -895,21 +894,6 @@ fn menu_picker_layouts(
         theme.menu_picker(&picker_spec(config, env), env).layout(),
         menu_look(theme, env).layout(),
     )
-}
-
-/// `styled` in the font and colour `label` gives its text at rest: the
-/// styling of a menu picker's selected value and of a radio row's label,
-/// which has no state of its own.
-pub fn label_styled(label: &LookLabel, styled: StyledStr) -> StyledStr {
-    let inputs = Inputs::at_rest(Rect::ZERO, InteractionState::empty(), &());
-    let styled = match label.get_font() {
-        Some(font) => styled.font(font.target(&inputs)),
-        None => styled,
-    };
-    match label.get_color() {
-        Some(color) => styled_with_default_foreground(styled, color.target(&inputs)),
-        None => styled,
-    }
 }
 
 /// The height of one row of a menu picker's popup: the menu's row height,
@@ -1923,6 +1907,7 @@ fn segmented_label_rect(
 /// Emits a retained picker's accessibility tree for the semantic walk — the
 /// same nodes `picker_accessibility` registers, with no bounds.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_picker_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<PickerRenderState<E>>>,

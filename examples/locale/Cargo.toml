@@ -18,6 +18,6 @@ dev = ["waterui/dynamic_linking"]
 workspace = true
 
 [dependencies]
-waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
+waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list", "picker"] }
 # The example formats dates and unit quantities.
 waterui-locale = { workspace = true, features = ["datetime", "number"] }

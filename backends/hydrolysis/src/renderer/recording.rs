@@ -16,16 +16,20 @@ use core::fmt;
 use core::hash::Hash;
 use kurbo::{Affine, Rect, Shape, Vec2};
 use nami::{Computed, Signal as _};
-use peniko::{BlendMode, Fill, FontData};
+#[cfg(any(feature = "menu", test))]
+use peniko::BlendMode;
+use peniko::{Fill, FontData};
 use rustc_hash::FxHashMap;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
 use cherenkov_record::{
-    ColorStop, Content, Draw, EvenOdd, Extend, FontId, Glyph as EngineGlyph, GlyphStyle, Group,
-    ImageId, ImagePattern, Interpolation, LayoutSize, LinearGradient, Paint, RadialGradient,
-    Recorder, Sampling, Shadow, ShapeData, SweepGradient, WorkingColor,
+    ColorStop, Draw, EvenOdd, Extend, FontId, Glyph as EngineGlyph, GlyphStyle, ImageId,
+    ImagePattern, Interpolation, LinearGradient, Paint, RadialGradient, Recorder, Sampling, Shadow,
+    ShapeData, SweepGradient, WorkingColor,
 };
+#[cfg(any(feature = "menu", test))]
+use cherenkov_record::{Content, Group, LayoutSize};
 use waterui_core::contract_violation;
 use waterui_graphics::backend::{
     FontSource, HeldResources, ImageColorSpace, ImageData, PlainId, RecordingResources, Registered,
@@ -94,6 +98,7 @@ enum Op {
         rect: Computed<Rect>,
         color: Computed<WorkingColor>,
     },
+    #[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
     Fill {
         transform: Affine,
         brush: peniko::Brush,
@@ -143,6 +148,7 @@ enum Op {
         color: WorkingColor,
         sigma: f64,
     },
+    #[cfg(any(feature = "menu", test))]
     PushGroup {
         blend: BlendMode,
         opacity: f32,
@@ -163,6 +169,7 @@ enum Op {
         /// A live paint the layout's default-coloured runs draw with.
         paint: Option<Computed<Paint>>,
     },
+    #[cfg(any(feature = "menu", test))]
     PopLayer,
 }
 
@@ -630,6 +637,7 @@ impl SceneResources {
     ///
     /// The engine's [`ResourceError`] when it does not register the
     /// brush's image; see [`image`](Self::image).
+    #[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
     pub(crate) fn transformed_paint(
         &self,
         names: &mut LoweringNames<'_>,
@@ -660,6 +668,7 @@ impl Recording {
     }
 
     /// Fills `shape` under `transform` with `brush`.
+    #[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
     pub(crate) fn fill<S: Shape + 'static>(
         &mut self,
         rule: Fill,
@@ -813,6 +822,7 @@ impl Recording {
     }
 
     /// Pushes a compositing scope with blend mode, opacity and clip.
+    #[cfg(any(feature = "menu", test))]
     pub(crate) fn push_group<S: Shape + 'static>(
         &mut self,
         rule: Fill,
@@ -833,6 +843,7 @@ impl Recording {
     /// Opens a compositing scope, runs `f` inside it, then closes it — the
     /// lexical pairing recording call sites use when their content is not a
     /// whole renderer traversal (`&mut Recording`, not `&mut Renderer`).
+    #[cfg(any(feature = "menu", test))]
     pub(crate) fn with_group<S: Shape + 'static>(
         &mut self,
         rule: Fill,
@@ -848,6 +859,7 @@ impl Recording {
     }
 
     /// Closes the current scope.
+    #[cfg(any(feature = "menu", test))]
     pub(crate) fn pop_scope(&mut self) {
         assert!(
             self.open_layers > 0,
@@ -861,17 +873,20 @@ impl Recording {
     pub(crate) fn append(&mut self, other: &Self, placement: Affine) {
         self.ops.extend(other.ops.iter().cloned().map(|mut op| {
             match &mut op {
+                #[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
+                Op::Fill { transform, .. } => *transform = placement * *transform,
                 Op::LiveRect { transform, .. }
-                | Op::Fill { transform, .. }
                 | Op::FillPaint { transform, .. }
                 | Op::StrokePaint { transform, .. }
                 | Op::Glyphs { transform, .. }
                 | Op::BlurredRoundedRect { transform, .. }
                 | Op::Shadow { transform, .. }
-                | Op::PushGroup { transform, .. }
                 | Op::Picture { transform, .. } => *transform = placement * *transform,
                 #[cfg(any(test, hydrolysis_hwui))]
                 Op::Text { transform, .. } => *transform = placement * *transform,
+                #[cfg(any(feature = "menu", test))]
+                Op::PushGroup { transform, .. } => *transform = placement * *transform,
+                #[cfg(any(feature = "menu", test))]
                 Op::PopLayer => {}
             }
             op
@@ -885,6 +900,7 @@ impl Recording {
     #[cfg(all(test, hydrolysis_gpu_painter))]
     pub(crate) fn clip_scopes(&self) -> impl Iterator<Item = (Affine, Rect)> {
         self.ops.iter().filter_map(|op| match op {
+            #[cfg(any(feature = "menu", test))]
             Op::PushGroup {
                 transform, clip, ..
             } => Some((*transform, clip.bounds())),
@@ -976,6 +992,7 @@ impl Recording {
         self.ops
             .iter()
             .filter_map(|op| match op {
+                #[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
                 Op::Fill {
                     brush: peniko::Brush::Solid(color),
                     ..
@@ -1029,10 +1046,14 @@ impl Recording {
         /// An open scope: the clip it narrows to and its opacity, or
         /// `None` when nothing inside it can be summarised.
         type Scope = Option<(Rect, f32)>;
+        #[cfg(any(feature = "menu", test))]
         let mut scopes: Vec<Scope> = Vec::new();
+        #[cfg(not(any(feature = "menu", test)))]
+        let scopes: Vec<Scope> = Vec::new();
         let mut rects = Vec::new();
         for op in &self.ops {
             let (transform, color, rect) = match op {
+                #[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
                 Op::Fill {
                     transform,
                     brush: peniko::Brush::Solid(color),
@@ -1057,6 +1078,7 @@ impl Recording {
                     rect,
                     color,
                 } => (transform, color.clone(), rect.clone()),
+                #[cfg(any(feature = "menu", test))]
                 Op::PushGroup {
                     blend,
                     opacity,
@@ -1077,6 +1099,7 @@ impl Recording {
                     });
                     continue;
                 }
+                #[cfg(any(feature = "menu", test))]
                 Op::PopLayer => {
                     scopes.pop();
                     continue;
@@ -1176,6 +1199,7 @@ fn lower(
             } => {
                 recorder.transform(*transform, |r| r.fill(rect.clone(), color.clone()));
             }
+            #[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
             Op::Fill {
                 transform,
                 brush,
@@ -1295,6 +1319,7 @@ fn lower(
                 };
                 recorder.transform(*transform, |r| r.shadow(shape.clone(), shadow));
             }
+            #[cfg(any(feature = "menu", test))]
             Op::PushGroup {
                 transform,
                 clip,
@@ -1352,6 +1377,7 @@ fn lower(
                     draw(recorder, *transform);
                 }
             }
+            #[cfg(any(feature = "menu", test))]
             Op::PopLayer => return,
         }
     }
@@ -1460,6 +1486,7 @@ const fn sampling(quality: peniko::ImageQuality) -> Sampling {
 /// one combined mode; peniko's separable pair collapses where Porter-Duff and
 /// CSS compositing overlap, and the remaining combinations have no engine
 /// equivalent.
+#[cfg(any(feature = "menu", test))]
 fn blend_mode(mode: BlendMode) -> cherenkov_record::BlendMode {
     use peniko::{Compose, Mix};
     match (mode.mix, mode.compose) {
@@ -1572,6 +1599,7 @@ impl Recording {
     /// `body` runs there and the finished content freezes into the picture.
     /// Chrome does not bind to a layer's layout size, so the recording reads
     /// a fresh [`LayoutSize`].
+    #[cfg(any(feature = "menu", test))]
     pub(crate) fn record_picture(&mut self, transform: Affine, body: impl FnOnce(&mut Recorder)) {
         let picture = Content::record(&LayoutSize::new(), body).into_picture();
         if !picture.display_list().is_empty() {

@@ -367,6 +367,7 @@ impl<B: cherenkov::Backend> SurfaceCore<B> {
     }
 
     /// The space the surface stores, set by [`Self::storage_space`].
+    #[cfg(hydrolysis_gpu)]
     pub const fn stored_space(&self) -> cherenkov_record::BlendSpace {
         self.storage_space
     }

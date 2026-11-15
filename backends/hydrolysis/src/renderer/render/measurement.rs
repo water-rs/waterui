@@ -1,34 +1,58 @@
+#[cfg(feature = "list")]
+use crate::num_cast::f64_as_f32;
+#[cfg(feature = "list")]
+use crate::theme::ListMetrics;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use crate::theme::TextFieldLook;
+#[cfg(feature = "navigation")]
+use crate::theme::{NavigationBarLook, NavigationMetrics, NavigationSpec, TabsSpec};
+#[cfg(feature = "text-field")]
+use crate::widgets::controls::field_look::placeholder_text;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use crate::widgets::controls::field_look::value_text;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use waterui_core::interaction::InteractionState;
+#[cfg(feature = "list")]
+use waterui_core::views::AnyViewsSnapshot;
+#[cfg(feature = "list")]
+use waterui_layout::padding::EdgeInsets;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::num_cast::f64_as_f32;
 use crate::text::TextEngine;
 use crate::text::TextLayout as _;
-use crate::theme::{
-    ListMetrics, NavigationBarLook, NavigationMetrics, NavigationSpec, TabsSpec, TextFieldLook,
-    WidgetTheme,
-};
-use crate::widgets::controls::field_look::{field_look, placeholder_text, value_text};
+use crate::theme::WidgetTheme;
+#[cfg(any(
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "date-picker"
+))]
+use crate::widgets::controls::field_look::field_look;
 use crate::widgets::layout::container::resolve_lazy_container_extent;
+#[cfg(feature = "navigation")]
 use crate::widgets::nav::tabs::{tabs_decide_layout, tabs_item_natural_width};
 use std::rc::Rc;
+#[cfg(feature = "navigation")]
 use waterui::navigation::tab::TabIcon;
 use waterui_core::contract_violation;
 use waterui_core::handler::BoxedAction;
-use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{LayoutError, ResolvedExtent, layout_direction, resolve_layout_extent};
-use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot};
+#[cfg(any(feature = "list", feature = "navigation"))]
+use waterui_core::views::ViewSnapshot;
+#[cfg(feature = "picker")]
 use waterui_form::picker::PickerStyle;
+#[cfg(feature = "date-picker")]
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_layout::container::resolve_directional_extent;
-use waterui_layout::padding::EdgeInsets;
 
+#[cfg(feature = "table")]
 pub struct MeasuredTableMetrics {
     pub(crate) column_widths: Vec<f64>,
     pub(crate) table_width: f64,
     pub table_height: f64,
 }
 
+#[cfg(feature = "table")]
 pub fn table_header_cell_rect(
     origin_x: f64,
     origin_y: f64,
@@ -44,6 +68,7 @@ pub fn table_header_cell_rect(
     )
 }
 
+#[cfg(feature = "table")]
 pub fn table_data_cell_rect(
     origin_x: f64,
     origin_y: f64,
@@ -65,10 +90,12 @@ pub fn table_data_cell_rect(
 }
 
 /// The navigation chrome's look for the spec of `env`.
+#[cfg(feature = "navigation")]
 pub fn navigation_look(theme: &Rc<dyn WidgetTheme>, env: &Environment) -> NavigationBarLook {
     theme.navigation_bar(&NavigationSpec::new(layout_direction(env).snapshot()), env)
 }
 
+#[cfg(feature = "navigation")]
 fn navigation_bar_height<E: crate::text::TextEngine>(
     view: &NavigationView,
     state: &mut HydroState<E>,
@@ -100,6 +127,7 @@ fn navigation_bar_height<E: crate::text::TextEngine>(
 }
 
 /// The height of a bar showing its title in `display_mode`, under `metrics`.
+#[cfg(feature = "navigation")]
 pub const fn navigation_base_bar_height(
     display_mode: waterui::navigation::NavigationTitleDisplayMode,
     metrics: NavigationMetrics,
@@ -112,6 +140,7 @@ pub const fn navigation_base_bar_height(
     }
 }
 
+#[cfg(feature = "navigation")]
 pub fn split_compact_threshold(sidebar_width: f64) -> f64 {
     sidebar_width + 360.0
 }
@@ -762,6 +791,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         clippy::needless_pass_by_value,
         reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
     )]
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn build_text_layout(
         state: &mut HydroState<E>,
         styled: StyledStr,
@@ -800,6 +830,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             .size
     }
 
+    #[cfg(feature = "text-field")]
     pub(crate) fn measure_text_intrinsic_size_with_line_limit(
         state: &mut HydroState<E>,
         styled: StyledStr,
@@ -820,6 +851,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// The size of an editable field's content, at most `max_lines` lines.
     /// Empty text still measures the one line a caret occupies, so a field
     /// keeps its height as text is entered.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn measure_editable_text_size(
         state: &HydroState<E>,
         styled: &StyledStr,
@@ -836,6 +868,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     clippy::option_if_let_else,
     reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
 )]
+#[cfg(feature = "navigation")]
 pub fn measure_navigation_view_intrinsic<E: crate::text::TextEngine>(
     navigation: &NavigationView,
     state: &mut HydroState<E>,
@@ -950,6 +983,7 @@ pub fn measure_navigation_view_intrinsic<E: crate::text::TextEngine>(
 /// rect the container hands the column. The whole view dies with the call, so
 /// it is normalized and measured as transient: none of its parts may leave an
 /// entry under an address the next build is handed.
+#[cfg(feature = "navigation")]
 pub fn measure_owned_navigation_view_with_proposal<E: crate::text::TextEngine>(
     navigation: NavigationView,
     proposal: ProposalSize,
@@ -964,6 +998,7 @@ pub fn measure_owned_navigation_view_with_proposal<E: crate::text::TextEngine>(
 /// Measures a `TabsLayout` under `proposal`: each tab's content answers the
 /// proposal its rendered content rect hands it — the pane minus the tab bar —
 /// and the layout echoes bounded axes. `intrinsic` is the `UNSPECIFIED` call.
+#[cfg(feature = "navigation")]
 pub fn measure_tabs_layout<E: crate::text::TextEngine>(
     tabs: &TabsLayout,
     proposal: ProposalSize,
@@ -1060,6 +1095,7 @@ pub fn measure_tabs_layout<E: crate::text::TextEngine>(
 /// covers the band outright (keyboard deeper than container inset plus bar
 /// height). Bounded axes echo the offer; an axis the container left open
 /// stays open.
+#[cfg(feature = "navigation")]
 pub fn tabs_content_proposal(
     proposal: ProposalSize,
     style: NativeTabStyle,
@@ -1081,6 +1117,7 @@ pub fn tabs_content_proposal(
     }
 }
 
+#[cfg(feature = "navigation")]
 pub fn tabs_button_rect(
     bar_rect: kurbo::Rect,
     tab_count: usize,
@@ -1101,6 +1138,7 @@ pub fn tabs_button_rect(
     }
 }
 
+#[cfg(feature = "navigation")]
 pub fn navigation_back_button_rect(
     bounds: kurbo::Rect,
     metrics: crate::theme::NavigationMetrics,
@@ -1117,6 +1155,7 @@ pub fn navigation_back_button_rect(
 /// `insets` replace the theme's row insets edge for edge, and unset the theme's
 /// symmetric horizontal inset applies. `EdgeInsets` is logical, so leading is
 /// the side the layout direction starts from.
+#[cfg(feature = "list")]
 pub fn list_row_horizontal_insets(
     insets: Option<&EdgeInsets>,
     metrics: ListMetrics,
@@ -1135,6 +1174,7 @@ pub fn list_row_horizontal_insets(
 
 /// The spec of a list in `env`.
 #[must_use]
+#[cfg(feature = "list")]
 pub fn list_spec(env: &Environment) -> crate::theme::ListSpec {
     crate::theme::ListSpec::new(layout_direction(env).snapshot())
 }
@@ -1144,6 +1184,7 @@ pub fn list_spec(env: &Environment) -> crate::theme::ListSpec {
 /// height comes from this answer, so content that wraps is held at the lines it
 /// wraps to there. The content is a view this measurement materialized, so it
 /// goes through the transient path.
+#[cfg(feature = "list")]
 pub fn measure_list_row_content<E: TextEngine>(
     content: &AnyView,
     row_width: f64,
@@ -1168,6 +1209,7 @@ pub fn measure_list_row_content<E: TextEngine>(
 /// is proposed: rows are then measured at it, so the height answers the
 /// wrapping that width causes; `None` is the ideal query, rows at their natural
 /// width.
+#[cfg(feature = "list")]
 pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
     list: &ListConfig,
     contents: &AnyViewsSnapshot<ListItem>,
@@ -1241,6 +1283,7 @@ pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
 /// Materializes the `ListItem` at `index` from `contents` — an immutable
 /// snapshot of the row collection, so the caller's whole pass (section walk,
 /// accessibility emit, or draw loop) reads one coherent membership.
+#[cfg(feature = "list")]
 pub fn materialize_list_item(
     contents: &impl ViewSnapshot<View = ListItem>,
     index: usize,
@@ -1265,6 +1308,7 @@ pub fn materialize_list_item(
 /// The caller measures the content ([`measure_list_row_content`] on the
 /// materialized `ListItem`) and the section chrome height is added on top
 /// of what this returns.
+#[cfg(feature = "list")]
 pub fn list_row_height_for_content(
     content_height: f64,
     insets: Option<&EdgeInsets>,
@@ -1299,6 +1343,7 @@ pub fn measure_progress_intrinsic<E: crate::text::TextEngine>(
     )
 }
 
+#[cfg(feature = "text-field")]
 pub fn measure_text_field_intrinsic<E: crate::text::TextEngine>(
     text_field: &ResolvedTextFieldConfig,
     state: &mut HydroState<E>,
@@ -1327,6 +1372,7 @@ pub fn measure_text_field_intrinsic<E: crate::text::TextEngine>(
 /// text — text scrolls inside the dealt width. `None` answers the ideal, the
 /// look's `min_width` floored at the label. Height is the intrinsic height,
 /// whose text line an empty field measures too.
+#[cfg(feature = "text-field")]
 pub fn measure_text_field_size_with_label_size<E: crate::text::TextEngine>(
     text_field: &ResolvedTextFieldConfig,
     label_size: LayoutSize,
@@ -1377,10 +1423,12 @@ pub fn measure_text_field_size_with_label_size<E: crate::text::TextEngine>(
 /// answered floored at `minimum` — the `0` probe included — so an unbounded
 /// probe answers `INFINITY`; `None` answers the `ideal` (theme `min_width`
 /// floor applied). The field's text is not an input to the width.
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 fn input_field_width(proposal: Option<f32>, ideal: f64, minimum: f64) -> f64 {
     proposal.map_or(ideal, |width| f64::from(width).max(minimum))
 }
 
+#[cfg(feature = "secure-field")]
 pub fn measure_secure_field_intrinsic<E: crate::text::TextEngine>(
     secure_field: &SecureFieldConfig,
     state: &mut HydroState<E>,
@@ -1406,6 +1454,7 @@ pub fn measure_secure_field_intrinsic<E: crate::text::TextEngine>(
 /// `Horizontal`-leaf contract as the text field: the width answers the
 /// proposal floored at the label's extent and never the masked text; `None`
 /// answers the look's `min_width` ideal.
+#[cfg(feature = "secure-field")]
 pub fn measure_secure_field_size_with_label_size<E: crate::text::TextEngine>(
     secure_field: &SecureFieldConfig,
     label_size: LayoutSize,
@@ -1447,6 +1496,7 @@ pub fn measure_secure_field_size_with_label_size<E: crate::text::TextEngine>(
 /// theme's `label_height`: the label scales into the band when it floats, so
 /// the unscaled label measure only decides whether the band exists, never
 /// how tall it is (water-rs/waterui#2387).
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 fn measured_input_label_height(label_size: LayoutSize, label_height: f64) -> f64 {
     if label_size.width > 0.0 || label_size.height > 0.0 {
         label_height
@@ -1455,6 +1505,7 @@ fn measured_input_label_height(label_size: LayoutSize, label_height: f64) -> f64
     }
 }
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 fn measured_input_field_height(
     text_height: f32,
     label_height: f64,
@@ -1469,6 +1520,7 @@ fn measured_input_field_height(
     measured_height.max(metrics.min_height)
 }
 
+#[cfg(feature = "table")]
 pub fn measure_table_metrics<E: crate::text::TextEngine>(
     columns: &[TableColumn],
     state: &mut HydroState<E>,
@@ -1501,6 +1553,7 @@ pub fn measure_table_metrics<E: crate::text::TextEngine>(
     }
 }
 
+#[cfg(feature = "table")]
 pub fn refresh_table_slot_baseline<E: crate::text::TextEngine>(
     columns: &[TableColumn],
     slot: &mut LazyTableSlot,
@@ -1525,11 +1578,13 @@ pub fn refresh_table_slot_baseline<E: crate::text::TextEngine>(
 
 /// The cells of a table a frame shows: the rows and columns in view.
 #[derive(Debug, Clone, Copy)]
+#[cfg(feature = "table")]
 pub struct VisibleCells {
     pub rows: VisibleIndexWindow,
     pub columns: VisibleColumnWindow,
 }
 
+#[cfg(feature = "table")]
 pub fn update_table_slot_visible_cell_widths<E: crate::text::TextEngine>(
     columns: &[TableColumn],
     slot: &mut LazyTableSlot,
@@ -1564,6 +1619,7 @@ pub fn update_table_slot_visible_cell_widths<E: crate::text::TextEngine>(
     }
 }
 
+#[cfg(feature = "picker")]
 fn resolved_text_styled<E: crate::text::TextEngine>(
     text: &Text,
     env: &Environment,
@@ -1573,6 +1629,7 @@ fn resolved_text_styled<E: crate::text::TextEngine>(
     state.measure_signal(&resolved.content())
 }
 
+#[cfg(feature = "date-picker")]
 pub fn measure_date_picker_intrinsic<E: crate::text::TextEngine>(
     date_picker: &DatePickerConfig,
     state: &mut HydroState<E>,
@@ -1646,6 +1703,7 @@ pub fn measure_button_view_intrinsic<E: crate::text::TextEngine>(
 /// Measures a segmented picker of `items` under `look` beneath a heading of
 /// `label_size`: each item's label at the larger of its selected and
 /// unselected fonts, laid out by the look's layout.
+#[cfg(feature = "picker")]
 pub fn measure_segmented_intrinsic<E: crate::text::TextEngine>(
     look: &crate::theme::SegmentedLook,
     items: &[waterui_form::picker::PickerItem<waterui_core::id::Id>],
@@ -1677,6 +1735,7 @@ pub fn measure_segmented_intrinsic<E: crate::text::TextEngine>(
     crate::widgets::controls::picker::segmented_intrinsic(look.layout(), &sizes, label_size)
 }
 
+#[cfg(feature = "picker")]
 pub fn measure_picker_intrinsic<E: crate::text::TextEngine>(
     picker: &PickerConfig,
     state: &mut HydroState<E>,
@@ -1696,6 +1755,7 @@ pub fn measure_picker_intrinsic<E: crate::text::TextEngine>(
 
 /// The intrinsic size of a menu picker's field: the widest item value, the
 /// in-field label above it and the look's insets and indicator space.
+#[cfg(feature = "picker")]
 fn measure_menu_picker_intrinsic<E: crate::text::TextEngine>(
     look: &crate::theme::MenuPickerLook,
     items: &[waterui_form::picker::PickerItem<waterui_core::id::Id>],
@@ -1707,7 +1767,7 @@ fn measure_menu_picker_intrinsic<E: crate::text::TextEngine>(
     let mut max_item_width: f64 = 0.0;
     let mut max_item_height: f64 = 0.0;
     for item in items {
-        let styled = crate::widgets::controls::picker::label_styled(
+        let styled = crate::widgets::controls::button::label_styled(
             look.get_value(),
             resolved_text_styled(&item.content, env, state),
         );
@@ -1747,6 +1807,7 @@ fn measure_menu_picker_intrinsic<E: crate::text::TextEngine>(
 
 /// The intrinsic size of a radio group: one row per item, stacked with the
 /// look's row spacing, under the group label.
+#[cfg(feature = "picker")]
 fn measure_radio_picker_intrinsic<E: crate::text::TextEngine>(
     look: &crate::theme::RadioGroupLook,
     items: &[waterui_form::picker::PickerItem<waterui_core::id::Id>],
@@ -1759,7 +1820,7 @@ fn measure_radio_picker_intrinsic<E: crate::text::TextEngine>(
     let mut max_item_width: f64 = 0.0;
     let mut total_height = 0.0;
     for (index, item) in items.iter().enumerate() {
-        let styled = crate::widgets::controls::picker::label_styled(
+        let styled = crate::widgets::controls::button::label_styled(
             look.get_label(),
             resolved_text_styled(&item.content, env, state),
         );
@@ -1804,6 +1865,7 @@ fn measure_radio_picker_intrinsic<E: crate::text::TextEngine>(
 /// the retained-node path passes the label measured from its built
 /// [`crate::renderer::RetainedSubview`], so layout and the in-field label
 /// render agree on the label height.
+#[cfg(feature = "picker")]
 pub fn measure_picker_intrinsic_with_label_size<E: crate::text::TextEngine>(
     picker: &PickerConfig,
     label_size: LayoutSize,
