@@ -16,7 +16,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
@@ -103,7 +103,7 @@ fun GalleryTwin() {
                     Spacer(Modifier.weight(1f))
                     Icon(
                         if (s in expanded) Icons.Filled.KeyboardArrowDown
-                        else Icons.Filled.KeyboardArrowRight,
+                        else Icons.AutoMirrored.Filled.KeyboardArrowRight,
                         contentDescription = if (s in expanded) "collapse" else "expand",
                     )
                 }

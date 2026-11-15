@@ -75,7 +75,9 @@ class BaselineProfileGenerator {
                             SuiteRegistry.exampleForFixture(fixture) +
                             " --es waterui.env.WATERUI_DISABLE_DYNAMIC_COLORS 1",
                     )
-                    device.wait(Until.hasObject(By.res("screen-root")), 10_000)
+                    check(device.wait(Until.hasObject(By.res("screen-root")), 10_000)) {
+                        "Benchmark screen did not become ready"
+                    }
                     Journey.run(device, spec, fixture)
                 } finally {
                     device.pressHome()

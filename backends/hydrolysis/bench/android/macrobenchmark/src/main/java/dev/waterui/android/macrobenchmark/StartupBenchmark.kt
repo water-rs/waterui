@@ -51,7 +51,9 @@ class StartupBenchmark {
             intent.putExtra("waterui.bench.markers", true)
         }
         // First meaningful content, not the splash/blank host.
-        device.wait(Until.hasObject(By.res("screen-root")), 10_000)
+        check(device.wait(Until.hasObject(By.res("screen-root")), 10_000)) {
+            "Benchmark screen did not become ready"
+        }
     }
 
     @Test

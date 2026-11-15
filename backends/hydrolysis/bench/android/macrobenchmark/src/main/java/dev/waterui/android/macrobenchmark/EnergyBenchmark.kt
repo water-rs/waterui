@@ -64,7 +64,9 @@ class EnergyBenchmark {
                 intent.putExtra("E2EExample", SuiteRegistry.exampleForFixture(fixture))
                 intent.putExtra("waterui.env.WATERUI_DISABLE_DYNAMIC_COLORS", "1")
             }
-            device.wait(Until.hasObject(By.res("screen-root")), 10_000)
+            check(device.wait(Until.hasObject(By.res("screen-root")), 10_000)) {
+                "Benchmark screen did not become ready"
+            }
             Journey.runFor(device, spec, fixture, scriptSeconds)
             // Idle segment: the app sits presented but untouched so the round
             // also reports the fixture's idle draw.

@@ -66,7 +66,9 @@ class FrameBenchmark {
                 intent.putExtra("waterui.env.WATERUI_DISABLE_DYNAMIC_COLORS", "1")
                 intent.putExtra("waterui.bench.markers", true)
             }
-            device.wait(Until.hasObject(By.res("screen-root")), 10_000)
+            check(device.wait(Until.hasObject(By.res("screen-root")), 10_000)) {
+                "Benchmark screen did not become ready"
+            }
             Journey.runFor(device, spec, fixture, scriptSeconds)
         }
     }
