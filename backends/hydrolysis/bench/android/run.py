@@ -468,9 +468,9 @@ def cmd_lock_campaign(args: argparse.Namespace) -> int:
         lock = json.loads(lock_path.read_text())
         old = lock.get("compose_bom")
         if old and old != bom and not args.refresh:
-            print(
-                f"campaign already locked to {bom} differs from existing "
-                f"{old}; pass --refresh to re-lock (recalibrate noise!)"
+            sys.exit(
+                f"campaign is locked to {old}; latest stable is {bom}. "
+                "Pass --refresh to start a new campaign and recalibrate noise."
             )
     lock.update(
         {
