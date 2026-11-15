@@ -10,6 +10,7 @@ config; `collect` reports whether surface-level coverage was present).
 
 from __future__ import annotations
 
+import csv
 import re
 import subprocess
 from pathlib import Path
@@ -44,46 +45,48 @@ def parse_gfxinfo(text: str) -> dict:
 
 
 def parse_framestats(text: str) -> dict:
-    """Per-frame stats from `dumpsys gfxinfo <pkg> framestats`.
+    """Read Android's named CSV columns between PROFILEDATA delimiters.
 
-    The CSV's INTENDED_VSYNC/VSYNC and FRAME_COMPLETED columns give actual
-    presented-frame timing: frame duration = FRAME_COMPLETED - INTENDED_VSYNC
-    in ns, and a missed deadline = duration > vsync period + full deadline.
+    FrameCompleted measures window-frame completion, not surface presentation.
+    FrameDeadline and FrameInterval determine missed display intervals;
+    Vsync minus IntendedVsync is scheduling delay, not the display period.
     """
-
-    lines = [
-        line
-        for line in text.splitlines()
-        if line and not line.startswith("---") and not line.startswith("Flags")
-    ]
+    required = {
+        "Flags", "IntendedVsync", "FrameCompleted", "FrameDeadline",
+        "FrameInterval",
+    }
     durations_ns: list[int] = []
     missed = 0
     max_stall_ns = 0
     header: list[str] | None = None
-    for line in lines:
-        fields = line.split(",")
+    for fields in csv.reader(text.splitlines()):
+        if not fields:
+            continue
+        if fields[0] == "---PROFILEDATA---":
+            header = None
+            continue
+        if fields[0] == "Flags":
+            missing = required.difference(fields)
+            if missing:
+                raise ValueError(f"framestats header lacks {sorted(missing)}")
+            header = fields
+            continue
         if header is None:
-            if fields and fields[0] == "PROFILEDATA":
-                header = fields[1:] if fields[1] else fields
-                # framestats CSVs open with a column list row; keep the first
-                # seen as the header and parse subsequent PROFILEDATA rows.
             continue
-        if fields[0] != "PROFILEDATA" or len(fields) < len(header) + 1:
+        row = dict(zip(header, fields, strict=True))
+        # Android marks nonordinary frames with Flags.
+        if int(row["Flags"]) != 0:
             continue
-        row = dict(zip(header, fields[1:]))
-        try:
-            intended = int(row["INTENDED_VSYNC"])
-            completed = int(row["FRAME_COMPLETED"])
-            vsync = int(row.get("VSYNC", intended))
-        except (KeyError, ValueError):
-            continue
+        intended = int(row["IntendedVsync"])
+        completed = int(row["FrameCompleted"])
+        deadline = int(row["FrameDeadline"])
+        interval = int(row["FrameInterval"])
         duration = completed - intended
-        if duration <= 0:
-            continue
+        if interval <= 0 or duration <= 0:
+            raise ValueError(f"invalid framestats timing: {row}")
         durations_ns.append(duration)
-        period = max(vsync - intended, 1)
-        if duration > 2 * period:
-            missed += 1
+        lateness = max(completed - deadline, 0)
+        missed += (lateness + interval - 1) // interval
         max_stall_ns = max(max_stall_ns, duration)
     durations_ns.sort()
     out: dict = {}
@@ -93,9 +96,9 @@ def parse_framestats(text: str) -> dict:
             idx = min(len(durations_ns) - 1, int(len(durations_ns) * p))
             return durations_ns[idx] / 1e6
 
-        out["presented_frames"] = len(durations_ns)
-        out["presented_ms_p50"] = round(pct(0.50), 3)
-        out["presented_ms_p99"] = round(pct(0.99), 3)
+        out["frame_samples"] = len(durations_ns)
+        out["frame_ms_p50"] = round(pct(0.50), 3)
+        out["frame_ms_p99"] = round(pct(0.99), 3)
         out["missed_slots"] = missed
         out["max_stall_ms"] = round(max_stall_ns / 1e6, 3)
     return out
