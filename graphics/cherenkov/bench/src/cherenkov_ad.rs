@@ -2143,6 +2143,8 @@ impl Engine for Cherenkov {
             surface_pixels: stats.surface_pixels,
             damaged_surface_pixels: stats.damaged_surface_pixels,
             passes_culled: Some(stats.passes_culled),
+            picture_tiles_invalidated: Some(stats.picture_tiles_invalidated),
+            picture_tiles_composed: Some(stats.picture_tiles_composed),
         })
     }
 
@@ -2152,6 +2154,8 @@ impl Engine for Cherenkov {
         counters.dispatches = Some(stats.draws);
         counters.passes = Some(stats.passes);
         counters.passes_culled = Some(stats.passes_culled);
+        counters.picture_tiles_invalidated = Some(stats.picture_tiles_invalidated);
+        counters.picture_tiles_composed = Some(stats.picture_tiles_composed);
         counters.surface_pixels = Some(stats.surface_pixels);
         counters.damaged_surface_pixels = Some(stats.damaged_surface_pixels);
         if let Ok(memory) = self.engine.memory() {

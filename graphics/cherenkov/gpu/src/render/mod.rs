@@ -700,7 +700,7 @@ impl SurfaceState {
         }
     }
 
-    fn lowering_bytes(&self) -> u64 {
+    fn lowering_bytes(&self, shared: &mut projective::Memory) -> u64 {
         #[cfg(target_os = "android")]
         let damage_bytes = (self.part_damage.capacity()
             * std::mem::size_of::<cherenkov::damage::Region>()) as u64
@@ -727,12 +727,12 @@ impl SurfaceState {
                 .projective
                 .values()
                 .flatten()
-                .map(projective::Entry::cpu_bytes)
+                .map(|entry| entry.cpu_bytes(shared))
                 .sum::<u64>()
             + self
                 .layers
                 .values()
-                .map(ContentData::gpu_input_bytes)
+                .map(|content| content.gpu_input_bytes(shared))
                 .sum::<u64>()
     }
 
@@ -4614,6 +4614,7 @@ impl Renderer for GpuRenderer {
     }
 
     fn memory(&self) -> MemoryUsage {
+        let mut shared = projective::Memory::default();
         let glyph_cache =
             self.atlas.cpu_bytes() + self.fonts.values().map(FontData::bounds_bytes).sum::<u64>();
         let cpu = glyph_cache
@@ -4627,7 +4628,7 @@ impl Renderer for GpuRenderer {
             + self
                 .surfaces
                 .values()
-                .map(SurfaceState::lowering_bytes)
+                .map(|surface| surface.lowering_bytes(&mut shared))
                 .sum::<u64>()
             + self
                 .surfaces
@@ -8647,6 +8648,16 @@ impl GpuRenderer {
         stats.projective_composed +=
             u32::try_from(composed.iter().filter(|key| key.picture.is_none()).count())
                 .unwrap_or(u32::MAX);
+        stats.picture_tiles_invalidated += u32::try_from(
+            realize
+                .iter()
+                .filter(|image| image.key.picture.is_some())
+                .count(),
+        )
+        .expect("frame tile count fits u32");
+        stats.picture_tiles_composed +=
+            u32::try_from(composed.iter().filter(|key| key.picture.is_some()).count())
+                .expect("frame tile count fits u32");
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.picture_commands_pending |=

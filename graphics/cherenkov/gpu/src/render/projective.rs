@@ -7,7 +7,9 @@
 //! layer whose content, density and layout are unchanged draws only that
 //! quad: no local passes and no mip builds.
 
+mod memory;
 pub(super) mod tiles;
+pub(super) use memory::Memory;
 
 use cherenkov::LayerId;
 use cherenkov::lowering::projective::{Homography, Limits, LocalImage};
@@ -380,9 +382,8 @@ impl Entry {
         }
     }
 
-    /// CPU allocations retained by an image, including the immutable source.
-    /// Shared source allocations follow Content's per-retain accounting.
-    pub fn cpu_bytes(&self) -> u64 {
+    /// CPU allocations retained by an image, counting shared sources once.
+    pub fn cpu_bytes(&self, shared: &mut Memory) -> u64 {
         (std::mem::size_of::<Self>()
             + self.levels.capacity() * std::mem::size_of::<wgpu::TextureView>()
             + self.mips.capacity() * std::mem::size_of::<wgpu::BindGroup>()
@@ -390,12 +391,7 @@ impl Entry {
                 * std::mem::size_of::<((Option<usize>, Option<u64>), wgpu::BindGroup)>())
             as u64
             + self.picture.as_ref().map_or(0, |picture| {
-                picture
-                    .source
-                    .display_list()
-                    .heap_bytes(cherenkov::lowering::memory::command_bytes)
-                    // Arc's strong and weak counters and the cell coordinates.
-                    + (2 * size_of::<usize>() + size_of::<[i32; 2]>()) as u64
+                shared.source(&picture.source) + shared.cell(&picture.cell)
             })
     }
 

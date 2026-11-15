@@ -1742,6 +1742,8 @@ impl Engine for Cherenkov {
             surface_pixels: stats.surface_pixels,
             damaged_surface_pixels: stats.damaged_surface_pixels,
             passes_culled: None,
+            picture_tiles_invalidated: None,
+            picture_tiles_composed: None,
         })
     }
 

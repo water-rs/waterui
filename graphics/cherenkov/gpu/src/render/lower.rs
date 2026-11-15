@@ -745,7 +745,7 @@ impl ContentData {
         self.storage.geometry.flag_reconcile();
     }
 
-    pub fn gpu_input_bytes(&self) -> u64 {
+    pub fn gpu_input_bytes(&self, shared: &mut crate::render::projective::Memory) -> u64 {
         (self.storage.templates.capacity() * size_of::<InstanceTemplate>()
             + self.storage.covers.capacity() * size_of::<Cover>()
             + self.storage.instances.capacity() * size_of::<RetainedInstance>()
@@ -765,7 +765,7 @@ impl ContentData {
                 .storage
                 .picture_domains
                 .values()
-                .map(picture::PreparedDomain::source_bytes)
+                .map(|domain| domain.source_bytes(shared))
                 .sum::<u64>()
     }
 

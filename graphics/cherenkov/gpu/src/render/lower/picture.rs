@@ -39,13 +39,17 @@ impl PreparedDomain {
         std::ptr::eq(self.source.display_list(), source.display_list())
     }
 
-    pub(super) fn source_bytes(&self) -> u64 {
-        self.source_bytes
+    pub(super) fn source_bytes(&self, shared: &mut crate::render::projective::Memory) -> u64 {
+        shared.source(&self.source)
             + self.versions.bytes()
             + self.tiling.as_ref().map_or(0, |tiling| {
                 (tiling.cells.capacity() * size_of::<(Cell, Tile)>()
-                    + tiling.cells.len() * (2 * size_of::<usize>() + size_of::<[i32; 2]>())
                     + tiling.levels.capacity() * size_of::<(u32, u32)>()) as u64
+                    + tiling
+                        .cells
+                        .values()
+                        .map(|tile| shared.cell(&tile.identity))
+                        .sum::<u64>()
             })
     }
 }
@@ -378,6 +382,20 @@ impl Lowering<'_> {
                 && entry.is_some_and(|entry| {
                     entry.key == Some(cache) && entry.picture.as_ref().is_some_and(snapshot_matches)
                 }));
+            if !current {
+                tracing::trace!(
+                    tile_x = cell.x,
+                    tile_y = cell.y,
+                    new_tile = entry.is_none(),
+                    source_changed = entry.is_some_and(|entry| entry
+                        .picture
+                        .as_ref()
+                        .is_some_and(|snapshot| !snapshot_matches(snapshot))),
+                    resources_changed = context.inputs.stale.contains(&key),
+                    raster_changed = entry.is_some_and(|entry| entry.key != Some(cache)),
+                    "retained picture tile invalidated"
+                );
+            }
             let bytes = tiling.committed;
             if !context.composed.contains(&key) {
                 required = required.saturating_add(bytes);

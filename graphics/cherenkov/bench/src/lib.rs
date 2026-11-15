@@ -169,6 +169,10 @@ pub struct Counters {
     pub passes: Option<u32>,
     /// Planned raster passes skipped for lack of pixel demand, where exposed.
     pub passes_culled: Option<u32>,
+    /// Picture tiles requiring preparation; pixel damage may cull their work.
+    pub picture_tiles_invalidated: Option<u32>,
+    /// Cached or newly prepared picture tiles composed this frame.
+    pub picture_tiles_composed: Option<u32>,
     /// Pixel area of the surfaces prepared in the last frame, where exposed.
     pub surface_pixels: Option<u64>,
     /// Root-output raster coverage in the last frame, without overlap or
@@ -204,6 +208,10 @@ pub struct DamageSample {
     pub damaged_surface_pixels: u64,
     /// Planned raster passes skipped for lack of demand; unavailable on CPU.
     pub passes_culled: Option<u32>,
+    /// Picture tiles requiring preparation; pixel damage may cull their work.
+    pub picture_tiles_invalidated: Option<u32>,
+    /// Cached or newly prepared picture tiles composed this frame.
+    pub picture_tiles_composed: Option<u32>,
 }
 
 /// Device and thermal metadata captured at measure time.

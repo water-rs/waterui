@@ -214,6 +214,13 @@ pub struct FrameStats {
     pub projective_realized: u32,
     /// Projective layers composed this frame, cached or fresh.
     pub projective_composed: u32,
+    /// Retained picture tiles whose source, resources or raster storage
+    /// required preparation. Damage tracking may still cull unchanged pixels.
+    /// Zero for backends without a retained picture tile cache.
+    pub picture_tiles_invalidated: u32,
+    /// Retained picture tiles composed this frame, cached or newly prepared.
+    /// Zero for backends without a retained picture tile cache.
+    pub picture_tiles_composed: u32,
     /// Layer filters applied this frame: one per filter each rendered
     /// surface ran over its filtered subtree.
     pub filters_applied: u32,

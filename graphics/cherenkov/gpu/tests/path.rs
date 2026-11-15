@@ -1072,6 +1072,8 @@ fn retained_picture_reuses_pixels_across_fractional_translation() -> Result<(), 
     // source-anchored grid. The offscreen part of the 142x142 source is
     // not rasterized merely to make later rotations free.
     assert_eq!(engine.stats().paths_rasterized, 4);
+    assert_eq!(engine.stats().picture_tiles_invalidated, 4);
+    assert_eq!(engine.stats().picture_tiles_composed, 4);
     placement.set(Affine::rotate(0.4));
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     assert_eq!(engine.stats().paths_rasterized, 2, "rotation exposes one new row of two cells");
@@ -1079,6 +1081,8 @@ fn retained_picture_reuses_pixels_across_fractional_translation() -> Result<(), 
         placement.set(Affine::translate((x, 0.375)));
         wait!(engine.render(cherenkov::FrameTime::now()))?;
         assert_eq!(engine.stats().paths_rasterized, 0, "picture pixels should move without new coverage");
+        assert_eq!(engine.stats().picture_tiles_invalidated, 0);
+        assert!(engine.stats().picture_tiles_composed > 0);
         let pixels = wait!(surface.readback())?;
         assert!(px(&pixels, 20, 20)[0] > 0.99);
         assert!(px(&pixels, 60, 60)[0] < 0.01);
@@ -1099,6 +1103,7 @@ fn retained_picture_reuses_pixels_across_fractional_translation() -> Result<(), 
         placement.set(Affine::scale(scale));
         wait!(engine.render(cherenkov::FrameTime::now()))?;
         assert_eq!(engine.stats().paths_rasterized, 4, "new density replaces the four visible cells");
+        assert_eq!(engine.stats().picture_tiles_invalidated, 4);
     }
     let green = Picture::record(|c| c.fill(overhang(), WorkingColor::new([0.0, 1.0, 0.0, 1.0])));
     surface.update(|tx| {
