@@ -9831,6 +9831,8 @@ impl GpuRenderer {
                     self.images_gen,
                     i,
                     composite::vulkan::exec::Recording {
+                        #[cfg(feature = "parallel")]
+                        preparation: &self.preparation,
                         encoder: &mut encoder,
                         buffers: &mut buffers,
                         timestamps: self.query_set.as_ref().map(|query_set| {
