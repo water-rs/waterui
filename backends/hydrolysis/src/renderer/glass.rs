@@ -132,7 +132,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     chrome,
                 );
                 renderer.register_pointer_observer(bounds, slot, Rc::clone(&handles));
-                (state.state, Some(handles))
+                (state, Some(handles))
             } else {
                 (InteractionState::empty(), None)
             };

@@ -5,14 +5,12 @@
 //! [`Style`](crate::Style): a [`WidgetTheme`] plus a token installer. The
 //! contract is everything a style package names from Hydrolysis:
 //!
-//! - [`WidgetTheme`], the widget chrome the renderer lays out and draws from:
-//!   motion policies, per-widget metrics and the `draw_*` methods;
-//! - the state the renderer hands a theme on every draw:
-//!   [`WidgetInteractionState`] with its [`PressWaves`];
+//! - [`WidgetTheme`], the declarative widget looks the renderer measures,
+//!   places, hit-tests, records and animates from;
 //! - the motion and metric token tables a theme returns, such as
 //!   [`InteractionMotion`] and [`ListMetrics`];
-//! - the looks a theme returns for the widgets ported to the declarative
-//!   contract (water-rs/waterui#1434), such as [`ButtonLook`] for a
+//! - the looks a theme returns for each widget family (water-rs/waterui#1434),
+//!   such as [`ButtonLook`] for a
 //!   [`ButtonSpec`], [`SwitchLook`] for a [`ToggleSpec`], [`StepperLook`]
 //!   for a [`StepperSpec`], [`SegmentedLook`] for a [`SegmentedSpec`],
 //!   [`MenuLook`] for a [`MenuSpec`], [`MenuPickerLook`] and
@@ -107,8 +105,7 @@ pub use toggle::{CheckboxLook, SwitchDrag, SwitchLook, ToggleBackdrop, ToggleCon
 pub use widget::{
     BadgeMetrics, InputFieldMetrics, InteractionFocusBinding, InteractionMotion,
     ListDividerMetrics, ListMetrics, ListRowMetrics, ListSectionMetrics,
-    ListTrailingControlMetrics, MAX_PRESS_WAVES, ModalInteraction, PressWave, PressWaves,
-    TableMetrics, TextCaretMotion, WidgetInteractionState, WidgetTheme,
+    ListTrailingControlMetrics, ModalInteraction, TableMetrics, TextCaretMotion, WidgetTheme,
 };
 
 #[cfg(hydrolysis_runtime)]
@@ -152,7 +149,7 @@ struct Palette {
 /// The disabled foreground is the scheme's foreground at this alpha, the
 /// contrast Material gives disabled content (on-surface at 38%).
 #[cfg(hydrolysis_runtime)]
-const DISABLED_FOREGROUND_ALPHA: f32 = 0.38;
+pub(crate) const DISABLED_FOREGROUND_ALPHA: f32 = 0.38;
 
 /// Dark content on light surfaces.
 #[cfg(hydrolysis_runtime)]
