@@ -20,6 +20,24 @@ use waterui_cli::{
     winui::backend::WinUiBackend,
 };
 
+/// Cargo features selected for the application build.
+#[derive(clap::Args, Debug, Default)]
+pub struct FeatureArgs {
+    /// Cargo features to enable (comma- or space-separated; may be repeated).
+    #[arg(long = "features", value_name = "FEATURES")]
+    features: Vec<String>,
+}
+
+impl FeatureArgs {
+    fn values(&self) -> impl Iterator<Item = &str> {
+        self.features.iter().flat_map(|value| {
+            value
+                .split(|character: char| character == ',' || character.is_whitespace())
+                .filter(|feature| !feature.is_empty())
+        })
+    }
+}
+
 /// Target backend (how the app is built and rendered).
 ///
 /// Shared by every command that takes `--backend`; commands accepting a
@@ -329,6 +347,57 @@ fn parse_viewport(s: &str) -> eyre::Result<(u32, u32)> {
 mod tests {
     use super::confirm_experimental_backend;
     use crate::shell::Shell;
+
+    #[test]
+    fn build_run_and_package_expose_cargo_features() {
+        use clap::Args as _;
+        for command in [
+            super::build::Args::augment_args(clap::Command::new("build")),
+            super::run::Args::augment_args(clap::Command::new("run")),
+            super::package::Args::augment_args(clap::Command::new("package")),
+        ] {
+            let matches = command
+                .try_get_matches_from([
+                    "water",
+                    "--platform",
+                    "android",
+                    "--features",
+                    "hydrolysis/frame-profile",
+                ])
+                .expect("command accepts feature selection");
+            assert_eq!(
+                matches
+                    .get_many::<String>("features")
+                    .expect("features")
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                ["hydrolysis/frame-profile"]
+            );
+        }
+    }
+
+    #[test]
+    fn cargo_features_accept_commas_spaces_and_repeated_flags() {
+        use clap::Parser as _;
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            features: super::FeatureArgs,
+        }
+        let parsed = Cli::try_parse_from([
+            "water",
+            "--features",
+            "first,second third",
+            "--features",
+            "hydrolysis/frame-profile",
+        ])
+        .expect("Cargo feature syntax");
+        assert_eq!(
+            parsed.features.values().collect::<Vec<_>>(),
+            ["first", "second", "third", "hydrolysis/frame-profile"]
+        );
+        assert!(Cli::try_parse_from(["water", "--features"]).is_err());
+    }
 
     #[test]
     fn experimental_backend_yes_flag_confirms_without_prompt() {
