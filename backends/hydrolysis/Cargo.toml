@@ -116,6 +116,7 @@ png = { version = "0.18", optional = true }
 waterui-assets = { workspace = true, optional = true }
 
 [build-dependencies]
+askama = { version = "0.16", default-features = false, features = ["derive", "std"], optional = true }
 cfg_aliases = "0.2.2"
 
 # Termination signals for the windowed desktop runner. No windowing system
@@ -499,6 +500,7 @@ inspector-signals = ["waterui/inspector-signals"]
 # (water-rs/waterui#1811). On other targets the feature selects nothing; the
 # subsystem still compiles for tests.
 hwui = [
+    "dep:askama",
     "dep:android_logger",
     "dep:lru",
     "dep:peniko",
