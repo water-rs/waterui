@@ -67,6 +67,7 @@ mod scroll_indicator;
 #[cfg(feature = "picker")]
 mod segmented;
 mod stepper;
+#[cfg(feature = "table")]
 mod table;
 #[cfg(feature = "navigation")]
 mod tabs;
@@ -102,6 +103,7 @@ pub use segmented::{
     SegmentedValue,
 };
 pub use stepper::{StepperLook, StepperSpec};
+#[cfg(feature = "table")]
 pub use table::TableLook;
 #[cfg(feature = "navigation")]
 pub use tabs::{TabItem, TabItemGeometry, TabItemLayout, TabsLook, TabsMetrics, TabsSpec};

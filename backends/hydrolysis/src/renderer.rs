@@ -140,6 +140,7 @@ use waterui::component::badge::BadgeConfig;
 use waterui::component::focus::Focused;
 use waterui::component::list::{ListConfig, ListItem};
 use waterui::component::progress::ProgressConfig;
+#[cfg(feature = "table")]
 use waterui::component::table::{TableColumn, TableConfig};
 use waterui::cursor::{Cursor, CursorStyle};
 use waterui::drag_drop::{Draggable, DropDestination};

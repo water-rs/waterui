@@ -6,4 +6,5 @@ pub mod list;
 mod list_motion;
 pub mod scroll;
 pub mod spacer;
+#[cfg(feature = "table")]
 pub mod table;

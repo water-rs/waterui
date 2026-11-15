@@ -837,6 +837,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Ok(list) => return Self::build_list((*list).into_inner(), env, renderer),
             Err(view) => view,
         };
+        #[cfg(feature = "table")]
         let view = match view.downcast::<Native<TableConfig>>() {
             Ok(table) => return Self::build_table(renderer, (*table).into_inner(), env),
             Err(view) => view,

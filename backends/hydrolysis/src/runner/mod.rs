@@ -28,18 +28,19 @@ use waterui::app::App;
     not(target_os = "android")
 ))]
 use waterui::app::AppParts;
+#[cfg(feature = "table")]
 use waterui::component::table::TableConfig;
 use waterui::window::Window;
 use waterui::window::WindowManager;
 #[cfg(hydrolysis_cherenkov)]
 use waterui_core::AnyView;
 use waterui_core::Environment;
-use waterui_core::Native;
 use waterui_core::Retain;
 #[cfg(hydrolysis_cherenkov)]
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::key::KeyPress;
-use waterui_core::view::Hook;
+#[cfg(feature = "table")]
+use waterui_core::{Native, view::Hook};
 #[cfg(hydrolysis_cherenkov)]
 use waterui_text::FontCollection;
 
@@ -350,6 +351,7 @@ fn install_native_component_hooks(env: &mut Environment) {
     // The page's own `<video>` element is the web's native player.
     #[cfg(all(target_arch = "wasm32", feature = "web", feature = "video"))]
     crate::widgets::platform::video::install(env);
+    #[cfg(feature = "table")]
     env.insert(Hook::new(|_env: &Environment, config: TableConfig| {
         Native::new(config)
     }));

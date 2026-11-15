@@ -139,6 +139,7 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<TabsLayout>);
         $macro!(Native<BadgeConfig>);
         $macro!(Native<ListConfig>);
+        #[cfg(feature = "table")]
         $macro!(Native<TableConfig>);
         $macro!(Native<ButtonConfig>);
         $macro!(Native<ResolvedMenu>);

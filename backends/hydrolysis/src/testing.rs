@@ -242,6 +242,7 @@ pub fn plain_list_look() -> crate::theme::ListLook {
 /// points, cells inset 16 points vertically, a header 56 points tall and
 /// rows 52 points tall.
 #[must_use]
+#[cfg(feature = "table")]
 pub fn plain_table_look() -> crate::theme::TableLook {
     use crate::theme::{Custom, TableLook, TableMetrics};
     TableLook::new(
@@ -414,6 +415,8 @@ pub const fn plain_input_metrics() -> crate::theme::InputFieldMetrics {
 }
 
 mod test_style {
+    #[cfg(feature = "table")]
+    use crate::theme::TableLook;
     use std::time::Duration;
 
     use crate::theme::{
@@ -422,8 +425,8 @@ mod test_style {
         ListSpec, MenuLook, MenuPickerLook, MenuSpec, Motion, NavigationBarLook, NavigationSpec,
         PickerSpec, PressFeedback, ProgressControl, ProgressSpec, RadioGroupLook,
         ScrollIndicatorLook, SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook,
-        StepperSpec, Surface, TableLook, TabsLook, TabsSpec, TextFieldLook, TextFieldSpec,
-        ToggleSpec, WidgetTheme,
+        StepperSpec, Surface, TabsLook, TabsSpec, TextFieldLook, TextFieldSpec, ToggleSpec,
+        WidgetTheme,
     };
     use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
     use waterui::animation::Animation;

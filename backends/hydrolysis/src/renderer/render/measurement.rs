@@ -25,12 +25,14 @@ use waterui_form::picker::date::DatePickerConfig;
 use waterui_layout::container::resolve_directional_extent;
 use waterui_layout::padding::EdgeInsets;
 
+#[cfg(feature = "table")]
 pub struct MeasuredTableMetrics {
     pub(crate) column_widths: Vec<f64>,
     pub(crate) table_width: f64,
     pub table_height: f64,
 }
 
+#[cfg(feature = "table")]
 pub fn table_header_cell_rect(
     origin_x: f64,
     origin_y: f64,
@@ -46,6 +48,7 @@ pub fn table_header_cell_rect(
     )
 }
 
+#[cfg(feature = "table")]
 pub fn table_data_cell_rect(
     origin_x: f64,
     origin_y: f64,
@@ -1473,6 +1476,7 @@ fn measured_input_field_height(
     measured_height.max(metrics.min_height)
 }
 
+#[cfg(feature = "table")]
 pub fn measure_table_metrics<E: crate::text::TextEngine>(
     columns: &[TableColumn],
     state: &mut HydroState<E>,
@@ -1505,6 +1509,7 @@ pub fn measure_table_metrics<E: crate::text::TextEngine>(
     }
 }
 
+#[cfg(feature = "table")]
 pub fn refresh_table_slot_baseline<E: crate::text::TextEngine>(
     columns: &[TableColumn],
     slot: &mut LazyTableSlot,
@@ -1529,11 +1534,13 @@ pub fn refresh_table_slot_baseline<E: crate::text::TextEngine>(
 
 /// The cells of a table a frame shows: the rows and columns in view.
 #[derive(Debug, Clone, Copy)]
+#[cfg(feature = "table")]
 pub struct VisibleCells {
     pub rows: VisibleIndexWindow,
     pub columns: VisibleColumnWindow,
 }
 
+#[cfg(feature = "table")]
 pub fn update_table_slot_visible_cell_widths<E: crate::text::TextEngine>(
     columns: &[TableColumn],
     slot: &mut LazyTableSlot,

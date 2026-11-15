@@ -17,6 +17,7 @@ impl_widget_behavior!(
     ; a11y: crate::widgets::layout::list::emit_list_accessibility
     ; surface: surface
 );
+#[cfg(feature = "table")]
 impl_widget_behavior!(
     crate::widgets::layout::table::TableRenderState<E>,
     crate::widgets::layout::table::render_table_node,
@@ -129,6 +130,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// reactive cell content and a changing column/row set stay live; the
     /// `LazyTableController` column-width/row-count cache (keyed by body-order cursor
     /// slot) persists across frames. Stretch is read from the config.
+    #[cfg(feature = "table")]
     pub(super) fn build_table(
         renderer: &SemanticCore<E>,
         config: TableConfig,
