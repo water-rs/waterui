@@ -12983,7 +12983,6 @@ dependencies = [
  "reflink-copy",
  "remove_dir_all",
  "resvg",
- "roxmltree 0.21.1",
  "rustc-demangle",
  "same-file",
  "schemars 1.2.3",
