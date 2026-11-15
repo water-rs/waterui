@@ -451,6 +451,7 @@ fn packaged_binary_finds_every_shared_library_it_records() -> std::io::Result<()
         );
 
         let built = BuiltTarget {
+            build_scripts: Vec::new(),
             features: Vec::new(),
             profile_dir: profile_dir.clone(),
             artifact: executable.clone(),
