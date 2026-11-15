@@ -906,6 +906,8 @@ pub(crate) async fn build_prepared(
             framework.origin(),
         );
     }
+    let inspector_feature =
+        super::development_inspector(&backend_path.join("Cargo.toml"), options.is_release())?;
     let rust_build = RustBuild::for_project(project, &backend_path, triple.clone())
         .with_crate_type_override("cdylib")
         .with_rustc_flag(ANDROID_MAX_PAGE_SIZE_LINK_ARG)
@@ -913,12 +915,16 @@ pub(crate) async fn build_prepared(
         // Pack other dynamic relocations with Android's API 23 encoding.
         .with_final_rustc_arg("-Clink-arg=-Wl,--pack-dyn-relocs=android+relr")
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
-        .with_features(std::iter::once(painter.name()).chain(features.iter().copied()))
+        .with_features(
+            std::iter::once(painter.name())
+                .chain(features.iter().copied())
+                .chain(inspector_feature),
+        )
         .with_features(options.app_features(project))
         .with_envs(options.cargo_envs().iter().cloned())
         .with_envs(resolve_windows_arm64_llvm_envs(host).await?);
     let launcher_manifest = backend_path.join("Cargo.toml");
-    let widget_features = assets::widget_features(
+    let backend_features = assets::backend_features(
         project,
         &launcher_manifest,
         &triple,
@@ -926,7 +932,7 @@ pub(crate) async fn build_prepared(
         &["hydrolysis", "hydrolysis-m3"],
     )
     .await?;
-    let rust_build = rust_build.with_features(widget_features);
+    let rust_build = rust_build.with_features(backend_features);
     assets::seed_managed_crate_lock(project, &launcher_manifest).await?;
     let required_permissions =
         assets::scan_required_permissions(project, &launcher_manifest, rust_build.features())

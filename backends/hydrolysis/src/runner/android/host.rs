@@ -53,6 +53,8 @@ use crate::renderer::HydrolysisTextContextMenuMode;
 use crate::runner::android_executor::{AndroidMainThreadExecutor, UiThreadPoster};
 use crate::runner::android_methods::{HOST_METHODS, HostMethodId};
 use crate::runner::android_metrics::InsetsMetrics;
+#[cfg(feature = "inspector")]
+use crate::runner::init_inspector;
 #[cfg(any(
     test,
     feature = "text-field",
@@ -75,7 +77,7 @@ use crate::runner::window::{
 #[cfg(hydrolysis_gpu_painter)]
 use crate::runner::window::{WindowFrame, render_window};
 use crate::runner::{
-    RenderDiagnosticsConfig, init_main_thread_executors, install_headless_window_managers,
+    RenderDiagnosticsConfig, init_global_executor, install_headless_window_managers,
 };
 #[cfg(hydrolysis_gpu_painter)]
 use crate::text::ParleyEngine;
@@ -1072,10 +1074,15 @@ impl UiThreadServices {
     /// Runs at `nativeUiThreadServices` — the load hook, once per process on
     /// the UI thread (its main looper must already exist).
     pub(crate) fn init(vm: &'static JavaVM) -> Result<Self, JniError> {
-        let inspector = init_main_thread_executors();
+        init_global_executor();
+        #[cfg(feature = "inspector")]
+        let inspector = init_inspector();
+        #[cfg(feature = "inspector")]
         let inspector_probe = inspector
             .as_ref()
             .map(waterui::inspector::InspectorRuntime::runtime_probe);
+        #[cfg(not(feature = "inspector"))]
+        let inspector_probe = None;
         // SAFETY: NONBLOCK + CLOEXEC keep a saturated counter from stalling
         // the looper and the fd out of child processes.
         let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
@@ -1098,7 +1105,10 @@ impl UiThreadServices {
         .map_err(|_| {
             JniError("hydrolysis android: the UI thread's executor is already attached".to_owned())
         })?;
-        let mut env = Environment::new();
+        let env = Environment::new();
+        #[cfg(feature = "inspector")]
+        let mut env = env;
+        #[cfg(feature = "inspector")]
         waterui::inspector::install(&mut env, inspector);
         Ok(Self {
             executor,

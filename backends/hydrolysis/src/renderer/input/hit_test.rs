@@ -2336,7 +2336,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 if let Some(menu_target) =
                     self.topmost_context_menu_target_enclosing(point, surface_bounds)
                 {
-                    let mut items = popup_menu_nodes(
+                    let items = popup_menu_nodes(
                         &menu_target.items.snapshot(),
                         &menu_target.env,
                         self.window_closable,
@@ -2345,7 +2345,16 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         // The debug inspect entry extends a menu, it does not
                         // create one — an empty `.context_menu` must behave
                         // the same in every build (water-rs/hydrolysis#188).
-                        self.append_inspect_element_item(&mut items, point);
+                        #[cfg(all(
+                            feature = "inspector",
+                            feature = "accessibility",
+                            not(target_arch = "wasm32")
+                        ))]
+                        let items = {
+                            let mut items = items;
+                            self.append_inspect_element_item(&mut items, point);
+                            items
+                        };
                         // The menu opens in the declaring view's environment
                         // layered over this dispatch's, so `.state(&value)`
                         // overlays reach the item actions.
@@ -2444,14 +2453,23 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             #[cfg(feature = "menu")]
             if button == PointerButton::Secondary && !in_context_menu_presentation {
                 let menu_target = self.topmost_context_menu_target_at_point(point);
-                let mut items = menu_target.as_ref().map_or_default(|target| {
+                let items = menu_target.as_ref().map_or_default(|target| {
                     popup_menu_nodes(&target.items.snapshot(), &target.env, self.window_closable)
                 });
                 if !items.is_empty() {
                     // The debug inspect entry extends a menu, it does not
                     // create one — an empty `.context_menu` must behave the
                     // same in every build (water-rs/hydrolysis#188).
-                    self.append_inspect_element_item(&mut items, point);
+                    #[cfg(all(
+                        feature = "inspector",
+                        feature = "accessibility",
+                        not(target_arch = "wasm32")
+                    ))]
+                    let items = {
+                        let mut items = items;
+                        self.append_inspect_element_item(&mut items, point);
+                        items
+                    };
                     #[cfg(any(feature = "text-field", feature = "secure-field"))]
                     if self.set_focused_text_input(focused) {
                         refresh_requested = true;
@@ -4262,10 +4280,19 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         } else {
             self.topmost_context_menu_target_at_point(point)
         };
-        let mut items = menu_target.as_ref().map_or_default(|target| {
+        let items = menu_target.as_ref().map_or_default(|target| {
             popup_menu_nodes(&target.items.snapshot(), &target.env, self.window_closable)
         });
-        self.append_inspect_element_item(&mut items, point);
+        #[cfg(all(
+            feature = "inspector",
+            feature = "accessibility",
+            not(target_arch = "wasm32")
+        ))]
+        let items = {
+            let mut items = items;
+            self.append_inspect_element_item(&mut items, point);
+            items
+        };
         if items.is_empty() {
             return false;
         }
