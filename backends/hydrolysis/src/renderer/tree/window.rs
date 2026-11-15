@@ -557,10 +557,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // Same for an open `.context_menu` presentation: its dim backdrop,
         // lifted preview and anchored accessory re-encode per frame and the
         // pass is where dismiss_requests/menu-close is observed.
-        let host = self.core.presentation_hosts.context_menu.clone();
-        self.record_host(&host, |renderer| {
-            renderer.render_context_menu_presentation(transform, safe_area);
-        });
+        #[cfg(feature = "menu")]
+        {
+            let host = self.core.presentation_hosts.context_menu.clone();
+            self.record_host(&host, |renderer| {
+                renderer.render_context_menu_presentation(transform, safe_area);
+            });
+        }
         // Anchored overlays (`.anchored_overlay`) draw above all content:
         // the flush registered each anchor's live bounds, so the placement
         // contract re-runs per frame and the overlay follows moves/resizes.

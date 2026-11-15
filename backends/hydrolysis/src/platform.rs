@@ -4150,6 +4150,7 @@ pub mod macos_appearance;
 pub mod linux_appearance;
 
 #[cfg(all(hydrolysis_winit, any(target_os = "macos", target_os = "windows")))]
+#[cfg(feature = "menu")]
 pub mod native_menu_bar;
 
 #[cfg(hydrolysis_winit)]
@@ -5213,7 +5214,7 @@ mod winit_impl {
         /// takes — a menu's Close Window asks through here, so the window's
         /// `closable` gate in `handle_input_events` decides it exactly as it
         /// does a title-bar click.
-        #[cfg(hydrolysis_closable_windows)]
+        #[cfg(all(hydrolysis_closable_windows, feature = "menu"))]
         pub(crate) fn request_close(&mut self) {
             self.pending_events.push(InputEvent::CloseRequested);
         }

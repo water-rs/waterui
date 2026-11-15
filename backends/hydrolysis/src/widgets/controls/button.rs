@@ -1,9 +1,13 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
+#[cfg(feature = "menu")]
+use crate::renderer::measure_view_intrinsic;
+#[cfg(feature = "menu")]
+use crate::renderer::popup_menu_nodes;
 use crate::renderer::{
     GroupOpacity, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
-    WidgetRenderContext, measure_label_intrinsic, measure_view_intrinsic, popup_menu_nodes,
+    WidgetRenderContext, measure_label_intrinsic,
 };
 use crate::theme::{
     ButtonLook, ButtonSpec, Chrome, CornerShape, Corners, Inputs, Label as LookLabel, SpecTint,
@@ -23,6 +27,7 @@ use waterui::style::FloatingStyle;
 use waterui_controls::ControlSize;
 use waterui_controls::button::{ButtonConfig, ButtonStyle};
 use waterui_controls::label::{Label, LabelDisplayMode};
+#[cfg(feature = "menu")]
 use waterui_controls::menu::ResolvedMenu;
 use waterui_core::handler::ReportExtraction as _;
 use waterui_core::interaction::InteractionState;
@@ -120,6 +125,7 @@ fn resolve_look(theme: &Rc<dyn WidgetTheme>, spec: &ButtonSpec, env: &Environmen
         return ButtonLook::new(chrome.clone(), label);
     }
     let look = theme.button(spec, env);
+    #[cfg(feature = "menu")]
     if env.get::<MenuRowChrome>().is_some() {
         return lower_menu_row(
             &look,
@@ -137,12 +143,14 @@ fn resolve_look(theme: &Rc<dyn WidgetTheme>, spec: &ButtonSpec, env: &Environmen
 /// Marks the rows of a popup menu: each is a button the renderer draws as a
 /// menu item rather than a button.
 #[derive(Debug, Clone, Copy)]
+#[cfg(feature = "menu")]
 pub struct MenuRowChrome;
 
 /// A popup menu row: the theme look's state-layer tokens, press feedback,
 /// motion, hit region and font over a square, containerless surface whose
 /// state layer is the foreground colour, inset by the theme's menu-item
 /// inset. A row shows keyboard focus through its state layer alone.
+#[cfg(feature = "menu")]
 fn lower_menu_row(look: &ButtonLook, horizontal_inset: f64) -> ButtonLook {
     let theme_chrome = look.chrome();
     let layer = theme_chrome.state_layer();
@@ -168,6 +176,7 @@ fn lower_menu_row(look: &ButtonLook, horizontal_inset: f64) -> ButtonLook {
 
 /// The font a popup menu row's label takes in `env`: the borderless button
 /// look's.
+#[cfg(feature = "menu")]
 pub fn menu_row_font(theme: &Rc<dyn WidgetTheme>, env: &Environment) -> Option<Font> {
     let spec = button_spec(ButtonStyle::Borderless, ControlSize::Small, false, env);
     look_font(
@@ -543,6 +552,7 @@ pub fn render_button_node<E: crate::text::TextEngine>(
 /// `Label`/`TitleOnly`, which is rendered as styled text fresh each frame like a
 /// button); the `items`/`accessibility_label` signals are kept and read through
 /// `read_signal`.
+#[cfg(feature = "menu")]
 pub struct MenuRenderState<E: crate::text::TextEngine> {
     /// The build-time decision of how to render the label.
     label: MenuLabel<E>,
@@ -561,6 +571,7 @@ pub struct MenuRenderState<E: crate::text::TextEngine> {
 
 /// How a menu trigger renders its label, decided once at build time from the
 /// label `AnyView`.
+#[cfg(feature = "menu")]
 enum MenuLabel<E: crate::text::TextEngine> {
     /// A `Label` with `TitleOnly` display: rendered as centered styled text fresh
     /// each frame (cloneable, like a button title).
@@ -569,6 +580,7 @@ enum MenuLabel<E: crate::text::TextEngine> {
     View(Box<RetainedSubview<E>>),
 }
 
+#[cfg(feature = "menu")]
 impl<E: crate::text::TextEngine> MenuRenderState<E> {
     pub(crate) fn from_resolved(menu: ResolvedMenu, env: &Environment) -> Self {
         let ResolvedMenu {
@@ -640,6 +652,7 @@ impl<E: crate::text::TextEngine> MenuRenderState<E> {
     }
 }
 
+#[cfg(feature = "menu")]
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedMenu> {
     fn intrinsic(
         state: &mut crate::renderer::HydroState<E>,
@@ -655,6 +668,7 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedMenu> {
 /// Shared by the rendered `Widget`-node flush (which passes its [`RenderContext`]
 /// and theme for the popup anchor and metrics) and the semantic emission walk
 /// (which passes `None` for both — activation only marks a menu group active).
+#[cfg(feature = "menu")]
 pub fn menu_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
@@ -740,6 +754,7 @@ pub fn menu_accessibility<E: crate::text::TextEngine>(
 }
 
 /// Measures a retained menu leaf from its [`MenuRenderState`].
+#[cfg(feature = "menu")]
 pub fn measure_menu_node<E: crate::text::TextEngine>(
     state: &MenuRenderState<E>,
     proposal: ProposalSize,
@@ -766,6 +781,7 @@ pub fn measure_menu_node<E: crate::text::TextEngine>(
 
 /// Renders a retained menu leaf every flush: emits a11y (unless hidden) then the
 /// chrome + label + tap target, reading the accessibility-label/items signals.
+#[cfg(feature = "menu")]
 pub fn render_menu_node<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<MenuRenderState<E>>>,
@@ -1061,6 +1077,7 @@ pub fn render_button_parts<E: crate::text::TextEngine>(
         );
 }
 
+#[cfg(feature = "menu")]
 pub fn render_menu_parts<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<MenuRenderState<E>>>,
@@ -1161,6 +1178,7 @@ pub fn measure_button_look_intrinsic<E: crate::text::TextEngine>(
     button_size(label_size, &look, ProposalSize::UNSPECIFIED)
 }
 
+#[cfg(feature = "menu")]
 pub fn measure_menu_intrinsic<E: crate::text::TextEngine>(
     menu: &ResolvedMenu,
     state: &mut HydroState<E>,
@@ -1300,6 +1318,7 @@ pub fn emit_button_accessibility<E: crate::text::TextEngine>(
 /// Emits a retained menu trigger's accessibility node for the semantic walk —
 /// the same node `menu_accessibility` registers, with no bounds.
 #[cfg(feature = "accessibility")]
+#[cfg(feature = "menu")]
 pub fn emit_menu_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<MenuRenderState<E>>>,
@@ -1340,6 +1359,7 @@ mod tests {
     use waterui::{AnyView, View};
     use waterui_controls::ControlSize;
     use waterui_controls::button::ButtonStyle;
+    #[cfg(feature = "menu")]
     use waterui_controls::menu::{Menu, ResolvedMenu};
     use waterui_core::Environment;
     use waterui_core::animation::Animation;

@@ -2197,10 +2197,19 @@ pub(super) fn handle_input_events<P: PlatformWindow, E: crate::text::TextEngine>
     env: &Environment,
 ) -> bool {
     handle_input_events_with(runtime, env, |runtime, env| {
-        env.extending(runtime_window_origin(runtime))
+        #[cfg(any(feature = "menu", feature = "color-picker"))]
+        {
+            env.extending(runtime_window_origin(runtime))
+        }
+        #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+        {
+            let _ = runtime;
+            env.clone()
+        }
     })
 }
 
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 pub(super) fn runtime_window_origin<P: PlatformWindow, E: crate::text::TextEngine>(
     runtime: &RuntimeWindow<P, E>,
 ) -> HydrolysisWindowOrigin {
@@ -2876,8 +2885,11 @@ pub(super) fn advance_runtime<P: PlatformWindow, E: crate::text::TextEngine>(
     // A gesture tick can mount a popup window — an armed context-menu hold
     // fires here — and the popup anchors in absolute coordinates through
     // `HydrolysisWindowOrigin`, the same extension pointer dispatch gets.
-    let gesture_env = env.extending(runtime_window_origin(runtime));
-    if runtime.renderer.handle_gesture_tick(now, &gesture_env) {
+    #[cfg(any(feature = "menu", feature = "color-picker"))]
+    let gesture_env = &env.extending(runtime_window_origin(runtime));
+    #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+    let gesture_env = &env;
+    if runtime.renderer.handle_gesture_tick(now, gesture_env) {
         tracing::debug!("wake cause: context-menu hold opened");
         runtime.request_refresh();
     }

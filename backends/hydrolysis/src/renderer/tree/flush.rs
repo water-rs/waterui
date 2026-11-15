@@ -96,8 +96,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 WrapperEffect::Clip(_)
                 | WrapperEffect::Border(_)
                 | WrapperEffect::Shadow(_)
-                | WrapperEffect::PopupMenuSurface(_)
                 | WrapperEffect::Material(_) => true,
+                #[cfg(feature = "menu")]
+                WrapperEffect::PopupMenuSurface(_) => true,
                 #[cfg(feature = "navigation")]
                 WrapperEffect::NavigationTransitionSource(_)
                 | WrapperEffect::NavigationTransitionDestination(_) => true,
@@ -486,6 +487,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                         renderer.material_group_scopes.pop();
                     }
+                    #[cfg(feature = "menu")]
                     WrapperEffect::PopupMenuSurface(selected_row) => {
                         HydrolysisRenderer::apply_popup_menu_surface(
                             renderer,
@@ -561,6 +563,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             },
                         );
                     }
+                    #[cfg(feature = "menu")]
                     WrapperEffect::ContextMenu(value) => {
                         HydrolysisRenderer::apply_context_menu(
                             renderer,

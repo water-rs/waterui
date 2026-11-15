@@ -668,6 +668,7 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
     /// through `node_at_point_where` instead, which compiles everywhere the
     /// accessibility feature does.
     #[cfg(any(not(target_arch = "wasm32"), test))]
+    #[cfg(feature = "menu")]
     pub(crate) fn node_at_point(&self, point: kurbo::Point) -> Option<AccessibilityNodeId> {
         self.node_at_point_where(point, |_| true)
     }
@@ -1559,12 +1560,32 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         clippy::too_many_lines,
         reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
     )]
+    #[cfg_attr(
+        not(any(
+            feature = "slider",
+            feature = "stepper",
+            feature = "date-picker",
+            feature = "text-field",
+            feature = "secure-field"
+        )),
+        expect(
+            clippy::needless_pass_by_value,
+            reason = "value-editing capabilities consume request data through the same action interface"
+        )
+    )]
     pub fn handle_accessibility_action(
         &mut self,
         request: AccessibilityActionRequest,
         env: &Environment,
     ) -> bool {
         let action = request.action;
+        #[cfg(any(
+            feature = "slider",
+            feature = "stepper",
+            feature = "date-picker",
+            feature = "text-field",
+            feature = "secure-field"
+        ))]
         let action_data = request.data;
         let target_node = request.target_node;
         let focus_action = matches!(
@@ -2554,6 +2575,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
+    #[cfg(any(feature = "list", feature = "picker", feature = "navigation"))]
     pub(crate) fn register_accessibility_child_node_with_key(
         &mut self,
         semantic_key: i64,
@@ -2580,6 +2602,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
+    #[cfg(any(feature = "list", feature = "picker", feature = "navigation"))]
     pub(crate) fn register_accessibility_child_node_with_key_semantic(
         &mut self,
         semantic_key: i64,
@@ -2744,6 +2767,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             #[cfg(feature = "color-picker")]
             waterui_form::picker::color::ColorPickerConfig,
         );
+        #[cfg(feature = "menu")]
         if let Some(menu) = view.downcast_ref::<Native<waterui_controls::menu::ResolvedMenu>>() {
             let styled = self.read_signal(&menu.as_inner().accessibility_label);
             return Some(styled.to_semantic().to_string());
@@ -2909,6 +2933,13 @@ fn declined_action(target: &str, action: AccessibilityAction) -> bool {
 
 /// Declines an accessibility action whose payload is not the `expected` data.
 #[cfg(feature = "accessibility")]
+#[cfg(any(
+    feature = "slider",
+    feature = "stepper",
+    feature = "date-picker",
+    feature = "text-field",
+    feature = "secure-field"
+))]
 fn declined_action_data(target: &str, action: AccessibilityAction, expected: &str) -> bool {
     contract_violation!(
         "hydrolysis accessibility {target} {action:?} requires {expected} data; the action is declined"

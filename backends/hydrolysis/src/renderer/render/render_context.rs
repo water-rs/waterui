@@ -1,10 +1,27 @@
-use super::{HydrolysisRenderer, TailMark};
+use super::HydrolysisRenderer;
+#[cfg(any(
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker",
+    feature = "date-picker",
+    feature = "picker",
+    feature = "list"
+))]
+use super::TailMark;
 #[cfg(feature = "navigation")]
 use crate::renderer::grow_rect;
 
 use crate::renderer::HydroState;
 use crate::renderer::SafeAreaLayout;
 use waterui_core::Environment;
+#[cfg(any(
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker",
+    feature = "date-picker",
+    feature = "picker",
+    feature = "list"
+))]
 use waterui_core::layout::HorizontalAlignment;
 use waterui_text::styled::StyledStr;
 
@@ -59,6 +76,7 @@ impl RenderContext {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 pub struct HydrolysisWindowOrigin {
     pub x: f32,
     pub y: f32,
@@ -235,6 +253,14 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
 
     /// Opens the named scope `key` clipped to `clip` at `alpha`, through
     /// this context's transform.
+    #[cfg(any(
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "navigation",
+        feature = "slider",
+        feature = "stepper",
+        feature = "toggle"
+    ))]
     pub(crate) fn open_scope(
         &mut self,
         key: crate::renderer::mount::ScopeKey,
@@ -373,6 +399,14 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
 
     /// `styled` limited to `max_lines`, its default-coloured runs drawn in
     /// `paint`, live, when given.
+    #[cfg(any(
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "color-picker",
+        feature = "date-picker",
+        feature = "picker",
+        feature = "list"
+    ))]
     pub(crate) fn render_styled_text_limited(
         &mut self,
         styled: StyledStr,

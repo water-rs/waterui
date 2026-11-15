@@ -49,10 +49,25 @@ use crate::renderer::FontFamilyResolution;
 use crate::renderer::HydrolysisRenderer;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::renderer::HydrolysisTextContextMenuMode;
-use crate::renderer::MenuShortcutRegistry;
+
 use crate::runner::android_executor::{AndroidMainThreadExecutor, UiThreadPoster};
 use crate::runner::android_methods::{HOST_METHODS, HostMethodId};
 use crate::runner::android_metrics::InsetsMetrics;
+#[cfg(any(
+    test,
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker",
+    feature = "date-picker",
+    feature = "list",
+    feature = "navigation",
+    feature = "table",
+    hydrolysis_system_webview,
+    all(target_arch = "wasm32", feature = "web", feature = "video")
+))]
+use crate::runner::install_native_component_hooks;
+#[cfg(feature = "menu")]
+use crate::runner::menu_bar;
 use crate::runner::window::{
     FrameDemand, FrameTransaction, RuntimeWindow, advance_runtime, handle_input_events,
     reports_ui_idle,
@@ -61,7 +76,6 @@ use crate::runner::window::{
 use crate::runner::window::{WindowFrame, render_window};
 use crate::runner::{
     RenderDiagnosticsConfig, init_main_thread_executors, install_headless_window_managers,
-    install_native_component_hooks, menu_bar,
 };
 #[cfg(hydrolysis_gpu_painter)]
 use crate::text::ParleyEngine;
@@ -1123,6 +1137,7 @@ fn session_mounts(
     };
     let waterui::app::AppParts {
         windows,
+        #[cfg(feature = "menu")]
         menu_bar,
         env,
         // A phone activity already embodies both policies: when the last
@@ -1137,11 +1152,24 @@ fn session_mounts(
         .extending(waterui_graphics::backend::SceneViewMergeToParent)
         .layered_on(&services.env);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
+    #[cfg(any(
+        test,
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "color-picker",
+        feature = "date-picker",
+        feature = "list",
+        feature = "navigation",
+        feature = "table",
+        hydrolysis_system_webview,
+        all(target_arch = "wasm32", feature = "web", feature = "video")
+    ))]
     install_native_component_hooks(&mut env);
     install_headless_window_managers::<super::AndroidTextEngine>(
         &mut env,
         Rc::clone(&pending_window_queue),
     );
+    #[cfg(feature = "menu")]
     menu_bar::register_menu_bar::<super::AndroidTextEngine>(&menu_bar, &env);
     #[cfg(any(feature = "text-field", feature = "secure-field"))]
     env.insert(HydrolysisTextContextMenuMode::Overlay);
@@ -1160,13 +1188,10 @@ fn session_mounts(
     let fonts = crate::text::fonts::native_collection(&env);
     #[cfg(hydrolysis_gpu_painter)]
     fonts.clone().install(&mut env);
-    let Some(shortcuts) = env
-        .get::<MenuShortcutRegistry<super::AndroidTextEngine>>()
-        .cloned()
-    else {
+    let Some(identities) = env.get::<crate::renderer::WindowIdentities>().cloned() else {
         contract_violation!(
             "hydrolysis android: install_headless_window_managers did not seed \
-             MenuShortcutRegistry; no session is created"
+             WindowIdentities; no session is created"
         );
         return Ok(None);
     };
@@ -1231,7 +1256,7 @@ fn session_mounts(
         theme,
         #[cfg(hydrolysis_gpu_painter)]
         fonts,
-        window_id: shortcuts.mint_window_id(),
+        window_id: identities.mint_window_id(),
         pending_window_queue,
         platform_views,
         platform_view_focus,

@@ -429,7 +429,7 @@ harness = false
 required-features = ["webview-system", "winit"]
 
 [features]
-menu = ["waterui/menu"]
+menu = ["waterui/menu", "dep:waterkit-menu"]
 calendar = ["waterui/calendar"]
 color-picker = ["waterui/color-picker"]
 date-picker = ["calendar", "stepper", "menu", "waterui/date-picker"]
@@ -561,7 +561,6 @@ winit = [
     "dep:objc2-foundation",
     "dep:objc2-quartz-core",
     "dep:futures",
-    "dep:waterkit-menu",
     "dep:windows",
     "dep:x11-dl",
     "dep:x11rb",

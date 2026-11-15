@@ -147,6 +147,7 @@ macro_rules! hydro_native_view_types {
         #[cfg(feature = "table")]
         $macro!(Native<TableConfig>);
         $macro!(Native<ButtonConfig>);
+        #[cfg(feature = "menu")]
         $macro!(Native<ResolvedMenu>);
         #[cfg(feature = "toggle")]
         $macro!(Native<ToggleConfig>);

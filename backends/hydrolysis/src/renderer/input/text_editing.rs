@@ -434,6 +434,13 @@ impl TextInputModel {
         }
     }
 
+    #[cfg_attr(
+        not(feature = "text-field"),
+        expect(
+            clippy::unnecessary_wraps,
+            reason = "the shared editing model also supports unlimited text fields"
+        )
+    )]
     pub(crate) const fn line_limit(&self) -> Option<usize> {
         match self {
             #[cfg(feature = "text-field")]
@@ -452,6 +459,13 @@ impl TextInputModel {
         }
     }
 
+    #[cfg_attr(
+        not(feature = "text-field"),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "only text fields expose custom selection items through the shared editing model"
+        )
+    )]
     pub(crate) fn custom_selection_menu_items(&self) -> Vec<ResolvedMenuItem> {
         match self {
             #[cfg(feature = "text-field")]
@@ -491,6 +505,13 @@ impl TextInputModel {
         }
     }
 
+    #[cfg_attr(
+        not(feature = "secure-field"),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "secure inputs count Unicode scalar values through the same model interface"
+        )
+    )]
     pub(crate) fn layout_len_for_plain_text(&self, text: &str) -> usize {
         match self {
             #[cfg(feature = "text-field")]

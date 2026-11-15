@@ -30,8 +30,8 @@ use waterui_core::Environment;
 use waterui_core::Str;
 use waterui_core::contract_violation;
 use waterui_core::handler::SharedAction;
-use waterui_core::impl_extractor;
 
+use super::WindowId;
 use super::popup_menu::{PopupMenuNode, PopupMenuStateGroup};
 use crate::HydrolysisRenderer;
 use crate::platform::Modifiers;
@@ -197,38 +197,6 @@ pub fn close_window_command(env: &Environment, owner_closable: bool) -> Option<R
     }
     Some(command)
 }
-
-/// A window's identity for menu-chord dispatch: the runner assigns one when it
-/// creates the window and hands it to the window's renderer, so the shared
-/// [`MenuShortcutRegistry`] can scope a mounted `Menu`'s chords to the window
-/// they mounted in. Unlike a pointer address, it cannot drift when the
-/// renderer moves nor alias a recycled allocation (water-rs/hydrolysis#247).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WindowId {
-    /// A winit window — its native `winit::window::WindowId`.
-    #[cfg(hydrolysis_winit)]
-    Winit(winit::window::WindowId),
-    /// A window on a runner without a native window id — an ordinal the
-    /// registry hands out in window-creation order.
-    Runner(u64),
-    /// A renderer no runner claimed — embedded GPU hosts and renderers built
-    /// directly in tests. Their mounted sources answer only to their own
-    /// dispatch.
-    Orphan,
-}
-
-impl WindowId {
-    /// The winit window this id names, when it names one.
-    #[cfg(hydrolysis_closable_windows)]
-    pub(crate) const fn as_winit(self) -> Option<winit::window::WindowId> {
-        match self {
-            Self::Winit(id) => Some(id),
-            Self::Runner(_) | Self::Orphan => None,
-        }
-    }
-}
-
-impl_extractor!(WindowId);
 
 impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// (Re)register a mounted `Menu` trigger's chords on the app's shared
@@ -401,9 +369,6 @@ struct MenuShortcutRegistryState<E: crate::text::TextEngine> {
     /// Registration order across every window — a chord conflict resolves to
     /// the most recently registered source.
     next_seq: u64,
-    /// Ordinals minted in creation order for windows whose runner has no
-    /// native window id.
-    next_window_ordinal: u64,
 }
 
 impl<E: crate::text::TextEngine> MenuShortcutRegistryState<E> {
@@ -415,15 +380,6 @@ impl<E: crate::text::TextEngine> MenuShortcutRegistryState<E> {
 }
 
 impl<E: crate::text::TextEngine> MenuShortcutRegistry<E> {
-    /// A fresh window id for a runner with no native one — minted in creation
-    /// order. Winit windows take [`WindowId::Winit`] instead.
-    pub(crate) fn mint_window_id(&self) -> WindowId {
-        let mut inner = self.0.borrow_mut();
-        let id = WindowId::Runner(inner.next_window_ordinal);
-        inner.next_window_ordinal += 1;
-        id
-    }
-
     /// (Re)register a mounted `Menu` trigger's chords — called from the
     /// trigger's render on every flush; a live source just refreshes its
     /// items signal and environment, keeping its registration order.
@@ -606,7 +562,6 @@ impl<E: crate::text::TextEngine> Default for MenuShortcutRegistryState<E> {
         Self {
             sources: Vec::default(),
             next_seq: Default::default(),
-            next_window_ordinal: Default::default(),
         }
     }
 }

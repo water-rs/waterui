@@ -29,6 +29,7 @@ pub use measurement_cache::{MeasurementCaches, MemoGate, NodeMeasureEntry};
 pub use render_context::ChromeGroup;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub use render_context::HydrolysisTextContextMenuMode;
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 pub use render_context::HydrolysisWindowOrigin;
 pub use render_context::RenderContext;
 pub use render_context::{WidgetRenderContext, bounded_proposal};

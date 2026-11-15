@@ -39,18 +39,23 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, DeviceEvents, EventLoop};
 use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
 use winit::window::{Window as NativeWindow, WindowId};
 
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use super::window::runtime_window_origin;
 use crate::platform::{PlatformWindow, WinitGpuContext, WinitWindow};
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::renderer::HydrolysisTextContextMenuMode;
-use crate::renderer::{
-    FontFamilyResolution, HydrolysisRenderer, HydrolysisWindowOrigin, MenuShortcutRegistry,
-    PopupWindowManager,
-};
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use crate::renderer::HydrolysisWindowOrigin;
+#[cfg(feature = "menu")]
+use crate::renderer::MenuShortcutRegistry;
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use crate::renderer::PopupWindowManager;
+use crate::renderer::{FontFamilyResolution, HydrolysisRenderer};
 #[cfg(hydrolysis_wayland_platform)]
 use crate::runner::x11_state_watch::{self, X11StateWatch};
 use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, WindowFrame, advance_runtime, handle_input_events_with,
-    pump_window_semantics, render_window, runtime_window_origin,
+    pump_window_semantics, render_window,
 };
 use crate::text::ParleyEngine;
 
@@ -83,6 +88,7 @@ pub(super) enum RunnerEvent {
     /// runner installs: a declared `MenuItem::CloseWindow` was chosen, or
     /// its chord pressed, for the given window — the payload names it.
     #[cfg(hydrolysis_closable_windows)]
+    #[cfg(feature = "menu")]
     CloseWindow(crate::renderer::WindowId),
     /// The termination machine finished its work — the runner's
     /// [`TerminationHost`] sent it — so teardown happens on the event loop,
@@ -236,6 +242,7 @@ fn sync_system_color_scheme(
 /// Whether the window may close is the shared close path's check, not this
 /// one's.
 #[cfg(hydrolysis_closable_windows)]
+#[cfg(feature = "menu")]
 fn close_window_target<K, W>(
     source: Option<K>,
     popup_ids: &std::collections::HashSet<K>,
@@ -605,6 +612,7 @@ impl PendingWindow {
         }
     }
 
+    #[cfg(any(feature = "menu", feature = "color-picker"))]
     const fn popup(window: Window) -> Self {
         Self {
             window,
@@ -673,6 +681,7 @@ pub fn run(
 ) {
     let AppParts {
         windows,
+        #[cfg(feature = "menu")]
         menu_bar,
         env,
         last_window,
@@ -735,6 +744,18 @@ pub fn run(
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
+    #[cfg(any(
+        test,
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "color-picker",
+        feature = "date-picker",
+        feature = "list",
+        feature = "navigation",
+        feature = "table",
+        hydrolysis_system_webview,
+        all(target_arch = "wasm32", feature = "web", feature = "video")
+    ))]
     super::install_native_component_hooks(&mut env);
     #[cfg(unix)]
     let _termination_signals = install_termination_handler(&event_proxy);
@@ -752,6 +773,7 @@ pub fn run(
             let _ = event_proxy.send_event(RunnerEvent::MountPendingWindows);
         }
     }));
+    #[cfg(any(feature = "menu", feature = "color-picker"))]
     env.insert(PopupWindowManager::new({
         let pending_window_queue = Rc::clone(&pending_window_queue);
         let event_proxy = event_proxy.clone();
@@ -766,6 +788,10 @@ pub fn run(
     // registry: a compositor that hands a popup window keyboard focus routes
     // the menu's chords to that window's dispatch, which must resolve them
     // while the menu is open (water-rs/hydrolysis#247).
+    let _ = env.get_or_insert_with::<crate::renderer::WindowIdentities, _>(
+        crate::renderer::WindowIdentities::default,
+    );
+    #[cfg(feature = "menu")]
     let _ = env.get_or_insert_with::<MenuShortcutRegistry<crate::text::ParleyEngine>, _>(
         MenuShortcutRegistry::default,
     );
@@ -827,6 +853,7 @@ pub fn run(
     // for through the runner, which owns the windows: the primitive only
     // posts the target's identity to the event loop.
     #[cfg(hydrolysis_closable_windows)]
+    #[cfg(feature = "menu")]
     env.insert(crate::renderer::WindowCloser::new({
         let event_proxy = event_proxy.clone();
         move |window| {
@@ -847,11 +874,13 @@ pub fn run(
     // event loop is the main thread, which is what the install's
     // `MainThreadMarker` contract needs.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(feature = "menu")]
     let native_menu_bar = crate::platform::native_menu_bar::NativeMenuBar::install(
         &super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env),
         &env,
     );
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(feature = "menu")]
     super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
     // The capture service mounts its subtree under a snapshot of the
     // assembled environment — the theme tokens, hooks and font collection a
@@ -870,6 +899,7 @@ pub fn run(
         fonts,
         window_icon,
         #[cfg(any(target_os = "macos", target_os = "windows"))]
+        #[cfg(feature = "menu")]
         native_menu_bar,
         pending_windows: windows
             .into_iter()
@@ -931,6 +961,7 @@ struct WinitRunner {
     /// app's duration and pumped on every event-loop pass. Linux has no
     /// surface — the chords are still armed (see `menu_bar`).
     #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(feature = "menu")]
     native_menu_bar: crate::platform::native_menu_bar::NativeMenuBar,
     pending_windows: Vec<PendingWindow>,
     /// What the application does once it has no window left.
@@ -1204,6 +1235,7 @@ impl WinitRunner {
         }
     }
 
+    #[cfg(any(feature = "menu", feature = "color-picker"))]
     fn current_window_origin<E: crate::text::TextEngine>(
         runtime: &RuntimeWindow<WinitWindow, E>,
     ) -> HydrolysisWindowOrigin {
@@ -1228,6 +1260,7 @@ impl WinitRunner {
         if let Ok(handle) = native_window.window_handle()
             && let RawWindowHandle::Win32(win) = handle.as_raw()
         {
+            #[cfg(feature = "menu")]
             self.native_menu_bar.attach_hwnd(
                 win.hwnd.get(),
                 crate::renderer::WindowId::Winit(native_window.id()),
@@ -1523,7 +1556,15 @@ impl WinitRunner {
         env: &Environment,
     ) -> bool {
         handle_input_events_with(runtime, env, |runtime, env| {
-            env.extending(Self::current_window_origin(runtime))
+            #[cfg(any(feature = "menu", feature = "color-picker"))]
+            {
+                env.extending(Self::current_window_origin(runtime))
+            }
+            #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+            {
+                let _ = runtime;
+                env.clone()
+            }
         })
     }
 
@@ -1540,6 +1581,7 @@ impl WinitRunner {
         if let Ok(handle) = runtime.platform.native_window().window_handle()
             && let RawWindowHandle::Win32(win) = handle.as_raw()
         {
+            #[cfg(feature = "menu")]
             self.native_menu_bar.detach_hwnd(win.hwnd.get());
             remove_termination_subclass(win.hwnd.get() as windows_sys::Win32::Foundation::HWND);
         }
@@ -1573,6 +1615,7 @@ impl WinitRunner {
     /// through the window's ordinary close path, so closing the last one
     /// still follows the `LastWindowPolicy`.
     #[cfg(hydrolysis_closable_windows)]
+    #[cfg(feature = "menu")]
     fn close_window(&mut self, source: crate::renderer::WindowId) {
         let Some(window_id) =
             close_window_target(source.as_winit(), &self.popup_window_ids, &self.windows)
@@ -1682,10 +1725,13 @@ impl WinitRunner {
                     target = ?request.target_node,
                     "accesskit action requested"
                 );
-                let action_env = self.env.extending(Self::current_window_origin(runtime));
+                #[cfg(any(feature = "menu", feature = "color-picker"))]
+                let action_env = &self.env.extending(Self::current_window_origin(runtime));
+                #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+                let action_env = &self.env;
                 if runtime
                     .renderer
-                    .handle_accessibility_action(request, &action_env)
+                    .handle_accessibility_action(request, action_env)
                 {
                     runtime.request_refresh();
                     runtime.request_redraw();
@@ -1838,9 +1884,11 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
         // window; on Windows it acts on the bar's own window — Close
         // Window's request names it through the shared `WindowCloser` path.
         #[cfg(target_os = "macos")]
+        #[cfg(feature = "menu")]
         self.native_menu_bar
             .pump_menu_events(self.focused_window.map(crate::renderer::WindowId::Winit));
         #[cfg(target_os = "windows")]
+        #[cfg(feature = "menu")]
         self.native_menu_bar.pump_menu_events();
         self.mount_pending_windows(event_loop);
         let now = Instant::now();
@@ -1919,6 +1967,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                 self.exit_after_runtime_cleanup(event_loop);
             }
             #[cfg(hydrolysis_closable_windows)]
+            #[cfg(feature = "menu")]
             RunnerEvent::CloseWindow(source) => self.close_window(source),
             #[cfg(hydrolysis_wayland_platform)]
             RunnerEvent::X11VisibilitySignal => {

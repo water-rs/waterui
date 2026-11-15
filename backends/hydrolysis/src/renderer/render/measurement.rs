@@ -22,6 +22,11 @@ use super::*;
 use crate::text::TextEngine;
 use crate::text::TextLayout as _;
 use crate::theme::WidgetTheme;
+#[cfg(any(
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "date-picker"
+))]
 use crate::widgets::controls::field_look::field_look;
 use crate::widgets::layout::container::resolve_lazy_container_extent;
 #[cfg(feature = "navigation")]
@@ -32,6 +37,7 @@ use waterui::navigation::tab::TabIcon;
 use waterui_core::contract_violation;
 use waterui_core::handler::BoxedAction;
 use waterui_core::layout::{LayoutError, ResolvedExtent, layout_direction, resolve_layout_extent};
+#[cfg(any(feature = "list", feature = "navigation"))]
 use waterui_core::views::ViewSnapshot;
 #[cfg(feature = "picker")]
 use waterui_form::picker::PickerStyle;

@@ -60,6 +60,7 @@ mod list;
 #[cfg(hydrolysis_runtime)]
 pub(crate) mod live;
 mod look;
+#[cfg(feature = "menu")]
 mod menu;
 #[cfg(feature = "navigation")]
 mod navigation;
@@ -91,6 +92,7 @@ pub use look::{
 };
 #[cfg(hydrolysis_runtime)]
 pub(crate) use look::{Change, CustomPart, LayerRotation, LiveDriven, RealizedCustom, Retarget};
+#[cfg(feature = "menu")]
 pub use menu::{MenuLayout, MenuLook, MenuSpec};
 #[cfg(feature = "navigation")]
 pub use navigation::{

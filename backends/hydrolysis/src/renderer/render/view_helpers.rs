@@ -365,10 +365,13 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         HighDynamicRange,
         Cursor,
         IgnoreSafeArea,
+        #[cfg(feature = "menu")]
         ContextMenu,
+        #[cfg(feature = "menu")]
         ResolvedContextMenu,
         AnchoredOverlay,
         waterui::dialog::Dialog,
+        #[cfg(feature = "menu")]
         PopupMenuSurface,
         Draggable,
         DropDestination,
@@ -568,10 +571,13 @@ fn normalize_layout_view_with_budget(
         HighDynamicRange,
         Cursor,
         IgnoreSafeArea,
+        #[cfg(feature = "menu")]
         ContextMenu,
+        #[cfg(feature = "menu")]
         ResolvedContextMenu,
         AnchoredOverlay,
         waterui::dialog::Dialog,
+        #[cfg(feature = "menu")]
         PopupMenuSurface,
         Draggable,
         DropDestination,

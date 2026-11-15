@@ -45,6 +45,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::progress::emit_progress_accessibility
 );
+#[cfg(feature = "menu")]
 impl_widget_behavior!(
     crate::widgets::controls::button::MenuRenderState<E>,
     crate::widgets::controls::button::render_menu_node,
@@ -290,6 +291,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// Build a persistent menu node: its trigger label is a move-only `AnyView`
     /// pre-built into a [`RetainedSubview`]; its `accessibility_label` and `items`
     /// signals are read through `read_signal` so a change schedules a frame.
+    #[cfg(feature = "menu")]
     pub(super) fn build_menu(
         renderer: &SemanticCore<E>,
         menu: ResolvedMenu,

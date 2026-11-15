@@ -237,6 +237,7 @@ pub struct PartStep {
 
 impl PartStep {
     /// Content drawn whole, recorded with the steps around it.
+    #[cfg(any(feature = "picker", feature = "navigation"))]
     pub(crate) fn content(record: impl Fn(&mut Recorder) + 'static) -> Self {
         Self {
             opacity: None,
@@ -1620,6 +1621,7 @@ impl LiveChrome {
     /// it and reports the state itself: the owner steers it through
     /// [`Self::sync`], [`Self::begin_wave`] and [`Self::fade_wave`], and
     /// records it through [`Self::layer_steps`].
+    #[cfg(any(feature = "picker", feature = "navigation"))]
     pub(crate) fn realize(
         spec: Chrome,
         bounds: Rect,
@@ -1643,6 +1645,7 @@ impl LiveChrome {
     /// [`LiveChromeParts`] lists them around a widget's content: the
     /// surface, its backdrop material and the border over it, the custom
     /// parts, then the interaction layers.
+    #[cfg(any(feature = "picker", feature = "navigation"))]
     pub(crate) fn layer_steps(chrome: &Rc<Self>) -> impl Iterator<Item = PartStep> {
         let surface = PartStep::content({
             let chrome = Rc::clone(chrome);

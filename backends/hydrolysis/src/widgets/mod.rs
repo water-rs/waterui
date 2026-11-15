@@ -9,4 +9,5 @@ pub mod visual;
 
 pub use layout::{divider, scroll};
 pub use scroll::draw_scroll_indicators;
+#[cfg(any(feature = "menu", feature = "table"))]
 pub use util::inset_rect;

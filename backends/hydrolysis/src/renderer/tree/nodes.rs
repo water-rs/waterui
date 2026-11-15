@@ -1000,6 +1000,7 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// the drag begins.
     Draggable(Rc<Draggable>),
     DropDestination(DropDestinationHandles),
+    #[cfg(feature = "menu")]
     ContextMenu(ContextMenuEffect<E>),
     /// Conditional hit-testing: renders the child, then truncates the interaction
     /// targets it registered when disabled. The bookkeeping counts targets across
@@ -1040,6 +1041,7 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// fill (water-rs/hydrolysis#200): the panel of the theme's `MenuLook`,
     /// and the look's selected-row part over the rect, in the panel's own
     /// space, of a picker popup's selected row.
+    #[cfg(feature = "menu")]
     PopupMenuSurface(Option<kurbo::Rect>),
     /// A within-window `Material` background (water-rs/waterui#1854): every
     /// flush closes the scene segment painted so far — the content behind
@@ -1081,13 +1083,16 @@ impl<E: crate::text::TextEngine> WrapperEffect<E> {
     /// in (water-rs/waterui#1292), and a handler wrapper is itself transparent
     /// to that resolution when it sits in an outer handler's modifier chain.
     pub(super) const fn captures_environment(&self) -> bool {
+        #[cfg(feature = "menu")]
+        if matches!(self, Self::ContextMenu(_)) {
+            return true;
+        }
         matches!(
             self,
             Self::OnEvent(_)
                 | Self::OnChange { .. }
                 | Self::GestureObserver(_)
                 | Self::DropDestination(_)
-                | Self::ContextMenu(_)
                 | Self::AnchoredOverlay(_)
                 | Self::Dialog(_)
                 | Self::LifeCycle(_)
@@ -1150,6 +1155,7 @@ pub struct DialogEffect<E: crate::text::TextEngine> {
 /// across the rest of the tree's lifetime exactly like a widget's label
 /// sub-view — built lazily at the first open, patched and re-flushed per frame
 /// while presented.
+#[cfg(feature = "menu")]
 pub struct ContextMenuEffect<E: crate::text::TextEngine> {
     /// The resolved menu items the popup is built from.
     pub(crate) items: nami::Computed<Vec<ResolvedMenuItem>>,

@@ -334,6 +334,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
+        #[cfg(feature = "menu")]
         let view = match view.downcast::<Metadata<ContextMenu>>() {
             Ok(meta) => return Self::build_view(meta.content, env, renderer),
             Err(view) => view,
@@ -479,6 +480,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
+        #[cfg(feature = "menu")]
         let view = match view.downcast::<Metadata<PopupMenuSurface>>() {
             Ok(meta) => {
                 return Self::build_wrapper(
@@ -533,6 +535,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
+        #[cfg(feature = "menu")]
         let view = match view.downcast::<Metadata<ResolvedContextMenu>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
@@ -770,6 +773,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
+        #[cfg(feature = "menu")]
         let view = match view.downcast::<Native<ResolvedMenu>>() {
             Ok(menu) => return Self::build_menu(renderer, (*menu).into_inner(), env),
             Err(view) => view,

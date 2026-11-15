@@ -123,6 +123,7 @@ pub struct OwnerRegistrations<E: crate::text::TextEngine> {
     /// Drop destinations.
     pub drop_targets: Vec<RetainedEntry<crate::renderer::DropTarget<E>, E>>,
     /// Context-menu targets.
+    #[cfg(feature = "menu")]
     pub context_menu_targets: Vec<RetainedEntry<crate::renderer::ContextMenuTarget<E>, E>>,
     /// Scroll targets.
     pub scroll_targets: Vec<RetainedEntry<crate::renderer::ScrollTarget<E>, E>>,
@@ -323,7 +324,6 @@ owner_tagged!(
     crate::renderer::input::PointerObserver<E>,
     crate::renderer::input::DropTarget<E>,
     crate::renderer::input::ScrollTarget<E>,
-    crate::renderer::input::ContextMenuTarget<E>,
     crate::renderer::input::EmbeddedInputTarget<E>,
     RegisteredGesture<E>,
 );
@@ -354,6 +354,7 @@ impl<E: crate::text::TextEngine> Default for OwnerRegistrations<E> {
             hover_targets: Vec::default(),
             pointer_observers: Vec::default(),
             drop_targets: Vec::default(),
+            #[cfg(feature = "menu")]
             context_menu_targets: Vec::default(),
             scroll_targets: Vec::default(),
             #[cfg(any(feature = "text-field", feature = "secure-field"))]
@@ -365,3 +366,6 @@ impl<E: crate::text::TextEngine> Default for OwnerRegistrations<E> {
         }
     }
 }
+
+#[cfg(feature = "menu")]
+owner_tagged!(crate::renderer::input::ContextMenuTarget<E>);

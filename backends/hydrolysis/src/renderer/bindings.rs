@@ -327,6 +327,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let gesture_deadline = self.gesture_engine.next_deadline();
         // An armed context-menu hold wakes the runner at the same instant
         // its tick fires it — it shares the gesture deadline channel.
+        #[cfg(not(feature = "menu"))]
+        let hold_deadline = None;
+        #[cfg(feature = "menu")]
         let hold_deadline = self
             .hit_test
             .pending_context_menu_hold

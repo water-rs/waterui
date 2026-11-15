@@ -594,6 +594,14 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// inside. `paint` is the transform `clip` is given under, in the
     /// recording node's space; the clip is stored in the scope's own space.
     /// The layer sits at the scope's record-space delta.
+    #[cfg(any(
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "navigation",
+        feature = "slider",
+        feature = "stepper",
+        feature = "toggle"
+    ))]
     pub(crate) fn open_scope(
         &mut self,
         key: mount::ScopeKey,

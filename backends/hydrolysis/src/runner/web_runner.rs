@@ -32,7 +32,9 @@ use crate::text::fonts::WebFonts;
 use crate::platform::{BrowserWindow, PlatformWindow};
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::renderer::HydrolysisTextContextMenuMode;
-use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, MenuShortcutRegistry};
+#[cfg(feature = "menu")]
+use crate::renderer::MenuShortcutRegistry;
+use crate::renderer::{FontFamilyResolution, HydrolysisRenderer};
 use crate::runner::web_accessibility::WebAccessibilityBridge;
 use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, WindowFrame, advance_runtime, handle_input_events,
@@ -496,6 +498,7 @@ pub fn run(app: App, style: impl crate::Style) {
         // is never started.
         let AppParts {
             windows,
+            #[cfg(feature = "menu")]
             menu_bar,
             env,
             last_window: _,
@@ -514,14 +517,31 @@ pub fn run(app: App, style: impl crate::Style) {
 
         let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
         let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
+        #[cfg(any(
+            test,
+            feature = "text-field",
+            feature = "secure-field",
+            feature = "color-picker",
+            feature = "date-picker",
+            feature = "list",
+            feature = "navigation",
+            feature = "table",
+            hydrolysis_system_webview,
+            all(target_arch = "wasm32", feature = "web", feature = "video")
+        ))]
         super::install_native_component_hooks(&mut env);
         // Every runner seeds the chord table so mounted menus resolve
         // shortcuts through the same path (water-rs/hydrolysis#247).
+        let _ = env.get_or_insert_with::<crate::renderer::WindowIdentities, _>(
+            crate::renderer::WindowIdentities::default,
+        );
+        #[cfg(feature = "menu")]
         let _ = env.get_or_insert_with::<MenuShortcutRegistry<crate::text::ParleyEngine>, _>(
             MenuShortcutRegistry::default,
         );
         // A browser page cannot own the browser's menu bar, so the app menus
         // contribute their chords only — nothing renders.
+        #[cfg(feature = "menu")]
         super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
         #[cfg(any(feature = "text-field", feature = "secure-field"))]
         env.insert(HydrolysisTextContextMenuMode::Overlay);
@@ -592,8 +612,8 @@ pub fn run(app: App, style: impl crate::Style) {
             ParleyEngine::from_collection(fonts.collection(), FontFamilyResolution::Lenient),
         );
         renderer.set_window_id(
-            env.get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
-                .expect("the web runner seeds MenuShortcutRegistry")
+            env.get::<crate::renderer::WindowIdentities>()
+                .expect("the web runner seeds WindowIdentities")
                 .mint_window_id(),
         );
         renderer.set_window_closable(window.closable);

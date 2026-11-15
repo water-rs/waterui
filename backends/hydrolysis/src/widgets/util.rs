@@ -19,6 +19,7 @@ pub fn widget_disabled(env: &Environment) -> Computed<bool> {
 /// `show_date_picker`), so the node-local `ctx.bounds` must first resolve
 /// through the placement chain (`SemanticCore::resolve_window_rect`) — the
 /// pointer and the accessibility-activate paths anchor identically.
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 pub const fn popup_anchor(window_bounds: kurbo::Rect) -> waterui_core::layout::Point {
     waterui_core::layout::Point::new(
         crate::num_cast::f64_as_f32(window_bounds.x0),

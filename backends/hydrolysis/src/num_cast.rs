@@ -228,6 +228,12 @@ pub const fn i32_as_f32(v: i32) -> f32 {
     clippy::cast_sign_loss,
     reason = "the values are non-negative coordinates; the sign-loss branch is unreachable in practice"
 )]
+#[cfg(any(
+    target_os = "android",
+    feature = "list",
+    feature = "picker",
+    feature = "navigation"
+))]
 pub const fn i32_as_u32(v: i32) -> u32 {
     v as u32
 }

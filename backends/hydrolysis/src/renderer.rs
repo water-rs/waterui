@@ -81,9 +81,14 @@ pub use recording::check_well_formed_image;
 #[cfg(hydrolysis_cherenkov)]
 pub use recording::{Glyph, GlyphRun};
 pub use recording::{Recording, working_color};
+#[cfg(any(feature = "list", feature = "text-field", feature = "secure-field"))]
+pub use tree::safe_area::ScrollSurfaceArea;
+#[cfg(any(feature = "list", feature = "navigation"))]
+pub use tree::safe_area::grow_rect;
 #[cfg(feature = "navigation")]
 pub use tree::safe_area::{ChromeBar, Edge};
-pub use tree::safe_area::{EdgeOffsets, SafeAreaLayout, ScrollSurfaceArea, grow_rect};
+pub use tree::safe_area::{EdgeOffsets, SafeAreaLayout};
+#[cfg(any(feature = "list", feature = "navigation"))]
 pub use tree::transition::TransitionPaint;
 #[cfg(feature = "list")]
 pub use tree::transition::flush_transitioned;
@@ -127,19 +132,38 @@ use std::rc::{Rc, Weak};
 #[cfg(hydrolysis_gpu_painter)]
 use std::sync::Arc;
 
+#[cfg(feature = "menu")]
+use crate::widgets::inset_rect;
+#[cfg(all(
+    feature = "accessibility",
+    any(
+        feature = "slider",
+        feature = "stepper",
+        feature = "date-picker",
+        feature = "text-field",
+        feature = "secure-field"
+    )
+))]
+use accesskit::ActionData as AccessibilityActionData;
 #[cfg(feature = "accessibility")]
 use accesskit::{
-    Action as AccessibilityAction, ActionData as AccessibilityActionData,
-    ActionRequest as AccessibilityActionRequest, Node as AccessibilityNode,
-    NodeId as AccessibilityNodeId, Rect as AccessibilityRect, Role as AccessibilityNodeRole,
-    TextDirection as AccessibilityTextDirection, Toggled as AccessibilityToggled,
-    TreeId as AccessibilityTreeId, TreeInfo as AccessibilityTree,
+    Action as AccessibilityAction, ActionRequest as AccessibilityActionRequest,
+    Node as AccessibilityNode, NodeId as AccessibilityNodeId, Rect as AccessibilityRect,
+    Role as AccessibilityNodeRole, TextDirection as AccessibilityTextDirection,
+    Toggled as AccessibilityToggled, TreeId as AccessibilityTreeId, TreeInfo as AccessibilityTree,
     TreeUpdate as AccessibilityTreeUpdate,
 };
 use cherenkov_record::{Paint, WorkingColor};
 use executor_core::spawn_local;
 use nami::{Binding, Signal};
 use waterkit_clipboard::Clipboard;
+#[cfg(any(
+    any(feature = "menu", feature = "color-picker"),
+    feature = "navigation",
+    feature = "picker",
+    feature = "text-field",
+    feature = "secure-field"
+))]
 use waterui::ViewExt;
 use waterui::accessibility::{
     AccessibilityChildren, AccessibilityGeometry, AccessibilityHidden, AccessibilityIdentifier,
@@ -162,6 +186,7 @@ use waterui::filter::Opacity;
 use waterui::gesture::{Gesture, GestureObserver};
 use waterui::interaction::Hittable;
 use waterui::metadata::anchored_overlay::AnchoredOverlay;
+#[cfg(feature = "menu")]
 use waterui::metadata::context_menu::{ContextMenu, ResolvedContextMenu};
 use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
 #[cfg(feature = "navigation")]
@@ -174,11 +199,13 @@ use waterui::navigation::{
 };
 use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::widget::Divider;
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui::window::{Window, WindowState, WindowStyle};
 use waterui_controls::button::{Button, ButtonConfig};
 #[cfg(feature = "accessibility")]
 use waterui_controls::input::ContentType;
 use waterui_controls::label::Label as SemanticLabel;
+#[cfg(feature = "menu")]
 use waterui_controls::menu::{CommandRole, ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
 #[cfg(feature = "slider")]
 use waterui_controls::slider::SliderConfig;
@@ -192,7 +219,11 @@ use waterui_controls::text_field::TextField;
 use waterui_controls::toggle::ToggleConfig;
 use waterui_core::dynamic::{Dynamic, DynamicInitialContent};
 use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnChange, OnEvent};
-use waterui_core::handler::{AnyViewBuilder, BoxedAction, SharedAction};
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use waterui_core::handler::AnyViewBuilder;
+use waterui_core::handler::{BoxedAction, SharedAction};
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use waterui_core::impl_extractor;
 use waterui_core::key::{KeyHandling, KeyPress, OnKeyPress};
 use waterui_core::layout::{
     HorizontalAlignment, Layout, PlacedSubview, Point as LayoutPoint, ProposalSize,
@@ -202,10 +233,9 @@ use waterui_core::layout::{
 #[cfg(feature = "accessibility")]
 use waterui_core::metadata::MetadataKey;
 use waterui_core::view::Hook;
+#[cfg(any(feature = "table", feature = "navigation"))]
 use waterui_core::views::Views;
-use waterui_core::{
-    AnyView, Environment, IgnorableMetadata, Metadata, Native, Retain, Str, View, impl_extractor,
-};
+use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, Native, Retain, Str, View};
 #[cfg(feature = "picker")]
 use waterui_form::picker::PickerConfig;
 #[cfg(feature = "color-picker")]
@@ -246,7 +276,6 @@ use crate::scroll::ScrollHandle;
 #[cfg(test)]
 use crate::text::ParleyEngine;
 use crate::time::Instant;
-use crate::widgets::inset_rect;
 
 const OPACITY_ANIMATION_KEY: usize = 0x0100_0001;
 const SCALE_X_ANIMATION_KEY: usize = 0x0100_0002;
@@ -446,6 +475,7 @@ pub struct PresentationHosts<E: crate::text::TextEngine> {
     #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) text_overlay: NodeCore<E>,
     /// The `.context_menu` presentation's host.
+    #[cfg(feature = "menu")]
     pub(crate) context_menu: NodeCore<E>,
     /// `.anchored_overlay` presentations' host.
     pub(crate) anchored: NodeCore<E>,
@@ -463,6 +493,7 @@ impl<E: crate::text::TextEngine> PresentationHosts<E> {
         for host in [
             #[cfg(any(feature = "text-field", feature = "secure-field"))]
             &self.text_overlay,
+            #[cfg(feature = "menu")]
             &self.context_menu,
             &self.anchored,
             &self.dialog,
@@ -842,6 +873,7 @@ pub const HIT_TEST_ALPHA_THRESHOLD: f32 = 0.01;
 /// selects a word, a triple click a line.
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 const MAX_TEXT_SELECTION_CLICKS: u32 = 3;
+#[cfg(feature = "menu")]
 const TEXT_CONTEXT_MENU_WINDOW_TITLE: &str = "";
 
 impl<E: crate::text::TextEngine> SemanticCore<E> {
@@ -860,6 +892,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     /// The `closable` the runner's window was declared with.
+    #[cfg(feature = "menu")]
     pub(crate) const fn window_closable(&self) -> bool {
         self.window_closable
     }
@@ -944,6 +977,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let presentation_hosts = PresentationHosts {
             #[cfg(any(feature = "text-field", feature = "secure-field"))]
             text_overlay: host(),
+            #[cfg(feature = "menu")]
             context_menu: host(),
             anchored: host(),
             dialog: host(),
@@ -2090,11 +2124,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// finally the `.dialog` modal layer so nothing else stacks above it.
     pub(crate) fn mount_roots(
         &self,
-    ) -> [Rc<NodeCell<E>>; 4 + cfg!(any(feature = "text-field", feature = "secure-field")) as usize]
-    {
+    ) -> [Rc<NodeCell<E>>;
+        3 + cfg!(feature = "menu") as usize
+            + cfg!(any(feature = "text-field", feature = "secure-field")) as usize] {
         let hosts = &self.core.presentation_hosts;
         [
             Rc::clone(&self.core.root_core.cell),
+            #[cfg(feature = "menu")]
             Rc::clone(&hosts.context_menu.cell),
             Rc::clone(&hosts.anchored.cell),
             #[cfg(any(feature = "text-field", feature = "secure-field"))]
@@ -2209,6 +2245,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 pub use render::HydroState;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub use render::HydrolysisTextContextMenuMode;
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 pub use render::HydrolysisWindowOrigin;
 pub use render::RenderContext;
 

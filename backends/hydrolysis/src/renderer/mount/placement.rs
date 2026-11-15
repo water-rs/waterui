@@ -160,6 +160,7 @@ pub enum HitGate {
     Inactive,
     /// The lifted context-menu preview: dev truncated the input lists plus
     /// drop, context-menu and native-occlusion registrations.
+    #[cfg(feature = "menu")]
     Preview,
 }
 
@@ -167,7 +168,9 @@ impl HitGate {
     /// The hit alpha the gate's scope multiplies into its chain.
     pub const fn alpha(self) -> f32 {
         match self {
-            Self::Unhittable | Self::Preview => 1.0,
+            Self::Unhittable => 1.0,
+            #[cfg(feature = "menu")]
+            Self::Preview => 1.0,
             Self::Inactive => 0.0,
         }
     }
@@ -177,6 +180,7 @@ impl HitGate {
         match self {
             Self::Unhittable => HitClasses::INPUT,
             Self::Inactive => HitClasses::NONE,
+            #[cfg(feature = "menu")]
             Self::Preview => HitClasses::INPUT
                 .union(HitClasses::DROP)
                 .union(HitClasses::CONTEXT_MENU)

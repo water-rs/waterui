@@ -37,20 +37,54 @@ use waterui_graphics::color::{Color, signal_color};
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use waterui_text::styled::StyledStr;
 
+#[cfg(any(
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker"
+))]
 use cherenkov_record::Paint;
+#[cfg(any(
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker"
+))]
 use kurbo::Rect;
-use nami::{Binding, Signal as _};
+#[cfg(any(
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker"
+))]
+use nami::Binding;
+use nami::Signal as _;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use waterui::ViewExt as _;
 use waterui_core::Environment;
+#[cfg(any(
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker"
+))]
 use waterui_core::interaction::InteractionState;
 
+#[cfg(any(
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker"
+))]
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
+#[cfg(any(
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker"
+))]
 use crate::renderer::{InteractionKey, InteractionLayerHandles, PressSlot, WidgetRenderContext};
-use crate::theme::{
-    Border, Chrome, Custom, Driven, SpecTint, TextFieldLook, TextFieldSpec, WidgetInteractionState,
-    WidgetTheme,
-};
+#[cfg(any(
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker"
+))]
+use crate::theme::{Border, Chrome, Custom, Driven, WidgetInteractionState};
+use crate::theme::{SpecTint, TextFieldLook, TextFieldSpec, WidgetTheme};
 
 /// The spec of a field in `env`.
 pub fn field_spec(env: &Environment) -> TextFieldSpec {
@@ -68,6 +102,11 @@ pub fn field_look(theme: &Rc<dyn WidgetTheme>, env: &Environment) -> TextFieldLo
 
 /// The container's chrome with the look's active indicator drawn along its
 /// bottom edge, over the surface and beneath the state layer.
+#[cfg(any(
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker"
+))]
 fn container_of(look: &TextFieldLook) -> Chrome {
     let chrome = look.container().clone();
     let Some(indicator) = look.get_active_indicator() else {
@@ -78,6 +117,11 @@ fn container_of(look: &TextFieldLook) -> Chrome {
 
 /// The active indicator as a custom part of the container: a line of the
 /// border's width along the frame's bottom edge, painted with its paint.
+#[cfg(any(
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker"
+))]
 fn indicator_part(indicator: &Driven<Border>) -> Custom<(), (Driven<Paint>, Driven<f64>)> {
     Custom::new(
         (
@@ -95,6 +139,11 @@ fn indicator_part(indicator: &Driven<Border>) -> Custom<(), (Driven<Paint>, Driv
 }
 
 /// The look a field was requested for, and the container it realizes.
+#[cfg(any(
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker"
+))]
 struct Held {
     spec: TextFieldSpec,
     look: TextFieldLook,
@@ -115,6 +164,11 @@ type ValueColor = Rc<RefCell<Option<Driven<WorkingColor>>>>;
 /// spec it was requested for, the container's live chrome and the
 /// reported-state binding that keeps the floating label's operands and
 /// colour current.
+#[cfg(any(
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker"
+))]
 pub struct FieldChrome {
     held: Option<Held>,
     parts: Option<LiveChromeParts>,
@@ -141,6 +195,11 @@ pub struct FieldChrome {
     _focus: Box<dyn Any>,
 }
 
+#[cfg(any(
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker"
+))]
 impl FieldChrome {
     pub(crate) fn new() -> Self {
         let report = Binding::container(InteractionState::empty());
