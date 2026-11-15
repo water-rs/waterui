@@ -23,7 +23,7 @@ waterui-text.workspace = true
 waterui-media = { workspace = true, optional = true }
 waterui-video = { workspace = true, optional = true }
 native-executor.workspace = true
-waterui-navigation.workspace = true
+waterui-navigation = { workspace = true, optional = true }
 waterui-form.workspace = true
 waterui-controls.workspace = true
 waterui-webview = { workspace = true, optional = true }
@@ -85,7 +85,39 @@ getrandom = { workspace = true, optional = true }
 cpu-time.workspace = true
 
 [features]
+list = []
+table = ["list"]
+navigation = ["dep:waterui-navigation"]
+menu = ["waterui-controls/menu"]
+calendar = ["waterui-form/calendar"]
+color-picker = ["waterui-form/color-picker"]
+date-picker = ["waterui-form/date-picker"]
+file-picker = ["waterui-form/file-picker"]
+multi-date-picker = ["calendar", "waterui-form/multi-date-picker"]
+picker = ["waterui-form/picker"]
+secure-field = ["waterui-form/secure-field"]
+slider = ["waterui-form/slider"]
+stepper = ["waterui-form/stepper"]
+text-field = ["menu", "waterui-form/text-field"]
+toggle = ["waterui-form/toggle"]
+validation = ["text-field", "waterui-form/validation"]
 default = [
+    "list",
+    "table",
+    "navigation",
+    "menu",
+    "calendar",
+    "color-picker",
+    "date-picker",
+    "file-picker",
+    "multi-date-picker",
+    "picker",
+    "secure-field",
+    "slider",
+    "stepper",
+    "text-field",
+    "toggle",
+    "validation",
     "gpu",
     "assets",
     "dialog",
@@ -173,14 +205,14 @@ widgets = ["dep:waterui-widgets", "waterui-macros/widgets"]
 # links a JavaScript engine. An application that writes no `tsx!` and leaves
 # this off links none of it — `waterui-ts` is an optional dependency and no
 # other feature pulls it in.
-ts = ["dep:waterui-ts"]
+ts = ["dep:waterui-ts", "navigation", "table", "picker", "slider", "stepper", "text-field", "toggle"]
 # The over-the-air update client for TypeScript view bundles: fetches a
 # signed manifest and bundle, verifies them, and caches them for the next
 # launch. Separate from `ts` because it links an HTTP client, a signature
 # verifier and the file-system kit; an application that ships only its
 # baseline bundle leaves it off and opens no connection by construction.
 ts-ota = ["ts", "waterui-ts/ota"]
-navigation-restoration = ["waterui-navigation/serde"]
+navigation-restoration = ["navigation", "waterui-navigation/serde"]
 # Markdown rendering: `RichText` and `include_markdown!`, which parse CommonMark
 # with `pulldown-cmark`, plus `FlowMarkdown`'s streaming renderer, which
 # re-parses the document incrementally with the tree-sitter Markdown grammar.
@@ -216,6 +248,22 @@ particle = ["dep:waterui-particle"]
 # modules opts in explicitly rather than paying for them through the
 # full-feature set — the same reasoning `markdown-math` carries above.
 all = [
+    "list",
+    "table",
+    "navigation",
+    "menu",
+    "calendar",
+    "color-picker",
+    "date-picker",
+    "file-picker",
+    "multi-date-picker",
+    "picker",
+    "secure-field",
+    "slider",
+    "stepper",
+    "text-field",
+    "toggle",
+    "validation",
     "canvas",
     "chart",
     "barcode",

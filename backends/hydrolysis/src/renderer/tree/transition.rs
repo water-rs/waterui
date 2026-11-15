@@ -26,9 +26,11 @@ use super::*;
 use std::rc::Rc;
 
 use waterui_core::contract_violation;
+#[cfg(feature = "navigation")]
+use waterui_core::transition::{AnyTransition, Transition};
 use waterui_core::transition::{
-    AnyTransition, Ghost, GhostSlot, Transition, TransitionGeometry, TransitionPhase,
-    TransitionProperties, TransitionSpec, TransitionState,
+    Ghost, GhostSlot, TransitionGeometry, TransitionPhase, TransitionProperties, TransitionSpec,
+    TransitionState,
 };
 use waterui_graphics::backend::{AnyEffect, ParamGuards};
 
@@ -104,6 +106,7 @@ pub fn claim_transition<E: crate::text::TextEngine>(
 /// content ([`WidgetBehavior::claim_page_transition`]). Only the stack calls
 /// this — a navigation view anywhere else is not a structural instance, so a
 /// declaration on its content stays unowned.
+#[cfg(feature = "navigation")]
 pub fn claim_page_transition<E: crate::text::TextEngine>(
     page: &RenderNode<E>,
 ) -> Option<TransitionSpec> {
@@ -298,11 +301,13 @@ impl<E: crate::text::TextEngine> TransitionRun<E> {
 /// presence when the gesture is cancelled. Reduce Motion and the capture
 /// rejection resolve exactly as [`TransitionSpec::start`] and
 /// [`checked_transition`] resolve them for a clock-driven removal.
+#[cfg(feature = "navigation")]
 pub struct ScrubbedRemoval<E: crate::text::TextEngine> {
     transition: AnyTransition,
     runtime: TransitionRuntime<E>,
 }
 
+#[cfg(feature = "navigation")]
 impl<E: crate::text::TextEngine> ScrubbedRemoval<E> {
     pub fn new(spec: &TransitionSpec, reduce_motion: bool, now: Instant) -> Self {
         let transition = if reduce_motion {

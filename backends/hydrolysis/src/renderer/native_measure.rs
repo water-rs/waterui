@@ -133,23 +133,38 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<FixedContainer>);
         $macro!(Native<LazyContainer>);
         $macro!(Native<ScrollView>);
+        #[cfg(feature = "navigation")]
         $macro!(Native<NavigationView>);
+        #[cfg(feature = "navigation")]
         $macro!(Native<NavigationSplitLayout>);
+        #[cfg(feature = "navigation")]
         $macro!(Native<NavigationStack<(), ()>>);
+        #[cfg(feature = "navigation")]
         $macro!(Native<TabsLayout>);
         $macro!(Native<BadgeConfig>);
+        #[cfg(feature = "list")]
         $macro!(Native<ListConfig>);
+        #[cfg(feature = "table")]
         $macro!(Native<TableConfig>);
         $macro!(Native<ButtonConfig>);
+        #[cfg(feature = "menu")]
         $macro!(Native<ResolvedMenu>);
+        #[cfg(feature = "toggle")]
         $macro!(Native<ToggleConfig>);
+        #[cfg(feature = "slider")]
         $macro!(Native<SliderConfig>);
+        #[cfg(feature = "stepper")]
         $macro!(Native<StepperConfig>);
         $macro!(Native<ProgressConfig>);
+        #[cfg(feature = "color-picker")]
         $macro!(Native<ColorPickerConfig>);
+        #[cfg(feature = "date-picker")]
         $macro!(Native<DatePickerConfig>);
+        #[cfg(feature = "text-field")]
         $macro!(Native<ResolvedTextFieldConfig>);
+        #[cfg(feature = "secure-field")]
         $macro!(Native<SecureFieldConfig>);
+        #[cfg(feature = "picker")]
         $macro!(Native<PickerConfig>);
         $macro!(Native<Dynamic>);
         $macro!(Native<SystemIcon>);

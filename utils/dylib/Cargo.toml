@@ -21,7 +21,39 @@ crate-type = ["dylib", "rlib"]
 waterui-internal.workspace = true
 
 [features]
+list = ["waterui-internal/list"]
+table = ["waterui-internal/table"]
+navigation = ["waterui-internal/navigation"]
+menu = ["waterui-internal/menu"]
+calendar = ["waterui-internal/calendar"]
+color-picker = ["waterui-internal/color-picker"]
+date-picker = ["waterui-internal/date-picker"]
+file-picker = ["waterui-internal/file-picker"]
+multi-date-picker = ["waterui-internal/multi-date-picker"]
+picker = ["waterui-internal/picker"]
+secure-field = ["waterui-internal/secure-field"]
+slider = ["waterui-internal/slider"]
+stepper = ["waterui-internal/stepper"]
+text-field = ["waterui-internal/text-field"]
+toggle = ["waterui-internal/toggle"]
+validation = ["waterui-internal/validation"]
 default = [
+    "list",
+    "table",
+    "navigation",
+    "menu",
+    "calendar",
+    "color-picker",
+    "date-picker",
+    "file-picker",
+    "multi-date-picker",
+    "picker",
+    "secure-field",
+    "slider",
+    "stepper",
+    "text-field",
+    "toggle",
+    "validation",
     "gpu",
     "assets",
     "webview",
@@ -58,6 +90,22 @@ chart = ["waterui-internal/chart"]
 barcode = ["waterui-internal/barcode"]
 particle = ["waterui-internal/particle"]
 all = [
+    "list",
+    "table",
+    "navigation",
+    "menu",
+    "calendar",
+    "color-picker",
+    "date-picker",
+    "file-picker",
+    "multi-date-picker",
+    "picker",
+    "secure-field",
+    "slider",
+    "stepper",
+    "text-field",
+    "toggle",
+    "validation",
     "waterui-internal/all",
     "navigation-restoration",
     "highlight",

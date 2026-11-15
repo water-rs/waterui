@@ -373,8 +373,18 @@ pub async fn scan_fonts(
     build_manifest: &Path,
     platforms: &[FontPlatform],
 ) -> eyre::Result<Vec<FontDeclaration>> {
+    scan_fonts_with_features(project, build_manifest, platforms, &[]).await
+}
+
+/// Scan fonts in the dependency graph selected by the build's Cargo features.
+pub async fn scan_fonts_with_features(
+    project: &Project,
+    build_manifest: &Path,
+    platforms: &[FontPlatform],
+    features: &[String],
+) -> eyre::Result<Vec<FontDeclaration>> {
     let mut declarations = manifest_font_declarations(project.manifest(), project.root())?;
-    declarations.extend(scan_crate_font_declarations(project, build_manifest).await?);
+    declarations.extend(scan_crate_font_declarations(project, build_manifest, features).await?);
     declarations.retain(|declaration| {
         platforms
             .iter()
@@ -532,6 +542,7 @@ fn parse_waterui_metadata(
 async fn scan_crate_font_declarations(
     project: &Project,
     build_manifest: &Path,
+    features: &[String],
 ) -> eyre::Result<Vec<FontDeclaration>> {
     debug!(
         "Scanning fonts from dependencies via cargo metadata on {}",
@@ -544,6 +555,7 @@ async fn scan_crate_font_declarations(
         .facts()
         .answer(&DependencyFonts {
             manifest: build_manifest.to_path_buf(),
+            features: features.to_vec(),
         })
         .await
         .wrap_err_with(|| {
@@ -579,20 +591,21 @@ async fn scan_crate_font_declarations(
 /// `cargo metadata` document it was read from.
 struct DependencyFonts {
     manifest: PathBuf,
+    features: Vec<String>,
 }
 
 impl Fact for DependencyFonts {
     const KIND: &'static str = "dependency-fonts";
-    type Question = PathBuf;
+    type Question = (PathBuf, Vec<String>);
     type Value = Vec<RecordedFont>;
 
-    fn question(&self) -> PathBuf {
-        self.manifest.clone()
+    fn question(&self) -> Self::Question {
+        (self.manifest.clone(), self.features.clone())
     }
 
     async fn resolve(&self, scope: &Scope<'_>) -> eyre::Result<Vec<RecordedFont>> {
         let metadata = scope
-            .cargo_metadata(&crate_metadata_command(&self.manifest, &[]))
+            .cargo_metadata(&crate_metadata_command(&self.manifest, &self.features))
             .await?;
         let fonts =
             dependency_font_declarations(&metadata, GraphScope::Build).wrap_err_with(|| {
@@ -1693,7 +1706,7 @@ async fn seed_font_cache_scoped(
         .map_err(SeedFontCacheError::Scaffold)?;
     for manifest in manifests {
         declarations.extend(
-            scan_crate_font_declarations(project, &manifest)
+            scan_crate_font_declarations(project, &manifest, &[])
                 .await
                 .map_err(SeedFontCacheError::Fonts)?,
         );
@@ -2384,13 +2397,15 @@ pub async fn stage_hydrolysis_web_fonts(
     project: &Project,
     backend_path: &Path,
     site_root: &Path,
+    features: &[String],
 ) -> eyre::Result<()> {
     let mut resolved_fonts = resolve_fonts(
         project.host(),
-        scan_fonts(
+        scan_fonts_with_features(
             project,
             &backend_path.join("Cargo.toml"),
             &[FontPlatform::Web],
+            features,
         )
         .await?,
     )
@@ -2481,7 +2496,7 @@ pub async fn package_feature_enabled(
     target: &Triple,
 ) -> eyre::Result<bool> {
     let enabled = project
-        .generated_manifest_features(build_manifest, target)
+        .generated_manifest_features(build_manifest, target, &[])
         .await
         .wrap_err_with(|| {
             format!(
@@ -2489,6 +2504,7 @@ pub async fn package_feature_enabled(
                 build_manifest.display()
             )
         })?
+        .enabled
         .get(package)
         .is_some_and(|features| features.contains(feature));
     debug!("resolved feature {package}/{feature} for {target}: {enabled}");
@@ -2564,6 +2580,143 @@ const OPTIONAL_CAPABILITIES: &[Capability] = &[
         feature: None,
     },
 ];
+
+/// Widget capabilities are selected by their defining components, including
+/// direct component imports that do not pass through the facade.
+const WIDGET_CAPABILITIES: &[Capability] = &[
+    Capability {
+        name: "menu",
+        package: "waterui-controls",
+        feature: Some("menu"),
+    },
+    Capability {
+        name: "calendar",
+        package: "waterui-form",
+        feature: Some("calendar"),
+    },
+    Capability {
+        name: "color-picker",
+        package: "waterui-form",
+        feature: Some("color-picker"),
+    },
+    Capability {
+        name: "date-picker",
+        package: "waterui-form",
+        feature: Some("date-picker"),
+    },
+    Capability {
+        name: "file-picker",
+        package: "waterui-form",
+        feature: Some("file-picker"),
+    },
+    Capability {
+        name: "multi-date-picker",
+        package: "waterui-form",
+        feature: Some("multi-date-picker"),
+    },
+    Capability {
+        name: "picker",
+        package: "waterui-form",
+        feature: Some("picker"),
+    },
+    Capability {
+        name: "secure-field",
+        package: "waterui-form",
+        feature: Some("secure-field"),
+    },
+    Capability {
+        name: "slider",
+        package: "waterui-controls",
+        feature: Some("slider"),
+    },
+    Capability {
+        name: "stepper",
+        package: "waterui-controls",
+        feature: Some("stepper"),
+    },
+    Capability {
+        name: "text-field",
+        package: "waterui-controls",
+        feature: Some("text-field"),
+    },
+    Capability {
+        name: "toggle",
+        package: "waterui-controls",
+        feature: Some("toggle"),
+    },
+    Capability {
+        name: "validation",
+        package: "waterui-form",
+        feature: Some("validation"),
+    },
+    Capability {
+        name: "list",
+        package: "waterui-internal",
+        feature: Some("list"),
+    },
+    Capability {
+        name: "table",
+        package: "waterui-internal",
+        feature: Some("table"),
+    },
+    Capability {
+        name: "navigation",
+        package: "waterui-navigation",
+        feature: None,
+    },
+];
+
+fn selected_widget_capabilities(graph: &BTreeMap<String, BTreeSet<String>>) -> Vec<&'static str> {
+    WIDGET_CAPABILITIES
+        .iter()
+        .filter(|capability| {
+            graph.get(capability.package).is_some_and(|features| {
+                capability
+                    .feature
+                    .is_none_or(|feature| features.contains(feature))
+            })
+        })
+        .map(|capability| capability.name)
+        .collect()
+}
+
+/// Resolve widget capabilities for this exact target and Cargo feature selection.
+///
+/// # Errors
+/// Returns an error when Cargo cannot resolve the generated manifest.
+pub async fn widget_features(
+    project: &Project,
+    build_manifest: &Path,
+    target: &Triple,
+    features: &[String],
+    destinations: &[&str],
+) -> eyre::Result<Vec<String>> {
+    seed_managed_crate_lock(project, build_manifest).await?;
+    let graph = project
+        .generated_manifest_features(build_manifest, target, features)
+        .await?;
+    Ok(backend_widget_features(&graph, destinations))
+}
+
+fn backend_widget_features(
+    graph: &super::project::ResolvedManifestFeatures,
+    destinations: &[&str],
+) -> Vec<String> {
+    selected_widget_capabilities(&graph.enabled)
+        .into_iter()
+        .flat_map(|capability| {
+            destinations
+                .iter()
+                .filter(move |destination| {
+                    graph
+                        .declared
+                        .get(**destination)
+                        .is_some_and(|declared| declared.contains(capability))
+                })
+                .map(move |destination| format!("{destination}/{capability}"))
+        })
+        .collect()
+}
 
 /// Returns whether this app's resolved graph carries the named capability.
 ///
@@ -2649,6 +2802,58 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn widget_capabilities_follow_defining_components() {
+        let graph = BTreeMap::from([
+            (
+                "waterui-form".into(),
+                BTreeSet::from(["secure-field".into()]),
+            ),
+            ("waterui-controls".into(), BTreeSet::from(["menu".into()])),
+            ("waterui-navigation".into(), BTreeSet::new()),
+            ("unrelated".into(), BTreeSet::from(["slider".into()])),
+        ]);
+        assert_eq!(
+            selected_widget_capabilities(&graph),
+            ["menu", "secure-field", "navigation"]
+        );
+    }
+
+    #[test]
+    fn widget_features_only_forward_capabilities_declared_by_each_backend() {
+        let graph = super::super::project::ResolvedManifestFeatures {
+            enabled: BTreeMap::from([
+                ("waterui-internal".into(), BTreeSet::from(["list".into()])),
+                ("waterui-controls".into(), BTreeSet::from(["slider".into()])),
+            ]),
+            declared: BTreeMap::from([
+                (
+                    "hydrolysis".into(),
+                    BTreeSet::from(["list".into(), "slider".into()]),
+                ),
+                ("hydrolysis-m3".into(), BTreeSet::from(["list".into()])),
+            ]),
+        };
+        assert_eq!(
+            backend_widget_features(&graph, &["hydrolysis", "hydrolysis-m3"]),
+            ["hydrolysis/slider", "hydrolysis/list", "hydrolysis-m3/list"]
+        );
+        assert_eq!(
+            backend_widget_features(&graph, &["older-backend"]),
+            [] as [std::string::String; 0]
+        );
+    }
+
+    #[test]
+    fn list_capability_does_not_select_other_controls() {
+        let graph = BTreeMap::from([
+            ("waterui-internal".into(), BTreeSet::from(["list".into()])),
+            ("waterui-form".into(), BTreeSet::new()),
+            ("waterui-controls".into(), BTreeSet::new()),
+        ]);
+        assert_eq!(selected_widget_capabilities(&graph), ["list"]);
+    }
 
     /// A `FontFetch` stub for declarations that must never be downloaded.
     fn must_not_download<'a>(
@@ -3650,6 +3855,43 @@ mod permission_audit_tests {
             app.is_empty(),
             "the app graph does not carry `theme` and must stay silent"
         );
+    }
+
+    #[test]
+    fn font_queries_distinguish_feature_selected_dependency_graphs() {
+        smol::block_on(async {
+            let directory = tempdir().expect("temp project");
+            let root = directory.path().join("app");
+            write_crate(
+                &directory.path().join("fonts"),
+                "fonts",
+                "[[package.metadata.waterui.assets.font]]\nname = \"Feature Face\"\nlocal_path = \"face.ttf\"\n",
+            );
+            let manifest = write_crate(
+                &root,
+                "app",
+                "[features]\nextra = [\"dep:fonts\"]\n[dependencies]\nfonts = { path = \"../fonts\", optional = true }\n",
+            );
+            std::fs::write(root.join("Water.toml"),
+                "[package]\nname = \"Feature Fonts\"\nbundle_identifier = \"dev.waterui.featurefonts\"\n")
+                .expect("project manifest");
+            let host = crate::toolchain::testing::real_toolchain_host(directory.path());
+            let project =
+                crate::project::Project::open(&host, &root, crate::project::ManagedBackends::NONE)
+                    .await
+                    .expect("project opens");
+            for (features, count) in [(vec![], 0), (vec![String::from("extra")], 1), (vec![], 0)] {
+                let fonts = super::scan_fonts_with_features(
+                    &project,
+                    &manifest,
+                    &[FontPlatform::Android],
+                    &features,
+                )
+                .await
+                .expect("fonts scan");
+                assert_eq!(fonts.len(), count);
+            }
+        });
     }
 
     #[test]

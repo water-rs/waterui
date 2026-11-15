@@ -10,10 +10,12 @@ use crate::theme::InteractionFocusBinding;
 #[cfg(feature = "accessibility")]
 use std::borrow::Cow;
 #[cfg(feature = "accessibility")]
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::BTreeSet;
 #[cfg(feature = "accessibility")]
-use std::ops::RangeInclusive;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use std::collections::VecDeque;
 #[cfg(feature = "accessibility")]
+#[cfg(feature = "date-picker")]
 use waterui_form::picker::date::{DatePickerType, DateTime};
 
 #[cfg(feature = "accessibility")]
@@ -295,22 +297,22 @@ pub struct DelegatedActivation<E: crate::text::TextEngine> {
 pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
     /// Direct semantic activation: `Click` invokes the widget's own activation
     /// handler, no pointer and no coordinates.
-    Activate {
-        action: AccessibilityActivation<E>,
-    },
-    Toggle {
-        binding: nami::Binding<bool>,
-    },
+    Activate { action: AccessibilityActivation<E> },
+    #[cfg(feature = "toggle")]
+    Toggle { binding: nami::Binding<bool> },
+    #[cfg(feature = "slider")]
     Slider {
         value: nami::Binding<f64>,
         range: RangeInclusive<f64>,
         step: f64,
     },
+    #[cfg(feature = "stepper")]
     Stepper {
         value: nami::Binding<i32>,
         step: nami::Computed<i32>,
         range: RangeInclusive<i32>,
     },
+    #[cfg(feature = "date-picker")]
     DatePicker {
         value: nami::Binding<DateTime>,
         range: RangeInclusive<DateTime>,
@@ -323,13 +325,14 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
         /// (water-rs/hydrolysis#140).
         env: Environment,
     },
+    #[cfg(feature = "text-field")]
     TextField {
         value: nami::Binding<StyledStr>,
         line_limit: Option<usize>,
     },
-    SecureField {
-        value: nami::Binding<FormSecure>,
-    },
+    #[cfg(feature = "secure-field")]
+    SecureField { value: nami::Binding<FormSecure> },
+    #[cfg(any(feature = "picker", feature = "navigation"))]
     PickerSelect {
         selection: nami::Binding<waterui_core::id::Id>,
         target: waterui_core::id::Id,
@@ -346,6 +349,7 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
     /// `Focus` lands on the row like on every focusable node. Arrow-key
     /// navigation between rows is built on these actions
     /// (water-rs/waterui#1223).
+    #[cfg(feature = "list")]
     ListRow {
         /// The row's index in the list's row set.
         index: usize,
@@ -426,6 +430,7 @@ pub struct AccessibilityBuilder<E: crate::text::TextEngine> {
     pub(crate) root_bounds: kurbo::Rect,
     pub(crate) root_label: String,
     pub(crate) focus: AccessibilityNodeId,
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) pending_text_input_nodes: VecDeque<AccessibilityNodeId>,
     pub(crate) parent_stack: Vec<AccessibilityNodeId>,
     /// The registering cell of each emitted node — the owner the unit rule
@@ -519,6 +524,7 @@ impl<E: crate::text::TextEngine> Default for AccessibilityBuilder<E> {
             root_bounds: kurbo::Rect::ZERO,
             root_label: String::from("WaterUI Window"),
             focus: ACCESSIBILITY_ROOT_NODE_ID,
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             pending_text_input_nodes: VecDeque::new(),
             parent_stack: Vec::new(),
             node_owners: std::collections::BTreeMap::new(),
@@ -574,6 +580,7 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         self.active_node_keys.clear();
         self.owner_ordinals.clear();
         self.owner_stack.clear();
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         self.pending_text_input_nodes.clear();
         self.parent_stack.clear();
         self.suppression_depth = 0;
@@ -661,6 +668,7 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
     /// through `node_at_point_where` instead, which compiles everywhere the
     /// accessibility feature does.
     #[cfg(any(not(target_arch = "wasm32"), test))]
+    #[cfg(feature = "menu")]
     pub(crate) fn node_at_point(&self, point: kurbo::Point) -> Option<AccessibilityNodeId> {
         self.node_at_point_where(point, |_| true)
     }
@@ -712,10 +720,12 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         }
     }
 
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn push_pending_text_input_node(&mut self, node_id: AccessibilityNodeId) {
         self.pending_text_input_nodes.push_back(node_id);
     }
 
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn take_pending_text_input_node(&mut self) -> Option<AccessibilityNodeId> {
         self.pending_text_input_nodes.pop_front()
     }
@@ -1550,12 +1560,32 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         clippy::too_many_lines,
         reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
     )]
+    #[cfg_attr(
+        not(any(
+            feature = "slider",
+            feature = "stepper",
+            feature = "date-picker",
+            feature = "text-field",
+            feature = "secure-field"
+        )),
+        expect(
+            clippy::needless_pass_by_value,
+            reason = "value-editing capabilities consume request data through the same action interface"
+        )
+    )]
     pub fn handle_accessibility_action(
         &mut self,
         request: AccessibilityActionRequest,
         env: &Environment,
     ) -> bool {
         let action = request.action;
+        #[cfg(any(
+            feature = "slider",
+            feature = "stepper",
+            feature = "date-picker",
+            feature = "text-field",
+            feature = "secure-field"
+        ))]
         let action_data = request.data;
         let target_node = request.target_node;
         let focus_action = matches!(
@@ -1604,6 +1634,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 AccessibilityAction::Focus => true,
                 _ => declined_action("activation", action),
             },
+            #[cfg(feature = "toggle")]
             AccessibilityActionTarget::Toggle { binding } => match action {
                 AccessibilityAction::Click => {
                     let next = !binding.snapshot();
@@ -1613,6 +1644,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 AccessibilityAction::Focus => true,
                 _ => declined_action("toggle", action),
             },
+            #[cfg(feature = "slider")]
             AccessibilityActionTarget::Slider { value, range, step } => {
                 handle_accessibility_slider_action(
                     &value,
@@ -1623,6 +1655,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     action_data,
                 )
             }
+            #[cfg(feature = "stepper")]
             AccessibilityActionTarget::Stepper { value, step, range } => {
                 handle_accessibility_stepper_action(
                     &value,
@@ -1633,6 +1666,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     action_data,
                 )
             }
+            #[cfg(feature = "date-picker")]
             AccessibilityActionTarget::DatePicker {
                 value,
                 range,
@@ -1650,6 +1684,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 action_data,
                 env,
             ),
+            #[cfg(feature = "text-field")]
             AccessibilityActionTarget::TextField { value, line_limit } => {
                 handle_accessibility_text_field_action(
                     self,
@@ -1660,6 +1695,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     action_data,
                 )
             }
+            #[cfg(feature = "secure-field")]
             AccessibilityActionTarget::SecureField { value } => {
                 handle_accessibility_secure_field_action(
                     self,
@@ -1669,12 +1705,14 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     action_data,
                 )
             }
+            #[cfg(any(feature = "picker", feature = "navigation"))]
             AccessibilityActionTarget::PickerSelect { selection, target } => {
                 handle_accessibility_picker_select_action(&selection, target, action)
             }
             AccessibilityActionTarget::Scroll { handle, axis } => {
                 handle_accessibility_scroll_action(self, &handle, axis, action, target_node)
             }
+            #[cfg(feature = "list")]
             AccessibilityActionTarget::ListRow {
                 index,
                 position,
@@ -1734,6 +1772,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Has the published tree follow `value` between `key`'s renders: when
     /// `changed` is raised, the node `key` emitted takes the binding's
     /// current value, clamped to `range`, in an incremental update.
+    #[cfg(feature = "slider")]
     pub(crate) fn register_live_numeric(
         &mut self,
         key: crate::renderer::InteractionKey,
@@ -1756,6 +1795,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// interaction identity and the tag it selects — is marked selected in
     /// the node it emitted exactly when the binding names its tag, in an
     /// incremental update.
+    #[cfg(feature = "picker")]
     pub(crate) fn register_live_selection(
         &mut self,
         key: crate::renderer::InteractionKey,
@@ -1801,6 +1841,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// the node a pointer at its centre would hit in the accessibility
     /// tree's own terms — the innermost descendant advertising `Click`.
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "list")]
     pub(crate) fn click_list_row(
         &mut self,
         row_node: AccessibilityNodeId,
@@ -1834,6 +1875,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// last matching node emitted is the innermost. `None` on a row with
     /// nothing clickable inside.
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "list")]
     fn clickable_descendant(&self, row_node: AccessibilityNodeId) -> Option<AccessibilityNodeId> {
         let mut inside: std::collections::BTreeSet<AccessibilityNodeId> =
             std::collections::BTreeSet::new();
@@ -1974,6 +2016,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// looked up through the registry — never the root — or, with no
     /// target registered (the semantic runtime), the row node's owner.
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "list")]
     pub(crate) fn scroll_list_row_into_view(
         &self,
         position: usize,
@@ -2005,6 +2048,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn push_pending_text_input_accessibility_node(
         &mut self,
         node_id: AccessibilityNodeId,
@@ -2013,6 +2057,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn take_pending_text_input_accessibility_node(
         &mut self,
     ) -> Option<AccessibilityNodeId> {
@@ -2464,6 +2509,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// [`AccessibilityContentTypes`], the channel for a declaration the
     /// accesskit node has no property for (water-rs/waterui#1874).
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "text-field")]
     pub(crate) fn register_accessibility_content_type(
         &mut self,
         node_id: AccessibilityNodeId,
@@ -2490,6 +2536,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "navigation")]
     pub(crate) fn register_accessibility_child_node(
         &mut self,
         node: AccessibilityNode,
@@ -2515,6 +2562,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "navigation")]
     pub(crate) fn register_accessibility_child_node_semantic(
         &mut self,
         node: AccessibilityNode,
@@ -2527,6 +2575,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
+    #[cfg(any(feature = "list", feature = "picker", feature = "navigation"))]
     pub(crate) fn register_accessibility_child_node_with_key(
         &mut self,
         semantic_key: i64,
@@ -2553,6 +2602,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
+    #[cfg(any(feature = "list", feature = "picker", feature = "navigation"))]
     pub(crate) fn register_accessibility_child_node_with_key_semantic(
         &mut self,
         semantic_key: i64,
@@ -2688,7 +2738,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // control's own name rather than dropping it — e.g. a `List` row of a
         // single `toggle("Wi-Fi")` announces "Wi-Fi".
         macro_rules! label_from_native_config {
-            ($($config:ty),+ $(,)?) => {$(
+            ($($(#[$attr:meta])* $config:ty),+ $(,)?) => {$(
+                $(#[$attr])*
                 if let Some(native) = view.downcast_ref::<Native<$config>>() {
                     return Self::accessibility_label_from_label(
                         native.as_inner().label(),
@@ -2698,16 +2749,25 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             )+};
         }
         label_from_native_config!(
+            #[cfg(feature = "toggle")]
             waterui_controls::toggle::ToggleConfig,
+            #[cfg(feature = "slider")]
             waterui_controls::slider::SliderConfig,
+            #[cfg(feature = "stepper")]
             waterui_controls::stepper::StepperConfig,
             waterui_controls::button::ButtonConfig,
+            #[cfg(feature = "text-field")]
             waterui_controls::text_field::ResolvedTextFieldConfig,
+            #[cfg(feature = "secure-field")]
             waterui_form::secure::SecureFieldConfig,
+            #[cfg(feature = "picker")]
             waterui_form::picker::PickerConfig,
+            #[cfg(feature = "date-picker")]
             waterui_form::picker::date::DatePickerConfig,
+            #[cfg(feature = "color-picker")]
             waterui_form::picker::color::ColorPickerConfig,
         );
+        #[cfg(feature = "menu")]
         if let Some(menu) = view.downcast_ref::<Native<waterui_controls::menu::ResolvedMenu>>() {
             let styled = self.read_signal(&menu.as_inner().accessibility_label);
             return Some(styled.to_semantic().to_string());
@@ -2873,6 +2933,13 @@ fn declined_action(target: &str, action: AccessibilityAction) -> bool {
 
 /// Declines an accessibility action whose payload is not the `expected` data.
 #[cfg(feature = "accessibility")]
+#[cfg(any(
+    feature = "slider",
+    feature = "stepper",
+    feature = "date-picker",
+    feature = "text-field",
+    feature = "secure-field"
+))]
 fn declined_action_data(target: &str, action: AccessibilityAction, expected: &str) -> bool {
     contract_violation!(
         "hydrolysis accessibility {target} {action:?} requires {expected} data; the action is declined"
@@ -2940,6 +3007,7 @@ fn handle_accessibility_scroll_action<E: crate::text::TextEngine>(
 }
 
 #[cfg(feature = "accessibility")]
+#[cfg(feature = "slider")]
 pub fn slider_step_for_range(range: RangeInclusive<f64>) -> f64 {
     let start = *range.start();
     let end = *range.end();
@@ -2958,6 +3026,7 @@ pub fn slider_step_for_range(range: RangeInclusive<f64>) -> f64 {
     clippy::needless_pass_by_value,
     reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
 )]
+#[cfg(feature = "slider")]
 fn handle_accessibility_slider_action(
     value: &nami::Binding<f64>,
     start: f64,
@@ -2996,6 +3065,7 @@ fn handle_accessibility_slider_action(
     clippy::needless_pass_by_value,
     reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
 )]
+#[cfg(feature = "stepper")]
 fn handle_accessibility_stepper_action(
     value: &nami::Binding<i32>,
     step: &nami::Computed<i32>,
@@ -3047,6 +3117,7 @@ fn handle_accessibility_stepper_action(
     clippy::too_many_arguments,
     reason = "threads the full accessibility-action context; grouping into a struct would not improve clarity"
 )]
+#[cfg(feature = "date-picker")]
 fn handle_accessibility_date_picker_action<E: crate::text::TextEngine>(
     renderer: &mut SemanticCore<E>,
     value: &nami::Binding<DateTime>,
@@ -3103,6 +3174,7 @@ fn handle_accessibility_date_picker_action<E: crate::text::TextEngine>(
 }
 
 #[cfg(feature = "accessibility")]
+#[cfg(feature = "text-field")]
 fn handle_accessibility_text_field_action<E: crate::text::TextEngine>(
     renderer: &mut SemanticCore<E>,
     node_id: AccessibilityNodeId,
@@ -3150,6 +3222,7 @@ fn handle_accessibility_text_field_action<E: crate::text::TextEngine>(
 }
 
 #[cfg(feature = "accessibility")]
+#[cfg(feature = "secure-field")]
 fn handle_accessibility_secure_field_action<E: crate::text::TextEngine>(
     renderer: &mut SemanticCore<E>,
     node_id: AccessibilityNodeId,
@@ -3193,6 +3266,7 @@ fn handle_accessibility_secure_field_action<E: crate::text::TextEngine>(
 }
 
 #[cfg(feature = "accessibility")]
+#[cfg(any(feature = "picker", feature = "navigation"))]
 fn handle_accessibility_picker_select_action(
     selection: &nami::Binding<waterui_core::id::Id>,
     target: waterui_core::id::Id,
@@ -3276,19 +3350,23 @@ impl<E: crate::text::TextEngine> Clone for AccessibilityActionTarget<E> {
             Self::Activate { action } => Self::Activate {
                 action: action.clone(),
             },
+            #[cfg(feature = "toggle")]
             Self::Toggle { binding } => Self::Toggle {
                 binding: binding.clone(),
             },
+            #[cfg(feature = "slider")]
             Self::Slider { value, range, step } => Self::Slider {
                 value: value.clone(),
                 range: range.clone(),
                 step: *step,
             },
+            #[cfg(feature = "stepper")]
             Self::Stepper { value, step, range } => Self::Stepper {
                 value: value.clone(),
                 step: step.clone(),
                 range: range.clone(),
             },
+            #[cfg(feature = "date-picker")]
             Self::DatePicker {
                 value,
                 range,
@@ -3302,13 +3380,16 @@ impl<E: crate::text::TextEngine> Clone for AccessibilityActionTarget<E> {
                 origin: *origin,
                 env: env.clone(),
             },
+            #[cfg(feature = "text-field")]
             Self::TextField { value, line_limit } => Self::TextField {
                 value: value.clone(),
                 line_limit: *line_limit,
             },
+            #[cfg(feature = "secure-field")]
             Self::SecureField { value } => Self::SecureField {
                 value: value.clone(),
             },
+            #[cfg(any(feature = "picker", feature = "navigation"))]
             Self::PickerSelect { selection, target } => Self::PickerSelect {
                 selection: selection.clone(),
                 target: *target,
@@ -3317,6 +3398,7 @@ impl<E: crate::text::TextEngine> Clone for AccessibilityActionTarget<E> {
                 handle: handle.clone(),
                 axis: *axis,
             },
+            #[cfg(feature = "list")]
             Self::ListRow {
                 index,
                 position,
@@ -3347,3 +3429,9 @@ impl<E: crate::text::TextEngine> Clone for ScopedAccessibilitySemantics<E> {
         }
     }
 }
+
+#[cfg(all(
+    feature = "accessibility",
+    any(feature = "slider", feature = "stepper", feature = "date-picker")
+))]
+use std::ops::RangeInclusive;

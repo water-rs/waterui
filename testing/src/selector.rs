@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use accesskit::{Action as AccessibilityAction, ActionData as AccessibilityActionData};
 use hydrolysis::{AccessibilityActivationPointError, HeadlessRuntime};
-use waterui::component::text_field::ContentType;
+use waterui::component::input::ContentType;
 
 use crate::app::SemanticApp;
 use crate::driver::RuntimeDriver;

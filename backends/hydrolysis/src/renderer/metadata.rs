@@ -251,6 +251,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// `selected_row` (a picker popup's selected row, in the panel's own
     /// space). The window leaves the panel's shadow room inside its own
     /// bounds via `POPUP_MENU_PANEL_MARGIN`.
+    #[cfg(feature = "menu")]
     pub(super) fn apply_popup_menu_surface(
         renderer: &mut Self,
         ctx: RenderContext,
@@ -839,6 +840,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// registration and the preview/accessory slots travel with the target for
     /// the open presentation to mount. The node's environment travels with the
     /// target so the popup opens inside it (water-rs/hydrolysis#140).
+    #[cfg(feature = "menu")]
     pub(super) fn apply_context_menu(
         renderer: &mut Self,
         ctx: RenderContext,

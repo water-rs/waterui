@@ -1,9 +1,27 @@
-use super::{HydrolysisRenderer, TailMark};
+use super::HydrolysisRenderer;
+#[cfg(any(
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker",
+    feature = "date-picker",
+    feature = "picker",
+    feature = "list"
+))]
+use super::TailMark;
+#[cfg(feature = "navigation")]
+use crate::renderer::grow_rect;
 
 use crate::renderer::HydroState;
 use crate::renderer::SafeAreaLayout;
-use crate::renderer::grow_rect;
 use waterui_core::Environment;
+#[cfg(any(
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker",
+    feature = "date-picker",
+    feature = "picker",
+    feature = "list"
+))]
 use waterui_core::layout::HorizontalAlignment;
 use waterui_text::styled::StyledStr;
 
@@ -58,12 +76,14 @@ impl RenderContext {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 pub struct HydrolysisWindowOrigin {
     pub x: f32,
     pub y: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub enum HydrolysisTextContextMenuMode {
     Overlay,
     NativeWindow,
@@ -143,6 +163,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
     /// touches a boundary stay reachable, so a scroll surface inside still
     /// extends and `.ignore_safe_area` inside still releases on the edges the
     /// chrome left on the boundary (§7.1).
+    #[cfg(feature = "navigation")]
     pub(crate) fn content_area_for(&self, rect: kurbo::Rect) -> Option<SafeAreaLayout> {
         self.safe_area
             .as_ref()
@@ -154,6 +175,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
     /// fill must both cover so an extended bar surface is never clipped and
     /// never lands on the window background. `self.bounds` itself stays
     /// the layout reference.
+    #[cfg(feature = "navigation")]
     pub(crate) fn chrome_paint_bounds(&self) -> kurbo::Rect {
         grow_rect(
             self.bounds,
@@ -171,6 +193,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
     /// context keeps `bounds`' own edges, the placement every
     /// context-free chrome container gets: the bars come back
     /// [`ChromeBar::contextless`] and `content_area` stays `None`.
+    #[cfg(feature = "navigation")]
     pub(crate) fn chrome_splits<const N: usize>(
         &self,
         bars: [(crate::renderer::Edge, f64); N],
@@ -230,6 +253,14 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
 
     /// Opens the named scope `key` clipped to `clip` at `alpha`, through
     /// this context's transform.
+    #[cfg(any(
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "navigation",
+        feature = "slider",
+        feature = "stepper",
+        feature = "toggle"
+    ))]
     pub(crate) fn open_scope(
         &mut self,
         key: crate::renderer::mount::ScopeKey,
@@ -250,6 +281,11 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
     }
 
     /// [`Self::open_scope`] around `f`.
+    #[cfg(any(
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "navigation"
+    ))]
     pub(crate) fn with_scope(
         &mut self,
         key: crate::renderer::mount::ScopeKey,
@@ -327,6 +363,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
 
     /// [`Self::with_scope`] when the scope only exists conditionally (a
     /// disabled-control alpha group): pairing stays lexical either way.
+    #[cfg(any(feature = "slider", feature = "stepper", feature = "toggle"))]
     pub(crate) fn with_scope_if(
         &mut self,
         enabled: bool,
@@ -344,6 +381,12 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         }
     }
 
+    #[cfg(any(
+        feature = "picker",
+        feature = "list",
+        feature = "color-picker",
+        feature = "date-picker"
+    ))]
     pub(crate) fn render_styled_text(
         &mut self,
         styled: StyledStr,
@@ -356,6 +399,14 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
 
     /// `styled` limited to `max_lines`, its default-coloured runs drawn in
     /// `paint`, live, when given.
+    #[cfg(any(
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "color-picker",
+        feature = "date-picker",
+        feature = "picker",
+        feature = "list"
+    ))]
     pub(crate) fn render_styled_text_limited(
         &mut self,
         styled: StyledStr,
@@ -414,6 +465,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
 /// never paired with another bar's context — plus the one content rect
 /// and composed content context; a context-free widget's bars come back
 /// [`ChromeBar::contextless`] and `content_area` `None`.
+#[cfg(feature = "navigation")]
 pub struct ChromeGroup<const N: usize> {
     /// Each bar's share of the split, in the order the edges were given.
     pub bars: [crate::renderer::ChromeBar; N],

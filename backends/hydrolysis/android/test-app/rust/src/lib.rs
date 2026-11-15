@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use waterui::app::App;
 #[cfg(not(feature = "probe"))]
-use waterui::component::text_field::{ContentType, KeyboardType};
+use waterui::component::input::{ContentType, KeyboardType};
 #[cfg(not(feature = "probe"))]
 use waterui::form::secure::Secure;
 #[cfg(not(feature = "probe"))]

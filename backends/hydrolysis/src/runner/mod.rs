@@ -28,18 +28,19 @@ use waterui::app::App;
     not(target_os = "android")
 ))]
 use waterui::app::AppParts;
+#[cfg(feature = "table")]
 use waterui::component::table::TableConfig;
 use waterui::window::Window;
 use waterui::window::WindowManager;
 #[cfg(hydrolysis_cherenkov)]
 use waterui_core::AnyView;
 use waterui_core::Environment;
-use waterui_core::Native;
 use waterui_core::Retain;
 #[cfg(hydrolysis_cherenkov)]
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::key::KeyPress;
-use waterui_core::view::Hook;
+#[cfg(feature = "table")]
+use waterui_core::{Native, view::Hook};
 #[cfg(hydrolysis_cherenkov)]
 use waterui_text::FontCollection;
 
@@ -82,6 +83,7 @@ mod diagnostics;
 /// The `InputConnection` protocol state machine — compiled on Android for the
 /// JNI bridge and on host for its tests; dead elsewhere.
 #[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub mod editing;
 #[cfg(hydrolysis_cherenkov)]
 mod executor;
@@ -89,6 +91,7 @@ mod executor;
 mod headless;
 pub mod ime;
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
+#[cfg(feature = "menu")]
 pub mod menu_bar;
 #[cfg(hydrolysis_winit)]
 pub mod placement;
@@ -159,6 +162,7 @@ use window::{FrameReader, render_window_with_capture};
         hydrolysis_cherenkov
     )
 ))]
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 use window::runtime_window_origin;
 // The winit runner pumps events and window semantics through these.
 #[cfg(hydrolysis_winit)]
@@ -206,11 +210,15 @@ use crate::readback::readback_surface_texture_rgba8;
 #[cfg(hydrolysis_cherenkov)]
 use crate::renderer::FontFamilyResolution;
 #[cfg(hydrolysis_cherenkov)]
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::renderer::HydrolysisTextContextMenuMode;
-use crate::renderer::{
-    HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery, KeyPressOutcome, SemanticCore,
-};
-use crate::renderer::{MenuShortcutRegistry, PopupWindowManager};
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use crate::renderer::HydrolysisWindowOrigin;
+#[cfg(feature = "menu")]
+use crate::renderer::MenuShortcutRegistry;
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use crate::renderer::PopupWindowManager;
+use crate::renderer::{HydrolysisRenderer, KeyDelivery, KeyPressOutcome, SemanticCore};
 #[cfg(hydrolysis_cherenkov)]
 use crate::text::ParleyEngine;
 use crate::time::Instant;
@@ -341,7 +349,28 @@ fn offscreen_scale_factor() -> f64 {
 /// `video-gpu` / `map-gpu` features. What this renderer installs are the
 /// platform's own primitives it bridges: the system web view on macOS and the
 /// `<video>` element on the web.
+#[cfg(any(
+    test,
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker",
+    feature = "date-picker",
+    feature = "list",
+    feature = "navigation",
+    feature = "table",
+    hydrolysis_system_webview,
+    all(target_arch = "wasm32", feature = "web", feature = "video")
+))]
 fn install_native_component_hooks(env: &mut Environment) {
+    #[cfg(any(
+        test,
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "color-picker",
+        feature = "date-picker",
+        feature = "list",
+        feature = "navigation"
+    ))]
     crate::localization::install(env);
     // The only web engine this backend knows about is the platform's own: a
     // browser engine an application links installs its realization itself.
@@ -350,6 +379,7 @@ fn install_native_component_hooks(env: &mut Environment) {
     // The page's own `<video>` element is the web's native player.
     #[cfg(all(target_arch = "wasm32", feature = "web", feature = "video"))]
     crate::widgets::platform::video::install(env);
+    #[cfg(feature = "table")]
     env.insert(Hook::new(|_env: &Environment, config: TableConfig| {
         Native::new(config)
     }));
@@ -359,15 +389,19 @@ fn install_headless_window_managers<E: crate::text::TextEngine>(
     env: &mut Environment,
     pending_windows: Rc<RefCell<Vec<Window>>>,
 ) {
-    env.insert(WindowManager::new({
-        let pending_windows = Rc::clone(&pending_windows);
-        move |window| {
-            pending_windows.borrow_mut().push(window);
-        }
-    }));
-    env.insert(PopupWindowManager::new(move |window| {
+    #[cfg(any(feature = "menu", feature = "color-picker"))]
+    let popup_windows = Rc::clone(&pending_windows);
+    env.insert(WindowManager::new(move |window| {
         pending_windows.borrow_mut().push(window);
     }));
+    #[cfg(any(feature = "menu", feature = "color-picker"))]
+    env.insert(PopupWindowManager::new(move |window| {
+        popup_windows.borrow_mut().push(window);
+    }));
+    let _ = env.get_or_insert_with::<crate::renderer::WindowIdentities, _>(
+        crate::renderer::WindowIdentities::default,
+    );
+    #[cfg(feature = "menu")]
     let _ = env.get_or_insert_with::<MenuShortcutRegistry<E>, _>(MenuShortcutRegistry::default);
 }
 
@@ -447,6 +481,7 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
     // started.
     let AppParts {
         windows,
+        #[cfg(feature = "menu")]
         menu_bar,
         env,
         last_window: _,
@@ -457,6 +492,18 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
+    #[cfg(any(
+        test,
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "color-picker",
+        feature = "date-picker",
+        feature = "list",
+        feature = "navigation",
+        feature = "table",
+        hydrolysis_system_webview,
+        all(target_arch = "wasm32", feature = "web", feature = "video")
+    ))]
     install_native_component_hooks(&mut env);
     install_headless_window_managers::<crate::text::ParleyEngine>(
         &mut env,
@@ -464,7 +511,9 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
     );
     // App-level menu bar: arms its chords on the shared registry. The
     // headless host renders no chrome, so there is no surface to draw.
+    #[cfg(feature = "menu")]
     menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     // A headless host has no platform appearance: the scheme is Light
     // unless the application installs its own.
@@ -489,9 +538,9 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
             FontFamilyResolution::Lenient,
         ),
     ));
-    let shortcuts = env
-        .get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
-        .expect("install_headless_window_managers seeds MenuShortcutRegistry")
+    let identities = env
+        .get::<crate::renderer::WindowIdentities>()
+        .expect("install_headless_window_managers seeds WindowIdentities")
         .clone();
     let mut pending_windows = VecDeque::from(windows);
     while let Some(window) = pending_windows.pop_front() {
@@ -507,7 +556,7 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
             Rc::clone(&theme),
             ParleyEngine::from_collection(&fonts, FontFamilyResolution::Lenient),
         );
-        renderer.set_window_id(shortcuts.mint_window_id());
+        renderer.set_window_id(identities.mint_window_id());
         renderer.set_window_closable(window.closable);
         let mut runtime =
             RuntimeWindow::new_painted(window, platform, renderer, render_diagnostics_config, &env);

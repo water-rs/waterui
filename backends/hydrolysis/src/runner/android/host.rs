@@ -37,6 +37,7 @@ use waterui_core::layout::LayoutDirection;
 use super::accessibility::AccessibilitySnapshot;
 #[cfg(hydrolysis_gpu_painter)]
 use super::gpu::{AndroidGpuContext, AndroidSurface};
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use super::ime::ImeBridge;
 use super::jni::JniError;
 #[cfg(hydrolysis_gpu_painter)]
@@ -46,10 +47,27 @@ use crate::platform::{InputEvent, PlatformWindow, TextInputState, validated_wind
 use crate::renderer::FontFamilyResolution;
 #[cfg(hydrolysis_gpu_painter)]
 use crate::renderer::HydrolysisRenderer;
-use crate::renderer::{HydrolysisTextContextMenuMode, MenuShortcutRegistry};
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use crate::renderer::HydrolysisTextContextMenuMode;
+
 use crate::runner::android_executor::{AndroidMainThreadExecutor, UiThreadPoster};
 use crate::runner::android_methods::{HOST_METHODS, HostMethodId};
 use crate::runner::android_metrics::InsetsMetrics;
+#[cfg(any(
+    test,
+    feature = "text-field",
+    feature = "secure-field",
+    feature = "color-picker",
+    feature = "date-picker",
+    feature = "list",
+    feature = "navigation",
+    feature = "table",
+    hydrolysis_system_webview,
+    all(target_arch = "wasm32", feature = "web", feature = "video")
+))]
+use crate::runner::install_native_component_hooks;
+#[cfg(feature = "menu")]
+use crate::runner::menu_bar;
 use crate::runner::window::{
     FrameDemand, FrameTransaction, RuntimeWindow, advance_runtime, handle_input_events,
     reports_ui_idle,
@@ -58,7 +76,6 @@ use crate::runner::window::{
 use crate::runner::window::{WindowFrame, render_window};
 use crate::runner::{
     RenderDiagnosticsConfig, init_main_thread_executors, install_headless_window_managers,
-    install_native_component_hooks, menu_bar,
 };
 #[cfg(hydrolysis_gpu_painter)]
 use crate::text::ParleyEngine;
@@ -311,12 +328,14 @@ impl HostBridge {
 
     /// `session.onNativeEditingState(json)` — the authoritative editing
     /// state for the connection's `Editable` mirror.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn editing_state_changed(&self, json: &str) {
         self.call_str(HostMethodId::EditingState, json);
     }
 
     /// `session.onNativeCursorAnchorInfo(json)` — the subscribed cursor
     /// anchor info, in logical units.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn cursor_anchor_changed(&self, json: &str) {
         self.call_str(HostMethodId::CursorAnchorInfo, json);
     }
@@ -391,6 +410,7 @@ impl HostBridge {
     /// `session.onNativeBackAvailable(available)` — the host enables its back
     /// callback only while a navigation stack can accept the pop. A disabled
     /// callback leaves back to the system, which finishes the activity.
+    #[cfg(feature = "navigation")]
     fn set_back_navigation_available(&self, available: bool) {
         self.call(HostMethodId::BackAvailable, &[JValue::Bool(available)]);
     }
@@ -983,6 +1003,7 @@ pub struct AndroidSession {
     /// The platform-view sink the window's `PlatformView` leaves record into;
     /// the published table is serialized for the Kotlin registry.
     pub(crate) platform_views: crate::platform_view::PlatformViewSink,
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) ime: ImeBridge,
     /// The live surface generation, as last reported by the host.
     #[cfg(hydrolysis_gpu_painter)]
@@ -1017,6 +1038,7 @@ pub struct AndroidSession {
     ready_logged: Cell<bool>,
     /// The last value reported to the host's back callback. Starts disabled,
     /// matching the callback the activity registers.
+    #[cfg(feature = "navigation")]
     back_navigation_available: bool,
     /// Sessions are owned and driven on the UI thread only.
     _not_send: std::marker::PhantomData<*const ()>,
@@ -1100,6 +1122,26 @@ fn install_view_renderer(env: &mut Environment, theme: &Rc<dyn WidgetTheme>) {
     env.insert(waterui_core::ViewRenderer::new(renderer));
 }
 
+/// Installs the platform-view sink and the surface producers that publish into it.
+fn install_platform_view_surfaces(env: &mut Environment) -> crate::platform_view::PlatformViewSink {
+    // The platform-view sink `PlatformView` leaves record their frames
+    // into; the published table is what `nativePlatformViewFrames` serves.
+    let platform_views = crate::platform_view::PlatformViewSink::new();
+    env.insert(platform_views.clone());
+    // GPU content under the HWUI painter: each view's own platform surface,
+    // placed through the same sink (water-rs/waterui#1812).
+    #[cfg(hydrolysis_hwui_gpu)]
+    env.insert(Rc::new(super::hosted_gpu::HostedGpu::new(
+        platform_views.clone(),
+    )));
+    // The GPU video player's decoder planes, placed through the same sink.
+    #[cfg(hydrolysis_video_plane)]
+    env.insert(Rc::new(super::video_plane::VideoPlanes::new(
+        platform_views.clone(),
+    )));
+    platform_views
+}
+
 /// What `create` wires into the platform host and the session: the one
 /// window the app registered, its environment, theme and fonts, the
 /// window's registry id, and the bindings and sinks the host later drives.
@@ -1149,6 +1191,7 @@ fn session_mounts(
     };
     let waterui::app::AppParts {
         windows,
+        #[cfg(feature = "menu")]
         menu_bar,
         env,
         // A phone activity already embodies both policies: when the last
@@ -1163,12 +1206,26 @@ fn session_mounts(
         .extending(waterui_graphics::backend::SceneViewMergeToParent)
         .layered_on(&services.env);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
+    #[cfg(any(
+        test,
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "color-picker",
+        feature = "date-picker",
+        feature = "list",
+        feature = "navigation",
+        feature = "table",
+        hydrolysis_system_webview,
+        all(target_arch = "wasm32", feature = "web", feature = "video")
+    ))]
     install_native_component_hooks(&mut env);
     install_headless_window_managers::<super::AndroidTextEngine>(
         &mut env,
         Rc::clone(&pending_window_queue),
     );
+    #[cfg(feature = "menu")]
     menu_bar::register_menu_bar::<super::AndroidTextEngine>(&menu_bar, &env);
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     // The configuration's night mode is the colour-scheme signal: created
     // with the real `uiMode` the create call carried and kept current by
@@ -1185,13 +1242,10 @@ fn session_mounts(
     let fonts = crate::text::fonts::native_collection(&env);
     #[cfg(hydrolysis_gpu_painter)]
     fonts.clone().install(&mut env);
-    let Some(shortcuts) = env
-        .get::<MenuShortcutRegistry<super::AndroidTextEngine>>()
-        .cloned()
-    else {
+    let Some(identities) = env.get::<crate::renderer::WindowIdentities>().cloned() else {
         contract_violation!(
             "hydrolysis android: install_headless_window_managers did not seed \
-             MenuShortcutRegistry; no session is created"
+             WindowIdentities; no session is created"
         );
         return Ok(None);
     };
@@ -1199,21 +1253,7 @@ fn session_mounts(
     env.insert(crate::platform::WindowSafeArea(safe_area.clone()));
     let keyboard_area = nami::binding(waterui_layout::padding::EdgeInsets::default());
     env.insert(crate::platform::WindowKeyboardArea(keyboard_area.clone()));
-    // The platform-view sink `PlatformView` leaves record their frames
-    // into; the published table is what `nativePlatformViewFrames` serves.
-    let platform_views = crate::platform_view::PlatformViewSink::new();
-    env.insert(platform_views.clone());
-    // GPU content under the HWUI painter: each view's own platform surface,
-    // placed through the same sink (water-rs/waterui#1812).
-    #[cfg(hydrolysis_hwui_gpu)]
-    env.insert(Rc::new(super::hosted_gpu::HostedGpu::new(
-        platform_views.clone(),
-    )));
-    // The GPU video player's decoder planes, placed through the same sink.
-    #[cfg(hydrolysis_video_plane)]
-    env.insert(Rc::new(super::video_plane::VideoPlanes::new(
-        platform_views.clone(),
-    )));
+    let platform_views = install_platform_view_surfaces(&mut env);
     // The session-wide "focus sits inside a platform-view container"
     // state the Kotlin registry reports through
     // `onNativePlatformViewFocus`: while a mounted child holds the IME,
@@ -1256,7 +1296,7 @@ fn session_mounts(
         theme,
         #[cfg(hydrolysis_gpu_painter)]
         fonts,
-        window_id: shortcuts.mint_window_id(),
+        window_id: identities.mint_window_id(),
         pending_window_queue,
         platform_views,
         platform_view_focus,
@@ -1479,6 +1519,7 @@ impl AndroidSession {
             pending_window_queue,
             a11y: AccessibilitySnapshot::default(),
             platform_views,
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             ime: ImeBridge::default(),
             #[cfg(hydrolysis_gpu_painter)]
             surface_generation: 0,
@@ -1490,6 +1531,7 @@ impl AndroidSession {
             presented_once: Cell::new(false),
             rendering_failed: false,
             ready_logged: Cell::new(false),
+            #[cfg(feature = "navigation")]
             back_navigation_available: false,
             _not_send: std::marker::PhantomData,
         })))
@@ -1634,6 +1676,7 @@ impl AndroidSession {
     ///
     /// The callback starts disabled. A disabled callback leaves back to the
     /// system, which finishes the activity with its own predictive animation.
+    #[cfg(feature = "navigation")]
     fn sync_back_navigation_available(&mut self) {
         let available = self.runtime.renderer.has_back_navigation_target();
         if available == self.back_navigation_available {
@@ -1698,6 +1741,7 @@ impl AndroidSession {
         }
         super::accessibility::publish_if_pending(self);
         super::platform_views::publish_if_pending(self, flushed);
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         self.editing_sync();
 
         // Popup windows mounting mid-frame land on the pending queue: the
@@ -1836,6 +1880,7 @@ impl AndroidSession {
         if presented {
             self.presented_once.set(true);
         }
+        #[cfg(feature = "navigation")]
         self.sync_back_navigation_available();
         true
     }

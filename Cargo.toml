@@ -264,8 +264,8 @@ waterui-media = { version = "0.5.1", path = "components/multimedia/media" }
 waterui-image = "0.5.0"
 waterui-video = { version = "0.5.1", path = "components/multimedia/video" }
 waterui-video-gpu = "0.4.0"
-waterui-form = { version = "0.5.1", path = "components/foundation/form" }
-waterui-controls = { version = "0.5.1", path = "components/foundation/controls"}
+waterui-form = { version = "0.5.1", path = "components/foundation/form", default-features = false }
+waterui-controls = { version = "0.5.1", path = "components/foundation/controls", default-features = false }
 waterui-color = { version = "0.5.1", path = "components/foundation/color" }
 waterui-graphics = { version = "0.5.1", path = "components/visual/graphics", default-features = false }
 waterui-shape = { version = "0.5.1", path = "components/foundation/shape", default-features = false }
@@ -396,7 +396,39 @@ waterui = { path = ".", features = ["media"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [features]
+list = ["waterui-internal/list", "waterui-dylib?/list"]
+table = ["waterui-internal/table", "waterui-dylib?/table"]
+navigation = ["waterui-internal/navigation", "waterui-dylib?/navigation"]
+menu = ["waterui-internal/menu", "waterui-dylib?/menu"]
+calendar = ["waterui-internal/calendar", "waterui-dylib?/calendar"]
+color-picker = ["waterui-internal/color-picker", "waterui-dylib?/color-picker"]
+date-picker = ["waterui-internal/date-picker", "waterui-dylib?/date-picker"]
+file-picker = ["waterui-internal/file-picker", "waterui-dylib?/file-picker"]
+multi-date-picker = ["waterui-internal/multi-date-picker", "waterui-dylib?/multi-date-picker"]
+picker = ["waterui-internal/picker", "waterui-dylib?/picker"]
+secure-field = ["waterui-internal/secure-field", "waterui-dylib?/secure-field"]
+slider = ["waterui-internal/slider", "waterui-dylib?/slider"]
+stepper = ["waterui-internal/stepper", "waterui-dylib?/stepper"]
+text-field = ["waterui-internal/text-field", "waterui-dylib?/text-field"]
+toggle = ["waterui-internal/toggle", "waterui-dylib?/toggle"]
+validation = ["waterui-internal/validation", "waterui-dylib?/validation"]
 default = [
+    "list",
+    "table",
+    "navigation",
+    "menu",
+    "calendar",
+    "color-picker",
+    "date-picker",
+    "file-picker",
+    "multi-date-picker",
+    "picker",
+    "secure-field",
+    "slider",
+    "stepper",
+    "text-field",
+    "toggle",
+    "validation",
     "gpu",
     "assets",
     "dialog",
@@ -481,6 +513,22 @@ particle = ["waterui-internal/particle", "waterui-dylib?/particle"]
 # TypeScript view modules opts in explicitly rather than paying for them through
 # the full-feature set — the same reasoning that keeps `markdown-math` out.
 all = [
+    "list",
+    "table",
+    "navigation",
+    "menu",
+    "calendar",
+    "color-picker",
+    "date-picker",
+    "file-picker",
+    "multi-date-picker",
+    "picker",
+    "secure-field",
+    "slider",
+    "stepper",
+    "text-field",
+    "toggle",
+    "validation",
     "canvas",
     "chart",
     "barcode",
@@ -618,7 +666,7 @@ waterui-watcher-set = { path = "utils/watcher-set" }
 # and the split tabs-bar surface and divider calls (#1982). Drop the git pin
 # once a release has these changes.
 hydrolysis = { path = "backends/hydrolysis" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "main" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "feat/192-widget-capabilities" }
 # The waterkit family follows waterkit's `dev` so the framework consumes its
 # unreleased changes; the patches apply only while the `[workspace.dependencies]`
 # requirements admit `dev`'s version (0.2). Every waterkit crate the

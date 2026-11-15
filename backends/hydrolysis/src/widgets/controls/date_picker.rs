@@ -23,8 +23,8 @@ use waterui_form::picker::date::DatePickerConfig;
 use waterui_text::styled::StyledStr;
 
 use crate::renderer::RetainedSubview;
+use crate::widgets::controls::button::label_styled;
 use crate::widgets::controls::field_look::field_look;
-use crate::widgets::controls::picker::label_styled;
 #[cfg(feature = "accessibility")]
 use crate::widgets::util::widget_disabled;
 use crate::widgets::util::{inset_rect, mirrored_in};

@@ -84,6 +84,7 @@ pub trait LiveSource {
 }
 
 /// The focused editor's caret, retained across animation ticks.
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub(super) struct LiveCaret {
     rect: Operand<Rect>,
     clip: Operand<Rect>,
@@ -91,6 +92,7 @@ pub(super) struct LiveCaret {
     group: Operand<cherenkov_record::Group>,
 }
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 impl LiveCaret {
     pub(super) fn new(rect: Rect, clip: Rect, paint: Paint, alpha: f32) -> Self {
         Self {
@@ -110,6 +112,7 @@ impl LiveCaret {
     }
 }
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 impl LiveSource for LiveCaret {
     fn record(
         &self,
@@ -234,6 +237,7 @@ pub struct PartStep {
 
 impl PartStep {
     /// Content drawn whole, recorded with the steps around it.
+    #[cfg(any(feature = "picker", feature = "navigation"))]
     pub(crate) fn content(record: impl Fn(&mut Recorder) + 'static) -> Self {
         Self {
             opacity: None,
@@ -1274,12 +1278,14 @@ impl LiveChrome {
 
     /// A drag moved the slider's value to `value`, normalized to the range:
     /// the parts follow the pointer, with no animation.
+    #[cfg(feature = "slider")]
     pub(crate) fn track_value(&self, value: f64) {
         self.move_value(value, None);
     }
 
     /// The offset of an active drag from where it was pressed, `None`
     /// between drags.
+    #[cfg(feature = "slider")]
     pub(crate) fn set_drag(&self, drag: Option<Vec2>) {
         let Some(slider) = &self.slider else {
             return;
@@ -1292,6 +1298,7 @@ impl LiveChrome {
     }
 
     /// The slider's value when the current press landed.
+    #[cfg(feature = "slider")]
     pub(crate) const fn press_value(&self) -> f64 {
         self.slider
             .as_ref()
@@ -1302,6 +1309,7 @@ impl LiveChrome {
 
     /// The current press's point in the chrome's record space; `None`
     /// between presses and for a keyboard or synthetic press.
+    #[cfg(feature = "slider")]
     pub(crate) const fn press_point(&self) -> Option<Point> {
         self.press_point.get()
     }
@@ -1334,6 +1342,7 @@ impl LiveChrome {
 
     /// The operands that show a slider's value indicator while it is held
     /// and carry it along with the knob; `None` without an indicator.
+    #[cfg(feature = "slider")]
     pub(crate) fn indicator_operands(&self) -> Option<(Operand<f32>, Operand<Affine>)> {
         self.slider
             .as_ref()?
@@ -1612,6 +1621,7 @@ impl LiveChrome {
     /// it and reports the state itself: the owner steers it through
     /// [`Self::sync`], [`Self::begin_wave`] and [`Self::fade_wave`], and
     /// records it through [`Self::layer_steps`].
+    #[cfg(any(feature = "picker", feature = "navigation"))]
     pub(crate) fn realize(
         spec: Chrome,
         bounds: Rect,
@@ -1635,6 +1645,7 @@ impl LiveChrome {
     /// [`LiveChromeParts`] lists them around a widget's content: the
     /// surface, its backdrop material and the border over it, the custom
     /// parts, then the interaction layers.
+    #[cfg(any(feature = "picker", feature = "navigation"))]
     pub(crate) fn layer_steps(chrome: &Rc<Self>) -> impl Iterator<Item = PartStep> {
         let surface = PartStep::content({
             let chrome = Rc::clone(chrome);
@@ -1760,6 +1771,7 @@ impl LiveSource for ChromeSource {
 struct ChromeLayers {
     customs: Option<PartRuns>,
     slider: Option<PartRuns>,
+    #[cfg(feature = "slider")]
     indicator: Option<PartRuns>,
 }
 
@@ -1929,6 +1941,7 @@ impl LiveChromeParts {
 
     /// Lists the slider's value indicator bubble in `ctx`, at rest: the
     /// caller opens it in a scope that follows [`Self::indicator_operands`].
+    #[cfg(feature = "slider")]
     pub(crate) fn push_indicator<E: crate::text::TextEngine>(
         &self,
         renderer: &mut HydrolysisRenderer<E>,

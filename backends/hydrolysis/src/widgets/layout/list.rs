@@ -1843,6 +1843,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
     // The keyboard-moving clearance runs before the rows paint: while the
     // host's keyboard animation is in flight the offset follows it frame by
     // frame, so this flush paints the field already clear.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     state
         .borrow()
         .surface
@@ -2613,6 +2614,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
 
     // The focused-field clearance runs after recording, over the retained
     // input targets (§7.1).
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     state
         .borrow()
         .surface
