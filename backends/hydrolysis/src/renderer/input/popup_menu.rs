@@ -14,9 +14,11 @@ use waterui_controls::button::ButtonStyle;
 use waterui_controls::menu::Shortcut;
 #[cfg(feature = "date-picker")]
 use waterui_controls::{Stepper, stepper::stepper};
+use waterui_core::SignalExt as _;
 use waterui_core::contract_violation;
+#[cfg(feature = "picker")]
+use waterui_core::id::Id;
 use waterui_core::metadata::{Metadata, MetadataKey};
-use waterui_core::{SignalExt as _, id::Id};
 #[cfg(feature = "date-picker")]
 use waterui_form::picker::date::{Date, DatePickerType, DateTime};
 use waterui_layout::frame::Frame;
@@ -140,6 +142,7 @@ pub struct PopupMenuState<E: crate::text::TextEngine> {
     /// owned by its picker node. This is only a registry for "dismiss every menu"
     /// (outside click) — it is Rc-pruned, never flush-order-indexed, so a dropped
     /// picker's handle falls out by strong count and the live ones are deduplicated.
+    #[cfg(feature = "picker")]
     pub(crate) node_picker_menus: Vec<Rc<Cell<bool>>>,
     /// The anchored overlays this frame's flush registered — each anchor's live
     /// hit-space bounds, placement and handles. The post-flush
@@ -159,11 +162,13 @@ pub struct PopupMenuState<E: crate::text::TextEngine> {
 }
 
 #[derive(Clone)]
+#[cfg(feature = "picker")]
 pub struct PickerMenuEntry {
     pub label: String,
     pub(crate) tag: Id,
 }
 
+#[cfg(feature = "picker")]
 pub struct PickerMenuRequest {
     pub entries: Vec<PickerMenuEntry>,
     pub(crate) selection: Binding<Id>,
@@ -179,6 +184,7 @@ impl<E: crate::text::TextEngine> PopupMenuState<E> {
     /// Register a picker node's open handle for "dismiss every menu". Prunes handles
     /// of dropped pickers (the registry is then their only holder) and deduplicates,
     /// so a node re-registering its handle on every flush is idempotent.
+    #[cfg(feature = "picker")]
     pub(crate) fn register_picker_menu(&mut self, open: &Rc<Cell<bool>>) {
         self.node_picker_menus
             .retain(|handle| Rc::strong_count(handle) > 1);
@@ -192,6 +198,7 @@ impl<E: crate::text::TextEngine> PopupMenuState<E> {
     }
 
     /// Close every open picker menu (an outside click dismisses them all).
+    #[cfg(feature = "picker")]
     pub(crate) fn close_all_picker_menus(&mut self) {
         self.node_picker_menus
             .retain(|handle| Rc::strong_count(handle) > 1);
@@ -702,6 +709,7 @@ pub fn semantic_popup_menu_window(
 /// rows — borderless `Button`s that write the binding and close the menu —
 /// without the frame sizing or panel chrome.
 #[cfg(feature = "accessibility")]
+#[cfg(feature = "picker")]
 pub fn semantic_picker_menu_window(
     entries: Vec<PickerMenuEntry>,
     selection: Binding<Id>,
@@ -753,6 +761,7 @@ pub fn semantic_picker_menu_window(
     clippy::too_many_arguments,
     reason = "fully specifies a popup-menu window layout; grouping into a struct would not improve clarity"
 )]
+#[cfg(feature = "picker")]
 pub fn picker_menu_window(
     entries: Vec<PickerMenuEntry>,
     selection: Binding<Id>,
@@ -842,6 +851,7 @@ pub fn picker_menu_window(
 /// The height of a picker popup's panel: its rows of `row_height` inside the
 /// menu's vertical padding. The window the popup opens and the accessibility
 /// option rectangles are both derived from it.
+#[cfg(feature = "picker")]
 pub fn picker_menu_panel_height(layout: MenuLayout, row_height: f64, rows: usize) -> f64 {
     layout
         .vertical_padding
@@ -850,6 +860,7 @@ pub fn picker_menu_panel_height(layout: MenuLayout, row_height: f64, rows: usize
 
 /// The rect of row `index` of a picker popup's panel of `width`, in the
 /// panel's own space.
+#[cfg(feature = "picker")]
 pub fn picker_menu_row_rect(
     layout: MenuLayout,
     row_height: f64,
@@ -1247,9 +1258,11 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         if let Some(group) = self.popup_menu.active_popup_menu_group.take() {
             group.close_all();
         }
+        #[cfg(feature = "picker")]
         self.popup_menu.close_all_picker_menus();
     }
 
+    #[cfg(feature = "picker")]
     pub(crate) fn register_picker_menu(&mut self, open: &Rc<Cell<bool>>) {
         self.popup_menu.register_picker_menu(open);
     }
@@ -1498,6 +1511,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// The semantic half of showing a picker menu: the same selection window
     /// the rendered runtime opens, without frame metrics.
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "picker")]
     pub(crate) fn activate_picker_menu(
         &mut self,
         entries: Vec<PickerMenuEntry>,
@@ -1523,6 +1537,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         true
     }
 
+    #[cfg(feature = "picker")]
     pub(crate) fn show_picker_menu(
         &mut self,
         request: PickerMenuRequest,
@@ -1718,6 +1733,7 @@ impl<E: crate::text::TextEngine> Default for PopupMenuState<E> {
         Self {
             active_popup_menu_group: Option::default(),
             context_menu_presentation: Option::default(),
+            #[cfg(feature = "picker")]
             node_picker_menus: Vec::default(),
             anchored_overlays: Vec::default(),
             presented_anchored_overlays: Vec::default(),

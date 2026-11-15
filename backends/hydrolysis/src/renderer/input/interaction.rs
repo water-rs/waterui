@@ -303,6 +303,7 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
 
     /// Every bound segment's live segmented picker, one per segment.
     #[cfg(test)]
+    #[cfg(feature = "picker")]
     pub(crate) fn live_segmenteds(
         &self,
     ) -> Vec<Rc<crate::renderer::live_segmented::LiveSegmented>> {

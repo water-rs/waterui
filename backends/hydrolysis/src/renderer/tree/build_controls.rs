@@ -69,6 +69,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::color_picker::emit_color_picker_accessibility
 );
+#[cfg(feature = "picker")]
 impl_widget_behavior!(
     crate::widgets::controls::picker::PickerRenderState<E>,
     crate::widgets::controls::picker::render_picker_node,
@@ -358,6 +359,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// `read_signal` each frame so a membership or selection change schedules a
     /// frame. The node's stretch is the payload's own axis: `Horizontal` for a
     /// segmented picker, content-sized otherwise.
+    #[cfg(feature = "picker")]
     pub(super) fn build_picker(
         config: PickerConfig,
         env: &Environment,

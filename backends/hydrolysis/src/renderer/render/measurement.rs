@@ -18,6 +18,7 @@ use waterui_core::handler::BoxedAction;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{LayoutError, ResolvedExtent, layout_direction, resolve_layout_extent};
 use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot};
+#[cfg(feature = "picker")]
 use waterui_form::picker::PickerStyle;
 #[cfg(feature = "date-picker")]
 use waterui_form::picker::date::DatePickerConfig;
@@ -1567,6 +1568,7 @@ pub fn update_table_slot_visible_cell_widths<E: crate::text::TextEngine>(
     }
 }
 
+#[cfg(feature = "picker")]
 fn resolved_text_styled<E: crate::text::TextEngine>(
     text: &Text,
     env: &Environment,
@@ -1650,6 +1652,7 @@ pub fn measure_button_view_intrinsic<E: crate::text::TextEngine>(
 /// Measures a segmented picker of `items` under `look` beneath a heading of
 /// `label_size`: each item's label at the larger of its selected and
 /// unselected fonts, laid out by the look's layout.
+#[cfg(feature = "picker")]
 pub fn measure_segmented_intrinsic<E: crate::text::TextEngine>(
     look: &crate::theme::SegmentedLook,
     items: &[waterui_form::picker::PickerItem<waterui_core::id::Id>],
@@ -1681,6 +1684,7 @@ pub fn measure_segmented_intrinsic<E: crate::text::TextEngine>(
     crate::widgets::controls::picker::segmented_intrinsic(look.layout(), &sizes, label_size)
 }
 
+#[cfg(feature = "picker")]
 pub fn measure_picker_intrinsic<E: crate::text::TextEngine>(
     picker: &PickerConfig,
     state: &mut HydroState<E>,
@@ -1700,6 +1704,7 @@ pub fn measure_picker_intrinsic<E: crate::text::TextEngine>(
 
 /// The intrinsic size of a menu picker's field: the widest item value, the
 /// in-field label above it and the look's insets and indicator space.
+#[cfg(feature = "picker")]
 fn measure_menu_picker_intrinsic<E: crate::text::TextEngine>(
     look: &crate::theme::MenuPickerLook,
     items: &[waterui_form::picker::PickerItem<waterui_core::id::Id>],
@@ -1711,7 +1716,7 @@ fn measure_menu_picker_intrinsic<E: crate::text::TextEngine>(
     let mut max_item_width: f64 = 0.0;
     let mut max_item_height: f64 = 0.0;
     for item in items {
-        let styled = crate::widgets::controls::picker::label_styled(
+        let styled = crate::widgets::controls::button::label_styled(
             look.get_value(),
             resolved_text_styled(&item.content, env, state),
         );
@@ -1751,6 +1756,7 @@ fn measure_menu_picker_intrinsic<E: crate::text::TextEngine>(
 
 /// The intrinsic size of a radio group: one row per item, stacked with the
 /// look's row spacing, under the group label.
+#[cfg(feature = "picker")]
 fn measure_radio_picker_intrinsic<E: crate::text::TextEngine>(
     look: &crate::theme::RadioGroupLook,
     items: &[waterui_form::picker::PickerItem<waterui_core::id::Id>],
@@ -1763,7 +1769,7 @@ fn measure_radio_picker_intrinsic<E: crate::text::TextEngine>(
     let mut max_item_width: f64 = 0.0;
     let mut total_height = 0.0;
     for (index, item) in items.iter().enumerate() {
-        let styled = crate::widgets::controls::picker::label_styled(
+        let styled = crate::widgets::controls::button::label_styled(
             look.get_label(),
             resolved_text_styled(&item.content, env, state),
         );
@@ -1808,6 +1814,7 @@ fn measure_radio_picker_intrinsic<E: crate::text::TextEngine>(
 /// the retained-node path passes the label measured from its built
 /// [`crate::renderer::RetainedSubview`], so layout and the in-field label
 /// render agree on the label height.
+#[cfg(feature = "picker")]
 pub fn measure_picker_intrinsic_with_label_size<E: crate::text::TextEngine>(
     picker: &PickerConfig,
     label_size: LayoutSize,

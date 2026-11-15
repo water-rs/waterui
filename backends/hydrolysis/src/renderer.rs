@@ -37,6 +37,7 @@ mod interaction_layers;
 mod lifecycle;
 pub mod live_bar;
 pub mod live_progress;
+#[cfg(feature = "picker")]
 pub mod live_segmented;
 pub mod live_tabs;
 pub mod live_toggle;
@@ -185,6 +186,7 @@ use waterui_core::views::Views;
 use waterui_core::{
     AnyView, Environment, IgnorableMetadata, Metadata, Native, Retain, Str, View, impl_extractor,
 };
+#[cfg(feature = "picker")]
 use waterui_form::picker::PickerConfig;
 #[cfg(feature = "color-picker")]
 use waterui_form::picker::color::ColorPickerConfig;

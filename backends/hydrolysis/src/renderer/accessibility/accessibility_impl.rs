@@ -328,6 +328,7 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
     },
     #[cfg(feature = "secure-field")]
     SecureField { value: nami::Binding<FormSecure> },
+    #[cfg(any(feature = "picker", feature = "navigation"))]
     PickerSelect {
         selection: nami::Binding<waterui_core::id::Id>,
         target: waterui_core::id::Id,
@@ -1672,6 +1673,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     action_data,
                 )
             }
+            #[cfg(any(feature = "picker", feature = "navigation"))]
             AccessibilityActionTarget::PickerSelect { selection, target } => {
                 handle_accessibility_picker_select_action(&selection, target, action)
             }
@@ -1760,6 +1762,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// interaction identity and the tag it selects — is marked selected in
     /// the node it emitted exactly when the binding names its tag, in an
     /// incremental update.
+    #[cfg(feature = "picker")]
     pub(crate) fn register_live_selection(
         &mut self,
         key: crate::renderer::InteractionKey,
@@ -2713,6 +2716,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             waterui_controls::text_field::ResolvedTextFieldConfig,
             #[cfg(feature = "secure-field")]
             waterui_form::secure::SecureFieldConfig,
+            #[cfg(feature = "picker")]
             waterui_form::picker::PickerConfig,
             #[cfg(feature = "date-picker")]
             waterui_form::picker::date::DatePickerConfig,
@@ -3209,6 +3213,7 @@ fn handle_accessibility_secure_field_action<E: crate::text::TextEngine>(
 }
 
 #[cfg(feature = "accessibility")]
+#[cfg(any(feature = "picker", feature = "navigation"))]
 fn handle_accessibility_picker_select_action(
     selection: &nami::Binding<waterui_core::id::Id>,
     target: waterui_core::id::Id,
@@ -3330,6 +3335,7 @@ impl<E: crate::text::TextEngine> Clone for AccessibilityActionTarget<E> {
             Self::SecureField { value } => Self::SecureField {
                 value: value.clone(),
             },
+            #[cfg(any(feature = "picker", feature = "navigation"))]
             Self::PickerSelect { selection, target } => Self::PickerSelect {
                 selection: selection.clone(),
                 target: *target,

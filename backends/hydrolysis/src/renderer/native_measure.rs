@@ -156,6 +156,7 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<ResolvedTextFieldConfig>);
         #[cfg(feature = "secure-field")]
         $macro!(Native<SecureFieldConfig>);
+        #[cfg(feature = "picker")]
         $macro!(Native<PickerConfig>);
         $macro!(Native<Dynamic>);
         $macro!(Native<SystemIcon>);

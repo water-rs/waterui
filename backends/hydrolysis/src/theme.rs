@@ -64,6 +64,7 @@ mod navigation;
 mod picker;
 mod progress;
 mod scroll_indicator;
+#[cfg(feature = "picker")]
 mod segmented;
 mod stepper;
 mod table;
@@ -95,6 +96,7 @@ pub use progress::{
     IndicatorLook, LinearLayout, LinearProgressLook, ProgressControl, ProgressSpec,
 };
 pub use scroll_indicator::ScrollIndicatorLook;
+#[cfg(feature = "picker")]
 pub use segmented::{
     Segment, SegmentLabel, SegmentedDrag, SegmentedLayout, SegmentedLook, SegmentedSpec,
     SegmentedValue,

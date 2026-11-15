@@ -345,6 +345,7 @@ pub fn plain_radio_group_look() -> crate::theme::RadioGroupLook {
 /// in segments at least 58 points wide, 8 points below the heading, in the
 /// default font and foreground.
 #[must_use]
+#[cfg(feature = "picker")]
 pub fn plain_segmented_look() -> crate::theme::SegmentedLook {
     use crate::theme::{Motion, SegmentLabel, SegmentedLayout, SegmentedLook};
     SegmentedLook::new(

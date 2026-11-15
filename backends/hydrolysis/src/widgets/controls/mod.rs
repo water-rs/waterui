@@ -4,6 +4,7 @@ pub mod color_picker;
 #[cfg(feature = "date-picker")]
 pub mod date_picker;
 pub mod field_look;
+#[cfg(feature = "picker")]
 pub mod picker;
 pub mod progress;
 #[cfg(feature = "slider")]

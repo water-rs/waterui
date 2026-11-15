@@ -5047,6 +5047,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// from `look`, on the segment's touch `target`, the segment wearing
     /// `chrome`: the same live binding [`Self::bind_live_chrome_target`]
     /// makes.
+    #[cfg(feature = "picker")]
     pub(crate) fn bind_live_segment_target(
         &mut self,
         key: InteractionKey,

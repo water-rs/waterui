@@ -809,6 +809,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
+        #[cfg(feature = "picker")]
         let view = match view.downcast::<Native<PickerConfig>>() {
             Ok(picker) => {
                 return Self::build_picker((*picker).into_inner(), env, renderer);
