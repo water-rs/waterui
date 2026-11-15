@@ -17,8 +17,20 @@ use crate::renderer::live_segmented::LiveSegmented;
 use crate::renderer::live_tabs::LiveTabs;
 #[cfg(any(feature = "toggle", feature = "picker"))]
 use crate::renderer::live_toggle::LiveToggle;
-use crate::theme::{InteractionMotion, MAX_PRESS_WAVES, PressWave, PressWaves};
+use crate::theme::InteractionMotion;
 use waterui_core::interaction::InteractionState;
+
+/// Maximum number of overlapping press ripple waves tracked per widget.
+pub const MAX_PRESS_WAVES: usize = 4;
+
+/// A sampled press ripple wave for interaction unit tests.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SampledWave {
+    pub origin: Option<kurbo::Point>,
+    pub progress: f32,
+    pub opacity: f32,
+}
 
 /// One press ripple wave slot: every press spawns its own wave (Material/the M3 reference
 /// semantics), so rapid re-presses overlap while older waves fade out.
@@ -577,22 +589,28 @@ impl InteractionLayerHandles {
 
     /// Samples the currently visible waves, ordered oldest to newest, with
     /// origins in window coordinates.
-    pub(crate) fn sample_waves(&self, now: Instant) -> PressWaves {
+    #[cfg(test)]
+    pub(crate) fn sample_waves(&self, now: Instant) -> Vec<SampledWave> {
         let mut order: [usize; MAX_PRESS_WAVES] = core::array::from_fn(|index| index);
         order.sort_unstable_by_key(|index| self.waves[*index].seq.get());
-        let mut sampled = PressWaves::EMPTY;
+        let mut sampled = Vec::new();
         for index in order {
             let wave = &self.waves[index];
             if !wave.visible(now) {
                 continue;
             }
-            sampled.push(PressWave {
+            sampled.push(SampledWave {
                 origin: wave.origin.get(),
                 progress: wave.progress.sample(now),
                 opacity: wave.alpha.sample(now),
             });
         }
         sampled
+    }
+
+    #[cfg(test)]
+    pub(crate) fn press_progress_at(&self, now: Instant) -> f32 {
+        self.press_progress.sample(now)
     }
 }
 

@@ -429,11 +429,11 @@ mod test_style {
 
     use crate::theme::{
         BadgeLook, ButtonLook, ButtonSpec, Chrome, CornerShape, DragMapping, FocusIndicator,
-        HitRegion, IndicatorLook, InteractionMotion, Knob, Label, LinearProgressLook, MenuLook,
-        MenuPickerLook, MenuSpec, Motion, PickerSpec, PressFeedback, ProgressControl, ProgressSpec,
-        RadioGroupLook, ScrollIndicatorLook, SliderLayout, SliderLook, SliderSpec, StateLayer,
-        StepperLook, StepperSpec, Surface, TabsLook, TabsSpec, TextFieldLook, TextFieldSpec,
-        ToggleSpec, WidgetTheme,
+        HitRegion, IndicatorLook, Knob, Label, LinearProgressLook, MenuLook, MenuPickerLook,
+        MenuSpec, Motion, PickerSpec, PressFeedback, ProgressControl, ProgressSpec, RadioGroupLook,
+        ScrollIndicatorLook, SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook,
+        StepperSpec, Surface, TabsLook, TabsSpec, TextFieldLook, TextFieldSpec, ToggleSpec,
+        WidgetTheme,
     };
     use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
     use waterui::animation::Animation;
@@ -500,25 +500,6 @@ mod test_style {
     }
 
     impl WidgetTheme for TestStyle {
-        fn interaction_motion(&self) -> InteractionMotion {
-            InteractionMotion {
-                hover_opacity: 0.08,
-                focus_opacity: 0.12,
-                pressed_opacity: 0.12,
-                dragged_opacity: 0.16,
-                hover_enter: Animation::linear(Duration::from_millis(15)),
-                hover_exit: Animation::linear(Duration::from_millis(15)),
-                focus_enter: Animation::linear(Duration::from_millis(15)),
-                focus_exit: Animation::linear(Duration::from_millis(15)),
-                press_fade_in: Animation::linear(Duration::from_millis(105)),
-                press_fade_out: Animation::linear(Duration::from_millis(375)),
-                press_grow: Animation::bezier(Duration::from_millis(450), 0.2, 0.0, 0.0, 1.0),
-                press_shape: Animation::linear(Duration::from_millis(15)),
-                minimum_press_duration: Duration::from_millis(225),
-                touch_delay: Duration::from_millis(150),
-            }
-        }
-
         /// A button with no visible chrome: a clear surface, a state layer
         /// with no opacity in any state and no press feedback, so a test
         /// sees the button's content and layout alone.

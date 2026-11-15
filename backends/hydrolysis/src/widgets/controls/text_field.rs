@@ -348,11 +348,10 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
     }
     let field_rect = ctx.bounds;
     let is_focused = ctx.renderer_mut().is_text_input_focused(&interaction_key);
-    let (field_interaction, _, _) =
+    let (field_flags, _, _) =
         state
             .field
             .bind(ctx, &interaction_key, field_rect, env, disabled, is_focused);
-    let field_flags = field_interaction.state;
     let selection_slot = Rc::clone(&state.selection_slot);
     let input_model = TextInputModel::TextField {
         value: value_binding.clone(),
@@ -727,11 +726,10 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
     }
     let field_rect = ctx.bounds;
     let is_focused = ctx.renderer_mut().is_text_input_focused(&interaction_key);
-    let (field_interaction, _, _) =
+    let (field_flags, _, _) =
         state
             .field
             .bind(ctx, &interaction_key, field_rect, env, disabled, is_focused);
-    let field_flags = field_interaction.state;
     let value_paint = state.field.value_paint();
     let selection_slot = Rc::clone(&state.selection_slot);
     let input_model = TextInputModel::SecureField {

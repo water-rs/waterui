@@ -94,7 +94,8 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// `nativeVideoPlaneAttached` hands the Kotlin host object of a placement to
 /// the player and `nativeVideoPlaneSurfaceDestroyed` reports the loss of its
 /// `Surface`.
-pub const JNI_SCHEMA: jint = 29;
+/// 30 adds asynchronous GPU initialization and frame-completion delivery.
+pub const JNI_SCHEMA: jint = 30;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -212,7 +213,9 @@ pub(super) fn publish_application_context(
 /// disjoint `session` field is lent mutably — the two never overlap.
 struct SessionBox {
     entered: Cell<bool>,
-    session: AndroidSession,
+    session: Option<AndroidSession>,
+    #[cfg(hydrolysis_gpu_painter)]
+    startup: Option<super::startup::Startup>,
 }
 
 /// One JNI call's exclusive borrow of the session [`session`] names.
@@ -246,7 +249,7 @@ impl std::ops::Deref for SessionGuard {
         // SAFETY: `session()` proves no other borrow was live when it
         // minted this guard, and `entered` keeps a second guard from
         // existing until this one drops.
-        unsafe { &(*self.entry).session }
+        unsafe { (*self.entry).session.as_ref().expect("session is mounted") }
     }
 }
 
@@ -254,7 +257,7 @@ impl std::ops::DerefMut for SessionGuard {
     fn deref_mut(&mut self) -> &mut AndroidSession {
         // SAFETY: same argument as `deref` — the guard is the exclusive
         // borrow for the whole JNI call.
-        unsafe { &mut (*self.entry).session }
+        unsafe { (*self.entry).session.as_mut().expect("session is mounted") }
     }
 }
 
@@ -299,6 +302,23 @@ fn session(ptr: jlong) -> Option<SessionGuard> {
     Some(SessionGuard { entry })
 }
 
+/// Applies a lifecycle update before the renderer has mounted. The normal
+/// session path below handles the same update once initialization completes.
+macro_rules! initializing {
+    ($ptr:expr, $pending:ident, $body:block) => {
+        #[cfg(hydrolysis_gpu_painter)]
+        {
+            let Some(guard) = session($ptr) else {
+                return Ok(Default::default());
+            };
+            // SAFETY: the entry flag excludes another lifecycle mutation.
+            if let Some($pending) = unsafe { &mut (*guard.entry).startup } {
+                $body
+            }
+        }
+    };
+}
+
 /// Borrows the session `$ptr` names inside a JNI entry's closure, or makes
 /// the entry return the neutral value `$neutral` (default: the return
 /// type's `Default`) when [`session`] refused the pointer.
@@ -308,7 +328,9 @@ macro_rules! session {
     };
     ($ptr:expr, $neutral:expr) => {
         match session($ptr) {
-            Some(guard) => guard,
+            // SAFETY: the guard excludes any simultaneous mutation of session.
+            Some(guard) if unsafe { (*guard.entry).session.is_some() } => guard,
+            Some(_) => return Ok($neutral),
             None => return Ok($neutral),
         }
     };
@@ -508,16 +530,34 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
             double_tap_timeout_ms: 0,
             double_tap_slop_px: 0.0,
         };
-        let Some(session) =
-            AndroidSession::create(env, vm, host_view, &painter, metrics, night, services)?
-        else {
-            // A reported contract violation left no session: the null handle.
-            return Ok(0);
-        };
-        Ok(Box::into_raw(Box::new(SessionBox {
-            entered: Cell::new(false),
-            session: *session,
-        })) as jlong)
+        let bridge = std::sync::Arc::new(super::host::HostBridge::new(env, vm, host_view)?);
+        #[cfg(hydrolysis_gpu_painter)]
+        {
+            if !painter.is_null() {
+                return Err(JniError(
+                    "hydrolysis GPU: unexpected HWUI painter".to_owned(),
+                ));
+            }
+            Ok(Box::into_raw(Box::new(SessionBox {
+                entered: Cell::new(false),
+                session: None,
+                startup: Some(super::startup::Startup::new(
+                    bridge, services, metrics, night,
+                )),
+            })) as jlong)
+        }
+        #[cfg(hydrolysis_hwui)]
+        {
+            let Some(session) =
+                AndroidSession::create(env, bridge, &painter, metrics, night, services)?
+            else {
+                return Ok(0);
+            };
+            Ok(Box::into_raw(Box::new(SessionBox {
+                entered: Cell::new(false),
+                session: Some(*session),
+            })) as jlong)
+        }
     })
 }
 
@@ -582,7 +622,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetMetrics
     double_tap_slop: jfloat,
 ) {
     guard(&mut env, |_env| {
-        session!(session_ptr).set_metrics(MetricsSnapshot {
+        let metrics = MetricsSnapshot {
             width_px: crate::num_cast::i32_as_u32(width_px.max(0)),
             height_px: crate::num_cast::i32_as_u32(height_px.max(0)),
             density: f64::from(density).max(f64::EPSILON),
@@ -596,7 +636,12 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetMetrics
             scroll_friction: f64::from(scroll_friction),
             double_tap_timeout_ms: crate::num_cast::i32_as_u32(double_tap_timeout_ms.max(0)),
             double_tap_slop_px: double_tap_slop,
+        };
+        initializing!(session_ptr, pending, {
+            pending.metrics = metrics;
+            return Ok(());
         });
+        session!(session_ptr).set_metrics(metrics);
         Ok(())
     });
 }
@@ -640,6 +685,22 @@ fn monotonic_nanos_to_instant(nanos: i64) -> Result<crate::time::Instant, JniErr
     }
 }
 
+/// Applies a render-thread completion without waiting for another vsync.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCompleteFrame<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+) {
+    guard(&mut env, |_env| {
+        #[cfg(hydrolysis_gpu_painter)]
+        session!(session_ptr).complete_gpu_frame();
+        #[cfg(hydrolysis_hwui)]
+        let _ = session_ptr;
+        Ok(())
+    });
+}
+
 /// The Choreographer callback. Returns a bitmask: `1` = the engine wants
 /// another frame; `2` = the window asked to close. A deadline is read out
 /// with `nativeFrameDeadlineInNanos` when `4` is set.
@@ -655,7 +716,36 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeOnFrame<'l
     has_presentation: jboolean,
     presentation_nanos: jlong,
 ) -> jlong {
-    guard_val(&mut env, 0, |_env| {
+    guard_val(&mut env, 0, |env| {
+        #[cfg(hydrolysis_hwui)]
+        let _ = env;
+        #[cfg(hydrolysis_gpu_painter)]
+        {
+            use std::future::Future;
+            let Some(guard) = session(session_ptr) else {
+                return Ok(0);
+            };
+            let entry = guard.entry;
+            // SAFETY: this guard holds the lifecycle's exclusive entry flag.
+            if let Some(startup) = unsafe { &mut (*entry).startup } {
+                let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+                let std::task::Poll::Ready(result) =
+                    std::pin::Pin::new(&mut startup.task).poll(&mut cx)
+                else {
+                    return Ok(0);
+                };
+                // SAFETY: the guard still exclusively owns the startup field;
+                // polling above has finished borrowing its task.
+                let startup = unsafe { &mut (*entry).startup }
+                    .take()
+                    .expect("initialization was just polled");
+                let mounted = startup.mount(env, result.map_err(JniError::from)?)?;
+                // SAFETY: the guard still owns this disjoint session field.
+                unsafe {
+                    (*entry).session = Some(mounted);
+                }
+            }
+        }
         let presentation = has_presentation
             .then(|| monotonic_nanos_to_instant(presentation_nanos))
             .transpose()?;
@@ -724,6 +814,20 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceAtt
                 "hydrolysis android: ANativeWindow_fromSurface returned null".to_owned(),
             ));
         };
+        initializing!(session_ptr, pending, {
+            pending.surface = Some(super::startup::Attachment {
+                window,
+                refresh: super::gpu::DisplayRefresh {
+                    peak: peak_refresh_hz,
+                    normal: normal_refresh_hz,
+                    high: high_refresh_hz,
+                },
+                width: crate::num_cast::i32_as_u32(width.max(0)),
+                height: crate::num_cast::i32_as_u32(height.max(0)),
+                generation: crate::num_cast::i64_as_u64(generation),
+            });
+            return Ok(true);
+        });
         session!(session_ptr, false)
             .surface_attached_with_generation(
                 window,
@@ -752,6 +856,15 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceCha
     generation: jlong,
 ) {
     guard(&mut env, |_env| {
+        initializing!(session_ptr, pending, {
+            if let Some(surface) = &mut pending.surface
+                && surface.generation == crate::num_cast::i64_as_u64(generation)
+            {
+                surface.width = crate::num_cast::i32_as_u32(width.max(0));
+                surface.height = crate::num_cast::i32_as_u32(height.max(0));
+            }
+            return Ok(());
+        });
         session!(session_ptr).surface_resized(
             crate::num_cast::i32_as_u32(width.max(0)),
             crate::num_cast::i32_as_u32(height.max(0)),
@@ -770,6 +883,14 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceDes
     generation: jlong,
 ) {
     guard(&mut env, |_env| {
+        initializing!(session_ptr, pending, {
+            if pending.surface.as_ref().is_some_and(|surface| {
+                surface.generation == crate::num_cast::i64_as_u64(generation)
+            }) {
+                pending.surface = None;
+            }
+            return Ok(());
+        });
         session!(session_ptr).surface_detached(crate::num_cast::i64_as_u64(generation));
         Ok(())
     });
@@ -852,6 +973,10 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetColorSc
     night: jboolean,
 ) {
     guard(&mut env, |_env| {
+        initializing!(session_ptr, pending, {
+            pending.night = night;
+            return Ok(());
+        });
         session!(session_ptr).set_night_mode(night);
         Ok(())
     });
@@ -867,6 +992,10 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetVisible
     visible: jboolean,
 ) {
     guard(&mut env, |_env| {
+        initializing!(session_ptr, pending, {
+            pending.visible = visible;
+            return Ok(());
+        });
         session!(session_ptr).set_visible(visible);
         Ok(())
     });
@@ -1044,6 +1173,10 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetHostAtt
     attached: jboolean,
 ) {
     guard(&mut env, |_env| {
+        initializing!(session_ptr, pending, {
+            pending.attached = attached;
+            return Ok(());
+        });
         session!(session_ptr).set_host_attached(attached);
         Ok(())
     });
@@ -1061,6 +1194,10 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetFrameDe
     touching: jboolean,
 ) {
     guard(&mut env, |_env| {
+        initializing!(session_ptr, pending, {
+            pending.demand = (continuous, touching);
+            return Ok(());
+        });
         session!(session_ptr)
             .set_frame_demand(continuous, touching)
             .map_err(JniError)
@@ -1122,6 +1259,10 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePointerEve
             2 => InputEvent::PointerMove { id, kind, x, y },
             _ => InputEvent::PointerCancel { id, kind },
         };
+        initializing!(session_ptr, pending, {
+            pending.push_event(event);
+            return Ok(());
+        });
         session!(session_ptr).runtime.platform.push_event(event);
         Ok(())
     });
@@ -1167,10 +1308,12 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeBackEvent<
                 return Ok(());
             }
         };
-        session!(session_ptr)
-            .runtime
-            .platform
-            .push_event(InputEvent::BackNavigation(event));
+        let event = InputEvent::BackNavigation(event);
+        initializing!(session_ptr, pending, {
+            pending.push_event(event);
+            return Ok(());
+        });
+        session!(session_ptr).runtime.platform.push_event(event);
         Ok(())
     });
 }
@@ -1186,16 +1329,18 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeScrollEven
     dy: jfloat,
 ) {
     guard(&mut env, |_env| {
-        session!(session_ptr)
-            .runtime
-            .platform
-            .push_event(InputEvent::Scroll {
-                x,
-                y,
-                dx,
-                dy,
-                is_line_delta: false,
-            });
+        let event = InputEvent::Scroll {
+            x,
+            y,
+            dx,
+            dy,
+            is_line_delta: false,
+        };
+        initializing!(session_ptr, pending, {
+            pending.push_event(event);
+            return Ok(());
+        });
+        session!(session_ptr).runtime.platform.push_event(event);
         Ok(())
     });
 }
@@ -1220,8 +1365,12 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeKeyEvent<'
             alt,
             super_key: meta,
         };
-        let mut session = session!(session_ptr);
-        super::ime::key_event(&mut session.runtime.platform, &key, pressed, modifiers);
+        let event = super::ime::key_input(&key, pressed, modifiers);
+        initializing!(session_ptr, pending, {
+            pending.push_event(event);
+            return Ok(());
+        });
+        session!(session_ptr).runtime.platform.push_event(event);
         Ok(())
     });
 }

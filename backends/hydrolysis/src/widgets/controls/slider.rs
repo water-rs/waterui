@@ -635,7 +635,7 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
         ctx.with_scope_if(
             disabled,
             crate::renderer::mount::ScopeKey { role, item: 0 },
-            theme.disabled_content_alpha(),
+            crate::theme::DISABLED_FOREGROUND_ALPHA,
             rect,
             place,
         );

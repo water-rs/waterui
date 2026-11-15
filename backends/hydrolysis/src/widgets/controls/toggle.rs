@@ -336,7 +336,7 @@ pub fn render_toggle_parts<E: crate::text::TextEngine>(
                 role: "label-dim",
                 item: 0,
             },
-            theme.disabled_content_alpha(),
+            crate::theme::DISABLED_FOREGROUND_ALPHA,
             label_bounds,
             |ctx| {
                 let render_ctx = ctx.render_context();

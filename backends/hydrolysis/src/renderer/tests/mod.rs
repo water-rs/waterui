@@ -673,7 +673,7 @@ fn labeled_toggle_keeps_label_activation_out_of_switch_visual_interaction() {
     assert_eq!(
         switch_interaction
             .sample_waves(renderer.frame_instant())
-            .latest()
+            .last()
             .and_then(|wave| wave.origin),
         Some(switch_point),
         "switch ripple must originate inside the switch control"
@@ -2302,17 +2302,35 @@ fn interaction_state_does_not_migrate_between_semantic_identities() {
     renderer.finish_rebuild_frame();
 
     renderer.begin_rebuild_frame();
-    let (state, _, _) =
+    let (state, _, handles) =
         renderer.bind_interaction_target(second_key, Rect::new(100.0, 100.0, 180.0, 180.0), &env);
 
-    assert!(!state.state.contains(InteractionState::PRESSED));
-    assert!(state.press_waves.is_empty());
+    assert!(!state.contains(InteractionState::PRESSED));
+    assert_eq!(handles.sample_waves(renderer.frame_instant()), []);
+}
+
+fn test_interaction_motion() -> InteractionMotion {
+    InteractionMotion {
+        hover_opacity: 0.08,
+        focus_opacity: 0.12,
+        pressed_opacity: 0.12,
+        dragged_opacity: 0.16,
+        hover_enter: Animation::linear(Duration::from_millis(15)),
+        hover_exit: Animation::linear(Duration::from_millis(15)),
+        focus_enter: Animation::linear(Duration::from_millis(15)),
+        focus_exit: Animation::linear(Duration::from_millis(15)),
+        press_fade_in: Animation::linear(Duration::from_millis(105)),
+        press_fade_out: Animation::linear(Duration::from_millis(375)),
+        press_grow: Animation::bezier(Duration::from_millis(450), 0.2, 0.0, 0.0, 1.0),
+        press_shape: Animation::linear(Duration::from_millis(15)),
+        minimum_press_duration: Duration::from_millis(225),
+        touch_delay: Duration::from_millis(150),
+    }
 }
 
 /// Regression guard for the retained-path state-layer loss: a began press must
-/// surface through the re-bound `WidgetInteractionState` as a visible press
-/// layer once the fade-in has run, because widgets draw their themed state
-/// layers from exactly this sampled state on every flush.
+/// surface through the re-bound interaction handles as a visible press
+/// layer once the fade-in has run.
 #[test]
 fn began_press_samples_a_visible_press_layer_after_fade_in() {
     let mut renderer = test_renderer();
@@ -2320,9 +2338,11 @@ fn began_press_samples_a_visible_press_layer_after_fade_in() {
     let bounds = Rect::new(0.0, 0.0, 80.0, 80.0);
     let owner = Rc::new(());
     let key = InteractionKey::for_rc(&owner, 0);
+    let motion = test_interaction_motion();
 
     renderer.begin_rebuild_frame();
-    let (_, slot, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    let (_, slot, _) =
+        renderer.bind_interaction_target_with_motion(key.clone(), bounds, &env, motion.clone());
     let at = renderer.frame_instant();
     renderer
         .hit_test
@@ -2330,8 +2350,8 @@ fn began_press_samples_a_visible_press_layer_after_fade_in() {
         .begin_press(&slot, Point::new(20.0, 20.0), None, at);
     renderer.finish_rebuild_frame();
 
-    // Advance past the press fade-in (105ms in MinimalTestTheme) and re-bind:
-    // the sampled state must carry a visible press layer, its origin, and
+    // Advance past the press fade-in (105ms) and re-bind:
+    // the sampled handles must carry a visible press layer, its origin, and
     // non-zero grow progress.
     let later = renderer
         .frame_instant()
@@ -2339,15 +2359,14 @@ fn began_press_samples_a_visible_press_layer_after_fade_in() {
         .expect("test press deadline overflow");
     renderer.set_frame_instant(later);
     renderer.begin_rebuild_frame();
-    let (state, _, _) = renderer.bind_interaction_target(key, bounds, &env);
+    let (state, _, handles) =
+        renderer.bind_interaction_target_with_motion(key, bounds, &env, motion);
     assert!(
-        state.state.contains(InteractionState::PRESSED),
+        state.contains(InteractionState::PRESSED),
         "held press must stay visually pressed"
     );
-    let wave = state
-        .press_waves
-        .latest()
-        .expect("held press must sample a visible wave");
+    let waves = handles.sample_waves(later);
+    let wave = waves.last().expect("held press must sample a visible wave");
     assert!(
         wave.opacity > 0.0,
         "press layer must be visible after fade-in"
@@ -2370,10 +2389,10 @@ fn interaction_engine_resolves_focus_state() {
         &env,
         true,
         false,
+        test_interaction_motion(),
     );
 
-    assert!(state.state.contains(InteractionState::FOCUSED));
-    approx::assert_relative_eq!(state.focus_progress, 1.0);
+    assert!(state.contains(InteractionState::FOCUSED));
 }
 
 /// `press_progress` is the physical-press morph value: it animates towards
@@ -2387,14 +2406,16 @@ fn press_progress_animates_while_pressed_and_back_on_release() {
     let bounds = Rect::new(0.0, 0.0, 80.0, 80.0);
     let owner = Rc::new(());
     let key = InteractionKey::for_rc(&owner, 0);
+    let motion = test_interaction_motion();
 
     renderer.begin_rebuild_frame();
-    let (resting, slot, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    let (_, slot, handles) =
+        renderer.bind_interaction_target_with_motion(key.clone(), bounds, &env, motion.clone());
     renderer.finish_rebuild_frame();
-    approx::assert_relative_eq!(resting.press_progress, 0.0);
+    approx::assert_relative_eq!(handles.press_progress_at(renderer.frame_instant()), 0.0);
 
     // The press lands between flushes; the next bind resolves it as PRESSED
-    // and the morph (15ms linear in MinimalTestTheme) is in flight.
+    // and the morph (15ms linear) is in flight.
     let pressed_at = renderer.frame_instant();
     renderer
         .hit_test
@@ -2402,51 +2423,59 @@ fn press_progress_animates_while_pressed_and_back_on_release() {
         .begin_press(&slot, Point::new(20.0, 20.0), None, pressed_at);
 
     renderer.begin_rebuild_frame();
-    let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    let (state, _, _) =
+        renderer.bind_interaction_target_with_motion(key.clone(), bounds, &env, motion.clone());
     renderer.finish_rebuild_frame();
-    assert!(state.state.contains(InteractionState::PRESSED));
+    assert!(state.contains(InteractionState::PRESSED));
 
-    renderer.set_frame_instant(pressed_at + Duration::from_millis(8));
+    let mid_press = pressed_at + Duration::from_millis(8);
+    renderer.set_frame_instant(mid_press);
     renderer.begin_rebuild_frame();
-    let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    let (_, _, handles) =
+        renderer.bind_interaction_target_with_motion(key.clone(), bounds, &env, motion.clone());
     renderer.finish_rebuild_frame();
+    let progress = handles.press_progress_at(mid_press);
     assert!(
-        state.press_progress > 0.0 && state.press_progress < 1.0,
-        "the press morph must be in flight while the press is held: {}",
-        state.press_progress
+        progress > 0.0 && progress < 1.0,
+        "the press morph must be in flight while the press is held: {progress}",
     );
 
     // Once the animation has settled the held press reports 1.
     let held_at = pressed_at + Duration::from_millis(60);
     renderer.set_frame_instant(held_at);
     renderer.begin_rebuild_frame();
-    let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    let (_, _, handles) =
+        renderer.bind_interaction_target_with_motion(key.clone(), bounds, &env, motion.clone());
     renderer.finish_rebuild_frame();
-    approx::assert_relative_eq!(state.press_progress, 1.0);
+    approx::assert_relative_eq!(handles.press_progress_at(held_at), 1.0);
 
     // Release: the morph plays `press_shape` backwards from the release
     // instant — it must not snap back to 0 in one frame.
     renderer.hit_test.interaction.clear_all_presses(held_at);
     renderer.begin_rebuild_frame();
-    let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    let (state, _, _) =
+        renderer.bind_interaction_target_with_motion(key.clone(), bounds, &env, motion.clone());
     renderer.finish_rebuild_frame();
-    assert!(!state.state.contains(InteractionState::PRESSED));
+    assert!(!state.contains(InteractionState::PRESSED));
 
-    renderer.set_frame_instant(held_at + Duration::from_millis(8));
+    let mid_release = held_at + Duration::from_millis(8);
+    renderer.set_frame_instant(mid_release);
     renderer.begin_rebuild_frame();
-    let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    let (_, _, handles) =
+        renderer.bind_interaction_target_with_motion(key.clone(), bounds, &env, motion.clone());
     renderer.finish_rebuild_frame();
+    let progress = handles.press_progress_at(mid_release);
     assert!(
-        state.press_progress > 0.0 && state.press_progress < 1.0,
-        "the morph must animate back on release instead of snapping: {}",
-        state.press_progress
+        progress > 0.0 && progress < 1.0,
+        "the morph must animate back on release instead of snapping: {progress}",
     );
 
-    renderer.set_frame_instant(held_at + Duration::from_millis(60));
+    let settled_at = held_at + Duration::from_millis(60);
+    renderer.set_frame_instant(settled_at);
     renderer.begin_rebuild_frame();
-    let (state, _, _) = renderer.bind_interaction_target(key, bounds, &env);
+    let (_, _, handles) = renderer.bind_interaction_target_with_motion(key, bounds, &env, motion);
     renderer.finish_rebuild_frame();
-    approx::assert_relative_eq!(state.press_progress, 0.0);
+    approx::assert_relative_eq!(handles.press_progress_at(settled_at), 0.0);
 }
 
 #[test]
@@ -2483,7 +2512,8 @@ fn touch_press_delays_ripple_and_move_cancels_click() {
     let action_activations = Rc::clone(&activations);
 
     renderer.begin_rebuild_frame();
-    let (_, press_slot, handles) = renderer.bind_interaction_target(key, bounds, &env);
+    let (_, press_slot, handles) =
+        renderer.bind_interaction_target_with_motion(key, bounds, &env, test_interaction_motion());
     renderer.register_interactive_pointer_target(bounds, press_slot, move |_, _, _| {
         action_activations.set(action_activations.get() + 1);
         true
@@ -3135,25 +3165,6 @@ fn tab_highlight_strip(item: TabItemGeometry) -> Rect {
 }
 
 impl WidgetTheme for MinimalTestTheme {
-    fn interaction_motion(&self) -> InteractionMotion {
-        InteractionMotion {
-            hover_opacity: 0.08,
-            focus_opacity: 0.12,
-            pressed_opacity: 0.12,
-            dragged_opacity: 0.16,
-            hover_enter: Animation::linear(Duration::from_millis(15)),
-            hover_exit: Animation::linear(Duration::from_millis(15)),
-            focus_enter: Animation::linear(Duration::from_millis(15)),
-            focus_exit: Animation::linear(Duration::from_millis(15)),
-            press_fade_in: Animation::linear(Duration::from_millis(105)),
-            press_fade_out: Animation::linear(Duration::from_millis(375)),
-            press_grow: Animation::bezier(Duration::from_millis(450), 0.2, 0.0, 0.0, 1.0),
-            press_shape: Animation::linear(Duration::from_millis(15)),
-            minimum_press_duration: Duration::from_millis(225),
-            touch_delay: Duration::from_millis(150),
-        }
-    }
-
     fn button(&self, spec: &ButtonSpec, _env: &Environment) -> ButtonLook {
         let chrome = self.button_chrome.clone().unwrap_or_else(invisible_chrome);
         let mut look = ButtonLook::new(chrome, self.button_label.clone().unwrap_or_default())

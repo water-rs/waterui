@@ -458,7 +458,7 @@ jobs:
     name: Android package (${{ matrix.profile }})
     needs: [bump, changes, cli]
     if: >-
-      always()
+      !cancelled()
       && needs.bump.result == 'success'
       && needs.changes.outputs.android == 'true'
       && (needs.cli.result == 'success' || needs.cli.result == 'skipped')
