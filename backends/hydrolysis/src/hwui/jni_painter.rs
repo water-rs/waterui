@@ -20,6 +20,7 @@ use jni::signature::{Primitive, ReturnType};
 use jni::{Env, jni_sig, jni_str};
 
 use super::jni::{JniObject, Method};
+use super::profile::FrameStats;
 
 /// The session's painter on the UI thread: replays each frame's words into
 /// the `HwuiPainter` through one JNI call.
@@ -53,8 +54,17 @@ impl JniPainter {
     ///
     /// A description when the JVM, a global reference or the method is
     /// unavailable.
-    pub fn new(env: &mut Env<'_>, painter: &JObject<'_>) -> Result<Self, String> {
-        let painter = JniObject::new(env, painter, "dev.waterui.hydrolysis.hwui.HwuiPainter")?;
+    pub fn new(
+        env: &mut Env<'_>,
+        painter: &JObject<'_>,
+        stats: &FrameStats,
+    ) -> Result<Self, String> {
+        let painter = JniObject::new(
+            env,
+            painter,
+            "dev.waterui.hydrolysis.hwui.HwuiPainter",
+            stats,
+        )?;
         let replay = painter.method(env, "replay", "(Ljava/nio/ByteBuffer;IJZ)V")?;
         Ok(Self {
             painter,

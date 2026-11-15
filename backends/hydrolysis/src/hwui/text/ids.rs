@@ -6,6 +6,7 @@ use cherenkov_record::kurbo::Rect;
 
 use crate::hwui::HwuiError;
 use crate::hwui::buffer::{CommandBuffer, Field};
+use crate::hwui::profile::FrameStats;
 use crate::hwui::protocol::Op;
 use crate::hwui::resources::Table;
 
@@ -17,7 +18,7 @@ use crate::hwui::resources::Table;
 /// frame no installed content draws the layout in, recycled when the frame
 /// after it drains.
 #[derive(Clone, Debug, Default)]
-pub struct TextLayoutIds(Arc<Mutex<State>>);
+pub struct TextLayoutIds(Arc<Mutex<State>>, FrameStats);
 
 #[derive(Debug)]
 struct State {
@@ -58,6 +59,13 @@ impl TextLayoutIds {
         Self::default()
     }
 
+    /// An empty table whose shapes count into `stats`: each `acquire` is one
+    /// platform shape, a text-shape cache miss.
+    #[must_use]
+    pub fn counting(stats: FrameStats) -> Self {
+        Self(Arc::default(), stats)
+    }
+
     // Every critical section leaves the state consistent, so a panic
     // elsewhere that poisoned the lock left nothing half-written.
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -70,6 +78,7 @@ impl TextLayoutIds {
     ///
     /// [`HwuiError::IdsExhausted`] when every id is live.
     pub fn acquire(&self) -> Result<u32, HwuiError> {
+        self.1.text_shape_miss();
         self.lock().table.acquire()
     }
 

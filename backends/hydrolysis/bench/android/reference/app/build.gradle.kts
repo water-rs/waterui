@@ -298,4 +298,8 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.profileinstaller:profileinstaller:1.4.1")
+
+    // The producer module whose journeys generate each variant's profile
+    // (run.py generate-profile).
+    baselineProfile(project(":baselineprofile"))
 }

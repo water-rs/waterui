@@ -15,8 +15,11 @@
 #   reason          required for smoke/skip; the CI-recorded justification
 #   golden          path under bench/android/ to the baseline frame, or none
 #   compose_twin    "registered" — a hand-written MD3 twin exists in
-#                   reference/ — or "missing" (an explicit unfinished entry;
-#                   section 6 of the plan requires a twin per fixture)
+#                   reference/ — "skipped" — a documented skip whose
+#                   `compose_twin_skip_reason` says why no twin can exist —
+#                   or "missing" (an explicit unfinished entry; section 6 of
+#                   the plan requires a twin per fixture)
+#   compose_twin_skip_reason   required when compose_twin = "skipped"
 #   parity_budget   pixel-diffraction bound for the twin comparison; only
 #                   present when compose_twin = "registered"
 #   parity_budget_source   "blessed" (recorded in parity-budgets.json) or
@@ -66,14 +69,16 @@ source = "examples/chromium"
 package = "dev.waterui.examples.chromium"
 mode = "skip"
 reason = "CEF has no Android realization; the example cannot function on an emulator"
-compose_twin = "missing"
+compose_twin = "skipped"
+compose_twin_skip_reason = "the example's subject is the CEF engine, which Android does not realize, so no Hydrolysis app exists to compare against; the platform web engine is compared through the `webview` twin"
 
 [fixtures.webview-cef]
 source = "examples/webview-cef"
 package = "dev.waterui.examples.webviewcef"
 mode = "skip"
 reason = "CEF has no Android realization; the example cannot function on an emulator"
-compose_twin = "missing"
+compose_twin = "skipped"
+compose_twin_skip_reason = "the example's subject is the CEF engine, which Android does not realize, so no Hydrolysis app exists to compare against; the platform web engine is compared through the `webview` twin"
 
 # ---------------------------------------------------------------------------
 # smoke — fixtures CI runs with start-and-non-blank-content checks only.
@@ -412,9 +417,9 @@ status = "no fixture: examples/particle is absent at the pinned waterui revision
 verify = []
 # smoke-mode fixtures missing a twin (matching actions still required):
 smoke = []
-# skip-mode fixtures: their missing twins are recorded but blocked — the
-# fixture itself has no Android realization, so twin work cannot run.
-skip = ["chromium", "webview-cef"]
+# skip-mode fixtures carry `compose_twin = "skipped"` with their reason on
+# the fixture entry, so nothing is left unfinished there.
+skip = []
 
 # Section-6 coverage the finished reference must add on top of the seven
 # registered twins: the remaining core fixture screens in light/dark, CJK and
