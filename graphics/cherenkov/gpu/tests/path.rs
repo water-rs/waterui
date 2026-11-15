@@ -1068,10 +1068,13 @@ fn retained_picture_reuses_pixels_across_fractional_translation() -> Result<(), 
         }));
     });
     wait!(engine.render(cherenkov::FrameTime::now()))?;
-    assert_eq!(engine.stats().paths_rasterized, 1);
+    // The visible 41x41 portion crosses two cells on each axis of the
+    // source-anchored grid. The offscreen part of the 142x142 source is
+    // not rasterized merely to make later rotations free.
+    assert_eq!(engine.stats().paths_rasterized, 4);
     placement.set(Affine::rotate(0.4));
     wait!(engine.render(cherenkov::FrameTime::now()))?;
-    assert_eq!(engine.stats().paths_rasterized, 0, "rotation must not increase raster density");
+    assert_eq!(engine.stats().paths_rasterized, 2, "rotation exposes one new row of two cells");
     for x in [0.25, -10.5, 8.125] {
         placement.set(Affine::translate((x, 0.375)));
         wait!(engine.render(cherenkov::FrameTime::now()))?;
@@ -1095,7 +1098,7 @@ fn retained_picture_reuses_pixels_across_fractional_translation() -> Result<(), 
     for scale in [0.25, 2.0] {
         placement.set(Affine::scale(scale));
         wait!(engine.render(cherenkov::FrameTime::now()))?;
-        assert_eq!(engine.stats().paths_rasterized, 1, "new density needs new pixels");
+        assert_eq!(engine.stats().paths_rasterized, 4, "new density replaces the four visible cells");
     }
     let green = Picture::record(|c| c.fill(overhang(), WorkingColor::new([0.0, 1.0, 0.0, 1.0])));
     surface.update(|tx| {
@@ -1164,6 +1167,54 @@ fn a_retained_picture_keeps_working_precision() -> Result<(), Box<dyn std::error
         &crop(&wait!(direct.readback())?, 0..160, 0..80),
         &crop(&wait!(retained.readback())?, 0..160, 0..80),
     );
+    Ok(())
+}
+}
+
+split_test! {
+/// Scrolling exposes new cells while previously visible picture pixels remain
+/// equivalent to drawing the same commands directly, across tile boundaries.
+fn tiled_picture_scroll_matches_direct_commands() -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::kurbo::{Affine, Rect};
+    use cherenkov::{LinearGradient, Picture};
+    use nami::Binding;
+    fn scene<D: Draw>(c: &mut D)
+    where
+        D::Value<Rect>: From<Rect>,
+        D::Value<LinearGradient>: From<LinearGradient>,
+        D::Value<WorkingColor>: From<WorkingColor>,
+    {
+        c.fill::<Rect, LinearGradient>(Rect::new(0.0, 0.0, 4096.0, 64.0),
+            LinearGradient::new((0.0, 0.0), (4096.0, 64.0))
+                .stop(0.0, WorkingColor::new([0.1, 0.3, 0.8, 1.0]))
+                .stop(1.0, WorkingColor::new([0.8, 0.6, 0.1, 1.0])));
+        for x in (0..4096).step_by(37) {
+            c.fill::<Rect, WorkingColor>(Rect::new(f64::from(x), 14.0, f64::from(x + 13), 50.0),
+                WorkingColor::new([0.8, 0.1, 0.2, 0.6]));
+        }
+    }
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let direct = wait!(engine.surface(Offscreen::new((128, 64), OffscreenFormat::LinearF16), || {}))?;
+    let retained = wait!(engine.surface(Offscreen::new((128, 64), OffscreenFormat::LinearF16), || {}))?;
+    let picture = Picture::record(scene);
+    let placement = Binding::container(Affine::IDENTITY);
+    retained.update(|tx| {
+        tx[retained.root()].content(retained.record(|c| c.picture(&picture, placement.clone())));
+    });
+    for x in [0.0, 0.25, 64.0, 129.0, 257.25, 64.0] {
+        let transform = Affine::translate((-x, 0.0));
+        placement.set(transform);
+        direct.update(|tx| {
+            tx[direct.root()].content(direct.record(|c| c.transform(transform, scene)));
+        });
+        wait!(engine.render(cherenkov::FrameTime::now()))?;
+        let reference = crop(&wait!(direct.readback())?, 0..128, 0..64);
+        let image = crop(&wait!(retained.readback())?, 0..128, 0..64);
+        let output = std::env::temp_dir();
+        reference.write_png(&output.join("cherenkov-2558-scroll-direct.png"))?;
+        image.write_png(&output.join("cherenkov-2558-scroll-tiled.png"))?;
+        assert_images_match(&reference, &image);
+    }
     Ok(())
 }
 }

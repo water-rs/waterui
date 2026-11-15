@@ -7,6 +7,8 @@
 //! layer whose content, density and layout are unchanged draws only that
 //! quad: no local passes and no mip builds.
 
+pub(super) mod tiles;
+
 use cherenkov::LayerId;
 use cherenkov::lowering::projective::{Homography, Limits, LocalImage};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -27,18 +29,11 @@ pub struct LocalKey {
     pub bucket: i32,
 }
 
-/// A local image's allocation identity: a whole picture's immutable display
-/// list or a cell owned by the grid and its retained image snapshots.
+/// A cell allocation owned by the grid and its retained image snapshots.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PictureId(std::num::NonZeroUsize);
 
 impl PictureId {
-    /// The identity of `picture`'s display list.
-    #[must_use]
-    pub fn of(picture: &cherenkov::Picture) -> Self {
-        Self(std::ptr::NonNull::from(picture.display_list()).addr())
-    }
-
     /// A cell keeps its allocation across picture replacements. The prepared
     /// grid and every image snapshot own the allocation while its key is live.
     #[must_use]
@@ -329,15 +324,14 @@ pub struct Inputs {
 #[derive(Clone, Debug)]
 pub struct PictureImage {
     pub source: cherenkov::Picture,
-    pub domain: super::planes::static_layer::Domain,
-    pub cell: Option<std::sync::Arc<[i32; 2]>>,
+    pub grid: tiles::Grid,
+    pub anchor: kurbo::Vec2,
+    pub cell: std::sync::Arc<[i32; 2]>,
 }
 
 impl PictureImage {
     pub fn identity(&self) -> PictureId {
-        self.cell
-            .as_ref()
-            .map_or_else(|| PictureId::of(&self.source), PictureId::cell)
+        PictureId::cell(&self.cell)
     }
 }
 
@@ -400,10 +394,8 @@ impl Entry {
                     .source
                     .display_list()
                     .heap_bytes(cherenkov::lowering::memory::command_bytes)
-                    + picture.cell.as_ref().map_or(0, |_| {
-                        // Arc's strong and weak counters and the cell coordinates.
-                        (2 * size_of::<usize>() + size_of::<[i32; 2]>()) as u64
-                    })
+                    // Arc's strong and weak counters and the cell coordinates.
+                    + (2 * size_of::<usize>() + size_of::<[i32; 2]>()) as u64
             })
     }
 

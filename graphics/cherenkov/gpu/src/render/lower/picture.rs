@@ -1,13 +1,13 @@
 //! Picture-local raster retention, using the shared local-image cache.
-#[cfg(test)]
-mod tiles;
 
 use super::{
     Affine, Emission, EmissionStorage, GlyphContext, LayerId, LocalKey, Lowering, Op, Placement,
     Range, Realization, Rect, RenderError, Target,
 };
+use crate::render::projective::tiles::{Cell, Grid};
 use crate::render::projective::{Key, PictureId, PictureImage, Realize};
-use cherenkov::lowering::projective::{Homography, LocalImage, mip_levels};
+use cherenkov::lowering::projective::{Homography, LocalImage};
+use std::sync::Arc;
 
 /// Picture bounds survive texture eviction and admission retries. Keeping the
 /// immutable source alive makes allocation identity safe across replacements.
@@ -15,11 +15,21 @@ pub(super) struct PreparedDomain {
     source: cherenkov::Picture,
     bucket: i32,
     source_bytes: u64,
-    visible: bool,
     domain: Option<crate::render::planes::static_layer::Domain>,
-    /// What the driver commits for the domain's image with its mip chain,
-    /// by the base size it was asked for.
-    committed: Option<((u32, u32), u64)>,
+    tiling: Option<Tiling>,
+}
+
+struct Tile {
+    identity: Arc<[i32; 2]>,
+    visible: bool,
+}
+
+struct Tiling {
+    grid: Grid,
+    anchor: kurbo::Vec2,
+    cells: super::FxHashMap<Cell, Tile>,
+    levels: Vec<(u32, u32)>,
+    committed: u64,
 }
 
 impl PreparedDomain {
@@ -27,24 +37,13 @@ impl PreparedDomain {
         std::ptr::eq(self.source.display_list(), source.display_list())
     }
 
-    pub(super) const fn source_bytes(&self) -> u64 {
+    pub(super) fn source_bytes(&self) -> u64 {
         self.source_bytes
-    }
-
-    /// The bytes the driver commits for this domain's image with every mip
-    /// level, asked once per size.
-    fn committed(&mut self, device: &wgpu::Device, size: (u32, u32)) -> Result<u64, RenderError> {
-        if let Some((s, bytes)) = self.committed
-            && s == size
-        {
-            return Ok(bytes);
-        }
-        let bytes = crate::render::resident::texture_bytes(
-            device,
-            &crate::render::projective::descriptor(&mip_levels(size)),
-        )?;
-        self.committed = Some((size, bytes));
-        Ok(bytes)
+            + self.tiling.as_ref().map_or(0, |tiling| {
+                (tiling.cells.capacity() * size_of::<(Cell, Tile)>()
+                    + tiling.cells.len() * (2 * size_of::<usize>() + size_of::<[i32; 2]>())
+                    + tiling.levels.capacity() * size_of::<(u32, u32)>()) as u64
+            })
     }
 }
 
@@ -64,30 +63,17 @@ impl<'a> super::PictureInputs<'a> {
                 continue;
             };
             for (&index, prepared) in &content.storage.picture_domains {
-                if !prepared.visible {
-                    continue;
-                }
                 if !matches!(ops.get(index), Some(Op::BeginPicture { picture, .. }) if prepared.matches_source(picture))
                 {
                     continue;
                 }
-                let Some(domain) = prepared.domain else {
+                let Some(tiling) = &prepared.tiling else {
                     continue;
                 };
-                // A visible domain was sized when it was planned; one whose
-                // size moved since is planned again before it ranks.
-                let Some((size, bytes)) = prepared.committed else {
-                    continue;
-                };
-                if size != domain.size {
-                    continue;
+                let count = tiling.cells.values().filter(|tile| tile.visible).count() as u64;
+                if count != 0 {
+                    candidates.push((layer, prepared, count * tiling.committed));
                 }
-                let key = LocalKey {
-                    layer,
-                    picture: Some(PictureId::of(&prepared.source)),
-                    bucket: prepared.bucket,
-                };
-                candidates.push((key, prepared.source_bytes(), bytes));
             }
         }
         let selected = if candidates.is_empty() {
@@ -96,13 +82,26 @@ impl<'a> super::PictureInputs<'a> {
             // Geometry preparation saved per retained texture byte, rather
             // than paint order deciding which content receives the budget.
             candidates.sort_by(|a, b| {
-                (u128::from(b.1) * u128::from(a.2)).cmp(&(u128::from(a.1) * u128::from(b.2)))
+                (u128::from(b.1.source_bytes) * u128::from(a.2))
+                    .cmp(&(u128::from(a.1.source_bytes) * u128::from(b.2)))
             });
             let mut remaining = available;
-            let mut selected = super::FxHashSet::default();
-            for (key, _, bytes) in candidates {
-                if bytes <= remaining && selected.insert(key) {
+            let mut selected = super::FxHashMap::default();
+            for (layer, prepared, bytes) in candidates {
+                let admitted = bytes <= remaining;
+                if admitted {
                     remaining -= bytes;
+                }
+                let tiling = prepared.tiling.as_ref().expect("ranked grid");
+                for tile in tiling.cells.values().filter(|tile| tile.visible) {
+                    selected.insert(
+                        LocalKey {
+                            layer,
+                            picture: Some(PictureId::cell(&tile.identity)),
+                            bucket: prepared.bucket,
+                        },
+                        admitted,
+                    );
                 }
             }
             Some(selected)
@@ -125,9 +124,12 @@ struct PicturePlan {
     cache: Key,
     current: bool,
     interop: u64,
-    domain: crate::render::planes::static_layer::Domain,
+    grid: Grid,
+    anchor: kurbo::Vec2,
     /// The bytes the driver commits for the image, which admission counted.
     bytes: u64,
+    cell: Arc<[i32; 2]>,
+    tile: crate::render::projective::TilePlacement,
 }
 
 impl Lowering<'_> {
@@ -151,193 +153,269 @@ impl Lowering<'_> {
         ops: &[Op],
         (layer, domains, index): (LayerId, &mut super::FxHashMap<usize, PreparedDomain>, usize),
         glyphs: &GlyphContext<'_>,
-    ) -> Result<Option<PicturePlan>, RenderError> {
+    ) -> Result<Option<Vec<PicturePlan>>, RenderError> {
         let Some(context) = self.pictures.as_ref() else {
             return Ok(None);
         };
-        if self.depth != 0 {
+        if self.depth != 0
+            || self.clip.is_some_and(|clip| {
+                clip.mask.is_some()
+                    || clip
+                        .aligned_rect
+                        .is_none_or(|r| [r.x0, r.y0, r.x1, r.y1].iter().any(|v| v.fract() != 0.0))
+            })
+        {
             return Ok(None);
         }
-        // The image stores the space of the pass it composites into: its
-        // commands blend with each other there, and the image composites
-        // source-over there, exactly as the commands drawn inline would.
-        let space = self.current_space();
-        if self.clip.is_some_and(|clip| {
-            clip.mask.is_some()
-                || clip
-                    .aligned_rect
-                    .is_none_or(|r| [r.x0, r.y0, r.x1, r.y1].iter().any(|v| v.fract() != 0.0))
+        // Destination-dependent scopes keep their existing lowering path.
+        if ops.iter().any(|op| {
+            matches!(
+                op,
+                Op::BeginPicture { .. } | Op::BeginIsolate { .. } | Op::BeginShadow { .. }
+            )
         }) {
             return Ok(None);
         }
+        let space = self.current_space();
         let to_parent = self.transform * local;
         let [a, b, c, d, _, _] = to_parent.as_coeffs();
-        // The largest singular value measures scale without charging rotation
-        // as magnification. Match the raster's f32 precision before bucketing,
-        // so roundoff in an orthogonal transform cannot double its density.
         let (xx, yy, xy) = (
             b.mul_add(b, a * a),
             d.mul_add(d, c * c),
             b.mul_add(d, a * c),
         );
         let scale = ((xx + yy + (xx - yy).hypot(2.0 * xy)) * 0.5).sqrt();
-        // Half-octave buckets bound excess texel area to 2x while preserving
-        // pixels across small scale changes. Whole octaves can charge 4x.
-        let density = (f64::from(scale as f32).log2() * 2.0).ceil();
-        let density = (density * 0.5).exp2();
-        let key = LocalKey {
-            layer,
-            picture: Some(PictureId::of(picture)),
-            bucket: crate::render::projective::bucket(density),
-        };
-        let entry = context
-            .retained
-            .get(&layer)
-            .and_then(|entries| entries.iter().find(|entry| entry.matches(key)));
-        let pending = context.realize.iter().find(|image| image.key == key);
-        let snapshot = entry
-            .and_then(|entry| entry.picture.as_ref())
-            .or_else(|| pending.and_then(|image| image.picture.as_ref()));
-        let domain = if let Some(snapshot) = snapshot {
-            snapshot.domain
-        } else {
-            // Composite pictures keep their children independently reusable when
-            // their placement changes or the enclosing recording is replaced.
-            // Groups may depend on the destination and keep their own path.
-            if ops.iter().any(|op| {
-                matches!(
-                    op,
-                    Op::BeginPicture { .. } | Op::BeginIsolate { .. } | Op::BeginShadow { .. }
-                )
-            }) {
-                return Ok(None);
-            }
-            let cached = domains
-                .get(&index)
-                .filter(|entry| entry.bucket == key.bucket && entry.matches_source(picture));
-            let domain = if let Some(cached) = cached {
-                cached.domain
-            } else {
-                let domain = crate::render::planes::static_layer::domain_in(
-                    local.inverse(),
-                    ops,
-                    source,
-                    glyphs.fonts,
-                    density,
-                    context.inputs.limits.max_dimension,
-                )?;
-                domains.insert(
-                    index,
-                    PreparedDomain {
-                        source: picture.clone(),
-                        bucket: key.bucket,
-                        source_bytes: picture
-                            .display_list()
-                            .heap_bytes(cherenkov::lowering::memory::command_bytes),
-                        visible: true,
-                        domain,
-                        committed: None,
-                    },
-                );
-                domain
-            };
-            let Some(domain) = domain else {
-                return Ok(None);
-            };
-            domain
-        };
-        let raster = domain.raster();
-        let forward = to_parent * raster;
-        let bounds = forward
-            .transform_rect_bbox(Rect::new(
-                0.0,
-                0.0,
-                f64::from(domain.size.0),
-                f64::from(domain.size.1),
-            ))
-            .expand()
-            .intersect(Rect::new(
-                0.0,
-                0.0,
-                f64::from(self.width),
-                f64::from(self.height),
-            ));
+        // Half-octave buckets bound excess texel area to 2x.
+        let density = ((f64::from(scale as f32).log2() * 2.0).ceil() * 0.5).exp2();
+        let bucket = crate::render::projective::bucket(density);
         let prepared = domains.entry(index).or_insert_with(|| PreparedDomain {
             source: picture.clone(),
-            bucket: key.bucket,
+            bucket,
             source_bytes: picture
                 .display_list()
                 .heap_bytes(cherenkov::lowering::memory::command_bytes),
-            visible: true,
-            domain: Some(domain),
-            committed: None,
+            domain: None,
+            tiling: None,
         });
-        prepared.bucket = key.bucket;
-        prepared.domain = Some(domain);
-        prepared.visible = !bounds.is_zero_area();
-        if !prepared.visible {
-            return Ok(None);
+        if !prepared.matches_source(picture) || prepared.bucket != bucket {
+            if prepared.bucket != bucket {
+                prepared.tiling = None;
+            }
+            prepared.source = picture.clone();
+            prepared.source_bytes = picture
+                .display_list()
+                .heap_bytes(cherenkov::lowering::memory::command_bytes);
+            prepared.bucket = bucket;
+            prepared.domain = None;
         }
-        // Sized before selection, so a picture ranks once it is planned.
-        let committed = prepared.committed(context.device, domain.size)?;
-        let mut image = LocalImage {
-            density,
-            local_to_texel: raster.inverse(),
-            size: domain.size,
-            levels: Vec::new(),
-            inverse: Homography::affine(forward.inverse()),
-            forward: Homography::affine(forward),
-            to_parent: Homography::affine(to_parent),
-            bounds: [
-                bounds.x0 as u32,
-                bounds.y0 as u32,
-                bounds.x1 as u32,
-                bounds.y1 as u32,
-            ],
+        if prepared.domain.is_none() {
+            // Only individual textures obey the device dimension limit.
+            prepared.domain = crate::render::planes::static_layer::domain_in(
+                local.inverse(),
+                ops,
+                source,
+                glyphs.fonts,
+                density,
+                u32::MAX,
+            )?;
+        }
+        let Some(domain) = prepared.domain else {
+            return Ok(None);
         };
-        let cache = Key::new(&image, space, 0, context.inputs.replacements);
-        let current = pending.is_some()
-            || (!context.inputs.stale.contains(&key)
-                && entry.is_some_and(|entry| entry.key == Some(cache)));
-        if context
-            .selected
+        let source_bounds = Rect::from_origin_size(
+            (domain.origin * density).to_point(),
+            (f64::from(domain.size.0), f64::from(domain.size.1)),
+        );
+        let inverse = Affine::scale(density) * to_parent.inverse();
+        let viewport = Rect::new(0.0, 0.0, f64::from(self.width), f64::from(self.height));
+        let viewport = self
+            .clip
+            .and_then(|clip| clip.aligned_rect)
+            .map_or(viewport, |clip| viewport.intersect(clip));
+        let visible = inverse
+            .transform_rect_bbox(viewport)
+            .intersect(source_bounds);
+        if visible.is_zero_area() {
+            if let Some(tiling) = &mut prepared.tiling {
+                for tile in tiling.cells.values_mut() {
+                    tile.visible = false;
+                }
+            }
+            return Ok(Some(Vec::new()));
+        }
+        if prepared.tiling.is_none() {
+            let entries = context.retained.get(&layer).map_or_default(Vec::as_slice);
+            let compatible = |entry: &&crate::render::projective::Entry| {
+                entry.bucket == bucket
+                    && entry.picture.as_ref().is_some_and(|snapshot| {
+                        std::ptr::eq(snapshot.source.display_list(), picture.display_list())
+                            && snapshot.grid.supports(inverse)
+                    })
+            };
+            if let Some(entry) = entries.iter().find(compatible) {
+                let snapshot = entry.picture.as_ref().expect("matched picture");
+                let mut cells = super::FxHashMap::default();
+                for image in entries
+                    .iter()
+                    .filter(compatible)
+                    .filter_map(|entry| entry.picture.as_ref())
+                {
+                    if image.grid == snapshot.grid && image.anchor == snapshot.anchor {
+                        let identity = &image.cell;
+                        cells.insert(
+                            Cell {
+                                x: identity[0],
+                                y: identity[1],
+                            },
+                            Tile {
+                                identity: Arc::clone(identity),
+                                visible: false,
+                            },
+                        );
+                    }
+                }
+                prepared.tiling = Some(Tiling {
+                    grid: snapshot.grid,
+                    anchor: snapshot.anchor,
+                    cells,
+                    levels: snapshot.grid.levels(),
+                    committed: entry.bytes(),
+                });
+            }
+        }
+        if prepared
+            .tiling
             .as_ref()
-            .is_some_and(|selected| !selected.contains(&key))
+            .is_none_or(|tiling| !tiling.grid.supports(inverse))
         {
-            return Ok(None);
+            let Some(grid) = Grid::for_view(
+                inverse,
+                source_bounds,
+                visible,
+                context.inputs.limits.max_dimension,
+            ) else {
+                return Ok(None);
+            };
+            let levels = grid.levels();
+            let committed = crate::render::resident::texture_bytes(
+                context.device,
+                &crate::render::projective::descriptor(&levels),
+            )?;
+            prepared.tiling = Some(Tiling {
+                grid,
+                anchor: domain.origin * density,
+                cells: super::FxHashMap::default(),
+                levels,
+                committed,
+            });
         }
-        let already_composed = context.composed.contains(&key);
-        let bytes = if current {
-            entry.map_or_else(
-                || {
-                    pending
-                        .expect("current image is retained or pending")
-                        .bytes()
-                },
-                crate::render::projective::Entry::bytes,
-            )
-        } else {
-            image.levels = mip_levels(image.size);
-            committed
+        let tiling = prepared.tiling.as_mut().expect("planned grid");
+        for tile in tiling.cells.values_mut() {
+            tile.visible = false;
+        }
+        let Some(cells) = tiling.grid.cells(visible - tiling.anchor) else {
+            return Ok(None);
         };
-        if !already_composed && bytes > context.available {
+        let mut plans = Vec::new();
+        let mut required = 0_u64;
+        let mut admitted = true;
+        for cell in cells {
+            let recorded = tiling.cells.entry(cell).or_insert_with(|| Tile {
+                identity: Arc::new([cell.x, cell.y]),
+                visible: false,
+            });
+            recorded.visible = true;
+            let key = LocalKey {
+                layer,
+                picture: Some(PictureId::cell(&recorded.identity)),
+                bucket,
+            };
+            let core = tiling.grid.interior(cell) + tiling.anchor;
+            let raster = tiling.grid.raster(cell) + tiling.anchor;
+            let local_to_texel =
+                Affine::translate(-raster.origin().to_vec2()) * Affine::scale(density);
+            let forward = to_parent * local_to_texel.inverse();
+            let bounds = inverse
+                .inverse()
+                .transform_rect_bbox(core.intersect(source_bounds))
+                .expand()
+                .intersect(viewport);
+            let image = LocalImage {
+                density,
+                local_to_texel,
+                size: tiling.levels[0],
+                levels: tiling.levels.clone(),
+                inverse: Homography::affine(inverse),
+                forward: Homography::affine(forward),
+                to_parent: Homography::affine(to_parent),
+                bounds: [
+                    bounds.x0 as u32,
+                    bounds.y0 as u32,
+                    bounds.x1 as u32,
+                    bounds.y1 as u32,
+                ],
+            };
+            let cache = Key::new(&image, space, 0, context.inputs.replacements);
+            let entry = context
+                .retained
+                .get(&layer)
+                .and_then(|entries| entries.iter().find(|entry| entry.matches(key)));
+            let pending = context.realize.iter().find(|image| image.key == key);
+            let snapshot_matches = |snapshot: &PictureImage| {
+                std::ptr::eq(snapshot.source.display_list(), picture.display_list())
+            };
+            let current = pending.is_some_and(|image| {
+                image.cache == cache && image.picture.as_ref().is_some_and(snapshot_matches)
+            }) || (!context.inputs.stale.contains(&key)
+                && entry.is_some_and(|entry| {
+                    entry.key == Some(cache) && entry.picture.as_ref().is_some_and(snapshot_matches)
+                }));
+            let bytes = tiling.committed;
+            if !context.composed.contains(&key) {
+                required = required.saturating_add(bytes);
+            }
+            // A newly exposed cell has no prior admission ranking. The
+            // frame's remaining budget still applies to it below.
+            if entry.is_some()
+                && context
+                    .selected
+                    .as_ref()
+                    .is_some_and(|set| set.get(&key) == Some(&false))
+            {
+                admitted = false;
+            }
+            plans.push(PicturePlan {
+                image,
+                key,
+                cache,
+                current,
+                interop: context.inputs.interop,
+                grid: tiling.grid,
+                anchor: tiling.anchor,
+                bytes,
+                cell: Arc::clone(&recorded.identity),
+                tile: crate::render::projective::TilePlacement {
+                    interior: core,
+                    origin: raster.origin(),
+                },
+            });
+        }
+        // A snapshot owns every resident cell's identity. Once neither a
+        // snapshot nor this frame needs it, the sparse grid can release it.
+        tiling
+            .cells
+            .retain(|_, tile| tile.visible || Arc::strong_count(&tile.identity) > 1);
+        if !admitted || required > context.available {
             return Ok(None);
         }
-        let interop = context.inputs.interop;
-        if !already_composed {
-            let context = self.pictures.as_mut().expect("picture inputs");
-            context.available -= bytes;
-            context.composed.push(key);
+        let context = self.pictures.as_mut().expect("picture inputs");
+        context.available -= required;
+        for plan in &plans {
+            if !context.composed.contains(&plan.key) {
+                context.composed.push(plan.key);
+            }
         }
-        Ok(Some(PicturePlan {
-            image,
-            key,
-            cache,
-            current,
-            interop,
-            domain,
-            bytes,
-        }))
+        Ok(Some(plans))
     }
 
     /// Lowers the picture scope opened at `ops[open]`: its retained image
@@ -397,15 +475,7 @@ impl Lowering<'_> {
         (layer, range): (LayerId, Range<usize>),
         glyphs: &GlyphContext<'_>,
     ) -> Result<Option<bool>, RenderError> {
-        let Some(PicturePlan {
-            image,
-            key,
-            cache,
-            current,
-            interop,
-            domain,
-            bytes,
-        }) = self.plan_picture(
+        let Some(plans) = self.plan_picture(
             picture,
             local,
             source,
@@ -416,6 +486,51 @@ impl Lowering<'_> {
         else {
             return Ok(None);
         };
+        let mut changed = false;
+        for plan in plans {
+            changed |= self.realize_picture_tile(
+                picture,
+                local,
+                source,
+                ops,
+                emissions,
+                storage,
+                (layer, range.clone()),
+                glyphs,
+                plan,
+            )?;
+        }
+        Ok(Some(changed))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one retained operation range and its tile plan"
+    )]
+    fn realize_picture_tile(
+        &mut self,
+        picture: &cherenkov::Picture,
+        local: Affine,
+        source: &cherenkov::DisplayList,
+        ops: &[Op],
+        emissions: &mut [Realization<Emission>],
+        storage: &mut EmissionStorage,
+        (layer, range): (LayerId, Range<usize>),
+        glyphs: &GlyphContext<'_>,
+        plan: PicturePlan,
+    ) -> Result<bool, RenderError> {
+        let PicturePlan {
+            image,
+            key,
+            cache,
+            current,
+            interop,
+            grid,
+            anchor,
+            bytes,
+            cell,
+            tile,
+        } = plan;
         if !current {
             let saved = (
                 self.transform,
@@ -472,8 +587,9 @@ impl Lowering<'_> {
                     levels: image.levels,
                     picture: Some(PictureImage {
                         source: picture.clone(),
-                        domain,
-                        cell: None,
+                        grid,
+                        anchor,
+                        cell,
                     }),
                     deps,
                 });
@@ -486,12 +602,12 @@ impl Lowering<'_> {
                 to_parent: image.to_parent,
                 bounds: image.bounds,
                 density: image.density,
-                tile: None,
+                tile: Some(tile),
             },
             1.0,
             cherenkov::BlendMode::Normal,
             cache.space,
         );
-        Ok(Some(!current))
+        Ok(!current)
     }
 }

@@ -1135,9 +1135,8 @@ impl GeometryCache {
 
 impl EmissionStorage {
     fn retain_gpu_paths(&mut self, ops: &[Op]) {
-        self.picture_domains.retain(|index, entry| {
-            matches!(ops.get(*index), Some(Op::BeginPicture { picture, .. }) if entry.matches_source(picture))
-        });
+        self.picture_domains
+            .retain(|index, _| matches!(ops.get(*index), Some(Op::BeginPicture { .. })));
         self.gpu_paths
             .retain(|index, _| matches!(ops.get(*index), Some(Op::Path { .. })));
     }
@@ -1827,7 +1826,7 @@ pub struct PictureInputs<'a> {
     /// Asked what a picture image will commit before it is admitted.
     device: &'a wgpu::Device,
     pub available: u64,
-    selected: Option<FxHashSet<LocalKey>>,
+    selected: Option<FxHashMap<LocalKey, bool>>,
     /// Picture images this walk realizes, in realization order.
     pub realize: Vec<super::projective::Realize>,
     /// Picture images this walk composes.

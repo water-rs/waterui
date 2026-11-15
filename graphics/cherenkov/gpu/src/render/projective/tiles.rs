@@ -6,21 +6,46 @@ use kurbo::{Affine, Rect};
 /// A cell is identified in picture texels, independently of its placement
 /// on the surface. Scrolling changes the visible cells, not their identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) struct Cell {
+pub(in crate::render) struct Cell {
     pub x: i32,
     pub y: i32,
 }
 
 /// Every texture origin and size is aligned to the coarsest sampled mip.
 /// Consequently adjacent textures reconstruct the same global texel grid.
-#[derive(Clone, Copy, Debug)]
-pub(super) struct Grid {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::render) struct Grid {
     span: [u32; 2],
     apron: [u32; 2],
     level: u32,
 }
 
 impl Grid {
+    /// Start with viewport-sized cells, bounded by the picture and the device.
+    /// The retained grid keeps this size while the viewport scrolls; no dense
+    /// allocation scales with the full picture's area.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "positive spans are bounded by the device dimension"
+    )]
+    pub fn for_view(inverse: Affine, source: Rect, visible: Rect, limit: u32) -> Option<Self> {
+        let mut grid = Self::new(inverse, [1, 1], limit)?;
+        let alignment = 1_u32 << grid.level;
+        let requested = [
+            source.width().min(visible.width()),
+            source.height().min(visible.height()),
+        ];
+        for (axis, requested) in requested.into_iter().enumerate() {
+            let available = (limit - 2 * grid.apron[axis]) / alignment * alignment;
+            let requested = (requested / f64::from(alignment)).ceil() * f64::from(alignment);
+            grid.span[axis] = requested
+                .min(f64::from(available))
+                .max(f64::from(alignment)) as u32;
+        }
+        Some(grid)
+    }
+
     /// Plans cells for an affine destination-to-picture-texel transform.
     /// `span` is the requested cell interior; `limit` is the device's
     /// maximum texture dimension, including the filtering apron.
