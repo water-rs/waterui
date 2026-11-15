@@ -975,7 +975,8 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ListConfig> {
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
-        measure_list_intrinsic(view.as_inner(), None, state, env, theme)
+        let list = view.as_inner();
+        measure_list_intrinsic(list, &list.contents().snapshot(), None, state, env, theme)
     }
 }
 
@@ -1722,13 +1723,15 @@ fn register_edit_control_node<E: crate::text::TextEngine>(
 
 /// Measures the scrollable viewport, using content size only for ideal queries.
 pub fn measure_list_node<E: crate::text::TextEngine>(
-    list: &ListConfig,
+    list: &ListRenderState<E>,
     proposal: ProposalSize,
     state: &mut HydroState<E>,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
-    let intrinsic = measure_list_intrinsic(list, proposal.width, state, env, theme);
+    let contents = list.rows_snapshot.borrow().clone();
+    let intrinsic =
+        measure_list_intrinsic(&list.config, &contents, proposal.width, state, env, theme);
     ViewDimensions::new(LayoutSize::new(
         proposal.width.unwrap_or(intrinsic.width),
         proposal.height.unwrap_or(intrinsic.height),
