@@ -160,7 +160,7 @@ impl HwuiWindow {
         self.painter
             .replay(frame.words(), frame.clear())
             .map_err(JniError)?;
-        self.surface.encoder().stats().report();
+        self.surface.encoder().report_stats();
         sync_platform_input(runtime);
         if runtime.renderer.take_redraw_request() || animating || self.surface.has_pending() {
             runtime.request_redraw();

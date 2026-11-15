@@ -6,8 +6,8 @@ nodes re-recorded, text-shape misses and font registrations since the
 previous frame. A failed HWUI-versus-Compose metric is attributed with these
 counters, so a round records their distribution rather than one number.
 
-`dumpsys gfxinfo` supplies the two device-side figures the counters cannot:
-the window's RenderNode count and the display-list memory they hold
+`dumpsys gfxinfo` supplies the Android View count and RenderNode memory
+separately from the encoder's live retained-node gauge
 (`metrics.frames.parse_render_nodes`).
 
 Only the HWUI painter reports: the GPU painter draws through Cherenkov, whose
@@ -32,6 +32,9 @@ COUNTERS = (
     "font_registrations",
 )
 
+GAUGES = ("live_render_nodes",)
+FIELDS = COUNTERS + GAUGES
+
 _LINE = re.compile(r"hydrolysis::frame_profile:.*?\bhwui frame\b(?P<fields>.*)$")
 _FIELD = re.compile(r"(\w+)=(\d+)")
 
@@ -49,12 +52,12 @@ def parse_frames(text: str) -> list[dict[str, int]]:
         if match is None:
             continue
         fields = {k: int(v) for k, v in _FIELD.findall(match.group("fields"))}
-        missing = [c for c in COUNTERS if c not in fields]
+        missing = [c for c in FIELDS if c not in fields]
         if missing:
             raise ValueError(
                 f"frame_profile line lacks {missing}: {line.strip()!r}"
             )
-        frames.append({c: fields[c] for c in COUNTERS})
+        frames.append({c: fields[c] for c in FIELDS})
     return frames
 
 
@@ -65,9 +68,10 @@ def _percentile(sorted_values: list[int], fraction: float) -> int:
 def summarize(frames: list[dict[str, int]]) -> dict:
     """Total, p50, p99 and max of each counter over the round's frames."""
     summary: dict = {"frame_profile_frames": len(frames)}
-    for counter in COUNTERS:
+    for counter in FIELDS:
         values = sorted(frame[counter] for frame in frames)
-        summary[f"{counter}_total"] = sum(values)
+        if counter in COUNTERS:
+            summary[f"{counter}_total"] = sum(values)
         if values:
             summary[f"{counter}_p50"] = _percentile(values, 0.50)
             summary[f"{counter}_p99"] = _percentile(values, 0.99)

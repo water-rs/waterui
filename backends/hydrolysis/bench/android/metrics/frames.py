@@ -47,19 +47,19 @@ def parse_gfxinfo(text: str) -> dict:
 
 
 # `dumpsys gfxinfo <pkg>` closes each window's view-hierarchy section with
-# "<n> views, <x> kB of render nodes": the count of views whose RenderNode is
-# alive and the display-list memory they hold. Summed over the package's
+# "<n> views, <x> kB of render nodes": the View hierarchy size and its RenderNode memory, not a count of all
+# retained RenderNodes. Summed over the package's
 # windows.
 _RENDER_NODES = re.compile(r"(\d+) views,\s*([\d.]+) kB of render nodes")
 
 
 def parse_render_nodes(text: str) -> dict:
-    """RenderNode count and display-list memory from `dumpsys gfxinfo`."""
+    """View count and RenderNode memory from `dumpsys gfxinfo`."""
     windows = _RENDER_NODES.findall(text)
     if not windows:
         return {}
     return {
-        "render_node_count": sum(int(views) for views, _ in windows),
+        "android_view_count": sum(int(views) for views, _ in windows),
         "display_list_kb": round(sum(float(kb) for _, kb in windows), 2),
     }
 

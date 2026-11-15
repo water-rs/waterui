@@ -492,6 +492,12 @@ impl Encoder {
         &self.stats
     }
 
+    /// Reports frame work and the retained nodes owned by this encoder.
+    #[cfg(target_os = "android")]
+    pub(crate) fn report_stats(&self) {
+        self.stats.report(self.pools.nodes.live());
+    }
+
     /// The last clear colour committed, as a `ColorLong`.
     #[must_use]
     pub fn clear_color(&self) -> Option<u64> {

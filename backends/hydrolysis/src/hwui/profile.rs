@@ -65,10 +65,11 @@ mod counting {
 
         /// Logs the counts since the previous report as one logcat line the
         /// harness parses, and zeroes them.
-        pub fn report(&self) {
+        pub fn report(&self, live_render_nodes: usize) {
             let counts = &*self.0;
             tracing::info!(
                 target: "hydrolysis::frame_profile",
+                live_render_nodes,
                 jni_calls = counts.jni_calls.swap(0, Ordering::Relaxed),
                 command_bytes = counts.command_bytes.swap(0, Ordering::Relaxed),
                 nodes_rerecorded = counts.nodes_rerecorded.swap(0, Ordering::Relaxed),
@@ -110,7 +111,7 @@ mod counting {
         pub const fn font_registration(&self) {}
 
         /// Reports nothing.
-        pub const fn report(&self) {}
+        pub const fn report(&self, _live_render_nodes: usize) {}
     }
 }
 
