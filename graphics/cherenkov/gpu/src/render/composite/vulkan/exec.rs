@@ -58,6 +58,9 @@ pub struct Resources<'a> {
 /// statistics it counts into, and the attribution collector when a
 /// report is being built (#2547).
 pub struct Recording<'a> {
+    /// Existing renderer workers used for missing pipeline creation.
+    #[cfg(feature = "parallel")]
+    pub preparation: &'a rayon::ThreadPool,
     /// The frame encoder. It is finished into `buffers` before the
     /// epoch's own command buffer and replaced with a fresh one, which
     /// the caller goes on recording into.
@@ -81,6 +84,7 @@ pub struct Recording<'a> {
 /// so that nothing borrows the surface inside it.
 struct Draw {
     key: PipeKey,
+    pipeline: Option<vk::Pipeline>,
     /// The canonical pass the draw belongs to, for the attribution
     /// report's first-use event.
     pass: usize,
@@ -120,6 +124,8 @@ pub fn encode(
     recording: Recording<'_>,
 ) -> Result<(), MirrorError> {
     let Recording {
+        #[cfg(feature = "parallel")]
+        preparation,
         encoder,
         buffers,
         timestamps,
@@ -179,6 +185,7 @@ pub fn encode(
             // planner's clear region is everywhere the opening image is
             // written, which bounds every read of it.
             draws.push(Draw {
+                pipeline: None,
                 key: PipeKey {
                     target: op.target,
                     source: op.target,
@@ -221,6 +228,7 @@ pub fn encode(
                 ShaderVariant::Composite => 8,
             };
             draws.push(Draw {
+                pipeline: None,
                 key: PipeKey {
                     target: op.target,
                     source: source.unwrap_or(op.target),
@@ -289,9 +297,42 @@ pub fn encode(
             state: wgpu::TextureUses::RESOURCE,
         }
     }));
+    // Prepare only visible cache misses; the steady path resolves each handle once.
+    let mut missing = Vec::new();
+    for draw in &mut draws {
+        draw.pipeline = mirror.pipeline(draw.key);
+        if draw.pipeline.is_some() {
+            continue;
+        }
+        let visible = crate::render::repaint::Scissors::new(
+            surf.draw_demand.pass(first_output.pass),
+            epoch.region,
+        )
+        .rectangles()
+        .any(|repaint| crate::render::repaint::intersection(draw.region, repaint).is_some());
+        if !visible {
+            continue;
+        }
+        if !missing.contains(&draw.key) {
+            missing.push(draw.key);
+            note(&mut pipelines, true, draw.pass, draw.key);
+        }
+    }
+    mirror.prepare(
+        &missing,
+        #[cfg(feature = "parallel")]
+        preparation,
+    )?;
+    if !missing.is_empty() {
+        for draw in &mut draws {
+            if draw.pipeline.is_none() {
+                draw.pipeline = mirror.pipeline(draw.key);
+            }
+        }
+    }
+
     // Native descriptor reads are invisible to wgpu's pass tracker. Include
-    // buffers as well as textures so pending uploads become shader-visible
-    // before the native epoch consumes them.
+    // buffers as well as textures so pending uploads become shader-visible.
     let buffers_read = [
         (resources.globals, wgpu::BufferUses::UNIFORM),
         (resources.instances, wgpu::BufferUses::STORAGE_READ_ONLY),
@@ -339,7 +380,6 @@ pub fn encode(
                     },
                     &draws,
                     stats,
-                    &mut pipelines,
                 )
             })
         }
@@ -383,7 +423,6 @@ unsafe fn record(
     epoch: &Epoch<'_>,
     draws: &[Draw],
     stats: &mut FrameStats,
-    pipelines: &mut Option<&mut Vec<report::PipelineCreated>>,
 ) -> Result<(), MirrorError> {
     let device = mirror.device().clone();
     let layout = mirror.pipeline_layout();
@@ -504,15 +543,7 @@ unsafe fn record(
             let Some(scissor) = crate::render::repaint::intersection(draw.region, repaint) else {
                 continue;
             };
-            let mut created = false;
-            let pipeline = match mirror.pipeline(draw.key, &mut created) {
-                Ok(pipeline) => pipeline,
-                Err(error) => {
-                    result = Err(error);
-                    break;
-                }
-            };
-            note(pipelines, created, draw.pass, draw.key);
+            let pipeline = draw.pipeline.expect("epoch pipelines were prepared");
             let sampled = match mirror.sampled_set(epoch.stamp, epoch.dummy, draw.image, draw.mask)
             {
                 Ok(set) => set,

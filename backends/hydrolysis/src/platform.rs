@@ -543,6 +543,20 @@ crate::engine::cfg_async_fn! {
 
 #[cfg(hydrolysis_gpu_painter)]
 impl GpuGeneration {
+    /// Opens a device generation without blocking its host on engine startup.
+    #[cfg(target_os = "android")]
+    pub(crate) async fn open_async(
+        loss: DeviceLoss,
+        config: cherenkov_gpu::GpuConfig,
+    ) -> Result<Self, GpuUnavailable> {
+        let engine = crate::engine::SharedEngineState::new_async(
+            loss.gpu_context().shared_device.clone(),
+            config,
+        )
+        .await?;
+        Ok(Self { loss, engine })
+    }
+
     /// The generation's device-loss observation and creation chain.
     pub(crate) const fn loss(&self) -> &DeviceLoss {
         &self.loss
@@ -2076,10 +2090,21 @@ pub struct EngineWindowTarget<'a> {
     pub(crate) display_moved: bool,
 }
 
+#[cfg(all(target_os = "android", hydrolysis_gpu_painter))]
+pub struct PendingAndroidWindow {
+    pub task: executor_core::async_task::AsyncTask<
+        Result<crate::engine::AndroidCherenkovSurface, crate::renderer::FrameError>,
+    >,
+    pub display_scale: f64,
+    pub base_color: cherenkov_record::WorkingColor,
+}
+
 /// Android's engine-presented window, owned by its `SurfaceView` attachment.
 #[cfg(target_os = "android")]
 #[cfg(hydrolysis_gpu_painter)]
 pub struct EngineAndroidTarget<'a> {
+    pub(crate) pending: &'a mut Option<PendingAndroidWindow>,
+    pub(crate) executor: &'a crate::runner::android_executor::AndroidMainThreadExecutor,
     pub window: &'a ndk::native_window::NativeWindow,
     pub window_slot: &'a mut Option<
         crate::renderer::CherenkovWindow<
