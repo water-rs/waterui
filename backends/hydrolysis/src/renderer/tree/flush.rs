@@ -1300,7 +1300,7 @@ fn record_hosted_gpu<E, R>(
 /// The semantic walk's counterpart of [`record_hosted_gpu`]: the same
 /// accessibility node, and the same input target as a focus-bookkeeping
 /// slot — there is no layout to bound it, so it is not a hit rect.
-#[cfg(all(hydrolysis_gpu, feature = "accessibility"))]
+#[cfg(all(hydrolysis_cherenkov, hydrolysis_gpu, feature = "accessibility"))]
 fn emit_hosted_gpu_accessibility<E, R>(
     renderer: &mut SemanticCore<E>,
     env: &Environment,
