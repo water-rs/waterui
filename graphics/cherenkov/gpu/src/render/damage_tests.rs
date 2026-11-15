@@ -79,6 +79,84 @@ fn replacement_storage_invalidates_only_its_target_until_submission() {
 }
 
 #[test]
+fn independent_pass_insertion_and_removal_preserve_command_history() {
+    let mut scene = frame(&[(0, 10.0), (1, 70.0)]);
+    let mut history = Commands::default();
+    history.update(&scene);
+    history.submitted();
+    let mut added = frame(&[]).passes.remove(0);
+    added.target = Target::Part(1);
+    added.ranges.clear();
+    scene.passes.insert(0, added);
+    history.update(&scene);
+    assert!(history.pass(0).is_full());
+    assert!(
+        history.pass(1).is_empty(),
+        "pass index is not content identity"
+    );
+    scene.instances[0].bounds = [20.0, 10.0, 30.0, 20.0];
+    history.update(&scene);
+    assert_eq!(history.pass(1).pixel_area(), 264);
+    history.submitted();
+    scene.passes.remove(0);
+    history.update(&scene);
+    assert!(history.pass(0).is_empty());
+    // Removing a command at the same time as its pass index changes still
+    // clears the command's last submitted pixels on the surviving target.
+    scene.commands.truncate(1);
+    scene.command_sources.truncate(1);
+    scene.instances.truncate(1);
+    scene.passes[0].ranges[0].instances = 0..1;
+    history.update(&scene);
+    assert_eq!(history.pass(0).pixel_area(), 144);
+    assert!(contains(&history, 70, 10));
+}
+
+#[test]
+fn topology_changes_rebuild_dependent_and_repeated_writes() {
+    let mut scene = frame(&[]);
+    scene.passes[0].ranges[0].source = Some(crate::render::lower::Source::Scratch(0));
+    let mut history = Commands::default();
+    history.update(&scene);
+    history.submitted();
+    let mut added = frame(&[]).passes.remove(0);
+    added.target = Target::Part(1);
+    scene.passes.push(added);
+    history.update(&scene);
+    assert!(
+        history.pass(0).is_full(),
+        "producer order needs reevaluation"
+    );
+    history.submitted();
+    scene.passes[0].ranges[0].source = None;
+    history.update(&scene);
+    history.submitted();
+    scene.passes.push(scene.passes[0].clone());
+    history.update(&scene);
+    assert!(history.pass(0).is_full());
+    assert!(history.pass(2).is_full());
+    assert!(
+        history.pass(1).is_empty(),
+        "independent target remains retained"
+    );
+}
+
+#[test]
+fn scratch_storage_is_not_retained_across_topology_changes() {
+    let mut scene = frame(&[]);
+    scene.passes[0].target = Target::Scratch(0);
+    let mut history = Commands::default();
+    history.update(&scene);
+    history.submitted();
+    scene.passes.insert(0, frame(&[]).passes.remove(0));
+    history.update(&scene);
+    assert!(
+        history.pass(1).is_full(),
+        "scratch allocation belongs to the new plan"
+    );
+}
+
+#[test]
 fn movement_and_removal_keep_last_submitted_footprints() {
     let mut history = Commands::default();
     history.update(&frame(&[(0, 10.0)]));
