@@ -391,7 +391,7 @@ pub fn render_stepper_parts<E: crate::text::TextEngine>(
                 role: "label-dim",
                 item: 0,
             },
-            theme.disabled_content_alpha(),
+            crate::theme::DISABLED_FOREGROUND_ALPHA,
             rects.label,
             |ctx| {
                 let render_ctx = ctx.render_context();

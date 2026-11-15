@@ -29,13 +29,13 @@ use waterui_core::Environment;
 use waterui_core::animation::{Animation, ChangeAnimation};
 use waterui_core::interaction::InteractionState;
 
+use crate::renderer::interaction_layers::MAX_PRESS_WAVES;
 use crate::renderer::recording::{LoweredResources, SceneResources};
 use crate::renderer::{HydrolysisRenderer, RenderContext};
 use crate::theme::live::Operand;
 use crate::theme::{
     Change, Chrome, Corners, CustomPart, Driven, Elevation, Fill, FocusIndicator, Inputs,
-    InteractionMotion, LayerRotation, LiveDriven, MAX_PRESS_WAVES, Motion, RealizedCustom,
-    Retarget, Ripple, Wash,
+    InteractionMotion, LayerRotation, LiveDriven, Motion, RealizedCustom, Retarget, Ripple, Wash,
 };
 use waterui_graphics::color::Color;
 
