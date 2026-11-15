@@ -15,7 +15,7 @@ categories = ["gui", "graphics"]
 waterui-core.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
 nami.workspace = true
 waterui-icon.workspace = true
 waterui-shape.workspace = true
@@ -214,7 +214,6 @@ objc2-web-kit = { version = "0.3.2", optional = true, default-features = false, 
     "WKWebViewConfiguration",
     "WKWebsiteDataStore",
 ] }
-serde_json = { workspace = true, optional = true }
 
 # The native app menu-bar surface (`App::menu_bar`): waterkit-menu builds the
 # real NSMenu on NSApp.mainMenu (macOS) and a Win32 HMENU on the window's HWND
@@ -316,7 +315,7 @@ tracing-log = "0.2"
 # The accessibility tree publish and the platform-view placement set cross JNI
 # as JSON.
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+serde_json = { workspace = true, optional = true }
 # The published payload's `contentTypes` map serializes `ContentType`
 # (camelCase names) — the provider maps each onto `HintConstants`.
 waterui-controls = { workspace = true, features = ["serde"] }
@@ -333,7 +332,7 @@ console_error_panic_hook = { version = "0.1", optional = true }
 futures = { workspace = true, optional = true }
 js-sys = "0.3"
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+serde_json = { workspace = true, optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 # The `video` feature's realization of the two video leaves.
@@ -461,6 +460,8 @@ frame-profile = ["gpu"]
 # it, while `hwui` + `gpu` keeps the HWUI painter with the GPU crates present
 # for hosted content (water-rs/waterui#1812).
 gpu = [
+    "dep:serde_json",
+    "dep:tracing-subscriber",
     "dep:android_logger",
     "dep:cherenkov",
     "dep:cherenkov-gpu",
@@ -493,6 +494,8 @@ gpu = [
 # hardware adapter and on the CPU otherwise. The windowed runner presents
 # through the GPU only (water-rs/waterui#4064).
 cpu = [
+    "dep:serde_json",
+    "dep:tracing-subscriber",
     "dep:cherenkov",
     "dep:cherenkov-cpu",
     "dep:lru",
@@ -518,6 +521,8 @@ inspector-signals = ["inspector", "waterui/inspector-signals"]
 # (water-rs/waterui#1811). On other targets the feature selects nothing; the
 # subsystem still compiles for tests.
 hwui = [
+    "dep:serde_json",
+    "dep:tracing-subscriber",
     "dep:askama",
     "dep:android_logger",
     "dep:lru",
@@ -592,6 +597,7 @@ video = [
     "web-sys?/WheelEventInit",
 ]
 web = [
+    "dep:serde_json",
     "accessibility",
     "dep:console_error_panic_hook",
     "dep:futures",
