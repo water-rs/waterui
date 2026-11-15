@@ -581,7 +581,7 @@ impl Encoder {
                 }
                 Realize::Remove(id) => self.remove_layer(id)?,
                 Realize::Content(id, content) => self.set_content(id, content, &mut recycled)?,
-                #[expect(
+                #[allow(
                     unreachable_code,
                     reason = "HWUI's sealed install payload is Infallible; unwrapping it cannot return"
                 )]

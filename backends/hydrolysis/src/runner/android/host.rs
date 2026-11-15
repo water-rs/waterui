@@ -1370,10 +1370,10 @@ impl AndroidSession {
     /// several windows, an orphan window id): no session exists then.
     pub(crate) fn create(
         #[cfg_attr(
-            hydrolysis_gpu_painter,
+            all(hydrolysis_gpu_painter, not(hydrolysis_android_system_webview)),
             expect(
                 unused_variables,
-                reason = "only HWUI creates a Java painter during mounting"
+                reason = "HWUI and system WebView mounting use the JNI environment"
             )
         )]
         jni_env: &mut Env,
@@ -1651,17 +1651,7 @@ impl AndroidSession {
     /// `presentation` is when `Choreographer` expects this frame to reach
     /// the display; the engine renders against it. A frame woken by a
     /// deadline timer has none and renders at the instant it starts.
-    pub(crate) fn on_frame(
-        &mut self,
-        #[cfg_attr(
-            hydrolysis_hwui,
-            expect(
-                unused_variables,
-                reason = "the HWUI painter draws on the platform's own frame clock; only the engine renders against a presentation time"
-            )
-        )]
-        presentation: Option<Instant>,
-    ) -> FrameOutcome {
+    pub(crate) fn on_frame(&mut self, presentation: Option<Instant>) -> FrameOutcome {
         tracing::debug!(target: "waterui::hydrolysis::android", "frame wake");
         #[cfg(not(hydrolysis_hwui))]
         self.runtime.renderer.set_presentation_target(presentation);
@@ -1681,7 +1671,7 @@ impl AndroidSession {
         #[cfg(hydrolysis_gpu_painter)]
         self.poll_gpu_frame();
         let mut deadline = advance_runtime(&mut self.runtime, &self.env, now);
-        if matches!(self.runtime.engine_next, crate::renderer::Next::At { time, .. } if time <= now)
+        if FrameTransaction::engine_frame_due(&self.runtime.engine_next, now, presentation)
             && !self.runtime.is_hidden()
         {
             self.runtime.platform.request_redraw();

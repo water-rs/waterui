@@ -1624,6 +1624,28 @@ fn a_binding_set_outside_a_frame_fires_the_installed_wake_once() {
 }
 
 #[test]
+fn frame_transaction_serves_animation_due_at_presentation() {
+    use super::window::FrameTransaction;
+    use crate::renderer::Next;
+
+    let now = Instant::now();
+    let due = now + Duration::from_millis(8);
+    let next = Next::At {
+        time: due,
+        rate: 60..=120,
+    };
+    assert!(!FrameTransaction::engine_frame_due(&next, now, None));
+    assert!(!FrameTransaction::engine_frame_due(&next, now, Some(now)));
+    assert!(FrameTransaction::engine_frame_due(&next, now, Some(due)));
+    assert!(FrameTransaction::engine_frame_due(&next, due, None));
+    assert!(!FrameTransaction::engine_frame_due(
+        &Next::Idle,
+        now,
+        Some(due)
+    ));
+}
+
+#[test]
 fn frame_transaction_gates_wakes_and_renders_the_restore_frame() {
     use super::window::{FrameDemand, FrameTransaction};
 
