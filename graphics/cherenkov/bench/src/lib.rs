@@ -801,6 +801,8 @@ pub fn engine_names() -> Vec<&'static str> {
         skia_ad::SkiaMtl::NAME,
         #[cfg(feature = "cherenkov")]
         cherenkov_ad::Cherenkov::NAME,
+        #[cfg(feature = "cherenkov")]
+        cherenkov_ad::PictureCache::NAME,
         #[cfg(feature = "cherenkov-cpu")]
         cherenkov_cpu_ad::Cherenkov::NAME,
     ]
@@ -832,6 +834,10 @@ pub fn create_engine(name: &str) -> Result<Box<dyn Engine>, BenchError> {
         #[cfg(feature = "cherenkov")]
         cherenkov_ad::Cherenkov::NAME => {
             cherenkov_ad::Cherenkov::new().map(|e| Box::new(e) as Box<dyn Engine>)
+        }
+        #[cfg(feature = "cherenkov")]
+        cherenkov_ad::PictureCache::NAME => {
+            cherenkov_ad::PictureCache::new().map(|e| Box::new(e) as Box<dyn Engine>)
         }
         #[cfg(feature = "cherenkov-cpu")]
         cherenkov_cpu_ad::Cherenkov::NAME => {
