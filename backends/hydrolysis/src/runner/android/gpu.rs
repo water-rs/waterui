@@ -470,19 +470,20 @@ impl AndroidSurface {
     /// The band's geometry changed; the next engine frame applies the size.
     /// `generation` must match the live attachment — a stale `surfaceChanged`
     /// is ignored.
-    pub(crate) fn resize_for(&mut self, width: u32, height: u32, generation: u64) {
-        if generation != self.generation || self.native_window.is_none() {
-            return;
+    pub(crate) fn resize_for(&mut self, width: u32, height: u32, generation: u64) -> bool {
+        if generation != self.generation
+            || self.native_window.is_none()
+            || (self.width, self.height) == (width, height)
+        {
+            return false;
         }
-        if (self.width, self.height) != (width, height) {
-            self.cancel_frame();
-        }
+        self.cancel_frame();
         self.width = width;
         self.height = height;
         if width == 0 || height == 0 {
-            self.pending = None;
             self.engine_window = None;
         }
+        true
     }
 
     /// Adopts the live device chain. The next render replaces an engine

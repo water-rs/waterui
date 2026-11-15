@@ -1971,15 +1971,21 @@ impl AndroidSession {
             height,
             "wake posted: surface resized"
         );
-        self.runtime
+        if !self
+            .runtime
             .platform
             .surface
-            .resize_for(width, height, generation);
+            .resize_for(width, height, generation)
+        {
+            return;
+        }
         self.runtime.platform.sync_frame_wake_gate();
-        // A surface parked on a zero-size attach becomes drawable here — the
-        // resize that gave the band a real extent can be its un-hide, and
-        // the Choreographer post is the only wake the restore frame gets.
-        self.runtime.sync_occlusion_and_post_restore();
+        self.runtime.sync_occlusion();
+        // Resizing cancels an in-flight submission or surface preparation.
+        // Its completion can no longer drive the pump, so the new size owns
+        // a refresh and wake even when the window was already visible.
+        self.runtime.request_refresh();
+        self.runtime.request_redraw();
     }
 
     /// The band's surface is going away; `generation` names which one, so a
