@@ -4773,6 +4773,49 @@ mod tests {
         assert_eq!(release["panic"].as_str(), Some("abort"));
     }
 
+    #[test]
+    fn root_manifest_control_features_follow_framework_metadata() {
+        for (declared, web) in [(false, false), (true, false), (true, true)] {
+            let temp = tempfile::tempdir().expect("temp dir");
+            let root = temp.path().join("project");
+            let mut ctx = ctx(None, None, Some(root.clone()));
+            let controls = ["slider", "stepper", "text-field", "toggle"];
+            if declared {
+                let mut selection: toml::Value =
+                    toml::from_str(&toml::to_string(&ctx.framework).unwrap()).unwrap();
+                selection["metadata"].as_table_mut().unwrap().insert(
+                    "scaffold-features".to_string(),
+                    toml::Value::try_from(controls).unwrap(),
+                );
+                ctx.framework = selection.try_into().unwrap();
+            }
+            if web {
+                ctx.web_frontend_arg = Some("web".to_string());
+            }
+            smol::block_on(crate::templates::root::scaffold(&root, &ctx, "assets"))
+                .expect("root scaffold should succeed");
+            let manifest: toml::Table = std::fs::read_to_string(root.join("Cargo.toml"))
+                .unwrap()
+                .parse()
+                .unwrap();
+            let features = manifest["dependencies"]["waterui"]
+                .get("features")
+                .and_then(toml::Value::as_array)
+                .map_or_default(|features| {
+                    features
+                        .iter()
+                        .map(|feature| feature.as_str().unwrap())
+                        .collect::<Vec<_>>()
+                });
+            let expected = if declared && !web {
+                controls.to_vec()
+            } else {
+                Vec::new()
+            };
+            assert_eq!(features, expected);
+        }
+    }
+
     /// The scaffold enables the controls used by its form and counter; video
     /// is declared as the crate's own `media` feature and left off, because
     /// `waterui/media` carries the system media stack (VA-API, `PipeWire`) a
@@ -4806,15 +4849,7 @@ mod tests {
                         .map(|feature| feature.as_str().expect("feature name"))
                         .collect::<Vec<_>>()
                 });
-        let controls = ["slider", "stepper", "text-field", "toggle"];
         assert_eq!(native_features, [] as [&str; 0]);
-        let shared_features = manifest["dependencies"]["waterui"]["features"]
-            .as_array()
-            .expect("the demo controls are enabled on every target")
-            .iter()
-            .map(|feature| feature.as_str().expect("feature name"))
-            .collect::<Vec<_>>();
-        assert_eq!(shared_features, controls);
         assert_eq!(
             manifest["dependencies"]["waterui"]["default-features"].as_bool(),
             Some(false)
@@ -8704,7 +8739,11 @@ pub mod root {
         Ok(if ctx.web_frontend_arg.is_some() {
             detail
         } else {
-            detail.with_features(&["slider", "stepper", "text-field", "toggle"])
+            detail.with_features(
+                &ctx.framework
+                    .scaffold_features()
+                    .map_err(io::Error::other)?,
+            )
         })
     }
 
