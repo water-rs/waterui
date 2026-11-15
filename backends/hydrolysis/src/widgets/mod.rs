@@ -1,5 +1,6 @@
 pub mod controls;
 pub mod layout;
+#[cfg(feature = "navigation")]
 pub mod nav;
 pub mod platform;
 pub mod typography;

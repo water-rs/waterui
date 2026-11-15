@@ -107,6 +107,7 @@ pub struct OwnerRegistrations<E: crate::text::TextEngine> {
     /// Pointer targets, in emission order.
     pub pointer_targets: Vec<RetainedEntry<crate::renderer::PointerTarget<E>, E>>,
     /// System-back targets, frontmost last after materialization.
+    #[cfg(feature = "navigation")]
     pub back_targets: Vec<RetainedEntry<crate::renderer::NavigationBackTarget<E>, E>>,
     /// Gesture-recognizer regions, parallel to `pointer_targets`.
     pub gesture_regions: Vec<RetainedEntry<RegisteredGesture<E>, E>>,
@@ -321,11 +322,13 @@ owner_tagged!(
     crate::renderer::input::DropTarget<E>,
     crate::renderer::input::ScrollTarget<E>,
     crate::renderer::input::ContextMenuTarget<E>,
-    crate::renderer::NavigationBackTarget<E>,
     crate::renderer::input::TextInputTarget<E>,
     crate::renderer::input::EmbeddedInputTarget<E>,
     RegisteredGesture<E>,
 );
+
+#[cfg(feature = "navigation")]
+owner_tagged!(crate::renderer::NavigationBackTarget<E>);
 
 impl<E: crate::text::TextEngine> SetRegistrationOwner<E> for () {}
 impl<E: crate::text::TextEngine> SetRegistrationOwner<E>
@@ -339,6 +342,7 @@ impl<E: crate::text::TextEngine> Default for OwnerRegistrations<E> {
     fn default() -> Self {
         Self {
             pointer_targets: Vec::default(),
+            #[cfg(feature = "navigation")]
             back_targets: Vec::default(),
             gesture_regions: Vec::default(),
             gesture_occluders: Vec::default(),

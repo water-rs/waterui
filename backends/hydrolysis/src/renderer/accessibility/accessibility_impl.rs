@@ -2502,6 +2502,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "navigation")]
     pub(crate) fn register_accessibility_child_node(
         &mut self,
         node: AccessibilityNode,
@@ -2527,6 +2528,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "navigation")]
     pub(crate) fn register_accessibility_child_node_semantic(
         &mut self,
         node: AccessibilityNode,

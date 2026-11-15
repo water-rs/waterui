@@ -2,6 +2,8 @@
 use crate::num_cast::f64_as_f32;
 #[cfg(feature = "list")]
 use crate::theme::ListMetrics;
+#[cfg(feature = "navigation")]
+use crate::theme::{NavigationBarLook, NavigationMetrics, NavigationSpec, TabsSpec};
 #[cfg(feature = "list")]
 use waterui_core::views::AnyViewsSnapshot;
 #[cfg(feature = "list")]
@@ -11,13 +13,13 @@ use waterui_layout::padding::EdgeInsets;
 use super::*;
 use crate::text::TextEngine;
 use crate::text::TextLayout as _;
-use crate::theme::{
-    NavigationBarLook, NavigationMetrics, NavigationSpec, TabsSpec, TextFieldLook, WidgetTheme,
-};
+use crate::theme::{TextFieldLook, WidgetTheme};
 use crate::widgets::controls::field_look::{field_look, placeholder_text, value_text};
 use crate::widgets::layout::container::resolve_lazy_container_extent;
+#[cfg(feature = "navigation")]
 use crate::widgets::nav::tabs::{tabs_decide_layout, tabs_item_natural_width};
 use std::rc::Rc;
+#[cfg(feature = "navigation")]
 use waterui::navigation::tab::TabIcon;
 use waterui_core::contract_violation;
 use waterui_core::handler::BoxedAction;
@@ -75,10 +77,12 @@ pub fn table_data_cell_rect(
 }
 
 /// The navigation chrome's look for the spec of `env`.
+#[cfg(feature = "navigation")]
 pub fn navigation_look(theme: &Rc<dyn WidgetTheme>, env: &Environment) -> NavigationBarLook {
     theme.navigation_bar(&NavigationSpec::new(layout_direction(env).snapshot()), env)
 }
 
+#[cfg(feature = "navigation")]
 fn navigation_bar_height<E: crate::text::TextEngine>(
     view: &NavigationView,
     state: &mut HydroState<E>,
@@ -110,6 +114,7 @@ fn navigation_bar_height<E: crate::text::TextEngine>(
 }
 
 /// The height of a bar showing its title in `display_mode`, under `metrics`.
+#[cfg(feature = "navigation")]
 pub const fn navigation_base_bar_height(
     display_mode: waterui::navigation::NavigationTitleDisplayMode,
     metrics: NavigationMetrics,
@@ -122,6 +127,7 @@ pub const fn navigation_base_bar_height(
     }
 }
 
+#[cfg(feature = "navigation")]
 pub fn split_compact_threshold(sidebar_width: f64) -> f64 {
     sidebar_width + 360.0
 }
@@ -846,6 +852,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     clippy::option_if_let_else,
     reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
 )]
+#[cfg(feature = "navigation")]
 pub fn measure_navigation_view_intrinsic<E: crate::text::TextEngine>(
     navigation: &NavigationView,
     state: &mut HydroState<E>,
@@ -960,6 +967,7 @@ pub fn measure_navigation_view_intrinsic<E: crate::text::TextEngine>(
 /// rect the container hands the column. The whole view dies with the call, so
 /// it is normalized and measured as transient: none of its parts may leave an
 /// entry under an address the next build is handed.
+#[cfg(feature = "navigation")]
 pub fn measure_owned_navigation_view_with_proposal<E: crate::text::TextEngine>(
     navigation: NavigationView,
     proposal: ProposalSize,
@@ -974,6 +982,7 @@ pub fn measure_owned_navigation_view_with_proposal<E: crate::text::TextEngine>(
 /// Measures a `TabsLayout` under `proposal`: each tab's content answers the
 /// proposal its rendered content rect hands it — the pane minus the tab bar —
 /// and the layout echoes bounded axes. `intrinsic` is the `UNSPECIFIED` call.
+#[cfg(feature = "navigation")]
 pub fn measure_tabs_layout<E: crate::text::TextEngine>(
     tabs: &TabsLayout,
     proposal: ProposalSize,
@@ -1070,6 +1079,7 @@ pub fn measure_tabs_layout<E: crate::text::TextEngine>(
 /// covers the band outright (keyboard deeper than container inset plus bar
 /// height). Bounded axes echo the offer; an axis the container left open
 /// stays open.
+#[cfg(feature = "navigation")]
 pub fn tabs_content_proposal(
     proposal: ProposalSize,
     style: NativeTabStyle,
@@ -1091,6 +1101,7 @@ pub fn tabs_content_proposal(
     }
 }
 
+#[cfg(feature = "navigation")]
 pub fn tabs_button_rect(
     bar_rect: kurbo::Rect,
     tab_count: usize,
@@ -1111,6 +1122,7 @@ pub fn tabs_button_rect(
     }
 }
 
+#[cfg(feature = "navigation")]
 pub fn navigation_back_button_rect(
     bounds: kurbo::Rect,
     metrics: crate::theme::NavigationMetrics,

@@ -1,8 +1,9 @@
 use super::{HydrolysisRenderer, TailMark};
+#[cfg(feature = "navigation")]
+use crate::renderer::grow_rect;
 
 use crate::renderer::HydroState;
 use crate::renderer::SafeAreaLayout;
-use crate::renderer::grow_rect;
 use waterui_core::Environment;
 use waterui_core::layout::HorizontalAlignment;
 use waterui_text::styled::StyledStr;
@@ -143,6 +144,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
     /// touches a boundary stay reachable, so a scroll surface inside still
     /// extends and `.ignore_safe_area` inside still releases on the edges the
     /// chrome left on the boundary (§7.1).
+    #[cfg(feature = "navigation")]
     pub(crate) fn content_area_for(&self, rect: kurbo::Rect) -> Option<SafeAreaLayout> {
         self.safe_area
             .as_ref()
@@ -154,6 +156,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
     /// fill must both cover so an extended bar surface is never clipped and
     /// never lands on the window background. `self.bounds` itself stays
     /// the layout reference.
+    #[cfg(feature = "navigation")]
     pub(crate) fn chrome_paint_bounds(&self) -> kurbo::Rect {
         grow_rect(
             self.bounds,
@@ -171,6 +174,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
     /// context keeps `bounds`' own edges, the placement every
     /// context-free chrome container gets: the bars come back
     /// [`ChromeBar::contextless`] and `content_area` stays `None`.
+    #[cfg(feature = "navigation")]
     pub(crate) fn chrome_splits<const N: usize>(
         &self,
         bars: [(crate::renderer::Edge, f64); N],
@@ -421,6 +425,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
 /// never paired with another bar's context — plus the one content rect
 /// and composed content context; a context-free widget's bars come back
 /// [`ChromeBar::contextless`] and `content_area` `None`.
+#[cfg(feature = "navigation")]
 pub struct ChromeGroup<const N: usize> {
     /// Each bar's share of the split, in the order the edges were given.
     pub bars: [crate::renderer::ChromeBar; N],

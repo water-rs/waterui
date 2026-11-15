@@ -524,16 +524,24 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         )
     }
 
-    fn navigation_animating(&self, now: Instant) -> bool {
-        self.navigation.slots.values().any(|slot| {
-            slot.transition
-                .as_ref()
-                .is_some_and(|state| state.is_active(now))
-                || slot
-                    .interactive_pop
+    fn navigation_animating(&self) -> bool {
+        #[cfg(feature = "navigation")]
+        {
+            let now = self.frame_instant;
+            self.navigation.slots.values().any(|slot| {
+                slot.transition
                     .as_ref()
-                    .is_some_and(NavigationInteractivePop::is_animating)
-        })
+                    .is_some_and(|state| state.is_active(now))
+                    || slot
+                        .interactive_pop
+                        .as_ref()
+                        .is_some_and(NavigationInteractivePop::is_animating)
+            })
+        }
+        #[cfg(not(feature = "navigation"))]
+        {
+            false
+        }
     }
 
     /// Content demand for the host's animation cadence. Input-release and
@@ -542,7 +550,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(crate) fn animation_refresh_range(&self) -> Option<cherenkov_record::RefreshRange> {
         let now = self.frame_instant;
         if self.has_pending_interaction_releases(now)
-            || self.navigation_animating(now)
+            || self.navigation_animating()
             || self.has_gliding_smooth_scrolls()
             || self.has_active_touch_fling()
         {
@@ -561,7 +569,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let ticked = self.animation_controller.tick(now);
         // Scene content that asked for this frame presents in it.
         let scenes = self.scene_frames.mark_owners();
-        ticked || pending_releases || scenes || self.navigation_animating(now)
+        ticked || pending_releases || scenes || self.navigation_animating()
     }
 
     /// Whether scene content asked for the next frame at the last commit,
@@ -594,7 +602,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let now = self.frame_instant;
         self.animation_controller.has_active()
             || self.has_pending_interaction_releases(now)
-            || self.navigation_animating(now)
+            || self.navigation_animating()
     }
 
     /// Whether a wrapper's engine-run motion still runs at the frame clock.

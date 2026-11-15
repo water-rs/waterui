@@ -61,6 +61,7 @@ mod list;
 pub(crate) mod live;
 mod look;
 mod menu;
+#[cfg(feature = "navigation")]
 mod navigation;
 mod picker;
 mod progress;
@@ -91,6 +92,7 @@ pub use look::{
 #[cfg(hydrolysis_runtime)]
 pub(crate) use look::{Change, CustomPart, LayerRotation, LiveDriven, RealizedCustom, Retarget};
 pub use menu::{MenuLayout, MenuLook, MenuSpec};
+#[cfg(feature = "navigation")]
 pub use navigation::{
     BarSurface, NavigationBarLook, NavigationMetrics, NavigationMotion, NavigationSpec,
 };

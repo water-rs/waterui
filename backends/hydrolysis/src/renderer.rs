@@ -35,10 +35,12 @@ mod identity;
 mod input;
 mod interaction_layers;
 mod lifecycle;
+#[cfg(feature = "navigation")]
 pub mod live_bar;
 pub mod live_progress;
 #[cfg(feature = "picker")]
 pub mod live_segmented;
+#[cfg(feature = "navigation")]
 pub mod live_tabs;
 #[cfg(any(feature = "toggle", feature = "picker"))]
 pub mod live_toggle;
@@ -46,6 +48,7 @@ pub mod material;
 mod metadata;
 pub mod mount;
 mod native_measure;
+#[cfg(feature = "navigation")]
 mod navigation;
 pub mod recording;
 mod render;
@@ -73,12 +76,14 @@ pub use recording::check_well_formed_image;
 #[cfg(hydrolysis_cherenkov)]
 pub use recording::{Glyph, GlyphRun};
 pub use recording::{Recording, working_color};
-pub use tree::safe_area::{
-    ChromeBar, Edge, EdgeOffsets, SafeAreaLayout, ScrollSurfaceArea, grow_rect,
-};
+#[cfg(feature = "navigation")]
+pub use tree::safe_area::{ChromeBar, Edge};
+pub use tree::safe_area::{EdgeOffsets, SafeAreaLayout, ScrollSurfaceArea, grow_rect};
+pub use tree::transition::TransitionPaint;
 #[cfg(feature = "list")]
 pub use tree::transition::flush_transitioned;
-pub use tree::transition::{TransitionPaint, record_blurred, transition_transform};
+#[cfg(feature = "navigation")]
+pub use tree::transition::{record_blurred, transition_transform};
 pub use tree::*;
 pub use views::*;
 pub use waterui_backend_core::frame_signals::FrameSignals;
@@ -94,6 +99,7 @@ pub use input::*;
 pub use interaction_layers::*;
 pub use lifecycle::lazy;
 pub use lifecycle::*;
+#[cfg(feature = "navigation")]
 pub use navigation::*;
 #[cfg(hydrolysis_cherenkov)]
 pub use render::FrameError;
@@ -152,7 +158,9 @@ use waterui::interaction::Hittable;
 use waterui::metadata::anchored_overlay::AnchoredOverlay;
 use waterui::metadata::context_menu::{ContextMenu, ResolvedContextMenu};
 use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
+#[cfg(feature = "navigation")]
 use waterui::navigation::tab::{NativeTabStyle, TabsLayout};
+#[cfg(feature = "navigation")]
 use waterui::navigation::{
     CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStack,
     NavigationToolbarPlacement, NavigationTransaction, NavigationTransitionDestination,
@@ -170,7 +178,9 @@ use waterui_controls::menu::{CommandRole, ResolvedCommand, ResolvedMenu, Resolve
 use waterui_controls::slider::SliderConfig;
 #[cfg(feature = "stepper")]
 use waterui_controls::stepper::StepperConfig;
-use waterui_controls::text_field::{ResolvedTextFieldConfig, TextField};
+use waterui_controls::text_field::ResolvedTextFieldConfig;
+#[cfg(feature = "navigation")]
+use waterui_controls::text_field::TextField;
 #[cfg(feature = "toggle")]
 use waterui_controls::toggle::ToggleConfig;
 use waterui_core::dynamic::{Dynamic, DynamicInitialContent};
@@ -573,6 +583,7 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
     presentation_target: Option<Instant>,
     pub(crate) lazy: LazyState,
+    #[cfg(feature = "navigation")]
     pub(crate) navigation: NavigationState<E>,
     #[cfg(feature = "accessibility")]
     accessibility: AccessibilityBuilder<E>,
@@ -856,6 +867,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// The window's declared logical frame — `Rect::ZERO` until a runner's
     /// window declares one.
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "navigation")]
     pub(crate) const fn window_frame(&self) -> kurbo::Rect {
         self.window_frame
     }
@@ -950,6 +962,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
             presentation_target: None,
             lazy: LazyState::default(),
+            #[cfg(feature = "navigation")]
             navigation: NavigationState::default(),
             #[cfg(feature = "accessibility")]
             accessibility: AccessibilityBuilder::default(),

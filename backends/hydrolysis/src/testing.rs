@@ -82,6 +82,7 @@ pub fn plain_chrome() -> crate::theme::Chrome {
 /// The measures of a test style's navigation chrome: 64 point bars and a
 /// 40 point back button.
 #[must_use]
+#[cfg(feature = "navigation")]
 pub const fn plain_navigation_metrics() -> crate::theme::NavigationMetrics {
     crate::theme::NavigationMetrics {
         automatic_bar_height: 64.0,
@@ -107,6 +108,7 @@ pub const fn plain_navigation_metrics() -> crate::theme::NavigationMetrics {
 /// The page transition of a test style: 450 milliseconds on the standard
 /// easing.
 #[must_use]
+#[cfg(feature = "navigation")]
 pub const fn plain_navigation_motion() -> crate::theme::NavigationMotion {
     crate::theme::NavigationMotion {
         transition_duration: std::time::Duration::from_millis(450),
@@ -120,6 +122,7 @@ pub const fn plain_navigation_motion() -> crate::theme::NavigationMotion {
 /// nothing: what a test style's navigation chrome measures, places and
 /// hit-tests as.
 #[must_use]
+#[cfg(feature = "navigation")]
 pub fn plain_navigation_look() -> crate::theme::NavigationBarLook {
     crate::theme::NavigationBarLook::new(
         plain_navigation_metrics(),
@@ -420,15 +423,17 @@ mod test_style {
     use crate::theme::TableLook;
     #[cfg(feature = "list")]
     use crate::theme::{ListLook, ListSpec};
+    #[cfg(feature = "navigation")]
+    use crate::theme::{NavigationBarLook, NavigationSpec};
     use std::time::Duration;
 
     use crate::theme::{
         BadgeLook, ButtonLook, ButtonSpec, Chrome, CornerShape, DragMapping, FocusIndicator,
         HitRegion, IndicatorLook, InteractionMotion, Knob, Label, LinearProgressLook, MenuLook,
-        MenuPickerLook, MenuSpec, Motion, NavigationBarLook, NavigationSpec, PickerSpec,
-        PressFeedback, ProgressControl, ProgressSpec, RadioGroupLook, ScrollIndicatorLook,
-        SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook, StepperSpec, Surface,
-        TabsLook, TabsSpec, TextFieldLook, TextFieldSpec, ToggleSpec, WidgetTheme,
+        MenuPickerLook, MenuSpec, Motion, PickerSpec, PressFeedback, ProgressControl, ProgressSpec,
+        RadioGroupLook, ScrollIndicatorLook, SliderLayout, SliderLook, SliderSpec, StateLayer,
+        StepperLook, StepperSpec, Surface, TabsLook, TabsSpec, TextFieldLook, TextFieldSpec,
+        ToggleSpec, WidgetTheme,
     };
     use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
     use waterui::animation::Animation;

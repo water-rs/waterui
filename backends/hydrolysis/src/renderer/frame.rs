@@ -298,6 +298,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.next_gesture_group_id = 0;
         self.begin_animation_rebuild();
         self.lazy.begin_rebuild_frame();
+        #[cfg(feature = "navigation")]
         self.navigation.begin_rebuild_frame();
         #[cfg(feature = "accessibility")]
         self.accessibility.begin_rebuild_frame();
@@ -368,6 +369,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             .finish_rebuild_frame(&self.core.text_editing.text_input_targets);
         self.relocate_dropped_focus();
         self.clear_focused_fields();
+        #[cfg(feature = "navigation")]
         self.core.navigation.finish_rebuild_frame();
         self.core.finish_outside_read_frame();
         self.core.finish_rebuild();

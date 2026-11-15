@@ -317,8 +317,9 @@ fn gesture_group_identity_with_budget(view: &AnyView, remaining: usize) -> usize
 
 pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
     macro_rules! passthrough_metadata_content {
-        ($($ty:ty),+ $(,)?) => {
+        ($( $(#[$attr:meta])* $ty:ty),+ $(,)?) => {
             $(
+                $(#[$attr])*
                 if let Some(metadata) = view.downcast_ref::<Metadata<$ty>>() {
                     return Some(&metadata.content);
                 }
@@ -373,7 +374,9 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         DropDestination,
         Background,
         Selected,
+        #[cfg(feature = "navigation")]
         NavigationTransitionSource,
+        #[cfg(feature = "navigation")]
         NavigationTransitionDestination,
         waterui_core::transition::TransitionSpec
     );
@@ -507,8 +510,9 @@ fn normalize_layout_view_with_budget(
         });
     }
     macro_rules! normalize_passthrough_metadata {
-        ($($ty:ty),+ $(,)?) => {
+        ($( $(#[$attr:meta])* $ty:ty),+ $(,)?) => {
             $(
+                $(#[$attr])*
                 if view.is::<Metadata<$ty>>() {
                     let Metadata { content, value } = *view
                         .downcast::<Metadata<$ty>>()
@@ -572,7 +576,9 @@ fn normalize_layout_view_with_budget(
         Draggable,
         DropDestination,
         Background,
+        #[cfg(feature = "navigation")]
         NavigationTransitionSource,
+        #[cfg(feature = "navigation")]
         NavigationTransitionDestination,
         waterui_core::transition::TransitionSpec
     );
@@ -686,6 +692,7 @@ fn normalize_layout_view_with_budget(
         return AnyView::new(Native::new(scroll));
     }
 
+    #[cfg(feature = "navigation")]
     if view.is::<Native<NavigationView>>() {
         let native = *view
             .downcast::<Native<NavigationView>>()

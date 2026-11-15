@@ -2745,6 +2745,9 @@ where
                 let changed = runtime.renderer.handle_file_hover_cancelled(&event_env);
                 schedule_redraw_or_refresh(runtime, changed);
             }
+            #[cfg(not(feature = "navigation"))]
+            InputEvent::BackNavigation(_) => {}
+            #[cfg(feature = "navigation")]
             InputEvent::BackNavigation(navigation) => {
                 let event_env = input_env(runtime, env);
                 let changed = runtime

@@ -342,6 +342,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Ok(meta) => return Self::build_view(meta.content, env, renderer),
             Err(view) => view,
         };
+        #[cfg(feature = "navigation")]
         let view = match view.downcast::<Metadata<NavigationTransitionSource>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
@@ -354,6 +355,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
+        #[cfg(feature = "navigation")]
         let view = match view.downcast::<Metadata<NavigationTransitionDestination>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
@@ -884,24 +886,28 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         // the navigation controller, transition slot, and tab-bar state stay live
         // and reactive route/tab selection keeps driving updates, instead of
         // freezing in a one-shot `Captured` bake.
+        #[cfg(feature = "navigation")]
         let view = match view.downcast::<Native<NavigationView>>() {
             Ok(navigation) => {
                 return Self::build_navigation_view((*navigation).into_inner(), env, renderer);
             }
             Err(view) => view,
         };
+        #[cfg(feature = "navigation")]
         let view = match view.downcast::<Native<NavigationSplitLayout>>() {
             Ok(split) => {
                 return Self::build_navigation_split((*split).into_inner(), env, renderer);
             }
             Err(view) => view,
         };
+        #[cfg(feature = "navigation")]
         let view = match view.downcast::<Native<NavigationStack<(), ()>>>() {
             Ok(stack) => {
                 return Self::build_navigation_stack(renderer, (*stack).into_inner(), env);
             }
             Err(view) => view,
         };
+        #[cfg(feature = "navigation")]
         let view = match view.downcast::<Native<TabsLayout>>() {
             Ok(tabs) => return Self::build_tabs((*tabs).into_inner(), env, renderer),
             Err(view) => view,

@@ -458,9 +458,11 @@ pub struct HitTestState<E: crate::text::TextEngine> {
     /// System-back targets registered this frame, in paint order. The last
     /// entry is the frontmost stack. Cleared with the other per-frame target
     /// lists.
+    #[cfg(feature = "navigation")]
     pub(crate) back_targets: Vec<NavigationBackTarget<E>>,
     /// The system-back gesture in flight. Survives `reset_scene`, the same
     /// way `active_pointer_drag_target` does.
+    #[cfg(feature = "navigation")]
     pub(crate) system_back: SystemBackGesture,
     /// The in-flight scrollbar-thumb drag, if any.
     pub(crate) active_scrollbar_drag: Option<ScrollbarDrag<E>>,
@@ -768,6 +770,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let mut staged_embedded: Vec<Staged<EmbeddedInputTarget<E>>> = Vec::new();
         let mut staged_occlusions: Vec<Staged<NativeViewOcclusion>> = Vec::new();
         let mut staged_platform: Vec<StagedPlatform<E>> = Vec::new();
+        #[cfg(feature = "navigation")]
         let mut staged_back: Vec<Staged<crate::renderer::NavigationBackTarget<E>>> = Vec::new();
         let mut modal: Option<(mount::PaintOrder, crate::theme::ModalInteraction)> = None;
 
@@ -1055,6 +1058,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             // resolved datum, so they stage into the rank sort like
             // everything else. No gate applies: dev registered them under
             // neither its truncation nor its hit opacity.
+            #[cfg(feature = "navigation")]
             for entry in &regs.back_targets {
                 orders.push(entry.order.clone());
                 staged_back.push(Staged {
@@ -1206,10 +1210,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 }
             }));
 
-        self.hit_test.back_targets = staged_back
-            .into_iter()
-            .map(|staged| staged.payload)
-            .collect();
+        #[cfg(feature = "navigation")]
+        {
+            self.hit_test.back_targets = staged_back
+                .into_iter()
+                .map(|staged| staged.payload)
+                .collect();
+        }
 
         self.hit_test.modal_interaction = modal.map(|(_, payload)| payload);
 
@@ -2676,8 +2683,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         }
         let drop_changed = self.finish_active_drag(point, env);
         changed |= drop_changed;
-        changed |=
-            self.finish_interactive_navigation_pop(NavigationInteractivePopOutcome::ByProgress);
+        #[cfg(feature = "navigation")]
+        {
+            changed |=
+                self.finish_interactive_navigation_pop(NavigationInteractivePopOutcome::ByProgress);
+        }
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_owner = Weak::new();
@@ -4116,8 +4126,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             return pointer_kind == PointerKind::Mouse && self.end_hover(env);
         }
         let at = self.frame_instant();
+        #[cfg(feature = "navigation")]
         let mut refresh_requested =
             self.finish_interactive_navigation_pop(NavigationInteractivePopOutcome::Cancel);
+        #[cfg(not(feature = "navigation"))]
+        let mut refresh_requested = false;
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_owner = Weak::new();
@@ -4654,6 +4667,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         chain
     }
 
+    #[cfg(feature = "navigation")]
     pub(crate) fn register_pointer_drag_target<F>(&mut self, bounds: kurbo::Rect, action: F)
     where
         F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
@@ -5823,7 +5837,9 @@ impl<E: crate::text::TextEngine> Default for HitTestState<E> {
             active_pointer_drag_target: Option::default(),
             active_pointer_drag_owner: Weak::default(),
             active_pointer_drag_signature: Option::default(),
+            #[cfg(feature = "navigation")]
             back_targets: Vec::default(),
+            #[cfg(feature = "navigation")]
             system_back: SystemBackGesture::default(),
             active_scrollbar_drag: Option::default(),
             cursor_targets: Vec::default(),

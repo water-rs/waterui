@@ -14,7 +14,7 @@ use crate::renderer::mount::RetainedScopes;
 /// the same refresh.
 #[derive(Clone)]
 pub struct RetainedIdentity {
-    owner: Rc<dyn Any>,
+    _owner: Rc<dyn Any>,
     address: usize,
 }
 
@@ -22,7 +22,10 @@ impl RetainedIdentity {
     pub(crate) fn for_rc<T: 'static>(owner: &Rc<T>) -> Self {
         let address = Rc::as_ptr(owner) as usize;
         let owner: Rc<dyn Any> = owner.clone();
-        Self { owner, address }
+        Self {
+            _owner: owner,
+            address,
+        }
     }
 
     pub(crate) const fn address(&self) -> usize {
@@ -41,8 +44,9 @@ impl RetainedIdentity {
     ///
     /// This requires that the renderer hold no strong reference to the object
     /// beyond the single lease stored in the map.
+    #[cfg(feature = "navigation")]
     pub(crate) fn is_retained_elsewhere(&self) -> bool {
-        Rc::strong_count(&self.owner) > 1
+        Rc::strong_count(&self._owner) > 1
     }
 }
 

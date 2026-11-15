@@ -40,6 +40,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         ctx: RenderContext,
         env: &Environment,
     ) {
+        #[cfg(feature = "navigation")]
         if let Self::Wrapper(node) = self
             && let WrapperEffect::NavigationTransitionSource(id)
             | WrapperEffect::NavigationTransitionDestination(id) = &node.effect
@@ -91,16 +92,17 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             | Self::Widget(_) => true,
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(_) | Self::ExternalFrame(_) => true,
-            Self::Wrapper(node) => matches!(
-                node.effect,
+            Self::Wrapper(node) => match node.effect {
                 WrapperEffect::Clip(_)
-                    | WrapperEffect::Border(_)
-                    | WrapperEffect::Shadow(_)
-                    | WrapperEffect::PopupMenuSurface(_)
-                    | WrapperEffect::Material(_)
-                    | WrapperEffect::NavigationTransitionSource(_)
-                    | WrapperEffect::NavigationTransitionDestination(_)
-            ),
+                | WrapperEffect::Border(_)
+                | WrapperEffect::Shadow(_)
+                | WrapperEffect::PopupMenuSurface(_)
+                | WrapperEffect::Material(_) => true,
+                #[cfg(feature = "navigation")]
+                WrapperEffect::NavigationTransitionSource(_)
+                | WrapperEffect::NavigationTransitionDestination(_) => true,
+                _ => false,
+            },
             _ => false,
         }
     }
@@ -389,6 +391,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 // keep updating, instead of being frozen by a one-shot capture.
                 let child_env = &node.env;
                 match &node.effect {
+                    #[cfg(feature = "navigation")]
                     WrapperEffect::NavigationTransitionSource(id) => {
                         flush_navigation_transition_element(
                             renderer,
@@ -399,6 +402,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             *id,
                         );
                     }
+                    #[cfg(feature = "navigation")]
                     WrapperEffect::NavigationTransitionDestination(id) => {
                         flush_navigation_transition_element(
                             renderer,
@@ -1232,6 +1236,7 @@ fn flush_transform_wrapper<E: crate::text::TextEngine, const SLOTS: usize>(
     child.flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
 }
 
+#[cfg(feature = "navigation")]
 fn flush_navigation_transition_element<E: crate::text::TextEngine>(
     renderer: &mut HydrolysisRenderer<E>,
     ctx: RenderContext,

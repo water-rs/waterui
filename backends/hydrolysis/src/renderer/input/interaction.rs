@@ -316,6 +316,7 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
 
     /// Every bound tab item's live tab container, one per item.
     #[cfg(test)]
+    #[cfg(feature = "navigation")]
     pub(crate) fn live_tabs(&self) -> Vec<Rc<crate::renderer::live_tabs::LiveTabs>> {
         self.states
             .values()

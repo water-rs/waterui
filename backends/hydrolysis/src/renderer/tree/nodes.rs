@@ -671,6 +671,7 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
 
     /// Builds, lays out and records a navigation page into the open page
     /// scope, anchored at the scope's placement.
+    #[cfg(feature = "navigation")]
     pub(crate) fn record_built_page(
         &mut self,
         renderer: &mut HydrolysisRenderer<E>,
@@ -912,6 +913,7 @@ pub trait WidgetBehavior<E: crate::text::TextEngine> {
     /// Claims the transition declared on the root of this leaf's page
     /// content, for the navigation stack that owns the leaf as a page
     /// (layout-spec.md §4.5). `None` for every leaf that is not a page.
+    #[cfg(feature = "navigation")]
     fn claim_page_transition(&self) -> Option<waterui_core::transition::TransitionSpec> {
         None
     }
@@ -985,7 +987,9 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// the subtree reaches through the ignored zones and stops at the
     /// nearest unignored one (layout-spec.md §7.1).
     IgnoreSafeArea(IgnoreSafeArea),
+    #[cfg(feature = "navigation")]
     NavigationTransitionSource(RawId),
+    #[cfg(feature = "navigation")]
     NavigationTransitionDestination(RawId),
     Clip(ClipShape),
     Border(Border),

@@ -350,6 +350,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     fn begin_semantic_emit_frame(&mut self) {
         self.hit_test.begin_rebuild_frame();
         self.lazy.begin_rebuild_frame();
+        #[cfg(feature = "navigation")]
         self.navigation.begin_rebuild_frame();
     }
 
@@ -366,6 +367,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.next_gesture_group_id = 0;
         self.begin_animation_rebuild();
         self.lazy.begin_rebuild_frame();
+        #[cfg(feature = "navigation")]
         self.navigation.begin_rebuild_frame();
         #[cfg(feature = "accessibility")]
         self.accessibility.begin_rebuild_frame();
@@ -385,6 +387,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.hit_test
             .finish_rebuild_frame(&self.text_editing.text_input_targets);
         self.relocate_dropped_focus();
+        #[cfg(feature = "navigation")]
         self.navigation.finish_rebuild_frame();
         self.finish_outside_read_frame();
         #[cfg(feature = "accessibility")]
@@ -403,6 +406,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.frame_registries();
         self.hit_test
             .finish_rebuild_frame(&self.text_editing.text_input_targets);
+        #[cfg(feature = "navigation")]
         self.navigation.finish_rebuild_frame();
         self.finish_outside_read_frame();
         if structural_change {
@@ -731,6 +735,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // owned by their semantic retained nodes.
         self.hit_test.begin_rebuild_frame();
         self.lazy.begin_rebuild_frame();
+        #[cfg(feature = "navigation")]
         self.navigation.begin_rebuild_frame();
         // Fold in a structural patch a widget-owned sub-view applied during
         // the previous frame's flush (mid-flush, past that frame's
@@ -792,6 +797,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.core
             .hit_test
             .finish_rebuild_frame(&self.core.text_editing.text_input_targets);
+        #[cfg(feature = "navigation")]
         self.core.navigation.finish_rebuild_frame();
         self.core.finish_outside_read_frame();
         if structural_change {

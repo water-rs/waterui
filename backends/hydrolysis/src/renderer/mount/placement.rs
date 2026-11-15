@@ -433,6 +433,7 @@ impl Placement {
 
     /// Redirects the paint chain through `parent` (`None` follows the
     /// structural parent again).
+    #[cfg(feature = "navigation")]
     pub fn set_paint_parent(&self, parent: Option<Rc<Self>>) {
         *self.paint_parent.borrow_mut() = parent;
         self.clock.bump();

@@ -82,6 +82,7 @@ impl Edge {
     /// The edge across the window from this one — the boundary a bar docked
     /// at `self` can never touch: a top bar reaches top, leading and
     /// trailing, never the bottom edge.
+    #[cfg(feature = "navigation")]
     pub const fn opposite(self) -> Self {
         match self {
             Self::Top => Self::Bottom,
@@ -174,6 +175,7 @@ impl Edge {
     /// never does. The band's thickness clamps to the span `position`
     /// leaves to `bounds`' far edge, so a band docked outside `bounds`
     /// keeps `extent` instead of squashing against it.
+    #[cfg(feature = "navigation")]
     pub(crate) fn split_band(
         self,
         bounds: kurbo::Rect,
@@ -217,6 +219,7 @@ impl Edge {
 
     /// The band edge facing the hosted content — the counterpart of
     /// [`Self::frame_edge`] on the other side of a docked band.
+    #[cfg(feature = "navigation")]
     pub(crate) const fn inner_edge(self, band: kurbo::Rect) -> f64 {
         match self {
             Self::Top => band.y1,
@@ -292,10 +295,12 @@ pub enum EdgeBoundary {
     /// nested chrome container lays out on the same edge lands on, so
     /// nested chrome stacks on the outer bar instead of floating free of
     /// it — or riding onto the keyboard the outer bar ducked under.
+    #[cfg(feature = "navigation")]
     Docked { edge_at: f64, inner: f64 },
     /// No boundary: a hosted subtree's edge that does not touch the host's
     /// boundary is covered — nothing inside can touch, release or extend
     /// past it (§7.1: hosted content inherits, never reseeds).
+    #[cfg(feature = "navigation")]
     Covered,
 }
 
@@ -305,6 +310,7 @@ impl EdgeBoundary {
     const fn released(&self) -> ReleasedRegions {
         match self {
             Self::Reachable { released, .. } => *released,
+            #[cfg(feature = "navigation")]
             Self::Docked { .. } | Self::Covered => ReleasedRegions {
                 container: false,
                 keyboard: false,
@@ -314,6 +320,7 @@ impl EdgeBoundary {
 
     /// The window-space position a `Reachable` boundary records — `None`
     /// for edges a bar's band or a host's coverage owns.
+    #[cfg(feature = "navigation")]
     const fn position(&self) -> Option<f64> {
         match self {
             Self::Reachable { position, .. } => Some(*position),
@@ -349,6 +356,7 @@ impl EdgeOffsets {
     /// `self` with `edge` zeroed — the mask a chrome surface applies so a
     /// bar only ever extends through the edges its docking can touch, even
     /// when a clamped frame lands its inner edge on the opposite boundary.
+    #[cfg(feature = "navigation")]
     pub const fn cleared(mut self, edge: Edge) -> Self {
         self.set(edge, 0.0);
         self
@@ -494,6 +502,7 @@ impl SafeAreaLayout {
     /// other edge is `Covered` — nothing inside can touch, release or
     /// extend past it, so chrome content never reseeds a band the host
     /// did not leave on the boundary.
+    #[cfg(feature = "navigation")]
     pub fn hosted(&self, frame: kurbo::Rect) -> Self {
         let mut next = self.with_frame(frame);
         for edge in EDGES {
@@ -516,6 +525,7 @@ impl SafeAreaLayout {
     /// one content context — [`Self::hosted`] on the content's frame with
     /// each bar's edge `Docked` on its band's inner edge.
     #[must_use]
+    #[cfg(feature = "navigation")]
     pub fn chrome_splits<const N: usize>(
         &self,
         bounds: kurbo::Rect,
@@ -563,6 +573,7 @@ impl SafeAreaLayout {
     /// context with the keyboard region released on `edge`, so the bar's
     /// fills and extensions still reach the window edge through both
     /// regions.
+    #[cfg(feature = "navigation")]
     fn bar_split(
         &self,
         bounds: kurbo::Rect,
@@ -586,6 +597,7 @@ impl SafeAreaLayout {
     /// on it stacks on it (§7.1). Module-internal: `Docked` boundaries
     /// are minted only by [`Self::chrome_splits`], never forged.
     #[must_use]
+    #[cfg(feature = "navigation")]
     fn chrome_content_area(
         &self,
         frame: kurbo::Rect,
@@ -616,6 +628,7 @@ impl SafeAreaLayout {
     /// it from f64 inset depths (the module seeds boundaries from f32
     /// frames on purpose).
     #[must_use]
+    #[cfg(feature = "navigation")]
     fn releasing_keyboard(&self, edge: Edge) -> Self {
         let mut next = self.clone();
         let EdgeBoundary::Reachable { released, .. } = self.boundary(edge) else {
@@ -655,6 +668,7 @@ impl SafeAreaLayout {
     /// space through [`Self::hosted_frame`]'s offset. `None` on an edge
     /// this context's frame does not touch and does not end at a dock on:
     /// the band keeps `bounds`' edge.
+    #[cfg(feature = "navigation")]
     fn docked_bar_position(&self, bar_area: &Self, bounds: kurbo::Rect, edge: Edge) -> Option<f64> {
         let position = match self.boundary(edge) {
             EdgeBoundary::Docked { inner, .. } if self.touches_dock(edge) => Some(inner),
@@ -716,8 +730,10 @@ impl SafeAreaLayout {
     /// the same touch to the eye; comparing exactly would flip the answer
     /// frame to frame while a keyboard animation resizes the window.
     fn touches(&self, edge: Edge) -> bool {
-        let EdgeBoundary::Reachable { position, .. } = self.boundary(edge) else {
-            return false;
+        let position = match self.boundary(edge) {
+            EdgeBoundary::Reachable { position, .. } => position,
+            #[cfg(feature = "navigation")]
+            EdgeBoundary::Docked { .. } | EdgeBoundary::Covered => return false,
         };
         (edge.frame_edge(self.frame) - position).abs() < self.touch_tolerance(edge)
     }
@@ -727,6 +743,7 @@ impl SafeAreaLayout {
     /// the hosted content edge the dock was built for. A `Docked` boundary
     /// answers to frames that end where the dock was established and stays
     /// inert under any other frame (`hosted` covers it there).
+    #[cfg(feature = "navigation")]
     fn touches_dock(&self, edge: Edge) -> bool {
         let EdgeBoundary::Docked { edge_at, .. } = self.boundary(edge) else {
             return false;
@@ -862,6 +879,7 @@ pub struct ScrollSurfaceFacts {
 /// subtree lays out against, and the dock it hands the composed content
 /// context. Band and context live in one type so a bar's surface or
 /// placed views can never be paired with another bar's context.
+#[cfg(feature = "navigation")]
 pub struct ChromeBar {
     /// The `bounds` the split ran on — the space `band`, `rest` and
     /// [`Self::bar_area_for`]'s `rect` live in.
@@ -886,6 +904,7 @@ pub struct ChromeBar {
     bar_area: Option<SafeAreaLayout>,
 }
 
+#[cfg(feature = "navigation")]
 impl ChromeBar {
     /// A bar with no §7.1 context — the shape a context-free chrome
     /// container's split takes: the band keeps `bounds`' own edge, the
@@ -958,6 +977,7 @@ impl ChromeBar {
 /// content context — [`SafeAreaLayout::hosted`] on the content's frame
 /// plus every bar's `Docked` boundary. A one-bar container calls it as
 /// `chrome_splits::<1>` — the single content rect is then `bars[0].rest`.
+#[cfg(feature = "navigation")]
 pub struct ChromeSplits<const N: usize> {
     /// Each bar's share of the split, in the order `chrome_splits` took
     /// the edges.

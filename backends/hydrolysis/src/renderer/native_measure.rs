@@ -133,9 +133,13 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<FixedContainer>);
         $macro!(Native<LazyContainer>);
         $macro!(Native<ScrollView>);
+        #[cfg(feature = "navigation")]
         $macro!(Native<NavigationView>);
+        #[cfg(feature = "navigation")]
         $macro!(Native<NavigationSplitLayout>);
+        #[cfg(feature = "navigation")]
         $macro!(Native<NavigationStack<(), ()>>);
+        #[cfg(feature = "navigation")]
         $macro!(Native<TabsLayout>);
         $macro!(Native<BadgeConfig>);
         #[cfg(feature = "list")]
