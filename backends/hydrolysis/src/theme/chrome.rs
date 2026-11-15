@@ -596,7 +596,7 @@ impl StateLayer {
 /// opacity rises to [`StateLayer::pressed`] under `fade_in` and, once
 /// released and `minimum_duration` has passed since the press, falls to
 /// `0` under `fade_out`. Rapid re-presses overlap: older waves keep fading
-/// while the newest grows, up to [`MAX_PRESS_WAVES`](super::MAX_PRESS_WAVES)
+/// while the newest grows, up to 4 concurrent waves
 /// at once. A wave stays recorded for the widget's life, so its fade runs
 /// until the animation settles — a spring that undershoots is never cut
 /// off at its first zero crossing. Waves are clipped to the silhouette.
