@@ -8,6 +8,7 @@ use super::*;
 #[cfg(any(hydrolysis_android_system_webview, not(hydrolysis_system_webview)))]
 use waterui_core::contract_violation;
 
+#[cfg(feature = "list")]
 impl_widget_behavior!(
     crate::widgets::layout::list::ListRenderState<E>,
     crate::widgets::layout::list::render_list_node,
@@ -110,6 +111,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// a changing collection length stay live; the `LazyListController` row-extent
     /// cache (keyed by body-order cursor slot) persists across frames. Stretches to
     /// fill the proposal (`StretchAxis::Both`, read from the config).
+    #[cfg(feature = "list")]
     pub(super) fn build_list(
         config: ListConfig,
         env: &Environment,

@@ -9,6 +9,7 @@ use core::time::Duration;
 use nami::Signal;
 #[cfg(feature = "date-picker")]
 use waterui::form::Calendar;
+#[cfg(any(feature = "picker", feature = "color-picker", feature = "date-picker"))]
 use waterui_controls::button;
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::menu::Shortcut;

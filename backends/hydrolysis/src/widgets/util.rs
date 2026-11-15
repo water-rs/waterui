@@ -49,6 +49,12 @@ pub fn centered_label_rect(rect: kurbo::Rect, size: waterui_core::layout::Size) 
 
 /// `rect` reflected about the vertical centre line of `bounds`: where a
 /// right-to-left layout places what a left-to-right one placed at `rect`.
+#[cfg(any(
+    feature = "picker",
+    feature = "toggle",
+    feature = "stepper",
+    feature = "date-picker"
+))]
 pub fn mirrored_in(rect: kurbo::Rect, bounds: kurbo::Rect) -> kurbo::Rect {
     let sum = bounds.x0 + bounds.x1;
     kurbo::Rect::new(sum - rect.x1, rect.y0, sum - rect.x0, rect.y1)
@@ -62,6 +68,12 @@ pub fn mirrored_in(rect: kurbo::Rect, bounds: kurbo::Rect) -> kurbo::Rect {
 /// takes its own height (capped to `row`) centred on the control's centre
 /// line: a single-line label shares the control's centre instead of riding
 /// the row's top edge.
+#[cfg(any(
+    feature = "picker",
+    feature = "toggle",
+    feature = "stepper",
+    feature = "slider"
+))]
 pub fn label_beside_control_bounds(
     x0: f64,
     x1: f64,

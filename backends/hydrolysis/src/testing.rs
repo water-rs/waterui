@@ -206,6 +206,7 @@ pub fn plain_menu_look() -> crate::theme::MenuLook {
 /// half a slot, a drag begins after 8 points and rows settle over 15
 /// milliseconds.
 #[must_use]
+#[cfg(feature = "list")]
 pub fn plain_list_look() -> crate::theme::ListLook {
     use crate::theme::{Custom, ListControls, ListGestures, ListLook, ListMetrics};
     ListLook::new(
@@ -417,16 +418,17 @@ pub const fn plain_input_metrics() -> crate::theme::InputFieldMetrics {
 mod test_style {
     #[cfg(feature = "table")]
     use crate::theme::TableLook;
+    #[cfg(feature = "list")]
+    use crate::theme::{ListLook, ListSpec};
     use std::time::Duration;
 
     use crate::theme::{
         BadgeLook, ButtonLook, ButtonSpec, Chrome, CornerShape, DragMapping, FocusIndicator,
-        HitRegion, IndicatorLook, InteractionMotion, Knob, Label, LinearProgressLook, ListLook,
-        ListSpec, MenuLook, MenuPickerLook, MenuSpec, Motion, NavigationBarLook, NavigationSpec,
-        PickerSpec, PressFeedback, ProgressControl, ProgressSpec, RadioGroupLook,
-        ScrollIndicatorLook, SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook,
-        StepperSpec, Surface, TabsLook, TabsSpec, TextFieldLook, TextFieldSpec, ToggleSpec,
-        WidgetTheme,
+        HitRegion, IndicatorLook, InteractionMotion, Knob, Label, LinearProgressLook, MenuLook,
+        MenuPickerLook, MenuSpec, Motion, NavigationBarLook, NavigationSpec, PickerSpec,
+        PressFeedback, ProgressControl, ProgressSpec, RadioGroupLook, ScrollIndicatorLook,
+        SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook, StepperSpec, Surface,
+        TabsLook, TabsSpec, TextFieldLook, TextFieldSpec, ToggleSpec, WidgetTheme,
     };
     use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
     use waterui::animation::Animation;

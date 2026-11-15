@@ -345,6 +345,7 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
     /// `Focus` lands on the row like on every focusable node. Arrow-key
     /// navigation between rows is built on these actions
     /// (water-rs/waterui#1223).
+    #[cfg(feature = "list")]
     ListRow {
         /// The row's index in the list's row set.
         index: usize,
@@ -1680,6 +1681,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             AccessibilityActionTarget::Scroll { handle, axis } => {
                 handle_accessibility_scroll_action(self, &handle, axis, action, target_node)
             }
+            #[cfg(feature = "list")]
             AccessibilityActionTarget::ListRow {
                 index,
                 position,
@@ -1808,6 +1810,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// the node a pointer at its centre would hit in the accessibility
     /// tree's own terms — the innermost descendant advertising `Click`.
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "list")]
     pub(crate) fn click_list_row(
         &mut self,
         row_node: AccessibilityNodeId,
@@ -1841,6 +1844,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// last matching node emitted is the innermost. `None` on a row with
     /// nothing clickable inside.
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "list")]
     fn clickable_descendant(&self, row_node: AccessibilityNodeId) -> Option<AccessibilityNodeId> {
         let mut inside: std::collections::BTreeSet<AccessibilityNodeId> =
             std::collections::BTreeSet::new();
@@ -1981,6 +1985,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// looked up through the registry — never the root — or, with no
     /// target registered (the semantic runtime), the row node's owner.
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "list")]
     pub(crate) fn scroll_list_row_into_view(
         &self,
         position: usize,
@@ -3344,6 +3349,7 @@ impl<E: crate::text::TextEngine> Clone for AccessibilityActionTarget<E> {
                 handle: handle.clone(),
                 axis: *axis,
             },
+            #[cfg(feature = "list")]
             Self::ListRow {
                 index,
                 position,

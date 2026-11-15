@@ -1,12 +1,18 @@
+#[cfg(feature = "list")]
+use crate::num_cast::f64_as_f32;
+#[cfg(feature = "list")]
+use crate::theme::ListMetrics;
+#[cfg(feature = "list")]
+use waterui_core::views::AnyViewsSnapshot;
+#[cfg(feature = "list")]
+use waterui_layout::padding::EdgeInsets;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::num_cast::f64_as_f32;
 use crate::text::TextEngine;
 use crate::text::TextLayout as _;
 use crate::theme::{
-    ListMetrics, NavigationBarLook, NavigationMetrics, NavigationSpec, TabsSpec, TextFieldLook,
-    WidgetTheme,
+    NavigationBarLook, NavigationMetrics, NavigationSpec, TabsSpec, TextFieldLook, WidgetTheme,
 };
 use crate::widgets::controls::field_look::{field_look, placeholder_text, value_text};
 use crate::widgets::layout::container::resolve_lazy_container_extent;
@@ -17,13 +23,12 @@ use waterui_core::contract_violation;
 use waterui_core::handler::BoxedAction;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{LayoutError, ResolvedExtent, layout_direction, resolve_layout_extent};
-use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot};
+use waterui_core::views::ViewSnapshot;
 #[cfg(feature = "picker")]
 use waterui_form::picker::PickerStyle;
 #[cfg(feature = "date-picker")]
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_layout::container::resolve_directional_extent;
-use waterui_layout::padding::EdgeInsets;
 
 #[cfg(feature = "table")]
 pub struct MeasuredTableMetrics {
@@ -1122,6 +1127,7 @@ pub fn navigation_back_button_rect(
 /// `insets` replace the theme's row insets edge for edge, and unset the theme's
 /// symmetric horizontal inset applies. `EdgeInsets` is logical, so leading is
 /// the side the layout direction starts from.
+#[cfg(feature = "list")]
 pub fn list_row_horizontal_insets(
     insets: Option<&EdgeInsets>,
     metrics: ListMetrics,
@@ -1140,6 +1146,7 @@ pub fn list_row_horizontal_insets(
 
 /// The spec of a list in `env`.
 #[must_use]
+#[cfg(feature = "list")]
 pub fn list_spec(env: &Environment) -> crate::theme::ListSpec {
     crate::theme::ListSpec::new(layout_direction(env).snapshot())
 }
@@ -1149,6 +1156,7 @@ pub fn list_spec(env: &Environment) -> crate::theme::ListSpec {
 /// height comes from this answer, so content that wraps is held at the lines it
 /// wraps to there. The content is a view this measurement materialized, so it
 /// goes through the transient path.
+#[cfg(feature = "list")]
 pub fn measure_list_row_content<E: TextEngine>(
     content: &AnyView,
     row_width: f64,
@@ -1173,6 +1181,7 @@ pub fn measure_list_row_content<E: TextEngine>(
 /// is proposed: rows are then measured at it, so the height answers the
 /// wrapping that width causes; `None` is the ideal query, rows at their natural
 /// width.
+#[cfg(feature = "list")]
 pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
     list: &ListConfig,
     contents: &AnyViewsSnapshot<ListItem>,
@@ -1246,6 +1255,7 @@ pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
 /// Materializes the `ListItem` at `index` from `contents` — an immutable
 /// snapshot of the row collection, so the caller's whole pass (section walk,
 /// accessibility emit, or draw loop) reads one coherent membership.
+#[cfg(feature = "list")]
 pub fn materialize_list_item(
     contents: &impl ViewSnapshot<View = ListItem>,
     index: usize,
@@ -1270,6 +1280,7 @@ pub fn materialize_list_item(
 /// The caller measures the content ([`measure_list_row_content`] on the
 /// materialized `ListItem`) and the section chrome height is added on top
 /// of what this returns.
+#[cfg(feature = "list")]
 pub fn list_row_height_for_content(
     content_height: f64,
     insets: Option<&EdgeInsets>,

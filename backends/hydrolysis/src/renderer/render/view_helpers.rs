@@ -254,6 +254,7 @@ pub fn a11y_scoped_env_for_view<E: crate::text::TextEngine>(
 /// the modifier and the named view) still belongs to the subtree's own build,
 /// so hoisting stops at one.
 #[cfg(feature = "accessibility")]
+#[cfg(feature = "list")]
 pub fn hoist_accessibility_metadata<E: crate::text::TextEngine>(
     view: AnyView,
     env: &Environment,
@@ -264,6 +265,7 @@ pub fn hoist_accessibility_metadata<E: crate::text::TextEngine>(
 }
 
 #[cfg(feature = "accessibility")]
+#[cfg(feature = "list")]
 fn hoist_accessibility_metadata_inner<E: crate::text::TextEngine>(
     mut view: AnyView,
     scoped: &mut Environment,

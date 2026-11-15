@@ -1311,6 +1311,7 @@ pub fn emit_menu_accessibility<E: crate::text::TextEngine>(
 /// `styled` in the font and colour `label` gives its text at rest: the
 /// styling of a menu picker's selected value and of a radio row's label,
 /// which has no state of its own.
+#[cfg(any(feature = "picker", feature = "date-picker"))]
 pub fn label_styled(label: &LookLabel, styled: StyledStr) -> StyledStr {
     let inputs = Inputs::at_rest(Rect::ZERO, InteractionState::empty(), &());
     let styled = match label.get_font() {

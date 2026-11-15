@@ -304,6 +304,7 @@ impl<T: 'static, G> SubscribedSnapshot<T, G> {
 impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// The frame triggers, for a watcher that outlives the read and only
     /// needs to wake the pump without re-encoding the tree.
+    #[cfg(any(feature = "picker", feature = "slider"))]
     pub(crate) fn frame_signals(&self) -> FrameSignals {
         self.signals.clone()
     }
@@ -462,6 +463,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         signal.snapshot()
     }
 
+    #[cfg(any(feature = "picker", feature = "list"))]
     pub(crate) fn read_resolved_text_styled(
         &mut self,
         text: &Text,

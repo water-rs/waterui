@@ -40,6 +40,7 @@ pub mod live_progress;
 #[cfg(feature = "picker")]
 pub mod live_segmented;
 pub mod live_tabs;
+#[cfg(any(feature = "toggle", feature = "picker"))]
 pub mod live_toggle;
 pub mod material;
 mod metadata;
@@ -75,9 +76,9 @@ pub use recording::{Recording, working_color};
 pub use tree::safe_area::{
     ChromeBar, Edge, EdgeOffsets, SafeAreaLayout, ScrollSurfaceArea, grow_rect,
 };
-pub use tree::transition::{
-    TransitionPaint, flush_transitioned, record_blurred, transition_transform,
-};
+#[cfg(feature = "list")]
+pub use tree::transition::flush_transitioned;
+pub use tree::transition::{TransitionPaint, record_blurred, transition_transform};
 pub use tree::*;
 pub use views::*;
 pub use waterui_backend_core::frame_signals::FrameSignals;
@@ -138,6 +139,7 @@ use waterui::background::{Background, GlassBackground, MaterialBackground, Mater
 use waterui::border::Border;
 use waterui::component::badge::BadgeConfig;
 use waterui::component::focus::Focused;
+#[cfg(feature = "list")]
 use waterui::component::list::{ListConfig, ListItem};
 use waterui::component::progress::ProgressConfig;
 #[cfg(feature = "table")]
@@ -1925,6 +1927,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// The modifier snapshot the window last reported — pointer targets read
     /// it at commit time because pointer events carry no modifier state of
     /// their own (toggle and Shift range selection).
+    #[cfg(feature = "list")]
     pub(crate) const fn modifiers(&self) -> Modifiers {
         self.hit_test.modifiers
     }

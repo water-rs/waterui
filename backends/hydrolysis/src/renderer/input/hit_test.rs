@@ -128,6 +128,7 @@ pub struct PointerTarget<E: crate::text::TextEngine> {
     /// The control's own handling of a press on this target, when it tracks
     /// the press instead of acting on release ([`Track`]). The action still
     /// answers keyboard activation.
+    #[cfg(any(feature = "toggle", feature = "picker"))]
     pub(crate) track: Option<TrackAction>,
     pub(crate) keyboard_step: Option<KeyboardStepAction>,
     /// Whether a press at a window point inside `bounds` is this target's,
@@ -332,6 +333,7 @@ pub type PointerAction<E> =
 /// press was a tap or a drag. The target's action still answers keyboard
 /// activation.
 #[derive(Debug, Clone, Copy)]
+#[cfg(any(feature = "toggle", feature = "picker"))]
 pub enum Track {
     /// The press landed at this point.
     Begin(kurbo::Point),
@@ -350,6 +352,7 @@ pub enum Track {
 }
 
 /// A control's handler for [`Track`] steps.
+#[cfg(any(feature = "toggle", feature = "picker"))]
 pub type TrackAction = Rc<RefCell<dyn FnMut(Track)>>;
 pub type KeyboardStepAction = Rc<RefCell<dyn FnMut(bool) -> bool>>;
 pub type HoverAction = Rc<RefCell<dyn FnMut(&Environment) -> bool>>;
@@ -2473,6 +2476,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 // Material controls commit on release, not on pointer-down. Keep
                 // the topmost opaque target captured so a release inside its
                 // bounds activates it exactly once; a release outside cancels.
+                #[cfg(any(feature = "toggle", feature = "picker"))]
                 if let Some(track) = target.track.as_ref() {
                     (track.borrow_mut())(Track::Begin(target.to_local * point));
                 }
@@ -2644,13 +2648,24 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 .as_ref()
                 .map_or(0.0, |slot| slot.cancel_distance);
             let within_reach = target.bounds.inflate(reach, reach).contains(point);
+            #[cfg(any(feature = "toggle", feature = "picker"))]
             if let Some(track) = target.track.as_ref() {
                 (track.borrow_mut())(Track::Release {
                     #[cfg(feature = "toggle")]
                     point: target.to_local * point,
                     within_reach,
                 });
-            } else if within_reach {
+            }
+            if within_reach && {
+                #[cfg(any(feature = "toggle", feature = "picker"))]
+                {
+                    target.track.is_none()
+                }
+                #[cfg(not(any(feature = "toggle", feature = "picker")))]
+                {
+                    true
+                }
+            } {
                 // The action's verdict is "the tap landed", not a layout
                 // input: whatever it writes marks its own readers through
                 // the signal guards, so an ordinary activation marks
@@ -2723,11 +2738,19 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // starts under the finger never shows or activates it.
         // A tracked press owns its movement, so a drag never cancels it.
         if pointer_kind != PointerKind::Mouse
-            && self
-                .hit_test
-                .active_pointer_target
-                .as_ref()
-                .is_none_or(|target| target.track.is_none())
+            && {
+                #[cfg(any(feature = "toggle", feature = "picker"))]
+                {
+                    self.hit_test
+                        .active_pointer_target
+                        .as_ref()
+                        .is_none_or(|target| target.track.is_none())
+                }
+                #[cfg(not(any(feature = "toggle", feature = "picker")))]
+                {
+                    true
+                }
+            }
             && self
                 .hit_test
                 .pending_pointer_press
@@ -2791,6 +2814,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             drag_changed |= text_drag_changed;
             refresh_requested |= text_drag_changed;
         }
+        #[cfg(any(feature = "toggle", feature = "picker"))]
         if let Some(target) = self.hit_test.active_pointer_target.as_ref()
             && let Some(track) = target.track.clone()
         {
@@ -3556,6 +3580,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// hoisting and chrome nodes can neither fake nor lose row membership
     /// (water-rs/waterui#1223).
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "list")]
     fn list_row_context(
         &self,
         node: AccessibilityNodeId,
@@ -3596,6 +3621,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// destination row and Shift extends the anchored range
     /// (water-rs/waterui#1226).
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "list")]
     fn navigate_list_row(
         &mut self,
         dest: AccessibilityNodeId,
@@ -3721,6 +3747,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 // step between sibling rows. The cross-axis pair keeps its
                 // other meanings and falls through to the stepper handling
                 // below.
+                #[cfg(feature = "list")]
                 if let Some(node) = self.keyboard_focus_node()
                     && let Some((siblings, index, axis)) = self.list_row_context(node)
                 {
@@ -3802,6 +3829,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // `Home`/`End` jump the focused `List` row to the first and last row
         // — consumed, so the keys do not fall through to whoever else would
         // claim them.
+        #[cfg(feature = "list")]
         if let KeyCode::Named(name) = key
             && (name == "Home" || name == "End")
             && let Some(node) = self.keyboard_focus_node()
@@ -3973,6 +4001,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 
     /// Tells the active press's control, when it tracks its press, that the
     /// press was taken away.
+    #[cfg(any(feature = "toggle", feature = "picker"))]
     fn cancel_tracked_press(&self) {
         if let Some(track) = self
             .hit_test
@@ -3991,6 +4020,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// steals the sequence through.
     fn consume_active_press(&mut self, at: Instant, env: &Environment) {
         self.hit_test.pending_pointer_press = None;
+        #[cfg(any(feature = "toggle", feature = "picker"))]
         self.cancel_tracked_press();
         self.hit_test.active_pointer_target = None;
         self.hit_test.active_pointer_drag_target = None;
@@ -4093,6 +4123,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.hit_test.active_pointer_drag_owner = Weak::new();
         self.hit_test.active_pointer_drag_signature = None;
         self.clear_scrollbar_drag();
+        #[cfg(any(feature = "toggle", feature = "picker"))]
         self.cancel_tracked_press();
         self.hit_test.active_pointer_target = None;
         self.hit_test.active_embedded_target = None;
@@ -4684,6 +4715,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 owners: self.owner_stack.clone(),
                 interaction,
                 action,
+                #[cfg(any(feature = "toggle", feature = "picker"))]
                 track: None,
                 keyboard_step: None,
                 press_filter: None,
@@ -4738,6 +4770,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 action: Rc::new(RefCell::new(
                     |_: &mut Self, _: kurbo::Point, _: &Environment| true,
                 )),
+                #[cfg(any(feature = "toggle", feature = "picker"))]
                 track: None,
                 keyboard_step: None,
                 press_filter: None,
@@ -4847,6 +4880,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 owners: self.owner_stack.clone(),
                 interaction: None,
                 action: Rc::new(RefCell::new(action)),
+                #[cfg(any(feature = "toggle", feature = "picker"))]
                 track: None,
                 keyboard_step: None,
                 press_filter: None,
@@ -4935,6 +4969,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 }
 
 impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
+    #[cfg(any(test, feature = "list"))]
     pub(crate) fn bind_interaction_target(
         &mut self,
         key: InteractionKey,
@@ -5025,6 +5060,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// engine-realized ([`LiveToggle`](crate::renderer::live_toggle::LiveToggle))
     /// from `control`, on its touch `target`: the same live binding
     /// [`Self::bind_live_chrome_target`] makes.
+    #[cfg(any(feature = "toggle", feature = "picker"))]
     pub(crate) fn bind_live_toggle_target(
         &mut self,
         key: InteractionKey,
@@ -5350,11 +5386,19 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     ) where
         F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
     {
-        self.register_press_target(bounds, press_slot, keyboard_focusable, action, None);
+        self.register_press_target(
+            bounds,
+            press_slot,
+            keyboard_focusable,
+            action,
+            #[cfg(any(feature = "toggle", feature = "picker"))]
+            None,
+        );
     }
 
     /// Registers a keyboard-focusable press target whose control tracks its
     /// press itself ([`Track`]); `action` answers keyboard activation.
+    #[cfg(any(feature = "toggle", feature = "picker"))]
     pub(crate) fn register_tracked_pointer_target<F>(
         &mut self,
         bounds: kurbo::Rect,
@@ -5373,7 +5417,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         press_slot: PressSlot,
         keyboard_focusable: bool,
         action: F,
-        track: Option<TrackAction>,
+        #[cfg(any(feature = "toggle", feature = "picker"))] track: Option<TrackAction>,
     ) where
         F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
     {
@@ -5392,6 +5436,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 owners: self.owner_stack.clone(),
                 interaction,
                 action: Rc::new(RefCell::new(action)),
+                #[cfg(any(feature = "toggle", feature = "picker"))]
                 track,
                 keyboard_step: None,
                 press_filter: None,
@@ -5431,6 +5476,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 owners: self.owner_stack.clone(),
                 interaction,
                 action: Rc::new(RefCell::new(action)),
+                #[cfg(any(feature = "toggle", feature = "picker"))]
                 track: None,
                 keyboard_step: Some(Rc::new(RefCell::new(keyboard_step))),
                 press_filter,
@@ -5875,6 +5921,7 @@ impl<E: crate::text::TextEngine> Clone for PointerTarget<E> {
             owner: self.owner.clone(),
             interaction: self.interaction.clone(),
             action: self.action.clone(),
+            #[cfg(any(feature = "toggle", feature = "picker"))]
             track: self.track.clone(),
             keyboard_step: self.keyboard_step.clone(),
             press_filter: self.press_filter.clone(),

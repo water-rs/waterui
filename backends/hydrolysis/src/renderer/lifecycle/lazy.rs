@@ -271,11 +271,13 @@ impl VirtualExtentIndex {
     }
 
     #[must_use]
+    #[cfg(any(test, feature = "list"))]
     pub(crate) fn measured(&self, index: usize) -> Option<f64> {
         self.measured[index]
     }
 
     #[must_use]
+    #[cfg(any(test, feature = "list"))]
     pub(crate) fn offset_of(&self, index: usize) -> f64 {
         assert!(
             index <= self.measured.len(),

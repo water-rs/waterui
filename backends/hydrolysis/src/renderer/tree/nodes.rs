@@ -463,6 +463,7 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
     /// bounds move so its response, children and drawing land at `anchor`
     /// ([`RenderNode::layout_in`]). Set before placing; a change re-lays the
     /// sub-view out.
+    #[cfg(feature = "list")]
     pub(crate) fn set_content_anchor(&mut self, anchor: UnitPoint) {
         let built = self.expect_built_mut("set_content_anchor");
         if built.content_anchor != Some(anchor) {
@@ -621,6 +622,7 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
     /// gesture registered inside the sub-view is a strict descendant of it and
     /// one attached to the root itself is not. `None` when the root carries no
     /// identity; running before build panics, a caller ordering bug.
+    #[cfg(feature = "list")]
     pub(crate) fn root_accessibility_identity(&self) -> Option<Rc<()>> {
         self.expect_built("root_accessibility_identity")
             .node

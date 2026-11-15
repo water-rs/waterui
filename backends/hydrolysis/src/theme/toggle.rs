@@ -30,7 +30,7 @@ use waterui_graphics::color::Color;
 #[cfg(feature = "toggle")]
 use super::look::SpecTint;
 use super::look::{Custom, CustomPart, DrivenSet, HitRegion, Motion};
-#[cfg(hydrolysis_runtime)]
+#[cfg(all(hydrolysis_runtime, any(feature = "toggle", feature = "picker")))]
 use super::look::{Inputs, RealizedCustom};
 use super::{Backdrop, Driven};
 
@@ -333,6 +333,7 @@ impl ToggleControl {
     /// The parts recorded below the backdrop, bottom first, realized at
     /// `inputs`.
     #[cfg(hydrolysis_runtime)]
+    #[cfg(any(feature = "toggle", feature = "picker"))]
     pub(crate) fn realize_below(&self, inputs: &Inputs<'_, bool>) -> Vec<RealizedCustom<bool>> {
         self.0
             .below
@@ -344,6 +345,7 @@ impl ToggleControl {
     /// The parts recorded above the backdrop, bottom first, realized at
     /// `inputs`.
     #[cfg(hydrolysis_runtime)]
+    #[cfg(any(feature = "toggle", feature = "picker"))]
     pub(crate) fn realize_above(&self, inputs: &Inputs<'_, bool>) -> Vec<RealizedCustom<bool>> {
         self.0
             .above
@@ -354,6 +356,7 @@ impl ToggleControl {
 
     /// Whether `other` is this control.
     #[cfg(hydrolysis_runtime)]
+    #[cfg(any(feature = "toggle", feature = "picker"))]
     pub(crate) fn same(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
     }

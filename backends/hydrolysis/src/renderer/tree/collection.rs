@@ -850,6 +850,7 @@ impl<T: View, E: crate::text::TextEngine> LazyTransitions<E, T> {
 
     /// The row display position `display` shows — or, for a removal ghost,
     /// the row the ghost sits before.
+    #[cfg(feature = "list")]
     pub(crate) fn row_at(&self, display: usize) -> usize {
         match self.slot_at(display) {
             LazySlot::Row(row) => row,

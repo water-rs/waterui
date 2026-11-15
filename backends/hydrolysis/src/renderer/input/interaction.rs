@@ -294,6 +294,7 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
 
     /// Every bound control's live toggle.
     #[cfg(test)]
+    #[cfg(any(feature = "toggle", feature = "picker"))]
     pub(crate) fn live_toggles(&self) -> Vec<Rc<crate::renderer::live_toggle::LiveToggle>> {
         self.states
             .values()

@@ -833,6 +833,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Ok(badge) => return Self::build_badge((*badge).into_inner(), env, renderer),
             Err(view) => view,
         };
+        #[cfg(feature = "list")]
         let view = match view.downcast::<Native<ListConfig>>() {
             Ok(list) => return Self::build_list((*list).into_inner(), env, renderer),
             Err(view) => view,

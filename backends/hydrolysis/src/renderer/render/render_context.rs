@@ -345,6 +345,12 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
         }
     }
 
+    #[cfg(any(
+        feature = "picker",
+        feature = "list",
+        feature = "color-picker",
+        feature = "date-picker"
+    ))]
     pub(crate) fn render_styled_text(
         &mut self,
         styled: StyledStr,

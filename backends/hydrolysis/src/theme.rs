@@ -55,6 +55,7 @@
 mod badge;
 mod chrome;
 mod glass;
+#[cfg(feature = "list")]
 mod list;
 #[cfg(hydrolysis_runtime)]
 pub(crate) mod live;
@@ -81,6 +82,7 @@ pub use chrome::{
     Ripple, StateLayer, Surface, Wash,
 };
 pub use glass::GlassLook;
+#[cfg(feature = "list")]
 pub use list::{ListControls, ListGestures, ListLook, ListSpec};
 pub use look::{
     ButtonLook, ButtonSpec, Custom, Driven, DrivenSet, HitRegion, Inputs, Label, Motion, SpecTint,
