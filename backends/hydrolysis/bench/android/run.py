@@ -254,26 +254,27 @@ def launch_and_capture(
             sys.exit(f"{package}: baseline profile not applied:\n{block}")
         result["baseline_profile_applied"] = True
     metrics.adb(serial, "shell", "dumpsys", "gfxinfo", package, "reset")
-    frame_profile.clear_logcat(serial)
-    launch_at = time.monotonic()
-    start_launcher(serial, package, env)
-    try:
-        capture_first_frame(serial, package, out / "capture.png", timeout_s)
-        result["first_frame_observed_ms"] = int((time.monotonic() - launch_at) * 1000)
-        if journey is None:
-            raise ValueError(f"{name}: no journey in interactions.json")
-        unsupported = replay_journey(serial, journey, display_size(serial))
-        if unsupported:
-            raise ValueError(f"{name}: incomplete journey, unsupported operations {unsupported}")
-        result["replay"] = "complete"
-        if painter is not None:
-            result.update(frame_profile.collect(serial, painter, out, "frame_profile"))
-        result.update(frame_metrics.collect(serial, package, out, "frames"))
-        result.update(memory_metrics.collect_at(serial, package, "post_journey", out, "memory"))
-        result.update(latency_metrics.collect(serial, out, "input"))
-        e2e.dump_logcat(serial, out / "logcat.txt")
-    finally:
-        e2e.force_stop(serial, package)
+    profile_log = out / "frame_profile.logcat.txt"
+    with frame_profile.record(serial, profile_log):
+        launch_at = time.monotonic()
+        start_launcher(serial, package, env)
+        try:
+            capture_first_frame(serial, package, out / "capture.png", timeout_s)
+            result["first_frame_observed_ms"] = int((time.monotonic() - launch_at) * 1000)
+            if journey is None:
+                raise ValueError(f"{name}: no journey in interactions.json")
+            unsupported = replay_journey(serial, journey, display_size(serial))
+            if unsupported:
+                raise ValueError(f"{name}: incomplete journey, unsupported operations {unsupported}")
+            result["replay"] = "complete"
+            result.update(frame_metrics.collect(serial, package, out, "frames"))
+            result.update(memory_metrics.collect_at(serial, package, "post_journey", out, "memory"))
+            result.update(latency_metrics.collect(serial, out, "input"))
+            e2e.dump_logcat(serial, out / "logcat.txt")
+        finally:
+            e2e.force_stop(serial, package)
+    if painter is not None:
+        result.update(frame_profile.collect(painter, profile_log))
 
     checked = subprocess.run(
         [comparison_tool, "check", str(out / "capture.png")],

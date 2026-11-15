@@ -1,6 +1,6 @@
 """Keep reference capture outside the measured application's focused journey."""
 
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from pathlib import Path
 import subprocess
 import tempfile
@@ -26,7 +26,7 @@ class CaptureOrderingTests(unittest.TestCase):
             stack.enter_context(patch.object(run.e2e, "install_apk"))
             stack.enter_context(patch.object(run.e2e, "dump_logcat"))
             stack.enter_context(patch.object(run.metrics, "adb"))
-            stack.enter_context(patch.object(run.frame_profile, "clear_logcat"))
+            stack.enter_context(patch.object(run.frame_profile, "record", return_value=nullcontext()))
             stack.enter_context(patch.object(run.frame_profile, "collect", return_value={}))
             stack.enter_context(patch.object(run.frame_metrics, "collect", return_value={}))
             stack.enter_context(patch.object(run.memory_metrics, "collect_at", return_value={}))

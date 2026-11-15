@@ -19,12 +19,13 @@ than carrying zeros.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import re
 import subprocess
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from . import adb, adb_out
+from . import adb
 
 # The counters `FrameStats::report` logs, in the order it logs them.
 COUNTERS = (
@@ -50,6 +51,31 @@ Number = TypeVar("Number", int, float)
 def clear_logcat(serial: str) -> None:
     """Empties every logcat buffer so a round counts only its own frames."""
     adb(serial, "logcat", "-c")
+
+
+@contextmanager
+def record(serial: str, output: Path):
+    """Stream the round to disk before logcat's finite ring can overwrite it."""
+    clear_logcat(serial)
+    with output.open("wb") as stream:
+        process = subprocess.Popen(
+            ["adb", "-s", serial, "logcat", "-s", "hydrolysis:I"],
+            stdout=stream,
+        )
+        try:
+            yield output
+        finally:
+            status = process.poll()
+            if status is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+                    raise
+            else:
+                raise RuntimeError(f"frame-profile logcat exited unexpectedly: {status}")
 
 
 def _parse_records(
@@ -105,7 +131,7 @@ def summarize(
     return summary
 
 
-def collect(serial: str, painter: str, artifacts_dir: Path, name: str) -> dict:
+def collect(painter: str, logcat: Path) -> dict:
     """The round's counters from logcat, or the reason there are none.
 
     `painter` is the CLI's painter name. A build without `frame-profile`
@@ -120,12 +146,7 @@ def collect(serial: str, painter: str, artifacts_dir: Path, name: str) -> dict:
                 "Perfetto trace, not the HWUI counters"
             ),
         }
-    try:
-        data = adb_out(serial, "logcat", "-d", "-s", "hydrolysis:I")
-    except subprocess.CalledProcessError as error:
-        return {"frame_profile": "unavailable", "frame_profile_reason": str(error)}
-    text = data.decode("utf-8", "replace")
-    (artifacts_dir / f"{name}.logcat.txt").write_text(text)
+    text = logcat.read_text()
     frames = parse_frames(text)
     if not frames:
         return {
