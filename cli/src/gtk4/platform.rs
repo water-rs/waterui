@@ -53,6 +53,7 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
             &format!("{}/dev", project.crate_name()),
             &["$ORIGIN"],
         )
+        .with_features(options.app_features(project))
         .with_envs(options.cargo_envs().iter().cloned());
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());
@@ -135,6 +136,7 @@ pub async fn package_gtk4(
         &backend_path,
         &built.app_symbols().await?,
         options.uses_dev_server(),
+        &built.features,
     )
     .await?;
 
@@ -226,6 +228,7 @@ async fn copy_assets_and_fonts(
     backend_path: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
+    features: &[String],
 ) -> eyre::Result<()> {
     let resources_dir = backend_path.join("resources");
     fs::create_dir_all(&resources_dir).await?;
@@ -236,10 +239,11 @@ async fn copy_assets_and_fonts(
     assets::stage_hicolor_icons(project, &resources_dir.join("icons")).await?;
 
     // Scan and resolve dependency fonts
-    let font_declarations = assets::scan_fonts(
+    let font_declarations = assets::scan_fonts_with_features(
         project,
         &backend_path.join("Cargo.toml"),
         &[waterui_assets_planner::FontPlatform::Linux],
+        features,
     )
     .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;

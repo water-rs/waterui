@@ -1203,6 +1203,7 @@ impl BuildProfile {
 /// Options for building Rust libraries.
 #[derive(Debug, Clone)]
 pub struct BuildOptions {
+    features: Vec<String>,
     profile: BuildProfile,
     output_dir: Option<std::path::PathBuf>,
     /// Optional path to sccache for compilation caching.
@@ -1232,6 +1233,7 @@ impl BuildOptions {
     pub fn development(profile: BuildProfile) -> Self {
         Self {
             profile,
+            features: Vec::new(),
             output_dir: None,
             sccache_path: None,
             target_triple: None,
@@ -1300,6 +1302,7 @@ impl BuildOptions {
     pub const fn packaging(profile: BuildProfile) -> Self {
         Self {
             profile,
+            features: Vec::new(),
             output_dir: None,
             sccache_path: None,
             target_triple: None,
@@ -1308,6 +1311,24 @@ impl BuildOptions {
             cargo_envs: Vec::new(),
             progress: None,
         }
+    }
+
+    /// Enable application Cargo features, preserving explicitly qualified dependencies.
+    #[must_use]
+    pub fn with_features(mut self, features: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.features.extend(features.into_iter().map(Into::into));
+        self
+    }
+
+    /// Features as seen from a generated backend crate's application dependency.
+    pub fn app_features(&self, project: &Project) -> impl Iterator<Item = String> {
+        self.features.iter().map(|feature| {
+            if feature.contains('/') {
+                feature.clone()
+            } else {
+                format!("{}/{feature}", project.crate_name())
+            }
+        })
     }
 
     /// Whether the build uses Cargo's `release` profile.
