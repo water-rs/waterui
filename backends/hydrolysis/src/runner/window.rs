@@ -92,6 +92,8 @@ pub(super) struct RuntimeWindow<P: PlatformWindow, E: crate::text::TextEngine> {
     pub(super) presented_frames: u64,
     pub(super) pointer_position: Option<(f32, f32)>,
     pub(super) render_diagnostics: RenderDiagnostics,
+    #[cfg(all(target_os = "android", hydrolysis_gpu_painter))]
+    pub(super) pending_render_diagnostic: Option<(RenderPhaseSample, Instant)>,
     /// Last display refresh rate (Hz) observed from the platform, used to detect changes
     /// and re-derive the diagnostics frame budget. `None` until first observed.
     pub(super) refresh_rate_hz: Option<f64>,
@@ -150,6 +152,8 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
             presented_frames: 0,
             pointer_position: None,
             render_diagnostics: RenderDiagnostics::new(render_diagnostics_config),
+            #[cfg(all(target_os = "android", hydrolysis_gpu_painter))]
+            pending_render_diagnostic: None,
             refresh_rate_hz: None,
             applied_size_limits: None,
             _declaration_watches: declaration_watches,
@@ -266,6 +270,18 @@ pub(super) struct FrameTransaction {
 
 #[cfg(any(target_os = "android", test))]
 impl FrameTransaction {
+    /// A running engine animation consumes the host's display callback. Its
+    /// requested rate is applied to the surface; comparing ideal frame periods
+    /// with actual vsync timestamps can skip a refresh. Only timer wakes need
+    /// the absolute deadline gate.
+    pub(super) fn engine_frame_due(
+        next: &crate::renderer::Next,
+        now: Instant,
+        presentation: Option<Instant>,
+    ) -> bool {
+        matches!(next, crate::renderer::Next::At { time, .. } if presentation.is_some() || *time <= now)
+    }
+
     /// Wraps the host's frame post in the gate: the returned wake posts only
     /// while no transaction is open and the window is not occluded.
     pub(super) fn frame_wake(&self, post: Rc<dyn Fn()>) -> Rc<dyn Fn()> {
@@ -1479,6 +1495,7 @@ pub(super) fn pump_window_semantics<P: PlatformWindow, E: crate::text::TextEngin
 
 #[cfg(hydrolysis_cherenkov)]
 pub struct SurfaceRenderResult {
+    presented: bool,
     acquire: Duration,
     render: Duration,
     present: Duration,
@@ -1488,8 +1505,9 @@ pub struct SurfaceRenderResult {
 #[cfg(hydrolysis_cherenkov)]
 impl SurfaceRenderResult {
     #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
-    pub(crate) const fn engine_presented(render: Duration) -> Self {
+    pub(crate) const fn engine_submitted(render: Duration) -> Self {
         Self {
+            presented: false,
             acquire: Duration::ZERO,
             render,
             present: Duration::ZERO,
@@ -1688,6 +1706,7 @@ crate::engine::cfg_async_fn! {
     // the submission done.
     surface.device_loss().note_frame_presented();
     Ok(SurfaceRenderResult {
+        presented: true,
         acquire,
         render,
         present,
@@ -1722,6 +1741,7 @@ impl PaintedFrame for crate::platform::WinitSurface {
         renderer.render_window_frame(&target, engine_target)?;
         self.device_loss().note_frame_presented();
         Ok(SurfaceRenderResult {
+            presented: true,
             acquire: Duration::ZERO,
             render: render_started_at.elapsed(),
             present: Duration::ZERO,
@@ -1762,6 +1782,7 @@ impl PaintedFrame for crate::platform::BrowserSurface {
             .await?;
         self.device_loss().note_frame_presented();
         Ok(SurfaceRenderResult {
+            presented: true,
             acquire: Duration::ZERO,
             render: render_started_at.elapsed(),
             present: Duration::ZERO,
@@ -1874,6 +1895,7 @@ impl CapturedFrame for crate::platform::RasterOffscreen {
             capture.then_some(cherenkov::OutputAlpha::Straight),
         )?;
         Ok(SurfaceRenderResult {
+            presented: true,
             acquire: Duration::ZERO,
             render: render_started_at.elapsed(),
             present: Duration::ZERO,
@@ -2104,7 +2126,7 @@ crate::engine::cfg_async_fn! {
                 applied_filter_count,
                 applied_filter_capture_us,
                 applied_filter_effect_us,
-                rendered: true,
+                rendered: rendered.presented,
                 captured_snapshot: capture_snapshot,
                 frame_work: runtime.renderer.take_frame_work_counters(),
             },
@@ -2113,9 +2135,7 @@ crate::engine::cfg_async_fn! {
 
         if diagnostics_enabled {
             let window_title = runtime.window.title.snapshot();
-            runtime.render_diagnostics.record_frame(
-                window_title.as_str(),
-                RenderPhaseSample {
+            let sample = RenderPhaseSample {
                     rebuild: rebuild_phases.rebuild,
                     build_content: rebuild_phases.build_content,
                     scene_dispatch: rebuild_phases.scene_dispatch,
@@ -2127,8 +2147,35 @@ crate::engine::cfg_async_fn! {
                     rebuild_iterations: u32::from(pump_outcome.built),
                     filtered_layers: mount_stats.filtered,
                     rebuilt: pump_outcome.built,
-                },
-            );
+                };
+            #[cfg(all(target_os = "android", hydrolysis_gpu_painter))]
+            if rendered.presented {
+                runtime.render_diagnostics.record_frame(window_title.as_str(), sample);
+            } else {
+                let now = Instant::now();
+                let sample = if let Some((mut preparation, started)) = runtime.pending_render_diagnostic.take() {
+                    // Surface preparation and the following submission are one
+                    // presented frame. Keep the wait between their CPU phases.
+                    let elapsed = now.duration_since(started);
+                    preparation.render += elapsed.saturating_sub(sample.total) + sample.render;
+                    preparation.total += elapsed;
+                    preparation.rebuild += sample.rebuild;
+                    preparation.build_content += sample.build_content;
+                    preparation.scene_dispatch += sample.scene_dispatch;
+                    preparation.scene_finish += sample.scene_finish;
+                    preparation.acquire += sample.acquire;
+                    preparation.present += sample.present;
+                    preparation.rebuild_iterations += sample.rebuild_iterations;
+                    preparation.filtered_layers = sample.filtered_layers;
+                    preparation.rebuilt |= sample.rebuilt;
+                    preparation
+                } else {
+                    sample
+                };
+                runtime.pending_render_diagnostic = Some((sample, now));
+            }
+            #[cfg(not(all(target_os = "android", hydrolysis_gpu_painter)))]
+            runtime.render_diagnostics.record_frame(window_title.as_str(), sample);
         }
     }
 

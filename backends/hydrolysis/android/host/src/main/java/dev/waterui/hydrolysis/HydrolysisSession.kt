@@ -486,6 +486,19 @@ class HydrolysisSession internal constructor(
 
     // ---- native → host callbacks (names are the JNI contract) ----
 
+    /** A completed GPU frame applies immediately outside any native borrow. */
+    @CalledFromNative
+    fun onNativeFrameCompleted() {
+        if (destroyRequested) return
+        if (nativeDepth != 0) {
+            mainHandler.post { onNativeFrameCompleted() }
+            return
+        }
+        withNativePtr(NativeBridge::nativeCompleteFrame.name) { ptr ->
+            NativeBridge.nativeCompleteFrame(ptr)
+        }
+    }
+
     /**
      * The scheduler belongs to the session, so a request made while no
      * view is bound — between a configuration change's unbind and the new

@@ -40,6 +40,8 @@ pub(crate) mod jni;
 mod native_window;
 mod platform_views;
 mod preview;
+#[cfg(hydrolysis_gpu_painter)]
+mod startup;
 #[cfg(hydrolysis_video_plane)]
 pub(crate) mod video_plane;
 
