@@ -201,6 +201,43 @@ fn opacity_wrapper_builds_and_flushes_via_dsl() {
 }
 
 #[test]
+#[cfg(feature = "accessibility")]
+fn window_accessibility_root_tracks_logical_viewport() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let bounds = Rect::new(0.0, 0.0, 220.0, 200.0);
+    renderer.begin_rebuild_frame();
+    renderer.capture_window_tree(
+        AnyView::new(waterui_text::text("Visible content")),
+        &env,
+        bounds,
+        Affine::scale(2.0),
+        Affine::IDENTITY,
+    );
+    renderer.finish_rebuild_frame();
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("initial tree");
+    let root_id = update.tree.as_ref().expect("tree metadata").root;
+    let root = update.nodes.iter().find(|(id, _)| *id == root_id).unwrap();
+    assert_eq!(
+        root.1.bounds(),
+        Some(accesskit::Rect::new(0.0, 0.0, 220.0, 200.0))
+    );
+
+    let resized = Rect::new(0.0, 0.0, 360.0, 480.0);
+    assert!(renderer.flush_window_tree(&env, resized, Affine::scale(2.0), Affine::IDENTITY));
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("resized tree");
+    let root = update.nodes.iter().find(|(id, _)| *id == root_id).unwrap();
+    assert_eq!(
+        root.1.bounds(),
+        Some(accesskit::Rect::new(0.0, 0.0, 360.0, 480.0))
+    );
+}
+
+#[test]
 #[cfg(hydrolysis_gpu_painter)]
 fn capture_window_tree_renders_mixed_widgets() {
     let env = test_environment();
