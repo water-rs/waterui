@@ -1625,7 +1625,11 @@ impl AndroidSession {
         {
             self.runtime.platform.request_redraw();
         }
+        #[cfg(all(hydrolysis_hwui, feature = "frame-profile"))]
+        let render_started = Instant::now();
         let flushed = self.render_due_frame();
+        #[cfg(all(hydrolysis_hwui, feature = "frame-profile"))]
+        let render_time = render_started.elapsed();
         // A lost device is recreated inside the frame above
         // (`PresentationSurface::ensure_live`, water-rs/waterui#2742); a
         // recreation that exhausts its loss budget, like any other terminal
@@ -1634,9 +1638,13 @@ impl AndroidSession {
         if should_close {
             self.runtime.platform.bridge.close_requested();
         }
+        #[cfg(all(hydrolysis_hwui, feature = "frame-profile"))]
+        let publication_started = Instant::now();
         super::accessibility::publish_if_pending(self);
         super::platform_views::publish_if_pending(self, flushed);
         self.editing_sync();
+        #[cfg(all(hydrolysis_hwui, feature = "frame-profile"))]
+        let publication_time = publication_started.elapsed();
 
         // Popup windows mounting mid-frame land on the pending queue: the
         // host has no second band to put one on, so this is the explicit
@@ -1709,6 +1717,21 @@ impl AndroidSession {
             should_close,
             "frame outcome"
         );
+        #[cfg(all(hydrolysis_hwui, feature = "frame-profile"))]
+        if flushed {
+            let stages = self.runtime.renderer.take_frame_stage_times();
+            tracing::info!(
+                target: "hydrolysis::frame_profile",
+                total_ms = now.elapsed().as_secs_f64() * 1000.0,
+                input_ms = render_started.duration_since(now).as_secs_f64() * 1000.0,
+                render_ms = render_time.as_secs_f64() * 1000.0,
+                publication_ms = publication_time.as_secs_f64() * 1000.0,
+                update_ms = stages.update().as_secs_f64() * 1000.0,
+                layout_ms = stages.layout().as_secs_f64() * 1000.0,
+                encode_ms = stages.encode().as_secs_f64() * 1000.0,
+                "hwui stages"
+            );
+        }
         FrameOutcome {
             wants_next_frame,
             deadline_in_nanos,
