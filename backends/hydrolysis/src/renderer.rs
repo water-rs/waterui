@@ -160,6 +160,7 @@ use waterui::window::{Window, WindowState, WindowStyle};
 use waterui_controls::button::{Button, ButtonConfig};
 use waterui_controls::label::Label as SemanticLabel;
 use waterui_controls::menu::{CommandRole, ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
+#[cfg(feature = "slider")]
 use waterui_controls::slider::SliderConfig;
 use waterui_controls::stepper::StepperConfig;
 #[cfg(feature = "accessibility")]
@@ -233,7 +234,7 @@ const OFFSET_Y_ANIMATION_KEY: usize = 0x0100_0006;
 #[cfg(feature = "accessibility")]
 pub use accessibility::{
     AccessibilityActionTarget, AccessibilityActivation, NodePlacement,
-    ScopedAccessibilitySemantics, accessibility_container_child_environment, slider_step_for_range,
+    ScopedAccessibilitySemantics, accessibility_container_child_environment,
 };
 pub use input::{
     TextInputModel, TextInputTargetRegistration, TextSelectionSlot, clamp_to_char_boundary,
@@ -2157,3 +2158,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 pub use render::HydroState;
 pub use render::RenderContext;
 pub use render::{HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};
+
+#[cfg(all(feature = "accessibility", feature = "slider"))]
+pub use accessibility::slider_step_for_range;

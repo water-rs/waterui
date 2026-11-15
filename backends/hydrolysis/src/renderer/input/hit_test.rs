@@ -5401,6 +5401,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         );
     }
 
+    #[cfg(feature = "slider")]
     pub(crate) fn register_interactive_pointer_drag_target<F, K>(
         &mut self,
         bounds: kurbo::Rect,

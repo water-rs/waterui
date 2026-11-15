@@ -4,6 +4,7 @@ pub mod date_picker;
 pub mod field_look;
 pub mod picker;
 pub mod progress;
+#[cfg(feature = "slider")]
 pub mod slider;
 pub mod stepper;
 pub mod text_field;

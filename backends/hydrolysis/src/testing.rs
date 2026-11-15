@@ -526,6 +526,7 @@ mod test_style {
                 .minimum_size(kurbo::Size::new(123.0, 45.0))
         }
 
+        #[cfg(feature = "toggle")]
         fn switch(&self, spec: &ToggleSpec, _env: &Environment) -> SwitchLook {
             SwitchLook::new(
                 super::plain_toggle_control(),
@@ -533,30 +534,42 @@ mod test_style {
             )
         }
 
+        #[cfg(feature = "toggle")]
         fn checkbox(&self, _spec: &ToggleSpec, _env: &Environment) -> CheckboxLook {
             CheckboxLook::new(super::plain_toggle_control())
         }
 
+        #[cfg(feature = "stepper")]
         fn stepper(&self, _spec: &StepperSpec, _env: &Environment) -> StepperLook {
             super::plain_stepper_look()
         }
 
+        #[cfg(any(
+            feature = "text-field",
+            feature = "secure-field",
+            feature = "date-picker",
+            feature = "color-picker"
+        ))]
         fn text_field(&self, _spec: &TextFieldSpec, _env: &Environment) -> TextFieldLook {
             super::plain_text_field_look(super::plain_chrome(), super::plain_input_metrics())
         }
 
+        #[cfg(feature = "menu")]
         fn menu(&self, _spec: &MenuSpec, _env: &Environment) -> MenuLook {
             super::plain_menu_look()
         }
 
+        #[cfg(any(feature = "picker", feature = "date-picker"))]
         fn menu_picker(&self, _spec: &PickerSpec, _env: &Environment) -> MenuPickerLook {
             super::plain_menu_picker_look()
         }
 
+        #[cfg(feature = "picker")]
         fn radio_group(&self, _spec: &PickerSpec, _env: &Environment) -> RadioGroupLook {
             super::plain_radio_group_look()
         }
 
+        #[cfg(feature = "picker")]
         fn segmented_picker(
             &self,
             _spec: &crate::theme::SegmentedSpec,
@@ -565,6 +578,7 @@ mod test_style {
             super::plain_segmented_look()
         }
 
+        #[cfg(feature = "slider")]
         fn slider(&self, _spec: &SliderSpec, _env: &Environment) -> SliderLook {
             SliderLook::new(
                 SliderLayout {
@@ -615,10 +629,12 @@ mod test_style {
             ))
         }
 
+        #[cfg(feature = "navigation")]
         fn navigation_bar(&self, _spec: &NavigationSpec, _env: &Environment) -> NavigationBarLook {
             super::plain_navigation_look()
         }
 
+        #[cfg(feature = "navigation")]
         fn tabs(&self, _spec: &TabsSpec, _env: &Environment) -> TabsLook {
             super::plain_tabs_look()
         }
@@ -631,10 +647,12 @@ mod test_style {
             super::plain_badge_look()
         }
 
+        #[cfg(feature = "list")]
         fn list(&self, _spec: &ListSpec, _env: &Environment) -> ListLook {
             super::plain_list_look()
         }
 
+        #[cfg(feature = "table")]
         fn table(&self, _env: &Environment) -> TableLook {
             super::plain_table_look()
         }

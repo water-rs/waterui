@@ -1734,6 +1734,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Has the published tree follow `value` between `key`'s renders: when
     /// `changed` is raised, the node `key` emitted takes the binding's
     /// current value, clamped to `range`, in an incremental update.
+    #[cfg(feature = "slider")]
     pub(crate) fn register_live_numeric(
         &mut self,
         key: crate::renderer::InteractionKey,
@@ -2688,7 +2689,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // control's own name rather than dropping it — e.g. a `List` row of a
         // single `toggle("Wi-Fi")` announces "Wi-Fi".
         macro_rules! label_from_native_config {
-            ($($config:ty),+ $(,)?) => {$(
+            ($($(#[$attr:meta])* $config:ty),+ $(,)?) => {$(
+                $(#[$attr])*
                 if let Some(native) = view.downcast_ref::<Native<$config>>() {
                     return Self::accessibility_label_from_label(
                         native.as_inner().label(),
@@ -2699,6 +2701,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
         label_from_native_config!(
             waterui_controls::toggle::ToggleConfig,
+            #[cfg(feature = "slider")]
             waterui_controls::slider::SliderConfig,
             waterui_controls::stepper::StepperConfig,
             waterui_controls::button::ButtonConfig,
@@ -2940,6 +2943,7 @@ fn handle_accessibility_scroll_action<E: crate::text::TextEngine>(
 }
 
 #[cfg(feature = "accessibility")]
+#[cfg(feature = "slider")]
 pub fn slider_step_for_range(range: RangeInclusive<f64>) -> f64 {
     let start = *range.start();
     let end = *range.end();

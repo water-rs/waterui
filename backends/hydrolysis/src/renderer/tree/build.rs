@@ -776,6 +776,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Ok(toggle) => return Self::build_toggle((*toggle).into_inner(), env, renderer),
             Err(view) => view,
         };
+        #[cfg(feature = "slider")]
         let view = match view.downcast::<Native<SliderConfig>>() {
             Ok(slider) => return Self::build_slider((*slider).into_inner(), env, renderer),
             Err(view) => view,

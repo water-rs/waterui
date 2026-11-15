@@ -19,12 +19,17 @@ use std::rc::Rc;
 
 use cherenkov_record::{BlendSpace, ShapeData};
 use kurbo::{Rect, Size, Vec2};
+#[cfg(feature = "toggle")]
 use waterui_controls::ControlSize;
+#[cfg(feature = "toggle")]
 use waterui_controls::toggle::ToggleStyle;
 use waterui_core::layout::LayoutDirection;
+#[cfg(feature = "toggle")]
 use waterui_graphics::color::Color;
 
-use super::look::{Custom, CustomPart, DrivenSet, HitRegion, Motion, SpecTint};
+#[cfg(feature = "toggle")]
+use super::look::SpecTint;
+use super::look::{Custom, CustomPart, DrivenSet, HitRegion, Motion};
 #[cfg(hydrolysis_runtime)]
 use super::look::{Inputs, RealizedCustom};
 use super::{Backdrop, Driven};
@@ -36,6 +41,7 @@ use super::{Backdrop, Driven};
 /// A spec change requests the look again; everything else reaches the look
 /// through its [`Driven`](super::Driven) values.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(feature = "toggle")]
 pub struct ToggleSpec {
     style: ToggleStyle,
     size: ControlSize,
@@ -43,6 +49,7 @@ pub struct ToggleSpec {
     tint: SpecTint,
 }
 
+#[cfg(feature = "toggle")]
 impl ToggleSpec {
     /// The spec of a `style` toggle of `size`, laid out `direction`, drawn
     /// with `tint`.

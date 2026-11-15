@@ -21,6 +21,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::toggle::emit_toggle_accessibility
 );
+#[cfg(feature = "slider")]
 impl_widget_behavior!(
     crate::widgets::controls::slider::SliderRenderState<E>,
     crate::widgets::controls::slider::render_slider_node,
@@ -205,6 +206,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// `AnyView`s, so they are pre-built into [`RetainedSubview`]s (the measure
     /// path has only `&mut HydroState`, no renderer to build on); the `value`
     /// binding is read through `read_signal` so a change schedules a frame.
+    #[cfg(feature = "slider")]
     pub(super) fn build_slider(
         config: SliderConfig,
         env: &Environment,

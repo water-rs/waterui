@@ -67,6 +67,7 @@ mod scroll_indicator;
 mod segmented;
 mod stepper;
 mod table;
+#[cfg(feature = "navigation")]
 mod tabs;
 mod text_field;
 mod toggle;
@@ -80,9 +81,8 @@ pub use chrome::{
 pub use glass::GlassLook;
 pub use list::{ListControls, ListGestures, ListLook, ListSpec};
 pub use look::{
-    ButtonLook, ButtonSpec, Custom, DragMapping, Driven, DrivenSet, HitRegion, Inputs, Knob, Label,
-    Motion, SliderLayout, SliderLook, SliderSpec, SpecTint, Transition, ValueIndicator,
-    ValueMotion,
+    ButtonLook, ButtonSpec, Custom, Driven, DrivenSet, HitRegion, Inputs, Label, Motion, SpecTint,
+    Transition, ValueMotion,
 };
 #[cfg(hydrolysis_runtime)]
 pub(crate) use look::{Change, CustomPart, LayerRotation, LiveDriven, RealizedCustom, Retarget};
@@ -101,9 +101,12 @@ pub use segmented::{
 };
 pub use stepper::{StepperLook, StepperSpec};
 pub use table::TableLook;
+#[cfg(feature = "navigation")]
 pub use tabs::{TabItem, TabItemGeometry, TabItemLayout, TabsLook, TabsMetrics, TabsSpec};
 pub use text_field::{Caret, FloatingLabel, TextFieldLook, TextFieldSpec};
-pub use toggle::{CheckboxLook, SwitchDrag, SwitchLook, ToggleBackdrop, ToggleControl, ToggleSpec};
+#[cfg(feature = "toggle")]
+pub use toggle::ToggleSpec;
+pub use toggle::{CheckboxLook, SwitchDrag, SwitchLook, ToggleBackdrop, ToggleControl};
 pub use widget::{
     BadgeMetrics, InputFieldMetrics, InteractionFocusBinding, InteractionMotion,
     ListDividerMetrics, ListMetrics, ListRowMetrics, ListSectionMetrics,
@@ -423,3 +426,6 @@ mod tests {
         assert_eq!(resolved::<Background>(&env), bits(color(DARK.background)));
     }
 }
+
+#[cfg(feature = "slider")]
+pub use look::{DragMapping, Knob, SliderLayout, SliderLook, SliderSpec, ValueIndicator};

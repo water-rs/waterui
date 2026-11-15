@@ -3182,6 +3182,7 @@ impl WidgetTheme for MinimalTestTheme {
         }
     }
 
+    #[cfg(feature = "toggle")]
     fn switch(&self, spec: &ToggleSpec, env: &Environment) -> SwitchLook {
         self.switch_look.as_ref().map_or_else(
             || {
@@ -3194,10 +3195,12 @@ impl WidgetTheme for MinimalTestTheme {
         )
     }
 
+    #[cfg(feature = "toggle")]
     fn checkbox(&self, _spec: &ToggleSpec, _env: &Environment) -> CheckboxLook {
         CheckboxLook::new(crate::testing::plain_toggle_control())
     }
 
+    #[cfg(feature = "stepper")]
     fn stepper(&self, spec: &StepperSpec, env: &Environment) -> StepperLook {
         self.stepper_specs.borrow_mut().push(spec.clone());
         self.stepper_look
@@ -3205,6 +3208,7 @@ impl WidgetTheme for MinimalTestTheme {
             .map_or_else(crate::testing::plain_stepper_look, |look| look(spec, env))
     }
 
+    #[cfg(feature = "picker")]
     fn segmented_picker(
         &self,
         spec: &crate::theme::SegmentedSpec,
@@ -3223,6 +3227,12 @@ impl WidgetTheme for MinimalTestTheme {
         self.glass_look.as_ref().and_then(|look| look(glass, env))
     }
 
+    #[cfg(any(
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "date-picker",
+        feature = "color-picker"
+    ))]
     fn text_field(&self, spec: &TextFieldSpec, env: &Environment) -> TextFieldLook {
         self.text_field_specs.borrow_mut().push(spec.clone());
         self.text_field_look.as_ref().map_or_else(
@@ -3237,6 +3247,7 @@ impl WidgetTheme for MinimalTestTheme {
         )
     }
 
+    #[cfg(feature = "menu")]
     fn menu(&self, _spec: &MenuSpec, _env: &Environment) -> MenuLook {
         let layout = Self::menu_layout();
         let radii = kurbo::RoundedRectRadii::from_single_radius(layout.corner_radius);
@@ -3264,10 +3275,12 @@ impl WidgetTheme for MinimalTestTheme {
         )
     }
 
+    #[cfg(any(feature = "picker", feature = "date-picker"))]
     fn menu_picker(&self, _spec: &PickerSpec, _env: &Environment) -> MenuPickerLook {
         crate::testing::plain_menu_picker_look()
     }
 
+    #[cfg(feature = "picker")]
     fn radio_group(&self, _spec: &PickerSpec, _env: &Environment) -> RadioGroupLook {
         let realizations = Rc::clone(&self.radio_indicator_realizations);
         let plain = crate::testing::plain_radio_group_look();
@@ -3285,6 +3298,7 @@ impl WidgetTheme for MinimalTestTheme {
         )
     }
 
+    #[cfg(feature = "slider")]
     fn slider(&self, spec: &SliderSpec, env: &Environment) -> SliderLook {
         self.slider_specs.borrow_mut().push(spec.clone());
         if let Some(look) = &self.slider_look {
@@ -3386,6 +3400,7 @@ impl WidgetTheme for MinimalTestTheme {
         })
     }
 
+    #[cfg(feature = "navigation")]
     fn navigation_bar(&self, _spec: &NavigationSpec, _env: &Environment) -> NavigationBarLook {
         let bar_draws = Rc::clone(&self.navigation_bar_draws);
         let separator_draws = Rc::clone(&self.navigation_bar_separator_draws);
@@ -3402,6 +3417,7 @@ impl WidgetTheme for MinimalTestTheme {
         }))
     }
 
+    #[cfg(feature = "navigation")]
     fn tabs(&self, _spec: &TabsSpec, _env: &Environment) -> TabsLook {
         let bar_draws = Rc::clone(&self.tabs_bar_draws);
         let divider_draws = Rc::clone(&self.tabs_bar_divider_draws);
@@ -3462,10 +3478,12 @@ impl WidgetTheme for MinimalTestTheme {
         )
     }
 
+    #[cfg(feature = "list")]
     fn list(&self, _spec: &ListSpec, _env: &Environment) -> ListLook {
         crate::testing::plain_list_look()
     }
 
+    #[cfg(feature = "table")]
     fn table(&self, _env: &Environment) -> TableLook {
         crate::testing::plain_table_look()
     }

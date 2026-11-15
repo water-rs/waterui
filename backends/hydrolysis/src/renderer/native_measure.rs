@@ -143,6 +143,7 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<ButtonConfig>);
         $macro!(Native<ResolvedMenu>);
         $macro!(Native<ToggleConfig>);
+        #[cfg(feature = "slider")]
         $macro!(Native<SliderConfig>);
         $macro!(Native<StepperConfig>);
         $macro!(Native<ProgressConfig>);

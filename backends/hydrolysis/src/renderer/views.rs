@@ -8,6 +8,7 @@ use crate::renderer::recording::transform_paint;
 use waterui::app::Quit;
 use waterui_core::handler::ReportExtraction as _;
 
+#[cfg(feature = "slider")]
 pub fn slider_value_epsilon(span: f64, track_width: f64) -> f64 {
     (span / track_width).abs().max(f64::EPSILON)
 }

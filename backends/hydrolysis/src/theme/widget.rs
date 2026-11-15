@@ -626,10 +626,12 @@ pub trait WidgetTheme {
     /// toggle, hover, press or drag moves live operands and records nothing.
     /// The look's [`SwitchDrag`](super::SwitchDrag) maps a drag of the knob
     /// to the value it settles on.
+    #[cfg(feature = "toggle")]
     fn switch(&self, spec: &super::ToggleSpec, env: &Environment) -> super::SwitchLook;
 
     /// The look of a checkbox toggle, requested and realized like
     /// [`Self::switch`] but taking taps only.
+    #[cfg(feature = "toggle")]
     fn checkbox(&self, spec: &super::ToggleSpec, env: &Environment) -> super::CheckboxLook;
 
     /// The look of a stepper.
@@ -640,6 +642,7 @@ pub trait WidgetTheme {
     /// [`Chrome`](super::Chrome) values, so a press, a hover or a value
     /// change moves live operands and records nothing. An end at the limit
     /// of the stepper's range is disabled.
+    #[cfg(feature = "stepper")]
     fn stepper(&self, spec: &super::StepperSpec, env: &Environment) -> super::StepperLook;
 
     /// The look of a text field, and of a secure field.
@@ -649,6 +652,12 @@ pub trait WidgetTheme {
     /// reaches the look through its [`Chrome`](super::Chrome) and
     /// [`Driven`](super::Driven) values, so a hover, a focus change or the
     /// label floating moves live operands and records nothing.
+    #[cfg(any(
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "date-picker",
+        feature = "color-picker"
+    ))]
     fn text_field(&self, spec: &super::TextFieldSpec, env: &Environment) -> super::TextFieldLook;
 
     /// The look of every menu presentation: the picker popup, the text
@@ -657,6 +666,7 @@ pub trait WidgetTheme {
     /// Hydrolysis measures, places and hit-tests a menu from the returned
     /// look's layout and records its panel, separators and selected row
     /// from its parts, and requests it again only when `spec` changes.
+    #[cfg(feature = "menu")]
     fn menu(&self, spec: &super::MenuSpec, env: &Environment) -> super::MenuLook;
 
     /// The look of a menu picker's field.
@@ -664,6 +674,7 @@ pub trait WidgetTheme {
     /// Hydrolysis measures, places, hit-tests and records the field from
     /// the returned look, and requests it again only when `spec` changes;
     /// the popup the field opens is the [`menu`](Self::menu) look.
+    #[cfg(any(feature = "picker", feature = "date-picker"))]
     fn menu_picker(&self, spec: &super::PickerSpec, env: &Environment) -> super::MenuPickerLook;
 
     /// The look of a radio group: the indicator each item draws and the
@@ -672,6 +683,7 @@ pub trait WidgetTheme {
     /// Each item's indicator is live over whether the item is selected, so
     /// a selection change moves the operands of the two items it touches
     /// and records nothing.
+    #[cfg(feature = "picker")]
     fn radio_group(&self, spec: &super::PickerSpec, env: &Environment) -> super::RadioGroupLook;
 
     /// The look of a segmented picker.
@@ -683,6 +695,7 @@ pub trait WidgetTheme {
     /// [`SegmentedValue`](super::SegmentedValue) or each segment's
     /// [`Segment`](super::Segment), so a selection change, a hover, a press
     /// or a drag moves live operands and records nothing.
+    #[cfg(feature = "picker")]
     fn segmented_picker(
         &self,
         spec: &super::SegmentedSpec,
@@ -695,6 +708,7 @@ pub trait WidgetTheme {
     /// the motion of that value and how a drag maps to it. Hydrolysis
     /// measures, places, hit-tests, records and animates the slider from
     /// the look alone.
+    #[cfg(feature = "slider")]
     fn slider(&self, spec: &super::SliderSpec, env: &Environment) -> super::SliderLook;
 
     /// The look of a linear progress indicator, determinate or not.
@@ -732,6 +746,7 @@ pub trait WidgetTheme {
     /// returned look and requests it again only when `spec` changes; the
     /// back button's chrome moves live operands on a press, a hover or a
     /// focus change and records nothing.
+    #[cfg(feature = "navigation")]
     fn navigation_bar(
         &self,
         spec: &super::NavigationSpec,
@@ -745,6 +760,7 @@ pub trait WidgetTheme {
     /// Hydrolysis measures, places, hit-tests and records the bar from the
     /// returned look and requests it again only when `spec` changes; a
     /// selection change moves the highlight's operands and records nothing.
+    #[cfg(feature = "navigation")]
     fn tabs(&self, spec: &super::TabsSpec, env: &Environment) -> super::TabsLook;
 
     /// The look of the thumb a scrolling surface draws.
@@ -764,8 +780,10 @@ pub trait WidgetTheme {
     /// from its parts, realizes its controls' chrome and moves a row under
     /// a swipe or a reorder drag as a live operand, and requests the look
     /// again only when `spec` changes.
+    #[cfg(feature = "list")]
     fn list(&self, spec: &super::ListSpec, env: &Environment) -> super::ListLook;
 
     /// The look of a table.
+    #[cfg(feature = "table")]
     fn table(&self, env: &Environment) -> super::TableLook;
 }

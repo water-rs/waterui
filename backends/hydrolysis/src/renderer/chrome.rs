@@ -1274,12 +1274,14 @@ impl LiveChrome {
 
     /// A drag moved the slider's value to `value`, normalized to the range:
     /// the parts follow the pointer, with no animation.
+    #[cfg(feature = "slider")]
     pub(crate) fn track_value(&self, value: f64) {
         self.move_value(value, None);
     }
 
     /// The offset of an active drag from where it was pressed, `None`
     /// between drags.
+    #[cfg(feature = "slider")]
     pub(crate) fn set_drag(&self, drag: Option<Vec2>) {
         let Some(slider) = &self.slider else {
             return;
@@ -1292,6 +1294,7 @@ impl LiveChrome {
     }
 
     /// The slider's value when the current press landed.
+    #[cfg(feature = "slider")]
     pub(crate) const fn press_value(&self) -> f64 {
         self.slider
             .as_ref()
@@ -1302,6 +1305,7 @@ impl LiveChrome {
 
     /// The current press's point in the chrome's record space; `None`
     /// between presses and for a keyboard or synthetic press.
+    #[cfg(feature = "slider")]
     pub(crate) const fn press_point(&self) -> Option<Point> {
         self.press_point.get()
     }
@@ -1334,6 +1338,7 @@ impl LiveChrome {
 
     /// The operands that show a slider's value indicator while it is held
     /// and carry it along with the knob; `None` without an indicator.
+    #[cfg(feature = "slider")]
     pub(crate) fn indicator_operands(&self) -> Option<(Operand<f32>, Operand<Affine>)> {
         self.slider
             .as_ref()?
@@ -1760,6 +1765,7 @@ impl LiveSource for ChromeSource {
 struct ChromeLayers {
     customs: Option<PartRuns>,
     slider: Option<PartRuns>,
+    #[cfg(feature = "slider")]
     indicator: Option<PartRuns>,
 }
 
@@ -1929,6 +1935,7 @@ impl LiveChromeParts {
 
     /// Lists the slider's value indicator bubble in `ctx`, at rest: the
     /// caller opens it in a scope that follows [`Self::indicator_operands`].
+    #[cfg(feature = "slider")]
     pub(crate) fn push_indicator<E: crate::text::TextEngine>(
         &self,
         renderer: &mut HydrolysisRenderer<E>,
