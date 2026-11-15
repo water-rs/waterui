@@ -573,9 +573,9 @@ impl Encoder {
     ///
     /// A [`HwuiError`] when the change set names what this target cannot
     /// mirror.
-    #[expect(
+    #[allow(
         unreachable_code,
-        reason = "HWUI installs are uninhabited; consuming their payload proves this arm unreachable"
+        reason = "Rust 1.99 warns when eliminating HWUI's Infallible install payload; newer compilers accept it"
     )]
     pub fn commit(&mut self, mut changes: ChangeSet<HwuiTarget>) -> Result<Recycle, HwuiError> {
         self.ensure_open();
