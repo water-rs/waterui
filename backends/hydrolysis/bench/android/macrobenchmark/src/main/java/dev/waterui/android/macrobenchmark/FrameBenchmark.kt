@@ -51,12 +51,12 @@ class FrameBenchmark {
                     target.prepareLaunch()
                     Journey.prepareDevice(device)
                     pressHome()
+                    startActivityAndWait { intent ->
+                        target.configureLaunch(intent, markers = true)
+                    }
+                    target.awaitContent(device)
                 },
             ) {
-                startActivityAndWait { intent ->
-                    target.configureLaunch(intent, markers = true)
-                }
-                target.awaitContent(device)
                 Journey.runFor(device, spec, fixture, scriptSeconds)
             }
         }

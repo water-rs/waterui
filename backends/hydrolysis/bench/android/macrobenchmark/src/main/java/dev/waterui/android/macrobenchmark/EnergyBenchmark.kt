@@ -50,12 +50,12 @@ class EnergyBenchmark {
                     target.prepareLaunch()
                     Journey.prepareDevice(device)
                     pressHome()
+                    startActivityAndWait { intent ->
+                        target.configureLaunch(intent)
+                    }
+                    target.awaitContent(device)
                 },
             ) {
-                startActivityAndWait { intent ->
-                    target.configureLaunch(intent)
-                }
-                target.awaitContent(device)
                 Journey.runFor(device, spec, fixture, scriptSeconds)
                 // Idle segment: the app sits presented but untouched so the round
                 // also reports the fixture's idle draw.
