@@ -90,6 +90,7 @@ internal class HydrolysisAccessibilityProvider(
             val id = entry.optLong("id", INVALID_ID)
             if (id == INVALID_ID || id > Int.MAX_VALUE) {
                 val event = AccessibilityEvent(type)
+                event.setSource(host)
                 event.packageName = host.context.packageName
                 event.contentChangeTypes = mask
                 val parent = host.parent
