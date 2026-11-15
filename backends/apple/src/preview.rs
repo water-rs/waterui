@@ -28,6 +28,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Instant;
 
 use cocoa_ui::MainThreadMarker;
 #[cfg(target_os = "macos")]
@@ -175,6 +176,7 @@ fn drive(
     resources: ResourceContext,
     config: PreviewRunConfig,
 ) -> Result<(), PreviewError> {
+    let load_started = Instant::now();
     let mtm = MainThreadMarker::new().ok_or(PreviewError::NotMainThread)?;
     // Startup before anything else can panic or error — the panic hook and
     // the unconditional stderr layer are what the contract guarantees
@@ -219,6 +221,11 @@ fn drive(
                     crate::components::webview::install_service(&mut env);
                     env
                 };
+                tracing::info!(
+                    phase = "load",
+                    elapsed_ms = load_started.elapsed().as_millis(),
+                    "Apple preview phase"
+                );
                 executor_core::spawn_local(async move {
                     *outcome.borrow_mut() = Some(
                         render_and_write(
@@ -378,12 +385,19 @@ async fn render_and_write(
     view: impl FnOnce() -> waterui::AnyView,
     capture: Capture<'_>,
 ) -> Result<(), PreviewError> {
+    let render_started = Instant::now();
     let ledger = waterui_core::ContentLedger::new();
     let content_env = env.extending(ledger.clone());
     let stage = Stage::mount(&content_env, mtm, host, view, capture.size);
     crate::content::await_content(&ledger, &stage.root, capture.content_deadline).await?;
     let result = stage.capture().await?;
     drop(stage);
+    tracing::info!(
+        phase = "render",
+        elapsed_ms = render_started.elapsed().as_millis(),
+        "Apple preview phase"
+    );
+    let encode_started = Instant::now();
     let (rgba_data, width, height) = result.into_parts();
     waterui_preview_protocol::run::write_png(
         capture.output,
@@ -392,6 +406,11 @@ async fn render_and_write(
         rgba_data,
         Alpha::Premultiplied,
     )?;
+    tracing::info!(
+        phase = "encode",
+        elapsed_ms = encode_started.elapsed().as_millis(),
+        "Apple preview phase"
+    );
     Ok(())
 }
 
