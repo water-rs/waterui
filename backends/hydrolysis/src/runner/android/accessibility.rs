@@ -91,15 +91,15 @@ pub fn publish_if_pending(session: &mut super::host::AndroidSession) {
     // publish skips the serialize and the JNI crossing entirely.
     let changed = session.a11y.published.as_ref() != Some(&merged.tree_update)
         || session.a11y.published_content_types != merged.content_types;
+    if !changed {
+        return;
+    }
     let events = crate::runner::android_accessibility::diff_events(
         session.a11y.published.as_ref(),
         &merged.tree_update,
     );
     session.a11y.published = Some(merged.tree_update);
     session.a11y.published_content_types = merged.content_types;
-    if !changed {
-        return;
-    }
     let Some(published) = session.a11y.published.as_ref() else {
         return;
     };
