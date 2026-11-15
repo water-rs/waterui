@@ -51,18 +51,41 @@ struct PreparedFile {
 pub(super) async fn is_current(record: &Path, executable: &Path, runtime: &Path) -> Result<bool> {
     let bytes = match smol::fs::read(record).await {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(path = %record.display(), "Apple preview runtime preparation record is missing");
+            return Ok(false);
+        }
         Err(error) => return Err(error.into()),
     };
     let files: Vec<PreparedFile> = serde_json::from_slice(&bytes)?;
     if files.first().map(|file| file.path.as_path()) != Some(executable)
         || files.get(1).map(|file| file.path.as_path()) != Some(runtime)
     {
+        tracing::debug!("Apple preview runtime artifact paths changed");
         return Ok(false);
     }
+    let runtime = runtime.to_path_buf();
     smol::unblock(move || {
+        let mut files = files.into_iter();
+        // The first entry is the Cargo executable checked above. Cargo may
+        // uplift its unchanged bytes to a new inode on every invocation.
+        let executable = files.next().expect("validated executable record");
+        if !FileStamp::of(&executable.path)?
+            .is_some_and(|stamp| stamp.same_cargo_output(executable.stamp))
+        {
+            tracing::debug!(path = %executable.path.display(), "Apple preview executable changed");
+            return Ok(false);
+        }
         for file in files {
-            if FileStamp::of(&file.path)? != Some(file.stamp) {
+            let unchanged = FileStamp::of(&file.path)?.is_some_and(|stamp| {
+                if file.path == runtime {
+                    stamp.same_cargo_output(file.stamp)
+                } else {
+                    stamp == file.stamp
+                }
+            });
+            if !unchanged {
+                tracing::debug!(path = %file.path.display(), "Apple preview runtime file changed");
                 return Ok(false);
             }
         }
@@ -118,6 +141,21 @@ mod tests {
                     .await
                     .unwrap()
             );
+            // Cargo can replace either uplift while preserving its output timestamp.
+            for output in [&executable, &runtime] {
+                let modified = filetime::FileTime::from_last_modification_time(
+                    &std::fs::metadata(output).unwrap(),
+                );
+                let replacement = dir.path().join("replacement");
+                std::fs::write(&replacement, b"artifact").unwrap();
+                filetime::set_file_mtime(&replacement, modified).unwrap();
+                std::fs::rename(replacement, output).unwrap();
+                assert!(
+                    is_current(&record_path, &executable, &runtime)
+                        .await
+                        .unwrap()
+                );
+            }
             for path in [&executable, &runtime, &staged] {
                 std::fs::write(path, b"rebuilt artifact").unwrap();
                 assert!(

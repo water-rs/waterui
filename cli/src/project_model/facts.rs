@@ -163,6 +163,12 @@ pub struct FileStamp {
 }
 
 impl FileStamp {
+    /// Cargo preserves output size and mtime when uplifting an unchanged artifact,
+    /// even when it replaces the inode. Only Cargo outputs have this contract.
+    pub(crate) const fn same_cargo_output(self, other: Self) -> bool {
+        self.len == other.len && self.modified_ns == other.modified_ns
+    }
+
     /// `path`'s identity, following symlinks; `None` when nothing is
     /// there.
     pub(crate) fn of(path: &Path) -> io::Result<Option<Self>> {
