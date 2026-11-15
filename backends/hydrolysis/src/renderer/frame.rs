@@ -237,6 +237,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     ) {
         self.window_bounds = bounds;
         self.window_display_transform = root_transform;
+        #[cfg(feature = "accessibility")]
+        {
+            // Accessibility hosts convert window logical units to screen pixels.
+            self.accessibility.root_bounds = bounds;
+        }
         // The activation-point projection intersects node bounds with the
         // window bounds alongside the node's clip chain — both in the same
         // window hit-test space the hit clip stack uses.
