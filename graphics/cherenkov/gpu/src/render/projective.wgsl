@@ -68,13 +68,23 @@ fn projected(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     let r0 = stops[first].color.xyz;
     let r1 = stops[first + 1u].color.xyz;
     let r2 = stops[first + 2u].color.xyz;
-    let d = vec3<f32>(pixel - instances[i].grad.xy, 1.0);
+    let tiled = (instances[i].meta_.w & (FLAG_PICTURE_TILE << 24u)) != 0u;
+    let d = vec3<f32>(select(pixel - instances[i].grad.xy, pixel, tiled), 1.0);
     let q = vec3<f32>(dot(r0, d), dot(r1, d), dot(r2, d));
     // The front half-space is exactly w > 0; nothing is clamped.
     if !(q.z > 0.0) {
         return vec4<f32>(0.0);
     }
-    let center = q.xy / q.z;
+    var center = q.xy / q.z;
+    if tiled {
+        // The common inverse gives every neighboring draw the same point.
+        // Aprons may overlap, but cell interiors own each sample once.
+        let cell = vec4<f32>(stops[first].offset, stops[first].pad0, stops[first].pad1, stops[first].pad2);
+        if any(center < cell.xy) || any(center >= cell.zw) {
+            return vec4<f32>(0.0);
+        }
+        center -= vec2<f32>(stops[first + 1u].offset, stops[first + 1u].pad0);
+    }
     // Jacobian of the division with respect to the device point.
     let w2 = q.z * q.z;
     let j = vec4<f32>(

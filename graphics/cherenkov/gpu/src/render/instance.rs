@@ -106,6 +106,8 @@ pub const FLAG_BLEND_SRC: u32 = 0x20;
 /// its `outer` extent. The ownership-weighted field replaces the
 /// member's clip coverage for the composite.
 pub const FLAG_UNION: u32 = 0x40;
+/// A projective draw owns one half-open picture-texel cell.
+pub const FLAG_PICTURE_TILE: u32 = 0x80;
 
 /// Projected-area threshold in device px² above which a solid ellipse's
 /// opaque interior is promoted from the inscribed octagon to a

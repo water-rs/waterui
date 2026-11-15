@@ -1,4 +1,7 @@
 //! Picture-local raster retention, using the shared local-image cache.
+#[cfg(test)]
+mod tiles;
+
 use super::{
     Affine, Emission, EmissionStorage, GlyphContext, LayerId, LocalKey, Lowering, Op, Placement,
     Range, Realization, Rect, RenderError, Target,
@@ -470,6 +473,7 @@ impl Lowering<'_> {
                     picture: Some(PictureImage {
                         source: picture.clone(),
                         domain,
+                        cell: None,
                     }),
                     deps,
                 });
@@ -482,6 +486,7 @@ impl Lowering<'_> {
                 to_parent: image.to_parent,
                 bounds: image.bounds,
                 density: image.density,
+                tile: None,
             },
             1.0,
             cherenkov::BlendMode::Normal,

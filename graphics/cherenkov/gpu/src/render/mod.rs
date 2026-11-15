@@ -6610,7 +6610,7 @@ impl GpuRenderer {
                 .projective
                 .get(&r.key.layer)
                 .and_then(|entries| entries.iter().find(|entry| entry.matches(r.key)));
-            if old.is_some_and(|entry| entry.fits(r.levels[0])) {
+            if old.is_some_and(|entry| entry.fits(&r.levels)) {
                 continue;
             }
             let growth = r
@@ -6630,7 +6630,7 @@ impl GpuRenderer {
             let entries = surf.projective.entry(r.key.layer).or_default();
             let slot = entries.iter().position(|e| e.matches(r.key));
             if let Some(entry) = slot.map(|i| &mut entries[i])
-                && entry.fits(r.levels[0])
+                && entry.fits(&r.levels)
             {
                 entry.key = None;
                 entry.picture.clone_from(&r.picture);
