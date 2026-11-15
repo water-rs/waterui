@@ -294,13 +294,9 @@ pub struct DelegatedActivation<E: crate::text::TextEngine> {
 pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
     /// Direct semantic activation: `Click` invokes the widget's own activation
     /// handler, no pointer and no coordinates.
-    Activate {
-        action: AccessibilityActivation<E>,
-    },
+    Activate { action: AccessibilityActivation<E> },
     #[cfg(feature = "toggle")]
-    Toggle {
-        binding: nami::Binding<bool>,
-    },
+    Toggle { binding: nami::Binding<bool> },
     #[cfg(feature = "slider")]
     Slider {
         value: nami::Binding<f64>,
@@ -330,9 +326,8 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
         value: nami::Binding<StyledStr>,
         line_limit: Option<usize>,
     },
-    SecureField {
-        value: nami::Binding<FormSecure>,
-    },
+    #[cfg(feature = "secure-field")]
+    SecureField { value: nami::Binding<FormSecure> },
     PickerSelect {
         selection: nami::Binding<waterui_core::id::Id>,
         target: waterui_core::id::Id,
@@ -1667,6 +1662,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     action_data,
                 )
             }
+            #[cfg(feature = "secure-field")]
             AccessibilityActionTarget::SecureField { value } => {
                 handle_accessibility_secure_field_action(
                     self,
@@ -2715,6 +2711,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             waterui_controls::stepper::StepperConfig,
             waterui_controls::button::ButtonConfig,
             waterui_controls::text_field::ResolvedTextFieldConfig,
+            #[cfg(feature = "secure-field")]
             waterui_form::secure::SecureFieldConfig,
             waterui_form::picker::PickerConfig,
             #[cfg(feature = "date-picker")]
@@ -3168,6 +3165,7 @@ fn handle_accessibility_text_field_action<E: crate::text::TextEngine>(
 }
 
 #[cfg(feature = "accessibility")]
+#[cfg(feature = "secure-field")]
 fn handle_accessibility_secure_field_action<E: crate::text::TextEngine>(
     renderer: &mut SemanticCore<E>,
     node_id: AccessibilityNodeId,
@@ -3328,6 +3326,7 @@ impl<E: crate::text::TextEngine> Clone for AccessibilityActionTarget<E> {
                 value: value.clone(),
                 line_limit: *line_limit,
             },
+            #[cfg(feature = "secure-field")]
             Self::SecureField { value } => Self::SecureField {
                 value: value.clone(),
             },

@@ -156,7 +156,7 @@ pub use snapshot::TestHost;
 pub use wait::{Expectation, WaitOptions, WaitResult};
 /// The content-type vocabulary [`NodeSnapshot::content_type`],
 /// [`Selector::content_type`] and [`Query::content_type`] speak.
-pub use waterui::component::text_field::ContentType;
+pub use waterui::component::input::ContentType;
 
 /// Internal async bridge used by `#[waterui::test(...)]` expansion.
 pub fn block_on<F>(future: F) -> F::Output

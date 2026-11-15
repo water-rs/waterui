@@ -154,6 +154,7 @@ macro_rules! hydro_native_view_types {
         #[cfg(feature = "date-picker")]
         $macro!(Native<DatePickerConfig>);
         $macro!(Native<ResolvedTextFieldConfig>);
+        #[cfg(feature = "secure-field")]
         $macro!(Native<SecureFieldConfig>);
         $macro!(Native<PickerConfig>);
         $macro!(Native<Dynamic>);

@@ -10,6 +10,7 @@ pub(crate) fn init_test_executor() {
     waterui_testing::install_test_executor();
 }
 
+pub mod input;
 pub mod label;
 pub use label::{IconPosition, IntoLabel, Label, LabelDisplayMode, label};
 #[cfg(feature = "menu")]

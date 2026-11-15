@@ -158,14 +158,14 @@ use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::widget::Divider;
 use waterui::window::{Window, WindowState, WindowStyle};
 use waterui_controls::button::{Button, ButtonConfig};
+#[cfg(feature = "accessibility")]
+use waterui_controls::input::ContentType;
 use waterui_controls::label::Label as SemanticLabel;
 use waterui_controls::menu::{CommandRole, ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
 #[cfg(feature = "slider")]
 use waterui_controls::slider::SliderConfig;
 #[cfg(feature = "stepper")]
 use waterui_controls::stepper::StepperConfig;
-#[cfg(feature = "accessibility")]
-use waterui_controls::text_field::ContentType;
 use waterui_controls::text_field::{ResolvedTextFieldConfig, TextField};
 #[cfg(feature = "toggle")]
 use waterui_controls::toggle::ToggleConfig;
@@ -190,6 +190,7 @@ use waterui_form::picker::PickerConfig;
 use waterui_form::picker::color::ColorPickerConfig;
 #[cfg(feature = "date-picker")]
 use waterui_form::picker::date::DatePickerConfig;
+#[cfg(feature = "secure-field")]
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::Gradient;
 use waterui_graphics::backend::{FilteredView, SceneView};

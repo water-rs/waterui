@@ -83,6 +83,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::text_field::emit_text_field_accessibility
 );
+#[cfg(feature = "secure-field")]
 impl_widget_behavior!(
     crate::widgets::controls::text_field::SecureFieldRenderState<E>,
     crate::widgets::controls::text_field::render_secure_field_node,
@@ -410,6 +411,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// frame so typing or a binding change schedules a frame and the masked display
     /// updates. The node re-runs the same text-input target registration each flush,
     /// preserving cursor/focus/IME state. Stretch is horizontal (read from the config).
+    #[cfg(feature = "secure-field")]
     pub(super) fn build_secure_field(
         config: SecureFieldConfig,
         env: &Environment,

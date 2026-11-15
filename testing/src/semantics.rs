@@ -7,7 +7,7 @@ use accesskit::{
     TreeUpdate as AccessibilityTreeUpdate,
 };
 use hydrolysis::AccessibilityContentTypes;
-use waterui::component::text_field::ContentType;
+use waterui::component::input::ContentType;
 use waterui::component::toggle::ToggleStyle;
 
 use crate::selector::{ScopeRelation, Selector};

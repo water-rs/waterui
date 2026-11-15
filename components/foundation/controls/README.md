@@ -252,7 +252,7 @@ formatter styles the inline value only — the semantic label is untouched.
 
 ```rust,no_run
 use core::num::NonZeroUsize;
-use text_field::KeyboardType;
+use input::KeyboardType;
 use waterui::prelude::*;
 
 fn email(value: &Binding<Str>) -> impl View {
@@ -379,7 +379,7 @@ fn note(value: &Binding<Str>) -> impl View {
 - `ControlSize` — `ExtraSmall`, `Small`, `Medium`, `Large`, `ExtraLarge`, shared by buttons and sliders;
   scales height, padding, icon size, and corner shape together.
 - `ToggleStyle` — `Automatic`, `Switch`, `Checkbox`.
-- `text_field::KeyboardType` — `Text`, `Email`, `URL`, `Number`, `PhoneNumber`.
+- `input::KeyboardType` — `Text`, `Email`, `URL`, `Number`, `PhoneNumber`.
 
 ### Backend-facing configuration
 

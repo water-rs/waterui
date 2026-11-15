@@ -3,9 +3,8 @@ use crate::renderer::text_editing::CaretPaints;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RetainedSubview, TailMark, TextInputModel,
     TextInputTargetRegistration, TextSelectionSlot, WidgetRenderContext, clamp_to_char_boundary,
-    measure_label_intrinsic, measure_secure_field_intrinsic,
-    measure_secure_field_size_with_label_size, measure_text_field_intrinsic,
-    measure_text_field_size_with_label_size, transformed_rect,
+    measure_label_intrinsic, measure_text_field_intrinsic, measure_text_field_size_with_label_size,
+    transformed_rect,
 };
 use crate::text::{TextLayout as _, TextPosition};
 use crate::theme::{ModalInteraction, TextFieldLook};
@@ -24,6 +23,7 @@ use waterui_core::layout::{
     HorizontalAlignment, LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions,
 };
 use waterui_core::{Environment, Native, Str};
+#[cfg(feature = "secure-field")]
 use waterui_form::secure::SecureFieldConfig;
 use waterui_text::styled::{Style, StyledStr};
 
@@ -76,6 +76,7 @@ impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
 /// drives the input model + accessibility, and its floating label is held as a
 /// [`RetainedSubview`] built once and re-flushed each frame under the animated
 /// label transform so reactive label content stays live.
+#[cfg(feature = "secure-field")]
 pub struct SecureFieldRenderState<E: crate::text::TextEngine> {
     config: SecureFieldConfig,
     label_view: RetainedSubview<E>,
@@ -85,6 +86,7 @@ pub struct SecureFieldRenderState<E: crate::text::TextEngine> {
     selection_slot: Rc<RefCell<TextSelectionSlot>>,
 }
 
+#[cfg(feature = "secure-field")]
 impl<E: crate::text::TextEngine> SecureFieldRenderState<E> {
     pub(crate) fn from_config(config: SecureFieldConfig) -> Self {
         let field = FieldChrome::new();
@@ -153,6 +155,7 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedTextField
     }
 }
 
+#[cfg(feature = "secure-field")]
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SecureFieldConfig> {
     fn intrinsic(
         state: &mut HydroState<E>,
@@ -597,6 +600,7 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
 /// render-driven a11y, so the inline a11y is emitted by `render_secure_field_parts`
 /// itself; this node suppresses it when the field is accessibility-hidden (the
 /// dispatch path's render-driven suppression contract).
+#[cfg(feature = "secure-field")]
 pub fn render_secure_field_node<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<SecureFieldRenderState<E>>>,
@@ -621,6 +625,7 @@ pub fn render_secure_field_node<E: crate::text::TextEngine>(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
+#[cfg(feature = "secure-field")]
 pub fn render_secure_field_parts<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<SecureFieldRenderState<E>>>,
@@ -886,6 +891,7 @@ pub fn measure_text_field_node<E: crate::text::TextEngine>(
 /// Measures a retained secure-field leaf from its [`SecureFieldRenderState`],
 /// mirroring [`measure_secure_field_intrinsic`] but reading the label size from its
 /// already-built [`RetainedSubview`] so layout and the floating-label render agree.
+#[cfg(feature = "secure-field")]
 pub fn measure_secure_field_node<E: crate::text::TextEngine>(
     render_state: &SecureFieldRenderState<E>,
     proposal: ProposalSize,
@@ -1334,6 +1340,7 @@ pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
 /// for the semantic walk — the same node `render_secure_field_parts`
 /// registers, with no bounds.
 #[cfg(feature = "accessibility")]
+#[cfg(feature = "secure-field")]
 pub fn emit_secure_field_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<SecureFieldRenderState<E>>>,
@@ -1491,3 +1498,6 @@ mod tests {
         approx::assert_relative_eq!(cursor.y1, text.y0 + 25.0);
     }
 }
+
+#[cfg(feature = "secure-field")]
+use crate::renderer::{measure_secure_field_intrinsic, measure_secure_field_size_with_label_size};

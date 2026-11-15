@@ -68,9 +68,8 @@ pub enum TextInputModel {
         /// field without one leaves the key unconsumed so it bubbles.
         on_submit: Option<SharedAction>,
     },
-    SecureField {
-        value: nami::Binding<FormSecure>,
-    },
+    #[cfg(feature = "secure-field")]
+    SecureField { value: nami::Binding<FormSecure> },
 }
 
 /// Text editing state that outlives a frame.
@@ -514,6 +513,7 @@ impl TextInputModel {
     pub(crate) fn plain_text(&self) -> String {
         match self {
             Self::TextField { value, .. } => value.snapshot().to_plain().to_string(),
+            #[cfg(feature = "secure-field")]
             Self::SecureField { value } => value.snapshot().expose().to_owned(),
         }
     }
@@ -521,6 +521,7 @@ impl TextInputModel {
     pub(crate) fn set_plain_text(&self, text: String) {
         match self {
             Self::TextField { value, .. } => value.set(StyledStr::plain(text)),
+            #[cfg(feature = "secure-field")]
             Self::SecureField { value } => {
                 let mut next = FormSecure::default();
                 next.set(text);
@@ -532,17 +533,23 @@ impl TextInputModel {
     pub(crate) const fn line_limit(&self) -> Option<usize> {
         match self {
             Self::TextField { line_limit, .. } => *line_limit,
+            #[cfg(feature = "secure-field")]
             Self::SecureField { .. } => Some(1),
         }
     }
 
     pub(crate) const fn is_secure(&self) -> bool {
-        matches!(self, Self::SecureField { .. })
+        match self {
+            Self::TextField { .. } => false,
+            #[cfg(feature = "secure-field")]
+            Self::SecureField { .. } => true,
+        }
     }
 
     pub(crate) fn custom_selection_menu_items(&self) -> Vec<ResolvedMenuItem> {
         match self {
             Self::TextField { selection_menu, .. } => selection_menu.snapshot(),
+            #[cfg(feature = "secure-field")]
             Self::SecureField { .. } => Vec::new(),
         }
     }
@@ -553,6 +560,7 @@ impl TextInputModel {
                 let text = self.plain_text();
                 clamp_to_char_boundary(text.as_str(), plain_index)
             }
+            #[cfg(feature = "secure-field")]
             Self::SecureField { .. } => {
                 let text = self.plain_text();
                 byte_index_to_char_offset(text.as_str(), plain_index)
@@ -566,6 +574,7 @@ impl TextInputModel {
                 let text = self.plain_text();
                 clamp_to_char_boundary(text.as_str(), layout_index)
             }
+            #[cfg(feature = "secure-field")]
             Self::SecureField { .. } => {
                 let text = self.plain_text();
                 char_offset_to_byte_index(text.as_str(), layout_index)
@@ -576,6 +585,7 @@ impl TextInputModel {
     pub(crate) fn layout_len_for_plain_text(&self, text: &str) -> usize {
         match self {
             Self::TextField { .. } => text.len(),
+            #[cfg(feature = "secure-field")]
             Self::SecureField { .. } => text.chars().count(),
         }
     }
@@ -649,11 +659,13 @@ pub fn next_grapheme_boundary(text: &str, index: usize) -> usize {
     clamped + grapheme.len()
 }
 
+#[cfg(feature = "secure-field")]
 pub fn byte_index_to_char_offset(text: &str, index: usize) -> usize {
     let clamped = clamp_to_char_boundary(text, index);
     text[..clamped].chars().count()
 }
 
+#[cfg(feature = "secure-field")]
 pub fn char_offset_to_byte_index(text: &str, char_offset: usize) -> usize {
     if char_offset == 0 {
         return 0;
@@ -2183,6 +2195,7 @@ impl waterui_controls::CustomTextSelection for FieldSelectionDriver {
     fn styled_value(&self) -> Option<nami::Binding<StyledStr>> {
         match &self.model {
             TextInputModel::TextField { value, .. } => Some(value.clone()),
+            #[cfg(feature = "secure-field")]
             TextInputModel::SecureField { .. } => None,
         }
     }

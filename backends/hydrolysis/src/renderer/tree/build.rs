@@ -821,6 +821,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
+        #[cfg(feature = "secure-field")]
         let view = match view.downcast::<Native<SecureFieldConfig>>() {
             Ok(secure_field) => {
                 return Self::build_secure_field((*secure_field).into_inner(), env, renderer);

@@ -1382,6 +1382,7 @@ fn input_field_width(proposal: Option<f32>, ideal: f64, minimum: f64) -> f64 {
     proposal.map_or(ideal, |width| f64::from(width).max(minimum))
 }
 
+#[cfg(feature = "secure-field")]
 pub fn measure_secure_field_intrinsic<E: crate::text::TextEngine>(
     secure_field: &SecureFieldConfig,
     state: &mut HydroState<E>,
@@ -1407,6 +1408,7 @@ pub fn measure_secure_field_intrinsic<E: crate::text::TextEngine>(
 /// `Horizontal`-leaf contract as the text field: the width answers the
 /// proposal floored at the label's extent and never the masked text; `None`
 /// answers the look's `min_width` ideal.
+#[cfg(feature = "secure-field")]
 pub fn measure_secure_field_size_with_label_size<E: crate::text::TextEngine>(
     secure_field: &SecureFieldConfig,
     label_size: LayoutSize,
