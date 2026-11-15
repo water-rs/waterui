@@ -4,6 +4,8 @@ use crate::num_cast::f64_as_f32;
 use crate::theme::ListMetrics;
 #[cfg(feature = "navigation")]
 use crate::theme::{NavigationBarLook, NavigationMetrics, NavigationSpec, TabsSpec};
+#[cfg(feature = "text-field")]
+use crate::widgets::controls::field_look::placeholder_text;
 #[cfg(feature = "list")]
 use waterui_core::views::AnyViewsSnapshot;
 #[cfg(feature = "list")]
@@ -14,7 +16,7 @@ use super::*;
 use crate::text::TextEngine;
 use crate::text::TextLayout as _;
 use crate::theme::{TextFieldLook, WidgetTheme};
-use crate::widgets::controls::field_look::{field_look, placeholder_text, value_text};
+use crate::widgets::controls::field_look::{field_look, value_text};
 use crate::widgets::layout::container::resolve_lazy_container_extent;
 #[cfg(feature = "navigation")]
 use crate::widgets::nav::tabs::{tabs_decide_layout, tabs_item_natural_width};
@@ -816,6 +818,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             .size
     }
 
+    #[cfg(feature = "text-field")]
     pub(crate) fn measure_text_intrinsic_size_with_line_limit(
         state: &mut HydroState<E>,
         styled: StyledStr,
@@ -1327,6 +1330,7 @@ pub fn measure_progress_intrinsic<E: crate::text::TextEngine>(
     )
 }
 
+#[cfg(feature = "text-field")]
 pub fn measure_text_field_intrinsic<E: crate::text::TextEngine>(
     text_field: &ResolvedTextFieldConfig,
     state: &mut HydroState<E>,
@@ -1355,6 +1359,7 @@ pub fn measure_text_field_intrinsic<E: crate::text::TextEngine>(
 /// text — text scrolls inside the dealt width. `None` answers the ideal, the
 /// look's `min_width` floored at the label. Height is the intrinsic height,
 /// whose text line an empty field measures too.
+#[cfg(feature = "text-field")]
 pub fn measure_text_field_size_with_label_size<E: crate::text::TextEngine>(
     text_field: &ResolvedTextFieldConfig,
     label_size: LayoutSize,

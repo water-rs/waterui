@@ -60,6 +60,7 @@ impl CaretPaints {
 
 #[derive(Clone)]
 pub enum TextInputModel {
+    #[cfg(feature = "text-field")]
     TextField {
         value: nami::Binding<StyledStr>,
         line_limit: Option<usize>,
@@ -510,8 +511,18 @@ pub enum ActiveTextContextMenu {
 }
 
 impl TextInputModel {
+    fn submit_action(&self) -> Option<&SharedAction> {
+        match self {
+            #[cfg(feature = "text-field")]
+            Self::TextField { on_submit, .. } => on_submit.as_ref(),
+            #[cfg(feature = "secure-field")]
+            Self::SecureField { .. } => None,
+        }
+    }
+
     pub(crate) fn plain_text(&self) -> String {
         match self {
+            #[cfg(feature = "text-field")]
             Self::TextField { value, .. } => value.snapshot().to_plain().to_string(),
             #[cfg(feature = "secure-field")]
             Self::SecureField { value } => value.snapshot().expose().to_owned(),
@@ -520,6 +531,7 @@ impl TextInputModel {
 
     pub(crate) fn set_plain_text(&self, text: String) {
         match self {
+            #[cfg(feature = "text-field")]
             Self::TextField { value, .. } => value.set(StyledStr::plain(text)),
             #[cfg(feature = "secure-field")]
             Self::SecureField { value } => {
@@ -532,6 +544,7 @@ impl TextInputModel {
 
     pub(crate) const fn line_limit(&self) -> Option<usize> {
         match self {
+            #[cfg(feature = "text-field")]
             Self::TextField { line_limit, .. } => *line_limit,
             #[cfg(feature = "secure-field")]
             Self::SecureField { .. } => Some(1),
@@ -540,6 +553,7 @@ impl TextInputModel {
 
     pub(crate) const fn is_secure(&self) -> bool {
         match self {
+            #[cfg(feature = "text-field")]
             Self::TextField { .. } => false,
             #[cfg(feature = "secure-field")]
             Self::SecureField { .. } => true,
@@ -548,6 +562,7 @@ impl TextInputModel {
 
     pub(crate) fn custom_selection_menu_items(&self) -> Vec<ResolvedMenuItem> {
         match self {
+            #[cfg(feature = "text-field")]
             Self::TextField { selection_menu, .. } => selection_menu.snapshot(),
             #[cfg(feature = "secure-field")]
             Self::SecureField { .. } => Vec::new(),
@@ -556,6 +571,7 @@ impl TextInputModel {
 
     pub(crate) fn layout_index_from_plain_index(&self, plain_index: usize) -> usize {
         match self {
+            #[cfg(feature = "text-field")]
             Self::TextField { .. } => {
                 let text = self.plain_text();
                 clamp_to_char_boundary(text.as_str(), plain_index)
@@ -570,6 +586,7 @@ impl TextInputModel {
 
     pub(crate) fn plain_index_from_layout_index(&self, layout_index: usize) -> usize {
         match self {
+            #[cfg(feature = "text-field")]
             Self::TextField { .. } => {
                 let text = self.plain_text();
                 clamp_to_char_boundary(text.as_str(), layout_index)
@@ -584,6 +601,7 @@ impl TextInputModel {
 
     pub(crate) fn layout_len_for_plain_text(&self, text: &str) -> usize {
         match self {
+            #[cfg(feature = "text-field")]
             Self::TextField { .. } => text.len(),
             #[cfg(feature = "secure-field")]
             Self::SecureField { .. } => text.chars().count(),
@@ -1710,13 +1728,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             preedit_caret: self.text_editing.ime_preedit_caret,
             password: target.model.is_secure(),
             line_limit: target.model.line_limit(),
-            has_submit: matches!(
-                &target.model,
-                TextInputModel::TextField {
-                    on_submit: Some(_),
-                    ..
-                }
-            ),
+            has_submit: target.model.submit_action().is_some(),
             bounds: target.bounds,
             cursor_area: target.cursor_area,
             text_bounds: target.text_bounds,
@@ -1786,13 +1798,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let submit = self
             .text_editing
             .focused_target()
-            .and_then(|target| match &target.model {
-                TextInputModel::TextField {
-                    line_limit: Some(_),
-                    on_submit: Some(action),
-                    ..
-                } => Some((action.clone(), target.env.clone())),
-                _ => None,
+            .filter(|target| target.model.line_limit().is_some())
+            .and_then(|target| {
+                target
+                    .model
+                    .submit_action()
+                    .map(|action| (action.clone(), target.env.clone()))
             });
         let Some((action, env)) = submit else {
             return false;
@@ -2151,11 +2162,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 /// delegates to: the field's model plus its selection slot, so the handle
 /// answers and splices the live selection at fire time
 /// (water-rs/waterui#1260).
+#[cfg(feature = "text-field")]
 struct FieldSelectionDriver {
     model: TextInputModel,
     selection: Rc<RefCell<TextSelectionSlot>>,
 }
 
+#[cfg(feature = "text-field")]
 impl waterui_controls::CustomTextSelection for FieldSelectionDriver {
     fn text(&self) -> Str {
         Str::from(self.model.plain_text())
@@ -2194,6 +2207,7 @@ impl waterui_controls::CustomTextSelection for FieldSelectionDriver {
 
     fn styled_value(&self) -> Option<nami::Binding<StyledStr>> {
         match &self.model {
+            #[cfg(feature = "text-field")]
             TextInputModel::TextField { value, .. } => Some(value.clone()),
             #[cfg(feature = "secure-field")]
             TextInputModel::SecureField { .. } => None,
@@ -2206,6 +2220,7 @@ impl waterui_controls::CustomTextSelection for FieldSelectionDriver {
 /// action resolves it as any other environment value. Only a `TextField`
 /// declares `selection_menu` items — a secure field's selection never
 /// reaches a command.
+#[cfg(feature = "text-field")]
 fn text_selection_for_env<E: crate::text::TextEngine>(
     target: &TextInputTarget<E>,
 ) -> Option<waterui_controls::TextSelection> {
@@ -2245,6 +2260,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // The field's live selection rides the menu's environment, so a
         // custom `selection_menu` command extracts it as a `TextSelection`
         // (water-rs/waterui#1260).
+        #[cfg(feature = "text-field")]
         let menu_env = match text_selection_for_env(&target) {
             Some(selection) => menu_env.extending(selection),
             None => menu_env,

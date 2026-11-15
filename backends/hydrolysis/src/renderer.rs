@@ -93,6 +93,7 @@ use accessibility::{
     ACCESSIBILITY_ROOT_NODE_ID, AccessibilityBuilder, AccessibilityNameFromContents,
     ScopedAccessibilityIdentifier,
 };
+#[cfg(feature = "text-field")]
 use core::num::NonZeroUsize;
 use core::time::Duration;
 pub use input::*;
@@ -178,6 +179,7 @@ use waterui_controls::menu::{CommandRole, ResolvedCommand, ResolvedMenu, Resolve
 use waterui_controls::slider::SliderConfig;
 #[cfg(feature = "stepper")]
 use waterui_controls::stepper::StepperConfig;
+#[cfg(feature = "text-field")]
 use waterui_controls::text_field::ResolvedTextFieldConfig;
 #[cfg(feature = "navigation")]
 use waterui_controls::text_field::TextField;

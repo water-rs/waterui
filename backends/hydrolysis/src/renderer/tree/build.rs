@@ -818,6 +818,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
+        #[cfg(feature = "text-field")]
         let view = match view.downcast::<Native<ResolvedTextFieldConfig>>() {
             Ok(text_field) => {
                 return Self::build_text_field((*text_field).into_inner(), env, renderer);

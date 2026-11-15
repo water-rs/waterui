@@ -431,6 +431,7 @@ impl FloatLabel {
 /// The placeholder `prompt` as the look styles it for a field in `state`
 /// over `frame`: its font follows the spec and the disabled state, its
 /// colour every state.
+#[cfg(feature = "text-field")]
 pub fn placeholder_text(
     look: &TextFieldLook,
     prompt: waterui_core::Str,

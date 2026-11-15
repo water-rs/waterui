@@ -322,6 +322,7 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
         /// (water-rs/hydrolysis#140).
         env: Environment,
     },
+    #[cfg(feature = "text-field")]
     TextField {
         value: nami::Binding<StyledStr>,
         line_limit: Option<usize>,
@@ -1654,6 +1655,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 action_data,
                 env,
             ),
+            #[cfg(feature = "text-field")]
             AccessibilityActionTarget::TextField { value, line_limit } => {
                 handle_accessibility_text_field_action(
                     self,
@@ -2476,6 +2478,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// [`AccessibilityContentTypes`], the channel for a declaration the
     /// accesskit node has no property for (water-rs/waterui#1874).
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "text-field")]
     pub(crate) fn register_accessibility_content_type(
         &mut self,
         node_id: AccessibilityNodeId,
@@ -2720,6 +2723,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             #[cfg(feature = "stepper")]
             waterui_controls::stepper::StepperConfig,
             waterui_controls::button::ButtonConfig,
+            #[cfg(feature = "text-field")]
             waterui_controls::text_field::ResolvedTextFieldConfig,
             #[cfg(feature = "secure-field")]
             waterui_form::secure::SecureFieldConfig,
@@ -3129,6 +3133,7 @@ fn handle_accessibility_date_picker_action<E: crate::text::TextEngine>(
 }
 
 #[cfg(feature = "accessibility")]
+#[cfg(feature = "text-field")]
 fn handle_accessibility_text_field_action<E: crate::text::TextEngine>(
     renderer: &mut SemanticCore<E>,
     node_id: AccessibilityNodeId,
@@ -3334,6 +3339,7 @@ impl<E: crate::text::TextEngine> Clone for AccessibilityActionTarget<E> {
                 origin: *origin,
                 env: env.clone(),
             },
+            #[cfg(feature = "text-field")]
             Self::TextField { value, line_limit } => Self::TextField {
                 value: value.clone(),
                 line_limit: *line_limit,

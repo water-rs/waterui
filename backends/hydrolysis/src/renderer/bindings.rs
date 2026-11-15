@@ -88,6 +88,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
     /// The platform-reported caret inside [`Self::current_ime_preedit`], so a
     /// field can map it onto the composed text's layout.
+    #[cfg(feature = "text-field")]
     pub(crate) fn current_ime_preedit_caret(&self) -> Option<usize> {
         self.text_editing.ime_preedit.as_ref()?;
         self.text_editing.ime_preedit_caret

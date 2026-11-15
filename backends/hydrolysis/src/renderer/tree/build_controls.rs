@@ -77,6 +77,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::picker::emit_picker_accessibility
 );
+#[cfg(feature = "text-field")]
 impl_widget_behavior!(
     crate::widgets::controls::text_field::TextFieldRenderState<E>,
     crate::widgets::controls::text_field::render_text_field_node,
@@ -387,6 +388,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// change schedules a frame. The node re-runs the same text-input target
     /// registration each flush, so cursor/focus/IME state is preserved. Stretch is
     /// horizontal (read from the config).
+    #[cfg(feature = "text-field")]
     pub(super) fn build_text_field(
         config: ResolvedTextFieldConfig,
         env: &Environment,
