@@ -1295,13 +1295,14 @@ fn device_model() -> String {
 }
 
 /// Writes `json` to `Documents/bench-<run_id>.json` inside the app sandbox.
+/// Mid-round writes log `BENCH_FLUSH`; only `finish` logs `BENCH_DONE`.
 fn write_result(json: &str, run_id: &str) {
     let path = std::env::home_dir()
         .unwrap_or_else(|| "/tmp".into())
         .join("Documents")
         .join(format!("bench-{run_id}.json"));
     match std::fs::write(&path, json) {
-        Ok(()) => info!(run_id = %run_id, path = %path.display(), "BENCH_DONE"),
+        Ok(()) => info!(run_id = %run_id, path = %path.display(), "BENCH_FLUSH"),
         Err(error) => tracing::error!(run_id = %run_id, %error, "result write failed"),
     }
 }
