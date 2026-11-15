@@ -30,7 +30,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main, dev]
+    branches: [main]
     # No `edited`: a run on the same commit replaces the one before it in
     # the required-check verdict, so a run started by a title or description
     # edit would hide the source run's results and block the merge (#3825).
