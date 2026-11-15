@@ -1,10 +1,6 @@
-//! The Kotlin half of the wire, generated from the Rust definitions.
-//!
-//! `templates/hwui/Protocol.kt` renders the opcodes, every code table and
-//! the text wire's constants into the `Protocol.kt` the Kotlin replayer and
-//! text provider compile against. With `HWUI_KOTLIN_DIR` set, as the
-//! `:hwui` Gradle module's `contractScenes` task sets it, the source is
-//! written there; nothing generated is committed.
+//! Kotlin protocol generation from the shared Rust definitions.
+//! Cargo writes the source under `OUT_DIR`; the CLI passes its reported
+//! directory to Gradle.
 
 use std::fs;
 use std::path::Path;
@@ -15,9 +11,10 @@ use super::protocol::{
     self, HEADER_WORDS, MAGIC, MATRIX_WORDS, MESH_BAND_PATCHES, MESH_PATCH_FLOATS, NONE, Op,
     PAINT_WORDS, SHAPE_WORDS, TRANSFORM_VALUES,
 };
-use super::text::wire;
+use super::text::constants as wire;
 
 /// A module of wire codes, as `codes!` declares it.
+#[derive(Debug)]
 pub struct Codes<T: 'static> {
     /// The Kotlin object the codes go in.
     pub object: &'static str,
@@ -292,9 +289,27 @@ impl Wire {
     }
 }
 
+/// Generate the Kotlin protocol into a Cargo build output directory.
+///
+/// # Panics
+/// Panics if the template cannot render or the output cannot be written.
+pub fn generate(dir: &Path) {
+    let source = Wire::new().render().expect("the Kotlin wire renders");
+    let package = dir.join("dev/waterui/hydrolysis/hwui");
+    fs::create_dir_all(&package).expect("the generated package directory is writable");
+    fs::write(package.join("Protocol.kt"), source).expect("the generated source is writable");
+}
+
 #[test]
 fn the_kotlin_wire_is_generated_from_the_rust_definitions() {
-    let source = Wire::new().render().expect("the Kotlin wire renders");
+    let directory = tempfile::tempdir().expect("generated source directory");
+    generate(directory.path());
+    let source = fs::read_to_string(
+        directory
+            .path()
+            .join("dev/waterui/hydrolysis/hwui/Protocol.kt"),
+    )
+    .expect("the generated protocol is readable");
     for op in Op::ALL {
         let constant = format!(
             "const val {}: Int = 0x{:04X}\n",
@@ -319,11 +334,6 @@ fn the_kotlin_wire_is_generated_from_the_rust_definitions() {
         "{source}"
     );
     assert!(!source.contains("{{"), "{source}");
-    if let Some(dir) = std::env::var_os("HWUI_KOTLIN_DIR") {
-        let package = Path::new(&dir).join("dev/waterui/hydrolysis/hwui");
-        fs::create_dir_all(&package).expect("the generated package directory is writable");
-        fs::write(package.join("Protocol.kt"), source).expect("the generated source is writable");
-    }
 }
 
 #[test]

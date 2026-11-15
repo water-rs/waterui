@@ -2,8 +2,33 @@
 
 use cfg_aliases::cfg_aliases;
 
+#[cfg(feature = "hwui")]
+#[path = "build/hwui.rs"]
+mod hwui;
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    #[cfg(feature = "hwui")]
+    {
+        for input in [
+            "build/hwui.rs",
+            "src/hwui/codes.rs",
+            "src/hwui/protocol.rs",
+            "src/hwui/text/constants.rs",
+            "src/hwui/kotlin.rs",
+            "templates/hwui/Protocol.kt",
+        ] {
+            println!("cargo:rerun-if-changed={input}");
+        }
+        let generated =
+            std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"))
+                .join("hwui-kotlin");
+        hwui::kotlin::generate(&generated);
+        println!(
+            "cargo:rustc-env=WATERUI_HWUI_KOTLIN_DIR={}",
+            generated.display()
+        );
+    }
     // A build with no painter feature links nothing that can draw: warn
     // rather than error so the bare `cargo check --no-default-features` lint
     // leg still exercises the crate. The generated launcher always passes
