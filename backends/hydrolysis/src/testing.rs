@@ -135,12 +135,14 @@ pub fn plain_navigation_look() -> crate::theme::NavigationBarLook {
 /// The measures of a test style's tab bars: 48 points high, items at least
 /// 48 points wide.
 #[must_use]
+#[cfg(feature = "navigation")]
 pub const fn plain_tabs_metrics() -> crate::theme::TabsMetrics {
     crate::theme::TabsMetrics::new(48.0, 48.0, 16.0, 4.0)
 }
 
 /// The motion of a test style's tab highlights: 15 milliseconds, linear.
 #[must_use]
+#[cfg(feature = "navigation")]
 pub fn plain_tabs_motion() -> crate::theme::Motion {
     crate::theme::Motion::uniform(waterui::animation::Animation::linear(
         std::time::Duration::from_millis(15),
@@ -150,6 +152,7 @@ pub fn plain_tabs_motion() -> crate::theme::Motion {
 /// A tabs look measured by [`plain_tabs_metrics`], drawing nothing: what a
 /// test style's tab containers measure, place and hit-test as.
 #[must_use]
+#[cfg(feature = "navigation")]
 pub fn plain_tabs_look() -> crate::theme::TabsLook {
     use crate::theme::Custom;
     crate::theme::TabsLook::new(
@@ -174,6 +177,7 @@ pub fn plain_stepper_look() -> crate::theme::StepperLook {
 /// The measures of a test style's menus: 56 point rows, 12 points of vertical
 /// padding, 16 of horizontal, at least 112 points wide and at most 320.
 #[must_use]
+#[cfg(feature = "menu")]
 pub const fn plain_menu_layout() -> crate::theme::MenuLayout {
     crate::theme::MenuLayout {
         row_height: 56.0,
@@ -192,6 +196,7 @@ pub const fn plain_menu_layout() -> crate::theme::MenuLayout {
 /// test style's picker popups, text context menus and popup windows measure,
 /// place and hit-test as.
 #[must_use]
+#[cfg(feature = "menu")]
 pub fn plain_menu_look() -> crate::theme::MenuLook {
     use crate::theme::Custom;
     crate::theme::MenuLook::new(
@@ -427,15 +432,32 @@ mod test_style {
     use crate::theme::{NavigationBarLook, NavigationSpec};
     use std::time::Duration;
 
+    #[cfg(feature = "picker")]
+    use crate::theme::RadioGroupLook;
     use crate::theme::{
-        BadgeLook, ButtonLook, ButtonSpec, Chrome, CornerShape, DragMapping, FocusIndicator,
-        HitRegion, IndicatorLook, Knob, Label, LinearProgressLook, MenuLook, MenuPickerLook,
-        MenuSpec, Motion, PickerSpec, PressFeedback, ProgressControl, ProgressSpec, RadioGroupLook,
-        ScrollIndicatorLook, SliderLayout, SliderLook, SliderSpec, StateLayer, StepperLook,
-        StepperSpec, Surface, TabsLook, TabsSpec, TextFieldLook, TextFieldSpec, ToggleSpec,
-        WidgetTheme,
+        BadgeLook, ButtonLook, ButtonSpec, Chrome, CornerShape, FocusIndicator, HitRegion,
+        IndicatorLook, Label, LinearProgressLook, Motion, PressFeedback, ProgressControl,
+        ProgressSpec, ScrollIndicatorLook, StateLayer, Surface, WidgetTheme,
     };
-    use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook};
+    #[cfg(feature = "toggle")]
+    use crate::theme::{CheckboxLook, SwitchDrag, SwitchLook, ToggleSpec};
+    #[cfg(feature = "slider")]
+    use crate::theme::{DragMapping, Knob, SliderLayout, SliderLook, SliderSpec};
+    #[cfg(feature = "menu")]
+    use crate::theme::{MenuLook, MenuSpec};
+    #[cfg(any(feature = "picker", feature = "date-picker"))]
+    use crate::theme::{MenuPickerLook, PickerSpec};
+    #[cfg(feature = "stepper")]
+    use crate::theme::{StepperLook, StepperSpec};
+    #[cfg(feature = "navigation")]
+    use crate::theme::{TabsLook, TabsSpec};
+    #[cfg(any(
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "date-picker",
+        feature = "color-picker"
+    ))]
+    use crate::theme::{TextFieldLook, TextFieldSpec};
     use waterui::animation::Animation;
     use waterui::{Color, Environment};
 
