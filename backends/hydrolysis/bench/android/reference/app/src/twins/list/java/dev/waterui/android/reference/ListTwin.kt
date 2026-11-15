@@ -1,6 +1,7 @@
 package dev.waterui.android.reference
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -78,7 +79,7 @@ fun ListTwin() {
         HorizontalDivider()
         LazyColumn(state = listState, modifier = Modifier.weight(1f)) {
             itemsIndexed(records, key = { _, record -> record }) { index, record ->
-                Column(modifier = Modifier.animateItem()) {
+                Box(modifier = Modifier.animateItem()) {
                     // Material ListRowMetrics adds these insets around the example content.
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -114,7 +115,7 @@ fun ListTwin() {
                         }
                     }
                     HorizontalDivider(
-                        modifier = Modifier.padding(horizontal = 16.dp),
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(horizontal = 16.dp),
                         color = MaterialTheme.colorScheme.outline,
                     )
                 }
