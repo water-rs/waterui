@@ -373,8 +373,18 @@ pub async fn scan_fonts(
     build_manifest: &Path,
     platforms: &[FontPlatform],
 ) -> eyre::Result<Vec<FontDeclaration>> {
+    scan_fonts_with_features(project, build_manifest, platforms, &[]).await
+}
+
+/// Scan fonts in the dependency graph selected by the build's Cargo features.
+pub async fn scan_fonts_with_features(
+    project: &Project,
+    build_manifest: &Path,
+    platforms: &[FontPlatform],
+    features: &[String],
+) -> eyre::Result<Vec<FontDeclaration>> {
     let mut declarations = manifest_font_declarations(project.manifest(), project.root())?;
-    declarations.extend(scan_crate_font_declarations(project, build_manifest).await?);
+    declarations.extend(scan_crate_font_declarations(project, build_manifest, features).await?);
     declarations.retain(|declaration| {
         platforms
             .iter()
@@ -532,6 +542,7 @@ fn parse_waterui_metadata(
 async fn scan_crate_font_declarations(
     project: &Project,
     build_manifest: &Path,
+    features: &[String],
 ) -> eyre::Result<Vec<FontDeclaration>> {
     debug!(
         "Scanning fonts from dependencies via cargo metadata on {}",
@@ -544,6 +555,7 @@ async fn scan_crate_font_declarations(
         .facts()
         .answer(&DependencyFonts {
             manifest: build_manifest.to_path_buf(),
+            features: features.to_vec(),
         })
         .await
         .wrap_err_with(|| {
@@ -579,20 +591,21 @@ async fn scan_crate_font_declarations(
 /// `cargo metadata` document it was read from.
 struct DependencyFonts {
     manifest: PathBuf,
+    features: Vec<String>,
 }
 
 impl Fact for DependencyFonts {
     const KIND: &'static str = "dependency-fonts";
-    type Question = PathBuf;
+    type Question = (PathBuf, Vec<String>);
     type Value = Vec<RecordedFont>;
 
-    fn question(&self) -> PathBuf {
-        self.manifest.clone()
+    fn question(&self) -> Self::Question {
+        (self.manifest.clone(), self.features.clone())
     }
 
     async fn resolve(&self, scope: &Scope<'_>) -> eyre::Result<Vec<RecordedFont>> {
         let metadata = scope
-            .cargo_metadata(&crate_metadata_command(&self.manifest, &[]))
+            .cargo_metadata(&crate_metadata_command(&self.manifest, &self.features))
             .await?;
         let fonts =
             dependency_font_declarations(&metadata, GraphScope::Build).wrap_err_with(|| {
@@ -1693,7 +1706,7 @@ async fn seed_font_cache_scoped(
         .map_err(SeedFontCacheError::Scaffold)?;
     for manifest in manifests {
         declarations.extend(
-            scan_crate_font_declarations(project, &manifest)
+            scan_crate_font_declarations(project, &manifest, &[])
                 .await
                 .map_err(SeedFontCacheError::Fonts)?,
         );
@@ -2384,13 +2397,15 @@ pub async fn stage_hydrolysis_web_fonts(
     project: &Project,
     backend_path: &Path,
     site_root: &Path,
+    features: &[String],
 ) -> eyre::Result<()> {
     let mut resolved_fonts = resolve_fonts(
         project.host(),
-        scan_fonts(
+        scan_fonts_with_features(
             project,
             &backend_path.join("Cargo.toml"),
             &[FontPlatform::Web],
+            features,
         )
         .await?,
     )
@@ -3650,6 +3665,43 @@ mod permission_audit_tests {
             app.is_empty(),
             "the app graph does not carry `theme` and must stay silent"
         );
+    }
+
+    #[test]
+    fn font_queries_distinguish_feature_selected_dependency_graphs() {
+        smol::block_on(async {
+            let directory = tempdir().expect("temp project");
+            let root = directory.path().join("app");
+            write_crate(
+                &directory.path().join("fonts"),
+                "fonts",
+                "[[package.metadata.waterui.assets.font]]\nname = \"Feature Face\"\nlocal_path = \"face.ttf\"\n",
+            );
+            let manifest = write_crate(
+                &root,
+                "app",
+                "[features]\nextra = [\"dep:fonts\"]\n[dependencies]\nfonts = { path = \"../fonts\", optional = true }\n",
+            );
+            std::fs::write(root.join("Water.toml"),
+                "[package]\nname = \"Feature Fonts\"\nbundle_identifier = \"dev.waterui.featurefonts\"\n")
+                .expect("project manifest");
+            let host = crate::toolchain::testing::real_toolchain_host(directory.path());
+            let project =
+                crate::project::Project::open(&host, &root, crate::project::ManagedBackends::NONE)
+                    .await
+                    .expect("project opens");
+            for (features, count) in [(vec![], 0), (vec![String::from("extra")], 1), (vec![], 0)] {
+                let fonts = super::scan_fonts_with_features(
+                    &project,
+                    &manifest,
+                    &[FontPlatform::Android],
+                    &features,
+                )
+                .await
+                .expect("fonts scan");
+                assert_eq!(fonts.len(), count);
+            }
+        });
     }
 
     #[test]

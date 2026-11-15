@@ -72,6 +72,9 @@ impl TargetArch {
     reason = "every boolean is a documented --flag, not structural state — the shape follows the CLI surface"
 )]
 pub struct Args {
+    #[command(flatten)]
+    features: super::FeatureArgs,
+
     /// Target platform to build for.
     #[arg(short, long, value_enum)]
     platform: TargetPlatform,
@@ -368,7 +371,8 @@ async fn build_options(shell: &Shell, args: &Args, backend: TargetBackend) -> Bu
             || BuildOptions::development(profile),
             |output_dir| BuildOptions::development(profile).with_output_dir(output_dir),
         )
-        .with_progress(shell.build_progress());
+        .with_progress(shell.build_progress())
+        .with_features(args.features.values());
 
     // `--release` is the shipped artifact, not a development unit: the shared
     // `waterui-dylib` runtime exists so `water run`/preview/mcp can reuse one
