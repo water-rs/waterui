@@ -54,7 +54,7 @@ import e2e  # noqa: E402
 
 
 def fixture_env(fixture: dict, defaults: dict) -> dict:
-    """The intent extras CI applies: shared defaults plus per-fixture env."""
+    """Shared environment defaults plus per-fixture overrides."""
     env = dict(defaults.get("env", {}))
     env.update(fixture.get("env", {}))
     return env
@@ -86,11 +86,11 @@ def apk_package(apk: Path) -> str:
     ).stdout.strip()
 
 
-def start_launcher(serial: str, package: str, env: dict, *, example: str | None = None) -> None:
+def start_launcher(serial: str, package: str, environment_args: list[str], *, example: str | None = None) -> None:
     """Starts `package`'s launcher activity, killing any prior run — the
     same intent for the generated Hydrolysis host and the Compose reference,
-    so neither depends on the other's activity name. `env` reaches the app as
-    `waterui.env.*` string extras."""
+    so neither depends on the other's activity name. The caller owns the
+    prepared launch environment through the complete capture cycle."""
     resolved = e2e.adb_out(
         serial, "shell", "cmd", "package", "resolve-activity", "--brief",
         "-a", "android.intent.action.MAIN",
@@ -103,8 +103,7 @@ def start_launcher(serial: str, package: str, env: dict, *, example: str | None 
     args = ["shell", "am", "start", "-S", "-n", component]
     if example is not None:
         args += ["--es", "E2EExample", example]
-    for key, value in env.items():
-        args += ["--es", f"waterui.env.{key}", value]
+    args += environment_args
     output = e2e.adb_out(serial, *args).decode("utf-8", "replace")
     if "Error" in output:
         sys.exit(f"am start {package} failed: {output.strip()}")
@@ -238,11 +237,12 @@ def launch_and_capture(
     needs_reference = fixture["mode"] == "verify"
     # Capturing the twin must not take focus away during the measured journey.
     if needs_reference and reference_package is not None:
-        start_launcher(serial, reference_package, env, example=name)
-        try:
-            capture_first_frame(serial, reference_package, reference, timeout_s)
-        finally:
-            e2e.force_stop(serial, reference_package)
+        with e2e.launch_environment(serial, reference_package, env, compose=True) as environment_args:
+            start_launcher(serial, reference_package, environment_args, example=name)
+            try:
+                capture_first_frame(serial, reference_package, reference, timeout_s)
+            finally:
+                e2e.force_stop(serial, reference_package)
 
     e2e.install_apk(serial, str(apk))
     e2e.force_stop(serial, package)
@@ -255,9 +255,9 @@ def launch_and_capture(
         result["baseline_profile_applied"] = True
     metrics.adb(serial, "shell", "dumpsys", "gfxinfo", package, "reset")
     profile_log = out / "frame_profile.logcat.txt"
-    with frame_profile.record(serial, profile_log):
+    with e2e.launch_environment(serial, package, env, compose=painter is None) as environment_args, frame_profile.record(serial, profile_log):
         launch_at = time.monotonic()
-        start_launcher(serial, package, env)
+        start_launcher(serial, package, environment_args)
         try:
             capture_first_frame(serial, package, out / "capture.png", timeout_s)
             result["first_frame_observed_ms"] = int((time.monotonic() - launch_at) * 1000)

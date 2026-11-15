@@ -7,31 +7,26 @@ import androidx.benchmark.macro.junit4.MacrobenchmarkRule
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
 import dev.waterui.android.bench.Journey
-import dev.waterui.android.bench.SuiteRegistry
 import dev.waterui.android.bench.loadInteractionSpec
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * System-wide energy per section 6: ODPM rails integrated over the same
- * scripted journey, ending with an idle segment so joules/script and idle
- * watts are read from the same round (energy/frame is undefined at idle —
- * frame counts land in the frame record, not here).
+ * System-wide energy per section 6: ODPM rails integrated over the same scripted journey, ending
+ * with an idle segment so joules/script and idle watts are read from the same round (energy/frame
+ * is undefined at idle — frame counts land in the frame record, not here).
  *
- * PowerMetric requires a physical device with ODPM rails (Pixel 6+); the
- * harness's ODPM validation step confirms rails are nonzero before trusting
- * these numbers.
+ * PowerMetric requires a physical device with ODPM rails (Pixel 6+); the harness's ODPM validation
+ * step confirms rails are nonzero before trusting these numbers.
  *
- * Instrumentation args: fixture, script_seconds (45), idle_seconds (15),
- * iterations (1).
+ * Instrumentation args: fixture, script_seconds (45), idle_seconds (15), iterations (1).
  */
 @OptIn(ExperimentalMetricApi::class)
 @RunWith(androidx.test.ext.junit.runners.AndroidJUnit4::class)
 class EnergyBenchmark {
 
-    @get:Rule
-    val benchmarkRule = MacrobenchmarkRule()
+    @get:Rule val benchmarkRule = MacrobenchmarkRule()
 
     private val device: UiDevice =
         UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
@@ -40,33 +35,32 @@ class EnergyBenchmark {
     fun energy() {
         val args = InstrumentationRegistry.getArguments()
         val fixture = args.getString("fixture") ?: "suite"
-        val target = BenchmarkTarget(args, fixture)
-        val scriptSeconds = args.getString("script_seconds")?.toIntOrNull() ?: 45
-        val idleSeconds = args.getString("idle_seconds")?.toIntOrNull() ?: 15
-        val iterations = args.getString("iterations")?.toIntOrNull() ?: 1
-        val spec = loadInteractionSpec(
-            InstrumentationRegistry.getInstrumentation().context,
-        )
-        benchmarkRule.measureRepeated(
-            packageName = target.packageName,
-            metrics = listOf(PowerMetric(PowerMetric.Energy())),
-            compilationMode = target.compilationMode,
-            iterations = iterations,
-            startupMode = StartupMode.WARM,
-            setupBlock = {
-                Journey.prepareDevice(device)
-                pressHome()
-            },
-        ) {
-            startActivityAndWait { intent ->
-                intent.putExtra("E2EExample", SuiteRegistry.exampleForFixture(fixture))
-                intent.putExtra("waterui.env.WATERUI_DISABLE_DYNAMIC_COLORS", "1")
+        BenchmarkTarget(args, fixture).use { target ->
+            val scriptSeconds = args.getString("script_seconds")?.toIntOrNull() ?: 45
+            val idleSeconds = args.getString("idle_seconds")?.toIntOrNull() ?: 15
+            val iterations = args.getString("iterations")?.toIntOrNull() ?: 1
+            val spec = loadInteractionSpec(InstrumentationRegistry.getInstrumentation().context)
+            benchmarkRule.measureRepeated(
+                packageName = target.packageName,
+                metrics = listOf(PowerMetric(PowerMetric.Energy())),
+                compilationMode = target.compilationMode,
+                iterations = iterations,
+                startupMode = StartupMode.WARM,
+                setupBlock = {
+                    target.prepareLaunch()
+                    Journey.prepareDevice(device)
+                    pressHome()
+                },
+            ) {
+                startActivityAndWait { intent ->
+                    target.configureLaunch(intent)
+                }
+                target.awaitContent(device)
+                Journey.runFor(device, spec, fixture, scriptSeconds)
+                // Idle segment: the app sits presented but untouched so the round
+                // also reports the fixture's idle draw.
+                Thread.sleep(idleSeconds * 1000L)
             }
-            target.awaitContent(device)
-            Journey.runFor(device, spec, fixture, scriptSeconds)
-            // Idle segment: the app sits presented but untouched so the round
-            // also reports the fixture's idle draw.
-            Thread.sleep(idleSeconds * 1000L)
         }
     }
 }

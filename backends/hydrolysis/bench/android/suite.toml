@@ -53,8 +53,8 @@ poll_interval_ms = 400
 pixel_tolerance = 8
 max_diff_fraction = 0.005
 
-# Applied to every example by CI: the generated MainActivity forwards these as
-# waterui.env.* intent extras (Os.setenv before the native library loads).
+# Applied before native library loading through the private launch-environment
+# provider. Compose reference apps receive their own benchmark intent extras.
 [defaults.env]
 WATERUI_DISABLE_DYNAMIC_COLORS = "1"
 

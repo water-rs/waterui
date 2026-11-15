@@ -1,5 +1,5 @@
 {
-  "$schema-comment": "Per-example policy for the example E2E shard script. mode=verify waits for a settled frame and compares it to e2e/goldens/<example>.png; mode=smoke only requires the app to start and show non-blank content; mode=skip does not run the example at all. env is forwarded to the app as waterui.env.* intent extras (the generated MainActivity applies them via Os.setenv before the native library loads).",
+  "$schema-comment": "Per-example policy for the example E2E shard script. mode=verify waits for a settled frame and compares it to e2e/goldens/<example>.png; mode=smoke only requires the app to start and show non-blank content; mode=skip does not run the example at all. env is delivered through the private launch-environment provider (the generated MainActivity applies them via Os.setenv before the native library loads).",
   "defaults": {
     "settle_timeout_seconds": 25,
     "poll_interval_ms": 400,
