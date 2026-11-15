@@ -1,7 +1,7 @@
 //! A text input component wired to a reactive string binding.
 //!
 //! ![`TextField`](https://raw.githubusercontent.com/water-rs/waterui/dev/docs/illustrations/text_field.svg)
-use crate::input::{ContentType, KeyboardType};
+pub use crate::input::{ContentType, KeyboardType};
 
 use core::num::NonZeroUsize;
 
