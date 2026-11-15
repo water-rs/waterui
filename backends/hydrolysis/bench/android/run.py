@@ -570,7 +570,11 @@ def cmd_build(args: argparse.Namespace) -> int:
         f":app:assemble{f[0].upper() + f[1:]}Release" for f in sorted(flavors)
     ]
     if not args.app_only:
-        tasks += [":macrobenchmark:assemble", ":baselineprofile:assemble"]
+        tasks += [
+            ":macrobenchmark:assemble", ":baselineprofile:assemble",
+            ":macrobenchmark:recordBenchmarkToolchain",
+            ":baselineprofile:recordBenchmarkToolchain",
+        ]
     print("gradle:", *tasks)
     _gradle(*tasks, project=project)
 
@@ -604,6 +608,17 @@ def cmd_build(args: argparse.Namespace) -> int:
                 {"path": str(p), "apk_bytes": p.stat().st_size}
                 for p in _apk_out(project, module)
             ]
+    if not args.app_only:
+        manifest["benchmark_toolchains"] = {
+            module: json.loads(
+                (project / f"../{module}/build/reports/benchmark-toolchain.json").read_text()
+            )
+            for module in ("baselineprofile", "macrobenchmark")
+        }
+    if propagated:
+        manifest["baseline_profile_toolchain"] = json.loads(
+            (gen.parent / "benchmark-toolchain.json").read_text()
+        )
     manifest["baseline_profiles_propagated"] = propagated
     manifest["resolved_dependencies"] = record_resolved_dependencies(
         project, sorted(flavors)
@@ -776,11 +791,13 @@ def cmd_generate_profile(args: argparse.Namespace) -> int:
             f"{min(3, args.max_iterations)}",
         ]
     print("gradle:", task, *extra)
-    _gradle(task, *extra, project=project)
+    _gradle(":baselineprofile:recordBenchmarkToolchain", task, *extra, project=project)
     generated = project / "app/src/suiteRelease/generated/baselineProfiles"
     files = sorted(p.name for p in generated.glob("*")) if generated.is_dir() else []
     if not files:
         sys.exit(f"generation produced no profile under {generated}")
+    provenance = project / "../baselineprofile/build/reports/benchmark-toolchain.json"
+    shutil.copyfile(provenance, generated.parent / "benchmark-toolchain.json")
     print(f"generated {', '.join(files)} -> {generated}")
     return 0
 

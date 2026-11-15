@@ -23,6 +23,12 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        providers.gradleProperty("benchmarkRepository").orNull?.let { repository ->
+            exclusiveContent {
+                forRepository { maven { url = uri(repository) } }
+                filter { includeGroup("androidx.benchmark") }
+            }
+        }
     }
 }
 
