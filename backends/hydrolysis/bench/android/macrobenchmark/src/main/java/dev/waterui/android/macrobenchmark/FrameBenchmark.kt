@@ -17,11 +17,9 @@ import org.junit.runner.RunWith
 /**
  * The fixed 60-second scripted frame round from section 6.
  *
- * FrameTimingMetric reports per-frame CPU presentation data and FrameTimingGfxInfoMetric the
- * gfxinfo percentiles; the shared journey loops until the script window closes so scroll/animation
- * demand runs the whole round at the display's demanded cadence. run.py pairs these records with
- * the Perfetto frametimeline trace for surface-level coverage — Compose draws through the decor
- * window, but the gate asserts coverage exists regardless of painter.
+ * WindowedFrameTimingMetric joins target frames to SurfaceFlinger and limits samples to
+ * measureBlock. Raw AndroidX CPU and gfxinfo summaries remain available for cross-checking; they do
+ * not establish the window's surface-presentation coverage on their own.
  *
  * Instrumentation args: fixture (default "suite"), script_seconds (60), iterations (1).
  */
@@ -49,6 +47,7 @@ class FrameBenchmark {
                     packageName = target.packageName,
                     metrics =
                         listOf(
+                            WindowedFrameTimingMetric(),
                             FrameTimingMetric(),
                             FrameTimingGfxInfoMetric(),
                             TraceSectionMetric("measureBlock", targetPackageOnly = false),
