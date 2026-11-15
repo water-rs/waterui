@@ -1,15 +1,11 @@
 package dev.waterui.android.macrobenchmark
 
-import androidx.benchmark.macro.BaselineProfileMode
-import androidx.benchmark.macro.CompilationMode
 import androidx.benchmark.macro.ExperimentalMetricApi
 import androidx.benchmark.macro.PowerMetric
 import androidx.benchmark.macro.StartupMode
 import androidx.benchmark.macro.junit4.MacrobenchmarkRule
 import androidx.test.platform.app.InstrumentationRegistry
-import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
-import androidx.test.uiautomator.Until
 import dev.waterui.android.bench.Journey
 import dev.waterui.android.bench.SuiteRegistry
 import dev.waterui.android.bench.loadInteractionSpec
@@ -44,6 +40,7 @@ class EnergyBenchmark {
     fun energy() {
         val args = InstrumentationRegistry.getArguments()
         val fixture = args.getString("fixture") ?: "suite"
+        val target = BenchmarkTarget(args, fixture)
         val scriptSeconds = args.getString("script_seconds")?.toIntOrNull() ?: 45
         val idleSeconds = args.getString("idle_seconds")?.toIntOrNull() ?: 15
         val iterations = args.getString("iterations")?.toIntOrNull() ?: 1
@@ -51,11 +48,9 @@ class EnergyBenchmark {
             InstrumentationRegistry.getInstrumentation().context,
         )
         benchmarkRule.measureRepeated(
-            packageName = SuiteRegistry.packageForFixture(fixture),
+            packageName = target.packageName,
             metrics = listOf(PowerMetric(PowerMetric.Energy())),
-            compilationMode = CompilationMode.Partial(
-                BaselineProfileMode.Require,
-            ),
+            compilationMode = target.compilationMode,
             iterations = iterations,
             startupMode = StartupMode.WARM,
             setupBlock = {
@@ -67,9 +62,7 @@ class EnergyBenchmark {
                 intent.putExtra("E2EExample", SuiteRegistry.exampleForFixture(fixture))
                 intent.putExtra("waterui.env.WATERUI_DISABLE_DYNAMIC_COLORS", "1")
             }
-            check(device.wait(Until.hasObject(By.res("screen-root")), 10_000)) {
-                "Benchmark screen did not become ready"
-            }
+            target.awaitContent(device)
             Journey.runFor(device, spec, fixture, scriptSeconds)
             // Idle segment: the app sits presented but untouched so the round
             // also reports the fixture's idle draw.

@@ -25,6 +25,7 @@ android {
     }
 
     targetProjectPath = ":app"
+    experimentalProperties["android.experimental.self-instrumenting"] = true
 
     sourceSets {
         named("main") {

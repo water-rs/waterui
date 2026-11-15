@@ -1,16 +1,12 @@
 package dev.waterui.android.macrobenchmark
 
-import androidx.benchmark.macro.BaselineProfileMode
-import androidx.benchmark.macro.CompilationMode
 import androidx.benchmark.macro.ExperimentalMetricApi
 import androidx.benchmark.macro.FrameTimingGfxInfoMetric
 import androidx.benchmark.macro.FrameTimingMetric
 import androidx.benchmark.macro.StartupMode
 import androidx.benchmark.macro.junit4.MacrobenchmarkRule
 import androidx.test.platform.app.InstrumentationRegistry
-import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
-import androidx.test.uiautomator.Until
 import dev.waterui.android.bench.Journey
 import dev.waterui.android.bench.SuiteRegistry
 import dev.waterui.android.bench.loadInteractionSpec
@@ -46,17 +42,16 @@ class FrameBenchmark {
     fun frames() {
         val args = InstrumentationRegistry.getArguments()
         val fixture = args.getString("fixture") ?: "suite"
+        val target = BenchmarkTarget(args, fixture)
         val scriptSeconds = args.getString("script_seconds")?.toIntOrNull() ?: 60
         val iterations = args.getString("iterations")?.toIntOrNull() ?: 1
         val spec = loadInteractionSpec(
             InstrumentationRegistry.getInstrumentation().context,
         )
         benchmarkRule.measureRepeated(
-            packageName = SuiteRegistry.packageForFixture(fixture),
+            packageName = target.packageName,
             metrics = listOf(FrameTimingMetric(), FrameTimingGfxInfoMetric()),
-            compilationMode = CompilationMode.Partial(
-                BaselineProfileMode.Require,
-            ),
+            compilationMode = target.compilationMode,
             iterations = iterations,
             startupMode = StartupMode.WARM,
             setupBlock = {
@@ -69,9 +64,7 @@ class FrameBenchmark {
                 intent.putExtra("waterui.env.WATERUI_DISABLE_DYNAMIC_COLORS", "1")
                 intent.putExtra("waterui.bench.markers", true)
             }
-            check(device.wait(Until.hasObject(By.res("screen-root")), 10_000)) {
-                "Benchmark screen did not become ready"
-            }
+            target.awaitContent(device)
             Journey.runFor(device, spec, fixture, scriptSeconds)
         }
     }

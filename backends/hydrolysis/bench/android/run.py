@@ -25,6 +25,7 @@ import json
 import os
 import re
 import shutil
+import shlex
 import signal
 import subprocess
 import sys
@@ -869,7 +870,7 @@ def cmd_instrument(args: argparse.Namespace) -> int:
           --class StartupBenchmark --extra-arg iterations=30
     """
     serial = args.serial or metrics.detect_serial()
-    test_pkg = "dev.waterui.android.macrobenchmark.test"
+    test_pkg = "dev.waterui.android.macrobenchmark"
     instr_args = {
         "fixture": args.fixture,
         "class": (
@@ -881,8 +882,10 @@ def cmd_instrument(args: argparse.Namespace) -> int:
     for k, v in instr_args.items():
         cmd += ["-e", k, str(v)]
     cmd.append(f"{test_pkg}/androidx.test.runner.AndroidJUnitRunner")
-    out = metrics.adb_out(serial, "shell", *cmd).decode("utf-8", "replace")
+    out = metrics.adb_out(serial, "shell", shlex.join(cmd)).decode("utf-8", "replace")
     print(out)
+    if not re.search(r"^OK \([1-9]\d* tests?\)", out, re.MULTILINE):
+        raise RuntimeError("Macrobenchmark instrumentation failed or ran no tests")
     # Pull the benchmark result payloads the test wrote to device media.
     media_dir = Path(args.out) / "benchmark-results"
     media_dir.mkdir(parents=True, exist_ok=True)
@@ -892,7 +895,7 @@ def cmd_instrument(args: argparse.Namespace) -> int:
             f"/sdcard/Android/media/{test_pkg}",
             str(media_dir),
         ],
-        capture_output=True,
+        capture_output=True, check=True,
     )
     print(f"results pulled -> {media_dir}")
     return 0
