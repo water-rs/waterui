@@ -647,3 +647,123 @@ fn picture_images_share_one_engine_wide_budget() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 }
+
+split_test! {
+/// A picture wider than a device texture stays cached through bounded visible
+/// cells, including a distant scroll and a return to previously visible pixels.
+fn oversized_picture_keeps_visible_tiles_within_budget() -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::Picture;
+    use cherenkov::kurbo::Affine;
+    use nami::Binding;
+    let sink = Sink::new();
+    let budget = Bytes::mib(32);
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig {
+        alloc_diag: Some(sink.clone()),
+        budget: cherenkov::Budget { gpu: budget, ..Default::default() },
+        ..Default::default()
+    }))?;
+    let surface = wait!(engine.surface(Offscreen::new((128, 64), OffscreenFormat::LinearF16), || {}))?;
+    // 65536 exceeds the native texture dimension on the supported mobile GPUs.
+    let picture = Picture::record(|c| c.fill(Rect::new(0.0, 0.0, 65536.0, 64.0),
+        WorkingColor::new([0.0, 1.0, 0.0, 1.0])));
+    let placement = Binding::container(Affine::IDENTITY);
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| c.picture(&picture, placement.clone())));
+    });
+    let mut live = 0;
+    for x in [0.0, 128.25, 65000.0, 0.0] {
+        placement.set(Affine::translate((-x, 0.0)));
+        wait!(engine.render(FrameTime::now()))?;
+        live += live_bytes(&sink.take(), "projective image");
+        assert!(live > 0, "the oversized picture must use retained images");
+        assert!(live <= i128::from(budget.0 / 8), "visible tiles obey the picture share");
+        let pixels = wait!(surface.readback())?;
+        assert!(pixels.pixels[32 * 128 + 64][1] > 0.99);
+    }
+    Ok(())
+}
+}
+
+split_test! {
+/// Re-recording one small command preserves unrelated pixels in retained tiles.
+fn picture_rerecord_keeps_damage_local() -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::Picture;
+    use cherenkov::kurbo::Affine;
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((128, 64), OffscreenFormat::LinearF16), || {}))?;
+    let edits = [
+        Some((10_u32, [1.0, 0.0, 0.0, 1.0])),
+        Some((10_u32, [0.0, 1.0, 0.0, 1.0])),
+        Some((18_u32, [0.0, 1.0, 0.0, 1.0])),
+        None,
+    ];
+    for (step, edit) in edits.into_iter().enumerate() {
+        let picture = Picture::record(|c| {
+            c.fill(Rect::new(0.0, 0.0, 128.0, 64.0), WorkingColor::new([0.0, 0.0, 0.5, 1.0]));
+            if let Some((x, color)) = edit {
+                c.fill(Rect::new(f64::from(x), 10.0, f64::from(x + 4), 14.0), WorkingColor::new(color));
+            }
+        });
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|c| c.picture(&picture, Affine::IDENTITY)));
+        });
+        wait!(engine.render(FrameTime::now()))?;
+        let pixels = wait!(surface.readback())?;
+        if let Some((x, _)) = edit {
+            let column = usize::try_from(x + 2)?;
+            let channel = usize::from(step != 0);
+            assert!(pixels.pixels[12 * 128 + column][channel] > 0.99);
+        }
+        if step >= 2 {
+            assert!(pixels.pixels[12 * 128 + 12][2] > 0.49, "movement clears the old position");
+        }
+        if edit.is_none() {
+            assert!(pixels.pixels[12 * 128 + 20][2] > 0.49, "removal clears the last position");
+        }
+        assert!(pixels.pixels[32 * 128 + 64][2] > 0.49);
+        if step != 0 {
+            let stats = engine.stats();
+            assert!(stats.damaged_surface_pixels * 20 < stats.surface_pixels,
+                "small picture edit damages {} of {} surface pixels", stats.damaged_surface_pixels, stats.surface_pixels);
+        }
+    }
+    Ok(())
+}
+}
+
+split_test! {
+/// Gradient stop edits keep their command identity distinct, and their dirty
+/// texels map through rotation and nonuniform scale into the surface.
+fn transformed_picture_gradient_edit_keeps_damage_local() -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::{Picture, LinearGradient};
+    use cherenkov::kurbo::{Affine, Point};
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((128, 64), OffscreenFormat::LinearF16), || {}))?;
+    let transform = Affine::translate((32.25, 12.5)) * Affine::rotate(0.2) * Affine::scale_non_uniform(1.2, 0.8);
+    for step in 0..2 {
+        let color = if step == 0 { [1.0, 0.0, 0.0, 1.0] } else { [0.0, 1.0, 0.0, 1.0] };
+        let picture = Picture::record(|c| {
+            c.fill(Rect::new(-100.0, -100.0, 256.0, 256.0), WorkingColor::new([0.0, 0.0, 0.5, 1.0]));
+            c.fill(Rect::new(10.0, 10.0, 16.0, 16.0),
+                LinearGradient::new((10.0, 10.0), (16.0, 16.0))
+                    .stop(0.0, WorkingColor::new(color))
+                    .stop(1.0, WorkingColor::new([color[0] * 0.8, color[1] * 0.8, 0.0, 1.0])));
+        });
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|c| c.picture(&picture, transform)));
+        });
+        wait!(engine.render(FrameTime::now()))?;
+        let pixels = wait!(surface.readback())?;
+        let point = transform * Point::new(13.0, 13.0);
+        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "the test point lies inside the surface")]
+        let index = point.y as usize * 128 + point.x as usize;
+        assert!(pixels.pixels[index][step] > 0.7, "new gradient paint reaches the transformed tile");
+        if step != 0 {
+            let stats = engine.stats();
+            assert!(stats.damaged_surface_pixels * 20 < stats.surface_pixels,
+                "mapped edit damages {} of {} surface pixels", stats.damaged_surface_pixels, stats.surface_pixels);
+        }
+    }
+    Ok(())
+}
+}

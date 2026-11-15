@@ -1,4 +1,5 @@
 //! Picture-local raster retention, using the shared local-image cache.
+mod versions;
 
 use super::{
     Affine, Emission, EmissionStorage, GlyphContext, LayerId, LocalKey, Lowering, Op, Placement,
@@ -17,6 +18,7 @@ pub(super) struct PreparedDomain {
     source_bytes: u64,
     domain: Option<crate::render::planes::static_layer::Domain>,
     tiling: Option<Tiling>,
+    versions: versions::Versions,
 }
 
 struct Tile {
@@ -39,6 +41,7 @@ impl PreparedDomain {
 
     pub(super) fn source_bytes(&self) -> u64 {
         self.source_bytes
+            + self.versions.bytes()
             + self.tiling.as_ref().map_or(0, |tiling| {
                 (tiling.cells.capacity() * size_of::<(Cell, Tile)>()
                     + tiling.cells.len() * (2 * size_of::<usize>() + size_of::<[i32; 2]>())
@@ -128,6 +131,7 @@ struct PicturePlan {
     anchor: kurbo::Vec2,
     /// The bytes the driver commits for the image, which admission counted.
     bytes: u64,
+    revisions: Arc<[u64]>,
     cell: Arc<[i32; 2]>,
     tile: crate::render::projective::TilePlacement,
 }
@@ -196,7 +200,11 @@ impl Lowering<'_> {
                 .heap_bytes(cherenkov::lowering::memory::command_bytes),
             domain: None,
             tiling: None,
+            versions: versions::Versions::default(),
         });
+        if prepared.versions.revisions().is_empty() || !prepared.matches_source(picture) {
+            prepared.versions.update(ops, local.inverse(), index + 1);
+        }
         if !prepared.matches_source(picture) || prepared.bucket != bucket {
             if prepared.bucket != bucket {
                 prepared.tiling = None;
@@ -393,6 +401,7 @@ impl Lowering<'_> {
                 grid: tiling.grid,
                 anchor: tiling.anchor,
                 bytes,
+                revisions: prepared.versions.revisions(),
                 cell: Arc::clone(&recorded.identity),
                 tile: crate::render::projective::TilePlacement {
                     interior: core,
@@ -528,6 +537,7 @@ impl Lowering<'_> {
             grid,
             anchor,
             bytes,
+            revisions,
             cell,
             tile,
         } = plan;
@@ -557,7 +567,17 @@ impl Lowering<'_> {
             let (filters, passes) = (self.frame.filters.len(), self.frame.passes.len());
             // The outer image already retains nested pictures' pixels.
             let context = self.pictures.take();
+            let first_source = self.frame.command_sources.len();
+            let first_op = range.start;
             let result = self.ops(source, ops, emissions, storage, (layer, range), glyphs);
+            for source in &self.frame.command_sources[first_source..] {
+                for (offset, command) in self.frame.commands[source.commands.clone()]
+                    .iter_mut()
+                    .enumerate()
+                {
+                    command.revision = revisions[source.first_op + offset - first_op];
+                }
+            }
             self.pictures = context;
             self.finish_pass();
             let deps = crate::render::projective::Deps::of(self.frame, filters, passes, interop);

@@ -182,7 +182,7 @@ pub const fn blend_code(mode: cherenkov::BlendMode) -> u32 {
 /// `exponent` is the Lamé exponent of the corner curve: 2.0 for a circular
 /// or elliptical corner, larger for a continuous corner.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
 pub struct Shape {
     /// Half extents of the box.
     pub half: [f32; 2],
@@ -290,7 +290,7 @@ impl Instance {
 
 /// One gradient stop, mirroring the WGSL `Stop`.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
 pub struct Stop {
     /// Straight-alpha colour in the interpolation space.
     pub color: [f32; 4],

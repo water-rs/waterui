@@ -149,6 +149,14 @@ impl Demand {
             }
             for (read, range) in plan.reads[index].iter().zip(&frame.passes[index].ranges) {
                 if let Some(read) = read {
+                    if matches!(
+                        range.source,
+                        Some(crate::render::lower::Source::Projected(_))
+                    ) {
+                        // Persistent images are valid outside their seeded changes.
+                        // Sampling them does not require rewriting unchanged texels.
+                        continue;
+                    }
                     let whole = read.kind != ReadKind::CorrespondingPixel
                         || !super::plan::corresponds(
                             frame,
@@ -282,6 +290,13 @@ impl Changes {
             }
             for (read, range) in plan.reads[index].iter().zip(&frame.passes[index].ranges) {
                 if let Some(read) = read {
+                    if let Some(writer) = read.writer
+                        && matches!(range.source, Some(crate::render::lower::Source::Projected(key)) if key.picture.is_some())
+                    {
+                        let (before, after) = self.regions.passes.split_at_mut(index);
+                        picture_changes(frame, range, &before[writer], &mut after[0]);
+                        continue;
+                    }
                     let whole = read.kind != ReadKind::CorrespondingPixel
                         || !super::plan::corresponds(
                             frame,
@@ -325,6 +340,81 @@ impl Changes {
                 if x0 < x1 && y0 < y1 {
                     add(destination, [x0, y0, x1 - x0, y1 - y0]);
                 }
+            }
+        }
+    }
+}
+
+/// Tile texels map through the exact common inverse uploaded to the shader.
+/// The stored apron bounds all reconstruction taps, including mip filtering.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "mapped bounds are clipped to the destination's integer extent"
+)]
+fn picture_changes(
+    frame: &Frame,
+    range: &crate::render::lower::DrawRange,
+    source: &Region,
+    destination: &mut Region,
+) {
+    use cherenkov::kurbo::{Affine, Rect, Vec2};
+    for instance in &frame.instances[range.instances.start as usize..range.instances.end as usize] {
+        let first = instance.meta[2] as usize;
+        let stops = &frame.stops[first..first + 3];
+        let w = f64::from(stops[2].color[2]);
+        let inverse = Affine::new([
+            f64::from(stops[0].color[0]) / w,
+            f64::from(stops[1].color[0]) / w,
+            f64::from(stops[0].color[1]) / w,
+            f64::from(stops[1].color[1]) / w,
+            f64::from(stops[0].color[2]) / w,
+            f64::from(stops[1].color[2]) / w,
+        ]);
+        let core = Rect::new(
+            f64::from(stops[0].offset),
+            f64::from(stops[0].pad[0]),
+            f64::from(stops[0].pad[1]),
+            f64::from(stops[0].pad[2]),
+        );
+        let origin = Vec2::new(f64::from(stops[1].offset), f64::from(stops[1].pad[0]));
+        let margin = core.origin().to_vec2() - origin;
+        let forward = inverse.inverse();
+        let [x0, y0, x1, y1] = instance.bounds.map(f64::from);
+        let (width, height) = destination.extent();
+        let bounds = Rect::new(x0, y0, x1, y1).intersect(Rect::new(
+            0.0,
+            0.0,
+            f64::from(width),
+            f64::from(height),
+        ));
+        for rect in source.rectangles() {
+            let changed = (Rect::new(
+                f64::from(rect.x0()),
+                f64::from(rect.y0()),
+                f64::from(rect.x1()),
+                f64::from(rect.y1()),
+            )
+            .inflate(margin.x, margin.y)
+                + origin)
+                .intersect(core);
+            if changed.is_zero_area() {
+                continue;
+            }
+            let mapped = forward
+                .transform_rect_bbox(changed)
+                .expand()
+                .intersect(bounds);
+            if !mapped.is_zero_area() {
+                add(
+                    destination,
+                    [
+                        mapped.x0 as u32,
+                        mapped.y0 as u32,
+                        (mapped.x1 - mapped.x0) as u32,
+                        (mapped.y1 - mapped.y0) as u32,
+                    ],
+                );
             }
         }
     }
