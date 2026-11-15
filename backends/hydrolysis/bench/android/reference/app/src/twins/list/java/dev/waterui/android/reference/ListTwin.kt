@@ -145,11 +145,6 @@ fun ListTwin() {
                                         verticalAlignment = Alignment.CenterVertically,
                                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
                                     ) {
-                                        if (editing) {
-                                            IconButton(onClick = { records.remove(record) }) {
-                                                Icon(Icons.Default.Delete, contentDescription = "Delete")
-                                            }
-                                        }
                                         Column(
                                             horizontalAlignment = Alignment.Start,
                                             verticalArrangement = Arrangement.spacedBy(WATERUI_SPACING.dp),
@@ -162,6 +157,13 @@ fun ListTwin() {
                                             )
                                         }
                                         if (editing) {
+                                            IconButton(onClick = { records.remove(record) }) {
+                                                Icon(
+                                                    Icons.Default.Delete,
+                                                    contentDescription = "Delete",
+                                                    tint = MaterialTheme.colorScheme.error,
+                                                )
+                                            }
                                             Icon(
                                                 Icons.Default.DragHandle,
                                                 contentDescription = "Move Record #%,06d".format(record),
