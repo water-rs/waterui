@@ -26,7 +26,7 @@ use waterui::cursor::CursorStyle;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
 #[cfg(feature = "text-field")]
 use waterui_core::Str;
-#[cfg(feature = "accessibility")]
+#[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{
     HorizontalAlignment, LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions,
