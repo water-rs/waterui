@@ -4807,7 +4807,7 @@ mod tests {
                         .collect::<Vec<_>>()
                 });
         let controls = ["slider", "stepper", "text-field", "toggle"];
-        assert!(native_features.is_empty());
+        assert_eq!(native_features, [] as [&str; 0]);
         let shared_features = manifest["dependencies"]["waterui"]["features"]
             .as_array()
             .expect("the demo controls are enabled on every target")
