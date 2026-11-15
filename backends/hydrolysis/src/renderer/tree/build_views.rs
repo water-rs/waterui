@@ -12,7 +12,7 @@ impl_widget_behavior!(
     crate::widgets::layout::list::ListRenderState<E>,
     crate::widgets::layout::list::render_list_node,
     |state: &crate::widgets::layout::list::ListRenderState<E>, proposal, hydro, env, theme| {
-        crate::widgets::layout::list::measure_list_node(&state.config, proposal, hydro, env, theme)
+        crate::widgets::layout::list::measure_list_node(state, proposal, hydro, env, theme)
     }
     ; a11y: crate::widgets::layout::list::emit_list_accessibility
     ; surface: surface

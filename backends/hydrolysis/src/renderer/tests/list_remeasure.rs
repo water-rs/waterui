@@ -241,3 +241,74 @@ fn growing_row_above_viewport_keeps_anchor_row_position() {
         after.y0
     );
 }
+
+#[test]
+fn retained_list_measurement_reuses_the_watcher_snapshot() {
+    use core::cell::{Cell, RefCell};
+    use core::ops::RangeBounds;
+    use std::rc::Rc;
+
+    use nami::Computed;
+    use nami::collection::CollectionChange;
+    use nami::watcher::Context;
+    use waterui_core::layout::ProposalSize;
+    use waterui_core::view::ConfigurableView as _;
+    use waterui_core::views::{ForEach, Views};
+
+    use crate::renderer::WidgetBehavior as _;
+    use crate::widgets::layout::list::ListRenderState;
+
+    struct Counted<V> {
+        source: V,
+        captures: Rc<Cell<usize>>,
+    }
+
+    impl<V: Views> Views for Counted<V> {
+        type Id = V::Id;
+        type Guard = V::Guard;
+        type View = V::View;
+        type Snapshot = V::Snapshot;
+
+        fn len(&self) -> Computed<usize> {
+            self.source.len()
+        }
+
+        fn snapshot(&self) -> Self::Snapshot {
+            self.captures.set(self.captures.get() + 1);
+            self.source.snapshot()
+        }
+
+        fn watch(
+            &self,
+            range: impl RangeBounds<usize>,
+            watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
+        ) -> Self::Guard {
+            self.source.watch(range, watcher)
+        }
+    }
+
+    let rows = Binding::container(vec![SelfId::new(0_u64), SelfId::new(1_u64)]);
+    let captures = Rc::new(Cell::new(0));
+    let list = List::new(Counted {
+        source: ForEach::new(SignalCollection::new(rows.clone()), |_| {
+            ListItem::new(text("row"))
+        }),
+        captures: Rc::clone(&captures),
+    });
+    let env = test_environment();
+    let mut renderer = super::test_renderer();
+    let theme = renderer.theme();
+    let widget = RefCell::new(ListRenderState::from_config(list.config(), &env, &renderer));
+    let mounted_captures = captures.get();
+    assert!(mounted_captures > 0);
+    let proposal = ProposalSize::new(Some(400.0), None);
+    let before = widget.measure(&mut renderer.state, proposal, &env, &theme);
+    let repeated = widget.measure(&mut renderer.state, proposal, &env, &theme);
+    assert!((before.size.height - repeated.size.height).abs() < f32::EPSILON);
+    assert_eq!(captures.get(), mounted_captures);
+
+    rows.get_mut().push(SelfId::new(2_u64));
+    let after = widget.measure(&mut renderer.state, proposal, &env, &theme);
+    assert!(after.size.height > before.size.height);
+    assert_eq!(captures.get(), mounted_captures);
+}
