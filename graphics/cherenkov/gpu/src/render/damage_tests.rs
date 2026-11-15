@@ -56,6 +56,29 @@ fn contains(commands: &Commands, x: u32, y: u32) -> bool {
 }
 
 #[test]
+fn replacement_storage_invalidates_only_its_target_until_submission() {
+    let mut scene = frame(&[]);
+    let mut other = frame(&[]).passes.remove(0);
+    other.target = Target::Part(1);
+    scene.passes.push(other);
+    let mut history = Commands::default();
+    history.update(&scene);
+    history.submitted();
+    history.forget_target(Target::Part(1));
+    for _ in 0..2 {
+        history.update(&scene);
+        assert!(history.pass(0).is_empty(), "unreplaced storage survives");
+        assert!(
+            history.pass(1).is_full(),
+            "even empty storage needs its clear"
+        );
+    }
+    history.submitted();
+    history.update(&scene);
+    assert_eq!(history.pixels(), 0);
+}
+
+#[test]
 fn movement_and_removal_keep_last_submitted_footprints() {
     let mut history = Commands::default();
     history.update(&frame(&[(0, 10.0)]));

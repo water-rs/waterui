@@ -54,8 +54,8 @@ pub struct Commands {
     previous: FxHashMap<(Key, usize), Footprint>,
     prepared: FxHashMap<(Key, usize), Footprint>,
     previous_targets: Vec<Target>,
-    previous_states: Vec<u64>,
-    states: Vec<u64>,
+    previous_states: Vec<Option<u64>>,
+    states: Vec<Option<u64>>,
     targets: Vec<Target>,
     spans: Vec<(Range<usize>, usize, u64)>,
     regions: Vec<Region>,
@@ -71,11 +71,22 @@ impl Commands {
         self.pending = false;
     }
 
+    /// Replacement storage has no retained pixels, including its clear color.
+    /// Keep other attachments' submitted footprints and preserve this invalidation
+    /// across preparations that never reach submission.
+    pub fn forget_target(&mut self, target: Target) {
+        for (previous, state) in self.previous_targets.iter().zip(&mut self.previous_states) {
+            if *previous == target {
+                *state = None;
+            }
+        }
+    }
+
     pub fn bytes(&self) -> u64 {
         ((self.previous.capacity() + self.prepared.capacity())
             * size_of::<((Key, usize), Footprint)>()
             + (self.previous_targets.capacity() + self.targets.capacity()) * size_of::<Target>()
-            + (self.previous_states.capacity() + self.states.capacity()) * size_of::<u64>()
+            + (self.previous_states.capacity() + self.states.capacity()) * size_of::<Option<u64>>()
             + self.spans.capacity() * size_of::<(Range<usize>, usize, u64)>()
             + self.regions.capacity() * size_of::<Region>()
             + self.last_order.capacity() * size_of::<usize>()) as u64
@@ -140,7 +151,7 @@ impl Commands {
             .extend(frame.passes.iter().map(|pass| pass.target));
         self.states.clear();
         self.states
-            .extend((0..frame.passes.len()).map(|index| pass_state(frame, index, version)));
+            .extend((0..frame.passes.len()).map(|index| Some(pass_state(frame, index, version))));
         self.spans.clear();
         for (pass, data) in frame.passes.iter().enumerate() {
             self.spans.extend(data.ranges.iter().map(|range| {

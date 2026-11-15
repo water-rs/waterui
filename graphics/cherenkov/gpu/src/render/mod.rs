@@ -6637,7 +6637,7 @@ impl GpuRenderer {
                 continue;
             }
             let pipelines = self.projective.as_ref().expect("built above");
-            surf.command_damage.forget();
+            surf.command_damage.forget_target(Target::Projected(r.key));
             let mut entry =
                 projective::Entry::new(&self.device, pipelines, r.key.bucket, &r.levels, r.bytes());
             if r.picture.is_some() {
