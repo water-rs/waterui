@@ -1,0 +1,51 @@
+name: Apple Rust setup
+description: >
+  Installs the requested Rust Apple targets, computes the toolchain
+  fingerprint, sets CARGO_MESSAGES, and restores the shared macOS cargo
+  sources and compiled target caches read-only.
+
+inputs:
+  targets:
+    description: Comma-separated Rust target triples to install.
+    required: true
+
+outputs:
+  sources-cache-hit:
+    description: Whether cargo-sources matched its exact primary key.
+    value: ${{ steps.cargo-sources.outputs.cache-hit }}
+  sources-primary-key:
+    description: Primary key for cargo-sources.
+    value: ${{ steps.cargo-sources.outputs.cache-primary-key }}
+  target-cache-hit:
+    description: Whether apple-target matched its exact primary key.
+    value: ${{ steps.apple-target.outputs.cache-hit }}
+  target-primary-key:
+    description: Primary key for apple-target.
+    value: ${{ steps.apple-target.outputs.cache-primary-key }}
+
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/setup-rust
+      with:
+        components: clippy, rustfmt
+        targets: ${{ inputs.targets }}
+        cache: "false"
+    - name: Rust toolchain fingerprint
+      id: rustc-fingerprint
+      shell: bash
+      run: echo "hash=$(rustc -vV | shasum -a 256 | cut -d' ' -f1)" >> "${GITHUB_OUTPUT}"
+    - name: Cargo message log
+      shell: bash
+      run: echo "CARGO_MESSAGES=${RUNNER_TEMP}/cargo-messages.jsonl" >> "${GITHUB_ENV}"
+    - name: Restore Cargo sources
+      id: cargo-sources
+      uses: ./.github/actions/cargo-sources
+    - name: Restore compiled target cache
+      id: apple-target
+      uses: actions/cache/restore@v4
+      with:
+        path: target
+        key: apple-target-${{ runner.os }}-${{ runner.arch }}-${{ steps.rustc-fingerprint.outputs.hash }}-${{ hashFiles('Cargo.lock') }}
+        restore-keys: |
+          apple-target-${{ runner.os }}-${{ runner.arch }}-${{ steps.rustc-fingerprint.outputs.hash }}-

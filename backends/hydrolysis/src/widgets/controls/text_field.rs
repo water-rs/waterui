@@ -18,6 +18,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::cursor::CursorStyle;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
+#[cfg(feature = "accessibility")]
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{
     HorizontalAlignment, LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions,
