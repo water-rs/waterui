@@ -119,7 +119,6 @@ zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 # `.tar.gz` (sccache on Linux and macOS).
 flate2 = "1"
 tar = "0.4"
-roxmltree = "0.21"            # Android SDK repository XML parsing
 fs_extra = "1.3"
 askama = "0.16"
 resvg = { version = "0.48.1", optional = true }
