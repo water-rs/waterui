@@ -155,7 +155,7 @@ impl CliIdentity {
 /// Unix, device and inode — a replaced file changes at least one of
 /// them, and every spelling of a path to it shares them all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-struct FileStamp {
+pub struct FileStamp {
     len: u64,
     modified_ns: u128,
     device: u64,
@@ -165,7 +165,7 @@ struct FileStamp {
 impl FileStamp {
     /// `path`'s identity, following symlinks; `None` when nothing is
     /// there.
-    fn of(path: &Path) -> io::Result<Option<Self>> {
+    pub(crate) fn of(path: &Path) -> io::Result<Option<Self>> {
         let metadata = match std::fs::metadata(path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),

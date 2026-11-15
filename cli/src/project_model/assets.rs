@@ -120,7 +120,7 @@ const HYDROLYSIS_DEFAULT_FONT_FAMILY: &str = "Roboto";
 const FONT_MANIFEST_FILE_NAME: &str = "waterui-fonts.json";
 
 /// A resolved font with its absolute path.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedFont {
     /// Font family name.
     pub name: String,
@@ -2329,6 +2329,8 @@ pub async fn stage_project_assets_for_gtk(
 pub fn scan_project_font_assets(manifest: &BundleManifest) -> eyre::Result<Vec<ResolvedFont>> {
     unified::scan_project_fonts(manifest)
 }
+
+pub use unified::cached_project_fonts;
 
 pub use unified::LaunchAssets;
 
