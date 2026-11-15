@@ -37,6 +37,7 @@ use waterui_core::layout::LayoutDirection;
 use super::accessibility::AccessibilitySnapshot;
 #[cfg(hydrolysis_gpu_painter)]
 use super::gpu::{AndroidGpuContext, AndroidSurface};
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use super::ime::ImeBridge;
 use super::jni::JniError;
 #[cfg(hydrolysis_gpu_painter)]
@@ -46,7 +47,9 @@ use crate::platform::{InputEvent, PlatformWindow, TextInputState, validated_wind
 use crate::renderer::FontFamilyResolution;
 #[cfg(hydrolysis_gpu_painter)]
 use crate::renderer::HydrolysisRenderer;
-use crate::renderer::{HydrolysisTextContextMenuMode, MenuShortcutRegistry};
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use crate::renderer::HydrolysisTextContextMenuMode;
+use crate::renderer::MenuShortcutRegistry;
 use crate::runner::android_executor::{AndroidMainThreadExecutor, UiThreadPoster};
 use crate::runner::android_methods::{HOST_METHODS, HostMethodId};
 use crate::runner::android_metrics::InsetsMetrics;
@@ -287,12 +290,14 @@ impl HostBridge {
 
     /// `session.onNativeEditingState(json)` — the authoritative editing
     /// state for the connection's `Editable` mirror.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn editing_state_changed(&self, json: &str) {
         self.call_str(HostMethodId::EditingState, json);
     }
 
     /// `session.onNativeCursorAnchorInfo(json)` — the subscribed cursor
     /// anchor info, in logical units.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn cursor_anchor_changed(&self, json: &str) {
         self.call_str(HostMethodId::CursorAnchorInfo, json);
     }
@@ -951,6 +956,7 @@ pub struct AndroidSession {
     /// The platform-view sink the window's `PlatformView` leaves record into;
     /// the published table is serialized for the Kotlin registry.
     pub(crate) platform_views: crate::platform_view::PlatformViewSink,
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) ime: ImeBridge,
     /// The live surface generation, as last reported by the host.
     #[cfg(hydrolysis_gpu_painter)]
@@ -1137,6 +1143,7 @@ fn session_mounts(
         Rc::clone(&pending_window_queue),
     );
     menu_bar::register_menu_bar::<super::AndroidTextEngine>(&menu_bar, &env);
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     // The configuration's night mode is the colour-scheme signal: created
     // with the real `uiMode` the create call carried and kept current by
@@ -1430,6 +1437,7 @@ impl AndroidSession {
             pending_window_queue,
             a11y: AccessibilitySnapshot::default(),
             platform_views,
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             ime: ImeBridge::default(),
             #[cfg(hydrolysis_gpu_painter)]
             surface_generation: 0,
@@ -1636,6 +1644,7 @@ impl AndroidSession {
         }
         super::accessibility::publish_if_pending(self);
         super::platform_views::publish_if_pending(self, flushed);
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         self.editing_sync();
 
         // Popup windows mounting mid-frame land on the pending queue: the

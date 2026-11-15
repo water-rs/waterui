@@ -1248,6 +1248,7 @@ pub fn date_picker_window(
 }
 
 impl<E: crate::text::TextEngine> SemanticCore<E> {
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) const fn active_popup_menu_visible(&self) -> bool {
         self.popup_menu.active_popup_menu_group.is_some()
     }

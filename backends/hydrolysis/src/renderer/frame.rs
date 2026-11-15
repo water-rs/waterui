@@ -51,14 +51,17 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// field that moved into the old position for the focused one. Shared by both
     /// frame paths.
     pub(crate) fn validate_focused_text_input_after_flush(&mut self) {
-        let modal_active = self.modal_shield_active();
-        let focus_is_live = !self.text_editing.has_focus()
-            || self
-                .text_editing
-                .focused_target()
-                .is_some_and(|target| !modal_active || target.modal);
-        if !focus_is_live {
-            self.set_focused_text_input_key(None);
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        {
+            let modal_active = self.modal_shield_active();
+            let focus_is_live = !self.text_editing.has_focus()
+                || self
+                    .text_editing
+                    .focused_target()
+                    .is_some_and(|target| !modal_active || target.modal);
+            if !focus_is_live {
+                self.set_focused_text_input_key(None);
+            }
         }
         // The semantic focus node must still be emitted and hittable: a node
         // that went hidden or disabled — itself or through an ancestor —
@@ -98,13 +101,16 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             self.hit_test.focus_dropped_this_frame = true;
             self.set_keyboard_focus(None, false);
         }
-        let selection_drag_is_live = self
-            .text_editing
-            .active_text_selection_drag
-            .as_ref()
-            .is_none_or(|drag| self.text_editing.index_of(&drag.target).is_some());
-        if !selection_drag_is_live {
-            self.text_editing.active_text_selection_drag = None;
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        {
+            let selection_drag_is_live = self
+                .text_editing
+                .active_text_selection_drag
+                .as_ref()
+                .is_none_or(|drag| self.text_editing.index_of(&drag.target).is_some());
+            if !selection_drag_is_live {
+                self.text_editing.active_text_selection_drag = None;
+            }
         }
     }
 
@@ -280,6 +286,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// still collecting that frame's work.
     pub fn reset_scene(&mut self) {
         self.gesture_engine.clear_targets();
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         self.text_editing.text_input_targets.clear();
         self.state.measurement.reset_counters();
         #[cfg(feature = "accessibility")]
@@ -364,10 +371,12 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.validate_focused_text_input_after_flush();
 
         self.core.retire_unbound_animation_slots();
-        self.core
-            .hit_test
-            .finish_rebuild_frame(&self.core.text_editing.text_input_targets);
+        self.core.hit_test.finish_rebuild_frame(
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
+            &self.core.text_editing.text_input_targets,
+        );
         self.relocate_dropped_focus();
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         self.clear_focused_fields();
         #[cfg(feature = "navigation")]
         self.core.navigation.finish_rebuild_frame();

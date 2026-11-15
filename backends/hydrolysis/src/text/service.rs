@@ -115,6 +115,7 @@ impl<E: TextEngine> TextService<E> {
     /// an empty input lays out the one empty line a caret in it occupies, in
     /// the input's default style, so an empty field measures as tall as a
     /// filled one.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn shape_editable(
         &self,
         input: &ResolvedTextLayoutInput,

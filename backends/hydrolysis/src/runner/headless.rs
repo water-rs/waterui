@@ -53,6 +53,13 @@ impl HeadlessSurface {
     /// Whether the driver reported the device generation this target
     /// renders on lost — the next frame recovers it under its context's
     /// recovery budget. The CPU painter has no device to lose.
+    #[cfg_attr(
+        not(hydrolysis_gpu_painter),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "the same query reads driver state when the GPU painter is enabled"
+        )
+    )]
     fn device_lost(&self) -> bool {
         match self {
             #[cfg(hydrolysis_gpu_painter)]
@@ -769,6 +776,7 @@ impl HeadlessRuntime {
             &mut env,
             Rc::clone(&pending_window_queue),
         );
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // A headless host has no platform appearance: the scheme is Light
         // unless the application installs its own.
@@ -1119,6 +1127,7 @@ impl HeadlessRuntime {
 
     #[cfg(feature = "accessibility")]
     /// Clears UI focus; returns whether focus changed.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub fn clear_ui_focus(&mut self) -> bool {
         let changed = self.runtime.renderer.clear_ui_focus();
         if changed {

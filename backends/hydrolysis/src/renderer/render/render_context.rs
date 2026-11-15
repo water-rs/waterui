@@ -65,6 +65,7 @@ pub struct HydrolysisWindowOrigin {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub enum HydrolysisTextContextMenuMode {
     Overlay,
     NativeWindow,
@@ -254,6 +255,11 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
     }
 
     /// [`Self::open_scope`] around `f`.
+    #[cfg(any(
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "navigation"
+    ))]
     pub(crate) fn with_scope(
         &mut self,
         key: crate::renderer::mount::ScopeKey,

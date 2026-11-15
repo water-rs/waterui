@@ -27,8 +27,10 @@ pub use measurement::*;
 pub use measurement_cache::{MeasurementCaches, MemoGate, NodeMeasureEntry};
 #[cfg(feature = "navigation")]
 pub use render_context::ChromeGroup;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+pub use render_context::HydrolysisTextContextMenuMode;
+pub use render_context::HydrolysisWindowOrigin;
 pub use render_context::RenderContext;
-pub use render_context::{HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};
 pub use render_context::{WidgetRenderContext, bounded_proposal};
 pub use state::HydroState;
 pub use subview::HydroSubview;

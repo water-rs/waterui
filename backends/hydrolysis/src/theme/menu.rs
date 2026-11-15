@@ -90,6 +90,7 @@ pub struct MenuLook {
             reason = "only the renderer records the menu's separators; a build without a painter compiles the theme contract alone"
         )
     )]
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     separator: Rc<dyn CustomPart<()>>,
     selected_row: Option<Rc<dyn CustomPart<()>>>,
 }
@@ -115,9 +116,12 @@ impl MenuLook {
         S: DrivenSet<()> + 'static,
         S::Live: 'static,
     {
+        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+        drop(separator);
         Self {
             layout,
             panel: Rc::new(panel),
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             separator: Rc::new(separator),
             selected_row: None,
         }
@@ -156,6 +160,7 @@ impl MenuLook {
 
     /// Records a separator over `frame`.
     #[cfg(hydrolysis_runtime)]
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn record_separator(&self, recorder: &mut Recorder, frame: Rect) {
         record_at_rest(&*self.separator, recorder, frame);
     }

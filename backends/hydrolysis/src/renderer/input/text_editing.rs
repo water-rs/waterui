@@ -91,26 +91,9 @@ pub struct TextEditingState<E: crate::text::TextEngine> {
     pub(crate) text_caret_fade_started_at: Option<Instant>,
     pub(crate) text_caret_next_frame_at: Option<Instant>,
     pub(crate) text_caret_motion: Option<TextCaretMotion>,
-    /// How many primary presses have landed on an editable target. A
-    /// platform with a soft keyboard shows it again when this changes, so a
-    /// tap on the field already holding focus brings back a keyboard the
-    /// user dismissed.
-    activations: u64,
 }
 
 impl<E: crate::text::TextEngine> TextEditingState<E> {
-    /// Records a primary press on an editable target.
-    pub(crate) const fn note_activation(&mut self) {
-        self.activations = self
-            .activations
-            .checked_add(1)
-            .expect("text input activation count overflow");
-    }
-
-    /// The press count [`Self::note_activation`] maintains.
-    pub(crate) const fn activations(&self) -> u64 {
-        self.activations
-    }
     /// This frame's position for a stable target identity, if that target is
     /// still emitted.
     pub(crate) fn index_of(&self, key: &InteractionKey) -> Option<usize> {
@@ -420,7 +403,7 @@ pub enum ActiveTextContextMenu {
 }
 
 impl TextInputModel {
-    fn submit_action(&self) -> Option<&SharedAction> {
+    const fn submit_action(&self) -> Option<&SharedAction> {
         match self {
             #[cfg(feature = "text-field")]
             Self::TextField { on_submit, .. } => on_submit.as_ref(),
@@ -787,38 +770,6 @@ pub fn set_model_caret_position(
     changed
 }
 
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        clippy::future_not_send,
-        reason = "wasm32 is single-threaded; the browser Clipboard handle is a JS object and `!Send` by design"
-    )
-)]
-pub async fn read_clipboard_text_async() -> Option<String> {
-    let clipboard = match Clipboard::new() {
-        Ok(value) => value,
-        Err(error) => {
-            tracing::warn!(
-                target: "waterui::hydrolysis::input",
-                error = %error,
-                "failed to initialize clipboard for paste"
-            );
-            return None;
-        }
-    };
-    match clipboard.text().await {
-        Ok(value) => value,
-        Err(error) => {
-            tracing::warn!(
-                target: "waterui::hydrolysis::input",
-                error = %error,
-                "failed to read clipboard text"
-            );
-            None
-        }
-    }
-}
-
 pub fn spawn_clipboard_paste_task(
     model: TextInputModel,
     selection: Rc<RefCell<TextSelectionSlot>>,
@@ -1180,115 +1131,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// Move focus to the text input with this stable identity, or clear it with
     /// `None`. The target need not be emitted this frame; focus simply resolves
     /// to nothing until it is.
-    /// Wires a `.focused(binding)` modifier to the single focusable target —
-    /// a text field or an input surface — registered inside `scope`'s subtree:
-    /// writes the binding onto that target, then applies the binding's value
-    /// to the focused-input key. The retained equivalent of the flat lists'
-    /// `[start..]` span: entries owned by cells inside `scope`'s subtree,
-    /// hittable or not — a `.focused()` inside an unhittable subtree still saw
-    /// the target on dev (the outer truncation ran after the wiring), and the
-    /// post-flush validation releases whatever focus a dead chain took.
-    /// Shared by the rendered flush and the semantic accessibility walk.
-    pub(crate) fn wire_focused_target(
-        &mut self,
-        value: &waterui::component::focus::Focused,
-        should_focus: bool,
-        scope: &Rc<NodeCell<E>>,
-    ) {
-        // Whether the entry's owning cell is `scope` or a descendant of it.
-        let in_scope = |owner: &std::rc::Weak<NodeCell<E>>| -> bool {
-            let mut cell = owner.upgrade();
-            while let Some(current) = cell {
-                if Rc::ptr_eq(&current, scope) {
-                    return true;
-                }
-                cell = current.parent();
-            }
-            false
-        };
-        // The retained registries own entries per recording cell — the
-        // scan walks every live owner's bucket and keeps the cell it
-        // found, so the write-back lands in the same bucket.
-        let mut text_hit = None;
-        let mut embedded_hit = None;
-        let mut count = 0usize;
-        for cell in self.retained.owners() {
-            let slot = cell.registrations.borrow();
-            let Some(regs) = slot.as_ref() else {
-                continue;
-            };
-            for (index, entry) in regs.text_input_targets.iter().enumerate() {
-                if in_scope(&entry.owner) {
-                    count += 1;
-                    text_hit = Some((Rc::clone(&cell), index));
-                }
-            }
-            for (index, entry) in regs.embedded_input_targets.iter().enumerate() {
-                if in_scope(&entry.owner) {
-                    count += 1;
-                    embedded_hit = Some((Rc::clone(&cell), index));
-                }
-            }
-        }
-        if count != 1 {
-            contract_violation!(
-                "hydrolysis .focused() requires exactly one TextField or SecureField or input surface in the wrapped subtree, found {count}; the binding is not wired"
-            );
-            return;
-        }
-        if let Some((cell, index)) = embedded_hit {
-            // The bucket borrow ends before the focus setters run: they
-            // materialize the registries, which borrow the same `RefCell`.
-            let target_key = {
-                let mut slot = cell.registrations.borrow_mut();
-                let target = &mut slot
-                    .as_mut()
-                    .expect("hydrolysis focused metadata missing embedded input bucket")
-                    .embedded_input_targets[index]
-                    .payload;
-                if target.focus_binding.is_some() {
-                    contract_violation!(
-                        "hydrolysis does not allow multiple .focused() modifiers to target the same control; the later binding is not wired"
-                    );
-                    return;
-                }
-                target.focus_binding = Some(value.0.clone());
-                target.interaction_key.clone()
-            };
-
-            if should_focus {
-                self.set_focused_embedded_key(Some(target_key));
-            } else if self.is_focused_embedded(&target_key) {
-                self.set_focused_embedded_key(None);
-            }
-            return;
-        }
-        let (cell, index) =
-            text_hit.expect("hydrolysis focused metadata missing registered text input target");
-        let target_key = {
-            let mut slot = cell.registrations.borrow_mut();
-            let target = &mut slot
-                .as_mut()
-                .expect("hydrolysis focused metadata missing text input bucket")
-                .text_input_targets[index]
-                .payload;
-            if target.focus_binding.is_some() {
-                contract_violation!(
-                    "hydrolysis does not allow multiple .focused() modifiers to target the same control; the later binding is not wired"
-                );
-                return;
-            }
-            target.focus_binding = Some(value.0.clone());
-            target.interaction_key.clone()
-        };
-
-        if should_focus {
-            self.set_focused_text_input_key(Some(target_key));
-        } else if self.text_editing.is_focused(&target_key) {
-            self.set_focused_text_input_key(None);
-        }
-    }
-
     pub(crate) fn set_focused_text_input_key(&mut self, focused: Option<InteractionKey>) -> bool {
         // Mid-flush callers (`wire_focused_target`) run before this frame's
         // materialization — resolve the key against what is registered so
@@ -2494,7 +2336,6 @@ impl<E: crate::text::TextEngine> Default for TextEditingState<E> {
             text_caret_fade_started_at: Option::default(),
             text_caret_next_frame_at: Option::default(),
             text_caret_motion: Option::default(),
-            activations: Default::default(),
         }
     }
 }

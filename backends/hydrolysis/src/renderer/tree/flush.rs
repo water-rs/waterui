@@ -742,6 +742,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 // frame by frame, so this flush paints the field already
                 // clear — `begin_flush` first, metrics after (the order
                 // `List`/`Table` use).
+                #[cfg(any(feature = "text-field", feature = "secure-field"))]
                 node.surface.begin_flush(renderer, &handle);
                 let metrics = handle.metrics();
                 {
@@ -836,6 +837,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 }
                 // The focused-field clearance runs after recording, over
                 // the retained input targets.
+                #[cfg(any(feature = "text-field", feature = "secure-field"))]
                 node.surface.register_clearance(renderer, &handle);
                 // The indicators ride the surface's own frame, not the
                 // extended clip: they stay visible at the avoided edge.

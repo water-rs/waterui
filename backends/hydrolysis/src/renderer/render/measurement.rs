@@ -2,10 +2,16 @@
 use crate::num_cast::f64_as_f32;
 #[cfg(feature = "list")]
 use crate::theme::ListMetrics;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use crate::theme::TextFieldLook;
 #[cfg(feature = "navigation")]
 use crate::theme::{NavigationBarLook, NavigationMetrics, NavigationSpec, TabsSpec};
 #[cfg(feature = "text-field")]
 use crate::widgets::controls::field_look::placeholder_text;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use crate::widgets::controls::field_look::value_text;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use waterui_core::interaction::InteractionState;
 #[cfg(feature = "list")]
 use waterui_core::views::AnyViewsSnapshot;
 #[cfg(feature = "list")]
@@ -15,8 +21,8 @@ use waterui_layout::padding::EdgeInsets;
 use super::*;
 use crate::text::TextEngine;
 use crate::text::TextLayout as _;
-use crate::theme::{TextFieldLook, WidgetTheme};
-use crate::widgets::controls::field_look::{field_look, value_text};
+use crate::theme::WidgetTheme;
+use crate::widgets::controls::field_look::field_look;
 use crate::widgets::layout::container::resolve_lazy_container_extent;
 #[cfg(feature = "navigation")]
 use crate::widgets::nav::tabs::{tabs_decide_layout, tabs_item_natural_width};
@@ -25,7 +31,6 @@ use std::rc::Rc;
 use waterui::navigation::tab::TabIcon;
 use waterui_core::contract_violation;
 use waterui_core::handler::BoxedAction;
-use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{LayoutError, ResolvedExtent, layout_direction, resolve_layout_extent};
 use waterui_core::views::ViewSnapshot;
 #[cfg(feature = "picker")]
@@ -780,6 +785,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         clippy::needless_pass_by_value,
         reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
     )]
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn build_text_layout(
         state: &mut HydroState<E>,
         styled: StyledStr,
@@ -839,6 +845,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// The size of an editable field's content, at most `max_lines` lines.
     /// Empty text still measures the one line a caret occupies, so a field
     /// keeps its height as text is entered.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn measure_editable_text_size(
         state: &HydroState<E>,
         styled: &StyledStr,
@@ -1410,6 +1417,7 @@ pub fn measure_text_field_size_with_label_size<E: crate::text::TextEngine>(
 /// answered floored at `minimum` — the `0` probe included — so an unbounded
 /// probe answers `INFINITY`; `None` answers the `ideal` (theme `min_width`
 /// floor applied). The field's text is not an input to the width.
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 fn input_field_width(proposal: Option<f32>, ideal: f64, minimum: f64) -> f64 {
     proposal.map_or(ideal, |width| f64::from(width).max(minimum))
 }
@@ -1482,6 +1490,7 @@ pub fn measure_secure_field_size_with_label_size<E: crate::text::TextEngine>(
 /// theme's `label_height`: the label scales into the band when it floats, so
 /// the unscaled label measure only decides whether the band exists, never
 /// how tall it is (water-rs/waterui#2387).
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 fn measured_input_label_height(label_size: LayoutSize, label_height: f64) -> f64 {
     if label_size.width > 0.0 || label_size.height > 0.0 {
         label_height
@@ -1490,6 +1499,7 @@ fn measured_input_label_height(label_size: LayoutSize, label_height: f64) -> f64
     }
 }
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 fn measured_input_field_height(
     text_height: f32,
     label_height: f64,

@@ -10,7 +10,10 @@ use crate::theme::InteractionFocusBinding;
 #[cfg(feature = "accessibility")]
 use std::borrow::Cow;
 #[cfg(feature = "accessibility")]
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::BTreeSet;
+#[cfg(feature = "accessibility")]
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use std::collections::VecDeque;
 #[cfg(feature = "accessibility")]
 #[cfg(feature = "date-picker")]
 use waterui_form::picker::date::{DatePickerType, DateTime};
@@ -427,6 +430,7 @@ pub struct AccessibilityBuilder<E: crate::text::TextEngine> {
     pub(crate) root_bounds: kurbo::Rect,
     pub(crate) root_label: String,
     pub(crate) focus: AccessibilityNodeId,
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) pending_text_input_nodes: VecDeque<AccessibilityNodeId>,
     pub(crate) parent_stack: Vec<AccessibilityNodeId>,
     /// The registering cell of each emitted node — the owner the unit rule
@@ -520,6 +524,7 @@ impl<E: crate::text::TextEngine> Default for AccessibilityBuilder<E> {
             root_bounds: kurbo::Rect::ZERO,
             root_label: String::from("WaterUI Window"),
             focus: ACCESSIBILITY_ROOT_NODE_ID,
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             pending_text_input_nodes: VecDeque::new(),
             parent_stack: Vec::new(),
             node_owners: std::collections::BTreeMap::new(),
@@ -575,6 +580,7 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         self.active_node_keys.clear();
         self.owner_ordinals.clear();
         self.owner_stack.clear();
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         self.pending_text_input_nodes.clear();
         self.parent_stack.clear();
         self.suppression_depth = 0;
@@ -713,10 +719,12 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         }
     }
 
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn push_pending_text_input_node(&mut self, node_id: AccessibilityNodeId) {
         self.pending_text_input_nodes.push_back(node_id);
     }
 
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn take_pending_text_input_node(&mut self) -> Option<AccessibilityNodeId> {
         self.pending_text_input_nodes.pop_front()
     }
@@ -2019,6 +2027,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn push_pending_text_input_accessibility_node(
         &mut self,
         node_id: AccessibilityNodeId,
@@ -2027,6 +2036,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn take_pending_text_input_accessibility_node(
         &mut self,
     ) -> Option<AccessibilityNodeId> {

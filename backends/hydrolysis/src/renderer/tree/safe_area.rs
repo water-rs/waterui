@@ -15,13 +15,17 @@
 //! bounds layout computed once, and the focused-field state the flush
 //! drives.
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use core::cell::RefCell;
+
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-use core::cell::{Cell, RefCell};
+use core::cell::Cell;
 use core::ops::Range;
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use waterui_core::animation::Animation;
 use waterui_core::contract_violation;
 use waterui_core::layout::{LayoutDirection, Rect, Size};
@@ -29,6 +33,7 @@ use waterui_layout::padding::EdgeInsets;
 use waterui_layout::safe_area::{EdgeSet, IgnoreSafeArea, SafeAreaRegions};
 use waterui_layout::scroll::Axis as ScrollAxis;
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::scroll::ScrollRunOutcome;
 
 /// One of the four edges §7.1's regions sit on.
@@ -850,7 +855,9 @@ impl SafeAreaLayout {
     pub fn surface_facts(&self) -> ScrollSurfaceFacts {
         ScrollSurfaceFacts {
             extension: self.touched_edge_offsets(),
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             window_frame: self.frame,
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             keyboard_top: self.window.y1 - f64::from(self.keyboard.bottom()),
         }
     }
@@ -869,9 +876,11 @@ pub struct ScrollSurfaceFacts {
     pub extension: EdgeOffsets,
     /// The surface's laid-out frame in window space — the clearance
     /// bound's lower term and the taller-field clamp.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub window_frame: kurbo::Rect,
     /// The keyboard region's top edge in window space — the clearance
     /// bound's upper term.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub keyboard_top: f64,
 }
 
@@ -1039,17 +1048,21 @@ pub struct ScrollSurfaceArea {
     pub facts: Cell<Option<ScrollSurfaceFacts>>,
     /// The field the clearance last handled: its window-space rect and the
     /// scroll offset it was captured at — the early pass's starting point.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     cleared: RefCell<Option<ClearedField>>,
     /// The keyboard top the last early pass saw — a change re-runs the
     /// clearance before the content paints.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     keyboard_top: Cell<Option<f64>>,
     /// Whether the keyboard top moved in this flush's early pass — selects
     /// the direct (not eased) scroll for a focus landing now.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     keyboard_moved: Cell<bool>,
 }
 
 /// One cleared field's identity and last observed geometry.
 #[derive(Clone)]
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 struct ClearedField {
     /// The field's stable target identity — a different key means the
     /// focus moved, which re-runs the clearance.
@@ -1124,6 +1137,7 @@ impl ScrollSurfaceArea {
     /// offset follows each frame directly — the host's own animation is
     /// the pacing, never an eased chase — using the previous frame's
     /// stored field rect, so the content paints already clear.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub fn begin_flush<E: crate::text::TextEngine>(
         &self,
         renderer: &HydrolysisRenderer<E>,
@@ -1143,6 +1157,7 @@ impl ScrollSurfaceArea {
     /// ([`HydrolysisRenderer::clear_focused_fields`]). The registration is
     /// retained: a clean surface that does not record keeps it, so a field
     /// gaining focus under it is still scrolled clear.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub fn register_clearance<E: crate::text::TextEngine>(
         self: &std::rc::Rc<Self>,
         renderer: &HydrolysisRenderer<E>,
@@ -1181,6 +1196,7 @@ impl ScrollSurfaceArea {
     /// [`HydrolysisRenderer::focused_field_frame_in_scope`] reads the
     /// focused field out of the buckets the cells under this surface's own
     /// record wrote, so it answers exactly dev's set.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     fn clear_focused_field<E: crate::text::TextEngine>(
         &self,
         renderer: &HydrolysisRenderer<E>,
@@ -1227,6 +1243,7 @@ impl ScrollSurfaceArea {
     /// it back. This assumes the field did not move inside the content
     /// between frames — a relayout that moves it re-captures through
     /// `clear_focused_field` before the next keyboard-moving pass reads it.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     fn field_window_rect(&self, offset_y: f64) -> Option<kurbo::Rect> {
         self.cleared
             .borrow()
@@ -1238,6 +1255,7 @@ impl ScrollSurfaceArea {
     /// `min(keyboard top, surface bottom)`; a field taller than the
     /// surface clamps the distance so its top stays inside the surface's
     /// frame.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     fn scroll_field_clear<E: crate::text::TextEngine>(
         renderer: &HydrolysisRenderer<E>,
         handle: &ScrollHandle,
@@ -1291,6 +1309,7 @@ pub fn released_size(size: Size, released: EdgeOffsets) -> Size {
     )
 }
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// The frame's post-record focus clearance (§B step 7): every live
     /// registered surface clears the focused field its subtree holds,

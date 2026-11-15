@@ -1,6 +1,7 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use waterui_core::contract_violation;
 
 /// What became of a key press once the framework finished with it.
 ///
@@ -132,6 +133,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         if self.handle_keyboard_key_down(key, press.key(), modifiers, env) {
             return KeyPressOutcome::Consumed;
         }
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         if self.handle_key(key, modifiers) {
             return KeyPressOutcome::Consumed;
         }
@@ -150,12 +152,24 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// every registration of the frame.
     fn bubble_key_press(&mut self, press: &KeyPress) -> KeyPressOutcome {
         let focused_key = self.hit_test.keyboard_focus.clone();
-        let mut scopes: Option<Option<Rc<KeyHandlerNode>>> = None;
-        let mut bubble_center: Option<kurbo::Point> = None;
-        if let Some(target) = self.text_editing.focused_target() {
-            scopes = Some(target.key_handlers.clone());
-            bubble_center = Some(target.bounds.center());
-        } else if let Some(key) = focused_key.as_ref() {
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        let (mut scopes, mut bubble_center) =
+            self.text_editing
+                .focused_target()
+                .map_or((None, None), |target| {
+                    (
+                        Some(target.key_handlers.clone()),
+                        Some(target.bounds.center()),
+                    )
+                });
+        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+        let (mut scopes, mut bubble_center): (
+            Option<Option<Rc<KeyHandlerNode>>>,
+            Option<kurbo::Point>,
+        ) = (None, None);
+        if scopes.is_none()
+            && let Some(key) = focused_key.as_ref()
+        {
             if let Some(target) = self.hit_test.pointer_targets.iter().find(|target| {
                 target
                     .press_slot
@@ -233,5 +247,122 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
     pub fn handle_key_release_with_env(&mut self, key: &KeyCode, env: &Environment) -> bool {
         self.handle_keyboard_key_up(key, env)
+    }
+}
+
+impl<E: crate::text::TextEngine> SemanticCore<E> {
+    /// Wires a `.focused(binding)` modifier to the single focusable target —
+    /// a text field or an input surface — registered inside `scope`'s subtree:
+    /// writes the binding onto that target, then applies the binding's value
+    /// to the focused-input key. The retained equivalent of the flat lists'
+    /// `[start..]` span: entries owned by cells inside `scope`'s subtree,
+    /// hittable or not — a `.focused()` inside an unhittable subtree still saw
+    /// the target on dev (the outer truncation ran after the wiring), and the
+    /// post-flush validation releases whatever focus a dead chain took.
+    /// Shared by the rendered flush and the semantic accessibility walk.
+    pub(crate) fn wire_focused_target(
+        &mut self,
+        value: &waterui::component::focus::Focused,
+        should_focus: bool,
+        scope: &Rc<NodeCell<E>>,
+    ) {
+        // Whether the entry's owning cell is `scope` or a descendant of it.
+        let in_scope = |owner: &std::rc::Weak<NodeCell<E>>| -> bool {
+            let mut cell = owner.upgrade();
+            while let Some(current) = cell {
+                if Rc::ptr_eq(&current, scope) {
+                    return true;
+                }
+                cell = current.parent();
+            }
+            false
+        };
+        // The retained registries own entries per recording cell — the
+        // scan walks every live owner's bucket and keeps the cell it
+        // found, so the write-back lands in the same bucket.
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        let mut text_hit = None;
+        let mut embedded_hit = None;
+        let mut count = 0usize;
+        for cell in self.retained.owners() {
+            let slot = cell.registrations.borrow();
+            let Some(regs) = slot.as_ref() else {
+                continue;
+            };
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
+            for (index, entry) in regs.text_input_targets.iter().enumerate() {
+                if in_scope(&entry.owner) {
+                    count += 1;
+                    text_hit = Some((Rc::clone(&cell), index));
+                }
+            }
+            for (index, entry) in regs.embedded_input_targets.iter().enumerate() {
+                if in_scope(&entry.owner) {
+                    count += 1;
+                    embedded_hit = Some((Rc::clone(&cell), index));
+                }
+            }
+        }
+        if count != 1 {
+            contract_violation!(
+                "hydrolysis .focused() requires exactly one TextField or SecureField or input surface in the wrapped subtree, found {count}; the binding is not wired"
+            );
+            return;
+        }
+        if let Some((cell, index)) = embedded_hit {
+            // The bucket borrow ends before the focus setters run: they
+            // materialize the registries, which borrow the same `RefCell`.
+            let target_key = {
+                let mut slot = cell.registrations.borrow_mut();
+                let target = &mut slot
+                    .as_mut()
+                    .expect("hydrolysis focused metadata missing embedded input bucket")
+                    .embedded_input_targets[index]
+                    .payload;
+                if target.focus_binding.is_some() {
+                    contract_violation!(
+                        "hydrolysis does not allow multiple .focused() modifiers to target the same control; the later binding is not wired"
+                    );
+                    return;
+                }
+                target.focus_binding = Some(value.0.clone());
+                target.interaction_key.clone()
+            };
+
+            if should_focus {
+                self.set_focused_embedded_key(Some(target_key));
+            } else if self.is_focused_embedded(&target_key) {
+                self.set_focused_embedded_key(None);
+            }
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
+            return;
+        }
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        {
+            let (cell, index) =
+                text_hit.expect("hydrolysis focused metadata missing registered text input target");
+            let target_key = {
+                let mut slot = cell.registrations.borrow_mut();
+                let target = &mut slot
+                    .as_mut()
+                    .expect("hydrolysis focused metadata missing text input bucket")
+                    .text_input_targets[index]
+                    .payload;
+                if target.focus_binding.is_some() {
+                    contract_violation!(
+                        "hydrolysis does not allow multiple .focused() modifiers to target the same control; the later binding is not wired"
+                    );
+                    return;
+                }
+                target.focus_binding = Some(value.0.clone());
+                target.interaction_key.clone()
+            };
+
+            if should_focus {
+                self.set_focused_text_input_key(Some(target_key));
+            } else if self.text_editing.is_focused(&target_key) {
+                self.set_focused_text_input_key(None);
+            }
+        }
     }
 }

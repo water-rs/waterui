@@ -30,9 +30,9 @@ use web_sys::Response;
 use crate::text::fonts::WebFonts;
 
 use crate::platform::{BrowserWindow, PlatformWindow};
-use crate::renderer::{
-    FontFamilyResolution, HydrolysisRenderer, HydrolysisTextContextMenuMode, MenuShortcutRegistry,
-};
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use crate::renderer::HydrolysisTextContextMenuMode;
+use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, MenuShortcutRegistry};
 use crate::runner::web_accessibility::WebAccessibilityBridge;
 use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, WindowFrame, advance_runtime, handle_input_events,
@@ -523,6 +523,7 @@ pub fn run(app: App, style: impl crate::Style) {
         // A browser page cannot own the browser's menu bar, so the app menus
         // contribute their chords only — nothing renders.
         super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // The page's `prefers-color-scheme` media query is the host's
         // appearance: `matches` seeds the scheme so the first frame already

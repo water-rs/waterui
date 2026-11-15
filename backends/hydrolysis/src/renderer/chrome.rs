@@ -84,6 +84,7 @@ pub trait LiveSource {
 }
 
 /// The focused editor's caret, retained across animation ticks.
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub(super) struct LiveCaret {
     rect: Operand<Rect>,
     clip: Operand<Rect>,
@@ -91,6 +92,7 @@ pub(super) struct LiveCaret {
     group: Operand<cherenkov_record::Group>,
 }
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 impl LiveCaret {
     pub(super) fn new(rect: Rect, clip: Rect, paint: Paint, alpha: f32) -> Self {
         Self {
@@ -110,6 +112,7 @@ impl LiveCaret {
     }
 }
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 impl LiveSource for LiveCaret {
     fn record(
         &self,

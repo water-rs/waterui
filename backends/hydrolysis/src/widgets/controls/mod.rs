@@ -11,6 +11,7 @@ pub mod progress;
 pub mod slider;
 #[cfg(feature = "stepper")]
 pub mod stepper;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub mod text_field;
 #[cfg(feature = "toggle")]
 pub mod toggle;

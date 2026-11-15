@@ -14,6 +14,7 @@ mod multi_click;
 mod popup_menu;
 mod scroll_physics;
 mod surface;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub mod text_editing;
 mod touch_scroll;
 
@@ -27,5 +28,6 @@ pub use menu_shortcuts::*;
 pub use multi_click::*;
 pub use popup_menu::*;
 pub use surface::*;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub use text_editing::*;
 pub use touch_scroll::*;

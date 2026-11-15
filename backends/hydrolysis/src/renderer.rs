@@ -21,6 +21,11 @@
 //!   [`render`]: interaction, lifecycle, navigation, a11y, and measurement
 //!   subsystems
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use crate::platform::TextInputPurpose;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use crate::theme::TextCaretMotion;
+
 #[cfg(feature = "accessibility")]
 pub mod accessibility;
 mod bindings;
@@ -235,14 +240,11 @@ use crate::animation::{
     AnimatedScalarHandle, AnimationController, AnimationKey, PerpetualAnimation,
 };
 use crate::gesture::GestureEngine;
-use crate::platform::{
-    KeyCode, Modifiers, PointerButton, PointerKind, TextInputPurpose, TextInputState, TouchPhase,
-};
+use crate::platform::{KeyCode, Modifiers, PointerButton, PointerKind, TextInputState, TouchPhase};
 #[cfg(feature = "accessibility")]
 use crate::scroll::ScrollHandle;
 #[cfg(test)]
 use crate::text::ParleyEngine;
-use crate::theme::TextCaretMotion;
 use crate::time::Instant;
 use crate::widgets::inset_rect;
 
@@ -258,6 +260,7 @@ pub use accessibility::{
     AccessibilityActionTarget, AccessibilityActivation, NodePlacement,
     ScopedAccessibilitySemantics, accessibility_container_child_environment,
 };
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub use input::{
     TextInputModel, TextInputTargetRegistration, TextSelectionSlot, clamp_to_char_boundary,
     text_editing,
@@ -440,6 +443,7 @@ impl ProducerWake {
 /// above the window's own.
 pub struct PresentationHosts<E: crate::text::TextEngine> {
     /// The overlay-mode text context menu's host.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) text_overlay: NodeCore<E>,
     /// The `.context_menu` presentation's host.
     pub(crate) context_menu: NodeCore<E>,
@@ -457,6 +461,7 @@ impl<E: crate::text::TextEngine> PresentationHosts<E> {
     #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     pub(crate) fn unmount(&self) {
         for host in [
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             &self.text_overlay,
             &self.context_menu,
             &self.anchored,
@@ -540,6 +545,7 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// Input targets, selection slots and pre-edit live here — `pub(crate)`
     /// because the runner's editing session and headless tests read them
     /// from outside the renderer module tree.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) text_editing: TextEditingState<E>,
     popup_menu: PopupMenuState<E>,
     /// The identity the runner gave the window this core renders — menu-chord
@@ -776,6 +782,7 @@ pub struct HydrolysisRenderer<E: crate::text::TextEngine> {
     /// the display link may sleep.
     #[cfg(hydrolysis_cherenkov)]
     engine_next: Option<Next>,
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     live_caret: Option<Rc<chrome::LiveCaret>>,
     /// Per-frame applied-filter telemetry the render thread's `EngineEffect`
     /// calls accumulate into; reset before each `Engine::render` and read back
@@ -833,6 +840,7 @@ pub const HIT_TEST_ALPHA_THRESHOLD: f32 = 0.01;
 
 /// The click count at which text selection stops growing: a double click
 /// selects a word, a triple click a line.
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 const MAX_TEXT_SELECTION_CLICKS: u32 = 3;
 const TEXT_CONTEXT_MENU_WINDOW_TITLE: &str = "";
 
@@ -934,6 +942,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             core
         };
         let presentation_hosts = PresentationHosts {
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             text_overlay: host(),
             context_menu: host(),
             anchored: host(),
@@ -945,6 +954,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             gesture_engine: GestureEngine::default(),
             gesture_group_ids: BTreeMap::new(),
             next_gesture_group_id: 0,
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             text_editing: TextEditingState::default(),
             popup_menu: PopupMenuState::default(),
             window_id: WindowId::Orphan,
@@ -1628,6 +1638,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// The current placement's composed hit transform — the replacement for
     /// the deleted `ctx.hit_transform` in code that maps coordinates both
     /// ways (interaction wave origins).
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn current_hit_transform(&self) -> kurbo::Affine {
         self.current_placement().resolved_transform(true)
     }
@@ -1662,6 +1673,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// boundary, so the subtree test walks the owner chain and the frame
     /// resolves through the entry's own paint chain (unclipped, as dev's
     /// `frame` was).
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn focused_field_frame_in_scope(
         &self,
         scope: &Rc<NodeCell<E>>,
@@ -1810,11 +1822,18 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             .owner_of(key)
             .filter(|owner| live(owner))
             .or_else(|| {
-                self.text_editing
-                    .text_input_targets
-                    .iter()
-                    .find(|target| &target.interaction_key == key)
-                    .map(|target| target.owner.clone())
+                #[cfg(any(feature = "text-field", feature = "secure-field"))]
+                {
+                    self.text_editing
+                        .text_input_targets
+                        .iter()
+                        .find(|target| &target.interaction_key == key)
+                        .map(|target| target.owner.clone())
+                }
+                #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+                {
+                    None
+                }
             })
             .or_else(|| {
                 self.hit_test
@@ -2069,12 +2088,16 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// The window's fixed host frames in paint order: the content root,
     /// then the context menu, anchored overlay and text overlay hosts, and
     /// finally the `.dialog` modal layer so nothing else stacks above it.
-    pub(crate) fn mount_roots(&self) -> [Rc<NodeCell<E>>; 5] {
+    pub(crate) fn mount_roots(
+        &self,
+    ) -> [Rc<NodeCell<E>>; 4 + cfg!(any(feature = "text-field", feature = "secure-field")) as usize]
+    {
         let hosts = &self.core.presentation_hosts;
         [
             Rc::clone(&self.core.root_core.cell),
             Rc::clone(&hosts.context_menu.cell),
             Rc::clone(&hosts.anchored.cell),
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             Rc::clone(&hosts.text_overlay.cell),
             Rc::clone(&hosts.dialog.cell),
         ]
@@ -2111,6 +2134,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     }
 
     /// [`SemanticCore::current_hit_transform`].
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn current_hit_transform(&self) -> kurbo::Affine {
         self.core.current_hit_transform()
     }
@@ -2138,6 +2162,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             program: Vec::new(),
             #[cfg(hydrolysis_cherenkov)]
             engine_next: None,
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             live_caret: None,
             #[cfg(hydrolysis_gpu_painter)]
             applied_filter_metrics: Arc::default(),
@@ -2182,8 +2207,10 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 }
 
 pub use render::HydroState;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+pub use render::HydrolysisTextContextMenuMode;
+pub use render::HydrolysisWindowOrigin;
 pub use render::RenderContext;
-pub use render::{HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};
 
 #[cfg(all(feature = "accessibility", feature = "slider"))]
 pub use accessibility::slider_step_for_range;

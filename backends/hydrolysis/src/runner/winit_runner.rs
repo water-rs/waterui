@@ -40,9 +40,11 @@ use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
 use winit::window::{Window as NativeWindow, WindowId};
 
 use crate::platform::{PlatformWindow, WinitGpuContext, WinitWindow};
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use crate::renderer::HydrolysisTextContextMenuMode;
 use crate::renderer::{
-    FontFamilyResolution, HydrolysisRenderer, HydrolysisTextContextMenuMode,
-    HydrolysisWindowOrigin, MenuShortcutRegistry, PopupWindowManager,
+    FontFamilyResolution, HydrolysisRenderer, HydrolysisWindowOrigin, MenuShortcutRegistry,
+    PopupWindowManager,
 };
 #[cfg(hydrolysis_wayland_platform)]
 use crate::runner::x11_state_watch::{self, X11StateWatch};
@@ -738,6 +740,7 @@ pub fn run(
     let _termination_signals = install_termination_handler(&event_proxy);
     #[cfg(windows)]
     install_termination_handler(&event_proxy);
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     env.insert(waterui::window::WindowManager::new({
         let pending_window_queue = Rc::clone(&pending_window_queue);

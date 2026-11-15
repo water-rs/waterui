@@ -7,33 +7,50 @@
 //! as live chrome, so a hover, a focus change or the label floating moves
 //! operands and records nothing.
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use crate::renderer::{RetainedSubview, SemanticCore};
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use crate::theme::live::Operand;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use crate::theme::{Inputs, ValueMotion};
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use crate::widgets::controls::button::{LIVE_STATES, styled_button_label};
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use cherenkov_record::WorkingColor;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use kurbo::Affine;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use nami::{Computed, SignalExt as _};
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use std::any::Any;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-
-use cherenkov_record::{Paint, WorkingColor};
-use kurbo::{Affine, Rect};
-use nami::{Binding, Computed, Signal as _, SignalExt as _};
-use waterui::ViewExt as _;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use waterui_controls::label::Label;
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use waterui_core::animation::{Animation, ChangeAnimation};
-use waterui_core::interaction::InteractionState;
-use waterui_core::{AnyView, Environment, View};
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use waterui_core::{AnyView, View};
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use waterui_graphics::color::{Color, signal_color};
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use waterui_text::styled::StyledStr;
 
+use cherenkov_record::Paint;
+use kurbo::Rect;
+use nami::{Binding, Signal as _};
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
+use waterui::ViewExt as _;
+use waterui_core::Environment;
+use waterui_core::interaction::InteractionState;
+
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
-use crate::renderer::{
-    InteractionKey, InteractionLayerHandles, PressSlot, RetainedSubview, SemanticCore,
-    WidgetRenderContext,
-};
-use crate::theme::live::Operand;
+use crate::renderer::{InteractionKey, InteractionLayerHandles, PressSlot, WidgetRenderContext};
 use crate::theme::{
-    Border, Chrome, Custom, Driven, Inputs, SpecTint, TextFieldLook, TextFieldSpec, ValueMotion,
-    WidgetInteractionState, WidgetTheme,
+    Border, Chrome, Custom, Driven, SpecTint, TextFieldLook, TextFieldSpec, WidgetInteractionState,
+    WidgetTheme,
 };
-use crate::widgets::controls::button::LIVE_STATES;
-use crate::widgets::controls::button::styled_button_label;
-use waterui_controls::label::Label;
 
 /// The spec of a field in `env`.
 pub fn field_spec(env: &Environment) -> TextFieldSpec {
@@ -86,10 +103,12 @@ struct Held {
 
 /// The colour the floating label's view takes, read through the field's
 /// reported state: the look's, when it has one.
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 type LabelColor = Rc<RefCell<Option<Driven<Color>>>>;
 
 /// The colour the field's value is drawn in, resolved in the field's
 /// environment: the look's, when it styles the value.
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 type ValueColor = Rc<RefCell<Option<Driven<WorkingColor>>>>;
 
 /// What a field keeps across renders to realize its look: the look for the
@@ -100,30 +119,41 @@ pub struct FieldChrome {
     held: Option<Held>,
     parts: Option<LiveChromeParts>,
     report: Binding<InteractionState>,
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     float: Rc<FloatLabel>,
     /// Whether the look was taken anew since the label view last took its
     /// font.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     label_font_stale: bool,
     /// Whether the label view carries a look font rather than the config
     /// label's own.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     label_font_set: bool,
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     label_color: LabelColor,
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     value_color: ValueColor,
     /// The paint the value is drawn in, following the reported state.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     value_paint: Computed<Paint>,
     /// The subscription that floats the label with the field's focus.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     _focus: Box<dyn Any>,
 }
 
 impl FieldChrome {
     pub(crate) fn new() -> Self {
         let report = Binding::container(InteractionState::empty());
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         let float = Rc::new(FloatLabel::new());
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         let focus = {
             let (float, state) = (Rc::clone(&float), report.clone());
             report.watch(move |_| float.focus(state.snapshot().contains(InteractionState::FOCUSED)))
         };
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         let value_color = ValueColor::default();
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         let value_paint = {
             let color = Rc::clone(&value_color);
             Computed::new(report.clone().map(move |state| {
@@ -139,12 +169,19 @@ impl FieldChrome {
             held: None,
             parts: None,
             report,
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             float,
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             label_font_stale: true,
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             label_font_set: false,
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             label_color: Rc::default(),
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             value_color,
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             value_paint,
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             _focus: Box::new(focus),
         }
     }
@@ -152,6 +189,7 @@ impl FieldChrome {
     /// `label` as the field's inside label view: it takes the look's label
     /// colour for the field's reported state as its default, else the
     /// ordinary foreground, and follows the state without rebuilding.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn label_view(&self, label: impl View + 'static) -> AnyView {
         let color = Rc::clone(&self.label_color);
         let color = signal_color(self.report.clone().map(move |state| {
@@ -170,6 +208,7 @@ impl FieldChrome {
     /// when it names one, else with the config label's own font. The field
     /// lays out again, so measurement uses the drawn font. A look the field
     /// already applied changes nothing.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn apply_label_font<E: crate::text::TextEngine>(
         &mut self,
         label_view: &mut RetainedSubview<E>,
@@ -210,7 +249,10 @@ impl FieldChrome {
         if self.held.as_ref().is_none_or(|held| held.spec != spec) {
             let look = theme.text_field(&spec, env);
             let container = container_of(&look);
-            self.label_font_stale = true;
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
+            {
+                self.label_font_stale = true;
+            }
             self.held = Some(Held {
                 spec,
                 look,
@@ -218,17 +260,21 @@ impl FieldChrome {
             });
         }
         let held = self.held.as_ref().expect("the look was just ensured");
-        self.float
-            .set_motion(held.look.floating_label().get_float().clone());
-        *self.label_color.borrow_mut() = held.look.floating_label().label().get_color().cloned();
-        *self.value_color.borrow_mut() = held
-            .look
-            .get_value()
-            .and_then(|value| value.get_color())
-            .map(|color| {
-                let env = env.clone();
-                color.map(move |color| color.resolve(&env).snapshot())
-            });
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        {
+            self.float
+                .set_motion(held.look.floating_label().get_float().clone());
+            *self.label_color.borrow_mut() =
+                held.look.floating_label().label().get_color().cloned();
+            *self.value_color.borrow_mut() = held
+                .look
+                .get_value()
+                .and_then(|value| value.get_color())
+                .map(|color| {
+                    let env = env.clone();
+                    color.map(move |color| color.resolve(&env).snapshot())
+                });
+        }
         &held.look
     }
 
@@ -236,6 +282,7 @@ impl FieldChrome {
     /// ordinary font when it has taken none: for the accessibility walk,
     /// which holds no theme.
     #[cfg(feature = "accessibility")]
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn value_styled(
         &self,
         styled: StyledStr,
@@ -251,6 +298,7 @@ impl FieldChrome {
     /// The paint the field's value is drawn in, live over the field's
     /// reported state; `None` when the look leaves the value's colour to the
     /// default foreground. [`Self::look`] ran first.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn value_paint(&self) -> Option<Computed<Paint>> {
         self.value_color
             .borrow()
@@ -327,6 +375,7 @@ impl FieldChrome {
     }
 
     /// The floating label's operands.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn float(&self) -> &FloatLabel {
         &self.float
     }
@@ -338,6 +387,7 @@ impl FieldChrome {
 /// The label floats while the field is focused or holds content. A change
 /// of either moves both operands under the look's float motion, so the
 /// label floating records nothing.
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub struct FloatLabel {
     focused: Cell<bool>,
     filled: Cell<bool>,
@@ -350,6 +400,7 @@ pub struct FloatLabel {
     opacity: Operand<f32>,
 }
 
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 impl FloatLabel {
     fn new() -> Self {
         Self {
@@ -454,6 +505,7 @@ pub fn placeholder_text(
 /// `frame`: the look's value font, which follows the spec and the disabled
 /// state. The colour is not set here: it follows the state live, through
 /// [`FieldChrome::value_paint`].
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub fn value_text(
     look: &TextFieldLook,
     styled: StyledStr,

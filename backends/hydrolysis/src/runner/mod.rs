@@ -83,6 +83,7 @@ mod diagnostics;
 /// The `InputConnection` protocol state machine — compiled on Android for the
 /// JNI bridge and on host for its tests; dead elsewhere.
 #[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 pub mod editing;
 #[cfg(hydrolysis_cherenkov)]
 mod executor;
@@ -207,6 +208,7 @@ use crate::readback::readback_surface_texture_rgba8;
 #[cfg(hydrolysis_cherenkov)]
 use crate::renderer::FontFamilyResolution;
 #[cfg(hydrolysis_cherenkov)]
+#[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::renderer::HydrolysisTextContextMenuMode;
 use crate::renderer::{
     HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery, KeyPressOutcome, SemanticCore,
@@ -467,6 +469,7 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
     // App-level menu bar: arms its chords on the shared registry. The
     // headless host renders no chrome, so there is no surface to draw.
     menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     // A headless host has no platform appearance: the scheme is Light
     // unless the application installs its own.

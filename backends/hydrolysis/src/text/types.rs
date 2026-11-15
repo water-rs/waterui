@@ -52,6 +52,7 @@ pub struct TextSelection {
 
 impl TextSelection {
     /// A caret at `at`.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) const fn collapsed(at: TextPosition) -> Self {
         Self {
             anchor: at,
@@ -61,6 +62,7 @@ impl TextSelection {
 
     /// Whether the selection is a single position rather than a range:
     /// anchor and focus carry the same index.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) const fn is_collapsed(&self) -> bool {
         self.anchor.index == self.focus.index
     }
