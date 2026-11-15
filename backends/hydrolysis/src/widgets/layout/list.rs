@@ -1505,6 +1505,7 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                     .or_insert_with(ScopedAccessibilitySemantics::new)
                     .clone();
                 subtree_env.insert(scope);
+                #[cfg(hydrolysis_cherenkov)]
                 if ctx.is_none() {
                     // Emit the row content's own semantics under the row's node:
                     // every text, control and image in the row becomes a child
