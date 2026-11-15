@@ -573,6 +573,10 @@ impl Encoder {
     ///
     /// A [`HwuiError`] when the change set names what this target cannot
     /// mirror.
+    #[expect(
+        unreachable_code,
+        reason = "HWUI installs are uninhabited; consuming their payload proves this arm unreachable"
+    )]
     pub fn commit(&mut self, mut changes: ChangeSet<HwuiTarget>) -> Result<Recycle, HwuiError> {
         self.ensure_open();
         if let Some(clear) = changes.clear {
