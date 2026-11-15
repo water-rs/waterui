@@ -45,6 +45,17 @@ class InstrumentationResultTests(unittest.TestCase):
             pull.assert_called_once()
             self.assertTrue(pull.call_args.kwargs["check"])
 
+    def test_failed_measurement_preserves_reported_trace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = argparse.Namespace(serial="device", fixture="list", klass="EnergyBenchmark",
+                                      extra_arg=None, out=directory)
+            output = b"INSTRUMENTATION_STATUS: additionalTestOutputFile_energy=/sdcard/energy.perfetto-trace\nFAILURES!!!"
+            with patch.object(run.metrics, "adb_out", return_value=output), patch.object(
+                run.subprocess, "run"
+            ) as pull, self.assertRaisesRegex(RuntimeError, "diagnostic artifacts were saved"):
+                run.cmd_instrument(args)
+            pull.assert_called_once()
+
     def test_failed_instrumentation_does_not_pull_results(self):
         args = argparse.Namespace(serial="device", fixture="list", klass="FrameBenchmark",
                                   extra_arg=None, out="unused")

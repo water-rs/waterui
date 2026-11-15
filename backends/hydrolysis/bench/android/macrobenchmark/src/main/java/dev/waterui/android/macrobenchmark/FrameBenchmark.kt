@@ -4,6 +4,7 @@ import androidx.benchmark.macro.ExperimentalMetricApi
 import androidx.benchmark.macro.FrameTimingGfxInfoMetric
 import androidx.benchmark.macro.FrameTimingMetric
 import androidx.benchmark.macro.StartupMode
+import androidx.benchmark.macro.TraceSectionMetric
 import androidx.benchmark.macro.junit4.MacrobenchmarkRule
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
@@ -38,26 +39,36 @@ class FrameBenchmark {
         val args = InstrumentationRegistry.getArguments()
         val fixture = args.getString("fixture") ?: "suite"
         BenchmarkTarget(args, fixture).use { target ->
-            val scriptSeconds = args.getString("script_seconds")?.toIntOrNull() ?: 60
-            val iterations = args.getString("iterations")?.toIntOrNull() ?: 1
+            val scriptSeconds = args.getString("script_seconds")?.toInt() ?: 60
+            val iterations = args.getString("iterations")?.toInt() ?: 1
             val spec = loadInteractionSpec(InstrumentationRegistry.getInstrumentation().context)
-            benchmarkRule.measureRepeated(
-                packageName = target.packageName,
-                metrics = listOf(FrameTimingMetric(), FrameTimingGfxInfoMetric()),
-                compilationMode = target.compilationMode,
-                iterations = iterations,
-                startupMode = StartupMode.WARM,
-                setupBlock = {
-                    target.prepareLaunch()
-                    Journey.prepareDevice(device)
-                    pressHome()
-                    startActivityAndWait { intent ->
-                        target.configureLaunch(intent, markers = true)
-                    }
-                    target.awaitContent(device)
-                },
-            ) {
-                Journey.runFor(device, spec, fixture, scriptSeconds)
+            // Configurable bound for a final synchronous UIAutomator action to finish.
+            val completionTimeout = args.getString("replay_finish_timeout_seconds")?.toLong() ?: 30L
+            Journey.TimedRun(device, spec, fixture, completionTimeout).use { replay ->
+                benchmarkRule.measureRepeated(
+                    packageName = target.packageName,
+                    metrics =
+                        listOf(
+                            FrameTimingMetric(),
+                            FrameTimingGfxInfoMetric(),
+                            TraceSectionMetric("measureBlock", targetPackageOnly = false),
+                        ),
+                    compilationMode = target.compilationMode,
+                    iterations = iterations,
+                    startupMode = StartupMode.WARM,
+                    setupBlock = {
+                        replay.finish()
+                        target.prepareLaunch()
+                        Journey.prepareDevice(device)
+                        pressHome()
+                        startActivityAndWait { intent ->
+                            target.configureLaunch(intent, markers = true)
+                        }
+                        target.awaitContent(device)
+                    },
+                ) {
+                    replay.measure(scriptSeconds)
+                }
             }
         }
     }

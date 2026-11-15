@@ -885,7 +885,9 @@ def cmd_instrument(args: argparse.Namespace) -> int:
     cmd.append(f"{test_pkg}/androidx.test.runner.AndroidJUnitRunner")
     out = metrics.adb_out(serial, "shell", shlex.join(cmd)).decode("utf-8", "replace")
     print(out)
-    if not re.search(r"^OK \([1-9]\d* tests?\)", out, re.MULTILINE):
+    succeeded = bool(re.search(r"^OK \([1-9]\d* tests?\)", out, re.MULTILINE))
+    # Failed measurements may still emit the trace needed to diagnose them.
+    if not succeeded and "additionalTestOutputFile_" not in out:
         raise RuntimeError("Macrobenchmark instrumentation failed or ran no tests")
     # Pull the benchmark result payloads the test wrote to device media.
     media_dir = Path(args.out) / "benchmark-results"
@@ -899,6 +901,8 @@ def cmd_instrument(args: argparse.Namespace) -> int:
         capture_output=True, check=True,
     )
     print(f"results pulled -> {media_dir}")
+    if not succeeded:
+        raise RuntimeError("Macrobenchmark instrumentation failed; diagnostic artifacts were saved")
     return 0
 
 

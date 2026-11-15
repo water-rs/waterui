@@ -6,6 +6,9 @@ import androidx.test.uiautomator.BySelector
 import androidx.test.uiautomator.Direction
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -54,19 +57,67 @@ object Journey {
         runSteps(device, steps(spec, fixture))
     }
 
-    /**
-     * Repeat the journey within a monotonic time window, checking each action and bounding waits by
-     * the time left. An in-flight gesture completes before returning; the trace records the actual
-     * measurement interval.
-     */
-    fun runFor(device: UiDevice, spec: JSONObject, fixture: String, seconds: Int) {
-        require(seconds > 0) { "journey duration must be positive" }
-        val deadline = SystemClock.elapsedRealtime() + seconds * 1000L
-        val journey = steps(spec, fixture)
-        require(journey.length() > 0) { "timed journey must contain steps" }
-        while (SystemClock.elapsedRealtime() < deadline) {
-            runSteps(device, journey, deadline)
+    /** A serial replay whose completion is owned outside the measured window. */
+    class TimedRun(
+        private val device: UiDevice,
+        spec: JSONObject,
+        fixture: String,
+        private val completionTimeoutSeconds: Long,
+    ) : AutoCloseable {
+        private val journey = steps(spec, fixture)
+        private var pending: FutureTask<Unit>? = null
+
+        init {
+            require(journey.length() > 0) { "timed journey must contain steps" }
+            require(completionTimeoutSeconds > 0) { "replay completion timeout must be positive" }
         }
+
+        /** Measure a fixed window; an in-flight gesture finishes outside that window. */
+        fun measure(seconds: Int) {
+            require(seconds > 0) { "journey duration must be positive" }
+            check(pending == null) { "Complete the preceding replay in setup before measuring" }
+            val deadline = SystemClock.elapsedRealtime() + seconds * 1000L
+            val task =
+                FutureTask<Unit> {
+                    while (!expired(deadline)) runSteps(device, journey, deadline)
+                }
+            pending = task
+            // One owned replay thread preserves action order; no parallel UI actions are submitted.
+            Thread(task, "WaterUI benchmark journey").start()
+            try {
+                task.get(remaining(seconds * 1000L, deadline), TimeUnit.MILLISECONDS)
+            } catch (_: TimeoutException) {
+                // The measurement ends now. finish() observes completion/errors outside the trace.
+            }
+        }
+
+        /**
+         * Called before changing target state and during final cleanup, never inside measurement.
+         */
+        fun finish() {
+            val task = pending ?: return
+            try {
+                task.get(completionTimeoutSeconds, TimeUnit.SECONDS)
+            } catch (error: TimeoutException) {
+                task.cancel(true)
+                throw IllegalStateException(
+                    "Replay did not finish after the measurement window",
+                    error,
+                )
+            } finally {
+                pending = null
+            }
+        }
+
+        override fun close() = finish()
+    }
+
+    /** A fixed idle measurement window without a replay task. */
+    fun idleFor(seconds: Int) {
+        require(seconds > 0) { "idle duration must be positive" }
+        val duration = seconds * 1000L
+        val deadline = SystemClock.elapsedRealtime() + duration
+        while (!expired(deadline)) pause(duration, deadline)
     }
 
     private fun selector(node: JSONObject): BySelector? {
