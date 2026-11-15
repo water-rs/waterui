@@ -220,8 +220,8 @@ fn elliptical_and_lame_rims_get_their_exact_area() -> Result<(), Box<dyn std::er
                 let (sin, cos) = FRAC_PI_6.sin_cos();
                 let dx = px - 16.0;
                 let dy = py - 16.0;
-                let ux = (dx * cos + dy * sin) / 14.0;
-                let uy = (dy * cos - dx * sin) / 1.5;
+                let ux = f64::mul_add(dy, sin, dx * cos) / 14.0;
+                let uy = f64::mul_add(dx, -sin, dy * cos) / 1.5;
                 ux.mul_add(ux, uy * uy) - 1.0
             }),
         ),
