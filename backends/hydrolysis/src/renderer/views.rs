@@ -400,6 +400,7 @@ pub fn render_str_parts<E: crate::text::TextEngine>(
 /// Emits a retained `Str` leaf's accessibility node for the semantic walk —
 /// the same node `str_accessibility` registers, with no bounds.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_str_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     text: &Rc<RefCell<Str>>,
@@ -412,6 +413,7 @@ pub fn emit_str_accessibility<E: crate::text::TextEngine>(
 /// walk — the same node `graphics_image_accessibility` registers, with no
 /// bounds.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_graphics_leaf_accessibility<T, E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     _state: &Rc<RefCell<T>>,

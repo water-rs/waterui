@@ -556,6 +556,7 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
     /// ghosts are not entries, so a removed item leaves the tree the moment
     /// the membership change lands, exactly as §4.5 requires.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(super) fn emit_accessibility(&self, renderer: &mut SemanticCore<E>) {
         let container_scope = self.accessibility_container_env.as_ref().map(|env| {
             renderer.push_accessibility_owner(&self.accessibility_identity);
@@ -1695,6 +1696,7 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
     /// whole collection, so every item materializes its node rather than only
     /// the visible window. Removal ghosts left the tree with their rows.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(super) fn emit_accessibility(&self, renderer: &mut SemanticCore<E>) {
         let snapshot = self.snapshot.borrow().clone();
         let count = snapshot.len();

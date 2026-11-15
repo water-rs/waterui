@@ -419,6 +419,7 @@ fn place_label<E: crate::text::TextEngine>(
 /// The label and value-label sub-views flush visual-only, so there is nothing
 /// else to emit.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_progress_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<ProgressRenderState<E>>>,

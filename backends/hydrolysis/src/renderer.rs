@@ -1235,6 +1235,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// reader after — the accessibility emit walk's entry; the record and
     /// layout descents take the renderer-level `with_reader`.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn with_reader<R>(
         &mut self,
         core: &NodeCore<E>,
@@ -1363,6 +1364,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// it descends into (a semantic frame has no placements to stamp
     /// otherwise).
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) const fn record_seq(&self) -> u64 {
         self.record_seq
     }

@@ -841,6 +841,7 @@ fn flush_cell_subview<E: crate::text::TextEngine>(
 /// same nodes `table_accessibility` registers, with no bounds and every cell
 /// present.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_table_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<TableRenderState<E>>>,

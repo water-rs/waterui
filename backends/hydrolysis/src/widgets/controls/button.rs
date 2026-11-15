@@ -1307,6 +1307,7 @@ pub fn styled_button_label(font: Option<Font>, label: Label) -> Label {
 /// sub-view flushes visual-only (its semantics are merged into the button's
 /// node), so there is nothing else to emit.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_button_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<ButtonRenderState<E>>>,
@@ -1319,6 +1320,7 @@ pub fn emit_button_accessibility<E: crate::text::TextEngine>(
 /// the same node `menu_accessibility` registers, with no bounds.
 #[cfg(feature = "accessibility")]
 #[cfg(feature = "menu")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_menu_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<MenuRenderState<E>>>,

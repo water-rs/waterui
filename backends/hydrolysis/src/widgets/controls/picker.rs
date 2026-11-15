@@ -1907,6 +1907,7 @@ fn segmented_label_rect(
 /// Emits a retained picker's accessibility tree for the semantic walk — the
 /// same nodes `picker_accessibility` registers, with no bounds.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_picker_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<PickerRenderState<E>>>,

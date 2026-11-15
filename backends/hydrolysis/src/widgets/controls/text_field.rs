@@ -1234,6 +1234,7 @@ fn material_input_cursor_rect(
     reason = "the emission walks every text-field element in one ordered sequence; splitting it would obscure the node ordering"
 )]
 #[cfg(feature = "text-field")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<TextFieldRenderState<E>>>,
@@ -1358,6 +1359,7 @@ pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
 /// registers, with no bounds.
 #[cfg(feature = "accessibility")]
 #[cfg(feature = "secure-field")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_secure_field_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<SecureFieldRenderState<E>>>,

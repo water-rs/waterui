@@ -416,6 +416,7 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
     /// layout and no encode — the sub-view emits exactly the nodes it would
     /// under a rendered flush, minus bounds.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn emit_accessibility(&mut self, renderer: &mut SemanticCore<E>, env: &Environment) {
         self.ensure_built(renderer, env);
         let built = self.expect_built_mut("emit_accessibility");
@@ -923,6 +924,7 @@ pub trait WidgetBehavior<E: crate::text::TextEngine> {
     /// no draw or hit-target work. The default emits nothing: leaves with no
     /// semantics (spacer, divider, gradient, …) need no override.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     fn emit_accessibility(self: Rc<Self>, _renderer: &mut SemanticCore<E>, _env: &Environment) {}
 }
 
