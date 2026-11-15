@@ -677,51 +677,67 @@ fn append_area(state: PolygonArea, p: vec2<f32>) -> PolygonArea {
     return next;
 }
 
+// The first clip's vertices feed the second clip directly. Only its
+// closing edge needs the first vertex; no polygon is stored or indexed.
+struct ClippedArea {
+    first: vec2<f32>,
+    previous: vec2<f32>,
+    previous_distance: f32,
+    started: bool,
+    area: PolygonArea,
+}
+
+fn append_clipped_area(state: ClippedArea, p: vec2<f32>, plane: vec3<f32>, scale: f32) -> ClippedArea {
+    var next = state;
+    let distance = plane.z + scale * dot(plane.xy, p);
+    if !state.started {
+        next.first = p;
+        next.started = true;
+    } else {
+        if (distance <= 0.0) != (state.previous_distance <= 0.0) {
+            let t = state.previous_distance / (state.previous_distance - distance);
+            next.area = append_area(next.area, state.previous + t * (p - state.previous));
+        }
+        if distance <= 0.0 {
+            next.area = append_area(next.area, p);
+        }
+    }
+    next.previous = p;
+    next.previous_distance = distance;
+    return next;
+}
+
+fn clip_corner_edge(state: ClippedArea, previous: vec2<f32>, p: vec2<f32>, distances: vec2<f32>, plane: vec3<f32>, scale: f32) -> ClippedArea {
+    var next = state;
+    if (distances.y <= 0.0) != (distances.x <= 0.0) {
+        let t = distances.x / (distances.x - distances.y);
+        next = append_clipped_area(next, previous + t * (p - previous), plane, scale);
+    }
+    if distances.y <= 0.0 {
+        next = append_clipped_area(next, p, plane, scale);
+    }
+    return next;
+}
+
 fn corner_coverage(a: vec2<f32>, v1: vec2<f32>, v2: vec2<f32>, scale: f32) -> f32 {
-    let square = array<vec2<f32>, 4>(
-        vec2<f32>(-0.5, -0.5),
-        vec2<f32>(0.5, -0.5),
-        vec2<f32>(0.5, 0.5),
-        vec2<f32>(-0.5, 0.5),
+    let p0 = vec2<f32>(-0.5, -0.5);
+    let p1 = vec2<f32>(0.5, -0.5);
+    let p2 = vec2<f32>(0.5, 0.5);
+    let p3 = vec2<f32>(-0.5, 0.5);
+    let d = vec4<f32>(
+        a.x + scale * dot(v1, p0),
+        a.x + scale * dot(v1, p1),
+        a.x + scale * dot(v1, p2),
+        a.x + scale * dot(v1, p3),
     );
-    // One half-plane adds at most one vertex to a convex square.
-    var clipped: array<vec2<f32>, 5>;
-    var n = 0u;
-    var previous = square[3];
-    var previous_distance = a.x + scale * dot(v1, previous);
-    for (var i = 0u; i < 4u; i = i + 1u) {
-        let p = square[i];
-        let distance = a.x + scale * dot(v1, p);
-        if (distance <= 0.0) != (previous_distance <= 0.0) {
-            let t = previous_distance / (previous_distance - distance);
-            clipped[n] = previous + t * (p - previous);
-            n = n + 1u;
-        }
-        if distance <= 0.0 {
-            clipped[n] = p;
-            n = n + 1u;
-        }
-        previous = p;
-        previous_distance = distance;
-    }
-    // Stream the second clip straight into the shoelace sum. This visits
-    // the same vertices in the same order without a second polygon array.
-    var area = PolygonArea(vec2<f32>(0.0), vec2<f32>(0.0), 0.0, 0u);
-    previous = clipped[n - 1u];
-    previous_distance = a.y + scale * dot(v2, previous);
-    for (var i = 0u; i < n; i = i + 1u) {
-        let p = clipped[i];
-        let distance = a.y + scale * dot(v2, p);
-        if (distance <= 0.0) != (previous_distance <= 0.0) {
-            let t = previous_distance / (previous_distance - distance);
-            area = append_area(area, previous + t * (p - previous));
-        }
-        if distance <= 0.0 {
-            area = append_area(area, p);
-        }
-        previous = p;
-        previous_distance = distance;
-    }
+    let plane = vec3<f32>(v2, a.y);
+    var clipped: ClippedArea;
+    clipped = clip_corner_edge(clipped, p3, p0, d.wx, plane, scale);
+    clipped = clip_corner_edge(clipped, p0, p1, d.xy, plane, scale);
+    clipped = clip_corner_edge(clipped, p1, p2, d.yz, plane, scale);
+    clipped = clip_corner_edge(clipped, p2, p3, d.zw, plane, scale);
+    // Close the first clip's polygon before closing the shoelace sum.
+    let area = append_clipped_area(clipped, clipped.first, plane, scale).area;
     let sum = area.area + area.previous.x * area.first.y - area.first.x * area.previous.y;
     return clamp(abs(sum) * 0.5, 0.0, 1.0);
 }
