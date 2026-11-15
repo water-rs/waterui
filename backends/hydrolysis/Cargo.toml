@@ -311,7 +311,7 @@ waterui-video-gpu = { workspace = true, optional = true }
 raw-window-handle = { version = "0.6", optional = true }
 android_logger = { version = "0.15", optional = true }
 waterui-assets-core = { workspace = true, optional = true }
-tracing-log = { version = "0.2", default-features = false, optional = true }
+tracing-log = { version = "0.2", default-features = false, features = ["std", "log-tracer"], optional = true }
 # The accessibility tree publish and the platform-view placement set cross JNI
 # as JSON.
 serde = { workspace = true, features = ["derive"] }
@@ -411,7 +411,7 @@ waterui-webview = { workspace = true, features = ["conformance"] }
 # bridges those records into the `tracing` subscriber the test captures. With
 # `complex-scripts` on the parley dep, no warning may be emitted at all.
 icu_provider = { version = "2.3", features = ["logging"] }
-tracing-log = { version = "0.2", default-features = false, optional = true }
+tracing-log = "0.2"
 # Drives the text-measure bench (`benches/text_measure.rs`).
 divan = "0.1"
 # The text-measure bench rides the real layout path; `harness = false` hands
