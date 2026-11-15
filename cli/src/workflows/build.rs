@@ -651,6 +651,19 @@ impl RustDynamicLibraries {
             .map(|library| library.source.as_path())
     }
 
+    /// Source and destination files whose identities vouch for a prepared runtime.
+    pub(crate) fn staged_files(&self, destination: &Path) -> Vec<PathBuf> {
+        [&self.waterui, &self.standard_library]
+            .into_iter()
+            .flat_map(|library| {
+                [
+                    library.source.clone(),
+                    destination.join(&library.staged_name),
+                ]
+            })
+            .collect()
+    }
+
     /// Copy all required dynamic libraries into a runtime search directory.
     ///
     /// Staging goes through the reflinking copy so a shared runtime that every build
@@ -668,11 +681,17 @@ impl RustDynamicLibraries {
         // so the staged-copy cleanup must leave sources alone and the copy
         // must not rewrite a library over itself.
         let libraries = [&self.waterui, &self.standard_library];
-        let sources: Vec<PathBuf> = libraries
+        let mut retained: Vec<PathBuf> = libraries
             .iter()
             .map(|library| library.source.clone())
             .collect();
-        Self::remove_staged_except(destination, &self.triple, &sources).await?;
+        retained.extend(
+            libraries
+                .iter()
+                .map(|library| destination.join(&library.staged_name)),
+        );
+        retained.push(self.apple_canonical_waterui(destination));
+        Self::remove_staged_except(destination, &self.triple, &retained).await?;
         for library in &libraries {
             let staged = destination.join(&library.staged_name);
             if library.source == staged {
@@ -5247,6 +5266,32 @@ mod tests {
             .expect("standard library name"),
             triple: triple("aarch64-apple-darwin"),
         }
+    }
+
+    #[test]
+    fn staging_preserves_current_libraries_and_removes_superseded_ones() {
+        let temporary = tempdir().unwrap();
+        let source = temporary.path().join("libwaterui_dylib-current.dylib");
+        let standard = temporary.path().join("libstd-current.dylib");
+        std::fs::write(&source, b"runtime").unwrap();
+        std::fs::write(&standard, b"standard").unwrap();
+        let mut libraries = canonical_staging_libraries(source);
+        libraries.standard_library = super::StagedDynamicLibrary::reported(standard).unwrap();
+        let destination = temporary.path().join("dist");
+        smol::block_on(libraries.stage(&destination)).unwrap();
+        let staged = destination.join("libstd-current.dylib");
+        // An old destination mtime makes an unnecessary copy observable even
+        // on filesystems whose copying preserves the source's mtime.
+        let old = filetime::FileTime::from_unix_time(1_700_000_000, 0);
+        filetime::set_file_mtime(&staged, old).unwrap();
+        let stale = destination.join("libstd-stale.dylib");
+        std::fs::write(&stale, b"stale").unwrap();
+        smol::block_on(libraries.stage(&destination)).unwrap();
+        assert!(!stale.exists());
+        assert_eq!(
+            filetime::FileTime::from_last_modification_time(&std::fs::metadata(staged).unwrap()),
+            old
+        );
     }
 
     fn dylib_bytes() -> Vec<u8> {
