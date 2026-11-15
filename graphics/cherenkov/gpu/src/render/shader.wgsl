@@ -895,7 +895,20 @@ fn fs_simple(in: VsOut, classified: bool) -> vec4<f32> {
             cov = 1.0;
         }
         default: {
-            cov = shape_coverage(s, in.local, m, classified);
+            if classified && in.affine1.w > 0.0 {
+                let r = vec2<f32>(s.half.x, s.half.x * s.aspect);
+                let u = abs(in.local) / r;
+                let rr = dot(u, u);
+                if rr < in.affine1.z {
+                    cov = 1.0;
+                } else if rr > in.affine1.w {
+                    cov = 0.0;
+                } else {
+                    cov = shape_coverage(s, in.local, m, classified);
+                }
+            } else {
+                cov = shape_coverage(s, in.local, m, classified);
+            }
         }
     }
     cov = clamp(cov, 0.0, 1.0) * in.params.y;
@@ -914,16 +927,15 @@ struct OpaqueOut {
     @location(0) @interpolate(flat) color: ColorRgb,
 }
 
-// Coverage replay carries the cell data and solid colour from the vertex
-// stage. Only analytic shapes fetch additional primitive fields per fragment.
+// Coverage replay needs only the original local/atlas coordinate, the
+// instance identity, and the conservative ellipse bounds. Pull the uniform
+// primitive fields in the fragment stage instead of duplicating them in
+// every vertex's rasterizer payload.
 struct PartialOut {
     @builtin(position) position: vec4<f32>,
     @location(0) local: vec2<f32>,
     @location(1) @interpolate(flat) instance: u32,
     @location(2) @interpolate(flat) coverage: vec2<f32>,
-    @location(7) @interpolate(flat) color: Color,
-    @location(8) @interpolate(flat) opacity: f32,
-    @location(9) ellipse_local: vec2<f32>,
     // cell-buffer
     // Buffer-cell stamps joined in the vertex stage (water-rs/waterui#3081).
     @location(3) @interpolate(flat) cell: vec4<f32>,
@@ -1045,7 +1057,6 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
     // cell-buffer
     out.position.z = bitcast<f32>(0x3e000000u + depth_index * 8u);
     let s = inst.shape;
-    var ellipse_local = vec2<f32>(0.0);
     if inst.meta_.x == KIND_FILL && s.exponent == 2.0 && all(s.radii == vec4<f32>(s.half.x)) {
         let m = inst.affine[0];
         let r = vec2<f32>(s.half.x, s.half.x * s.aspect);
@@ -1054,7 +1065,6 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
         // by its own radius keeps the bound conservative without widening
         // the costly rim to the shortest radius on both axes.
         let margin = length(h / r);
-        ellipse_local = out.local / r;
         out.affine1.z = max(1.0 - margin, 0.0) * max(1.0 - margin, 0.0);
         out.affine1.w = (1.0 + margin) * (1.0 + margin);
     }
@@ -1067,9 +1077,6 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
         local,
         out.instance,
         out.affine1.zw,
-        out.color,
-        out.params.y,
-        ellipse_local,
         // cell-buffer
         out.cell,
         out.cell_texel,
@@ -1086,21 +1093,10 @@ fn fs_opaque(in: OpaqueOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
-    // Classify the ellipse before fetching shape geometry. Its normalized
-    // local coordinate is affine, so interpolation preserves the vertex
-    // division and only the boundary band needs the distance solver.
-    if in.coverage.y > 0.0 {
-        let rr = dot(in.ellipse_local, in.ellipse_local);
-        if rr > in.coverage.y {
-            return vec4<f32>(0.0);
-        }
-        if rr < in.coverage.x {
-            return move_space(vec4<f32>(in.color * ColorScalar(in.opacity)), SPACE_LINEAR, globals.space);
-        }
-    }
+    let inst = instances[in.instance];
     var data: VsOut;
     data.local = in.local;
-    var kind = instances[in.instance].meta_.x;
+    var kind = inst.meta_.x;
     // cell-buffer
     // A buffer cell's origin, interior run and flag arrive as varyings:
     // `in.instance` is the draw's anchor, which carries none of the
@@ -1112,10 +1108,9 @@ fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
     kind = in.cell_meta.x;
     // cell-buffer
     data.meta_.x = select(kind, KIND_GLYPH, kind == KIND_REGION);
-    data.color = in.color;
-    data.params.y = in.opacity;
+    data.color = premultiplied_color(inst.color);
+    data.params.y = inst.params.y;
     if data.meta_.x != KIND_GLYPH && data.meta_.x != KIND_SPAN {
-        let inst = instances[in.instance];
         data.shape_a = vec4<f32>(inst.shape.half, inst.shape.aspect, inst.shape.exponent);
         data.shape_radii = inst.shape.radii;
         data.affine0 = inst.affine[0];
