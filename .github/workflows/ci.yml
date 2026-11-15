@@ -111,10 +111,9 @@ jobs:
       code: ${{ steps.prose.outputs.code == 'true' || steps.filter.outputs.workflows == 'true' }}
       deps: ${{ steps.filter.outputs.deps == 'true' || steps.filter.outputs.workflows == 'true' }}
       scripts: ${{ steps.filter.outputs.scripts == 'true' || steps.filter.outputs.workflows == 'true' }}
-      android: ${{ steps.filter.outputs.android == 'true' }}
+      android: ${{ steps.filter.outputs.android == 'true' || steps.android-metadata.outputs.changed == 'true' }}
     steps:
       - uses: actions/checkout@v4
-        if: github.event_name == 'push'
         with:
           fetch-depth: 0
       - uses: dorny/paths-filter@v3
@@ -137,10 +136,8 @@ jobs:
               - "cli/src/templates/*android*/**"
               - "cli/src/toolchain/**"
               - "cli/src/toolchain_checks.rs"
-              - "cli/Cargo.toml"
               - "backends/hydrolysis/android/**"
-              # `[package.metadata.waterui]`'s Android keys drive the scaffold.
-              - "Cargo.toml"
+              - ".github/scripts/android_metadata.py"
               # The packaging job's workflow and transitive local action inputs.
               # Keep these with the android-package job's setup below.
               - ".github/workflows/ci.yml"
@@ -151,9 +148,25 @@ jobs:
               - ".github/actions/install-android-platform/action.yml"
               - ".github/actions/setup-linux-deps/action.yml"
               - ".github/actions/refresh-apt-index/refresh.sh"
+            android_metadata:
+              - "cli/Cargo.toml"
+              - "Cargo.toml"
+              - ".github/scripts/android_metadata.py"
+              - ".github/workflows/ci.yml"
             workflows:
               - ".github/workflows/**"
               - ".github/actions/**"
+      - name: Compare Android scaffold metadata
+        id: android-metadata
+        if: steps.filter.outputs.android_metadata == 'true'
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            BASE="$(git merge-base "$BASE" HEAD)"
+          fi
+          python3 .github/scripts/android_metadata.py --base "$BASE"
       - uses: dorny/paths-filter@v3
         id: prose
         with:
