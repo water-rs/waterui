@@ -235,6 +235,7 @@ impl FieldChrome {
     /// `styled` in the value font of the look the field took last, the
     /// ordinary font when it has taken none: for the accessibility walk,
     /// which holds no theme.
+    #[cfg(feature = "accessibility")]
     pub(crate) fn value_styled(
         &self,
         styled: StyledStr,
