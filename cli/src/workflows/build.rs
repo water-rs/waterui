@@ -3864,10 +3864,7 @@ mod tests {
             [] as [cargo_metadata::Artifact; 0]
         );
         let mut malformed = message;
-        malformed
-            .as_object_mut()
-            .expect("message object")
-            .remove("out_dir");
+        malformed["env"] = serde_json::json!(42);
         let error = super::cargo_messages::<cargo_metadata::BuildScript>(
             &serde_json::to_vec(&malformed).expect("message serializes"),
             "build-script-executed",

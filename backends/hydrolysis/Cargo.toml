@@ -374,7 +374,7 @@ cherenkov = { workspace = true, features = ["testing"] }
 hydrolysis = { workspace = true, features = ["accessibility", "testing"] }
 # The HWUI target's unit tests read font metrics on the host as well.
 read-fonts = { version = "0.45.1", default-features = false, features = ["std"] }
-# The `hwui::kotlin` test renders the Kotlin wire constants from the Rust
+# The `hwui::kotlin` tests verify the generated Kotlin wire constants from the Rust
 # definitions.
 askama = { version = "0.16", default-features = false, features = ["derive", "std"] }
 # The tests' `MirrorTarget` implements `Queue`, whose `ChangeSet` the engine

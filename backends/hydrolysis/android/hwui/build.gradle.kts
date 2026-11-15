@@ -55,11 +55,14 @@ val kotlinWire = tasks.register<KotlinWire>("kotlinWire") {
     inputs.files(
         repositoryRoot.resolve("backends/hydrolysis/build.rs"),
         repositoryRoot.resolve("backends/hydrolysis/Cargo.toml"),
+        repositoryRoot.resolve("backends/hydrolysis/src/hwui/codes.rs"),
+        repositoryRoot.resolve("backends/hydrolysis/src/hwui/protocol.rs"),
+        repositoryRoot.resolve("backends/hydrolysis/src/hwui/text/constants.rs"),
+        repositoryRoot.resolve("backends/hydrolysis/src/hwui/kotlin.rs"),
         repositoryRoot.resolve("Cargo.lock"),
         projectDir.resolve("../scripts/generate-hwui-wire.py"),
     )
     inputs.dir(repositoryRoot.resolve("backends/hydrolysis/build"))
-    inputs.dir(repositoryRoot.resolve("backends/hydrolysis/src/hwui"))
     inputs.dir(repositoryRoot.resolve("backends/hydrolysis/templates/hwui"))
 }
 
