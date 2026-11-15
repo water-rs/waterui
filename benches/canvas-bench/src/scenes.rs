@@ -15,14 +15,16 @@ use nami::watcher::BoxWatcherGuard;
 use waterui::Identifiable;
 use waterui::canvas::{Canvas, Circle, Path, StrokeStyle};
 use waterui::color::{Working, WorkingColor, signal_color};
-use waterui::component::lazy::Lazy;
 use waterui::graphics::backend::draw::kurbo::{self, Affine, BezPath, Stroke};
 use waterui::graphics::backend::draw::{Draw, Fixed, Recorder};
 use waterui::graphics::backend::{
     NextFrame, SceneContent, SceneInvalidator, SceneView, invalidate_on_change,
 };
 use waterui::layout::scroll::{ScrollController, scroll};
-use waterui::layout::{LazyContainer, stack::VStackLayout};
+use waterui::layout::{
+    LazyContainer,
+    stack::{VStack, VStackLayout},
+};
 use waterui::prelude::*;
 use waterui::views::ForEach;
 use waterui_icons_lucide as lucide;
@@ -198,23 +200,44 @@ fn scenario4(spec: &CellSpec, handles: &SceneHandles) -> impl View {
     let rows_created = handles.rows_created.clone();
     let n = spec.n;
     let row_count = n.div_ceil(ICON_COLS);
-    let items: Vec<RowId> = (0..row_count).map(|id| RowId { id }).collect();
-    let contents = ForEach::new(items, move |row: RowId| {
-        rows_created.fetch_add(1, Ordering::Relaxed);
-        let start = row.id * ICON_COLS;
-        let end = (start + ICON_COLS).min(n);
-        let icons: Vec<AnyView> = (start..end)
-            .map(|index| icon_view(&variant, index, &tint))
-            .collect();
-        AnyView::new(hstack(icons).spacing(8.0).padding_with(4.0))
-    });
     match &handles.scroll {
-        ScrollDriver::Controller(controller) => AnyView::new(
-            scroll(LazyContainer::new(VStackLayout::default(), contents))
-                .scroll_controller(controller),
-        ),
-        ScrollDriver::None => AnyView::new(Lazy::vstack(contents)),
+        ScrollDriver::Controller(controller) => {
+            let items: Vec<RowId> = (0..row_count).map(|id| RowId { id }).collect();
+            let contents = ForEach::new(items, {
+                let variant = variant.clone();
+                let tint = tint.clone();
+                let rows_created = rows_created.clone();
+                move |row: RowId| {
+                    rows_created.fetch_add(1, Ordering::Relaxed);
+                    icon_row(&variant, row.id, n, &tint)
+                }
+            });
+            AnyView::new(
+                scroll(LazyContainer::new(VStackLayout::default(), contents))
+                    .scroll_controller(controller),
+            )
+        }
+        // Mount and tint materialize every icon in one tree so N=50 and
+        // N=200 differ; a lazy stack only builds the viewport.
+        ScrollDriver::None => {
+            let rows: Vec<AnyView> = (0..row_count)
+                .map(|id| {
+                    rows_created.fetch_add(1, Ordering::Relaxed);
+                    icon_row(&variant, id, n, &tint)
+                })
+                .collect();
+            AnyView::new(VStack::from_iter(rows).spacing(0.0))
+        }
     }
+}
+
+fn icon_row(variant: &str, row_id: u32, n: u32, tint: &Binding<WorkingColor>) -> AnyView {
+    let start = row_id * ICON_COLS;
+    let end = (start + ICON_COLS).min(n);
+    let icons: Vec<AnyView> = (start..end)
+        .map(|index| icon_view(variant, index, tint))
+        .collect();
+    AnyView::new(hstack(icons).spacing(8.0).padding_with(4.0))
 }
 
 fn icon_view(variant: &str, index: u32, tint: &Binding<WorkingColor>) -> AnyView {
