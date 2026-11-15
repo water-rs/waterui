@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.MaterialTheme
@@ -76,15 +77,17 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = scheme) {
                 Surface(
                     modifier =
-                        Modifier.fillMaxSize().safeDrawingPadding()
+                        Modifier.fillMaxSize()
                             .semantics { testTagsAsResourceId = true }
                             .testTag("screen-root"),
                 ) {
-                    val twin = fixtureContent(example)
-                    if (twin != null) {
-                        twin()
-                    } else {
-                        Text("No twin registered for example '$example'")
+                    Box(Modifier.fillMaxSize().safeDrawingPadding()) {
+                        val twin = fixtureContent(example)
+                        if (twin != null) {
+                            twin()
+                        } else {
+                            Text("No twin registered for example '$example'")
+                        }
                     }
                 }
             }
