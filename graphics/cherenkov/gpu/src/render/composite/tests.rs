@@ -746,13 +746,26 @@ fn demand_follows_frozen_writes_and_severs_cleared_generations() {
         for index in 0..5 {
             assert!(demand.pass(index).is_empty(), "old generation {index}");
         }
-        demand.update(&frame, &plan, |_, target, _, region| {
-            if matches!(target, Target::Part(_)) {
-                region.add(2, 3, 4, 5);
-            }
-        });
-        assert_eq!(demand.surface_pixels(&frame, (16, 16)), 20);
     }
+}
+
+#[test]
+fn surface_damage_unions_root_outputs_without_intermediates() {
+    let frame = frame(vec![
+        pass(Target::Scratch(0), true, None, 0),
+        pass(Target::Part(0), true, Some(Source::Scratch(0)), 1),
+        pass(Target::Part(1), true, None, 2),
+    ]);
+    let plan = ExecutionPlan::build(
+        &frame,
+        formats(wgpu::TextureFormat::Rgba16Float),
+        Err(Materialization::NoExecutor),
+    );
+    let mut demand = crate::render::composite::demand::Demand::default();
+    demand.update(&frame, &plan, |_, _, _, region| region.add(2, 3, 4, 5));
+    assert_eq!(demand.surface_pixels(&frame, (16, 16)), 20);
+    demand.update(&frame, &plan, |_, _, _, _| {});
+    assert_eq!(demand.surface_pixels(&frame, (16, 16)), 0);
 }
 
 #[test]
