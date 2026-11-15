@@ -3,11 +3,9 @@
 
 use cherenkov_record::{BlendSpace, MaterialRegistry};
 use core::time::Duration;
-use kurbo::Point;
 use nami::signal::IntoComputed;
 use waterui_core::animation::Animation;
 use waterui_core::handler::SharedAction;
-use waterui_core::interaction::InteractionState;
 use waterui_core::plugin::Plugin;
 use waterui_core::{Binding, Computed, Environment, Signal};
 
@@ -97,113 +95,6 @@ impl ModalInteraction {
 impl Plugin for ModalInteraction {}
 
 /// Maximum number of press ripple waves tracked concurrently per widget.
-///
-/// Every press spawns its own wave (Material semantics), so rapid
-/// re-presses overlap: older waves keep fading while the newest grows. A wave
-/// lives for at most its grow plus fade-out duration (a few hundred
-/// milliseconds), so this bound sits well above what any human click rate can
-/// keep alive; when it is exceeded the oldest wave's slot is recycled.
-pub const MAX_PRESS_WAVES: usize = 4;
-
-/// One in-flight press ripple wave.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PressWave {
-    /// Absolute logical-unit origin of the press that spawned this wave.
-    /// `None` centers the wave in the target (synthetic/keyboard presses).
-    pub origin: Option<Point>,
-    /// Animated grow progress in the 0.0..=1.0 range.
-    pub progress: f32,
-    /// Animated wave opacity sampled by the renderer.
-    pub opacity: f32,
-}
-
-/// The press ripple waves currently visible on a widget, ordered oldest to
-/// newest.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct PressWaves {
-    waves: [Option<PressWave>; MAX_PRESS_WAVES],
-}
-
-impl PressWaves {
-    /// No visible press waves.
-    pub const EMPTY: Self = Self {
-        waves: [None; MAX_PRESS_WAVES],
-    };
-
-    /// Appends a wave as the newest entry, recycling the oldest slot when the
-    /// set is full.
-    pub fn push(&mut self, wave: PressWave) {
-        if let Some(slot) = self.waves.iter_mut().find(|slot| slot.is_none()) {
-            *slot = Some(wave);
-            return;
-        }
-        self.waves.rotate_left(1);
-        self.waves[MAX_PRESS_WAVES - 1] = Some(wave);
-    }
-
-    /// Iterates the visible waves from oldest to newest.
-    pub fn iter(&self) -> impl Iterator<Item = PressWave> + '_ {
-        self.waves.iter().filter_map(|wave| *wave)
-    }
-
-    /// Whether no wave is visible.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.waves.iter().all(Option::is_none)
-    }
-
-    /// The most recently spawned wave.
-    #[must_use]
-    pub fn latest(&self) -> Option<PressWave> {
-        self.waves.iter().rev().find_map(|wave| *wave)
-    }
-
-    /// Maps every wave origin, e.g. from window space into a widget-local
-    /// frame.
-    pub fn map_origins(&mut self, mut map: impl FnMut(Point) -> Point) {
-        for wave in self.waves.iter_mut().flatten() {
-            wave.origin = wave.origin.map(&mut map);
-        }
-    }
-}
-
-/// Interactive state snapshot for widget chrome.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct WidgetInteractionState {
-    /// The widget's interaction flags for this frame — hovered, pressed,
-    /// keyboard-focus-visible, dragged, selected, disabled — resolved by the
-    /// renderer's bookkeeping. Themes read it to resolve
-    /// [`StateValue`](waterui_core::interaction::StateValue) fields
-    /// directly. When [`InteractionState::DISABLED`] is set the widget
-    /// renders its inactive appearance and the renderer suppresses hover,
-    /// press, and focus, so the remaining flags stay at rest.
-    pub state: InteractionState,
-    /// Animated focus affordance progress in the 0.0..=1.0 range.
-    pub focus_progress: f32,
-    /// Animated state-layer opacity sampled by the renderer.
-    pub state_layer_opacity: f32,
-    /// Animated physical-press progress in the 0.0..=1.0 range: moves
-    /// towards 1 while the widget is physically pressed and towards 0 on
-    /// release, with `InteractionMotion::press_shape` in both directions.
-    /// Themes drive state-dependent shape morphs from it; unlike a ripple
-    /// wave it plays backwards on release.
-    pub press_progress: f32,
-    /// The press ripple waves currently visible on the widget: one per press,
-    /// so rapid re-presses overlap while older waves fade out.
-    pub press_waves: PressWaves,
-}
-
-impl WidgetInteractionState {
-    /// No active interaction state.
-    pub const NONE: Self = Self {
-        state: InteractionState::empty(),
-        focus_progress: 0.0,
-        state_layer_opacity: 0.0,
-        press_progress: 0.0,
-        press_waves: PressWaves::EMPTY,
-    };
-}
-
 /// Motion policy for interactive widget chrome.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InteractionMotion {
@@ -229,13 +120,35 @@ pub struct InteractionMotion {
     pub press_fade_out: Animation,
     /// Animation used when the pressed ripple grows from origin to final size.
     pub press_grow: Animation,
-    /// Animation used for `WidgetInteractionState::press_progress` in both
-    /// directions.
+    /// Animation used for physical-press shape morphs in both directions.
     pub press_shape: Animation,
     /// Minimum amount of time a press must remain visible.
     pub minimum_press_duration: Duration,
     /// Touch delay before showing a press ripple.
     pub touch_delay: Duration,
+}
+
+impl InteractionMotion {
+    /// Inert interaction motion for targets that carry no visual chrome.
+    #[cfg(hydrolysis_runtime)]
+    pub(crate) const fn none() -> Self {
+        Self {
+            hover_opacity: 0.0,
+            focus_opacity: 0.0,
+            pressed_opacity: 0.0,
+            dragged_opacity: 0.0,
+            hover_enter: Animation::linear(Duration::ZERO),
+            hover_exit: Animation::linear(Duration::ZERO),
+            focus_enter: Animation::linear(Duration::ZERO),
+            focus_exit: Animation::linear(Duration::ZERO),
+            press_fade_in: Animation::linear(Duration::ZERO),
+            press_fade_out: Animation::linear(Duration::ZERO),
+            press_grow: Animation::linear(Duration::ZERO),
+            press_shape: Animation::linear(Duration::ZERO),
+            minimum_press_duration: Duration::ZERO,
+            touch_delay: Duration::ZERO,
+        }
+    }
 }
 
 /// Motion policy for text input carets.
@@ -498,18 +411,14 @@ pub struct TableMetrics {
 
 /// The widget chrome a style package supplies to Hydrolysis.
 ///
-/// Hydrolysis lays out every widget it renders from the theme's metrics,
-/// animates it with the theme's motion policies, and records its chrome by
-/// calling the theme's `draw_*` methods with the widget's bounds and the
-/// renderer-resolved [`WidgetInteractionState`]. Every draw method records
-/// into a `cherenkov-record` [`Recorder`](cherenkov_record::Recorder), the render-target-neutral
-/// vocabulary every Hydrolysis render target consumes, so a theme never
-/// names a render engine. A theme becomes a runnable style by also
-/// implementing [`Style`](crate::Style).
+/// Hydrolysis measures, places, hit-tests, records and animates every widget
+/// from the declarative look its [`WidgetTheme`] returns. Custom parts that
+/// engine chrome primitives cannot express record into a `cherenkov-record`
+/// [`Recorder`](cherenkov_record::Recorder), the render-target-neutral
+/// vocabulary every Hydrolysis render target consumes, so a theme never names
+/// a render engine. A theme becomes a runnable style by also implementing
+/// [`Style`](crate::Style).
 pub trait WidgetTheme {
-    /// Return motion policy for interactive widget chrome.
-    fn interaction_motion(&self) -> InteractionMotion;
-
     /// Declare the theme's backdrop materials in `registry`: both the
     /// backdrop shaders ([`MaterialShader`] keys, each with its
     /// [`BackdropShaderSource`]) and the capture classes ([`CaptureClass`]
@@ -610,13 +519,6 @@ pub trait WidgetTheme {
     /// style's container, colours and metrics.
     fn button(&self, spec: &super::ButtonSpec, env: &Environment) -> super::ButtonLook;
 
-    /// Content alpha for labels accompanying a disabled control (Material's
-    /// 38% disabled-content token). Backends dim a disabled control's label
-    /// views with this alpha.
-    fn disabled_content_alpha(&self) -> f32 {
-        0.38
-    }
-
     /// The look of a switch toggle.
     ///
     /// Hydrolysis measures, places, hit-tests, records and animates the
@@ -626,10 +528,12 @@ pub trait WidgetTheme {
     /// toggle, hover, press or drag moves live operands and records nothing.
     /// The look's [`SwitchDrag`](super::SwitchDrag) maps a drag of the knob
     /// to the value it settles on.
+    #[cfg(feature = "toggle")]
     fn switch(&self, spec: &super::ToggleSpec, env: &Environment) -> super::SwitchLook;
 
     /// The look of a checkbox toggle, requested and realized like
     /// [`Self::switch`] but taking taps only.
+    #[cfg(feature = "toggle")]
     fn checkbox(&self, spec: &super::ToggleSpec, env: &Environment) -> super::CheckboxLook;
 
     /// The look of a stepper.
@@ -640,6 +544,7 @@ pub trait WidgetTheme {
     /// [`Chrome`](super::Chrome) values, so a press, a hover or a value
     /// change moves live operands and records nothing. An end at the limit
     /// of the stepper's range is disabled.
+    #[cfg(feature = "stepper")]
     fn stepper(&self, spec: &super::StepperSpec, env: &Environment) -> super::StepperLook;
 
     /// The look of a text field, and of a secure field.
@@ -649,6 +554,12 @@ pub trait WidgetTheme {
     /// reaches the look through its [`Chrome`](super::Chrome) and
     /// [`Driven`](super::Driven) values, so a hover, a focus change or the
     /// label floating moves live operands and records nothing.
+    #[cfg(any(
+        feature = "text-field",
+        feature = "secure-field",
+        feature = "date-picker",
+        feature = "color-picker"
+    ))]
     fn text_field(&self, spec: &super::TextFieldSpec, env: &Environment) -> super::TextFieldLook;
 
     /// The look of every menu presentation: the picker popup, the text
@@ -657,6 +568,7 @@ pub trait WidgetTheme {
     /// Hydrolysis measures, places and hit-tests a menu from the returned
     /// look's layout and records its panel, separators and selected row
     /// from its parts, and requests it again only when `spec` changes.
+    #[cfg(feature = "menu")]
     fn menu(&self, spec: &super::MenuSpec, env: &Environment) -> super::MenuLook;
 
     /// The look of a menu picker's field.
@@ -664,6 +576,7 @@ pub trait WidgetTheme {
     /// Hydrolysis measures, places, hit-tests and records the field from
     /// the returned look, and requests it again only when `spec` changes;
     /// the popup the field opens is the [`menu`](Self::menu) look.
+    #[cfg(any(feature = "picker", feature = "date-picker"))]
     fn menu_picker(&self, spec: &super::PickerSpec, env: &Environment) -> super::MenuPickerLook;
 
     /// The look of a radio group: the indicator each item draws and the
@@ -672,6 +585,7 @@ pub trait WidgetTheme {
     /// Each item's indicator is live over whether the item is selected, so
     /// a selection change moves the operands of the two items it touches
     /// and records nothing.
+    #[cfg(feature = "picker")]
     fn radio_group(&self, spec: &super::PickerSpec, env: &Environment) -> super::RadioGroupLook;
 
     /// The look of a segmented picker.
@@ -683,6 +597,7 @@ pub trait WidgetTheme {
     /// [`SegmentedValue`](super::SegmentedValue) or each segment's
     /// [`Segment`](super::Segment), so a selection change, a hover, a press
     /// or a drag moves live operands and records nothing.
+    #[cfg(feature = "picker")]
     fn segmented_picker(
         &self,
         spec: &super::SegmentedSpec,
@@ -695,6 +610,7 @@ pub trait WidgetTheme {
     /// the motion of that value and how a drag maps to it. Hydrolysis
     /// measures, places, hit-tests, records and animates the slider from
     /// the look alone.
+    #[cfg(feature = "slider")]
     fn slider(&self, spec: &super::SliderSpec, env: &Environment) -> super::SliderLook;
 
     /// The look of a linear progress indicator, determinate or not.
@@ -732,6 +648,7 @@ pub trait WidgetTheme {
     /// returned look and requests it again only when `spec` changes; the
     /// back button's chrome moves live operands on a press, a hover or a
     /// focus change and records nothing.
+    #[cfg(feature = "navigation")]
     fn navigation_bar(
         &self,
         spec: &super::NavigationSpec,
@@ -745,6 +662,7 @@ pub trait WidgetTheme {
     /// Hydrolysis measures, places, hit-tests and records the bar from the
     /// returned look and requests it again only when `spec` changes; a
     /// selection change moves the highlight's operands and records nothing.
+    #[cfg(feature = "navigation")]
     fn tabs(&self, spec: &super::TabsSpec, env: &Environment) -> super::TabsLook;
 
     /// The look of the thumb a scrolling surface draws.
@@ -764,8 +682,10 @@ pub trait WidgetTheme {
     /// from its parts, realizes its controls' chrome and moves a row under
     /// a swipe or a reorder drag as a live operand, and requests the look
     /// again only when `spec` changes.
+    #[cfg(feature = "list")]
     fn list(&self, spec: &super::ListSpec, env: &Environment) -> super::ListLook;
 
     /// The look of a table.
+    #[cfg(feature = "table")]
     fn table(&self, env: &Environment) -> super::TableLook;
 }

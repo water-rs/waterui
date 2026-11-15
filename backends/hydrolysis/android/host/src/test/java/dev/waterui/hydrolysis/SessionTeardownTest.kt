@@ -58,6 +58,40 @@ class SessionTeardownTest {
     }
 
     @Test
+    fun aGpuCompletionAppliesWithoutWaitingForVsync() {
+        val session = HydrolysisSession(context, onCloseRequested = {})
+        session.onNativeFrameCompleted()
+        assertEquals(1, ShadowNativeBridge.completions)
+        assertEquals(0, ShadowNativeBridge.frames)
+        session.destroy()
+    }
+
+    @Test
+    fun aGpuCompletionInsideANativeCallWaitsForItToReturn() {
+        val session = HydrolysisSession(context, onCloseRequested = {})
+        session.withNativePtr("completion-test") {
+            session.onNativeFrameCompleted()
+            assertEquals(0, ShadowNativeBridge.completions)
+        }
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(1, ShadowNativeBridge.completions)
+        session.destroy()
+    }
+
+    @Test
+    fun aQueuedGpuCompletionCannotReachADestroyedSession() {
+        val session = HydrolysisSession(context, onCloseRequested = {})
+        session.withNativePtr("completion-test") {
+            session.onNativeFrameCompleted()
+            session.destroy()
+        }
+        shadowOf(Looper.getMainLooper()).idle()
+        session.onNativeFrameCompleted()
+        assertEquals(0, ShadowNativeBridge.completions)
+        assertTrue(ShadowNativeBridge.destroyed)
+    }
+
+    @Test
     fun aDelayedWakeReleasesHighRefreshUnlessTouchIsHeld() {
         val session = HydrolysisSession(context, onCloseRequested = {})
         val scheduler = FrameScheduler(session)
@@ -652,6 +686,8 @@ class ShadowNativeBridge {
         var deadlineQueries = 0
             private set
 
+        var completions = 0
+
         var deadlineNanos = 0L
         val highRefreshDemands = mutableListOf<Boolean>()
 
@@ -686,6 +722,7 @@ class ShadowNativeBridge {
                 isAccessible = true
                 set(NativeBridge, null)
             }
+            completions = 0
             frames = 0
             sessions = 0
             loads = 0
@@ -770,6 +807,13 @@ class ShadowNativeBridge {
             assertLive(sessionPtr)
             frames += 1
             return onFrame()
+        }
+
+        @JvmStatic
+        @Implementation
+        fun nativeCompleteFrame(sessionPtr: Long) {
+            assertLive(sessionPtr)
+            completions += 1
         }
 
         @JvmStatic

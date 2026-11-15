@@ -111,10 +111,9 @@ jobs:
       code: ${{ steps.prose.outputs.code == 'true' || steps.filter.outputs.workflows == 'true' }}
       deps: ${{ steps.filter.outputs.deps == 'true' || steps.filter.outputs.workflows == 'true' }}
       scripts: ${{ steps.filter.outputs.scripts == 'true' || steps.filter.outputs.workflows == 'true' }}
-      android: ${{ steps.filter.outputs.android == 'true' }}
+      android: ${{ steps.filter.outputs.android == 'true' || steps.android-metadata.outputs.changed == 'true' }}
     steps:
       - uses: actions/checkout@v4
-        if: github.event_name == 'push'
         with:
           fetch-depth: 0
       - uses: dorny/paths-filter@v3
@@ -137,10 +136,8 @@ jobs:
               - "cli/src/templates/*android*/**"
               - "cli/src/toolchain/**"
               - "cli/src/toolchain_checks.rs"
-              - "cli/Cargo.toml"
               - "backends/hydrolysis/android/**"
-              # `[package.metadata.waterui]`'s Android keys drive the scaffold.
-              - "Cargo.toml"
+              - ".github/scripts/android_metadata.py"
               # The packaging job's workflow and transitive local action inputs.
               # Keep these with the android-package job's setup below.
               - ".github/workflows/ci.yml"
@@ -151,9 +148,25 @@ jobs:
               - ".github/actions/install-android-platform/action.yml"
               - ".github/actions/setup-linux-deps/action.yml"
               - ".github/actions/refresh-apt-index/refresh.sh"
+            android_metadata:
+              - "cli/Cargo.toml"
+              - "Cargo.toml"
+              - ".github/scripts/android_metadata.py"
+              - ".github/workflows/ci.yml"
             workflows:
               - ".github/workflows/**"
               - ".github/actions/**"
+      - name: Compare Android scaffold metadata
+        id: android-metadata
+        if: steps.filter.outputs.android_metadata == 'true'
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            BASE="$(git merge-base "$BASE" HEAD)"
+          fi
+          python3 .github/scripts/android_metadata.py --base "$BASE"
       - uses: dorny/paths-filter@v3
         id: prose
         with:
@@ -380,6 +393,59 @@ jobs:
         with:
           name: ci-msrv
 
+  # Build and unit-test `waterui-cli` when it is in the affected scope.
+  # Downstream packaging downloads `water-cli-linux-x64` instead of compiling
+  # the CLI again inside `android-package`.
+  cli:
+    name: CLI
+    needs: [bump, changes, scope]
+    if: >-
+      needs.bump.result == 'success'
+      && needs.changes.outputs.code == 'true'
+      && needs.scope.outputs.comment-only != 'true'
+      && (
+        needs.scope.outputs.packages == 'workspace'
+        || contains(format(' {0} ', needs.scope.outputs.packages), ' waterui-cli ')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # `artifact_symbols` unit tests build a wasm32 rlib fixture.
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: wasm32-unknown-unknown
+          cache: "false"
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      # The CLI links libudev (serialport) on the host.
+      - uses: ./.github/actions/setup-linux-deps
+        with:
+          runtime-fonts: "false"
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: cargo-nextest@0.9.145
+          path: ~/.cargo/bin/cargo-nextest*
+      # nextest's `cli-roboto` fixture generator runs via `uv run` (.config/nextest.toml).
+      - uses: astral-sh/setup-uv@v6
+      # The binary under test needs no release optimisation: the ci-check
+      # profile skips the release profile's fat LTO and single codegen unit,
+      # and sharing `--cargo-profile ci-check` below avoids recompiling deps.
+      - name: Build water CLI binary
+        run: cargo build --timings --locked --profile ci-check -p waterui-cli --bin water
+      - uses: actions/upload-artifact@v4
+        with:
+          name: water-cli-linux-x64
+          path: target/ci-check/water
+          retention-days: 90
+          if-no-files-found: error
+      - name: Run CLI unit tests
+        run: cargo nextest run --timings --locked --cargo-profile ci-check -p waterui-cli --lib --bins --profile ci
+      - uses: ./.github/actions/upload-cargo-timings
+        if: always()
+        with:
+          name: ci-cli
+
   # Packaging is the only signal that drives the CLI's Android path end to
   # end on a clean machine (#2290): `water create` scaffolds against this
   # checkout, `water build` compiles the workspace for
@@ -389,16 +455,33 @@ jobs:
   # Android paths or the Hydrolysis Android host change; the nightly
   # `cli-e2e` legs run the same cycle unconditionally.
   android-package:
-    name: Android package
-    needs: [bump, changes]
-    if: needs.bump.result == 'success' && needs.changes.outputs.android == 'true'
+    name: Android package (${{ matrix.profile }})
+    needs: [bump, changes, cli]
+    if: >-
+      !cancelled()
+      && needs.bump.result == 'success'
+      && needs.changes.outputs.android == 'true'
+      && (needs.cli.result == 'success' || needs.cli.result == 'skipped')
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: debug
+            build_app: true
+            package_flags: --debug
+          - profile: release
+            build_app: false
+            package_flags: --release --unsigned
     steps:
       - uses: actions/checkout@v4
       # Its own cache story: the job builds the workspace for
-      # `aarch64-linux-android` and compiles the CLI for the host, so
-      # sharing the lint jobs' keys would only evict their tarballs.
+      # `aarch64-linux-android`, so sharing the lint jobs' keys would only
+      # evict their tarballs.
       - uses: ./.github/actions/setup-rust
         with:
           targets: aarch64-linux-android
@@ -417,15 +500,47 @@ jobs:
       - uses: ./.github/actions/setup-android-ndk
       # `sdkmanager` is the tool doctor's own remedy text names.
       - uses: ./.github/actions/install-android-platform
-      # The CLI links libudev (serialport) on the host.
+      # The CLI links libudev (serialport) on the host (needed when falling back to building CLI).
       - uses: ./.github/actions/setup-linux-deps
-      # The binary under test needs no release optimisation: the ci-check
-      # profile skips the release profile's fat LTO and single codegen unit.
-      - name: Install the CLI under test
-        run: cargo install --timings --locked --profile ci-check --path cli --root /tmp/water-cli
-      - name: Create, build and package a Hydrolysis Android app
+        with:
+          runtime-fonts: "false"
+      - name: Download water CLI artifact from this run
+        id: run-cli
+        if: needs.cli.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: water-cli-linux-x64
+          path: /tmp/water-cli/bin
+      - name: Download water CLI artifact from latest main run
+        id: main-cli
+        if: needs.cli.result != 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=water-cli-linux-x64&per_page=30" \
+            --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "main" and .workflow_run.repository_id == .workflow_run.head_repository_id)] | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')"
+          if [ -n "${run_id}" ]; then
+            echo "Downloading water-cli-linux-x64 from main run ${run_id}"
+            mkdir -p /tmp/water-cli/bin
+            gh run download "${run_id}" -R "${GITHUB_REPOSITORY}" -n water-cli-linux-x64 -D /tmp/water-cli/bin
+            echo "found=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "found=false" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Build CLI if no cached main artifact exists
+        if: needs.cli.result != 'success' && steps.main-cli.outputs.found != 'true'
+        run: |
+          set -euo pipefail
+          cargo build --timings --locked --profile ci-check -p waterui-cli --bin water
+          install -Dm755 target/ci-check/water /tmp/water-cli/bin/water
+      - name: Ensure downloaded water CLI is executable
+        run: chmod +x /tmp/water-cli/bin/water
+      - name: Create, build and package a Hydrolysis Android app (${{ matrix.profile }})
         env:
           WATER_CARGO_TIMINGS: "1"
+          BUILD_APP: ${{ matrix.build_app }}
+          PACKAGE_FLAGS: ${{ matrix.package_flags }}
         run: |
           set -euo pipefail
           export PATH="/tmp/water-cli/bin:$PATH"
@@ -440,36 +555,32 @@ jobs:
             echo "::error::doctor --fix reported failed installs"
             exit 1
           fi
-          water build --platform android --yes 2>&1 | tee ../e2e-logs/build.log
-          water package --platform android --arch arm64 --debug --yes 2>&1 | tee ../e2e-logs/package-debug.log
-          water package --platform android --arch arm64 --release --unsigned --yes 2>&1 | tee ../e2e-logs/package-release.log
-          grep -q 'Packaged at' ../e2e-logs/package-debug.log
-          grep -q 'Packaged at' ../e2e-logs/package-release.log
-      # The APK paths come from the `Packaged at <path>` lines (anstream
+          if [ "${BUILD_APP}" = "true" ]; then
+            water build --platform android --yes 2>&1 | tee ../e2e-logs/build.log
+          fi
+          read -ra flags <<< "${PACKAGE_FLAGS}"
+          water package --platform android --arch arm64 "${flags[@]}" --yes 2>&1 | tee ../e2e-logs/package.log
+          grep -q 'Packaged at' ../e2e-logs/package.log
+      # The APK path comes from the `Packaged at <path>` line (anstream
       # strips the colour codes off a piped stderr).
-      - name: Collect the APKs
+      - name: Collect the APK
+        env:
+          PROFILE: ${{ matrix.profile }}
         run: |
           set -euo pipefail
-          for profile in debug release; do
-            apk=$(sed -n 's/.*Packaged at //p' "e2e-logs/package-$profile.log" | tail -n 1)
-            [ -f "$apk" ] || { echo "::error::water package reported '$apk', which is not a file"; exit 1; }
-            mkdir -p "$RUNNER_TEMP/apk-$profile"
-            cp "$apk" "$RUNNER_TEMP/apk-$profile/"
-          done
+          apk=$(sed -n 's/.*Packaged at //p' "e2e-logs/package.log" | tail -n 1)
+          [ -f "$apk" ] || { echo "::error::water package reported '$apk', which is not a file"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/apk-${PROFILE}"
+          cp "$apk" "$RUNNER_TEMP/apk-${PROFILE}/"
       - uses: actions/upload-artifact@v4
         with:
-          name: android-package-apk-debug
-          path: ${{ runner.temp }}/apk-debug
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v4
-        with:
-          name: android-package-apk-release
-          path: ${{ runner.temp }}/apk-release
+          name: android-package-apk-${{ matrix.profile }}
+          path: ${{ runner.temp }}/apk-${{ matrix.profile }}
           if-no-files-found: error
       - uses: ./.github/actions/upload-cargo-timings
         if: always()
         with:
-          name: ci-android-package
+          name: ci-android-package-${{ matrix.profile }}
 
   test:
     name: Test
@@ -499,7 +610,7 @@ jobs:
   # on anything else, including a failed `changes` job.
   test-result:
     name: Test result
-    needs: [bump, changes, scope, test, windows-dx12]
+    needs: [bump, changes, scope, test, cli, windows-dx12]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -510,6 +621,7 @@ jobs:
           CHANGES: ${{ needs.changes.result }}
           SCOPE: ${{ needs.scope.result }}
           TEST: ${{ needs.test.result }}
+          CLI: ${{ needs.cli.result }}
           DX12: ${{ needs.windows-dx12.result }}
         run: |
           if [ "$BUMP" = skipped ]; then
@@ -537,6 +649,13 @@ jobs:
             success | skipped) ;;
             *)
               echo "::error::Test finished as $TEST"
+              exit 1
+              ;;
+          esac
+          case "$CLI" in
+            success | skipped) ;;
+            *)
+              echo "::error::CLI finished as $CLI"
               exit 1
               ;;
           esac

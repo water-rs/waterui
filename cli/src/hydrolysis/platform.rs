@@ -236,6 +236,15 @@ pub async fn build_hydrolysis_with_envs_and_features(
         .with_features(options.app_features(project))
         .with_envs(options.cargo_envs().iter().cloned())
         .with_envs(extra_envs.iter().cloned());
+    let widget_features = assets::widget_features(
+        project,
+        &backend_path.join("Cargo.toml"),
+        &platform.triple(),
+        build.features(),
+        &["hydrolysis", "hydrolysis-m3"],
+    )
+    .await?;
+    build = build.with_features(widget_features);
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());
     }

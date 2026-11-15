@@ -18,7 +18,7 @@ use crate::animation::PerpetualAnimation;
 use crate::renderer::accessibility::{
     AccessibilityContentTypes, MergedAccessibilityUpdate, WINDOW_ID_STRIDE,
 };
-use crate::renderer::{MenuShortcutRegistry, SemanticCore, WindowId};
+use crate::renderer::{SemanticCore, WindowId};
 use std::rc::Rc;
 #[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
@@ -267,11 +267,24 @@ impl SemanticRuntime {
         #[cfg(not(target_arch = "wasm32"))]
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
+        #[cfg(any(
+            test,
+            feature = "text-field",
+            feature = "secure-field",
+            feature = "color-picker",
+            feature = "date-picker",
+            feature = "list",
+            feature = "navigation",
+            feature = "table",
+            hydrolysis_system_webview,
+            all(target_arch = "wasm32", feature = "web", feature = "video")
+        ))]
         install_native_component_hooks(&mut env);
         install_headless_window_managers::<crate::text::ParleyEngine>(
             &mut env,
             Rc::clone(&pending_window_queue),
         );
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // Framework tokens only: the semantic runtime has no `Style`, so no
         // style-package tokens ever install — widget structure, roles, labels
@@ -312,8 +325,8 @@ impl SemanticRuntime {
         ));
 
         let window_id = env
-            .get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
-            .expect("install_headless_window_managers seeds MenuShortcutRegistry")
+            .get::<crate::renderer::WindowIdentities>()
+            .expect("install_headless_window_managers seeds WindowIdentities")
             .mint_window_id();
         window.arm_close_requests(&env);
         let semantic_window =
@@ -380,10 +393,11 @@ impl SemanticRuntime {
         } else {
             (&mut self.window, request)
         };
-        let action_env = self.env.extending(semantic_window_origin(window));
-        let changed = window
-            .core
-            .handle_accessibility_action(request, &action_env);
+        #[cfg(any(feature = "menu", feature = "color-picker"))]
+        let action_env = &self.env.extending(semantic_window_origin(window));
+        #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+        let action_env = &self.env;
+        let changed = window.core.handle_accessibility_action(request, action_env);
         if changed {
             window.refresh_requested = true;
         }
@@ -450,6 +464,7 @@ impl SemanticRuntime {
 
     /// Drops UI focus, if any text input holds it.
     #[cfg(feature = "accessibility")]
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub fn clear_ui_focus(&mut self) -> bool {
         let changed = self.window.core.clear_ui_focus();
         if changed {
@@ -556,8 +571,8 @@ impl SemanticRuntime {
             let fonts = self.fonts.clone();
             let window_id = self
                 .env
-                .get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
-                .expect("install_headless_window_managers seeds MenuShortcutRegistry")
+                .get::<crate::renderer::WindowIdentities>()
+                .expect("install_headless_window_managers seeds WindowIdentities")
                 .mint_window_id();
             window.arm_close_requests(&self.env);
             self.popup_windows.push(SemanticWindow::new(
@@ -611,6 +626,7 @@ fn kurbo_frame(frame: waterui_core::layout::Rect) -> kurbo::Rect {
 /// The window's origin as an environment value — the `input_env` the rendered
 /// runner builds around each event. Kept identical so key dispatch resolves
 /// the same environment in both runtimes.
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 fn semantic_window_origin(window: &SemanticWindow) -> HydrolysisWindowOrigin {
     HydrolysisWindowOrigin {
         x: window.window.frame.snapshot().x(),
@@ -634,10 +650,15 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
     // Same consumed-press suppression as the rendered runner: the press
     // precedes its paired `TextInput`, so this flag set at the press is read
     // by the very next `TextInput` event.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     let mut suppress_key_text = false;
     for (event, ime_owned) in events.into_iter().zip(ime_owned) {
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         let key_consumed = suppress_key_text;
-        suppress_key_text = false;
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        {
+            suppress_key_text = false;
+        }
         let changed = match event {
             InputEvent::CloseRequested => {
                 // The rendered runner's close gate (`handle_input_events`):
@@ -677,9 +698,11 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
                 window.core.set_window_frame(kurbo_frame(frame));
                 false
             }
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             InputEvent::TextInput { text } => {
                 !ime_owned && window.core.handle_text_input(text.as_str())
             }
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             InputEvent::KeyText { text } => {
                 !ime_owned && !key_consumed && window.core.handle_text_input(text.as_str())
             }
@@ -698,12 +721,18 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
                     window.core.swallow_ime_key_press(physical_code);
                     false
                 } else {
-                    let key_env = env.extending(semantic_window_origin(window));
+                    #[cfg(any(feature = "menu", feature = "color-picker"))]
+                    let key_env = &env.extending(semantic_window_origin(window));
+                    #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+                    let key_env = &env;
                     let press = KeyPress::new(logical_key, physical_code, modifiers.into(), repeat);
                     let outcome = window
                         .core
-                        .handle_key_press(&key, modifiers, &key_env, &press);
-                    suppress_key_text = outcome == KeyPressOutcome::Consumed;
+                        .handle_key_press(&key, modifiers, key_env, &press);
+                    #[cfg(any(feature = "text-field", feature = "secure-field"))]
+                    {
+                        suppress_key_text = outcome == KeyPressOutcome::Consumed;
+                    }
                     outcome != KeyPressOutcome::Ignored
                 }
             }
@@ -715,7 +744,10 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
                 state: KeyState::Released,
                 modifiers,
             } => {
-                let key_env = env.extending(semantic_window_origin(window));
+                #[cfg(any(feature = "menu", feature = "color-picker"))]
+                let key_env = &env.extending(semantic_window_origin(window));
+                #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+                let key_env = &env;
                 !window.core.take_ime_swallowed_release(physical_code)
                     && !ime_owned
                     && (window.core.handle_bubbled_key_release(&KeyDelivery {
@@ -724,13 +756,22 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
                         code: physical_code,
                         repeat,
                         modifiers,
-                    }) || window.core.handle_key_release_with_env(&key, &key_env))
+                    }) || window.core.handle_key_release_with_env(&key, key_env))
             }
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             InputEvent::ImePreedit { text, caret } => {
                 window.core.handle_ime_preedit(text.as_str(), caret)
             }
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             InputEvent::ImeCommit { text } => window.core.handle_ime_commit(text.as_str()),
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
             InputEvent::ImeDisabled => window.core.handle_ime_disabled(),
+            #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+            InputEvent::TextInput { .. }
+            | InputEvent::KeyText { .. }
+            | InputEvent::ImePreedit { .. }
+            | InputEvent::ImeCommit { .. }
+            | InputEvent::ImeDisabled => false,
             InputEvent::Focused(focused) => window.core.handle_window_focused(focused),
             InputEvent::KeyboardCancel => window.core.cancel_keyboard_press(),
             InputEvent::ModifiersChanged(modifiers) => {
@@ -745,9 +786,15 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
             InputEvent::FileHovered { .. }
             | InputEvent::FileDropped { .. }
             | InputEvent::FileHoverCancelled => false,
+            #[cfg(not(feature = "navigation"))]
+            InputEvent::BackNavigation(_) => false,
+            #[cfg(feature = "navigation")]
             InputEvent::BackNavigation(navigation) => {
-                let event_env = env.extending(semantic_window_origin(window));
-                window.core.handle_back_navigation(navigation, &event_env)
+                #[cfg(any(feature = "menu", feature = "color-picker"))]
+                let event_env = &env.extending(semantic_window_origin(window));
+                #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+                let event_env = &env;
+                window.core.handle_back_navigation(navigation, event_env)
             }
             geometric => {
                 tracing::trace!(

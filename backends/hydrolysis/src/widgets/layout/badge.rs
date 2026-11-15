@@ -238,6 +238,7 @@ pub fn draw_badge_indicator<E: crate::text::TextEngine>(
 /// count indicator's `Label` node — a vector-drawn badge value is otherwise
 /// invisible to assistive technology.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_badge_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<BadgeRenderState<E>>>,

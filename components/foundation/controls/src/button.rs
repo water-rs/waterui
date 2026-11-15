@@ -195,7 +195,9 @@ use fmt::Debug;
 
 use alloc::boxed::Box;
 use executor_core::spawn_local;
-use waterui_core::handler::{BoxedAction, ExtractionError, Handler, ReportExtraction};
+#[cfg(feature = "menu")]
+use waterui_core::handler::ReportExtraction;
+use waterui_core::handler::{BoxedAction, ExtractionError, Handler};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{AnyView, Environment, Native, NativeView, View, impl_debug};
 use waterui_text::IntoText;
@@ -728,6 +730,7 @@ const fn noop(_env: &Environment) -> Result<(), ExtractionError> {
     Ok(())
 }
 
+#[cfg(feature = "menu")]
 impl<Action> From<Button<Action>> for crate::menu::Command
 where
     Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
@@ -745,6 +748,7 @@ where
     }
 }
 
+#[cfg(feature = "menu")]
 impl<Action> From<Button<Action>> for crate::menu::MenuItem
 where
     Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
@@ -779,7 +783,7 @@ pub fn button(label: impl IntoLabel) -> Button<NoAction> {
     Button::new(label.into_label())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "menu"))]
 mod tests {
     use super::*;
     use waterui_core::Signal;

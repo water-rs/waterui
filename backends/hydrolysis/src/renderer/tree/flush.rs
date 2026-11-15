@@ -40,6 +40,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         ctx: RenderContext,
         env: &Environment,
     ) {
+        #[cfg(feature = "navigation")]
         if let Self::Wrapper(node) = self
             && let WrapperEffect::NavigationTransitionSource(id)
             | WrapperEffect::NavigationTransitionDestination(id) = &node.effect
@@ -91,16 +92,18 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             | Self::Widget(_) => true,
             #[cfg(hydrolysis_gpu)]
             Self::GpuContent(_) | Self::ExternalFrame(_) => true,
-            Self::Wrapper(node) => matches!(
-                node.effect,
+            Self::Wrapper(node) => match node.effect {
                 WrapperEffect::Clip(_)
-                    | WrapperEffect::Border(_)
-                    | WrapperEffect::Shadow(_)
-                    | WrapperEffect::PopupMenuSurface(_)
-                    | WrapperEffect::Material(_)
-                    | WrapperEffect::NavigationTransitionSource(_)
-                    | WrapperEffect::NavigationTransitionDestination(_)
-            ),
+                | WrapperEffect::Border(_)
+                | WrapperEffect::Shadow(_)
+                | WrapperEffect::Material(_) => true,
+                #[cfg(feature = "menu")]
+                WrapperEffect::PopupMenuSurface(_) => true,
+                #[cfg(feature = "navigation")]
+                WrapperEffect::NavigationTransitionSource(_)
+                | WrapperEffect::NavigationTransitionDestination(_) => true,
+                _ => false,
+            },
             _ => false,
         }
     }
@@ -389,6 +392,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 // keep updating, instead of being frozen by a one-shot capture.
                 let child_env = &node.env;
                 match &node.effect {
+                    #[cfg(feature = "navigation")]
                     WrapperEffect::NavigationTransitionSource(id) => {
                         flush_navigation_transition_element(
                             renderer,
@@ -399,6 +403,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             *id,
                         );
                     }
+                    #[cfg(feature = "navigation")]
                     WrapperEffect::NavigationTransitionDestination(id) => {
                         flush_navigation_transition_element(
                             renderer,
@@ -482,6 +487,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                         renderer.material_group_scopes.pop();
                     }
+                    #[cfg(feature = "menu")]
                     WrapperEffect::PopupMenuSurface(selected_row) => {
                         HydrolysisRenderer::apply_popup_menu_surface(
                             renderer,
@@ -557,6 +563,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             },
                         );
                     }
+                    #[cfg(feature = "menu")]
                     WrapperEffect::ContextMenu(value) => {
                         HydrolysisRenderer::apply_context_menu(
                             renderer,
@@ -738,6 +745,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 // frame by frame, so this flush paints the field already
                 // clear — `begin_flush` first, metrics after (the order
                 // `List`/`Table` use).
+                #[cfg(any(feature = "text-field", feature = "secure-field"))]
                 node.surface.begin_flush(renderer, &handle);
                 let metrics = handle.metrics();
                 {
@@ -832,6 +840,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 }
                 // The focused-field clearance runs after recording, over
                 // the retained input targets.
+                #[cfg(any(feature = "text-field", feature = "secure-field"))]
                 node.surface.register_clearance(renderer, &handle);
                 // The indicators ride the surface's own frame, not the
                 // extended clip: they stay visible at the avoided edge.
@@ -882,6 +891,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// produce, and every registration goes through the no-bounds semantic
     /// path.
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn emit_accessibility(&self, renderer: &mut SemanticCore<E>, env: &Environment) {
         renderer.with_reader(self.core(), ReaderPhase::Record, |renderer| {
             self.emit_accessibility_inner(renderer, env);
@@ -897,6 +907,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         clippy::option_if_let_else,
         reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
     )]
+    #[cfg(hydrolysis_cherenkov)]
     fn emit_accessibility_inner(&self, renderer: &mut SemanticCore<E>, env: &Environment) {
         match self {
             // A color fill carries no semantics.
@@ -1232,6 +1243,7 @@ fn flush_transform_wrapper<E: crate::text::TextEngine, const SLOTS: usize>(
     child.flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
 }
 
+#[cfg(feature = "navigation")]
 fn flush_navigation_transition_element<E: crate::text::TextEngine>(
     renderer: &mut HydrolysisRenderer<E>,
     ctx: RenderContext,
@@ -1288,7 +1300,7 @@ fn record_hosted_gpu<E, R>(
 /// The semantic walk's counterpart of [`record_hosted_gpu`]: the same
 /// accessibility node, and the same input target as a focus-bookkeeping
 /// slot — there is no layout to bound it, so it is not a hit rect.
-#[cfg(all(hydrolysis_gpu, feature = "accessibility"))]
+#[cfg(all(hydrolysis_cherenkov, hydrolysis_gpu, feature = "accessibility"))]
 fn emit_hosted_gpu_accessibility<E, R>(
     renderer: &mut SemanticCore<E>,
     env: &Environment,

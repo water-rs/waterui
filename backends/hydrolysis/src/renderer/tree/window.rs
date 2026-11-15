@@ -335,6 +335,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     #[cfg(hydrolysis_cherenkov)]
     fn reset_semantic_scene(&mut self) {
         self.gesture_engine.clear_targets();
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         self.text_editing.text_input_targets.clear();
         self.state.measurement.reset_counters();
         #[cfg(feature = "accessibility")]
@@ -350,6 +351,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     fn begin_semantic_emit_frame(&mut self) {
         self.hit_test.begin_rebuild_frame();
         self.lazy.begin_rebuild_frame();
+        #[cfg(feature = "navigation")]
         self.navigation.begin_rebuild_frame();
     }
 
@@ -366,6 +368,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.next_gesture_group_id = 0;
         self.begin_animation_rebuild();
         self.lazy.begin_rebuild_frame();
+        #[cfg(feature = "navigation")]
         self.navigation.begin_rebuild_frame();
         #[cfg(feature = "accessibility")]
         self.accessibility.begin_rebuild_frame();
@@ -382,9 +385,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.prune_dynamic_measurements(live_dynamics);
         self.validate_focused_text_input_after_flush();
         self.retire_unbound_animation_slots();
-        self.hit_test
-            .finish_rebuild_frame(&self.text_editing.text_input_targets);
+        self.hit_test.finish_rebuild_frame(
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
+            &self.text_editing.text_input_targets,
+        );
         self.relocate_dropped_focus();
+        #[cfg(feature = "navigation")]
         self.navigation.finish_rebuild_frame();
         self.finish_outside_read_frame();
         #[cfg(feature = "accessibility")]
@@ -401,8 +407,11 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     #[cfg(hydrolysis_cherenkov)]
     fn finish_semantic_emit_frame(&mut self, tree: &RenderNode<E>, structural_change: bool) {
         self.frame_registries();
-        self.hit_test
-            .finish_rebuild_frame(&self.text_editing.text_input_targets);
+        self.hit_test.finish_rebuild_frame(
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
+            &self.text_editing.text_input_targets,
+        );
+        #[cfg(feature = "navigation")]
         self.navigation.finish_rebuild_frame();
         self.finish_outside_read_frame();
         if structural_change {
@@ -511,6 +520,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
 impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Refreshes text presentation without walking or laying out the view tree.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) fn record_text_input_overlay(
         &mut self,
         env: &Environment,
@@ -537,17 +547,23 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         transform: kurbo::Affine,
         safe_area: &SafeAreaLayout,
     ) {
+        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+        let _ = env;
         // The overlay-mode text context menu re-encodes with the frame it
         // floats over; drawing it only on the one-time build path would
         // leave it visible for a single frame.
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         self.record_text_input_overlay(env, transform);
         // Same for an open `.context_menu` presentation: its dim backdrop,
         // lifted preview and anchored accessory re-encode per frame and the
         // pass is where dismiss_requests/menu-close is observed.
-        let host = self.core.presentation_hosts.context_menu.clone();
-        self.record_host(&host, |renderer| {
-            renderer.render_context_menu_presentation(transform, safe_area);
-        });
+        #[cfg(feature = "menu")]
+        {
+            let host = self.core.presentation_hosts.context_menu.clone();
+            self.record_host(&host, |renderer| {
+                renderer.render_context_menu_presentation(transform, safe_area);
+            });
+        }
         // Anchored overlays (`.anchored_overlay`) draw above all content:
         // the flush registered each anchor's live bounds, so the placement
         // contract re-runs per frame and the overlay follows moves/resizes.
@@ -731,6 +747,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // owned by their semantic retained nodes.
         self.hit_test.begin_rebuild_frame();
         self.lazy.begin_rebuild_frame();
+        #[cfg(feature = "navigation")]
         self.navigation.begin_rebuild_frame();
         // Fold in a structural patch a widget-owned sub-view applied during
         // the previous frame's flush (mid-flush, past that frame's
@@ -789,9 +806,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // The materialized platform-view placements write into their tables
         // once, here at frame end — never mid-materialization.
         self.core.record_platform_views();
-        self.core
-            .hit_test
-            .finish_rebuild_frame(&self.core.text_editing.text_input_targets);
+        self.core.hit_test.finish_rebuild_frame(
+            #[cfg(any(feature = "text-field", feature = "secure-field"))]
+            &self.core.text_editing.text_input_targets,
+        );
+        #[cfg(feature = "navigation")]
         self.core.navigation.finish_rebuild_frame();
         self.core.finish_outside_read_frame();
         if structural_change {
@@ -805,6 +824,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // accessibility tree.
         self.validate_focused_text_input_after_flush();
         self.relocate_dropped_focus();
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         self.clear_focused_fields();
         #[cfg(feature = "accessibility")]
         self.finalize_accessibility_tree_update();

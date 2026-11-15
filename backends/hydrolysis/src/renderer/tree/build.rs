@@ -334,6 +334,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
+        #[cfg(feature = "menu")]
         let view = match view.downcast::<Metadata<ContextMenu>>() {
             Ok(meta) => return Self::build_view(meta.content, env, renderer),
             Err(view) => view,
@@ -342,6 +343,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Ok(meta) => return Self::build_view(meta.content, env, renderer),
             Err(view) => view,
         };
+        #[cfg(feature = "navigation")]
         let view = match view.downcast::<Metadata<NavigationTransitionSource>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
@@ -354,6 +356,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
+        #[cfg(feature = "navigation")]
         let view = match view.downcast::<Metadata<NavigationTransitionDestination>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
@@ -477,6 +480,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
+        #[cfg(feature = "menu")]
         let view = match view.downcast::<Metadata<PopupMenuSurface>>() {
             Ok(meta) => {
                 return Self::build_wrapper(
@@ -531,6 +535,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
+        #[cfg(feature = "menu")]
         let view = match view.downcast::<Metadata<ResolvedContextMenu>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
@@ -768,18 +773,22 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
+        #[cfg(feature = "menu")]
         let view = match view.downcast::<Native<ResolvedMenu>>() {
             Ok(menu) => return Self::build_menu(renderer, (*menu).into_inner(), env),
             Err(view) => view,
         };
+        #[cfg(feature = "toggle")]
         let view = match view.downcast::<Native<ToggleConfig>>() {
             Ok(toggle) => return Self::build_toggle((*toggle).into_inner(), env, renderer),
             Err(view) => view,
         };
+        #[cfg(feature = "slider")]
         let view = match view.downcast::<Native<SliderConfig>>() {
             Ok(slider) => return Self::build_slider((*slider).into_inner(), env, renderer),
             Err(view) => view,
         };
+        #[cfg(feature = "stepper")]
         let view = match view.downcast::<Native<StepperConfig>>() {
             Ok(stepper) => {
                 return Self::build_stepper((*stepper).into_inner(), env, renderer);
@@ -792,30 +801,35 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
+        #[cfg(feature = "date-picker")]
         let view = match view.downcast::<Native<DatePickerConfig>>() {
             Ok(date_picker) => {
                 return Self::build_date_picker((*date_picker).into_inner(), env, renderer);
             }
             Err(view) => view,
         };
+        #[cfg(feature = "color-picker")]
         let view = match view.downcast::<Native<ColorPickerConfig>>() {
             Ok(color_picker) => {
                 return Self::build_color_picker((*color_picker).into_inner(), env, renderer);
             }
             Err(view) => view,
         };
+        #[cfg(feature = "picker")]
         let view = match view.downcast::<Native<PickerConfig>>() {
             Ok(picker) => {
                 return Self::build_picker((*picker).into_inner(), env, renderer);
             }
             Err(view) => view,
         };
+        #[cfg(feature = "text-field")]
         let view = match view.downcast::<Native<ResolvedTextFieldConfig>>() {
             Ok(text_field) => {
                 return Self::build_text_field((*text_field).into_inner(), env, renderer);
             }
             Err(view) => view,
         };
+        #[cfg(feature = "secure-field")]
         let view = match view.downcast::<Native<SecureFieldConfig>>() {
             Ok(secure_field) => {
                 return Self::build_secure_field((*secure_field).into_inner(), env, renderer);
@@ -826,10 +840,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Ok(badge) => return Self::build_badge((*badge).into_inner(), env, renderer),
             Err(view) => view,
         };
+        #[cfg(feature = "list")]
         let view = match view.downcast::<Native<ListConfig>>() {
             Ok(list) => return Self::build_list((*list).into_inner(), env, renderer),
             Err(view) => view,
         };
+        #[cfg(feature = "table")]
         let view = match view.downcast::<Native<TableConfig>>() {
             Ok(table) => return Self::build_table(renderer, (*table).into_inner(), env),
             Err(view) => view,
@@ -875,24 +891,28 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         // the navigation controller, transition slot, and tab-bar state stay live
         // and reactive route/tab selection keeps driving updates, instead of
         // freezing in a one-shot `Captured` bake.
+        #[cfg(feature = "navigation")]
         let view = match view.downcast::<Native<NavigationView>>() {
             Ok(navigation) => {
                 return Self::build_navigation_view((*navigation).into_inner(), env, renderer);
             }
             Err(view) => view,
         };
+        #[cfg(feature = "navigation")]
         let view = match view.downcast::<Native<NavigationSplitLayout>>() {
             Ok(split) => {
                 return Self::build_navigation_split((*split).into_inner(), env, renderer);
             }
             Err(view) => view,
         };
+        #[cfg(feature = "navigation")]
         let view = match view.downcast::<Native<NavigationStack<(), ()>>>() {
             Ok(stack) => {
                 return Self::build_navigation_stack(renderer, (*stack).into_inner(), env);
             }
             Err(view) => view,
         };
+        #[cfg(feature = "navigation")]
         let view = match view.downcast::<Native<TabsLayout>>() {
             Ok(tabs) => return Self::build_tabs((*tabs).into_inner(), env, renderer),
             Err(view) => view,

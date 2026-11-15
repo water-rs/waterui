@@ -635,7 +635,7 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
         ctx.with_scope_if(
             disabled,
             crate::renderer::mount::ScopeKey { role, item: 0 },
-            theme.disabled_content_alpha(),
+            crate::theme::DISABLED_FOREGROUND_ALPHA,
             rect,
             place,
         );
@@ -975,6 +975,7 @@ const fn layout_size(size: LayoutSize) -> LayoutSize {
 /// they emit their own nodes here too. The main label flushes visual-only and
 /// emits nothing.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_slider_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<SliderRenderState<E>>>,

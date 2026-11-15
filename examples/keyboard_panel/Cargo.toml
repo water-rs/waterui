@@ -17,4 +17,4 @@ dev = ["waterui/dynamic_linking"]
 workspace = true
 
 [dependencies]
-waterui.workspace = true
+waterui = { workspace = true, features = ["text-field"] }

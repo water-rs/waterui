@@ -4,7 +4,7 @@ use super::*;
 use crate::animation::PerpetualAnimation;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::platform::PainterUnavailable;
-use crate::renderer::MenuShortcutRegistry;
+
 #[cfg(feature = "accessibility")]
 use crate::renderer::accessibility::{
     AccessibilityActivationPointError, AccessibilityContentTypes, WINDOW_ID_STRIDE,
@@ -53,6 +53,13 @@ impl HeadlessSurface {
     /// Whether the driver reported the device generation this target
     /// renders on lost — the next frame recovers it under its context's
     /// recovery budget. The CPU painter has no device to lose.
+    #[cfg_attr(
+        not(hydrolysis_gpu_painter),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "the same query reads driver state when the GPU painter is enabled"
+        )
+    )]
     fn device_lost(&self) -> bool {
         match self {
             #[cfg(hydrolysis_gpu_painter)]
@@ -764,11 +771,24 @@ impl HeadlessRuntime {
         waterui_core::install_application_resources(&mut env);
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
+        #[cfg(any(
+            test,
+            feature = "text-field",
+            feature = "secure-field",
+            feature = "color-picker",
+            feature = "date-picker",
+            feature = "list",
+            feature = "navigation",
+            feature = "table",
+            hydrolysis_system_webview,
+            all(target_arch = "wasm32", feature = "web", feature = "video")
+        ))]
         install_native_component_hooks(&mut env);
         install_headless_window_managers::<crate::text::ParleyEngine>(
             &mut env,
             Rc::clone(&pending_window_queue),
         );
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // A headless host has no platform appearance: the scheme is Light
         // unless the application installs its own.
@@ -833,8 +853,8 @@ impl HeadlessRuntime {
             ParleyEngine::from_collection(&fonts, family_resolution),
         );
         renderer.set_window_id(
-            env.get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
-                .expect("install_headless_window_managers seeds MenuShortcutRegistry")
+            env.get::<crate::renderer::WindowIdentities>()
+                .expect("install_headless_window_managers seeds WindowIdentities")
                 .mint_window_id(),
         );
         renderer.set_window_closable(window.closable);
@@ -886,8 +906,8 @@ impl HeadlessRuntime {
         );
         renderer.set_window_id(
             self.env
-                .get::<MenuShortcutRegistry<crate::text::ParleyEngine>>()
-                .expect("install_headless_window_managers seeds MenuShortcutRegistry")
+                .get::<crate::renderer::WindowIdentities>()
+                .expect("install_headless_window_managers seeds WindowIdentities")
                 .mint_window_id(),
         );
         renderer.set_window_closable(window.closable);
@@ -1008,10 +1028,13 @@ impl HeadlessRuntime {
         } else {
             (&mut self.runtime, request)
         };
-        let action_env = self.env.extending(runtime_window_origin(window));
+        #[cfg(any(feature = "menu", feature = "color-picker"))]
+        let action_env = &self.env.extending(runtime_window_origin(window));
+        #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+        let action_env = &self.env;
         let changed = window
             .renderer
-            .handle_accessibility_action(request, &action_env);
+            .handle_accessibility_action(request, action_env);
         if changed {
             window.request_refresh();
             window.request_redraw();
@@ -1119,6 +1142,7 @@ impl HeadlessRuntime {
 
     #[cfg(feature = "accessibility")]
     /// Clears UI focus; returns whether focus changed.
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub fn clear_ui_focus(&mut self) -> bool {
         let changed = self.runtime.renderer.clear_ui_focus();
         if changed {
@@ -1305,6 +1329,7 @@ impl HeadlessRuntime {
     /// The drawn menu mounts no popup window, so `popup_frames` stays empty
     /// while it is up.
     #[cfg(test)]
+    #[cfg(feature = "menu")]
     pub(crate) fn context_menu_presentation_frames(
         &self,
     ) -> Option<(kurbo::Rect, Option<kurbo::Rect>)> {
@@ -1314,6 +1339,7 @@ impl HeadlessRuntime {
     /// The row frames inside the open drawn menu, in hit order — empty when
     /// no drawn presentation is open.
     #[cfg(test)]
+    #[cfg(feature = "menu")]
     pub(crate) fn context_menu_row_frames(&self) -> Vec<kurbo::Rect> {
         self.runtime.renderer.context_menu_row_frames()
     }
@@ -1329,6 +1355,7 @@ impl HeadlessRuntime {
     /// presentation — the source's rect unless fitting the stack moved or
     /// cropped it — or `None` when none is open.
     #[cfg(test)]
+    #[cfg(feature = "menu")]
     pub(crate) fn context_menu_lift_frame(&self) -> Option<kurbo::Rect> {
         self.runtime.renderer.context_menu_lift_frame()
     }

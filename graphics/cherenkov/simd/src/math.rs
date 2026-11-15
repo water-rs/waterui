@@ -190,6 +190,11 @@ mod tests {
                     (f64::from(actual) - expected).abs() < 6e-7,
                     "erf({x})={actual}, expected {expected}"
                 );
+                // Shadow rasterization skips integrals beyond this point:
+                // erfc(4) is below half an f32 spacing immediately below 1.
+                if x.abs() >= 4.0 {
+                    assert_eq!(actual.to_bits(), x.signum().to_bits());
+                }
             }
             let x = f32x4::load_array(simd, [f32::NEG_INFINITY, 0.0, f32::INFINITY, f32::NAN]);
             let result = exp4(simd, x).to_array();

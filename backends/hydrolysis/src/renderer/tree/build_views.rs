@@ -8,6 +8,7 @@ use super::*;
 #[cfg(any(hydrolysis_android_system_webview, not(hydrolysis_system_webview)))]
 use waterui_core::contract_violation;
 
+#[cfg(feature = "list")]
 impl_widget_behavior!(
     crate::widgets::layout::list::ListRenderState<E>,
     crate::widgets::layout::list::render_list_node,
@@ -17,6 +18,7 @@ impl_widget_behavior!(
     ; a11y: crate::widgets::layout::list::emit_list_accessibility
     ; surface: surface
 );
+#[cfg(feature = "table")]
 impl_widget_behavior!(
     crate::widgets::layout::table::TableRenderState<E>,
     crate::widgets::layout::table::render_table_node,
@@ -26,6 +28,7 @@ impl_widget_behavior!(
     ; a11y: crate::widgets::layout::table::emit_table_accessibility
     ; surface: surface
 );
+#[cfg(feature = "navigation")]
 impl_widget_behavior!(
     crate::widgets::nav::navigation::NavigationViewRenderState<E>,
     crate::widgets::nav::navigation::render_navigation_view_node,
@@ -37,11 +40,13 @@ impl_widget_behavior!(
 
 /// The declaration on a navigation view's content root — the page root a
 /// navigation stack owns.
+#[cfg(feature = "navigation")]
 fn navigation_page_transition<E: crate::text::TextEngine>(
     state: &crate::widgets::nav::navigation::NavigationViewRenderState<E>,
 ) -> Option<waterui_core::transition::TransitionSpec> {
     super::transition::claim_transition(state.content_node())
 }
+#[cfg(feature = "navigation")]
 impl_widget_behavior!(
     crate::widgets::nav::navigation::NavigationSplitRenderState<E>,
     crate::widgets::nav::navigation::render_navigation_split_node,
@@ -50,6 +55,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::nav::navigation::emit_navigation_split_accessibility
 );
+#[cfg(feature = "navigation")]
 impl_widget_behavior!(
     crate::widgets::nav::navigation::NavigationStackRenderState<E>,
     crate::widgets::nav::navigation::render_navigation_stack_node,
@@ -57,6 +63,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::nav::navigation::emit_navigation_stack_accessibility
 );
+#[cfg(feature = "navigation")]
 impl_widget_behavior!(
     crate::widgets::nav::tabs::TabsRenderState<E>,
     crate::widgets::nav::tabs::render_tabs_node,
@@ -109,6 +116,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// a changing collection length stay live; the `LazyListController` row-extent
     /// cache (keyed by body-order cursor slot) persists across frames. Stretches to
     /// fill the proposal (`StretchAxis::Both`, read from the config).
+    #[cfg(feature = "list")]
     pub(super) fn build_list(
         config: ListConfig,
         env: &Environment,
@@ -129,6 +137,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// reactive cell content and a changing column/row set stay live; the
     /// `LazyTableController` column-width/row-count cache (keyed by body-order cursor
     /// slot) persists across frames. Stretch is read from the config.
+    #[cfg(feature = "table")]
     pub(super) fn build_table(
         renderer: &SemanticCore<E>,
         config: TableConfig,
@@ -145,6 +154,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// [`RetainedSubview`]s; the bar's `color`/`hidden` signals are read through
     /// `read_signal` each frame so an appearance change schedules a frame and the
     /// bar re-renders. Stretch is `Both` (read from the config).
+    #[cfg(feature = "navigation")]
     pub(super) fn build_navigation_view(
         navigation: NavigationView,
         env: &Environment,
@@ -168,6 +178,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// frame, and the `selection` binding is read through `read_signal` so a
     /// selection change schedules a frame and the detail re-resolves. Stretch is
     /// `Both` (read from the config).
+    #[cfg(feature = "navigation")]
     pub(super) fn build_navigation_split(
         split: NavigationSplitLayout,
         env: &Environment,
@@ -193,6 +204,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// `Rc`-backed builders each flush; the navigation controller and transition
     /// slot persist across frames so push/pop transitions keep animating. Stretch is
     /// `Both` (read from the config).
+    #[cfg(feature = "navigation")]
     pub(super) fn build_navigation_stack(
         renderer: &SemanticCore<E>,
         stack: NavigationStack<(), ()>,
@@ -209,6 +221,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// from its `Rc`-backed builder each flush, and the `selection` binding is read
     /// through `read_signal` so a tab change schedules a frame and the active
     /// content/indicator updates. Stretch is `Both` (read from the config).
+    #[cfg(feature = "navigation")]
     pub(super) fn build_tabs(
         tabs: TabsLayout,
         env: &Environment,

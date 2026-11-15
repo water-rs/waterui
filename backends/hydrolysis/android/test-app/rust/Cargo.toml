@@ -33,8 +33,8 @@ gpu-map-probe = ["probe", "gpu", "dep:waterui-map", "dep:waterui-map-gpu", "dep:
 [target.'cfg(target_os = "android")'.dependencies]
 # `testing` for `hydrolysis::testing::TestStyle`: the debug app exercises the
 # host, not a style package, so it mounts the in-tree test theme.
-hydrolysis = { workspace = true, default-features = false, features = ["accessibility", "testing"] }
-waterui = { workspace = true, default-features = false }
+hydrolysis = { workspace = true, default-features = false, features = ["accessibility", "testing", "secure-field", "slider", "text-field", "toggle"] }
+waterui = { workspace = true, default-features = false, features = ["secure-field", "slider", "text-field", "toggle"] }
 waterui-core.workspace = true
 jni.workspace = true
 

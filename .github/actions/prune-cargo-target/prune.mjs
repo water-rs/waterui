@@ -18,6 +18,8 @@
 // feature sets no longer built, and anything whose name carries no hash.
 // Deleting a live unit costs a rebuild, never correctness: Cargo
 // recompiles whatever is missing.
+// Cargo's unit layout instead stores each complete unit (outputs and
+// fingerprints) in <profile>/build/<package>/<hash>; prune those as a whole.
 
 import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -27,6 +29,8 @@ const UNIT_DIRS = ['deps', 'build', 'examples', '.fingerprint'];
 // `libfoo-<hash>.rmeta`, `foo-<hash>.d`, `foo-<hash>.dll.lib`, `foo-<hash>`.
 const ENTRY_HASH = /-([0-9a-f]{16})(?:\.[A-Za-z0-9_]+)*$/;
 const PATH_HASH = /-([0-9a-f]{16})(?=[./\\]|$)/g;
+const UNIT_HASH = /^[0-9a-f]{16}$/;
+const UNIT_PATH_HASH = /(?:^|[/\\])build[/\\][^/\\]+[/\\]([0-9a-f]{16})(?=[/\\]|$)/g;
 
 const [targetDir, messagesPath] = process.argv.slice(2);
 if (!targetDir || !messagesPath) {
@@ -48,6 +52,7 @@ lines.forEach((line, index) => {
   if (message.reason === 'build-script-executed') paths.push(message.out_dir);
   for (const path of paths) {
     for (const match of path.matchAll(PATH_HASH)) keep.add(match[1]);
+    for (const match of path.matchAll(UNIT_PATH_HASH)) keep.add(match[1]);
   }
 });
 if (keep.size === 0) {
@@ -59,13 +64,21 @@ const profileDirs = [];
 const subdirs = (dir) => readdirSync(dir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
   .map((entry) => join(dir, entry.name));
+const unitPackages = (dir) => {
+  const build = join(dir, 'build');
+  if (!existsSync(build)) return [];
+  return subdirs(build).filter((packageDir) =>
+    readdirSync(packageDir, { withFileTypes: true })
+      .some((entry) => entry.isDirectory() && UNIT_HASH.test(entry.name)));
+};
+const isProfile = (dir) => existsSync(join(dir, '.fingerprint')) || unitPackages(dir).length > 0;
 for (const dir of subdirs(targetDir)) {
-  if (existsSync(join(dir, '.fingerprint'))) {
+  if (isProfile(dir)) {
     profileDirs.push(dir);
     continue;
   }
   for (const nested of subdirs(dir)) {
-    if (existsSync(join(nested, '.fingerprint'))) profileDirs.push(nested);
+    if (isProfile(nested)) profileDirs.push(nested);
   }
 }
 if (profileDirs.length === 0) {
@@ -75,9 +88,23 @@ if (profileDirs.length === 0) {
 for (const profileDir of profileDirs) {
   let kept = 0;
   let removed = 0;
+  const packages = unitPackages(profileDir);
+  for (const packageDir of packages) {
+    for (const entry of readdirSync(packageDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !UNIT_HASH.test(entry.name)) continue;
+      if (keep.has(entry.name)) {
+        kept += 1;
+      } else {
+        rmSync(join(packageDir, entry.name), { recursive: true });
+        removed += 1;
+      }
+    }
+    if (readdirSync(packageDir).length === 0) rmSync(packageDir, { recursive: true });
+  }
   for (const unitDir of UNIT_DIRS.map((name) => join(profileDir, name))) {
     if (!existsSync(unitDir) || !statSync(unitDir).isDirectory()) continue;
     for (const name of readdirSync(unitDir)) {
+      if (packages.includes(join(unitDir, name))) continue;
       const hash = ENTRY_HASH.exec(name)?.[1];
       if (hash !== undefined && keep.has(hash)) {
         kept += 1;

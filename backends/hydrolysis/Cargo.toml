@@ -371,7 +371,7 @@ cherenkov = { workspace = true, features = ["testing"] }
 # feature APIs — the headless runtimes' `new_for_tests` constructors, the
 # merged-tree queries and `testing::TestStyle` — and a dev-dependency on the
 # package itself is what turns them on for test builds (water-rs/waterui#1673).
-hydrolysis = { workspace = true, features = ["accessibility", "testing"] }
+hydrolysis = { workspace = true, features = ["accessibility", "testing", "all-controls"] }
 # The HWUI target's unit tests read font metrics on the host as well.
 read-fonts = { version = "0.45.1", default-features = false, features = ["std"] }
 # The `hwui::kotlin` tests verify the generated Kotlin wire constants from the Rust
@@ -430,7 +430,24 @@ harness = false
 required-features = ["webview-system", "winit"]
 
 [features]
-default = ["gpu"]
+menu = ["waterui/menu", "dep:waterkit-menu"]
+calendar = ["waterui/calendar"]
+color-picker = ["waterui/color-picker"]
+date-picker = ["calendar", "stepper", "menu", "waterui/date-picker"]
+file-picker = ["waterui/file-picker"]
+multi-date-picker = ["calendar", "waterui/multi-date-picker"]
+picker = ["menu", "waterui/picker"]
+secure-field = ["menu", "waterui/secure-field"]
+slider = ["waterui/slider"]
+stepper = ["waterui/stepper"]
+text-field = ["menu", "waterui/text-field"]
+toggle = ["waterui/toggle"]
+validation = ["text-field", "waterui/validation"]
+list = ["waterui/list"]
+table = ["list", "waterui/table"]
+navigation = ["text-field", "waterui/navigation"]
+all-controls = ["menu", "calendar", "color-picker", "date-picker", "file-picker", "multi-date-picker", "picker", "secure-field", "slider", "stepper", "text-field", "toggle", "validation", "list", "table", "navigation"]
+default = ["gpu", "all-controls"]
 accessibility = ["dep:accesskit"]
 testing = []
 # Per-frame CPU/GPU stage timing: wgpu timestamp queries around the
@@ -546,7 +563,6 @@ winit = [
     "dep:objc2-foundation",
     "dep:objc2-quartz-core",
     "dep:futures",
-    "dep:waterkit-menu",
     "dep:windows",
     "dep:x11-dl",
     "dep:x11rb",

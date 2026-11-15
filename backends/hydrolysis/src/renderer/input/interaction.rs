@@ -2,15 +2,14 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::animation::AnimationKey;
-use crate::theme::{InteractionMotion, MAX_PRESS_WAVES, WidgetInteractionState};
+use crate::renderer::interaction_layers::MAX_PRESS_WAVES;
+use crate::theme::InteractionMotion;
 use nami::Signal as _;
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 
-const INTERACTION_FOCUS_KEY: usize = 0;
 const INTERACTION_STATE_LAYER_KEY: usize = 1;
-/// Scalar key of the physical-press morph progress
-/// (`WidgetInteractionState::press_progress`).
+/// Scalar key of the physical-press morph progress.
 const INTERACTION_PRESS_PROGRESS_KEY: usize = 2;
 /// First animation key of the per-wave pairs; each press wave claims two
 /// consecutive keys (opacity, grow progress).
@@ -294,6 +293,7 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
 
     /// Every bound control's live toggle.
     #[cfg(test)]
+    #[cfg(any(feature = "toggle", feature = "picker"))]
     pub(crate) fn live_toggles(&self) -> Vec<Rc<crate::renderer::live_toggle::LiveToggle>> {
         self.states
             .values()
@@ -303,6 +303,7 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
 
     /// Every bound segment's live segmented picker, one per segment.
     #[cfg(test)]
+    #[cfg(feature = "picker")]
     pub(crate) fn live_segmenteds(
         &self,
     ) -> Vec<Rc<crate::renderer::live_segmented::LiveSegmented>> {
@@ -314,6 +315,7 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
 
     /// Every bound tab item's live tab container, one per item.
     #[cfg(test)]
+    #[cfg(feature = "navigation")]
     pub(crate) fn live_tabs(&self) -> Vec<Rc<crate::renderer::live_tabs::LiveTabs>> {
         self.states
             .values()
@@ -344,11 +346,7 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
         animation_controller: &mut AnimationController,
         now: Instant,
         owner: &std::rc::Rc<crate::renderer::mount::NodeCell<E>>,
-    ) -> (
-        WidgetInteractionState,
-        PressSlot,
-        Rc<InteractionLayerHandles>,
-    ) {
+    ) -> (InteractionState, PressSlot, Rc<InteractionLayerHandles>) {
         self.active.insert(key.clone());
         let interaction_state = self.states.entry(key.clone()).or_default();
         interaction_state.owner = std::rc::Rc::downgrade(owner);
@@ -383,19 +381,6 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
         };
         let focus_visible = !input.disabled && input.focus.is_some_and(|focus| focus.visible);
 
-        let focus_alpha = animation_controller.bind_scalar_target(
-            AnimationKey::renderer_local_scalar_with_discriminator(
-                key.owner.address(),
-                key.animation_discriminator(INTERACTION_FOCUS_KEY),
-            ),
-            if focus_visible { 1.0 } else { 0.0 },
-            if focus_visible {
-                motion.focus_enter.clone()
-            } else {
-                motion.focus_exit.clone()
-            },
-            now,
-        );
         let hover_target = if hovered { motion.hover_opacity } else { 0.0 };
         let hover_alpha = animation_controller.bind_scalar_target(
             AnimationKey::renderer_local_scalar_with_discriminator(
@@ -467,8 +452,8 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
         });
 
         let handles = Rc::new(InteractionLayerHandles::new(
-            hover_alpha.clone(),
-            press_progress.clone(),
+            hover_alpha,
+            press_progress,
             waves,
             motion.clone(),
         ));
@@ -497,18 +482,7 @@ impl<E: crate::text::TextEngine> InteractionEngine<E> {
         if focus_visible {
             flags |= InteractionState::FOCUSED;
         }
-        let state = WidgetInteractionState {
-            state: flags,
-            focus_progress: focus_alpha.sample(now),
-            state_layer_opacity: hover_alpha.sample(now),
-            press_progress: if input.disabled {
-                0.0
-            } else {
-                press_progress.sample(now)
-            },
-            press_waves: handles.sample_waves(now),
-        };
-        (state, press_slot, handles)
+        (flags, press_slot, handles)
     }
 }
 
@@ -700,11 +674,9 @@ mod tests {
         // Rebind mid-fade: the ripple must keep its expanded shape (progress
         // stays 1.0) instead of playing the grow animation backwards.
         let fading = released + Duration::from_millis(30);
-        let (state, _, _) = bind(&mut engine, &mut controller, fading);
-        let wave = state
-            .press_waves
-            .latest()
-            .expect("fading wave must still be sampled");
+        let (_, _, handles) = bind(&mut engine, &mut controller, fading);
+        let waves = handles.sample_waves(fading);
+        let wave = waves.last().expect("fading wave must still be sampled");
         assert!(wave.opacity > 0.0, "fade-out must still be in flight");
         assert!(
             (wave.progress - 1.0).abs() < f32::EPSILON,
@@ -714,9 +686,9 @@ mod tests {
         // Once the fade-out has finished the wave is invisible and dropped
         // from the sampled set.
         let faded = released + Duration::from_millis(160);
-        let (state, _, _) = bind(&mut engine, &mut controller, faded);
+        let (_, _, handles) = bind(&mut engine, &mut controller, faded);
         assert!(
-            state.press_waves.is_empty(),
+            handles.sample_waves(faded).is_empty(),
             "fully faded wave must no longer be sampled"
         );
     }
@@ -769,8 +741,8 @@ mod tests {
         // Both waves are visible: the released first wave keeps its own grow
         // progress and origin while the fresh wave starts over from zero.
         let sampled_at = repressed + Duration::from_millis(10);
-        let (state, _, _) = bind(&mut engine, &mut controller, sampled_at);
-        let waves: Vec<_> = state.press_waves.iter().collect();
+        let (_, _, handles) = bind(&mut engine, &mut controller, sampled_at);
+        let waves = handles.sample_waves(sampled_at);
         assert_eq!(waves.len(), 2, "both press waves must be visible");
         assert_eq!(
             waves[0].origin,
@@ -791,8 +763,8 @@ mod tests {
         // 75ms minimum press elapsed, 120ms long) must not touch the second,
         // still-pressed wave.
         let first_faded = started + Duration::from_millis(240);
-        let (state, _, _) = bind(&mut engine, &mut controller, first_faded);
-        let waves: Vec<_> = state.press_waves.iter().collect();
+        let (_, _, handles) = bind(&mut engine, &mut controller, first_faded);
+        let waves = handles.sample_waves(first_faded);
         assert_eq!(waves.len(), 1, "the first wave must have faded out alone");
         assert_eq!(
             waves[0].origin,
@@ -848,31 +820,31 @@ mod tests {
 
         let disabled_at = started + Duration::from_millis(50);
         let (state, _, _) = bind(&mut engine, &mut controller, disabled_at, true, true);
-        assert!(state.state.contains(InteractionState::DISABLED));
+        assert!(state.contains(InteractionState::DISABLED));
         assert!(
-            !state.state.contains(InteractionState::HOVERED),
+            !state.contains(InteractionState::HOVERED),
             "disabled widget must not sample hover"
         );
         assert!(
-            !state.state.contains(InteractionState::PRESSED),
+            !state.contains(InteractionState::PRESSED),
             "disabled widget must not sample press"
         );
 
         // The in-flight ripple is released, fades out (the reference implementation keeps the fade),
         // and must be gone once the fade-out has finished.
         let faded_at = disabled_at + Duration::from_millis(200);
-        let (state, _, _) = bind(&mut engine, &mut controller, faded_at, true, true);
+        let (_, _, handles) = bind(&mut engine, &mut controller, faded_at, true, true);
         assert!(
-            state.press_waves.is_empty(),
+            handles.sample_waves(faded_at).is_empty(),
             "the released ripple must finish fading while disabled"
         );
 
         // Re-enabling starts at rest: the stale press must not resurface.
         let reenabled_at = faded_at + Duration::from_millis(50);
-        let (state, _, _) = bind(&mut engine, &mut controller, reenabled_at, false, false);
-        assert!(!state.state.contains(InteractionState::DISABLED));
-        assert!(!state.state.contains(InteractionState::PRESSED));
-        assert!(state.press_waves.is_empty());
+        let (state, _, handles) = bind(&mut engine, &mut controller, reenabled_at, false, false);
+        assert!(!state.contains(InteractionState::DISABLED));
+        assert!(!state.contains(InteractionState::PRESSED));
+        assert_eq!(handles.sample_waves(reenabled_at), []);
     }
 
     #[test]

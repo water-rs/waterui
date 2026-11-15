@@ -1,36 +1,48 @@
 use crate::platform::TextInputPurpose;
+#[cfg(feature = "text-field")]
+use crate::renderer::TailMark;
 use crate::renderer::text_editing::CaretPaints;
 use crate::renderer::{
-    HydroNativeView, HydroState, HydrolysisRenderer, RetainedSubview, TailMark, TextInputModel,
+    HydroNativeView, HydroState, HydrolysisRenderer, RetainedSubview, TextInputModel,
     TextInputTargetRegistration, TextSelectionSlot, WidgetRenderContext, clamp_to_char_boundary,
-    measure_label_intrinsic, measure_secure_field_intrinsic,
-    measure_secure_field_size_with_label_size, measure_text_field_intrinsic,
-    measure_text_field_size_with_label_size, transformed_rect,
+    measure_label_intrinsic, transformed_rect,
 };
+#[cfg(feature = "secure-field")]
+use crate::renderer::{measure_secure_field_intrinsic, measure_secure_field_size_with_label_size};
+#[cfg(feature = "text-field")]
+use crate::renderer::{measure_text_field_intrinsic, measure_text_field_size_with_label_size};
 use crate::text::{TextLayout as _, TextPosition};
 use crate::theme::{ModalInteraction, TextFieldLook};
-use crate::widgets::controls::field_look::{
-    FieldChrome, FloatLabel, field_look, placeholder_text, value_text,
-};
+#[cfg(feature = "text-field")]
+use crate::widgets::controls::field_look::placeholder_text;
+use crate::widgets::controls::field_look::{FieldChrome, FloatLabel, field_look, value_text};
+#[cfg(feature = "text-field")]
 use core::num::NonZeroUsize;
 use nami::Signal as _;
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::cursor::CursorStyle;
+#[cfg(feature = "text-field")]
 use waterui_controls::text_field::ResolvedTextFieldConfig;
-#[cfg(feature = "accessibility")]
+#[cfg(feature = "text-field")]
+use waterui_core::Str;
+#[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{
     HorizontalAlignment, LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions,
 };
-use waterui_core::{Environment, Native, Str};
+use waterui_core::{Environment, Native};
+#[cfg(feature = "secure-field")]
 use waterui_form::secure::SecureFieldConfig;
-use waterui_text::styled::{Style, StyledStr};
+#[cfg(feature = "text-field")]
+use waterui_text::styled::Style;
+use waterui_text::styled::StyledStr;
 
 /// The retained render state of a text field: the cloneable [`ResolvedTextFieldConfig`]
 /// drives the input model + accessibility, and its floating label is held as a
 /// [`RetainedSubview`] built once and placed each frame at its resting place,
 /// riding the look's float operands, so reactive label content stays live.
+#[cfg(feature = "text-field")]
 pub struct TextFieldRenderState<E: crate::text::TextEngine> {
     config: ResolvedTextFieldConfig,
     label_view: RetainedSubview<E>,
@@ -43,6 +55,7 @@ pub struct TextFieldRenderState<E: crate::text::TextEngine> {
     selection_slot: Rc<RefCell<TextSelectionSlot>>,
 }
 
+#[cfg(feature = "text-field")]
 impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
     pub(crate) fn from_config(config: ResolvedTextFieldConfig) -> Self {
         let field = FieldChrome::new();
@@ -76,6 +89,7 @@ impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
 /// drives the input model + accessibility, and its floating label is held as a
 /// [`RetainedSubview`] built once and re-flushed each frame under the animated
 /// label transform so reactive label content stays live.
+#[cfg(feature = "secure-field")]
 pub struct SecureFieldRenderState<E: crate::text::TextEngine> {
     config: SecureFieldConfig,
     label_view: RetainedSubview<E>,
@@ -85,6 +99,7 @@ pub struct SecureFieldRenderState<E: crate::text::TextEngine> {
     selection_slot: Rc<RefCell<TextSelectionSlot>>,
 }
 
+#[cfg(feature = "secure-field")]
 impl<E: crate::text::TextEngine> SecureFieldRenderState<E> {
     pub(crate) fn from_config(config: SecureFieldConfig) -> Self {
         let field = FieldChrome::new();
@@ -123,6 +138,7 @@ use accesskit::{
 
 use crate::widgets::util::widget_disabled;
 
+#[cfg(feature = "text-field")]
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedTextFieldConfig> {
     fn intrinsic(
         state: &mut HydroState<E>,
@@ -153,6 +169,7 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedTextField
     }
 }
 
+#[cfg(feature = "secure-field")]
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SecureFieldConfig> {
     fn intrinsic(
         state: &mut HydroState<E>,
@@ -187,6 +204,7 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SecureFieldConfig
 /// render-driven a11y, so the inline a11y is emitted by `render_text_field_parts`
 /// itself; this node suppresses it when the field is accessibility-hidden (the
 /// dispatch path's render-driven suppression contract).
+#[cfg(feature = "text-field")]
 pub fn render_text_field_node<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<TextFieldRenderState<E>>>,
@@ -211,6 +229,7 @@ pub fn render_text_field_node<E: crate::text::TextEngine>(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
+#[cfg(feature = "text-field")]
 pub fn render_text_field_parts<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<TextFieldRenderState<E>>>,
@@ -331,11 +350,10 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
     }
     let field_rect = ctx.bounds;
     let is_focused = ctx.renderer_mut().is_text_input_focused(&interaction_key);
-    let (field_interaction, _, _) =
+    let (field_flags, _, _) =
         state
             .field
             .bind(ctx, &interaction_key, field_rect, env, disabled, is_focused);
-    let field_flags = field_interaction.state;
     let selection_slot = Rc::clone(&state.selection_slot);
     let input_model = TextInputModel::TextField {
         value: value_binding.clone(),
@@ -597,6 +615,7 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
 /// render-driven a11y, so the inline a11y is emitted by `render_secure_field_parts`
 /// itself; this node suppresses it when the field is accessibility-hidden (the
 /// dispatch path's render-driven suppression contract).
+#[cfg(feature = "secure-field")]
 pub fn render_secure_field_node<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<SecureFieldRenderState<E>>>,
@@ -621,6 +640,7 @@ pub fn render_secure_field_node<E: crate::text::TextEngine>(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
+#[cfg(feature = "secure-field")]
 pub fn render_secure_field_parts<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<SecureFieldRenderState<E>>>,
@@ -708,11 +728,10 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
     }
     let field_rect = ctx.bounds;
     let is_focused = ctx.renderer_mut().is_text_input_focused(&interaction_key);
-    let (field_interaction, _, _) =
+    let (field_flags, _, _) =
         state
             .field
             .bind(ctx, &interaction_key, field_rect, env, disabled, is_focused);
-    let field_flags = field_interaction.state;
     let value_paint = state.field.value_paint();
     let selection_slot = Rc::clone(&state.selection_slot);
     let input_model = TextInputModel::SecureField {
@@ -865,6 +884,7 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
 /// Measures a retained text-field leaf from its [`TextFieldRenderState`], mirroring
 /// [`measure_text_field_intrinsic`] but reading the label size from its already-built
 /// [`RetainedSubview`] so layout and the floating-label render agree.
+#[cfg(feature = "text-field")]
 pub fn measure_text_field_node<E: crate::text::TextEngine>(
     render_state: &TextFieldRenderState<E>,
     proposal: ProposalSize,
@@ -886,6 +906,7 @@ pub fn measure_text_field_node<E: crate::text::TextEngine>(
 /// Measures a retained secure-field leaf from its [`SecureFieldRenderState`],
 /// mirroring [`measure_secure_field_intrinsic`] but reading the label size from its
 /// already-built [`RetainedSubview`] so layout and the floating-label render agree.
+#[cfg(feature = "secure-field")]
 pub fn measure_secure_field_node<E: crate::text::TextEngine>(
     render_state: &SecureFieldRenderState<E>,
     proposal: ProposalSize,
@@ -1112,6 +1133,7 @@ fn place_label_view<E: crate::text::TextEngine>(
 /// Draws the prompt text at the inside label's resting place — centred in
 /// the container — used when the field has no label view so the prompt
 /// stands in as the label (#85).
+#[cfg(feature = "text-field")]
 fn place_prompt_label<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     env: &Environment,
@@ -1211,6 +1233,8 @@ fn material_input_cursor_rect(
     clippy::too_many_lines,
     reason = "the emission walks every text-field element in one ordered sequence; splitting it would obscure the node ordering"
 )]
+#[cfg(feature = "text-field")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<TextFieldRenderState<E>>>,
@@ -1334,6 +1358,8 @@ pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
 /// for the semantic walk — the same node `render_secure_field_parts`
 /// registers, with no bounds.
 #[cfg(feature = "accessibility")]
+#[cfg(feature = "secure-field")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_secure_field_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<SecureFieldRenderState<E>>>,

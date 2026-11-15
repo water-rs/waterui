@@ -198,29 +198,45 @@ cfg_async_fn! {
             shared_device: cherenkov_gpu::interop::SharedDevice,
             config: cherenkov_gpu::GpuConfig,
         ) -> Result<Rc<Self>, GpuUnavailable> {
-            let adapter = shared_device.adapter.clone();
-            let backend = adapter.get_info().backend;
-            let shader_delivery =
-                cherenkov_gpu::interop::shader_delivery(backend, &shared_device.device)
-                    .map_err(|source| GpuUnavailable::ShaderDelivery { backend, source })?;
-            let config = cherenkov_gpu::GpuConfig {
-                device: Some(shared_device),
-                pipeline_cache: pipeline_cache_path(&adapter),
-                ..config
-            };
-            let engine = Rc::new(engine_await!(GpuEngine::new(config)).map_err(|source| {
-                GpuUnavailable::Engine {
-                    adapter: adapter.get_info().name,
-                    source,
-                }
-            })?);
-            let resources = Rc::new(crate::renderer::recording::SceneResources::new(&engine));
-            Ok(Rc::new(Self {
-                engine,
-                resources,
-                shader_delivery,
-            }))
+            #[cfg(not(target_arch = "wasm32"))]
+            { pollster::block_on(Self::new_async(shared_device, config)) }
+            #[cfg(target_arch = "wasm32")]
+            { Self::new_async(shared_device, config).await }
         }
+    }
+}
+
+#[cfg(hydrolysis_gpu_painter)]
+impl SharedEngineState {
+    /// Creates the engine without waiting on its render thread on native hosts.
+    pub(crate) async fn new_async(
+        shared_device: cherenkov_gpu::interop::SharedDevice,
+        config: cherenkov_gpu::GpuConfig,
+    ) -> Result<Rc<Self>, GpuUnavailable> {
+        let adapter = shared_device.adapter.clone();
+        let backend = adapter.get_info().backend;
+        let shader_delivery =
+            cherenkov_gpu::interop::shader_delivery(backend, &shared_device.device)
+                .map_err(|source| GpuUnavailable::ShaderDelivery { backend, source })?;
+        let config = cherenkov_gpu::GpuConfig {
+            device: Some(shared_device),
+            pipeline_cache: pipeline_cache_path(&adapter),
+            ..config
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let opened = GpuEngine::new_async(config).await;
+        #[cfg(target_arch = "wasm32")]
+        let opened = GpuEngine::new(config).await;
+        let engine = Rc::new(opened.map_err(|source| GpuUnavailable::Engine {
+            adapter: adapter.get_info().name,
+            source,
+        })?);
+        let resources = Rc::new(crate::renderer::recording::SceneResources::new(&engine));
+        Ok(Rc::new(Self {
+            engine,
+            resources,
+            shader_delivery,
+        }))
     }
 }
 
@@ -351,6 +367,7 @@ impl<B: cherenkov::Backend> SurfaceCore<B> {
     }
 
     /// The space the surface stores, set by [`Self::storage_space`].
+    #[cfg(hydrolysis_gpu)]
     pub const fn stored_space(&self) -> cherenkov_record::BlendSpace {
         self.storage_space
     }
@@ -414,7 +431,11 @@ impl AndroidCherenkovSurface {
     /// the calling thread has no Looper (a host contract violation), and
     /// [`FrameError::Surface`](crate::renderer::FrameError::Surface) when
     /// the engine cannot create the surface.
-    pub(crate) fn new(
+    #[expect(
+        clippy::future_not_send,
+        reason = "surface creation stays on the UI executor that owns the engine Rc"
+    )]
+    pub(crate) async fn new(
         engine: Rc<GpuEngine>,
         window: &ndk::native_window::NativeWindow,
         size: (u32, u32),
@@ -433,12 +454,13 @@ impl AndroidCherenkovSurface {
             return Err(crate::renderer::FrameError::NoLooper);
         };
         let surface = engine
-            .surface(
+            .surface_async(
                 SurfaceControlTarget::new(parent, size, looper)
                     .transparent(transparent)
                     .band_commits(band_commits),
                 wake,
             )
+            .await
             .map_err(crate::renderer::FrameError::Surface)?;
         Ok(Self {
             core: SurfaceCore::new(engine, surface, size),
@@ -465,11 +487,18 @@ impl AndroidCherenkovSurface {
         self.core.engine.set_band(&self.core.surface, view, target)
     }
 
-    pub(crate) fn render(
+    pub(crate) fn submit(
         &self,
         time: cherenkov::FrameTime,
+    ) -> Result<cherenkov::PendingFrame<cherenkov_gpu::Gpu>, cherenkov::RenderError> {
+        self.core.engine.submit(time)
+    }
+
+    pub(crate) fn completed(
+        &self,
+        result: Result<cherenkov::Next, cherenkov::RenderError>,
     ) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        self.core.own(self.core.engine.render(time))
+        self.core.own(result)
     }
 }
 

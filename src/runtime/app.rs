@@ -10,10 +10,9 @@ use waterui_core::{
     handler::{Handler, HandlerOnce, ViewBuilder, boxed_action, boxed_action_once},
 };
 
-use crate::{
-    component::menu::{CloseWindowChord, Menu, MenuBarView},
-    window::Window,
-};
+#[cfg(feature = "menu")]
+use crate::component::menu::{CloseWindowChord, Menu, MenuBarView};
+use crate::window::Window;
 
 pub use crate::runtime::termination::{
     Quit, Termination, TerminationHandle, TerminationHost, TerminationKind,
@@ -32,6 +31,7 @@ pub struct App {
     /// What the application does once it has no window left.
     last_window: LastWindowPolicy,
     /// Optional system menu bar menus.
+    #[cfg(feature = "menu")]
     pub menu_bar: Computed<Vec<Menu>>,
     /// The application environment containing injected services. Values
     /// installed with [`App::state`] are layered over it when the runner
@@ -81,6 +81,7 @@ pub struct AppParts {
     /// The windows opened at startup, in declaration order; possibly none.
     pub windows: Vec<Window>,
     /// The application menu bar.
+    #[cfg(feature = "menu")]
     pub menu_bar: Computed<Vec<Menu>>,
     /// The application environment, the composition root every window renders
     /// under.
@@ -160,6 +161,7 @@ impl App {
         Self {
             windows: windows.into(),
             last_window: LastWindowPolicy::default(),
+            #[cfg(feature = "menu")]
             menu_bar: Computed::constant(Vec::new()),
             env,
             states: Environment::new(),
@@ -210,6 +212,7 @@ impl App {
 
     /// Sets the application system menu bar.
     #[must_use]
+    #[cfg(feature = "menu")]
     pub fn menu_bar(mut self, menus: impl MenuBarView) -> Self {
         self.menu_bar = menus.into_menus();
         self
@@ -341,10 +344,16 @@ impl App {
     /// environment a runner hands its menus carries the one decision.
     #[must_use]
     pub fn into_parts(self) -> AppParts {
-        let mut env = self.states.layered_on(&self.env);
-        env.insert(CloseWindowChord::new(&self.menu_bar, &env));
+        let env = self.states.layered_on(&self.env);
+        #[cfg(feature = "menu")]
+        let env = {
+            let mut env = env;
+            env.insert(CloseWindowChord::new(&self.menu_bar, &env));
+            env
+        };
         AppParts {
             windows: self.windows,
+            #[cfg(feature = "menu")]
             menu_bar: self.menu_bar,
             env,
             last_window: self.last_window,
@@ -378,6 +387,7 @@ mod tests {
     use waterui_locale::locales;
 
     use super::*;
+    #[cfg(feature = "menu")]
     use crate::component::menu::{CommandExt as _, Shortcut};
 
     #[test]
@@ -436,6 +446,7 @@ mod tests {
 
     /// Resolves `app`'s menu bar under the environment its runner receives
     /// and runs the first command of its first menu.
+    #[cfg(feature = "menu")]
     fn run_first_menu_bar_command(app: App) {
         use crate::component::menu::{ResolvedMenuItem, resolve_menu_bar_items};
 
@@ -460,6 +471,7 @@ mod tests {
     /// Window chord once, from the declared menu bar: a bar that binds ⌘W
     /// on its own command leaves every Close Window item ⇧⌘W.
     #[test]
+    #[cfg(feature = "menu")]
     fn the_menu_bar_decides_the_close_window_chord() {
         let parts = App::new(|| (), Environment::new())
             .menu_bar(Menu::new(
@@ -477,6 +489,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "menu")]
     fn a_menu_bar_command_extracts_state_installed_with_app_state() {
         #[waterui_macros::state]
         #[derive(Clone)]
@@ -504,6 +517,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "menu")]
     fn same_typed_app_state_binds_in_call_order() {
         let seen = Rc::new(RefCell::new(Vec::new()));
         let record = Rc::clone(&seen);

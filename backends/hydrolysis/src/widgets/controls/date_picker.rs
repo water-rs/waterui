@@ -23,8 +23,8 @@ use waterui_form::picker::date::DatePickerConfig;
 use waterui_text::styled::StyledStr;
 
 use crate::renderer::RetainedSubview;
+use crate::widgets::controls::button::label_styled;
 use crate::widgets::controls::field_look::field_look;
-use crate::widgets::controls::picker::label_styled;
 #[cfg(feature = "accessibility")]
 use crate::widgets::util::widget_disabled;
 use crate::widgets::util::{inset_rect, mirrored_in};
@@ -426,6 +426,7 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
 /// sub-view — it flushes unsuppressed in the rendered path, so it emits its
 /// own nodes here too.
 #[cfg(feature = "accessibility")]
+#[cfg(hydrolysis_cherenkov)]
 pub fn emit_date_picker_accessibility<E: crate::text::TextEngine>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     state: &Rc<RefCell<DatePickerRenderState<E>>>,

@@ -918,6 +918,15 @@ pub(crate) async fn build_prepared(
         .with_envs(options.cargo_envs().iter().cloned())
         .with_envs(resolve_windows_arm64_llvm_envs(host).await?);
     let launcher_manifest = backend_path.join("Cargo.toml");
+    let widget_features = assets::widget_features(
+        project,
+        &launcher_manifest,
+        &triple,
+        rust_build.features(),
+        &["hydrolysis", "hydrolysis-m3"],
+    )
+    .await?;
+    let rust_build = rust_build.with_features(widget_features);
     assets::seed_managed_crate_lock(project, &launcher_manifest).await?;
     let required_permissions =
         assets::scan_required_permissions(project, &launcher_manifest, rust_build.features())

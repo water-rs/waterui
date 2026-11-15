@@ -27,10 +27,11 @@ use cocoa_ui::{PlatformView, Rect, Retained, focus, view};
 use objc2::rc::Weak;
 use objc2_foundation::{NSRange, NSString};
 use waterui::Str;
-use waterui::component::menu::ResolvedMenuItem;
+use waterui::component::input::ContentType;
 #[cfg(target_os = "ios")]
-use waterui::component::text_field::KeyboardType;
-use waterui::component::text_field::{ContentType, ResolvedTextFieldConfig};
+use waterui::component::input::KeyboardType;
+use waterui::component::menu::ResolvedMenuItem;
+use waterui::component::text_field::ResolvedTextFieldConfig;
 use waterui::component::text_selection::{CustomTextSelection, TextSelection};
 use waterui::graphics::color::WorkingColor;
 use waterui::reactive::Computed;

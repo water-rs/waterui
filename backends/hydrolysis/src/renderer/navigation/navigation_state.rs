@@ -111,6 +111,7 @@ impl<E: crate::text::TextEngine> StackPage<E> {
     }
 
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn emit_accessibility(&mut self, renderer: &mut SemanticCore<E>, env: &Environment) {
         self.ensure_built(renderer, env);
         self.content.emit_accessibility(renderer, env);

@@ -1,32 +1,47 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+#[cfg(feature = "menu")]
 use crate::theme::{MenuLayout, MenuLook, MenuSpec};
+#[cfg(feature = "menu")]
 use crate::widgets::controls::button::{ListRowChrome, MenuRowChrome, menu_row_font};
+#[cfg(feature = "date-picker")]
 use core::ops::RangeInclusive;
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 use core::time::Duration;
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 use nami::Signal;
+#[cfg(feature = "date-picker")]
 use waterui::form::Calendar;
-use waterui::shape::{RoundedRectangle, ShapeExt as _};
-use waterui::theme::color::Surface;
+#[cfg(any(feature = "picker", feature = "color-picker", feature = "date-picker"))]
+use waterui_controls::button;
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_controls::button::ButtonStyle;
-use waterui_controls::label::LabelDisplayMode;
+#[cfg(feature = "menu")]
 use waterui_controls::menu::Shortcut;
-use waterui_controls::{Stepper, button, stepper::stepper};
-use waterui_core::contract_violation;
-use waterui_core::metadata::{Metadata, MetadataKey};
-use waterui_core::{SignalExt as _, id::Id};
+#[cfg(feature = "date-picker")]
+use waterui_controls::{Stepper, stepper::stepper};
+#[cfg(feature = "picker")]
+use waterui_core::id::Id;
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use waterui_core::metadata::Metadata;
+#[cfg(feature = "menu")]
+use waterui_core::metadata::MetadataKey;
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use waterui_core::{SignalExt as _, contract_violation};
+#[cfg(feature = "date-picker")]
 use waterui_form::picker::date::{Date, DatePickerType, DateTime};
-use waterui_layout::frame::Frame;
-use waterui_layout::padding::EdgeInsets;
-use waterui_layout::spacer::spacer;
-use waterui_layout::stack::hstack;
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use waterui_layout::{frame::Frame, padding::EdgeInsets};
+#[cfg(feature = "menu")]
+use waterui_layout::{spacer::spacer, stack::hstack};
+#[cfg(feature = "menu")]
 use waterui_text::font::Font;
-use waterui_text::text;
 
 /// The theme's [`MenuLook`] for a menu laid out in `env`'s direction: the one
 /// look every menu presentation — the picker popup, the text context menu
 /// and the popup window of a menu button — measures and draws from.
+#[cfg(feature = "menu")]
 pub fn menu_look(theme: &Rc<dyn crate::theme::WidgetTheme>, env: &Environment) -> MenuLook {
     theme.menu(
         &MenuSpec::new(waterui_core::layout::layout_direction(env).snapshot()),
@@ -41,8 +56,10 @@ pub fn menu_look(theme: &Rc<dyn crate::theme::WidgetTheme>, env: &Environment) -
 /// the desktop runner mount menus without activating them while ordinary
 /// application windows retain their normal focus behavior.
 #[derive(Clone)]
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 pub struct PopupWindowManager(Rc<dyn Fn(Window)>);
 
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 impl PopupWindowManager {
     pub(crate) fn new(show: impl Fn(Window) + 'static) -> Self {
         Self(Rc::new(show))
@@ -66,6 +83,7 @@ impl PopupWindowManager {
 /// frame origin becomes the subtree's `HydrolysisWindowOrigin`, the same
 /// value the input dispatcher installs for a root window, so a nested popup
 /// opened from this window anchors to it.
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 pub fn window_in_opening_environment(mut window: Window, env: &Environment) -> Window {
     let frame = window.frame.snapshot();
     let content_env = env.extending(HydrolysisWindowOrigin {
@@ -79,6 +97,7 @@ pub fn window_in_opening_environment(mut window: Window, env: &Environment) -> W
     window
 }
 
+#[cfg(feature = "menu")]
 pub struct ContextMenuTarget<E: crate::text::TextEngine> {
     pub(crate) bounds: kurbo::Rect,
     /// The node cell that registered the target.
@@ -102,6 +121,7 @@ pub struct ContextMenuTarget<E: crate::text::TextEngine> {
 }
 
 #[derive(Clone)]
+#[cfg(feature = "menu")]
 pub enum PopupMenuNode {
     Command {
         label: SemanticLabel,
@@ -127,18 +147,22 @@ pub enum PopupMenuNode {
 }
 
 #[derive(Clone)]
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 pub struct PopupMenuStateGroup(pub Rc<RefCell<Vec<Binding<WindowState>>>>);
 
 pub struct PopupMenuState<E: crate::text::TextEngine> {
+    #[cfg(any(feature = "menu", feature = "color-picker"))]
     pub active_popup_menu_group: Option<PopupMenuStateGroup>,
     /// The drawn presentation around an open `.context_menu` popup — dimmed
     /// backdrop, lifted preview and anchored accessory. `None` when the active
     /// menu was not opened from a context-menu target or carries no preview.
+    #[cfg(feature = "menu")]
     pub(crate) context_menu_presentation: Option<ContextMenuPresentation<E>>,
     /// Open/closed handles for the picker menus currently in the render tree, each
     /// owned by its picker node. This is only a registry for "dismiss every menu"
     /// (outside click) — it is Rc-pruned, never flush-order-indexed, so a dropped
     /// picker's handle falls out by strong count and the live ones are deduplicated.
+    #[cfg(feature = "picker")]
     pub(crate) node_picker_menus: Vec<Rc<Cell<bool>>>,
     /// The anchored overlays this frame's flush registered — each anchor's live
     /// hit-space bounds, placement and handles. The post-flush
@@ -158,11 +182,13 @@ pub struct PopupMenuState<E: crate::text::TextEngine> {
 }
 
 #[derive(Clone)]
+#[cfg(feature = "picker")]
 pub struct PickerMenuEntry {
     pub label: String,
     pub(crate) tag: Id,
 }
 
+#[cfg(feature = "picker")]
 pub struct PickerMenuRequest {
     pub entries: Vec<PickerMenuEntry>,
     pub(crate) selection: Binding<Id>,
@@ -178,6 +204,7 @@ impl<E: crate::text::TextEngine> PopupMenuState<E> {
     /// Register a picker node's open handle for "dismiss every menu". Prunes handles
     /// of dropped pickers (the registry is then their only holder) and deduplicates,
     /// so a node re-registering its handle on every flush is idempotent.
+    #[cfg(feature = "picker")]
     pub(crate) fn register_picker_menu(&mut self, open: &Rc<Cell<bool>>) {
         self.node_picker_menus
             .retain(|handle| Rc::strong_count(handle) > 1);
@@ -191,6 +218,7 @@ impl<E: crate::text::TextEngine> PopupMenuState<E> {
     }
 
     /// Close every open picker menu (an outside click dismisses them all).
+    #[cfg(feature = "picker")]
     pub(crate) fn close_all_picker_menus(&mut self) {
         self.node_picker_menus
             .retain(|handle| Rc::strong_count(handle) > 1);
@@ -200,6 +228,7 @@ impl<E: crate::text::TextEngine> PopupMenuState<E> {
     }
 }
 
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 impl PopupMenuStateGroup {
     pub(crate) fn new() -> Self {
         Self(Rc::new(RefCell::new(Vec::new())))
@@ -221,11 +250,13 @@ impl PopupMenuStateGroup {
     }
 }
 
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 impl_extractor!(PopupMenuStateGroup);
 
 /// `origin` shifted by the window's own origin, or `None` after a contract
 /// violation when the runner seeded no [`HydrolysisWindowOrigin`]: the popup
 /// then does not open.
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 pub fn popup_window_origin(origin: LayoutPoint, env: &Environment) -> Option<LayoutPoint> {
     let Some(window_origin) = env.get::<HydrolysisWindowOrigin>().copied() else {
         contract_violation!(
@@ -241,6 +272,7 @@ pub fn popup_window_origin(origin: LayoutPoint, env: &Environment) -> Option<Lay
 
 /// The [`PopupWindowManager`] the runner seeded into `env`, or `None` after a
 /// contract violation when it seeded none: the `opening` popup does not open.
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 pub fn popup_window_manager<'env>(
     env: &'env Environment,
     opening: &str,
@@ -254,10 +286,12 @@ pub fn popup_window_manager<'env>(
     manager
 }
 
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 const fn popup_enter_animation() -> Animation {
     Animation::bezier(Duration::from_millis(120), 0.2, 0.0, 0.0, 1.0)
 }
 
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 fn animated_popup_panel(content: impl View, group: PopupMenuStateGroup) -> impl View {
     let opacity = Binding::f32(0.0);
     let scale = Binding::f32(0.96);
@@ -281,22 +315,26 @@ fn animated_popup_panel(content: impl View, group: PopupMenuStateGroup) -> impl 
 /// to the drawn `.context_menu` presentation in dark and light
 /// (water-rs/hydrolysis#200). The window leaves `POPUP_MENU_PANEL_MARGIN` of
 /// transparent room on every side for the panel's elevation shadow.
+#[cfg(feature = "menu")]
 pub struct PopupMenuSurface {
     /// The rect of a picker popup's selected row in the panel's own space,
     /// over which the menu look draws its selected-row part; `None` for a
     /// menu with no selected row.
     pub selected_row: Option<kurbo::Rect>,
 }
+#[cfg(feature = "menu")]
 impl MetadataKey for PopupMenuSurface {}
 
 /// Transparent margin a `PopupWindowManager` menu window leaves around its
 /// panel, in logical points — the room the panel's elevation shadow draws
 /// into inside the window's own surface.
+#[cfg(feature = "menu")]
 pub const POPUP_MENU_PANEL_MARGIN: f64 = 14.0;
 
 /// A divider row's height: the theme's separator line
 /// (`md.comp.menu.divider.height`, 1 dp) inside the menu's vertical padding
 /// (`md.comp.menu.container.top-space`/`bottom-space`, 8 dp each side).
+#[cfg(feature = "menu")]
 pub const fn popup_menu_divider_height(metrics: MenuLayout) -> f64 {
     metrics
         .vertical_padding
@@ -304,6 +342,7 @@ pub const fn popup_menu_divider_height(metrics: MenuLayout) -> f64 {
 }
 
 /// The horizontal gap between a row's label and its shortcut hint.
+#[cfg(feature = "menu")]
 const MENU_SHORTCUT_HINT_GAP: f64 = 12.0;
 
 /// The text measurements [`popup_menu_size`] consumes: every row's intrinsic
@@ -311,6 +350,7 @@ const MENU_SHORTCUT_HINT_GAP: f64 = 12.0;
 /// intrinsic height, and the row's horizontal label inset — the theme's
 /// menu-item inset, which every row's leading edge shares.
 #[derive(Clone, Copy)]
+#[cfg(feature = "menu")]
 pub struct PopupMenuTextMetrics {
     /// The height a supporting (caption) line adds to a subtitled row.
     pub(crate) subtitle_height: f64,
@@ -325,6 +365,7 @@ pub struct PopupMenuTextMetrics {
     pub row_inset: f64,
 }
 
+#[cfg(feature = "menu")]
 pub fn popup_menu_size(
     nodes: &[PopupMenuNode],
     metrics: MenuLayout,
@@ -363,6 +404,7 @@ pub fn popup_menu_size(
 /// runs the command on press. A `disabled` row draws its label in the
 /// `DisabledForeground` token while its press stays inert (the action's early
 /// return also gates it).
+#[cfg(feature = "menu")]
 fn popup_menu_command_row(
     label: SemanticLabel,
     action: SharedAction<()>,
@@ -391,6 +433,7 @@ fn popup_menu_command_row(
 /// label when the command is disabled. The drawn row and
 /// [`SemanticCore::popup_menu_text_metrics`] share it so the two cannot
 /// drift (water-rs/hydrolysis#247).
+#[cfg(feature = "menu")]
 fn shortcut_hint_styled(shortcut: &Shortcut, disabled: bool, font: Option<Font>) -> StyledStr {
     let styled = StyledStr::plain(shortcut.to_string()).foreground({
         if disabled {
@@ -407,12 +450,14 @@ fn shortcut_hint_styled(shortcut: &Shortcut, disabled: bool, font: Option<Font>)
 
 /// A shortcut hint styled in the environment it renders in, where the
 /// theme's button look resolves.
+#[cfg(feature = "menu")]
 struct ShortcutHint {
     shortcut: Shortcut,
     disabled: bool,
     theme: Rc<dyn crate::theme::WidgetTheme>,
 }
 
+#[cfg(feature = "menu")]
 impl View for ShortcutHint {
     fn body(self, env: &Environment) -> impl View {
         waterui_text::text(shortcut_hint_styled(
@@ -432,6 +477,7 @@ impl View for ShortcutHint {
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
+#[cfg(feature = "menu")]
 pub fn popup_menu_content(
     nodes: Vec<PopupMenuNode>,
     depth: usize,
@@ -564,6 +610,7 @@ pub fn popup_menu_content(
     )
 }
 
+#[cfg(feature = "menu")]
 pub fn popup_menu_window(
     nodes: Vec<PopupMenuNode>,
     origin: LayoutPoint,
@@ -629,6 +676,7 @@ pub fn popup_menu_window(
 /// has no frame to size and no corner chrome to round, so none is built; the
 /// emitted accessibility tree is identical to the rendered popup's.
 #[cfg(feature = "accessibility")]
+#[cfg(feature = "menu")]
 pub fn semantic_popup_menu_window(
     nodes: Vec<PopupMenuNode>,
     group: PopupMenuStateGroup,
@@ -701,6 +749,7 @@ pub fn semantic_popup_menu_window(
 /// rows — borderless `Button`s that write the binding and close the menu —
 /// without the frame sizing or panel chrome.
 #[cfg(feature = "accessibility")]
+#[cfg(feature = "picker")]
 pub fn semantic_picker_menu_window(
     entries: Vec<PickerMenuEntry>,
     selection: Binding<Id>,
@@ -752,6 +801,7 @@ pub fn semantic_picker_menu_window(
     clippy::too_many_arguments,
     reason = "fully specifies a popup-menu window layout; grouping into a struct would not improve clarity"
 )]
+#[cfg(feature = "picker")]
 pub fn picker_menu_window(
     entries: Vec<PickerMenuEntry>,
     selection: Binding<Id>,
@@ -841,6 +891,7 @@ pub fn picker_menu_window(
 /// The height of a picker popup's panel: its rows of `row_height` inside the
 /// menu's vertical padding. The window the popup opens and the accessibility
 /// option rectangles are both derived from it.
+#[cfg(feature = "picker")]
 pub fn picker_menu_panel_height(layout: MenuLayout, row_height: f64, rows: usize) -> f64 {
     layout
         .vertical_padding
@@ -849,6 +900,7 @@ pub fn picker_menu_panel_height(layout: MenuLayout, row_height: f64, rows: usize
 
 /// The rect of row `index` of a picker popup's panel of `width`, in the
 /// panel's own space.
+#[cfg(feature = "picker")]
 pub fn picker_menu_row_rect(
     layout: MenuLayout,
     row_height: f64,
@@ -862,6 +914,7 @@ pub fn picker_menu_row_rect(
     kurbo::Rect::new(0.0, y0, width, y0 + row_height)
 }
 
+#[cfg(feature = "color-picker")]
 fn color_picker_palette() -> [(&'static str, Color); 12] {
     [
         ("Red", Color::srgb(0xba, 0x1a, 0x1a)),
@@ -882,6 +935,7 @@ fn color_picker_palette() -> [(&'static str, Color); 12] {
 /// The color-picker panel's rendered extent — swatch grid plus the optional
 /// alpha/headroom rows. Placement is a rendered-frame concern; the semantic
 /// window carries no origin.
+#[cfg(feature = "color-picker")]
 fn color_picker_size(support_alpha: bool, support_hdr: bool) -> (f64, f64) {
     let width = 280.0;
     let swatch = 40.0;
@@ -900,6 +954,7 @@ fn color_picker_size(support_alpha: bool, support_hdr: bool) -> (f64, f64) {
 /// alpha/headroom rows. Shared by the rendered popup path (which then sets a
 /// frame) and the semantic activation path (which mounts the window with no
 /// placement at all).
+#[cfg(feature = "color-picker")]
 fn color_picker_window_base(
     value: Binding<Color>,
     support_alpha: bool,
@@ -1002,6 +1057,7 @@ fn color_picker_window_base(
 /// The rendered popup path: the shared color-picker window anchored at the
 /// trigger's resolved origin. The semantic activation path mounts
 /// [`color_picker_window_base`] directly and sets no frame.
+#[cfg(feature = "color-picker")]
 pub fn color_picker_window(
     value: Binding<Color>,
     support_alpha: bool,
@@ -1022,12 +1078,14 @@ pub fn color_picker_window(
     (popup, state)
 }
 
+#[cfg(feature = "date-picker")]
 fn time_part_binding(value: &Binding<i32>, range: RangeInclusive<i32>, label: String) -> Stepper {
     stepper(label, value)
         .range(range)
         .value_formatter(|part| format!("{part:02}"))
 }
 
+#[cfg(feature = "date-picker")]
 fn apply_staged_date_time(
     value: &Binding<DateTime>,
     range: &RangeInclusive<DateTime>,
@@ -1050,6 +1108,7 @@ fn apply_staged_date_time(
 /// The date-picker panel's rendered extent from the picker's field
 /// configuration — date calendar plus optional time rows. Placement is a
 /// rendered-frame concern; the semantic window carries no origin.
+#[cfg(feature = "date-picker")]
 const fn date_picker_size(ty: DatePickerType) -> (f64, f64) {
     let uses_date = matches!(
         ty,
@@ -1077,6 +1136,7 @@ const fn date_picker_size(ty: DatePickerType) -> (f64, f64) {
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
+#[cfg(feature = "date-picker")]
 fn date_picker_window_base(
     value: Binding<DateTime>,
     range: RangeInclusive<DateTime>,
@@ -1205,6 +1265,7 @@ fn date_picker_window_base(
 /// The rendered popup path: the shared date-picker window anchored at the
 /// trigger's resolved origin. The semantic activation path mounts
 /// [`date_picker_window_base`] directly and sets no frame.
+#[cfg(feature = "date-picker")]
 pub fn date_picker_window(
     value: Binding<DateTime>,
     range: RangeInclusive<DateTime>,
@@ -1226,20 +1287,27 @@ pub fn date_picker_window(
 }
 
 impl<E: crate::text::TextEngine> SemanticCore<E> {
+    #[cfg(any(feature = "text-field", feature = "secure-field"))]
     pub(crate) const fn active_popup_menu_visible(&self) -> bool {
         self.popup_menu.active_popup_menu_group.is_some()
     }
 
+    #[cfg(any(feature = "menu", feature = "color-picker"))]
     pub(crate) fn dismiss_active_popup_menu(&mut self) {
         // Dropping the presentation hands the preview and accessory back to
         // their owning node's slots, so a later open mounts them again.
-        self.popup_menu.context_menu_presentation = None;
+        #[cfg(feature = "menu")]
+        {
+            self.popup_menu.context_menu_presentation = None;
+        }
         if let Some(group) = self.popup_menu.active_popup_menu_group.take() {
             group.close_all();
         }
+        #[cfg(feature = "picker")]
         self.popup_menu.close_all_picker_menus();
     }
 
+    #[cfg(feature = "picker")]
     pub(crate) fn register_picker_menu(&mut self, open: &Rc<Cell<bool>>) {
         self.popup_menu.register_picker_menu(open);
     }
@@ -1251,6 +1319,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// never creates one — an empty `.context_menu` behaves the same in every
     /// build. A release build appends nothing.
     #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+    #[cfg(feature = "menu")]
     pub(crate) fn append_inspect_element_item(
         &self,
         items: &mut Vec<PopupMenuNode>,
@@ -1291,6 +1360,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     #[cfg(any(not(feature = "accessibility"), target_arch = "wasm32"))]
     // always an empty stub where it compiles — const would lie about the real variant
     #[allow(clippy::missing_const_for_fn)]
+    #[cfg(feature = "menu")]
     pub(crate) fn append_inspect_element_item(
         &self,
         _items: &mut Vec<PopupMenuNode>,
@@ -1308,6 +1378,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// surface's, both computed as `hit_transform * layout bounds`). A menu
     /// whose bounds only overlap the surface belongs to a sibling and does not
     /// claim its secondary press.
+    #[cfg(feature = "menu")]
     pub(crate) fn topmost_context_menu_target_enclosing(
         &self,
         point: kurbo::Point,
@@ -1332,6 +1403,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             .map(|(_, target)| target.clone())
     }
 
+    #[cfg(feature = "menu")]
     pub(crate) fn topmost_context_menu_target_at_point(
         &self,
         point: kurbo::Point,
@@ -1352,6 +1424,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// The measured height of a command's secondary line, drawn in the theme's
     /// supporting text style. Measured once per presented menu — every
     /// subtitled row grows by the same line height.
+    #[cfg(feature = "menu")]
     pub(crate) fn popup_menu_subtitle_height(&mut self, env: &Environment) -> f64 {
         let styled = StyledStr::plain("Ag").font(waterui_text::font::Caption);
         f64::from(
@@ -1365,6 +1438,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// intrinsic height, and the row's horizontal label inset, the theme's
     /// menu-item inset every row's leading edge shares
     /// (`md.comp.menu.list-item.leading-space`/`trailing-space`).
+    #[cfg(feature = "menu")]
     pub(crate) fn popup_menu_text_metrics(
         &mut self,
         nodes: &[PopupMenuNode],
@@ -1424,6 +1498,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
     }
 
+    #[cfg(feature = "menu")]
     pub(crate) fn show_popup_menu_nodes(
         &mut self,
         nodes: Vec<PopupMenuNode>,
@@ -1461,6 +1536,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// merged accessibility tree exactly as they do in the rendered runtime —
     /// the semantic runtime has no pointer to open it and no frame to place.
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "menu")]
     pub(crate) fn activate_popup_menu_nodes(
         &mut self,
         nodes: Vec<PopupMenuNode>,
@@ -1488,6 +1564,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// The semantic half of showing a picker menu: the same selection window
     /// the rendered runtime opens, without frame metrics.
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "picker")]
     pub(crate) fn activate_picker_menu(
         &mut self,
         entries: Vec<PickerMenuEntry>,
@@ -1513,6 +1590,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         true
     }
 
+    #[cfg(feature = "picker")]
     pub(crate) fn show_picker_menu(
         &mut self,
         request: PickerMenuRequest,
@@ -1548,6 +1626,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         true
     }
 
+    #[cfg(feature = "color-picker")]
     pub(crate) fn show_color_picker(
         &mut self,
         value: Binding<Color>,
@@ -1578,6 +1657,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         true
     }
 
+    #[cfg(feature = "date-picker")]
     pub(crate) fn show_date_picker(
         &mut self,
         value: Binding<DateTime>,
@@ -1606,6 +1686,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// rendered runtime opens, mounted with no placement — a semantic popup
     /// has no frame to anchor and no pointer origin to anchor it to.
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "color-picker")]
     pub(crate) fn activate_color_picker(
         &mut self,
         value: Binding<Color>,
@@ -1630,6 +1711,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// The semantic half of showing a date picker: the same staging window
     /// the rendered runtime opens, mounted with no placement.
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "date-picker")]
     pub(crate) fn activate_date_picker(
         &mut self,
         value: Binding<DateTime>,
@@ -1650,6 +1732,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         true
     }
 
+    #[cfg(feature = "menu")]
     pub(crate) fn register_context_menu_target(
         &mut self,
         bounds: kurbo::Rect,
@@ -1671,6 +1754,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "menu")]
     pub(crate) fn register_context_menu_target_data(
         &mut self,
         bounds: kurbo::Rect,
@@ -1702,8 +1786,11 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 impl<E: crate::text::TextEngine> Default for PopupMenuState<E> {
     fn default() -> Self {
         Self {
+            #[cfg(any(feature = "menu", feature = "color-picker"))]
             active_popup_menu_group: Option::default(),
+            #[cfg(feature = "menu")]
             context_menu_presentation: Option::default(),
+            #[cfg(feature = "picker")]
             node_picker_menus: Vec::default(),
             anchored_overlays: Vec::default(),
             presented_anchored_overlays: Vec::default(),
@@ -1713,6 +1800,7 @@ impl<E: crate::text::TextEngine> Default for PopupMenuState<E> {
     }
 }
 
+#[cfg(feature = "menu")]
 impl<E: crate::text::TextEngine> Clone for ContextMenuTarget<E> {
     fn clone(&self) -> Self {
         Self {
@@ -1728,3 +1816,12 @@ impl<E: crate::text::TextEngine> Clone for ContextMenuTarget<E> {
         }
     }
 }
+
+#[cfg(any(feature = "date-picker", feature = "color-picker"))]
+use waterui::shape::{RoundedRectangle, ShapeExt as _};
+#[cfg(any(feature = "date-picker", feature = "color-picker"))]
+use waterui::theme::color::Surface;
+#[cfg(feature = "color-picker")]
+use waterui_controls::label::LabelDisplayMode;
+#[cfg(feature = "date-picker")]
+use waterui_text::text;

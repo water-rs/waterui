@@ -18,6 +18,7 @@
 //! colour, radii.
 
 use core::marker::PhantomData;
+#[cfg(feature = "slider")]
 use core::ops::RangeInclusive;
 use core::time::Duration;
 use std::any::Any;
@@ -38,9 +39,11 @@ use waterui_core::layout::LayoutDirection;
 use waterui_graphics::color::Color;
 use waterui_text::font::Font;
 
+use super::Chrome;
 #[cfg(hydrolysis_runtime)]
 use super::live::Operand;
-use super::{Chrome, CornerShape, FocusIndicator, PressFeedback, StateLayer, Surface};
+#[cfg(feature = "slider")]
+use super::{CornerShape, FocusIndicator, PressFeedback, StateLayer, Surface};
 
 /// The animations a change runs with as a condition sets in and as it
 /// clears.
@@ -1304,6 +1307,7 @@ impl ButtonLook {
 /// A spec change requests the look again; everything else reaches the look
 /// through its [`Driven`] values.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg(feature = "slider")]
 pub struct SliderSpec {
     size: ControlSize,
     range: RangeInclusive<f64>,
@@ -1315,6 +1319,7 @@ pub struct SliderSpec {
     value_indicator: bool,
 }
 
+#[cfg(feature = "slider")]
 impl SliderSpec {
     /// The spec of a `size` slider over `range` moving in `step`s, laid out
     /// `direction` and drawn with `tint`.
@@ -1409,6 +1414,7 @@ impl SliderSpec {
 /// The slider is a label band above a control row. The row holds the track
 /// between its two ends, each end optionally taking a label beside it.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg(feature = "slider")]
 pub struct SliderLayout {
     /// The control row's height: the room the knob travels in.
     pub row_height: f64,
@@ -1429,6 +1435,7 @@ pub struct SliderLayout {
 /// The knob of a slider: the extent its parts draw it in, and where it takes
 /// touches.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg(feature = "slider")]
 pub struct Knob {
     /// The knob's resting extent, centred on the value's position on the
     /// track. A knob that changes size draws within its own parts.
@@ -1439,6 +1446,7 @@ pub struct Knob {
     pub hit: HitRegion,
 }
 
+#[cfg(feature = "slider")]
 impl Knob {
     /// The knob's touch target when centred on `center`.
     #[must_use]
@@ -1461,6 +1469,7 @@ impl Knob {
     clippy::exhaustive_enums,
     reason = "closed: a drag sets the value from the pointer's position or from its movement"
 )]
+#[cfg(feature = "slider")]
 pub enum DragMapping {
     /// The value is the pointer's position along the track, so a press
     /// anywhere on the slider moves it there.
@@ -1482,6 +1491,7 @@ pub enum DragMapping {
 /// follows it along the track; it is as wide as the widest formatted value
 /// needs, no narrower than `minimum`.
 #[derive(Clone)]
+#[cfg(feature = "slider")]
 pub struct ValueIndicator {
     font: Font,
     color: Color,
@@ -1498,6 +1508,7 @@ pub struct ValueIndicator {
     container: Rc<dyn CustomPart<f64>>,
 }
 
+#[cfg(feature = "slider")]
 impl core::fmt::Debug for ValueIndicator {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ValueIndicator")
@@ -1510,6 +1521,7 @@ impl core::fmt::Debug for ValueIndicator {
     }
 }
 
+#[cfg(feature = "slider")]
 impl ValueIndicator {
     /// An indicator whose text takes `font` and `color`, in a bubble that
     /// `container` records on the bubble's frame.
@@ -1606,6 +1618,7 @@ impl ValueIndicator {
 /// drag and a change of hover or focus move the parts' operands under the
 /// look's [`Motion`] and record nothing.
 #[derive(Clone)]
+#[cfg(feature = "slider")]
 pub struct SliderLook {
     chrome: Chrome,
     layout: SliderLayout,
@@ -1617,6 +1630,7 @@ pub struct SliderLook {
     group_blend_space: Option<BlendSpace>,
 }
 
+#[cfg(feature = "slider")]
 impl core::fmt::Debug for SliderLook {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SliderLook")
@@ -1632,6 +1646,7 @@ impl core::fmt::Debug for SliderLook {
     }
 }
 
+#[cfg(feature = "slider")]
 impl SliderLook {
     /// A slider laid out by `layout` around `knob`, its values running with
     /// `motion` and dragged by `drag`; it draws nothing until parts are
