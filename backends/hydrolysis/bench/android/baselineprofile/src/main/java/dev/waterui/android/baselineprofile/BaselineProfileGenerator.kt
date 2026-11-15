@@ -63,6 +63,7 @@ class BaselineProfileGenerator {
             stableIterations = stableIterations,
             includeInStartupProfile = true,
         ) {
+            Journey.prepareDevice(device)
             pressHome()
             for (fixture in fixtures) {
                 android.util.Log.i("BaselineProfile", "journey: $fixture")

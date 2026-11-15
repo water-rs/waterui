@@ -59,7 +59,10 @@ class FrameBenchmark {
             ),
             iterations = iterations,
             startupMode = StartupMode.WARM,
-            setupBlock = { pressHome() },
+            setupBlock = {
+                Journey.prepareDevice(device)
+                pressHome()
+            },
         ) {
             startActivityAndWait { intent ->
                 intent.putExtra("E2EExample", SuiteRegistry.exampleForFixture(fixture))

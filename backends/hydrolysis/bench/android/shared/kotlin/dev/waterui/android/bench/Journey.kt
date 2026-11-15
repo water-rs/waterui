@@ -41,6 +41,13 @@ import org.json.JSONObject
  */
 object Journey {
 
+    /** Prepare immediately before an iteration; installation may outlast screen timeout. */
+    fun prepareDevice(device: UiDevice) {
+        device.wakeUp()
+        device.executeShellCommand("wm dismiss-keyguard")
+        device.executeShellCommand("cmd statusbar collapse")
+    }
+
     fun loadSpec(assetText: String): JSONObject = JSONObject(assetText)
 
     /** Steps for `fixture` from a parsed spec; empty when it has none. */

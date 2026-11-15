@@ -9,6 +9,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
+import dev.waterui.android.bench.Journey
 import dev.waterui.android.bench.SuiteRegistry
 import org.junit.Rule
 import org.junit.Test
@@ -77,7 +78,10 @@ class StartupBenchmark {
             ),
             iterations = 1,
             startupMode = StartupMode.COLD,
-            setupBlock = { pressHome() },
+            setupBlock = {
+                Journey.prepareDevice(device)
+                pressHome()
+            },
         ) {
             launchWithSpecEnv(fixture)
         }
@@ -94,6 +98,7 @@ class StartupBenchmark {
             iterations = iterations(),
             startupMode = mode,
             setupBlock = {
+                Journey.prepareDevice(device)
                 pressHome()
                 if (mode == StartupMode.WARM) {
                     // Warm = Activity creation in a live process: ensure the
