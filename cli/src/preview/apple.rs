@@ -224,6 +224,8 @@ pub async fn build_preview_with_apple(
         &options,
     )
     .await?
+    // Preview stages the shared runtime and its dependencies beside the executable.
+    .with_final_rustc_arg("-Clink-arg=-Wl,-rpath,@loader_path")
     .build_binary(project.apple_preview_crate_name().as_str(), false)
     .await
     .wrap_err("Failed to build the Apple preview binary")?;
