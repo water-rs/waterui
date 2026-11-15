@@ -538,7 +538,14 @@ impl convert::AnchorLayer<Gpu> for ContentLayer {
 }
 
 /// `cherenkov-gpu` adapter.
-pub struct Cherenkov {
+pub type Cherenkov = Adapter<false>;
+
+/// The same scene adapter recording immutable pictures for cache measurements.
+pub type PictureCache = Adapter<true>;
+
+/// Recording policy is selected at compile time so the direct adapter's
+/// measured recording path has no runtime mode dispatch.
+pub struct Adapter<const PICTURES: bool> {
     info: EngineInfo,
     engine: GpuEngine<Gpu>,
     shared_device: SharedDevice,
@@ -554,6 +561,7 @@ pub struct Cherenkov {
     filter_handles: Vec<cherenkov::Filter>,
     /// Layers holding recorded content, in draw order.
     content_layers: Vec<ContentLayer>,
+    pictures: Vec<cherenkov::Picture>,
     /// Whether any layer carries a `motion`.
     has_motion: bool,
     /// Whether the motion commits have been sent (first encode).
@@ -1712,7 +1720,7 @@ fn composition_sample(reports: &[cherenkov_gpu::composition::FrameReport]) -> cr
 }
 
 /// The engine, device and prepared scene state do not format.
-impl std::fmt::Debug for Cherenkov {
+impl<const PICTURES: bool> std::fmt::Debug for Adapter<PICTURES> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Cherenkov")
             .field("info", &self.info)
@@ -1720,9 +1728,13 @@ impl std::fmt::Debug for Cherenkov {
     }
 }
 
-impl Cherenkov {
+impl<const PICTURES: bool> Adapter<PICTURES> {
     /// Adapter key.
-    pub const NAME: &'static str = "cherenkov";
+    pub const NAME: &'static str = if PICTURES {
+        "cherenkov-picture"
+    } else {
+        "cherenkov"
+    };
 
     /// Creates the adapter, initializing the GPU engine.
     ///
@@ -1795,8 +1807,11 @@ impl Cherenkov {
                 precision: "analytic f32 quad instances; f16 working-space target",
                 route: "wgpu (gpu slice)",
                 color_note: "premultiplied linear Display P3 end to end; HDR channels unclamped",
-                encode_scope: "records `cherenkov::Content` calls (fill/stroke/shadow/glyphs) \
-                               against fonts and the layer tree prepared once",
+                encode_scope: if PICTURES {
+                    "records immutable pictures on first use and live-content changes; records picture placements on drift frames, with fonts and layers prepared once"
+                } else {
+                    "records `cherenkov::Content` calls (fill/stroke/shadow/glyphs) against fonts and the layer tree prepared once"
+                },
             },
             engine,
             shared_device,
@@ -1807,6 +1822,7 @@ impl Cherenkov {
             image_handles: Vec::new(),
             filter_handles: Vec::new(),
             content_layers: Vec::new(),
+            pictures: Vec::new(),
             backdrop_groups: HashMap::new(),
             has_motion: false,
             motion_committed: false,
@@ -1822,7 +1838,7 @@ impl Cherenkov {
     }
 }
 
-impl Engine for Cherenkov {
+impl<const PICTURES: bool> Engine for Adapter<PICTURES> {
     fn info(&self) -> &EngineInfo {
         &self.info
     }
@@ -1930,6 +1946,7 @@ impl Engine for Cherenkov {
             input.blobs,
         )?;
         self.content_layers.clear();
+        self.pictures.clear();
         self.backdrop_groups.clear();
         let mut content_layers = Vec::new();
         let mut filter_handles = Vec::new();
@@ -1955,6 +1972,11 @@ impl Engine for Cherenkov {
             backdrop_group,
         )?;
         convert::apply_backdrop_members(&surface, pending, &content_layers, &self.backdrop_groups);
+        if PICTURES && content_layers.iter().any(|layer| !layer.motions.is_empty()) {
+            return Err(BenchError::Engine(
+                "cherenkov-picture: immutable recordings cannot preserve paint-motion interpolation".into(),
+            ));
+        }
         self.has_motion = content_layers
             .iter()
             .any(|c| c.motion.is_some() || !c.motions.is_empty());
@@ -1985,6 +2007,42 @@ impl Engine for Cherenkov {
                 }
             }
             self.motion_committed = true;
+        }
+        if PICTURES {
+            if first_frame {
+                self.pictures = self
+                    .content_layers
+                    .iter()
+                    .map(|layer| {
+                        surface
+                            .record(|c| record_ops_static(c, &layer.ops, &layer.live))
+                            .into_picture()
+                    })
+                    .collect();
+            } else if input.drift.is_none() {
+                for (layer, picture) in self.content_layers.iter_mut().zip(&mut self.pictures) {
+                    if !layer.live.is_empty() {
+                        for live in &mut layer.live {
+                            live.advance(self.frame);
+                        }
+                        *picture = surface
+                            .record(|c| record_ops_static(c, &layer.ops, &layer.live))
+                            .into_picture();
+                    }
+                }
+            }
+            if first_frame || input.drift.is_some() || self.has_live {
+                surface.update(|tx| {
+                    for (layer, picture) in self.content_layers.iter().zip(&self.pictures) {
+                        tx[layer.handle(surface)].record(|c| {
+                            c.picture(picture, Fixed(input.drift.unwrap_or(Affine::IDENTITY)));
+                        });
+                    }
+                });
+            }
+            self.frame += 1;
+            self.clock.advance();
+            return Ok(());
         }
         // Content is recorded on the first frame and again on every frame
         // the bench drifts — each frame of a static scene, and a motion
@@ -2282,4 +2340,102 @@ pub(crate) fn phase_samples(phases: &cherenkov::Phases) -> Vec<crate::PhaseSampl
         ("stamp", phases.stamp_seconds),
         ("wait", phases.wait_seconds),
     ])
+}
+
+#[cfg(test)]
+mod picture_tests {
+    use super::*;
+    use cherenkov_oracle::metrics::assert_images_match;
+    use cherenkov_scene::{Color, FillRule, Live, Scene, Shape};
+
+    fn compare(scene: &Scene, drifts: &[Option<Affine>]) -> Result<Vec<Counters>, BenchError> {
+        let blobs = Blobs::default();
+        let mut input = EncodeInput {
+            scene,
+            blobs: &blobs,
+            scroll_offset: None,
+            drift: None,
+        };
+        let mut direct = Cherenkov::new()?;
+        let mut pictures = PictureCache::new()?;
+        direct.prepare(&input)?;
+        pictures.prepare(&input)?;
+        let mut counters = Vec::new();
+        for (frame, drift) in drifts.iter().enumerate() {
+            input.drift = *drift;
+            direct.encode(&input)?;
+            pictures.encode(&input)?;
+            let expected = direct
+                .submit(frame as u64, true)?
+                .image
+                .expect("requested readback");
+            let actual = pictures
+                .submit(frame as u64, true)?
+                .image
+                .expect("requested readback");
+            assert_images_match(&expected, &actual);
+            let sample = pictures.counters();
+            assert!(sample.picture_tiles_composed.expect("GPU tile counters") > 0);
+            counters.push(sample);
+        }
+        Ok(counters)
+    }
+
+    #[test]
+    fn picture_adapter_reuses_static_content() -> Result<(), BenchError> {
+        let scene = Scene::builder(64, 64)
+            .fill(
+                Shape::rect(-64.0, -64.0, 256.0, 256.0),
+                Color::srgb(0.1, 0.2, 0.3).into(),
+            )
+            .fill(
+                Shape::rect(10.0, 10.0, 8.0, 8.0),
+                Color::srgb(1.0, 0.0, 0.0).into(),
+            )
+            .build();
+        let counts = compare(&scene, &[None, Some(Affine::translate((0.25, 0.25)))])?;
+        assert!(
+            counts[0]
+                .picture_tiles_invalidated
+                .expect("GPU tile counters")
+                > 0
+        );
+        assert_eq!(counts[1].picture_tiles_invalidated, Some(0));
+        Ok(())
+    }
+
+    #[test]
+    fn picture_adapter_rerecords_live_content() -> Result<(), BenchError> {
+        let mut scene = Scene::builder(64, 64)
+            .fill(
+                Shape::rect(0.0, 0.0, 64.0, 64.0),
+                Color::srgb(0.1, 0.2, 0.3).into(),
+            )
+            .fill(
+                Shape::rect(10.0, 10.0, 4.0, 4.0),
+                Color::srgb(1.0, 0.0, 0.0).into(),
+            )
+            .build();
+        let Item::Draw(first) = scene.root.items[1].clone() else {
+            unreachable!()
+        };
+        scene.root.live.push(Live {
+            item: 1,
+            frames: vec![
+                first,
+                SceneDraw::Fill {
+                    shape: Shape::rect(10.0, 10.0, 4.0, 4.0),
+                    rule: FillRule::NonZero,
+                    paint: Color::srgb(0.0, 1.0, 0.0).into(),
+                },
+            ],
+        });
+        scene.compute_features();
+        let counts = compare(&scene, &[None, None, None])?;
+        for sample in &counts[1..] {
+            assert!(sample.picture_tiles_invalidated.expect("GPU tile counters") > 0);
+            assert!(sample.damaged_surface_pixels.expect("GPU damage counters") * 20 < 64 * 64);
+        }
+        Ok(())
+    }
 }
