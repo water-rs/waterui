@@ -1730,6 +1730,9 @@ pub fn measure_list_node<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
+    if let (Some(width), Some(height)) = (proposal.width, proposal.height) {
+        return ViewDimensions::new(LayoutSize::new(width, height));
+    }
     let contents = list.rows_snapshot.borrow().clone();
     let intrinsic =
         measure_list_intrinsic(&list.config, &contents, proposal.width, state, env, theme);

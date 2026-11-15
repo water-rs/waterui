@@ -312,3 +312,45 @@ fn retained_list_measurement_reuses_the_watcher_snapshot() {
     assert!(after.size.height > before.size.height);
     assert_eq!(captures.get(), mounted_captures);
 }
+
+#[test]
+fn specified_list_viewport_does_not_materialize_rows() {
+    use core::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    use waterui_core::layout::ProposalSize;
+    use waterui_core::view::ConfigurableView as _;
+
+    use crate::renderer::WidgetBehavior as _;
+    use crate::widgets::layout::list::ListRenderState;
+
+    let materializations = Rc::new(Cell::new(0));
+    let counted = Rc::clone(&materializations);
+    let rows = Binding::container(vec![SelfId::new(0_u64), SelfId::new(1_u64)]);
+    let list = List::for_each(SignalCollection::new(rows), move |_| {
+        counted.set(counted.get() + 1);
+        ListItem::new(text("row"))
+    });
+    let env = test_environment();
+    let mut renderer = super::test_renderer();
+    let theme = renderer.theme();
+    let widget = RefCell::new(ListRenderState::from_config(list.config(), &env, &renderer));
+    let mounted = materializations.get();
+    let bounded = widget.measure(
+        &mut renderer.state,
+        ProposalSize::new(Some(400.0), Some(700.0)),
+        &env,
+        &theme,
+    );
+    assert_eq!(bounded.size, waterui_core::layout::Size::new(400.0, 700.0));
+    assert_eq!(materializations.get(), mounted);
+
+    let ideal = widget.measure(
+        &mut renderer.state,
+        ProposalSize::new(Some(400.0), None),
+        &env,
+        &theme,
+    );
+    assert!(ideal.size.height > 0.0);
+    assert!(materializations.get() > mounted);
+}
