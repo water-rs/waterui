@@ -1160,13 +1160,6 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
     ctx: Option<RenderContext>,
     theme: Option<&Rc<dyn crate::theme::WidgetTheme>>,
     state: &Rc<RefCell<ListRenderState<E>>>,
-    #[cfg_attr(
-        not(feature = "accessibility"),
-        expect(
-            unused_variables,
-            reason = "only the accessibility emit resolves roles and rows against the environment"
-        )
-    )]
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
