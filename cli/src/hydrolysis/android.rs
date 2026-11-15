@@ -909,6 +909,9 @@ pub(crate) async fn build_prepared(
     let rust_build = RustBuild::for_project(project, &backend_path, triple.clone())
         .with_crate_type_override("cdylib")
         .with_rustc_flag(ANDROID_MAX_PAGE_SIZE_LINK_ARG)
+        // Standard RELR tags require API 30; the framework minimum is API 33.
+        // Pack other dynamic relocations with Android's API 23 encoding.
+        .with_final_rustc_arg("-Clink-arg=-Wl,--pack-dyn-relocs=android+relr")
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
         .with_features(std::iter::once(painter.name()).chain(features.iter().copied()))
         .with_features(options.app_features(project))
