@@ -1,43 +1,21 @@
 #!/usr/bin/env python3
-"""bench/android/run.py — drive the frozen fixture suite.
+"""Build and collect Android painter/reference benchmark fixtures.
 
-The harness lives in hydrolysis so archiving android-backend cannot remove
-the acceptance machinery. It consumes suite.toml (the frozen inventory) and
-the pinned toolchain, launches each fixture's built APK, waits for a settled
-non-blank frame, verifies against the golden where one exists, and emits one
-result record per (fixture, script, round) in the shared schema.
+`build-hydrolysis` packages fixtures through the water CLI for each painter.
+`build` produces the Compose release references with R8 and baseline profiles;
+`lock-campaign` freezes their Compose BOM and records resolved dependencies.
 
-The goldens are no longer stored (the repository carries no binary assets):
-a missing `reference/goldens/<fixture>.png` is generated during the run by
-rendering the fixture's registered Compose twin in the reference app and
-capturing its settled frame (water-rs/hydrolysis#343), which needs
-`--reference-apk`. A fixture whose twin is still unregistered — the
-`[unfinished.compose_twins]` list — reports `verify: unavailable` and names
-the gap.
+`run` captures the Compose reference before starting the measured app, waits
+for Android to report a frame in the focused app window, and replays the
+fixture journey. Captures and full-frame color-managed FLIP diagnostics require
+visual review; neither decoded pixels nor a comparison score certifies content.
+The launch/journey records are diagnostic captures. Formal frame and energy
+measurements use the instrumented macrobenchmark modules.
 
-Device plumbing (settle detection, ANR dismissal, golden comparison,
-gfxinfo/meminfo capture, perfetto) is the imported android-backend
-implementation in scripts/e2e.py — imported verbatim and hash-pinned by
-toolchain-lock.json as a frozen record of the old backend's measurement
-semantics. Those scripts cannot run against the current CLI.
-
-APK production: `build-hydrolysis` builds each fixture's Hydrolysis app
-through `water package` for each painter (`gpu`, `hwui`, named as the CLI
-names them) into `<out>/<painter>/<fixture>.apk`; `build` builds the Compose
-reference with Gradle (release, R8, resource shrinking, a baseline profile
-`run` verifies ART applied). Both are arm64-v8a and signed with the Gradle
-debug keystore. `run --apk-dir <dir>` launches each fixture's APK, replays
-its journey's input ops and writes the result record. `--painter` names the
-Hydrolysis painter of the app under test and is absent for `--backend
-compose`. A `build-hydrolysis --frame-profile` app additionally logs the
-HWUI painter's per-frame counters, which `run` collects from logcat.
-
-The Gradle trees (`reference/` here, `android/` for the host) are the
-callers of `scripts/fetch-gradle-wrapper.py`: their `gradlew` scripts
-need `gradle/wrapper/gradle-wrapper.jar`, which the repository does not
-store. Run `uv run scripts/fetch-gradle-wrapper.py` once before any
-`./gradlew` invocation — it materializes the jar for every wrapper in
-the tree, hash-verified against the published checksums.
+The frozen android-backend helpers supply device/process plumbing only. Their
+pixel-difference and nonblank-image checks are not used for visual acceptance.
+Materialize Gradle wrappers with the hash-verifying
+`backends/hydrolysis/scripts/fetch-gradle-wrapper.py` before building.
 """
 
 from __future__ import annotations
@@ -107,7 +85,7 @@ def apk_package(apk: Path) -> str:
     ).stdout.strip()
 
 
-def start_launcher(serial: str, package: str, env: dict) -> None:
+def start_launcher(serial: str, package: str, env: dict, *, example: str | None = None) -> None:
     """Starts `package`'s launcher activity, killing any prior run — the
     same intent for the generated Hydrolysis host and the Compose reference,
     so neither depends on the other's activity name. `env` reaches the app as
@@ -122,6 +100,8 @@ def start_launcher(serial: str, package: str, env: dict) -> None:
     if not component.startswith(package + "/"):
         sys.exit(f"{package} has no launcher activity: {resolved}")
     args = ["shell", "am", "start", "-S", "-n", component]
+    if example is not None:
+        args += ["--es", "E2EExample", example]
     for key, value in env.items():
         args += ["--es", f"waterui.env.{key}", value]
     output = e2e.adb_out(serial, *args).decode("utf-8", "replace")
@@ -201,6 +181,39 @@ def replay_journey(serial: str, steps: list[dict], size: tuple[int, int]) -> lis
     return unsupported
 
 
+def capture_first_frame(serial: str, package: str, output: Path, timeout_s: float) -> None:
+    """Capture after Android reports a frame in the focused app window.
+
+    This proves frame delivery, not meaningful content or visual correctness.
+    The resulting image always needs visual review.
+    """
+    deadline = time.monotonic() + timeout_s
+
+    def query(*args: str) -> bytes:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"{package}: no focused application frame within {timeout_s}s")
+        return subprocess.run(
+            ["adb", "-s", serial, *args], check=True, capture_output=True,
+            timeout=remaining,
+        ).stdout
+
+    while time.monotonic() < deadline:
+        displays = query("shell", "dumpsys", "window", "displays").decode()
+        if e2e.parse_anr_package(displays) == package:
+            raise RuntimeError(f"{package}: application not responding")
+        focused = e2e.parse_focused_window(displays)
+        if focused is None or e2e.window_package(focused) != package:
+            continue
+        frames = frame_metrics.parse_gfxinfo(
+            query("shell", "dumpsys", "gfxinfo", package).decode()
+        )
+        if frames.get("frames_total", 0) > 0:
+            output.write_bytes(query("exec-out", "screencap", "-p"))
+            return
+    raise TimeoutError(f"{package}: no focused application frame within {timeout_s}s")
+
+
 def launch_and_capture(
     serial: str,
     name: str,
@@ -210,137 +223,77 @@ def launch_and_capture(
     artifacts: Path,
     painter: str | None,
     journey: list[dict] | None,
+    comparison_tool: str,
+    reference_package: str | None,
 ) -> dict:
-    """One launch: install, start, settle, verify or smoke-check, replay the
-    fixture's journey, then collect the round's frame and painter counters.
-
-    Returns the round's result `metrics` payload; artifacts land under
-    `artifacts/<name>/`.
-    """
+    """Collect a diagnostic launch/journey round and images for visual review."""
     out = artifacts / name
     out.mkdir(parents=True, exist_ok=True)
     package = apk_package(apk)
-    mode = fixture["mode"]
-    settle_s = fixture.get(
-        "settle_timeout_seconds", defaults["settle_timeout_seconds"]
-    )
-    poll_s = fixture.get("poll_interval_ms", defaults["poll_interval_ms"]) / 1000
-
+    timeout_s = fixture.get("settle_timeout_seconds", defaults["settle_timeout_seconds"])
+    env = fixture_env(fixture, defaults)
     prepare_display(serial)
+    reference = out / "reference.png"
+    needs_reference = fixture["mode"] == "verify"
+    # Capturing the twin must not take focus away during the measured journey.
+    if needs_reference and reference_package is not None:
+        start_launcher(serial, reference_package, env, example=name)
+        try:
+            capture_first_frame(serial, reference_package, reference, timeout_s)
+        finally:
+            e2e.force_stop(serial, reference_package)
+
     e2e.install_apk(serial, str(apk))
     e2e.force_stop(serial, package)
+    result: dict = {"apk_bytes": apk.stat().st_size, "package": package}
     if painter is None:
-        # The Compose reference ships a baseline profile; verify ART applied
-        # it rather than assuming the APK entry did its job.
         compile_with_profile(serial, package)
         applied, block = speed_profile_state(serial, package)
         if not applied:
             sys.exit(f"{package}: baseline profile not applied:\n{block}")
-        result_profile = {"baseline_profile_applied": True}
-    else:
-        result_profile = {}
-    # Reset the frame statistics and the log so the round counts only its
-    # own frames and painter lines.
+        result["baseline_profile_applied"] = True
     metrics.adb(serial, "shell", "dumpsys", "gfxinfo", package, "reset")
     frame_profile.clear_logcat(serial)
     launch_at = time.monotonic()
-    start_launcher(serial, package, fixture_env(fixture, defaults))
-    watch = e2e.ProcessWatch(serial, package)
-    result: dict = {
-        "apk_bytes": apk.stat().st_size,
-        "package": package,
-        **result_profile,
-    }
-
-    anr: list[str] = []
-    foreign: list[str] = []
-    settled, frame, first_content_at = e2e.wait_for_settle(
-        serial,
-        settle_s,
-        poll_s,
-        watch=watch,
-        package=package,
-        anr=anr,
-        foreign=foreign,
-    )
-    if anr:
-        result["anr"] = anr
-    if foreign:
-        result["foreign_focus"] = foreign[-1]
-    if first_content_at is not None:
-        # Both instants are host monotonic seconds; the resolution is the
-        # settle poll interval, so this orients the round, it does not gate.
-        result["first_content_ms"] = int((first_content_at - launch_at) * 1000)
-
-    if frame is not None:
-        (out / "capture.png").write_bytes(frame)
-        result["nonblank"] = e2e.is_nonblank(frame)
-
-    golden_name = fixture.get("golden", "none")
-    if mode == "verify" and golden_name != "none":
-        golden_path = BENCH_DIR / golden_name
-        if not golden_path.exists():
-            # water-rs/hydrolysis#343: the golden is the reference app's
-            # settled twin frame, generated at run time rather than stored.
-            foreign_twin: list[str] = []
-            twin = e2e.capture_twin(serial, name, settle_s, poll_s, foreign_twin)
-            if twin is None:
-                detail = (
-                    f"foreign window '{foreign_twin[-1]}' held focus"
-                    if foreign_twin
-                    else "no registered twin — see [unfinished.compose_twins]"
-                )
-                result["golden_generation"] = detail
-            else:
-                golden_path.parent.mkdir(parents=True, exist_ok=True)
-                golden_path.write_bytes(twin)
-                result["golden_generation"] = "generated"
-        if frame is None or not golden_path.exists():
-            result["verify"] = "unavailable"
-        else:
-            from PIL import Image  # noqa: E402  — pinned harness dep
-
-            diff = e2e.compare_images(
-                Image.open(golden_path),
-                Image.open(out / "capture.png"),
-                pixel_tolerance=defaults["pixel_tolerance"],
-            )
-            result["golden_diff_fraction"] = diff
-            result["verify"] = (
-                "pass"
-                if settled
-                and diff <= defaults["max_diff_fraction"]
-                else "fail"
-            )
-    else:
-        # smoke, or verify without a frozen baseline (anchored_overlay):
-        # settled non-blank content is the check.
-        result["verify"] = "pass" if settled and result.get("nonblank") else "fail"
-
-    # The short interaction: the shared journey's input-only ops, so the
-    # frames below include scrolling work and not only the launch.
-    if journey is None:
-        result["replay"] = "no journey in interactions.json"
-    else:
+    start_launcher(serial, package, env)
+    try:
+        capture_first_frame(serial, package, out / "capture.png", timeout_s)
+        result["first_frame_observed_ms"] = int((time.monotonic() - launch_at) * 1000)
+        if journey is None:
+            raise ValueError(f"{name}: no journey in interactions.json")
         unsupported = replay_journey(serial, journey, display_size(serial))
-        result["replay"] = "partial" if unsupported else "complete"
         if unsupported:
-            result["replay_unsupported_ops"] = sorted(set(unsupported))
-    if painter is not None:
-        result.update(frame_profile.collect(serial, painter, out, "frame_profile"))
+            raise ValueError(f"{name}: incomplete journey, unsupported operations {unsupported}")
+        result["replay"] = "complete"
+        if painter is not None:
+            result.update(frame_profile.collect(serial, painter, out, "frame_profile"))
+        result.update(frame_metrics.collect(serial, package, out, "frames"))
+        result.update(memory_metrics.collect_at(serial, package, "post_journey", out, "memory"))
+        result.update(latency_metrics.collect(serial, out, "input"))
+        e2e.dump_logcat(serial, out / "logcat.txt")
+    finally:
+        e2e.force_stop(serial, package)
 
-    # Round metrics: frames over the launch + interaction window and a memory
-    # snapshot. The expensive dumps stay a separate replay per section 6 —
-    # here they run in the round because the round IS the measured script.
-    result.update(frame_metrics.collect(serial, package, out, "frames"))
-    result.update(
-        memory_metrics.collect_at(
-            serial, package, "settled_idle", out, "memory"
-        )
+    checked = subprocess.run(
+        [comparison_tool, "check", str(out / "capture.png")],
+        check=True, capture_output=True, text=True, timeout=60,
     )
-    result.update(latency_metrics.collect(serial, out, "input"))
-    e2e.dump_logcat(serial, out / "logcat.txt")
-    e2e.force_stop(serial, package)
+    result["image_decode"] = json.loads(checked.stdout)
+    result["verify"] = "review_required"
+    if needs_reference:
+        if reference_package is None:
+            result["verify"] = "unavailable"
+            result["visual_review_reason"] = "provide --reference-apk for the Compose twin"
+        else:
+            # Android twin tolerances are not calibrated. Record full-frame
+            # FLIP diagnostics; neither a small score nor valid PNG is approval.
+            compared = subprocess.run(
+                [comparison_tool, "compare", str(reference), str(out / "capture.png"),
+                 str(out / "heatmap.png"), "--platform", "android", "--example", name,
+                 "--record"],
+                check=True, capture_output=True, text=True, timeout=60,
+            )
+            result["visual_comparison"] = json.loads(compared.stdout)
     return result
 
 
@@ -358,7 +311,12 @@ def cmd_run(args: argparse.Namespace) -> int:
             k: v["revision"] for k, v in lock["sources"].items()
         },
     }
+    comparison_tool = shutil.which(args.comparison_tool)
+    if comparison_tool is None:
+        sys.exit(f"screenshot comparison executable not found: {args.comparison_tool}")
+    reference_package = None
     if args.reference_apk:
+        reference_package = apk_package(Path(args.reference_apk))
         e2e.adb(serial, "install", "-r", args.reference_apk)
     if args.backend == "hydrolysis":
         if args.painter not in PAINTERS:
@@ -381,11 +339,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             continue
         apk = apk_dir / f"{name}.apk" if apk_dir else None
         if apk is None or not apk.exists():
-            print(f"== {name}: no APK under {apk_dir} — not run")
-            continue
+            sys.exit(f"{name}: no APK under {apk_dir}; build it before collecting")
         if args.no_golden and fixture["mode"] == "verify":
-            # Settled non-blank content is the check; the round measures
-            # frames and counters, not pixels.
+            # Capture for visual review without generating a reference pair.
             fixture = {**fixture, "mode": "smoke"}
         print(f"== {name}: {fixture['mode']} on {serial} ({apk.name})")
         record = metrics.make_result(
@@ -405,6 +361,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                 Path(args.out),
                 painter,
                 interactions["fixtures"].get(name, {}).get("journey"),
+                comparison_tool,
+                reference_package,
             ),
         )
         path = metrics.write_result(
@@ -412,7 +370,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         )
         status = record["metrics"].get("verify", "fail")
         print(f"   -> {status}  ({path})")
-        if status != "pass":
+        if status != "review_required":
             failures.append(name)
     if failures:
         print("FAILED fixtures:", ", ".join(failures))
@@ -1037,8 +995,9 @@ def main() -> int:
                           "generate goldens for fixtures with registered twins")
     run.add_argument("--fixture", action="append", default=None)
     run.add_argument("--no-golden", action="store_true",
-                     help="check settled non-blank content only, for verify "
-                          "fixtures too — no golden is read or generated")
+                     help="capture for visual review without a reference comparison")
+    run.add_argument("--comparison-tool", default="compare-screenshots",
+                     help="color-managed FLIP screenshot comparison executable")
     run.add_argument("--run-skipped", action="store_true",
                      help="also attempt the two documented skip entries")
     run.add_argument("--backend", default="hydrolysis")
