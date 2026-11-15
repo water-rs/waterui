@@ -247,7 +247,7 @@ impl DevicePayload {
             async {
                 let (manifest, fonts) = futures_util::try_join!(
                     assets::plan_library_resources(project, &symbols, false),
-                    hydrolysis_android::resolve_declared_fonts(project),
+                    hydrolysis_android::resolve_declared_fonts(project, &[]),
                 )?;
                 assets::write_android_library_resources(&manifest, &resources_dir, &fonts).await
             },

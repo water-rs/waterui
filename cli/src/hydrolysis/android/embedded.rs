@@ -343,7 +343,7 @@ pub async fn build_aar(
         .backend_path::<HydrolysisBackend>()
         .join("android-embedded");
     let ((), library) = futures_util::try_join!(
-        super::prepare_for_build(project),
+        super::prepare_for_build(project, &[]),
         render_library(project, painter, &dir),
     )?;
 
@@ -376,7 +376,7 @@ pub async fn build_aar(
         &module_dir,
         &built.app_symbols().await?,
         false,
-        &super::resolve_declared_fonts(project).await?,
+        &super::resolve_declared_fonts(project, &[]).await?,
     )
     .await?;
 

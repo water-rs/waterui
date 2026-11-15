@@ -155,6 +155,9 @@ impl TargetPlatform {
     reason = "every boolean is a documented --flag, not structural state — the shape follows the CLI surface"
 )]
 pub struct Args {
+    #[command(flatten)]
+    features: super::FeatureArgs,
+
     /// Target platform to run on.
     /// Defaults to the host platform when omitted.
     #[arg(short, long, value_enum)]
@@ -254,6 +257,7 @@ pub struct Args {
 impl std::fmt::Debug for Args {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Args")
+            .field("features", &self.features)
             .field("platform", &self.platform)
             .field("backend", &self.backend)
             .field("painter", &self.painter)
@@ -391,7 +395,7 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
         .await?;
 
         if context.platform == TargetPlatform::Web {
-            run_web_app(shell, &context.project).await?;
+            run_web_app(shell, &context.project, &args.features).await?;
             return Ok(None);
         }
         let selection = Box::pin(select_run_device(
@@ -597,9 +601,17 @@ async fn check_run_toolchain(
     Ok(kotlin_toolchain)
 }
 
-async fn run_web_app(shell: &Shell, project: &Project) -> Result<()> {
+async fn run_web_app(
+    shell: &Shell,
+    project: &Project,
+    features: &super::FeatureArgs,
+) -> Result<()> {
     let spinner = shell.spinner("Building Hydrolysis web app...");
-    let site_root = prepare_hydrolysis_web_dev_site(project).await?;
+    let features = BuildOptions::development(BuildProfile::Debug)
+        .with_features(features.values())
+        .app_features(project)
+        .collect::<Vec<_>>();
+    let site_root = prepare_hydrolysis_web_dev_site(project, &features).await?;
     if let Some(pb) = spinner {
         pb.finish_and_clear();
     }
@@ -656,6 +668,7 @@ async fn build_run_config(
 
     let profile = run_profile(args, backend);
     Ok(BuildRunConfig {
+        features: args.features.values().map(str::to_owned).collect(),
         run_options,
         sccache_path,
         profile,
@@ -1011,6 +1024,7 @@ fn build_options(config: &BuildRunConfig) -> BuildOptions {
             |sccache| BuildOptions::development(config.profile).with_sccache(sccache.clone()),
         )
         .with_dev_server(config.dev_server)
+        .with_features(config.features.iter().cloned())
 }
 
 async fn build_for_backend(
@@ -1111,6 +1125,7 @@ async fn package_for_backend(
 }
 
 struct BuildRunConfig {
+    features: Vec<String>,
     run_options: RunOptions,
     sccache_path: Option<PathBuf>,
     /// The Cargo profile the run builds under — see `run_profile`.
@@ -1736,6 +1751,7 @@ mod tests {
     #[test]
     fn args_debug_reports_the_env_count_not_the_declarations() {
         let args = Args {
+            features: super::super::FeatureArgs::default(),
             platform: None,
             backend: None,
             painter: None,

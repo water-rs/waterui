@@ -124,6 +124,9 @@ impl AndroidArch {
     reason = "every boolean is a documented --flag, not structural state — the shape follows the CLI surface"
 )]
 pub struct Args {
+    #[command(flatten)]
+    features: super::FeatureArgs,
+
     /// Target platform to package for.
     #[arg(short, long, value_enum)]
     platform: TargetPlatform,
@@ -358,8 +361,9 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<
     }
     let project = super::ensure_generated_backend(shell, project, backend.cli_backend()).await?;
 
-    let mut build_options =
-        BuildOptions::packaging(args.profile()).with_progress(shell.build_progress());
+    let mut build_options = BuildOptions::packaging(args.profile())
+        .with_progress(shell.build_progress())
+        .with_features(args.features.values());
     if let Some(sccache_path) =
         super::detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await
     {
@@ -620,6 +624,21 @@ async fn package_artifact_inner(
     // tools run under.
     let project = &context.project.with_std_output(std_output);
     let package_options = context.package_options.clone();
+    if args.platform == TargetPlatform::Web {
+        let features = context
+            .build_options
+            .app_features(project)
+            .collect::<Vec<_>>();
+        let site = waterui_cli::hydrolysis::platform::package_hydrolysis_web_site(
+            project,
+            package_options.is_debug(),
+            false,
+            &features,
+        )
+        .await?;
+        return Ok(Artifact::new(project.bundle_identifier(), site));
+    }
+
     match context.backend {
         TargetBackend::Apple => {
             let built = built.ok_or_else(|| {

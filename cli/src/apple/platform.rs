@@ -297,6 +297,7 @@ pub(crate) async fn apple_rust_build(
     let target_underscore = target.replace('-', "_");
     let mut build = RustBuild::for_project(project, crate_path, triple)
         .with_features(features)
+        .with_features(options.app_features(project))
         .with_envs(options.cargo_envs().iter().cloned())
         .with_env("PKG_CONFIG_ALLOW_CROSS", "1")
         .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target_underscore}"), "1")
@@ -376,10 +377,11 @@ pub(crate) async fn build_rust_lib_with_links(
 
     // Resolve fonts BEFORE cargo build - this ensures icons.json is present
     // for crates like fontawesome7 that need it during build.rs
-    let font_declarations = crate::assets::scan_fonts(
+    let font_declarations = crate::assets::scan_fonts_with_features(
         project,
         &project.apple_crate_path().join("Cargo.toml"),
         &[platform.font_platform()],
+        &options.app_features(project).collect::<Vec<_>>(),
     )
     .await?;
     let _resolved_fonts = crate::assets::resolve_fonts(project.host(), font_declarations).await?;
@@ -890,6 +892,7 @@ pub async fn package_apple(
         &staging_dir,
         &built.app_symbols().await?,
         options.uses_dev_server(),
+        &built.features,
     )
     .await?;
 
@@ -1060,16 +1063,18 @@ async fn copy_assets_and_fonts(
     dest_dir: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
+    features: &[String],
 ) -> eyre::Result<()> {
     // Stage project assets using platform-native conventions.
     let manifest =
         assets::stage_project_assets_for_apple(project, dest_dir, symbols, dev_server).await?;
 
     // Scan and resolve dependency fonts
-    let font_declarations = assets::scan_fonts(
+    let font_declarations = assets::scan_fonts_with_features(
         project,
         &project.apple_crate_path().join("Cargo.toml"),
         &[platform.font_platform()],
+        features,
     )
     .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
