@@ -179,8 +179,18 @@ pub struct FrameStats {
     pub frame: Option<FrameId>,
     /// CPU time spent in each render phase.
     pub phases: Phases,
+    /// Total pixel area of the surfaces prepared for drawing this frame.
+    /// Retained picture images and other intermediate targets are excluded.
+    pub surface_pixels: u64,
+    /// Union of the pixels rasterized into each prepared surface's root
+    /// outputs. Overlapping passes and compositor parts count each surface
+    /// pixel once; offscreen images are excluded. Zero on an unchanged frame.
+    pub damaged_surface_pixels: u64,
     /// Render passes recorded (`render_to_texture` and effect passes).
     pub passes: u32,
+    /// Planned raster passes skipped because their composition epoch has
+    /// no pixel demand. Excludes filter and mip-generation passes.
+    pub passes_culled: u32,
     /// Scene commands encoded this frame.
     pub draws: u32,
     /// Pipeline state changes issued while encoding draw ranges.

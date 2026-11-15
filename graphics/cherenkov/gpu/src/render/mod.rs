@@ -8769,6 +8769,8 @@ impl GpuRenderer {
                     required.add(x, y, w, h);
                 }
             });
+        stats.surface_pixels += u64::from(surf.size.0) * u64::from(surf.size.1);
+        stats.damaged_surface_pixels += surf.draw_demand.surface_pixels(&surf.frame, surf.size);
         surf.repaint_clears
             .prepare(&mut surf.frame, &surf.draw_demand);
         let region_max: Vec<_> = surf
@@ -9777,6 +9779,7 @@ impl GpuRenderer {
                 .epoch_at(i)
                 .map_or(i + 1, |epoch| epoch.passes.end);
             if (i..end).all(|pass| surf.draw_demand.pass(pass).is_empty()) {
+                stats.passes_culled += u32::try_from(end - i).expect("frame pass count fits u32");
                 reduce_slot += surf
                     .frame
                     .reduces

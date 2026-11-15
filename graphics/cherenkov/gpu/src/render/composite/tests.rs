@@ -742,9 +742,16 @@ fn demand_follows_frozen_writes_and_severs_cleared_generations() {
         });
         assert_eq!(demand.pass(5).pixel_area(), 6);
         assert_eq!(demand.pass(6).pixel_area(), 6);
+        assert_eq!(demand.surface_pixels(&frame, (16, 16)), 6);
         for index in 0..5 {
             assert!(demand.pass(index).is_empty(), "old generation {index}");
         }
+        demand.update(&frame, &plan, |_, target, _, region| {
+            if matches!(target, Target::Part(_)) {
+                region.add(2, 3, 4, 5);
+            }
+        });
+        assert_eq!(demand.surface_pixels(&frame, (16, 16)), 20);
     }
 }
 

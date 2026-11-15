@@ -16,12 +16,16 @@ use crate::render::{
 pub struct Demand {
     passes: Vec<Region>,
     staging: rustc_hash::FxHashMap<usize, Region>,
+    surface_union: Option<Region>,
 }
 
 impl Demand {
     pub fn bytes(&self) -> u64 {
-        (self.passes.capacity() * size_of::<Region>()
-            + self.staging.capacity() * size_of::<(usize, Region)>()) as u64
+        self.surface_union
+            .as_ref()
+            .map_or(0, |region| region.heap_bytes().0)
+            + (self.passes.capacity() * size_of::<Region>()
+                + self.staging.capacity() * size_of::<(usize, Region)>()) as u64
             + self
                 .staging
                 .values()
@@ -54,6 +58,36 @@ impl Demand {
             }
         }
         outputs.values().map(Region::pixel_area).sum()
+    }
+
+    /// Root-output coverage, with overlapping compositor parts counted once.
+    /// A single root pass already owns the union, so it needs no scratch.
+    pub fn surface_pixels(&mut self, frame: &Frame, extent: (u32, u32)) -> u64 {
+        let mut roots =
+            frame.passes.iter().enumerate().filter_map(|(index, pass)| {
+                matches!(pass.target, Target::Part(_)).then_some(index)
+            });
+        let Some(first) = roots.next() else {
+            return 0;
+        };
+        let Some(second) = roots.next() else {
+            return self.pass(first).pixel_area();
+        };
+        let union = self
+            .surface_union
+            .get_or_insert_with(|| Region::new(extent));
+        if union.extent() == extent {
+            union.clear();
+        } else {
+            *union = Region::new(extent);
+        }
+        for index in [first, second].into_iter().chain(roots) {
+            for rect in self.passes[index].rectangles() {
+                let (x, y, width, height) = rect.xywh();
+                union.add(x, y, width, height);
+            }
+        }
+        union.pixel_area()
     }
 
     pub fn raster_pass(&self, index: usize) -> &Region {

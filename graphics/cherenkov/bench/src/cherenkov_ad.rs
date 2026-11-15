@@ -2137,11 +2137,23 @@ impl Engine for Cherenkov {
             .map_err(|e| BenchError::Gpu(format!("cherenkov: wait for the GPU: {e}")))
     }
 
+    fn damage(&self) -> Option<crate::DamageSample> {
+        let stats = self.engine.stats();
+        Some(crate::DamageSample {
+            surface_pixels: stats.surface_pixels,
+            damaged_surface_pixels: stats.damaged_surface_pixels,
+            passes_culled: Some(stats.passes_culled),
+        })
+    }
+
     fn counters(&self) -> Counters {
         let mut counters = self.counters.clone();
         let stats = self.engine.stats();
         counters.dispatches = Some(stats.draws);
         counters.passes = Some(stats.passes);
+        counters.passes_culled = Some(stats.passes_culled);
+        counters.surface_pixels = Some(stats.surface_pixels);
+        counters.damaged_surface_pixels = Some(stats.damaged_surface_pixels);
         if let Ok(memory) = self.engine.memory() {
             counters.memory_gpu_bytes = Some(memory.gpu.0);
             counters.memory_cpu_bytes = Some(memory.cpu.0);

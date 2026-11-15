@@ -631,6 +631,10 @@ fn render_returns_idle() -> Result<(), Box<dyn std::error::Error>> {
         wait!(engine.render(cherenkov::FrameTime::now()))?,
         cherenkov::Next::Idle
     );
+    assert_eq!(engine.stats().surface_pixels, 64 * 64);
+    assert_eq!(engine.stats().damaged_surface_pixels, 64 * 64);
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    assert_eq!(engine.stats().damaged_surface_pixels, 0);
     Ok(())
 }
 }
