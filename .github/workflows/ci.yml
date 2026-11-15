@@ -398,8 +398,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      # `artifact_symbols` unit tests build a wasm32 rlib fixture.
       - uses: ./.github/actions/setup-rust
         with:
+          targets: wasm32-unknown-unknown
           cache: "false"
       - name: Restore Cargo sources
         uses: ./.github/actions/cargo-sources
@@ -425,7 +427,7 @@ jobs:
           retention-days: 90
           if-no-files-found: error
       - name: Run CLI unit tests
-        run: cargo nextest run --timings --locked --cargo-profile ci-check -p waterui-cli --profile ci
+        run: cargo nextest run --timings --locked --cargo-profile ci-check -p waterui-cli --lib --bins --profile ci
       - uses: ./.github/actions/upload-cargo-timings
         if: always()
         with:
