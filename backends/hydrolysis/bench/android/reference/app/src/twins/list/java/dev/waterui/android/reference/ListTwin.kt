@@ -3,6 +3,7 @@ package dev.waterui.android.reference
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Column
@@ -49,6 +50,8 @@ import java.text.NumberFormat
 
 // Twin of examples/list: stable records, lazy rows, animated jumps and editing.
 private const val DATASET_SIZE = 100_000
+// hydrolysis-m3 ButtonSmallTokens leading/trailing space and vertical content padding.
+private val listButtonPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
 
 @Composable
 fun ListTwin() {
@@ -61,12 +64,13 @@ fun ListTwin() {
     var editing by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(WATERUI_SPACING.dp),
     ) {
         Column(
             horizontalAlignment = Alignment.Start,
             verticalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.padding(WATERUI_PADDING.dp).fillMaxWidth(),
+            modifier = Modifier.padding(WATERUI_PADDING.dp),
         ) {
             TitleText("100,000-row lazy List")
             SubheadlineText("${NumberFormat.getIntegerInstance().format(records.size)} active rows", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -74,18 +78,18 @@ fun ListTwin() {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                OutlinedButton(onClick = {
+                OutlinedButton(contentPadding = listButtonPadding, onClick = {
                     scope.launch { listState.animateScrollToItem(0) }
                 }) { Text("Top") }
-                OutlinedButton(onClick = {
+                OutlinedButton(contentPadding = listButtonPadding, onClick = {
                     scope.launch { listState.animateScrollToItem(records.size / 2) }
                 }) { Text("Middle") }
-                OutlinedButton(onClick = {
+                OutlinedButton(contentPadding = listButtonPadding, onClick = {
                     if (records.isNotEmpty()) {
                         scope.launch { listState.animateScrollToItem(records.lastIndex) }
                     }
                 }) { Text("Last") }
-                Button(onClick = { editing = !editing }) { Text(if (editing) "Done" else "Edit") }
+                Button(contentPadding = listButtonPadding, onClick = { editing = !editing }) { Text(if (editing) "Done" else "Edit") }
             }
             CaptionText(
                 "Animated jumps and the draggable scrollbar keep only viewport rows materialized.",
@@ -151,7 +155,7 @@ fun ListTwin() {
                                             verticalArrangement = Arrangement.spacedBy(WATERUI_SPACING.dp),
                                             modifier = Modifier.weight(1f).padding(vertical = 10.dp, horizontal = 16.dp),
                                         ) {
-                                            SubheadlineText(String.format("Record #%06d", record))
+                                            SubheadlineText(String.format("Record #%,06d", record))
                                             CaptionText(
                                                 "Materialized only while this row is visible",
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -160,7 +164,7 @@ fun ListTwin() {
                                         if (editing) {
                                             Icon(
                                                 Icons.Default.DragHandle,
-                                                contentDescription = "Move Record #%06d".format(record),
+                                                contentDescription = "Move Record #%,06d".format(record),
                                                 modifier = Modifier.size(48.dp).draggableHandle().semantics {
                                                     customActions = buildList {
                                                         if (index > 0) add(CustomAccessibilityAction("Move up") {
