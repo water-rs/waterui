@@ -171,7 +171,16 @@ impl AndroidGpuContext {
     /// instance, so the surfaces the chain holds stay valid
     /// (water-rs/waterui#2742).
     async fn open_generation(instance: &wgpu::Instance) -> Result<GpuGeneration, GpuError> {
-        let adapter = Self::pick_adapter(instance).await?;
+        let shared = Self::open_device(instance.clone()).await?;
+        Self::mount_generation(shared).await
+    }
+
+    /// Vulkan instance, adapter and device creation can run synchronously even
+    /// through wgpu's async API. Startup runs this Send-only part off the UI thread.
+    async fn open_device(
+        instance: wgpu::Instance,
+    ) -> Result<cherenkov_gpu::interop::SharedDevice, GpuError> {
+        let adapter = Self::pick_adapter(&instance).await?;
         let required_limits = crate::platform::required_device_limits(&adapter);
         let required_features = crate::platform::required_media_features(&adapter)
             .map_err(|error| GpuError::new(format!("hydrolysis android: {error}")))?
@@ -203,17 +212,21 @@ impl AndroidGpuContext {
                 "hydrolysis android: failed to open the engine's wgpu device: {error}"
             ))
         })?;
+        Ok(cherenkov_gpu::interop::SharedDevice {
+            instance,
+            adapter,
+            device,
+            queue,
+        })
+    }
+
+    /// Rc-owned engine state stays on the UI executor after device creation.
+    async fn mount_generation(
+        shared: cherenkov_gpu::interop::SharedDevice,
+    ) -> Result<GpuGeneration, GpuError> {
         let context_id = crate::platform::next_gpu_context_id();
         GpuGeneration::open_async(
-            crate::platform::DeviceLoss::observe(
-                cherenkov_gpu::interop::SharedDevice {
-                    instance: instance.clone(),
-                    adapter,
-                    device,
-                    queue,
-                },
-                context_id,
-            ),
+            crate::platform::DeviceLoss::observe(shared, context_id),
             cherenkov_gpu::GpuConfig::default(),
         )
         .await
@@ -227,8 +240,11 @@ impl AndroidGpuContext {
 
     pub(crate) async fn request_async() -> Result<Self, GpuError> {
         // Native plane imports and rendering share this Vulkan device.
-        let instance = new_instance(wgpu::Backends::VULKAN);
-        let generation = Self::open_generation(&instance).await?;
+        let shared = executor_core::spawn(async {
+            Self::open_device(new_instance(wgpu::Backends::VULKAN)).await
+        })
+        .await?;
+        let generation = Self::mount_generation(shared).await?;
         Ok(Self {
             inner: Rc::new(AndroidGpuContextInner {
                 gpu: crate::platform::RecoverableGpu::new(generation),
