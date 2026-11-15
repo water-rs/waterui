@@ -311,7 +311,7 @@ waterui-video-gpu = { workspace = true, optional = true }
 raw-window-handle = { version = "0.6", optional = true }
 android_logger = { version = "0.15", optional = true }
 waterui-assets-core = { workspace = true, optional = true }
-tracing-log = "0.2"
+tracing-log = { version = "0.2", default-features = false, optional = true }
 # The accessibility tree publish and the platform-view placement set cross JNI
 # as JSON.
 serde = { workspace = true, features = ["derive"] }
@@ -411,7 +411,7 @@ waterui-webview = { workspace = true, features = ["conformance"] }
 # bridges those records into the `tracing` subscriber the test captures. With
 # `complex-scripts` on the parley dep, no warning may be emitted at all.
 icu_provider = { version = "2.3", features = ["logging"] }
-tracing-log = "0.2"
+tracing-log = { version = "0.2", default-features = false, optional = true }
 # Drives the text-measure bench (`benches/text_measure.rs`).
 divan = "0.1"
 # The text-measure bench rides the real layout path; `harness = false` hands
@@ -460,6 +460,7 @@ frame-profile = ["gpu"]
 # it, while `hwui` + `gpu` keeps the HWUI painter with the GPU crates present
 # for hosted content (water-rs/waterui#1812).
 gpu = [
+    "dep:tracing-log",
     "dep:serde_json",
     "dep:tracing-subscriber",
     "dep:android_logger",
@@ -494,6 +495,7 @@ gpu = [
 # hardware adapter and on the CPU otherwise. The windowed runner presents
 # through the GPU only (water-rs/waterui#4064).
 cpu = [
+    "dep:tracing-log",
     "dep:serde_json",
     "dep:tracing-subscriber",
     "dep:cherenkov",
@@ -521,6 +523,7 @@ inspector-signals = ["inspector", "waterui/inspector-signals"]
 # (water-rs/waterui#1811). On other targets the feature selects nothing; the
 # subsystem still compiles for tests.
 hwui = [
+    "dep:tracing-log",
     "dep:serde_json",
     "dep:tracing-subscriber",
     "dep:askama",
