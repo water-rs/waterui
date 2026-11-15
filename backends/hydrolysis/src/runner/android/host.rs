@@ -1671,7 +1671,14 @@ impl AndroidSession {
         // The frame reads this frame's focus answer: the pull precedes
         // `render_window`'s `sync_text_input_state` hold gate.
         self.platform_view_focus_sync();
-        let should_close = handle_input_events(&mut self.runtime, &self.env) || self.should_close();
+        // Startup input must target the first presented tree, not the empty
+        // renderer that exists while its surface and first frame are pending.
+        #[cfg(hydrolysis_gpu_painter)]
+        let input_ready = self.presented_once.get();
+        #[cfg(hydrolysis_hwui)]
+        let input_ready = true;
+        let should_close = (input_ready && handle_input_events(&mut self.runtime, &self.env))
+            || self.should_close();
         #[cfg(hydrolysis_gpu_painter)]
         self.poll_gpu_frame();
         let mut deadline = advance_runtime(&mut self.runtime, &self.env, now);
@@ -1893,6 +1900,9 @@ impl AndroidSession {
                 self.runtime.presented_frames += 1;
                 tracing::debug!(frames = self.runtime.presented_frames, "frame presented");
                 self.presented_once.set(true);
+                if !self.runtime.platform.events.is_empty() {
+                    self.runtime.platform.request_redraw();
+                }
                 if let Some(next) = self.runtime.renderer.take_engine_next() {
                     self.runtime.engine_next = next;
                 }
