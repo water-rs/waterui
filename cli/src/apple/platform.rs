@@ -959,6 +959,7 @@ pub async fn package_apple(
     // statically linked package carries neither.
     let shared_runtime = if options.uses_shared_rust_runtime(&triple) {
         let bin_built = BuiltTarget {
+            build_scripts: Vec::new(),
             features: built.features.clone(),
             profile_dir: built.profile_dir.clone(),
             artifact: layout.executable_file(&product_name),

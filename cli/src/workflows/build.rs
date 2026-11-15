@@ -146,6 +146,8 @@ impl CargoTarget<'_> {
 /// landed under and the artifact Cargo reported for the selected target.
 #[derive(Debug)]
 pub struct BuiltTarget {
+    /// Build-script outputs reported by this Cargo invocation, including fresh units.
+    pub build_scripts: Vec<cargo_metadata::BuildScript>,
     /// Explicit Cargo features used for this invocation. Post-build metadata
     /// scans must resolve the same graph instead of inferring launcher features.
     pub features: Vec<String>,
@@ -2112,6 +2114,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
             None => None,
         };
         Ok(BuiltTarget {
+            build_scripts: cargo_messages(&output.stdout, "build-script-executed")?,
             features: self.features.clone(),
             profile_dir,
             artifact,
@@ -2979,6 +2982,13 @@ fn canonical_manifest_path(crate_dir: &Path) -> Result<PathBuf, RustBuildError> 
 pub(crate) fn compiler_artifacts(
     stdout: &[u8],
 ) -> Result<Vec<cargo_metadata::Artifact>, RustBuildError> {
+    cargo_messages(stdout, "compiler-artifact")
+}
+
+fn cargo_messages<T: serde::de::DeserializeOwned>(
+    stdout: &[u8],
+    expected_reason: &str,
+) -> Result<Vec<T>, RustBuildError> {
     /// The one field that classifies a cargo message line.
     #[derive(serde::Deserialize)]
     struct Reason {
@@ -2998,21 +3008,20 @@ pub(crate) fn compiler_artifacts(
             RustBuildError::FailToBuildRustLibrary(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "cargo emitted a malformed `compiler-artifact` message on line {}: {error}\n{line}",
+                    "cargo emitted a malformed `{expected_reason}` message on line {}: {error}\n{line}",
                     index + 1
                 ),
             ))
         };
         match serde_json::from_str::<Reason>(line) {
-            Ok(Reason { reason }) if reason == "compiler-artifact" => {
-                let artifact =
-                    serde_json::from_str::<cargo_metadata::Artifact>(line).map_err(malformed)?;
+            Ok(Reason { reason }) if reason == expected_reason => {
+                let artifact = serde_json::from_str::<T>(line).map_err(malformed)?;
                 artifacts.push(artifact);
             }
             // A line that is not readable JSON cannot yield its `reason`
             // field; one that still names itself a `compiler-artifact`
             // carries an unreadable payload — the hard error, never a drop.
-            Err(error) if line.contains("\"reason\":\"compiler-artifact\"") => {
+            Err(error) if line.contains(expected_reason) => {
                 return Err(malformed(error));
             }
             Ok(_) | Err(_) => {}
@@ -3852,6 +3861,38 @@ mod tests {
     };
 
     #[test]
+    fn cargo_build_script_outputs_preserve_generated_sources() {
+        let message = serde_json::json!({
+            "reason": "build-script-executed",
+            "package_id": "path+file:///framework#hydrolysis@0.3.1",
+            "linked_libs": [], "linked_paths": [], "cfgs": [],
+            "env": [["WATERUI_HWUI_KOTLIN_DIR", "/target/build/hydrolysis/out/hwui-kotlin"]],
+            "out_dir": "/target/build/hydrolysis/out"
+        });
+        let bytes = serde_json::to_vec(&message).expect("Cargo message serializes");
+        let outputs =
+            super::cargo_messages::<cargo_metadata::BuildScript>(&bytes, "build-script-executed")
+                .expect("Cargo build-script output parses");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(
+            outputs[0].env[0].1,
+            "/target/build/hydrolysis/out/hwui-kotlin"
+        );
+        assert_eq!(
+            super::compiler_artifacts(&bytes).expect("other messages are ignored"),
+            [] as [cargo_metadata::Artifact; 0]
+        );
+        let mut malformed = message;
+        malformed["env"] = serde_json::json!(42);
+        let error = super::cargo_messages::<cargo_metadata::BuildScript>(
+            &serde_json::to_vec(&malformed).expect("message serializes"),
+            "build-script-executed",
+        )
+        .expect_err("a malformed build-script report cannot be dropped");
+        assert!(error.to_string().contains("build-script-executed"));
+    }
+
+    #[test]
     fn cargo_timings_follow_the_truthy_environment_switch() {
         let cases = [
             (Some("1"), true),
@@ -3950,6 +3991,7 @@ mod tests {
 
         let profile_dir = temporary.path().join("target/debug");
         let error = BuiltTarget {
+            build_scripts: Vec::new(),
             features: Vec::new(),
             profile_dir: profile_dir.clone(),
             artifact: temporary.path().join("app"),

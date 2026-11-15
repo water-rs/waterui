@@ -1127,6 +1127,20 @@ pub async fn package_with_abis(
         ("WATERUI_SKIP_RUST_BUILD", "1".to_owned()),
         ("WATERUI_ANDROID_ABIS", abis_str),
     ];
+    if painter == HydrolysisAndroidPainter::Hwui {
+        let directories = built
+            .build_scripts
+            .iter()
+            .flat_map(|script| &script.env)
+            .filter_map(|(key, value)| (key == "WATERUI_HWUI_KOTLIN_DIR").then_some(value))
+            .collect::<std::collections::BTreeSet<_>>();
+        let [directory] = directories.into_iter().collect::<Vec<_>>()[..] else {
+            bail!(
+                "HWUI packaging requires exactly one WATERUI_HWUI_KOTLIN_DIR from Cargo build-script outputs"
+            );
+        };
+        envs.push(("WATERUI_HWUI_KOTLIN_DIR", directory.clone()));
+    }
     if release_signing == Some(crate::android::signing::ReleaseSigning::Suppressed) {
         envs.push((crate::android::signing::UNSIGNED_ENV, "1".to_owned()));
     }

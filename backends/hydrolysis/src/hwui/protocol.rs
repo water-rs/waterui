@@ -8,8 +8,7 @@
 //! replayer reads floats in bulk.
 //!
 //! The Kotlin constants (`Protocol.kt` under `android/hwui/build/`) are
-//! generated from this file and `text/wire.rs` by the `hwui::kotlin` test,
-//! which Gradle runs with the contract scenes. A fixed-size op's payload length must equal its [`Op::fixed_words`];
+//! generated from this file and `text/constants.rs` by the Cargo build. A fixed-size op's payload length must equal its [`Op::fixed_words`];
 //! a variable op's length must equal what its counts imply. The decoder fails
 //! on any mismatch and on an unknown opcode. Any change here bumps
 //! `JNI_SCHEMA` on both sides.
@@ -150,8 +149,8 @@ pub enum Op {
 }
 
 impl Op {
+    code_metadata! {
     /// Every opcode, in code order.
-    #[cfg(test)]
     pub const ALL: [Self; 37] = [
         Self::CreateNode,
         Self::ReleaseNode,
@@ -191,6 +190,7 @@ impl Op {
         Self::DefineEffect,
         Self::HostOrder,
     ];
+    }
 
     /// The wire code.
     #[must_use]
