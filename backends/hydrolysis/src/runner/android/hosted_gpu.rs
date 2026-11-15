@@ -278,7 +278,13 @@ impl SurfaceSlot {
                 .surface
                 .get_default_config(context.adapter(), size.0, size.1)
                 .expect("hydrolysis HWUI: the adapter cannot present to the GPU content surface");
-            configuration.format = preferred_surface_format(&capabilities, false);
+            let Some(format) = preferred_surface_format(&capabilities, false) else {
+                waterui_core::contract_violation!(
+                    "hydrolysis HWUI: the GPU content surface has no supported texture format"
+                );
+                return None;
+            };
+            configuration.format = format;
             configuration.alpha_mode = [
                 wgpu::CompositeAlphaMode::PreMultiplied,
                 wgpu::CompositeAlphaMode::Inherit,
