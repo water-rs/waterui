@@ -85,7 +85,33 @@ getrandom = { workspace = true, optional = true }
 cpu-time.workspace = true
 
 [features]
+menu = ["waterui-controls/menu"]
+calendar = ["waterui-form/calendar"]
+color-picker = ["waterui-form/color-picker"]
+date-picker = ["waterui-form/date-picker"]
+file-picker = ["waterui-form/file-picker"]
+multi-date-picker = ["calendar", "waterui-form/multi-date-picker"]
+picker = ["waterui-form/picker"]
+secure-field = ["waterui-form/secure-field"]
+slider = ["waterui-form/slider"]
+stepper = ["waterui-form/stepper"]
+text-field = ["menu", "waterui-form/text-field"]
+toggle = ["waterui-form/toggle"]
+validation = ["text-field", "waterui-form/validation"]
 default = [
+    "menu",
+    "calendar",
+    "color-picker",
+    "date-picker",
+    "file-picker",
+    "multi-date-picker",
+    "picker",
+    "secure-field",
+    "slider",
+    "stepper",
+    "text-field",
+    "toggle",
+    "validation",
     "gpu",
     "assets",
     "dialog",
@@ -173,7 +199,7 @@ widgets = ["dep:waterui-widgets", "waterui-macros/widgets"]
 # links a JavaScript engine. An application that writes no `tsx!` and leaves
 # this off links none of it — `waterui-ts` is an optional dependency and no
 # other feature pulls it in.
-ts = ["dep:waterui-ts"]
+ts = ["dep:waterui-ts", "picker", "slider", "stepper", "text-field", "toggle"]
 # The over-the-air update client for TypeScript view bundles: fetches a
 # signed manifest and bundle, verifies them, and caches them for the next
 # launch. Separate from `ts` because it links an HTTP client, a signature
@@ -216,6 +242,19 @@ particle = ["dep:waterui-particle"]
 # modules opts in explicitly rather than paying for them through the
 # full-feature set — the same reasoning `markdown-math` carries above.
 all = [
+    "menu",
+    "calendar",
+    "color-picker",
+    "date-picker",
+    "file-picker",
+    "multi-date-picker",
+    "picker",
+    "secure-field",
+    "slider",
+    "stepper",
+    "text-field",
+    "toggle",
+    "validation",
     "canvas",
     "chart",
     "barcode",
