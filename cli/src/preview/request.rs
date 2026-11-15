@@ -470,9 +470,10 @@ pub async fn check_toolchain_for_backend(
     backend: ResolvedPreviewBackend,
 ) -> Result<Option<crate::android::KotlinToolchain>> {
     match backend {
-        ResolvedPreviewBackend::Apple(platform) => {
-            toolchain_checks::check_apple_preview(host, platform).await?;
-        }
+        // Cargo validates the Apple SDK and target while building. Diagnose
+        // missing tools if that build fails, rather than launch SDK probes
+        // before every successful no-op preview.
+        ResolvedPreviewBackend::Apple(_) => {}
         ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android) => {
             return toolchain_checks::check_android_run(host).await.map(Some);
         }

@@ -11,15 +11,16 @@
 //! Catalyst, exec'd on this Mac with no simulator.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+mod staging;
 
 use askama::Template;
 use eyre::{Context as _, Result, bail};
 
-use crate::apple::dynamic_runtime;
 use crate::apple::platform::apple_rust_build;
 use crate::artifact_symbols::ArtifactSymbols;
-use crate::build::{BuildOptions, BuildProgress, RustDynamicLibraries};
+use crate::build::{BuildOptions, BuildProgress};
 use crate::platform::{TargetBackend, TargetPlatform};
 use crate::preview::run::{self, absolute_output_path, expect_nonempty_output, write_run_config};
 use crate::preview::{PreviewSource, PreviewTargetTemplate};
@@ -83,8 +84,8 @@ async fn stage_apple_preview_resources(
     symbols: &ArtifactSymbols,
 ) -> Result<()> {
     let resources_dir = project.apple_preview_crate_path().join("resources");
-    let manifest =
-        assets::stage_project_assets_for_apple(project, &resources_dir, symbols, false).await?;
+    let manifest = assets::plan_library_resources(project, symbols, false).await?;
+    assets::write_library_resources(&manifest, &resources_dir).await?;
 
     let mut resolved_fonts = {
         let font_manifest = project.apple_crate_path().join("Cargo.toml");
@@ -92,7 +93,7 @@ async fn stage_apple_preview_resources(
             assets::scan_fonts(project, &font_manifest, &[platform.font_platform()]).await?;
         assets::resolve_fonts(project.host(), font_declarations).await?
     };
-    resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
+    resolved_fonts.extend(assets::cached_project_fonts(project, &manifest).await?);
     if resolved_fonts.is_empty() {
         return Ok(());
     }
@@ -170,7 +171,8 @@ impl ApplePreviewBinary {
             content_deadline,
         );
         let run_config_path = write_run_config(&crate_dir, &run_config).await?;
-        run::run_preview_binary(
+        let process_started = Instant::now();
+        let output = run::run_preview_binary(
             self.project.host(),
             &crate_dir,
             &self.executable,
@@ -178,6 +180,14 @@ impl ApplePreviewBinary {
             "Apple preview",
         )
         .await?;
+        tracing::info!(
+            phase = "process",
+            elapsed_ms = process_started.elapsed().as_millis(),
+            "Apple preview phase"
+        );
+        for line in String::from_utf8_lossy(&output.stderr).lines() {
+            tracing::info!("{line}");
+        }
         expect_nonempty_output(&output_path, "the Apple preview binary's PNG").await
     }
 }
@@ -216,6 +226,7 @@ pub async fn build_preview_with_apple(
     if let Some(progress) = request.progress {
         options = options.with_progress(progress);
     }
+    let build_started = Instant::now();
     let built = apple_rust_build(
         &project,
         project.apple_preview_crate_path(),
@@ -224,25 +235,35 @@ pub async fn build_preview_with_apple(
         &options,
     )
     .await?
+    // Preview stages the shared runtime and its dependencies beside the executable.
+    .with_final_rustc_arg("-Clink-arg=-Wl,-rpath,@loader_path")
     .build_binary(project.apple_preview_crate_name().as_str(), false)
-    .await
-    .wrap_err("Failed to build the Apple preview binary")?;
+    .await;
+    let built = match built {
+        Ok(built) => built,
+        Err(error) => {
+            crate::toolchain_checks::check_apple_preview(request.host, request.platform).await?;
+            return Err(error).wrap_err("Failed to build the Apple preview binary");
+        }
+    };
 
-    // The binary links `libwaterui_dylib` and `libstd` dynamically: stage
-    // both beside it — the profile directory is on its rpath — then give
-    // the staged runtime copy the canonical install name and retarget the
-    // binary's hashed reference to it, the same fix-up the entry-owning
-    // binary gets, so only one runtime image loads in the process.
-    let libraries = RustDynamicLibraries::resolve(&built, &triple, &project).await?;
-    let profile_dir = built.profile_dir.clone();
-    libraries.stage(&profile_dir).await?;
-    let staged_runtime = libraries.stage_apple_canonical(&profile_dir).await?;
+    tracing::info!(
+        phase = "build",
+        elapsed_ms = build_started.elapsed().as_millis(),
+        "Apple preview phase"
+    );
+    let staging_started = Instant::now();
+
     let executable = built.executable()?.to_path_buf();
-    dynamic_runtime::retarget_module(request.host, &executable, &staged_runtime).await?;
-    dynamic_runtime::prepare_host_runtime(request.host, &staged_runtime).await?;
-
-    let symbols = built.app_symbols().await?;
-    stage_apple_preview_resources(&project, request.platform, &symbols).await?;
+    futures_util::try_join!(staging::prepare_runtime(&project, &built, &triple), async {
+        let symbols = built.app_symbols().await?;
+        stage_apple_preview_resources(&project, request.platform, &symbols).await
+    },)?;
+    tracing::info!(
+        phase = "staging",
+        elapsed_ms = staging_started.elapsed().as_millis(),
+        "Apple preview phase"
+    );
     Ok(ApplePreviewBinary {
         project,
         executable,

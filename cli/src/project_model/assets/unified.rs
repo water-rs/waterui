@@ -540,18 +540,67 @@ pub async fn stage_hicolor_icons(project: &Project, icons_root: &Path) -> eyre::
 /// Resolves the fonts inside an already-staged manifest; the staging call
 /// that produced it owns the artifact enumeration, so this stays pure.
 pub fn scan_project_fonts(manifest: &BundleManifest) -> eyre::Result<Vec<super::ResolvedFont>> {
+    resolve_font_families(font_paths(manifest))
+}
+
+fn font_paths(manifest: &BundleManifest) -> Vec<PathBuf> {
     manifest
         .assets()
         .iter()
         .filter(|asset| asset.kind() == AssetKind::Font)
-        .map(|asset| {
-            let name = detect_font_family(asset.source_path())?;
+        .map(|asset| asset.source_path().clone())
+        .collect()
+}
+
+fn resolve_font_families(paths: Vec<PathBuf>) -> eyre::Result<Vec<super::ResolvedFont>> {
+    paths
+        .into_iter()
+        .map(|path| {
             Ok(super::ResolvedFont {
-                name,
-                path: asset.source_path().clone(),
+                name: detect_font_family(&path)?,
+                path,
             })
         })
         .collect()
+}
+
+/// Reuse family names while the planned font files retain their contents.
+pub async fn cached_project_fonts(
+    project: &Project,
+    manifest: &BundleManifest,
+) -> eyre::Result<Vec<super::ResolvedFont>> {
+    let paths = font_paths(manifest);
+    Ok(project
+        .facts()
+        .answer(&FontFamilies { paths })
+        .await?
+        .as_ref()
+        .clone())
+}
+
+struct FontFamilies {
+    paths: Vec<PathBuf>,
+}
+
+impl crate::project_model::facts::Fact for FontFamilies {
+    const KIND: &'static str = "asset-font-families";
+    type Question = Vec<PathBuf>;
+    type Value = Vec<super::ResolvedFont>;
+
+    fn question(&self) -> Self::Question {
+        self.paths.clone()
+    }
+
+    async fn resolve(
+        &self,
+        scope: &crate::project_model::facts::Scope<'_>,
+    ) -> eyre::Result<Self::Value> {
+        for path in &self.paths {
+            scope.file(path);
+        }
+        let paths = self.paths.clone();
+        smol::unblock(move || resolve_font_families(paths)).await
+    }
 }
 
 /// Plans only the main application asset root.
@@ -1363,6 +1412,50 @@ async fn write_png(image: &image::RgbaImage, path: &Path) -> eyre::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn font_family_cache_tracks_font_contents() {
+        use crate::project_model::facts::Facts;
+        use crate::toolchain::testing::TestMachine;
+        smol::block_on(async {
+            let machine = TestMachine::new();
+            let host = machine.host([] as [(&str, &str); 0]);
+            let root = machine.root();
+            let font = root.join("face.ttf");
+            std::fs::copy(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/fonts/Roboto-Regular.ttf"),
+                &font,
+            )
+            .unwrap();
+            // Settle the input before the fact cache's timestamp granularity.
+            filetime::set_file_mtime(&font, filetime::FileTime::from_unix_time(1_700_000_000, 0))
+                .unwrap();
+            let question = super::FontFamilies {
+                paths: vec![font.clone()],
+            };
+            let records = root.join("facts");
+            let first = Facts::new(&host, root, &records)
+                .unwrap()
+                .answer(&question)
+                .await
+                .unwrap();
+            let second = Facts::new(&host, root, &records)
+                .unwrap()
+                .answer(&question)
+                .await
+                .unwrap();
+            assert_eq!(first[0].name, second[0].name);
+            std::fs::write(font, b"invalid replacement").unwrap();
+            assert!(
+                Facts::new(&host, root, &records)
+                    .unwrap()
+                    .answer(&question)
+                    .await
+                    .is_err()
+            );
+        });
+    }
+
     use super::*;
     use crate::project::ManagedBackends;
     use waterui_assets_planner::LaunchConfig;
