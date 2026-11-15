@@ -22,6 +22,7 @@ members = [
     "testing",
     "macros",
     "examples/*",
+    "benches/canvas-bench",
     ".claude/skills/waterui/skill_snippets",
     "backends/apple",
     "backends/apple/cocoa-ui",

@@ -1,0 +1,29 @@
+[package]
+name = "canvas-bench"
+version = "0.1.0"
+edition = "2024"
+authors = ["Lexo Liu"]
+description = "On-device Canvas / SceneView density measurement for water-rs/waterui#1564"
+license.workspace = true
+repository.workspace = true
+keywords = ["ui", "framework", "bench", "canvas"]
+categories = ["gui"]
+publish = false
+
+[features]
+dev = ["waterui/dynamic_linking"]
+
+[lints]
+workspace = true
+
+[dependencies]
+waterui = { workspace = true, features = ["gpu", "canvas"] }
+waterui-icons-lucide.workspace = true
+nami.workspace = true
+libc = "0.2"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_os = "ios")'.dependencies]
+cocoa-ui = { path = "../../backends/apple/cocoa-ui" }

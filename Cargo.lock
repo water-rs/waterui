@@ -1510,6 +1510,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "canvas-bench"
+version = "0.1.0"
+dependencies = [
+ "cocoa-ui",
+ "libc",
+ "nami",
+ "serde",
+ "serde_json",
+ "tracing",
+ "waterui",
+ "waterui-icons-lucide",
+]
+
+[[package]]
 name = "cargo-config2"
 version = "0.1.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"

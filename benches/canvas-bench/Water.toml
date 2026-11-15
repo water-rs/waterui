@@ -1,0 +1,5 @@
+waterui_path = "../.."
+
+[package]
+name = "CanvasBench"
+bundle_identifier = "dev.cherenkov.bench"
