@@ -970,26 +970,48 @@ impl Mirror {
         self.frames[index].sets.insert(key, set);
     }
 
-    /// The pipeline for `key`, created on first use. `created` is set
-    /// when this call built it — the attribution report's first-use
-    /// event (#2547).
+    /// The pipeline previously prepared for `key`, if any.
+    pub fn pipeline(&self, key: PipeKey) -> Option<vk::Pipeline> {
+        self.pipelines.get(&key).copied()
+    }
+
+    /// Creates the distinct missing keys together, joining every result before
+    /// publishing the cache. Successful creations remain owned if another fails.
     ///
     /// # Errors
-    /// [`MirrorError::Vulkan`] when pipeline creation fails.
-    pub fn pipeline(
+    /// [`MirrorError::Vulkan`] when any pipeline cannot be created.
+    pub fn prepare(
         &mut self,
-        key: PipeKey,
-        created: &mut bool,
-    ) -> Result<vk::Pipeline, MirrorError> {
-        if let Some(&pipeline) = self.pipelines.get(&key) {
-            return Ok(pipeline);
+        keys: &[PipeKey],
+        #[cfg(feature = "parallel")] pool: &rayon::ThreadPool,
+    ) -> Result<(), MirrorError> {
+        if keys.is_empty() {
+            return Ok(());
         }
-        *created = true;
-        let pipeline = self.create_pipeline(key)?;
-        self.pipelines.insert(key, pipeline);
+        #[cfg(feature = "parallel")]
+        let results: Vec<_> = pool.install(|| {
+            use rayon::prelude::*;
+            keys.par_iter()
+                .map(|&key| self.create_pipeline(key))
+                .collect()
+        });
+        #[cfg(not(feature = "parallel"))]
+        let results: Vec<_> = keys.iter().map(|&key| self.create_pipeline(key)).collect();
+        let mut failed = None;
+        for (&key, result) in keys.iter().zip(results) {
+            match result {
+                Ok(pipeline) => {
+                    self.pipelines.insert(key, pipeline);
+                }
+                Err(error) => {
+                    failed.get_or_insert(error);
+                }
+            }
+        }
         if let Some(path) = &self.cache_path {
-            // SAFETY: the cache belongs to this live device and all access
-            // is serialized on the renderer thread.
+            // SAFETY: all creation jobs have joined. The cache was created
+            // without EXTERNALLY_SYNCHRONIZED, so concurrent creations use
+            // Vulkan's internal synchronization; serialization is exclusive.
             match unsafe { self.device.get_pipeline_cache_data(self.cache) } {
                 Ok(data) => {
                     if let Err(error) = crate::render::write_pipeline_cache(path, &data) {
@@ -999,7 +1021,7 @@ impl Mirror {
                 Err(error) => tracing::debug!(%error, "could not read Vulkan pipeline cache"),
             }
         }
-        Ok(pipeline)
+        failed.map_or(Ok(()), Err)
     }
 
     /// Builds one tile pipeline.

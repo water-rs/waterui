@@ -62,14 +62,9 @@ impl Default for ImeBridge {
 impl ImeBridge {
     /// `sendKeyEvent` — a hardware/IME key press the `InputConnection` routed,
     /// already decoded by Kotlin to a W3C key value.
-    pub fn key_event(
-        platform: &mut super::host::AndroidHostWindow,
-        key: &str,
-        pressed: bool,
-        modifiers: Modifiers,
-    ) {
+    pub fn key_input(key: &str, pressed: bool, modifiers: Modifiers) -> InputEvent {
         let (code, logical_key) = crate::runner::editing::hardware_key(key);
-        platform.push_event(InputEvent::Key {
+        InputEvent::Key {
             logical_key,
             key: code,
             physical_code: keyboard_types::Code::Unidentified,
@@ -80,7 +75,7 @@ impl ImeBridge {
                 KeyState::Released
             },
             modifiers,
-        });
+        }
     }
 }
 
