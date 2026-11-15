@@ -767,3 +767,51 @@ fn transformed_picture_gradient_edit_keeps_damage_local() -> Result<(), Box<dyn 
     Ok(())
 }
 }
+
+split_test! {
+/// Diagnostic ink is rendered separately and never enters the observed cache.
+fn damage_report_overlay_preserves_retained_pixels() -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::{Picture, kurbo::Affine};
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig {
+        damage_diag: Some(sender),
+        ..Default::default()
+    }))?;
+    let surface = wait!(engine.surface(Offscreen::new((128, 64), OffscreenFormat::LinearF16), || {}))?;
+    for step in 0..2 {
+        let picture = Picture::record(|c| {
+            c.fill(Rect::new(0.0, 0.0, 256.0, 64.0), WorkingColor::new([0.1, 0.1, 0.3, 1.0]));
+            let color = if step == 0 { [1.0, 0.0, 0.0, 1.0] } else { [0.0, 1.0, 0.0, 1.0] };
+            c.fill(Rect::new(10.0, 10.0, 14.0, 14.0), WorkingColor::new(color));
+        });
+        surface.update(|tx| { tx[surface.root()].content(surface.record(|c| c.picture(&picture, Affine::IDENTITY))); });
+        wait!(engine.render(FrameTime::now()))?;
+        let report = receiver.try_recv()?;
+        assert_eq!(report.size, (128, 64));
+        assert_eq!(Some(report.frame), engine.stats().frame);
+        assert_eq!(report.damage.pixel_area(), engine.stats().damaged_surface_pixels);
+        assert!(!report.tiles.is_empty());
+        assert!(report.tiles.iter().any(|tile| tile.repainted));
+        if step == 0 {
+            assert!(report.damage.is_full());
+            continue;
+        }
+        assert!(report.damage.pixel_area() * 20 < 128 * 64);
+        let before = wait!(surface.readback())?;
+        let debug_engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+        let debug_surface = wait!(debug_engine.surface(Offscreen::new(report.size, OffscreenFormat::LinearF16), || {}))?;
+        let overlay = report.overlay();
+        debug_surface.update(|tx| { tx[debug_surface.root()].content(debug_surface.record(|c| {
+            c.picture(&picture, Affine::IDENTITY);
+            c.picture(&overlay, Affine::IDENTITY);
+        })); });
+        wait!(debug_engine.render(FrameTime::now()))?;
+        let output = wait!(debug_surface.readback())?;
+        #[cfg(not(target_arch = "wasm32"))]
+        crop(&output, 0..128, 0..64).write_png(&std::env::temp_dir().join("cherenkov-2558-damage-overlay.png"))?;
+        let after = wait!(surface.readback())?;
+        assert_images_match(&crop(&before, 0..128, 0..64), &crop(&after, 0..128, 0..64));
+    }
+    Ok(())
+}
+}

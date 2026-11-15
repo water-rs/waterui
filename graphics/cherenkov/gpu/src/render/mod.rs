@@ -8,6 +8,7 @@ mod composite;
 pub mod composition;
 mod content_range;
 mod damage;
+pub mod damage_debug;
 pub mod diag;
 #[cfg(target_os = "linux")]
 pub mod dmabuf_export;
@@ -9631,6 +9632,14 @@ impl GpuRenderer {
         let Some(surf) = self.surfaces.get_mut(&id) else {
             return Ok(());
         };
+        if let Some(sender) = &self.config.damage_diag {
+            let report =
+                damage_debug::capture(frame, id, surf.size, &surf.frame, &surf.draw_demand);
+            if sender.send(report).is_err() {
+                tracing::warn!("damage diagnostic receiver disconnected");
+                self.config.damage_diag = None;
+            }
+        }
         #[cfg(target_os = "android")]
         {
             surf.part_damage.resize_with(surf.plan.parts(), || {
