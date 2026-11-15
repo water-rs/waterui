@@ -885,6 +885,7 @@ pub fn picker_spec(config: &PickerConfig, env: &Environment) -> PickerSpec {
 
 /// The measures of the menu picker `config` is laid out by and of the menu
 /// its popup draws, requested from `theme` for `env`.
+#[cfg(feature = "accessibility")]
 fn menu_picker_layouts(
     theme: &Rc<dyn WidgetTheme>,
     config: &PickerConfig,

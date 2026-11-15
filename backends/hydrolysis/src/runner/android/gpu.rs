@@ -7,7 +7,10 @@
 //! remain owned by the host.
 
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 use std::rc::Rc;
+use std::task::{Context, Poll};
 
 use ndk::native_window::NativeWindow;
 
@@ -128,11 +131,6 @@ pub struct AndroidGpuContext {
 }
 
 impl AndroidGpuContext {
-    /// Requests the GPU context, blocking the calling (UI) thread.
-    pub(crate) fn request() -> Result<Self, GpuError> {
-        pollster::block_on(Self::request_async())
-    }
-
     /// The first painter-capable Vulkan adapter on `instance`.
     async fn pick_adapter(instance: &wgpu::Instance) -> Result<wgpu::Adapter, GpuError> {
         // The engine's shaders require f16 arithmetic — its raster pipeline
@@ -206,7 +204,7 @@ impl AndroidGpuContext {
             ))
         })?;
         let context_id = crate::platform::next_gpu_context_id();
-        GpuGeneration::open(
+        GpuGeneration::open_async(
             crate::platform::DeviceLoss::observe(
                 cherenkov_gpu::interop::SharedDevice {
                     instance: instance.clone(),
@@ -218,6 +216,7 @@ impl AndroidGpuContext {
             ),
             cherenkov_gpu::GpuConfig::default(),
         )
+        .await
         .map_err(|error| {
             GpuError::new(format!(
                 "hydrolysis android: {:#}",
@@ -226,7 +225,7 @@ impl AndroidGpuContext {
         })
     }
 
-    async fn request_async() -> Result<Self, GpuError> {
+    pub(crate) async fn request_async() -> Result<Self, GpuError> {
         // Native plane imports and rendering share this Vulkan device.
         let instance = new_instance(wgpu::Backends::VULKAN);
         let generation = Self::open_generation(&instance).await?;
@@ -267,6 +266,9 @@ pub struct AndroidSurface {
         std::sync::mpsc::Sender<cherenkov_gpu::interop::android::BandCommit>,
         std::sync::mpsc::Receiver<cherenkov_gpu::interop::android::BandCommit>,
     ),
+    pending: Option<cherenkov::PendingFrame<cherenkov_gpu::Gpu>>,
+    pending_window: Option<crate::platform::PendingAndroidWindow>,
+    executor: crate::runner::android_executor::AndroidMainThreadExecutor,
     native_window: Option<WindowLease>,
     /// The Kotlin `SurfaceHolder`'s reported geometry, independent of the
     /// engine surface — valid while between surface generations too.
@@ -323,7 +325,10 @@ impl DisplayRefresh {
 }
 
 impl AndroidSurface {
-    pub fn new(gpu: AndroidGpuContext) -> Self {
+    pub fn new(
+        gpu: AndroidGpuContext,
+        executor: crate::runner::android_executor::AndroidMainThreadExecutor,
+    ) -> Self {
         let handles = gpu.inner.gpu.generation();
         Self {
             gpu,
@@ -332,6 +337,9 @@ impl AndroidSurface {
             engine_window: None,
             bands_delivered: std::collections::BTreeMap::new(),
             band_commits: std::sync::mpsc::channel(),
+            pending: None,
+            pending_window: None,
+            executor,
             native_window: None,
             width: 0,
             height: 0,
@@ -380,8 +388,67 @@ impl AndroidSurface {
     /// Drops the engine surface before releasing its native parent window.
     /// Refresh demand survives attachment replacement.
     pub(crate) fn detach(&mut self) {
+        self.cancel_frame();
         self.engine_window = None;
         self.native_window = None;
+    }
+
+    pub(crate) fn cancel_frame(&mut self) {
+        self.pending_window = None;
+        self.pending = None;
+    }
+
+    pub(crate) const fn frame_pending(&self) -> bool {
+        self.pending.is_some() || self.pending_window.is_some()
+    }
+
+    pub(crate) const fn window_pending(&self) -> bool {
+        self.pending_window.is_some()
+    }
+
+    /// Poll the unique submitted frame on the UI thread; its commit applies here.
+    pub(crate) fn poll_frame(
+        &mut self,
+        renderer: &mut crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+        cx: &mut Context<'_>,
+    ) -> Result<bool, FrameFailure> {
+        if self.handles.loss().is_lost() {
+            self.cancel_frame();
+            return Err(SurfaceError::Lost.into());
+        }
+        if let Some(pending) = &mut self.pending_window {
+            let Poll::Ready(result) = Pin::new(&mut pending.task).poll(cx) else {
+                return Ok(false);
+            };
+            let pending = self
+                .pending_window
+                .take()
+                .expect("window preparation was just polled");
+            let target = crate::renderer::FrameRenderTarget::new(
+                &self.handles,
+                pending.display_scale,
+                (self.width, self.height),
+                pending.base_color,
+            );
+            self.engine_window = Some(renderer.install_android_surface(result?, &target));
+            return Ok(false);
+        }
+        let Some(frame) = &mut self.pending else {
+            return Ok(false);
+        };
+        let Poll::Ready(result) = Pin::new(frame).poll(cx) else {
+            return Ok(false);
+        };
+        self.pending = None;
+        renderer.complete_android_frame(
+            self.handles.gpu_context(),
+            self.engine_window
+                .as_mut()
+                .expect("an in-flight frame owns its window"),
+            result,
+        )?;
+        self.handles.loss().note_frame_presented();
+        Ok(true)
     }
 
     /// The band's geometry changed; the next engine frame applies the size.
@@ -391,9 +458,13 @@ impl AndroidSurface {
         if generation != self.generation || self.native_window.is_none() {
             return;
         }
+        if (self.width, self.height) != (width, height) {
+            self.cancel_frame();
+        }
         self.width = width;
         self.height = height;
         if width == 0 || height == 0 {
+            self.pending = None;
             self.engine_window = None;
         }
     }
@@ -432,6 +503,8 @@ impl AndroidSurface {
                 base_color,
             ),
             crate::platform::EngineAndroidTarget {
+                pending: &mut self.pending_window,
+                executor: &self.executor,
                 window: &lease.window,
                 window_slot: &mut self.engine_window,
                 transparent: self.transparent,
@@ -520,6 +593,7 @@ impl AndroidSurface {
             return;
         }
         self.transparent = transparent;
+        self.cancel_frame();
         self.engine_window = None;
     }
 
@@ -579,6 +653,9 @@ impl PresentationSurface for AndroidSurface {
     }
 
     fn resize(&mut self, width: u32, height: u32) {
+        if (self.width, self.height) != (width, height) {
+            self.cancel_frame();
+        }
         self.width = width;
         self.height = height;
         if width == 0 || height == 0 {
@@ -608,8 +685,7 @@ impl crate::runner::window::PaintedFrame for AndroidSurface {
         else {
             return Err(SurfaceError::Lost.into());
         };
-        renderer.render_android_frame(&target, engine_target)?;
-        self.handles.loss().note_frame_presented();
-        Ok(crate::runner::window::SurfaceRenderResult::engine_presented(started.elapsed()))
+        self.pending = renderer.render_android_frame(&target, engine_target)?;
+        Ok(crate::runner::window::SurfaceRenderResult::engine_submitted(started.elapsed()))
     }
 }

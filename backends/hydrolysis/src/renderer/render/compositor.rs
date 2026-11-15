@@ -333,8 +333,11 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         &mut self,
         target: &FrameRenderTarget<'_>,
         engine_target: crate::platform::EngineAndroidTarget<'_>,
-    ) -> Result<(), FrameError> {
+    ) -> Result<Option<cherenkov::PendingFrame<cherenkov_gpu::Gpu>>, FrameError> {
+        use executor_core::LocalExecutor;
         let crate::platform::EngineAndroidTarget {
+            pending,
+            executor,
             window: native_window,
             window_slot,
             transparent,
@@ -348,21 +351,27 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             // SurfaceHolder destroyed it. Remount its surviving node tree.
             self.unmount_for_window_replacement();
             *window_slot = None;
-            let surface = crate::engine::AndroidCherenkovSurface::new(
-                Rc::clone(&target.engine.engine),
-                native_window,
-                (target.width, target.height),
-                self.host_wake(),
-                transparent,
-                band_commits.clone(),
-            )?;
-            *window_slot = Some(CherenkovWindow::new(
-                surface,
-                target,
-                Arc::clone(&self.applied_filter_metrics),
-                Rc::clone(&self.material_registry),
-                self.theme.blend_space(),
-            ));
+            let engine = Rc::clone(&target.engine.engine);
+            let native_window = native_window.clone();
+            let size = (target.width, target.height);
+            let wake = self.host_wake();
+            let band_commits = band_commits.clone();
+            *pending = Some(crate::platform::PendingAndroidWindow {
+                task: executor.spawn_local(async move {
+                    crate::engine::AndroidCherenkovSurface::new(
+                        engine,
+                        &native_window,
+                        size,
+                        wake,
+                        transparent,
+                        band_commits,
+                    )
+                    .await
+                }),
+                display_scale: target.display_scale,
+                base_color: target.base_color,
+            });
+            return Ok(None);
         }
         let window = window_slot
             .as_mut()
@@ -372,14 +381,51 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         let _frame =
             self.commit_window_frame(window, target, cherenkov::Display::default().headroom);
         let time = self.frame_time();
-        Ok(self.render_presented_window(window, target, |surface| surface.render(time))?)
+        self.applied_filter_metrics.reset();
+        Ok(Some(window.surface.submit(time)?))
+    }
+
+    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+    pub(crate) fn install_android_surface(
+        &self,
+        surface: crate::engine::AndroidCherenkovSurface,
+        target: &FrameRenderTarget<'_>,
+    ) -> CherenkovWindow<crate::engine::AndroidCherenkovSurface, crate::text::ParleyEngine> {
+        CherenkovWindow::new(
+            surface,
+            target,
+            Arc::clone(&self.applied_filter_metrics),
+            Rc::clone(&self.material_registry),
+            self.theme.blend_space(),
+        )
+    }
+
+    /// Publishes only a completed Android frame's metrics and scheduling answer.
+    #[cfg(all(target_os = "android", not(hydrolysis_hwui)))]
+    pub(crate) fn complete_android_frame(
+        &mut self,
+        context: &crate::platform::GpuContextHandle,
+        window: &CherenkovWindow<crate::engine::AndroidCherenkovSurface, crate::text::ParleyEngine>,
+        result: Result<cherenkov::Next, cherenkov::RenderError>,
+    ) -> Result<(), FrameError> {
+        let next = window.surface.completed(result)?;
+        self.take_applied_filter_metrics();
+        #[cfg(feature = "frame-profile")]
+        {
+            let device = &context.shared_device.device;
+            let queue = &context.shared_device.queue;
+            self.gpu_profile_mark(window.gpu_profiler.as_ref(), device, queue, 2);
+            self.finish_gpu_frame_profile_with(window.gpu_profiler.as_ref(), device, queue);
+        }
+        #[cfg(not(feature = "frame-profile"))]
+        let _ = context;
+        self.engine_tracks = crate::engine::EngineSurface::running_tracks(&window.surface);
+        self.engine_next = Some(next.into());
+        Ok(())
     }
 
     /// The common completion path for engine-presented native windows.
-    #[cfg(any(
-        all(target_os = "android", not(hydrolysis_hwui)),
-        all(target_os = "macos", hydrolysis_winit)
-    ))]
+    #[cfg(all(target_os = "macos", hydrolysis_winit))]
     fn render_presented_window<S: crate::engine::EngineSurface>(
         &mut self,
         window: &mut CherenkovWindow<S, crate::text::ParleyEngine>,
