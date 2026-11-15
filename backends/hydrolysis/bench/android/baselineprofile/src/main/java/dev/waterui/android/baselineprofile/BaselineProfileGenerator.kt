@@ -81,7 +81,8 @@ class BaselineProfileGenerator {
                     Journey.run(device, spec, fixture)
                 } finally {
                     device.pressHome()
-                    device.executeShellCommand("am force-stop $packageName")
+                    // Flush ART profiles before ending this fixture process.
+                    killProcess()
                 }
             }
         }
