@@ -1624,7 +1624,7 @@ fn a_binding_set_outside_a_frame_fires_the_installed_wake_once() {
 }
 
 #[test]
-fn frame_transaction_serves_animation_due_at_presentation() {
+fn frame_transaction_serves_running_animation_on_vsync() {
     use super::window::FrameTransaction;
     use crate::renderer::Next;
 
@@ -1635,7 +1635,10 @@ fn frame_transaction_serves_animation_due_at_presentation() {
         rate: 60..=120,
     };
     assert!(!FrameTransaction::engine_frame_due(&next, now, None));
-    assert!(!FrameTransaction::engine_frame_due(&next, now, Some(now)));
+    assert!(
+        FrameTransaction::engine_frame_due(&next, now, Some(now)),
+        "a display callback must not be skipped for an ideal-period deadline"
+    );
     assert!(FrameTransaction::engine_frame_due(&next, now, Some(due)));
     assert!(FrameTransaction::engine_frame_due(&next, due, None));
     assert!(!FrameTransaction::engine_frame_due(

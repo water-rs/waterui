@@ -270,14 +270,16 @@ pub(super) struct FrameTransaction {
 
 #[cfg(any(target_os = "android", test))]
 impl FrameTransaction {
-    /// Compare animation demand with the time this frame will display, as
-    /// the renderer does when sampling it. Timer wakes have no display target.
+    /// A running engine animation consumes the host's display callback. Its
+    /// requested rate is applied to the surface; comparing ideal frame periods
+    /// with actual vsync timestamps can skip a refresh. Only timer wakes need
+    /// the absolute deadline gate.
     pub(super) fn engine_frame_due(
         next: &crate::renderer::Next,
         now: Instant,
         presentation: Option<Instant>,
     ) -> bool {
-        matches!(next, crate::renderer::Next::At { time, .. } if *time <= presentation.unwrap_or(now))
+        matches!(next, crate::renderer::Next::At { time, .. } if presentation.is_some() || *time <= now)
     }
 
     /// Wraps the host's frame post in the gate: the returned wake posts only
