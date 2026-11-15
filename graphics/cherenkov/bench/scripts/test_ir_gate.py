@@ -330,7 +330,35 @@ class Sampling(unittest.TestCase):
         self.assertIn(f'--separate-callers{ir_gate.CALLERS}=__memset_*', options)
 
 
+class Comparison(unittest.TestCase):
+    def test_memory_calls_are_diagnostic_but_instructions_and_allocations_gate(self):
+        baseline = dict(rust_ir=10000, allocs=2, reallocs=1, deallocs=2, mem_calls=3)
+        for changes, fails in [({'mem_calls': 4}, False), ({'rust_ir': 10101}, True),
+                               ({'allocs': 3}, True), ({'reallocs': 2}, True),
+                               ({'deallocs': 3}, True)]:
+            candidate = baseline | changes
+            def sample(out, tag, scene):
+                return {phase: {'second': baseline if tag == 'base' else candidate}
+                        for phase in ir_gate.LEGS['cpu'].scenes[scene]}
+            with self.subTest(changes=changes), mock.patch.object(ir_gate, 'load', side_effect=sample):
+                report, failed = ir_gate.compare(None, 'base', 'head', ir_gate.LEGS['cpu'])
+                self.assertEqual(failed, fails)
+                self.assertIn('mem calls', report)
+
+
 class Roots(unittest.TestCase):
+    def test_gpu_roots_exclude_picture_adapter_instantiations(self):
+        lower = '_RNvCs1_13cherenkov_gpu13lower_content'
+        adapter = '_RNvXs7_NtCs1_15cherenkov_bench12cherenkov_adINtB5_7AdapterKb{}_ENtB7_6Engine6encodeB7_'
+        transaction = '_RINvCs1_16cherenkov_record15run_transactionNC' + adapter
+        symbols = [lower, adapter.format(0), adapter.format(1),
+                   transaction.format(0), transaction.format(1)]
+        self.assertEqual(ir_gate.gpu_roots(symbols, 't'), {
+            'lower': lower, 'encode': adapter.format(0),
+            'run_transaction': transaction.format(0),
+        })
+
+
     def test_run_transaction_is_the_instantiation_encode_opens(self):
         record = '_RINvMs1_NtCs1_16cherenkov_record7surfaceINtB6_6SharedNtCs1_13cherenkov_gpu3GpuE15run_transactionNCNvXs7_NtCs1_15cherenkov_bench12cherenkov_adNtB1Y_9CherenkovNtB20_6Engine{}EB20_'
         encode, prepare = record.format('6encodes_0'), record.format('7prepares4_0')

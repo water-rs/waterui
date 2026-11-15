@@ -122,9 +122,6 @@ impl Demand {
             if self.passes[index].is_empty() {
                 continue;
             }
-            // Enclose before following reads: the pixels between separate
-            // changes will also be rasterized and need valid input images.
-            add(&mut self.passes[index], [0; 4]);
             // The filter/shadow executors currently produce their whole
             // bounded image. Demand their entire input until their kernels
             // accept a restricted output and its sampling apron.
@@ -275,7 +272,6 @@ impl Changes {
         self.regions.reset(frame);
         for index in 0..frame.passes.len() {
             changed(index, &mut self.regions.passes[index]);
-            add(&mut self.regions.passes[index], [0; 4]);
             for read in [&plan.loads[index], &plan.backdrops[index]]
                 .into_iter()
                 .flatten()

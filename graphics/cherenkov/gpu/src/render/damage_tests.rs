@@ -164,12 +164,14 @@ fn movement_and_removal_keep_last_submitted_footprints() {
     history.update(&frame(&[(0, 10.0)]));
     assert_eq!(history.pixels(), 0);
     history.update(&frame(&[(0, 40.0)]));
-    assert_eq!(history.pixels(), 504);
+    assert_eq!(history.pixels(), 288);
+    assert!(!contains(&history, 30, 10));
     assert!(contains(&history, 10, 10) && contains(&history, 40, 10));
     // A preparation that never reached the queue is not the old picture.
     history.update(&frame(&[(0, 60.0)]));
     assert!(contains(&history, 10, 10) && contains(&history, 60, 10));
-    assert_eq!(history.pixels(), 744); // enclosing the submitted and prepared footprints
+    assert_eq!(history.pixels(), 288); // only the submitted and prepared footprints
+    assert!(!contains(&history, 40, 10));
     history.submitted();
     history.submitted();
     history.update(&frame(&[]));
@@ -274,8 +276,8 @@ fn resource_versions_and_animated_ranges_are_local() {
     history.update_resources(&scene, |_| 2);
     assert_eq!(
         history.pixels(),
-        864,
-        "new external frame encloses its two changed commands"
+        288,
+        "new external frame damages its two changed commands"
     );
     history.submitted();
     history.update_resources(&scene, |_| 2);

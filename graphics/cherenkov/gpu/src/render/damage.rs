@@ -463,14 +463,9 @@ fn range_state(range: &DrawRange, version: u64) -> u64 {
     hash.finish()
 }
 
-/// Keep one conservative scissor per pass: replaying a geometry batch for
-/// every disjoint damage rectangle multiplies vertex and tiler work.
+/// Preserve disjoint damage so distant updates do not redraw the clean gap.
 pub(super) fn add(region: &mut Region, bounds: [u32; 4]) {
-    let [x, y, width, height] = region
-        .rectangles()
-        .iter()
-        .fold(bounds, |bounds, rect| cover(bounds, rect.xywh().into()));
-    region.clear();
+    let [x, y, width, height] = bounds;
     region.add(x, y, width, height);
 }
 

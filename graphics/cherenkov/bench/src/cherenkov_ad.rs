@@ -2447,10 +2447,39 @@ mod picture_tests {
             ],
         });
         scene.compute_features();
-        let counts = compare(&scene, &[None, None, None])?;
-        for sample in &counts[1..] {
-            assert!(sample.picture_tiles_invalidated.expect("GPU tile counters") > 0);
+        let single = compare(&scene, &[None, None, None])?;
+        for sample in &single[1..] {
             assert!(sample.damaged_surface_pixels.expect("GPU damage counters") * 20 < 64 * 64);
+        }
+        scene.root.items.push(Item::Draw(SceneDraw::Fill {
+            shape: Shape::rect(54.0, 54.0, 4.0, 4.0),
+            rule: FillRule::NonZero,
+            paint: Color::srgb(1.0, 0.0, 0.0).into(),
+        }));
+        let Item::Draw(second) = scene.root.items[2].clone() else {
+            unreachable!()
+        };
+        scene.root.live.push(Live {
+            item: 2,
+            frames: vec![
+                second,
+                SceneDraw::Fill {
+                    shape: Shape::rect(54.0, 54.0, 4.0, 4.0),
+                    rule: FillRule::NonZero,
+                    paint: Color::srgb(0.0, 1.0, 0.0).into(),
+                },
+            ],
+        });
+        scene.compute_features();
+        let counts = compare(&scene, &[None, None, None])?;
+        for (sample, single) in counts[1..].iter().zip(&single[1..]) {
+            assert!(sample.picture_tiles_invalidated.expect("GPU tile counters") > 0);
+            let pixels = sample.damaged_surface_pixels.expect("GPU damage counters");
+            let one = single.damaged_surface_pixels.expect("GPU damage counters");
+            assert!(
+                pixels <= 2 * one,
+                "two distant updates damage {pixels} pixels; one damages {one}"
+            );
         }
         Ok(())
     }
