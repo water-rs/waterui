@@ -2,13 +2,9 @@ pluginManagement {
     plugins {
         id("com.android.application") version "9.3.0"
         id("com.android.test") version "9.3.0"
-        // AGP 9 ships built-in Kotlin (enabled by default): applying
-        // org.jetbrains.kotlin.android separately conflicts with the
-        // built-in 'kotlin' extension, so only the Compose compiler plugin
-        // is declared here. Built-in Kotlin requires KGP >= 2.2.10 for the
-        // compose plugin — 2.2.10 is the smallest compatible bump over the
-        // imported 2.2.0 pin.
-        id("org.jetbrains.kotlin.plugin.compose") version "2.2.10"
+        // AGP supplies built-in Kotlin; the Compose compiler matches the
+        // Kotlin metadata required by the lazy-list scrollbar.
+        id("org.jetbrains.kotlin.plugin.compose") version "2.4.20"
         id("androidx.baselineprofile") version "1.5.0" apply false
     }
     repositories {
@@ -23,6 +19,10 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        exclusiveContent {
+            forRepository { maven { url = uri("https://jitpack.io") } }
+            filter { includeGroup("com.github.nanihadesuka.LazyColumnScrollbar") }
+        }
         providers.gradleProperty("benchmarkRepository").orNull?.let { repository ->
             exclusiveContent {
                 forRepository { maven { url = uri(repository) } }
