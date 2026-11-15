@@ -148,15 +148,17 @@ jobs:
               - ".github/actions/install-android-platform/action.yml"
               - ".github/actions/setup-linux-deps/action.yml"
               - ".github/actions/refresh-apt-index/refresh.sh"
-            android_manifests:
+            android_metadata:
               - "cli/Cargo.toml"
               - "Cargo.toml"
+              - ".github/scripts/android_metadata.py"
+              - ".github/workflows/ci.yml"
             workflows:
               - ".github/workflows/**"
               - ".github/actions/**"
       - name: Compare Android scaffold metadata
         id: android-metadata
-        if: steps.filter.outputs.android_manifests == 'true'
+        if: steps.filter.outputs.android_metadata == 'true'
         env:
           BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
           EVENT: ${{ github.event_name }}
