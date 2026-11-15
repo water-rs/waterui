@@ -12,29 +12,12 @@
 //! space (see `color`), so blends and alpha composites are encoded-space
 //! operations here.
 
-/// Declares a module of wire codes and, under test, the table the
-/// generated Kotlin mirrors (`hwui::kotlin`).
-macro_rules! codes {
-    (
-        $(#[doc = $doc:literal])*
-        $module:ident: $ty:ty => $object:literal {
-            $( $(#[doc = $code_doc:literal])* $name:ident = $value:expr; )*
-        }
-    ) => {
-        $(#[doc = $doc])*
-        pub mod $module {
-            $( $(#[doc = $code_doc])* pub const $name: $ty = $value; )*
-
-            /// The codes, for the generated Kotlin.
-            #[cfg(test)]
-            pub const CODES: crate::hwui::kotlin::Codes<$ty> = crate::hwui::kotlin::Codes {
-                object: $object,
-                doc: &[$($doc),*],
-                entries: &[$( (stringify!($name), $name, &[$($code_doc),*]) ),*],
-            };
-        }
-    };
+// Runtime builds need the constants; tests also inspect their code tables.
+macro_rules! code_metadata {
+    ($($item:item)*) => { $(#[cfg(test)] $item)* };
 }
+#[macro_use]
+mod codes;
 
 mod buffer;
 mod color;

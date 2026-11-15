@@ -14,6 +14,7 @@
 //! [`TextLayoutIds`] id; dropping its last clone queues a
 //! `ReleaseTextLayout` into the next command buffer.
 
+pub(super) mod constants;
 mod ids;
 mod index;
 #[cfg(hydrolysis_hwui)]
