@@ -927,15 +927,15 @@ struct OpaqueOut {
     @location(0) @interpolate(flat) color: ColorRgb,
 }
 
-// Coverage replay needs only the original local/atlas coordinate, the
-// instance identity, and the conservative ellipse bounds. Pull the uniform
-// primitive fields in the fragment stage instead of duplicating them in
-// every vertex's rasterizer payload.
+// Coverage replay carries the cell data and solid colour from the vertex
+// stage. Only analytic shapes fetch additional primitive fields per fragment.
 struct PartialOut {
     @builtin(position) position: vec4<f32>,
     @location(0) local: vec2<f32>,
     @location(1) @interpolate(flat) instance: u32,
     @location(2) @interpolate(flat) coverage: vec2<f32>,
+    @location(7) @interpolate(flat) color: Color,
+    @location(8) @interpolate(flat) opacity: f32,
     // cell-buffer
     // Buffer-cell stamps joined in the vertex stage (water-rs/waterui#3081).
     @location(3) @interpolate(flat) cell: vec4<f32>,
@@ -1077,6 +1077,8 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
         local,
         out.instance,
         out.affine1.zw,
+        out.color,
+        out.params.y,
         // cell-buffer
         out.cell,
         out.cell_texel,
@@ -1093,10 +1095,9 @@ fn fs_opaque(in: OpaqueOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
-    let inst = instances[in.instance];
     var data: VsOut;
     data.local = in.local;
-    var kind = inst.meta_.x;
+    var kind = instances[in.instance].meta_.x;
     // cell-buffer
     // A buffer cell's origin, interior run and flag arrive as varyings:
     // `in.instance` is the draw's anchor, which carries none of the
@@ -1108,9 +1109,10 @@ fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
     kind = in.cell_meta.x;
     // cell-buffer
     data.meta_.x = select(kind, KIND_GLYPH, kind == KIND_REGION);
-    data.color = premultiplied_color(inst.color);
-    data.params.y = inst.params.y;
+    data.color = in.color;
+    data.params.y = in.opacity;
     if data.meta_.x != KIND_GLYPH && data.meta_.x != KIND_SPAN {
+        let inst = instances[in.instance];
         data.shape_a = vec4<f32>(inst.shape.half, inst.shape.aspect, inst.shape.exponent);
         data.shape_radii = inst.shape.radii;
         data.affine0 = inst.affine[0];
