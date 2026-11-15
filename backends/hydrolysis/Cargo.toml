@@ -59,11 +59,11 @@ keyboard-types.workspace = true
 # `serde` lets the Android host push the merged accesskit tree to its
 # accessibility provider as JSON (src/runner/android/accessibility.rs).
 accesskit = { version = "0.25", optional = true, features = ["serde"] }
-waterui-inspector-protocol.workspace = true
+waterui-inspector-protocol = { workspace = true, optional = true }
 # `effects`, never `gpu` by itself: the `Filtered`/`filtrate` recipe
 # vocabulary resolves under every painter (the HWUI and CPU mounts name
 # their refusal); the GPU halves arrive with the `gpu` feature.
-waterui = { workspace = true, features = ["dialog", "inspector", "effects"] }
+waterui = { workspace = true, features = ["dialog", "effects"] }
 waterui-graphics = { workspace = true, features = ["effects"] }
 # `engine` (selected by `gpu` and `cpu`) for the `parley` font context the
 # Cherenkov painters build and install into the environment; the faces come
@@ -510,7 +510,8 @@ cpu = [
     "dep:icu_locale",
     "waterui-text/engine",
 ]
-inspector-signals = ["waterui/inspector-signals"]
+inspector = ["dep:waterui-inspector-protocol", "waterui/inspector"]
+inspector-signals = ["inspector", "waterui/inspector-signals"]
 # The HWUI render target (Android only): the retained layer tree recorded
 # into `RenderNode` display lists through one command buffer per frame, and
 # text laid out and drawn by the platform's `StaticLayout`

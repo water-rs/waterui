@@ -20,8 +20,6 @@ use crate::renderer::accessibility::{
 };
 use crate::renderer::{SemanticCore, WindowId};
 use std::rc::Rc;
-#[cfg(target_arch = "wasm32")]
-use std::sync::Arc;
 use waterui_core::contract_violation;
 
 /// What one semantic pump produced.
@@ -248,24 +246,16 @@ impl SemanticRuntime {
         family_resolution: FontFamilyResolution,
         build_fonts: fn(&Environment) -> FontCollection,
     ) -> Self {
+        init_global_executor();
         // The inspector endpoint is a TCP server a browser page cannot host —
         // on wasm32 the executor installs alone, with no probe to report to.
-        #[cfg(not(target_arch = "wasm32"))]
-        let inspector = init_main_thread_executors();
-        #[cfg(not(target_arch = "wasm32"))]
-        let inspector_probe = inspector
-            .as_ref()
-            .map(waterui::inspector::InspectorRuntime::runtime_probe);
-        #[cfg(target_arch = "wasm32")]
-        let inspector_probe: Option<Arc<dyn waterui::task::RuntimeProbe>> = {
-            init_global_executor();
-            None
-        };
+        #[cfg(any(target_arch = "wasm32", not(feature = "inspector")))]
+        let inspector_probe = None;
         let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
         #[cfg(not(target_arch = "wasm32"))]
         waterui_core::install_application_resources(&mut env);
-        #[cfg(not(target_arch = "wasm32"))]
-        waterui::inspector::install(&mut env, inspector);
+        #[cfg(all(not(target_arch = "wasm32"), feature = "inspector"))]
+        let inspector_probe = install_inspector(&mut env);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         #[cfg(any(
             test,
