@@ -17,7 +17,7 @@ use waterui_core::contract_violation;
 use waterui_core::handler::BoxedAction;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{LayoutError, ResolvedExtent, layout_direction, resolve_layout_extent};
-use waterui_core::views::ViewSnapshot;
+use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot};
 use waterui_form::picker::PickerStyle;
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_layout::container::resolve_directional_extent;
@@ -1170,6 +1170,7 @@ pub fn measure_list_row_content<E: TextEngine>(
 /// width.
 pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
     list: &ListConfig,
+    contents: &AnyViewsSnapshot<ListItem>,
     width: Option<f32>,
     state: &mut HydroState<E>,
     env: &Environment,
@@ -1177,13 +1178,12 @@ pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
 ) -> LayoutSize {
     // One immutable row set for the measure: the count, the sampled item, and
     // the section-marker walk all read the same membership.
-    let contents = list.contents().snapshot();
     let row_count = contents.len();
     if row_count == 0 {
         return LayoutSize::zero();
     }
     let editing = state.measure_signal(list.editing());
-    let first_item = materialize_list_item(&contents, 0, env);
+    let first_item = materialize_list_item(contents, 0, env);
     let metrics = theme.list(&list_spec(env), env).metrics();
     let content_size = match width {
         Some(width) => measure_list_row_content(
@@ -1217,7 +1217,7 @@ pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
     // rows draws its header and footer once. The sections come from row ids,
     // so no row is materialized for them.
     let mut section_height = 0.0;
-    for span in list.sections().spans(&contents) {
+    for span in list.sections().spans(contents) {
         let Some(section) = span.section else {
             continue;
         };
