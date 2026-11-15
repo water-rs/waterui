@@ -130,6 +130,7 @@ pub struct InteractionMotion {
 
 impl InteractionMotion {
     /// Inert interaction motion for targets that carry no visual chrome.
+    #[cfg(hydrolysis_runtime)]
     pub(crate) const fn none() -> Self {
         Self {
             hover_opacity: 0.0,
