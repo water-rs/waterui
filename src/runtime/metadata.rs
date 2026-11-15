@@ -11,6 +11,7 @@
 pub use waterui_core::metadata::{IgnorableMetadata, Metadata, MetadataKey, Retain};
 
 /// Context menu metadata module.
+#[cfg(feature = "menu")]
 pub mod context_menu {
     use alloc::vec::Vec;
     use nami::{Binding, Computed, SignalExt, binding};

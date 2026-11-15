@@ -21,6 +21,9 @@ crate-type = ["dylib", "rlib"]
 waterui-internal.workspace = true
 
 [features]
+list = ["waterui-internal/list"]
+table = ["waterui-internal/table"]
+navigation = ["waterui-internal/navigation"]
 menu = ["waterui-internal/menu"]
 calendar = ["waterui-internal/calendar"]
 color-picker = ["waterui-internal/color-picker"]
@@ -35,6 +38,9 @@ text-field = ["waterui-internal/text-field"]
 toggle = ["waterui-internal/toggle"]
 validation = ["waterui-internal/validation"]
 default = [
+    "list",
+    "table",
+    "navigation",
     "menu",
     "calendar",
     "color-picker",
@@ -84,6 +90,9 @@ chart = ["waterui-internal/chart"]
 barcode = ["waterui-internal/barcode"]
 particle = ["waterui-internal/particle"]
 all = [
+    "list",
+    "table",
+    "navigation",
     "menu",
     "calendar",
     "color-picker",

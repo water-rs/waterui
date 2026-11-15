@@ -264,8 +264,8 @@ waterui-media = { version = "0.5.1", path = "components/multimedia/media" }
 waterui-image = "0.5.0"
 waterui-video = { version = "0.5.1", path = "components/multimedia/video" }
 waterui-video-gpu = "0.4.0"
-waterui-form = { version = "0.5.1", path = "components/foundation/form" }
-waterui-controls = { version = "0.5.1", path = "components/foundation/controls"}
+waterui-form = { version = "0.5.1", path = "components/foundation/form", default-features = false }
+waterui-controls = { version = "0.5.1", path = "components/foundation/controls", default-features = false }
 waterui-color = { version = "0.5.1", path = "components/foundation/color" }
 waterui-graphics = { version = "0.5.1", path = "components/visual/graphics", default-features = false }
 waterui-shape = { version = "0.5.1", path = "components/foundation/shape", default-features = false }
@@ -396,6 +396,9 @@ waterui = { path = ".", features = ["media"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [features]
+list = ["waterui-internal/list", "waterui-dylib?/list"]
+table = ["waterui-internal/table", "waterui-dylib?/table"]
+navigation = ["waterui-internal/navigation", "waterui-dylib?/navigation"]
 menu = ["waterui-internal/menu", "waterui-dylib?/menu"]
 calendar = ["waterui-internal/calendar", "waterui-dylib?/calendar"]
 color-picker = ["waterui-internal/color-picker", "waterui-dylib?/color-picker"]
@@ -410,6 +413,9 @@ text-field = ["waterui-internal/text-field", "waterui-dylib?/text-field"]
 toggle = ["waterui-internal/toggle", "waterui-dylib?/toggle"]
 validation = ["waterui-internal/validation", "waterui-dylib?/validation"]
 default = [
+    "list",
+    "table",
+    "navigation",
     "menu",
     "calendar",
     "color-picker",
@@ -507,6 +513,9 @@ particle = ["waterui-internal/particle", "waterui-dylib?/particle"]
 # TypeScript view modules opts in explicitly rather than paying for them through
 # the full-feature set — the same reasoning that keeps `markdown-math` out.
 all = [
+    "list",
+    "table",
+    "navigation",
     "menu",
     "calendar",
     "color-picker",

@@ -64,7 +64,7 @@ pub mod prelude {
         AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, State, Str, Use, View,
         ViewExt, accessibility, animation, app, binding, color, component, cursor, drag_drop,
         entry, env, error, filter, form, fullscreen, gesture, gradient, id, layout, locale,
-        metadata, navigation, reactive, regional, shape, signal, style, task, text, widget, window,
+        metadata, reactive, regional, shape, signal, style, task, text, widget, window,
     };
 
     #[cfg(feature = "flow-markdown")]
@@ -86,7 +86,8 @@ pub mod prelude {
     pub use super::form::*;
     pub use super::layout::padding::*;
     pub use super::layout::*;
-    pub use super::navigation::*;
+    #[cfg(feature = "navigation")]
+    pub use super::navigation::{self, *};
     pub use super::style::*;
     pub use waterui_core::dynamic::{DynamicHandler, watch};
 
@@ -97,13 +98,16 @@ pub mod prelude {
     pub use super::text::{TextConfig, font, highlight, styled};
 
     pub use super::component::link::{Link, LinkTarget, link};
+    #[cfg(feature = "list")]
     pub use super::component::list::{
         List, ListContent, ListItem, ListMinRowHeight, ListSection, Row, Section, detail_row, row,
     };
+    #[cfg(feature = "menu")]
     pub use super::component::menu::{
         Command, CommandExt, CommandRole, Menu, MenuItem, NamedKey, Shortcut, ShortcutKey,
         ShortcutModifiers,
     };
+    #[cfg(feature = "menu")]
     pub use super::metadata::context_menu::{ContextMenu, DismissContextMenu};
 
     // Drag and drop extension traits
@@ -184,6 +188,7 @@ pub use waterui_macros::ui_test as test;
 pub use waterui_macros::*;
 #[cfg(feature = "media")]
 pub use waterui_media as media;
+#[cfg(feature = "navigation")]
 pub use waterui_navigation as navigation;
 #[cfg(feature = "gpu")]
 pub use waterui_svg as svg;
