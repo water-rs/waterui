@@ -29,7 +29,7 @@ use crate::renderer::{
 use crate::theme::live::Operand;
 use crate::theme::{
     Border, Chrome, Custom, Driven, Inputs, SpecTint, TextFieldLook, TextFieldSpec, ValueMotion,
-    WidgetInteractionState, WidgetTheme,
+    WidgetTheme,
 };
 use crate::widgets::controls::button::LIVE_STATES;
 use crate::widgets::controls::button::styled_button_label;
@@ -283,7 +283,7 @@ impl FieldChrome {
         disabled: bool,
         focused: bool,
     ) -> (
-        WidgetInteractionState,
+        waterui_core::interaction::InteractionState,
         PressSlot,
         Rc<InteractionLayerHandles>,
     ) {
@@ -294,7 +294,7 @@ impl FieldChrome {
             .container
             .clone();
         let target = container.target(bounds);
-        let (interaction, press_slot, handles) = ctx.renderer_mut().bind_live_field_target(
+        let (flags, press_slot, handles) = ctx.renderer_mut().bind_live_field_target(
             key.clone(),
             target,
             env,
@@ -302,7 +302,6 @@ impl FieldChrome {
             &container,
             focused,
         );
-        let flags = interaction.state;
         // Feed the state the field binds in to the floating label's colour
         // signal: the chrome reports only the changes it syncs, so a state
         // the field mounts in — disabled above all — reaches the label here.
@@ -323,7 +322,7 @@ impl FieldChrome {
         let render_ctx = ctx.render_context();
         parts.push_below(ctx.renderer_mut(), render_ctx);
         parts.push_above(ctx.renderer_mut(), render_ctx);
-        (interaction, press_slot, handles)
+        (flags, press_slot, handles)
     }
 
     /// The floating label's operands.
