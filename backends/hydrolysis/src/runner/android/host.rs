@@ -410,6 +410,7 @@ impl HostBridge {
     /// `session.onNativeBackAvailable(available)` — the host enables its back
     /// callback only while a navigation stack can accept the pop. A disabled
     /// callback leaves back to the system, which finishes the activity.
+    #[cfg(feature = "navigation")]
     fn set_back_navigation_available(&self, available: bool) {
         self.call(HostMethodId::BackAvailable, &[JValue::Bool(available)]);
     }
@@ -1037,6 +1038,7 @@ pub struct AndroidSession {
     ready_logged: Cell<bool>,
     /// The last value reported to the host's back callback. Starts disabled,
     /// matching the callback the activity registers.
+    #[cfg(feature = "navigation")]
     back_navigation_available: bool,
     /// Sessions are owned and driven on the UI thread only.
     _not_send: std::marker::PhantomData<*const ()>,
@@ -1523,6 +1525,7 @@ impl AndroidSession {
             presented_once: Cell::new(false),
             rendering_failed: false,
             ready_logged: Cell::new(false),
+            #[cfg(feature = "navigation")]
             back_navigation_available: false,
             _not_send: std::marker::PhantomData,
         })))
@@ -1667,6 +1670,7 @@ impl AndroidSession {
     ///
     /// The callback starts disabled. A disabled callback leaves back to the
     /// system, which finishes the activity with its own predictive animation.
+    #[cfg(feature = "navigation")]
     fn sync_back_navigation_available(&mut self) {
         let available = self.runtime.renderer.has_back_navigation_target();
         if available == self.back_navigation_available {
@@ -1870,6 +1874,7 @@ impl AndroidSession {
         if presented {
             self.presented_once.set(true);
         }
+        #[cfg(feature = "navigation")]
         self.sync_back_navigation_available();
         true
     }

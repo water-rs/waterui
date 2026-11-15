@@ -76,11 +76,13 @@ pub use identity::*;
 pub use mount::{Dirty, NodeCell, NodeCore, Placement, PlacementClock, ProducerKey};
 use mount::{HitClasses, HitGate, ScopeDelta};
 pub use native_measure::*;
+pub use recording::Recording;
 #[cfg(test)]
 pub use recording::check_well_formed_image;
+#[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
+pub use recording::working_color;
 #[cfg(hydrolysis_cherenkov)]
 pub use recording::{Glyph, GlyphRun};
-pub use recording::{Recording, working_color};
 #[cfg(any(feature = "list", feature = "text-field", feature = "secure-field"))]
 pub use tree::safe_area::ScrollSurfaceArea;
 #[cfg(any(feature = "list", feature = "navigation"))]
