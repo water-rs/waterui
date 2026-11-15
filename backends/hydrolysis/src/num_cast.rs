@@ -153,7 +153,11 @@ pub const fn f32_as_i32(v: f32) -> i32 {
 )]
 #[cfg(any(
     test,
-    feature = "accessibility",
+    hydrolysis_winit,
+    all(
+        feature = "accessibility",
+        any(feature = "stepper", target_os = "android")
+    ),
     all(target_os = "android", not(hydrolysis_hwui))
 ))]
 pub const fn f64_as_i32(v: f64) -> i32 {

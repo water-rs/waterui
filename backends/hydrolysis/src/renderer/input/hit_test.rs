@@ -340,6 +340,7 @@ pub enum Track {
     /// The pointer lifted at `point`; `within_reach` says whether that is
     /// within the press slot's cancel distance of the target.
     Release {
+        #[cfg(feature = "toggle")]
         point: kurbo::Point,
         within_reach: bool,
     },
@@ -2645,6 +2646,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             let within_reach = target.bounds.inflate(reach, reach).contains(point);
             if let Some(track) = target.track.as_ref() {
                 (track.borrow_mut())(Track::Release {
+                    #[cfg(feature = "toggle")]
                     point: target.to_local * point,
                     within_reach,
                 });

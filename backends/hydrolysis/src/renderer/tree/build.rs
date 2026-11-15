@@ -772,6 +772,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Ok(menu) => return Self::build_menu(renderer, (*menu).into_inner(), env),
             Err(view) => view,
         };
+        #[cfg(feature = "toggle")]
         let view = match view.downcast::<Native<ToggleConfig>>() {
             Ok(toggle) => return Self::build_toggle((*toggle).into_inner(), env, renderer),
             Err(view) => view,
@@ -781,6 +782,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Ok(slider) => return Self::build_slider((*slider).into_inner(), env, renderer),
             Err(view) => view,
         };
+        #[cfg(feature = "stepper")]
         let view = match view.downcast::<Native<StepperConfig>>() {
             Ok(stepper) => {
                 return Self::build_stepper((*stepper).into_inner(), env, renderer);
@@ -793,12 +795,14 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
+        #[cfg(feature = "date-picker")]
         let view = match view.downcast::<Native<DatePickerConfig>>() {
             Ok(date_picker) => {
                 return Self::build_date_picker((*date_picker).into_inner(), env, renderer);
             }
             Err(view) => view,
         };
+        #[cfg(feature = "color-picker")]
         let view = match view.downcast::<Native<ColorPickerConfig>>() {
             Ok(color_picker) => {
                 return Self::build_color_picker((*color_picker).into_inner(), env, renderer);

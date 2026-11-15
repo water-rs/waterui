@@ -12,8 +12,7 @@ use std::borrow::Cow;
 #[cfg(feature = "accessibility")]
 use std::collections::{BTreeSet, VecDeque};
 #[cfg(feature = "accessibility")]
-use std::ops::RangeInclusive;
-#[cfg(feature = "accessibility")]
+#[cfg(feature = "date-picker")]
 use waterui_form::picker::date::{DatePickerType, DateTime};
 
 #[cfg(feature = "accessibility")]
@@ -298,19 +297,23 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
     Activate {
         action: AccessibilityActivation<E>,
     },
+    #[cfg(feature = "toggle")]
     Toggle {
         binding: nami::Binding<bool>,
     },
+    #[cfg(feature = "slider")]
     Slider {
         value: nami::Binding<f64>,
         range: RangeInclusive<f64>,
         step: f64,
     },
+    #[cfg(feature = "stepper")]
     Stepper {
         value: nami::Binding<i32>,
         step: nami::Computed<i32>,
         range: RangeInclusive<i32>,
     },
+    #[cfg(feature = "date-picker")]
     DatePicker {
         value: nami::Binding<DateTime>,
         range: RangeInclusive<DateTime>,
@@ -1604,6 +1607,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 AccessibilityAction::Focus => true,
                 _ => declined_action("activation", action),
             },
+            #[cfg(feature = "toggle")]
             AccessibilityActionTarget::Toggle { binding } => match action {
                 AccessibilityAction::Click => {
                     let next = !binding.snapshot();
@@ -1613,6 +1617,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 AccessibilityAction::Focus => true,
                 _ => declined_action("toggle", action),
             },
+            #[cfg(feature = "slider")]
             AccessibilityActionTarget::Slider { value, range, step } => {
                 handle_accessibility_slider_action(
                     &value,
@@ -1623,6 +1628,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     action_data,
                 )
             }
+            #[cfg(feature = "stepper")]
             AccessibilityActionTarget::Stepper { value, step, range } => {
                 handle_accessibility_stepper_action(
                     &value,
@@ -1633,6 +1639,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                     action_data,
                 )
             }
+            #[cfg(feature = "date-picker")]
             AccessibilityActionTarget::DatePicker {
                 value,
                 range,
@@ -2700,15 +2707,19 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             )+};
         }
         label_from_native_config!(
+            #[cfg(feature = "toggle")]
             waterui_controls::toggle::ToggleConfig,
             #[cfg(feature = "slider")]
             waterui_controls::slider::SliderConfig,
+            #[cfg(feature = "stepper")]
             waterui_controls::stepper::StepperConfig,
             waterui_controls::button::ButtonConfig,
             waterui_controls::text_field::ResolvedTextFieldConfig,
             waterui_form::secure::SecureFieldConfig,
             waterui_form::picker::PickerConfig,
+            #[cfg(feature = "date-picker")]
             waterui_form::picker::date::DatePickerConfig,
+            #[cfg(feature = "color-picker")]
             waterui_form::picker::color::ColorPickerConfig,
         );
         if let Some(menu) = view.downcast_ref::<Native<waterui_controls::menu::ResolvedMenu>>() {
@@ -2962,6 +2973,7 @@ pub fn slider_step_for_range(range: RangeInclusive<f64>) -> f64 {
     clippy::needless_pass_by_value,
     reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
 )]
+#[cfg(feature = "slider")]
 fn handle_accessibility_slider_action(
     value: &nami::Binding<f64>,
     start: f64,
@@ -3000,6 +3012,7 @@ fn handle_accessibility_slider_action(
     clippy::needless_pass_by_value,
     reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
 )]
+#[cfg(feature = "stepper")]
 fn handle_accessibility_stepper_action(
     value: &nami::Binding<i32>,
     step: &nami::Computed<i32>,
@@ -3051,6 +3064,7 @@ fn handle_accessibility_stepper_action(
     clippy::too_many_arguments,
     reason = "threads the full accessibility-action context; grouping into a struct would not improve clarity"
 )]
+#[cfg(feature = "date-picker")]
 fn handle_accessibility_date_picker_action<E: crate::text::TextEngine>(
     renderer: &mut SemanticCore<E>,
     value: &nami::Binding<DateTime>,
@@ -3280,19 +3294,23 @@ impl<E: crate::text::TextEngine> Clone for AccessibilityActionTarget<E> {
             Self::Activate { action } => Self::Activate {
                 action: action.clone(),
             },
+            #[cfg(feature = "toggle")]
             Self::Toggle { binding } => Self::Toggle {
                 binding: binding.clone(),
             },
+            #[cfg(feature = "slider")]
             Self::Slider { value, range, step } => Self::Slider {
                 value: value.clone(),
                 range: range.clone(),
                 step: *step,
             },
+            #[cfg(feature = "stepper")]
             Self::Stepper { value, step, range } => Self::Stepper {
                 value: value.clone(),
                 step: step.clone(),
                 range: range.clone(),
             },
+            #[cfg(feature = "date-picker")]
             Self::DatePicker {
                 value,
                 range,
@@ -3351,3 +3369,9 @@ impl<E: crate::text::TextEngine> Clone for ScopedAccessibilitySemantics<E> {
         }
     }
 }
+
+#[cfg(all(
+    feature = "accessibility",
+    any(feature = "slider", feature = "stepper", feature = "date-picker")
+))]
+use std::ops::RangeInclusive;

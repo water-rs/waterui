@@ -14,6 +14,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::button::emit_button_accessibility
 );
+#[cfg(feature = "toggle")]
 impl_widget_behavior!(
     crate::widgets::controls::toggle::ToggleRenderState<E>,
     crate::widgets::controls::toggle::render_toggle_node,
@@ -29,6 +30,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::slider::emit_slider_accessibility
 );
+#[cfg(feature = "stepper")]
 impl_widget_behavior!(
     crate::widgets::controls::stepper::StepperRenderState<E>,
     crate::widgets::controls::stepper::render_stepper_node,
@@ -51,6 +53,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::button::emit_menu_accessibility
 );
+#[cfg(feature = "date-picker")]
 impl_widget_behavior!(
     crate::widgets::controls::date_picker::DatePickerRenderState<E>,
     crate::widgets::controls::date_picker::render_date_picker_node,
@@ -58,6 +61,7 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::date_picker::emit_date_picker_accessibility
 );
+#[cfg(feature = "color-picker")]
 impl_widget_behavior!(
     crate::widgets::controls::color_picker::ColorPickerRenderState<E>,
     crate::widgets::controls::color_picker::render_color_picker_node,
@@ -183,6 +187,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// or a hidden label is content-sized. A stretched hidden-label toggle
     /// would report a frame the label's dead zone inflates past the control,
     /// and taps inside it would hit nothing (water-rs/waterui#2241).
+    #[cfg(feature = "toggle")]
     pub(super) fn build_toggle(
         config: ToggleConfig,
         env: &Environment,
@@ -236,6 +241,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// label is content-sized — a stretched hidden-label stepper would report
     /// a frame inflated past the buttons that accepts no input
     /// (water-rs/waterui#2364).
+    #[cfg(feature = "stepper")]
     pub(super) fn build_stepper(
         config: StepperConfig,
         env: &Environment,
@@ -299,6 +305,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// to build on); the cloneable config drives the field + accessibility, and its
     /// value is read through `read_signal` so a change schedules a frame. Stretch is
     /// content-sized (read from the config).
+    #[cfg(feature = "date-picker")]
     pub(super) fn build_date_picker(
         config: DatePickerConfig,
         env: &Environment,
@@ -323,6 +330,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// to build on); the cloneable config drives the swatch + accessibility, and its
     /// value is read through `read_signal` so a change schedules a frame. Stretch is
     /// content-sized (read from the config).
+    #[cfg(feature = "color-picker")]
     pub(super) fn build_color_picker(
         config: ColorPickerConfig,
         env: &Environment,

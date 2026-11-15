@@ -142,12 +142,16 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<TableConfig>);
         $macro!(Native<ButtonConfig>);
         $macro!(Native<ResolvedMenu>);
+        #[cfg(feature = "toggle")]
         $macro!(Native<ToggleConfig>);
         #[cfg(feature = "slider")]
         $macro!(Native<SliderConfig>);
+        #[cfg(feature = "stepper")]
         $macro!(Native<StepperConfig>);
         $macro!(Native<ProgressConfig>);
+        #[cfg(feature = "color-picker")]
         $macro!(Native<ColorPickerConfig>);
+        #[cfg(feature = "date-picker")]
         $macro!(Native<DatePickerConfig>);
         $macro!(Native<ResolvedTextFieldConfig>);
         $macro!(Native<SecureFieldConfig>);

@@ -19,6 +19,7 @@ use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{LayoutError, ResolvedExtent, layout_direction, resolve_layout_extent};
 use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot};
 use waterui_form::picker::PickerStyle;
+#[cfg(feature = "date-picker")]
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_layout::container::resolve_directional_extent;
 use waterui_layout::padding::EdgeInsets;
@@ -1573,6 +1574,7 @@ fn resolved_text_styled<E: crate::text::TextEngine>(
     state.measure_signal(&resolved.content())
 }
 
+#[cfg(feature = "date-picker")]
 pub fn measure_date_picker_intrinsic<E: crate::text::TextEngine>(
     date_picker: &DatePickerConfig,
     state: &mut HydroState<E>,

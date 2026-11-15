@@ -3,26 +3,27 @@
 use super::*;
 use crate::theme::{MenuLayout, MenuLook, MenuSpec};
 use crate::widgets::controls::button::{ListRowChrome, MenuRowChrome, menu_row_font};
+#[cfg(feature = "date-picker")]
 use core::ops::RangeInclusive;
 use core::time::Duration;
 use nami::Signal;
+#[cfg(feature = "date-picker")]
 use waterui::form::Calendar;
-use waterui::shape::{RoundedRectangle, ShapeExt as _};
-use waterui::theme::color::Surface;
+use waterui_controls::button;
 use waterui_controls::button::ButtonStyle;
-use waterui_controls::label::LabelDisplayMode;
 use waterui_controls::menu::Shortcut;
-use waterui_controls::{Stepper, button, stepper::stepper};
+#[cfg(feature = "date-picker")]
+use waterui_controls::{Stepper, stepper::stepper};
 use waterui_core::contract_violation;
 use waterui_core::metadata::{Metadata, MetadataKey};
 use waterui_core::{SignalExt as _, id::Id};
+#[cfg(feature = "date-picker")]
 use waterui_form::picker::date::{Date, DatePickerType, DateTime};
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::hstack;
 use waterui_text::font::Font;
-use waterui_text::text;
 
 /// The theme's [`MenuLook`] for a menu laid out in `env`'s direction: the one
 /// look every menu presentation — the picker popup, the text context menu
@@ -862,6 +863,7 @@ pub fn picker_menu_row_rect(
     kurbo::Rect::new(0.0, y0, width, y0 + row_height)
 }
 
+#[cfg(feature = "color-picker")]
 fn color_picker_palette() -> [(&'static str, Color); 12] {
     [
         ("Red", Color::srgb(0xba, 0x1a, 0x1a)),
@@ -882,6 +884,7 @@ fn color_picker_palette() -> [(&'static str, Color); 12] {
 /// The color-picker panel's rendered extent — swatch grid plus the optional
 /// alpha/headroom rows. Placement is a rendered-frame concern; the semantic
 /// window carries no origin.
+#[cfg(feature = "color-picker")]
 fn color_picker_size(support_alpha: bool, support_hdr: bool) -> (f64, f64) {
     let width = 280.0;
     let swatch = 40.0;
@@ -900,6 +903,7 @@ fn color_picker_size(support_alpha: bool, support_hdr: bool) -> (f64, f64) {
 /// alpha/headroom rows. Shared by the rendered popup path (which then sets a
 /// frame) and the semantic activation path (which mounts the window with no
 /// placement at all).
+#[cfg(feature = "color-picker")]
 fn color_picker_window_base(
     value: Binding<Color>,
     support_alpha: bool,
@@ -1002,6 +1006,7 @@ fn color_picker_window_base(
 /// The rendered popup path: the shared color-picker window anchored at the
 /// trigger's resolved origin. The semantic activation path mounts
 /// [`color_picker_window_base`] directly and sets no frame.
+#[cfg(feature = "color-picker")]
 pub fn color_picker_window(
     value: Binding<Color>,
     support_alpha: bool,
@@ -1022,12 +1027,14 @@ pub fn color_picker_window(
     (popup, state)
 }
 
+#[cfg(feature = "date-picker")]
 fn time_part_binding(value: &Binding<i32>, range: RangeInclusive<i32>, label: String) -> Stepper {
     stepper(label, value)
         .range(range)
         .value_formatter(|part| format!("{part:02}"))
 }
 
+#[cfg(feature = "date-picker")]
 fn apply_staged_date_time(
     value: &Binding<DateTime>,
     range: &RangeInclusive<DateTime>,
@@ -1050,6 +1057,7 @@ fn apply_staged_date_time(
 /// The date-picker panel's rendered extent from the picker's field
 /// configuration — date calendar plus optional time rows. Placement is a
 /// rendered-frame concern; the semantic window carries no origin.
+#[cfg(feature = "date-picker")]
 const fn date_picker_size(ty: DatePickerType) -> (f64, f64) {
     let uses_date = matches!(
         ty,
@@ -1077,6 +1085,7 @@ const fn date_picker_size(ty: DatePickerType) -> (f64, f64) {
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
+#[cfg(feature = "date-picker")]
 fn date_picker_window_base(
     value: Binding<DateTime>,
     range: RangeInclusive<DateTime>,
@@ -1205,6 +1214,7 @@ fn date_picker_window_base(
 /// The rendered popup path: the shared date-picker window anchored at the
 /// trigger's resolved origin. The semantic activation path mounts
 /// [`date_picker_window_base`] directly and sets no frame.
+#[cfg(feature = "date-picker")]
 pub fn date_picker_window(
     value: Binding<DateTime>,
     range: RangeInclusive<DateTime>,
@@ -1548,6 +1558,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         true
     }
 
+    #[cfg(feature = "color-picker")]
     pub(crate) fn show_color_picker(
         &mut self,
         value: Binding<Color>,
@@ -1578,6 +1589,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         true
     }
 
+    #[cfg(feature = "date-picker")]
     pub(crate) fn show_date_picker(
         &mut self,
         value: Binding<DateTime>,
@@ -1606,6 +1618,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// rendered runtime opens, mounted with no placement — a semantic popup
     /// has no frame to anchor and no pointer origin to anchor it to.
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "color-picker")]
     pub(crate) fn activate_color_picker(
         &mut self,
         value: Binding<Color>,
@@ -1630,6 +1643,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// The semantic half of showing a date picker: the same staging window
     /// the rendered runtime opens, mounted with no placement.
     #[cfg(feature = "accessibility")]
+    #[cfg(feature = "date-picker")]
     pub(crate) fn activate_date_picker(
         &mut self,
         value: Binding<DateTime>,
@@ -1728,3 +1742,12 @@ impl<E: crate::text::TextEngine> Clone for ContextMenuTarget<E> {
         }
     }
 }
+
+#[cfg(any(feature = "date-picker", feature = "color-picker"))]
+use waterui::shape::{RoundedRectangle, ShapeExt as _};
+#[cfg(any(feature = "date-picker", feature = "color-picker"))]
+use waterui::theme::color::Surface;
+#[cfg(feature = "color-picker")]
+use waterui_controls::label::LabelDisplayMode;
+#[cfg(feature = "date-picker")]
+use waterui_text::text;

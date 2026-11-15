@@ -327,6 +327,7 @@ impl<'a, E: crate::text::TextEngine> WidgetRenderContext<'a, E> {
 
     /// [`Self::with_scope`] when the scope only exists conditionally (a
     /// disabled-control alpha group): pairing stays lexical either way.
+    #[cfg(any(feature = "slider", feature = "stepper", feature = "toggle"))]
     pub(crate) fn with_scope_if(
         &mut self,
         enabled: bool,
