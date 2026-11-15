@@ -3,9 +3,7 @@ use super::edge_stretch::{ScrollStretch, shown_stretch};
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::platform::Overscroll;
-use crate::theme::{
-    InteractionFocusBinding, InteractionMotion, ModalInteraction, WidgetInteractionState,
-};
+use crate::theme::{InteractionFocusBinding, InteractionMotion, ModalInteraction};
 use nami::Signal as _;
 use std::path::PathBuf;
 use waterui::Url;
@@ -4938,16 +4936,23 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         key: InteractionKey,
         bounds: kurbo::Rect,
         env: &Environment,
-    ) -> (
-        WidgetInteractionState,
-        PressSlot,
-        Rc<InteractionLayerHandles>,
-    ) {
+    ) -> (InteractionState, PressSlot, Rc<InteractionLayerHandles>) {
         self.bind_interaction_target_with_focus(key, bounds, env, None, false, None)
     }
 
+    #[cfg(test)]
+    pub(crate) fn bind_interaction_target_with_motion(
+        &mut self,
+        key: InteractionKey,
+        bounds: kurbo::Rect,
+        env: &Environment,
+        motion: InteractionMotion,
+    ) -> (InteractionState, PressSlot, Rc<InteractionLayerHandles>) {
+        self.bind_interaction_target_with_focus(key, bounds, env, None, false, Some(motion))
+    }
+
     /// Binds an interaction target for a control that supports the disabled
-    /// state: a disabled control samples an at-rest [`WidgetInteractionState`]
+    /// state: a disabled control samples an at-rest [`InteractionState`]
     /// (with its `disabled` flag set) and registers no hover target, so the
     /// pointer neither hovers nor presses it.
     #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
@@ -4957,11 +4962,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         bounds: kurbo::Rect,
         env: &Environment,
         disabled: bool,
-    ) -> (
-        WidgetInteractionState,
-        PressSlot,
-        Rc<InteractionLayerHandles>,
-    ) {
+    ) -> (InteractionState, PressSlot, Rc<InteractionLayerHandles>) {
         self.bind_interaction_target_with_focus(key, bounds, env, None, disabled, None)
     }
 
@@ -4981,11 +4982,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         env: &Environment,
         disabled: bool,
         chrome: &crate::theme::Chrome,
-    ) -> (
-        WidgetInteractionState,
-        PressSlot,
-        Rc<InteractionLayerHandles>,
-    ) {
+    ) -> (InteractionState, PressSlot, Rc<InteractionLayerHandles>) {
         let motion = crate::renderer::chrome::LiveChrome::handle_motion(chrome);
         self.bind_live_target(key, target, env, disabled, motion, chrome.get_hit(), None)
     }
@@ -5002,11 +4999,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         disabled: bool,
         chrome: &crate::theme::Chrome,
         focused: bool,
-    ) -> (
-        WidgetInteractionState,
-        PressSlot,
-        Rc<InteractionLayerHandles>,
-    ) {
+    ) -> (InteractionState, PressSlot, Rc<InteractionLayerHandles>) {
         let motion = crate::renderer::chrome::LiveChrome::handle_motion(chrome);
         self.bind_live_target(
             key,
@@ -5030,11 +5023,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         env: &Environment,
         disabled: bool,
         control: &crate::theme::ToggleControl,
-    ) -> (
-        WidgetInteractionState,
-        PressSlot,
-        Rc<InteractionLayerHandles>,
-    ) {
+    ) -> (InteractionState, PressSlot, Rc<InteractionLayerHandles>) {
         let motion = crate::renderer::live_toggle::LiveToggle::handle_motion(control);
         self.bind_live_target(key, target, env, disabled, motion, control.get_hit(), None)
     }
@@ -5053,11 +5042,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         disabled: bool,
         look: &crate::theme::SegmentedLook,
         chrome: Option<&crate::theme::Chrome>,
-    ) -> (
-        WidgetInteractionState,
-        PressSlot,
-        Rc<InteractionLayerHandles>,
-    ) {
+    ) -> (InteractionState, PressSlot, Rc<InteractionLayerHandles>) {
         let motion = crate::renderer::live_segmented::LiveSegmented::handle_motion(look, chrome);
         self.bind_live_target(
             key,
@@ -5083,11 +5068,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         motion: InteractionMotion,
         hit: &crate::theme::HitRegion,
         focus: Option<InteractionFocus>,
-    ) -> (
-        WidgetInteractionState,
-        PressSlot,
-        Rc<InteractionLayerHandles>,
-    ) {
+    ) -> (InteractionState, PressSlot, Rc<InteractionLayerHandles>) {
         let (state, mut slot, handles) = self.bind_interaction_target_with_focus(
             key,
             target,
@@ -5109,18 +5090,15 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         env: &Environment,
         focused: bool,
         disabled: bool,
-    ) -> (
-        WidgetInteractionState,
-        PressSlot,
-        Rc<InteractionLayerHandles>,
-    ) {
+        motion: InteractionMotion,
+    ) -> (InteractionState, PressSlot, Rc<InteractionLayerHandles>) {
         self.bind_interaction_target_with_focus(
             key,
             bounds,
             env,
             Some(InteractionFocus::visible(focused)),
             disabled,
-            None,
+            Some(motion),
         )
     }
 
@@ -5136,11 +5114,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         focus: Option<InteractionFocus>,
         disabled: bool,
         live_motion: Option<InteractionMotion>,
-    ) -> (
-        WidgetInteractionState,
-        PressSlot,
-        Rc<InteractionLayerHandles>,
-    ) {
+    ) -> (InteractionState, PressSlot, Rc<InteractionLayerHandles>) {
         // `WidgetInteractionInput::bounds` filters inherited press waves by
         // origin — origins are window-space points, so the check needs the
         // resolved window rect, not the node-local `bounds` the register
@@ -5168,9 +5142,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             self.hit_test.interaction.set_hovering(&hover_slot, false);
         }
         let live = live_motion.is_some();
-        let motion = live_motion.unwrap_or_else(|| self.theme().interaction_motion());
+        let motion = live_motion.unwrap_or_else(InteractionMotion::none);
         let now = self.frame_instant();
-        let (mut state, mut press_slot, handles) =
+        let (mut flags, mut press_slot, handles) =
             self.core.hit_test.interaction.bind_widget_state(
                 &key,
                 WidgetInteractionInput {
@@ -5199,8 +5173,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 self.hit_test.keyboard_focus_binding = Some(focus_binding.focused().clone());
             }
         }
-        let flags = self.interaction_state_flags(env, &key, state);
-        state.state = flags;
+        flags = self.interaction_state_flags(env, &key, flags);
         self.hit_test.interaction.set_reported_state(&key, flags);
         self.claim_interaction_reports(env, flags);
         // A widget that draws its hover/focus/press state layers from the
@@ -5227,7 +5200,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 |regs| &mut regs.hover_targets,
             );
         }
-        (state, press_slot, handles)
+        (flags, press_slot, handles)
     }
 }
 
@@ -5253,9 +5226,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         &mut self,
         env: &Environment,
         key: &InteractionKey,
-        state: WidgetInteractionState,
+        mut flags: InteractionState,
     ) -> InteractionState {
-        let mut flags = state.state;
         if self
             .active_pointer_drag_key()
             .is_some_and(|drag| drag == *key)

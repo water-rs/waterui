@@ -78,7 +78,10 @@ object NativeBridge {
      * (water-rs/waterui#1812). 29 = the GPU video player's decoder-plane
      * edge: [nativeVideoPlaneAttached] / [nativeVideoPlaneSurfaceDestroyed].
      */
-    private const val SCHEMA: Int = 29
+    private const val SCHEMA: Int = 30
+
+    /** Applies the pending GPU result on the UI thread. */
+    @JvmStatic external fun nativeCompleteFrame(session: Long)
 
     /** [nativeBackEvent] phase: a predictive gesture began. */
     const val BACK_STARTED: Int = 0

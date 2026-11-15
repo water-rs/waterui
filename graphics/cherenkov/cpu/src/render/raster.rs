@@ -3775,9 +3775,10 @@ impl Band<'_> {
         // left/right edges: `erf` reaches ±1 within `margin` of an edge,
         // so interior columns all evaluate to the same `s` (the sum of
         // in-box sample weights) and only the two edge bands pay the
-        // per-sample `erf` sum. For `sigma`-wide margins the tail error
-        // is `erf(5)-1 < 1e-11`.
-        let margin = 5.0 * sigma * std::f32::consts::SQRT_2;
+        // per-sample `erf` sum. erfc(4) is approximately 1.54e-8,
+        // below half the f32 spacing immediately below 1 (2^-25),
+        // so erf4 already rounds to ±1 at this boundary.
+        let margin = 4.0 * sigma * std::f32::consts::SQRT_2;
         // Consecutive rows with the same x intervals — every row whose
         // window misses the corner bands, and every row whose window
         // covers a whole corner band — form a run that shares the
@@ -4319,27 +4320,31 @@ impl Band<'_> {
             }
             return;
         }
-        for (i, &src) in scratch.iter().enumerate() {
-            let px = i % self.w;
-            let py = self.y0 + i / self.w;
-            let cc = clip_cov(clip, self.w, px, py);
-            if direct {
-                let s = src.map(|v| v * opacity * cc);
-                dst[i] = src_over(dst[i], s);
-            } else if cc > 0.0 {
-                // The clip limits the composite operation, including Clear
-                // and DestIn; multiplying only source alpha is not equivalent.
-                let source = src.map(|value| value * opacity);
-                let result = composite(
-                    simd, blend.0, src_space, dst_space, src_space, dst[i], source,
-                );
-                dst[i] = if cc >= 1.0 {
-                    result
-                } else {
-                    std::array::from_fn(|channel| {
-                        cc.mul_add(result[channel] - dst[i][channel], dst[i][channel])
-                    })
-                };
+        for (row, (src_row, dst_row)) in scratch
+            .chunks_exact(self.w)
+            .zip(dst.chunks_exact_mut(self.w))
+            .enumerate()
+        {
+            let py = self.y0 + row;
+            for (px, (&src, dst)) in src_row.iter().zip(dst_row).enumerate() {
+                let cc = clip_cov(clip, self.w, px, py);
+                if direct {
+                    let s = src.map(|v| v * opacity * cc);
+                    *dst = src_over(*dst, s);
+                } else if cc > 0.0 {
+                    // The clip limits the composite operation, including Clear
+                    // and DestIn; multiplying only source alpha is not equivalent.
+                    let source = src.map(|value| value * opacity);
+                    let result =
+                        composite(simd, blend.0, src_space, dst_space, src_space, *dst, source);
+                    *dst = if cc >= 1.0 {
+                        result
+                    } else {
+                        std::array::from_fn(|channel| {
+                            cc.mul_add(result[channel] - dst[channel], dst[channel])
+                        })
+                    };
+                }
             }
         }
     }
