@@ -30,6 +30,19 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        val benchmarkDisplay = requireNotNull(display) { "Benchmark activity has no display" }
+        val currentMode = benchmarkDisplay.mode
+        // Compare at the panel's highest refresh rate without changing resolution.
+        val benchmarkMode = benchmarkDisplay.supportedModes
+            .filter {
+                it.physicalWidth == currentMode.physicalWidth &&
+                    it.physicalHeight == currentMode.physicalHeight
+            }
+            .maxBy { it.refreshRate }
+        window.attributes = window.attributes.apply {
+            preferredDisplayModeId = benchmarkMode.modeId
+            preferredRefreshRate = benchmarkMode.refreshRate
+        }
         val example = intent.getStringExtra(EXTRA_EXAMPLE).orEmpty()
         val disableDynamic =
             intent.hasExtra("waterui.env.WATERUI_DISABLE_DYNAMIC_COLORS")
@@ -42,7 +55,7 @@ class MainActivity : ComponentActivity() {
             for (key in extras.keySet()) {
                 if (key.startsWith("waterui.env.")) {
                     AppEnv.values[key.removePrefix("waterui.env.")] =
-                        extras.get(key)?.toString() ?: ""
+                        requireNotNull(extras.getString(key)) { "Environment extra $key must be a string" }
                 }
             }
         }
