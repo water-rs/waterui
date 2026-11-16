@@ -35,7 +35,6 @@ use waterui_core::layout::{
 use waterui_core::metadata::Retain;
 
 use crate::contract::{NativeLeaf, RenderContext, Renderer};
-use crate::dispatch::Dispatcher;
 use crate::proposal::{self, Placement, to_proposal};
 use crate::transition::TransitionClaim;
 use crate::transition::ghost::Ghost;
@@ -337,8 +336,8 @@ fn render(
 /// Installs the `dynamic` handler on the dispatcher: `Native<Dynamic>`
 /// becomes a host whose single child the handler's receiver swaps per
 /// delivered `Context<AnyView>`.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<Dynamic>(|dynamic, ctx| render(dynamic, ctx, None));
+pub fn realize_dynamic(dynamic: Dynamic, ctx: &RenderContext<'_>) -> NativeLeaf {
+    render(dynamic, ctx, None)
 }
 
 #[cfg(test)]

@@ -31,7 +31,6 @@ use waterui_core::layout::{
 };
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
@@ -747,8 +746,8 @@ fn wire_scroll_reporting(
 }
 
 /// Registers the `scroll` leaf.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<ScrollView>(render);
+pub fn realize_scroll_view(value: ScrollView, ctx: &RenderContext<'_>) -> NativeLeaf {
+    render(value, ctx)
 }
 
 #[cfg(test)]

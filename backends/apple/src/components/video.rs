@@ -59,17 +59,25 @@ use waterui_video::{
 };
 
 use crate::contract::{NativeLeaf, RenderContext};
-use crate::dispatch::Dispatcher;
 
 #[cfg(all(target_os = "ios", feature = "video_player"))]
 use cocoa_ui::uikit::HostView;
 
 /// Registers both video leaves; each is still gated by its own feature.
-pub fn install(dispatcher: &mut Dispatcher) {
-    #[cfg(feature = "video")]
-    dispatcher.register_native::<NativeVideoConfig>(render_video);
-    #[cfg(feature = "video_player")]
-    dispatcher.register_native::<NativeVideoPlayerConfig>(render_video_player);
+#[cfg(feature = "video")]
+pub fn realize_native_video_config(
+    value: NativeVideoConfig,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    render_video(value, ctx)
+}
+
+#[cfg(feature = "video_player")]
+pub fn realize_native_video_player_config(
+    value: NativeVideoPlayerConfig,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    render_video_player(value, ctx)
 }
 
 /// Fallback bounds while the item's own size is unknown: 320 wide, and the

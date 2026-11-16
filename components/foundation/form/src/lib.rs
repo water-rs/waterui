@@ -18,7 +18,7 @@ use waterui_graphics::color::Color;
 #[cfg(feature = "calendar")]
 pub mod calendar;
 #[cfg(feature = "calendar")]
-pub use calendar::{Calendar, CalendarConfig};
+pub use calendar::{Calendar, CalendarConfig, CalendarGrid};
 /// Native picker controls for colors, dates, files, and multiple dates.
 pub mod picker;
 #[cfg(feature = "picker")]

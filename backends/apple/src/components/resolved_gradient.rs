@@ -21,7 +21,6 @@ use waterui_core::layout::{
 };
 
 use crate::contract::NativeLeaf;
-use crate::dispatch::Dispatcher;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -33,6 +32,7 @@ mod platform {
     pub(super) use cocoa_ui::uikit::HostView;
 }
 
+use crate::contract::RenderContext;
 use platform::HostView;
 
 const fn gradient_space(interpolation: Interpolation) -> GradientSpace {
@@ -250,48 +250,47 @@ impl SubView for GradientSubView {
 }
 
 /// Installs the `resolved_gradient` handler.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<Gradient>(|gradient, ctx| {
-        let mtm = ctx.mtm();
-        let view = HostView::new(mtm, cocoa_ui::Rect::ZERO);
-        #[cfg(target_os = "macos")]
-        cocoa_ui::view::ensure_layer_backed(&view);
-        // A gradient's whole painted surface is one fill — the fill rule
-        // extends it into the touched edge's regions when a background
-        // slot holds it.
-        view.set_is_fill(true);
-        if !matches!(
-            gradient.paint(),
-            Paint::Linear(_) | Paint::Radial(_) | Paint::Sweep(_)
-        ) {
-            waterui::contract_violation!(
-                "a native gradient must carry a linear, radial or sweep paint; \
+#[expect(clippy::needless_pass_by_value, reason = "NativeBackend hands each payload by value")]
+pub fn realize_gradient(gradient: Gradient, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let view = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+    #[cfg(target_os = "macos")]
+    cocoa_ui::view::ensure_layer_backed(&view);
+    // A gradient's whole painted surface is one fill — the fill rule
+    // extends it into the touched edge's regions when a background
+    // slot holds it.
+    view.set_is_fill(true);
+    if !matches!(
+        gradient.paint(),
+        Paint::Linear(_) | Paint::Radial(_) | Paint::Sweep(_)
+    ) {
+        waterui::contract_violation!(
+            "a native gradient must carry a linear, radial or sweep paint; \
                  a mesh gradient is rendered by the scene engine; the gradient is not drawn"
-            );
-            return NativeLeaf::new(&*view, GradientSubView);
-        }
-        let layer = Rc::new(GradientLayer::new(mtm, layer_paint(gradient.paint())));
-        cocoa_ui::view::layer(&view)
-            .expect("host view is layer-backed")
-            .addSublayer(&layer.layer());
+        );
+        return NativeLeaf::new(&*view, GradientSubView);
+    }
+    let layer = Rc::new(GradientLayer::new(mtm, layer_paint(gradient.paint())));
+    cocoa_ui::view::layer(&view)
+        .expect("host view is layer-backed")
+        .addSublayer(&layer.layer());
 
-        layer.set_frame(cocoa_ui::view::bounds(&view));
-        update_contents_scale(&view, &layer);
+    layer.set_frame(cocoa_ui::view::bounds(&view));
+    update_contents_scale(&view, &layer);
 
-        let layout_layer = Rc::clone(&layer);
-        view.set_layout_handler(move |view| {
-            layout_layer.set_frame(cocoa_ui::view::bounds(view));
-            update_contents_scale(view, &layout_layer);
-        });
-        let window_layer = Rc::clone(&layer);
-        view.set_window_handler(move |view| update_contents_scale(view, &window_layer));
-        let backing_layer = Rc::clone(&layer);
-        view.set_backing_changed_handler(move |view| {
-            update_contents_scale(view, &backing_layer);
-        });
-
-        NativeLeaf::new(&*view, GradientSubView)
+    let layout_layer = Rc::clone(&layer);
+    view.set_layout_handler(move |view| {
+        layout_layer.set_frame(cocoa_ui::view::bounds(view));
+        update_contents_scale(view, &layout_layer);
     });
+    let window_layer = Rc::clone(&layer);
+    view.set_window_handler(move |view| update_contents_scale(view, &window_layer));
+    let backing_layer = Rc::clone(&layer);
+    view.set_backing_changed_handler(move |view| {
+        update_contents_scale(view, &backing_layer);
+    });
+
+    NativeLeaf::new(&*view, GradientSubView)
 }
 
 #[cfg(test)]

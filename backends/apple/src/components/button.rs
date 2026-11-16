@@ -27,7 +27,6 @@ use waterui_core::layout::{
 
 use crate::components::button_chrome;
 use crate::contract::NativeLeaf;
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
@@ -47,6 +46,7 @@ mod platform {
     pub(super) type OwnedButton = Button;
 }
 
+use crate::contract::RenderContext;
 use platform::{Button, HitTest, HostView};
 
 /// The button as its platform view, for frames, alpha and accessibility.
@@ -159,99 +159,97 @@ impl SubView for ButtonSubView {
 }
 
 /// Registers the `button` leaf on `dispatcher`.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<ButtonConfig>(|config, ctx| {
-        let mtm = ctx.mtm();
-        let style = config.style();
+pub fn realize_button_config(config: ButtonConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let style = config.style();
 
-        // The label subtree resolves `Foreground` from the color the style
-        // prescribes for its platform, and on `AppKit` its default `Body`
-        // from the control size.
-        let label_env = button_chrome::label_environment(style, config.size(), ctx.env());
+    // The label subtree resolves `Foreground` from the color the style
+    // prescribes for its platform, and on `AppKit` its default `Body`
+    // from the control size.
+    let label_env = button_chrome::label_environment(style, config.size(), ctx.env());
 
-        let container = HostView::new(mtm, cocoa_ui::Rect::ZERO);
-        let button = Button::new(mtm);
-        let label_container = HostView::new(mtm, cocoa_ui::Rect::ZERO);
-        // The label never intercepts input meant for the button's chrome.
-        label_container.set_hit_test_handler(|_, _| HitTest::Pass);
+    let container = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+    let button = Button::new(mtm);
+    let label_container = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+    // The label never intercepts input meant for the button's chrome.
+    label_container.set_hit_test_handler(|_, _| HitTest::Pass);
 
-        #[cfg(target_os = "ios")]
-        let padding = configure_button(&button, style, mtm);
-        #[cfg(target_os = "macos")]
-        let padding = configure_button(&button, style, button_chrome::control_size(config.size()));
+    #[cfg(target_os = "ios")]
+    let padding = configure_button(&button, style, mtm);
+    #[cfg(target_os = "macos")]
+    let padding = configure_button(&button, style, button_chrome::control_size(config.size()));
 
-        let (label, action, ..) = config.into_parts();
-        let accessibility_label = label.accessibility_label();
-        let label_leaf = ctx.with_env(&label_env).render(AnyView::new(label));
-        let child_view = view::retain_base(label_leaf.view());
-        let mounted = label_leaf.mount(&label_container);
+    let (label, action, ..) = config.into_parts();
+    let accessibility_label = label.accessibility_label();
+    let label_leaf = ctx.with_env(&label_env).render(AnyView::new(label));
+    let child_view = view::retain_base(label_leaf.view());
+    let mounted = label_leaf.mount(&label_container);
 
-        // `AppKit`: the transparent label sits above the bezel as a sibling;
-        // `UIKit`: inside the button so the chrome draws beneath it.
-        view::add_subview(&container, as_view(&button));
-        #[cfg(target_os = "macos")]
-        view::add_subview(&container, &label_container);
-        #[cfg(target_os = "ios")]
-        as_view(&button).addSubview(&label_container);
+    // `AppKit`: the transparent label sits above the bezel as a sibling;
+    // `UIKit`: inside the button so the chrome draws beneath it.
+    view::add_subview(&container, as_view(&button));
+    #[cfg(target_os = "macos")]
+    view::add_subview(&container, &label_container);
+    #[cfg(target_os = "ios")]
+    as_view(&button).addSubview(&label_container);
 
-        // Frames: the button fills the container; the label container sits
-        // inside it, inset by the chrome's own padding. The child view fills
-        // the label container through its own layout handler.
-        {
-            let button = button.clone();
-            let label_container = label_container.clone();
-            container.set_layout_handler(move |host| {
-                // The button draws in its response rectangle, centred in
-                // the frame it was assigned (docs/layout-spec.md §2.4).
-                let bounds = proposal::response(host);
-                view::set_frame(as_view(&button), bounds);
-                let horizontal = f64::from(padding.0);
-                let vertical = f64::from(padding.1);
-                let label_frame = KitRect::new(
-                    horizontal,
-                    vertical,
-                    horizontal.mul_add(-2.0, bounds.size.width).max(0.0),
-                    vertical.mul_add(-2.0, bounds.size.height).max(0.0),
-                );
-                // `AppKit`'s label is the bezel's sibling in the host's
-                // space; `UIKit`'s is inside the button, in its own.
-                #[cfg(target_os = "macos")]
-                let label_frame = label_frame.translated(bounds.origin);
-                view::set_frame(&label_container, label_frame);
-            });
-        }
-        #[cfg(target_os = "macos")]
-        let link_child = child_view.clone();
-        {
-            label_container.set_layout_handler(move |host| {
-                view::set_frame(&child_view, view::bounds(host));
-            });
-        }
+    // Frames: the button fills the container; the label container sits
+    // inside it, inset by the chrome's own padding. The child view fills
+    // the label container through its own layout handler.
+    {
+        let button = button.clone();
+        let label_container = label_container.clone();
+        container.set_layout_handler(move |host| {
+            // The button draws in its response rectangle, centred in
+            // the frame it was assigned (docs/layout-spec.md §2.4).
+            let bounds = proposal::response(host);
+            view::set_frame(as_view(&button), bounds);
+            let horizontal = f64::from(padding.0);
+            let vertical = f64::from(padding.1);
+            let label_frame = KitRect::new(
+                horizontal,
+                vertical,
+                horizontal.mul_add(-2.0, bounds.size.width).max(0.0),
+                vertical.mul_add(-2.0, bounds.size.height).max(0.0),
+            );
+            // `AppKit`'s label is the bezel's sibling in the host's
+            // space; `UIKit`'s is inside the button, in its own.
+            #[cfg(target_os = "macos")]
+            let label_frame = label_frame.translated(bounds.origin);
+            view::set_frame(&label_container, label_frame);
+        });
+    }
+    #[cfg(target_os = "macos")]
+    let link_child = child_view.clone();
+    {
+        label_container.set_layout_handler(move |host| {
+            view::set_frame(&child_view, view::bounds(host));
+        });
+    }
 
-        let mut leaf = NativeLeaf::new(
-            &container,
-            ButtonSubView {
-                child: mounted,
-                padding,
-            },
-        );
-        leaf.keep(label_env);
+    let mut leaf = NativeLeaf::new(
+        &container,
+        ButtonSubView {
+            child: mounted,
+            padding,
+        },
+    );
+    leaf.keep(label_env);
 
-        // The action runs against the button's own environment — the one
-        // `Button<Action>` extracted state into — not the label's clone.
-        let action = Rc::new(RefCell::new(action));
-        let action_env = ctx.env().clone();
-        wire_action(&mut leaf, &button, action, action_env);
+    // The action runs against the button's own environment — the one
+    // `Button<Action>` extracted state into — not the label's clone.
+    let action = Rc::new(RefCell::new(action));
+    let action_env = ctx.env().clone();
+    wire_action(&mut leaf, &button, action, action_env);
 
-        bind_accessibility(&mut leaf, &button, &label_container, &accessibility_label);
-        bind_disabled(&mut leaf, &button, &label_container, ctx.env());
-        button_chrome::bind_tint(&mut leaf, styled(&button), style, ctx.env(), mtm);
-        #[cfg(target_os = "macos")]
-        if style == ButtonStyle::Link {
-            enable_link_chrome(&button, &link_child);
-        }
-        leaf
-    });
+    bind_accessibility(&mut leaf, &button, &label_container, &accessibility_label);
+    bind_disabled(&mut leaf, &button, &label_container, ctx.env());
+    button_chrome::bind_tint(&mut leaf, styled(&button), style, ctx.env(), mtm);
+    #[cfg(target_os = "macos")]
+    if style == ButtonStyle::Link {
+        enable_link_chrome(&button, &link_child);
+    }
+    leaf
 }
 
 /// Wires `config.action` through `ActionTarget` so a tap runs it on the

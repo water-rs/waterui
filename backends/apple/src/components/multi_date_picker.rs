@@ -13,13 +13,11 @@ use alloc::vec::Vec;
 
 use cocoa_ui::date::CalendarSelectionMode;
 use waterui::component::form::picker::date::Date;
-use waterui::component::form::picker::multi_date::{MultiDatePicker, MultiDatePickerConfig};
+use waterui::component::form::picker::multi_date::MultiDatePickerConfig;
 use waterui::reactive::{Binding, Signal, SignalExt};
-use waterui::view::{ConfigurableView, Hook};
 
 use super::calendar::{CalendarSelection, CalendarSpec, render_calendar};
 use crate::contract::{NativeLeaf, RenderContext};
-use crate::dispatch::Dispatcher;
 
 /// The toggle a pick applies to the date-ordered selection: `day` leaves
 /// it when present, else joins it in order.
@@ -70,17 +68,14 @@ fn render(config: MultiDatePickerConfig, ctx: &RenderContext<'_>) -> NativeLeaf 
 
 /// Installs the `multi_date_picker` handler: the composer claim plus the
 /// `Native<MultiDatePickerConfig>` claim for hook-produced payloads.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<MultiDatePickerConfig>(render);
-    dispatcher.register_view::<MultiDatePicker>(|picker, ctx| {
-        let mut config = picker.config();
-        // `body()`: an environment hook wins; otherwise the label resolves.
-        if let Some(hook) = ctx.env().get::<Hook<MultiDatePickerConfig>>() {
-            return ctx.render(hook.apply(ctx.env(), config));
-        }
-        config.label_mut().resolve_in_place(ctx.env());
-        render(config, ctx)
-    });
+/// `Native<MultiDatePickerConfig>`: the label resolves, then the platform
+/// picker renders.
+pub fn realize_multi_date_picker_config(
+    mut config: MultiDatePickerConfig,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    config.label_mut().resolve_in_place(ctx.env());
+    render(config, ctx)
 }
 
 #[cfg(test)]

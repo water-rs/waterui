@@ -417,38 +417,6 @@ pub fn place_leading(view: &PlatformView, frame: Rect, proposal: ProposalSize, r
 
 /// Registers `sink` as the channel `view` answers placements through; the
 /// returned guard unregisters on drop.
-#[cfg(any(
-    feature = "border",
-    feature = "clip_shape",
-    feature = "container",
-    feature = "context_menu",
-    feature = "cursor",
-    feature = "draggable",
-    feature = "drop_destination",
-    feature = "dynamic",
-    feature = "dynamic_range",
-    feature = "fixed_container",
-    feature = "gesture",
-    feature = "glass_background",
-    feature = "hittable",
-    feature = "ignore_safe_area",
-    feature = "layout_priority",
-    feature = "lifecycle_hook",
-    feature = "material_background",
-    feature = "menu",
-    feature = "offset",
-    feature = "on_event",
-    feature = "on_key_press",
-    feature = "opacity",
-    feature = "retain",
-    feature = "rotation",
-    feature = "scale",
-    feature = "scroll",
-    feature = "secure",
-    feature = "shadow",
-    feature = "env",
-    feature = "transition_sites",
-))]
 pub fn register_sink(view: &PlatformView, sink: impl Fn(Placement) + 'static) -> SinkGuard {
     CHANNELS.with(|channels| {
         channels.borrow_mut().insert(key(view), Rc::new(sink));
@@ -457,75 +425,11 @@ pub fn register_sink(view: &PlatformView, sink: impl Fn(Placement) + 'static) ->
 }
 
 /// The guard [`register_sink`] returns; drops the registration.
-#[cfg(any(
-    feature = "border",
-    feature = "clip_shape",
-    feature = "container",
-    feature = "context_menu",
-    feature = "cursor",
-    feature = "draggable",
-    feature = "drop_destination",
-    feature = "dynamic",
-    feature = "dynamic_range",
-    feature = "fixed_container",
-    feature = "gesture",
-    feature = "glass_background",
-    feature = "hittable",
-    feature = "ignore_safe_area",
-    feature = "layout_priority",
-    feature = "lifecycle_hook",
-    feature = "material_background",
-    feature = "menu",
-    feature = "offset",
-    feature = "on_event",
-    feature = "on_key_press",
-    feature = "opacity",
-    feature = "retain",
-    feature = "rotation",
-    feature = "scale",
-    feature = "scroll",
-    feature = "secure",
-    feature = "shadow",
-    feature = "env",
-    feature = "transition_sites",
-))]
 #[derive(Debug)]
 pub struct SinkGuard {
     view: usize,
 }
 
-#[cfg(any(
-    feature = "border",
-    feature = "clip_shape",
-    feature = "container",
-    feature = "context_menu",
-    feature = "cursor",
-    feature = "draggable",
-    feature = "drop_destination",
-    feature = "dynamic",
-    feature = "dynamic_range",
-    feature = "fixed_container",
-    feature = "gesture",
-    feature = "glass_background",
-    feature = "hittable",
-    feature = "ignore_safe_area",
-    feature = "layout_priority",
-    feature = "lifecycle_hook",
-    feature = "material_background",
-    feature = "menu",
-    feature = "offset",
-    feature = "on_event",
-    feature = "on_key_press",
-    feature = "opacity",
-    feature = "retain",
-    feature = "rotation",
-    feature = "scale",
-    feature = "scroll",
-    feature = "secure",
-    feature = "shadow",
-    feature = "env",
-    feature = "transition_sites",
-))]
 impl Drop for SinkGuard {
     fn drop(&mut self) {
         CHANNELS.with(|channels| {

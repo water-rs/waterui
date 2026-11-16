@@ -16,7 +16,6 @@ use waterui_core::layout::{
 };
 
 use crate::contract::NativeLeaf;
-use crate::dispatch::Dispatcher;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -28,6 +27,7 @@ mod platform {
     pub(super) use cocoa_ui::uikit::HostView;
 }
 
+use crate::contract::RenderContext;
 use platform::HostView;
 
 /// A `WorkingColor` as a `CGColor` in extended linear Display-P3 — channels carried
@@ -211,36 +211,35 @@ fn rebuild(view: &HostView, layer: &ShapeLayer, shape: &ResolvedShape) {
 /// Installs the `resolved_shape` handler: the fill color is a `Computed`
 /// watched imperatively; every change both repaints and invalidates any
 /// enclosing captured rendering.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<ResolvedShape>(|shape, ctx| {
-        let mtm = ctx.mtm();
-        let view = HostView::new(mtm, cocoa_ui::Rect::ZERO);
-        #[cfg(target_os = "macos")]
-        cocoa_ui::view::ensure_layer_backed(&view);
-        let layer = alloc::rc::Rc::new(ShapeLayer::new());
-        cocoa_ui::view::layer(&view)
-            .expect("host view is layer-backed")
-            .addSublayer(&layer.layer());
+#[expect(clippy::needless_pass_by_value, reason = "NativeBackend hands each payload by value")]
+pub fn realize_resolved_shape(shape: ResolvedShape, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let view = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+    #[cfg(target_os = "macos")]
+    cocoa_ui::view::ensure_layer_backed(&view);
+    let layer = alloc::rc::Rc::new(ShapeLayer::new());
+    cocoa_ui::view::layer(&view)
+        .expect("host view is layer-backed")
+        .addSublayer(&layer.layer());
 
-        rebuild(&view, &layer, &shape);
-        {
-            let layer = layer.clone();
-            let shape = shape.clone();
-            view.set_layout_handler(move |view| rebuild(view, &layer, &shape));
+    rebuild(&view, &layer, &shape);
+    {
+        let layer = layer.clone();
+        let shape = shape.clone();
+        view.set_layout_handler(move |view| rebuild(view, &layer, &shape));
+    }
+
+    let mut leaf = NativeLeaf::new(&*view, ShapeSubView);
+    layer.set_fill_color(Some(&cg_color(&shape.fill().snapshot())));
+    leaf.bind(shape.fill(), {
+        let layer = layer;
+        let view = view;
+        move |color| {
+            layer.set_fill_color(Some(&cg_color(&color)));
+            crate::invalidation::invalidate_rendered_content(&view);
         }
-
-        let mut leaf = NativeLeaf::new(&*view, ShapeSubView);
-        layer.set_fill_color(Some(&cg_color(&shape.fill().snapshot())));
-        leaf.bind(shape.fill(), {
-            let layer = layer;
-            let view = view;
-            move |color| {
-                layer.set_fill_color(Some(&cg_color(&color)));
-                crate::invalidation::invalidate_rendered_content(&view);
-            }
-        });
-        leaf
     });
+    leaf
 }
 
 #[cfg(test)]

@@ -90,7 +90,7 @@ pub fn install_service(env: &mut Environment) {
     let mtm = cocoa_ui::MainThreadMarker::new()
         .expect("the backend installs its services on the main thread");
     let renderer =
-        crate::contract::RenderContext::new(env, crate::dispatch::dispatcher(env), mtm).renderer();
+        crate::contract::RenderContext::new(env, mtm).renderer();
     env.insert(ViewRenderer::new(AppleViewRenderer { renderer, mtm }));
 }
 

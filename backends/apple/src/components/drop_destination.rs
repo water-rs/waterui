@@ -27,9 +27,9 @@ use waterui_core::layout::{
 };
 
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{HostView, drag_drop as kit};
 #[cfg(target_os = "ios")]
@@ -206,218 +206,215 @@ fn is_acceptable(session: &kit::DropSession<'_>, state: &RefCell<DropLeafState>)
 }
 
 /// Installs the `drop_destination` handler on the dispatcher.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one install wires both platforms' drop delegates, mirroring the baseline delegate extension"
-)]
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<DropDestination>>(|metadata, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let mounted = ctx.render(metadata.content).mount(&host);
-        crate::primary_content::forward(&host, mounted.view());
-        view::set_translates_autoresizing(mounted.view(), true);
+#[expect(clippy::too_many_lines, reason = "one component's whole realization, as the handler it replaces")]
+pub fn realize_drop_destination_metadata(
+    metadata: Metadata<DropDestination>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let mounted = ctx.render(metadata.content).mount(&host);
+    crate::primary_content::forward(&host, mounted.view());
+    view::set_translates_autoresizing(mounted.view(), true);
 
-        let state = Rc::new(RefCell::new(DropLeafState {
-            child: mounted,
-            destination: metadata.value,
-            env: ctx.env().clone(),
-        }));
+    let state = Rc::new(RefCell::new(DropLeafState {
+        child: mounted,
+        destination: metadata.value,
+        env: ctx.env().clone(),
+    }));
 
-        // The content always fills the wrapper — `contentView.frame = bounds`.
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |host| {
-                let state = state.borrow();
-                view::set_frame(state.child.view(), view::bounds(host));
-            }
-        });
-
-        let sink_guard = proposal::register_sink(&host, {
-            let state = Rc::clone(&state);
-            move |selected| {
-                let state = state.borrow();
-                proposal::deliver(state.child.view(), selected);
-            }
-        });
-
-        #[cfg(target_os = "macos")]
-        {
-            use cocoa_ui::Retained;
-            use cocoa_ui::objc2_app_kit::NSDragOperation;
-            use objc2_foundation::NSString;
-
-            let accepted_kind = state.borrow().destination.accepted_kind();
-            let types: Vec<Retained<NSString>> = accepted_types(accepted_kind)
-                .iter()
-                .map(|type_identifier| NSString::from_str(type_identifier))
-                .collect();
-            let types: Vec<&NSString> = types.iter().map(|t| &**t).collect();
-            host.set_drop_handlers(
-                &types,
-                Some(kit::DropHandlers {
-                    entered: {
-                        let state = Rc::clone(&state);
-                        Rc::new(move |info| {
-                            if is_accepted(info, &state) {
-                                call_enter(&state);
-                                NSDragOperation::Copy
-                            } else {
-                                NSDragOperation::None
-                            }
-                        })
-                    },
-                    updated: {
-                        let state = Rc::clone(&state);
-                        Rc::new(move |info| {
-                            if is_accepted(info, &state) {
-                                NSDragOperation::Copy
-                            } else {
-                                NSDragOperation::None
-                            }
-                        })
-                    },
-                    exited: {
-                        let state = Rc::clone(&state);
-                        Rc::new(move |info| {
-                            if is_accepted(info, &state) {
-                                call_exit(&state);
-                            }
-                        })
-                    },
-                    perform: {
-                        let state = Rc::clone(&state);
-                        Rc::new(move |info| {
-                            if let Some(any) = info.source_payload()
-                                && let Some(payload) = shared_payload(&any)
-                                && accepts(&state, &payload)
-                            {
-                                deliver(&state, payload);
-                                return true;
-                            }
-                            let accepted_kind = state.borrow().destination.accepted_kind();
-                            let text = match accepted_kind {
-                                TransferKind::Text => info
-                                    .string("public.utf8-plain-text")
-                                    .map(|text| text.to_string()),
-                                TransferKind::Url => {
-                                    info.string("public.url").map(|text| text.to_string())
-                                }
-                                _ => None,
-                            };
-                            let Some(payload) =
-                                payload_from_strings(accepted_kind, text, &info.file_urls())
-                            else {
-                                return false;
-                            };
-                            deliver(&state, payload);
-                            true
-                        })
-                    },
-                }),
-            );
+    // The content always fills the wrapper — `contentView.frame = bounds`.
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |host| {
+            let state = state.borrow();
+            view::set_frame(state.child.view(), view::bounds(host));
         }
+    });
 
-        #[cfg(target_os = "ios")]
-        let drop_target = kit::drop_target(
-            &host,
-            kit::DropHandlers {
-                can_handle: {
-                    let state = Rc::clone(&state);
-                    Rc::new(move |session| is_acceptable(session, &state))
-                },
+    let sink_guard = proposal::register_sink(&host, {
+        let state = Rc::clone(&state);
+        move |selected| {
+            let state = state.borrow();
+            proposal::deliver(state.child.view(), selected);
+        }
+    });
+
+    #[cfg(target_os = "macos")]
+    {
+        use cocoa_ui::Retained;
+        use cocoa_ui::objc2_app_kit::NSDragOperation;
+        use objc2_foundation::NSString;
+
+        let accepted_kind = state.borrow().destination.accepted_kind();
+        let types: Vec<Retained<NSString>> = accepted_types(accepted_kind)
+            .iter()
+            .map(|type_identifier| NSString::from_str(type_identifier))
+            .collect();
+        let types: Vec<&NSString> = types.iter().map(|t| &**t).collect();
+        host.set_drop_handlers(
+            &types,
+            Some(kit::DropHandlers {
                 entered: {
                     let state = Rc::clone(&state);
-                    Rc::new(move |session| {
-                        if is_acceptable(session, &state) {
+                    Rc::new(move |info| {
+                        if is_accepted(info, &state) {
                             call_enter(&state);
+                            NSDragOperation::Copy
+                        } else {
+                            NSDragOperation::None
                         }
                     })
                 },
-                update: {
+                updated: {
                     let state = Rc::clone(&state);
-                    Rc::new(move |session| {
-                        if is_acceptable(session, &state) {
-                            kit::DropOperation::Copy
+                    Rc::new(move |info| {
+                        if is_accepted(info, &state) {
+                            NSDragOperation::Copy
                         } else {
-                            kit::DropOperation::Forbidden
+                            NSDragOperation::None
                         }
                     })
                 },
                 exited: {
                     let state = Rc::clone(&state);
-                    Rc::new(move |session| {
-                        if is_acceptable(session, &state) {
+                    Rc::new(move |info| {
+                        if is_accepted(info, &state) {
                             call_exit(&state);
                         }
                     })
                 },
                 perform: {
                     let state = Rc::clone(&state);
-                    Rc::new(move |session| {
-                        if let Some(payload) = accepted_local_payload(session, &state) {
+                    Rc::new(move |info| {
+                        if let Some(any) = info.source_payload()
+                            && let Some(payload) = shared_payload(&any)
+                            && accepts(&state, &payload)
+                        {
                             deliver(&state, payload);
-                            return;
+                            return true;
                         }
                         let accepted_kind = state.borrow().destination.accepted_kind();
-                        match accepted_kind {
-                            TransferKind::Files if session.has_file_urls() => {
-                                let state = Rc::clone(&state);
-                                session.load_urls(move |urls| {
-                                    let file_urls: Vec<_> = urls
-                                        .into_iter()
-                                        .filter(|url| url.starts_with("file://"))
-                                        .collect();
-                                    if let Some(payload) =
-                                        payload_from_strings(accepted_kind, None, &file_urls)
-                                    {
-                                        deliver(&state, payload);
-                                    }
-                                });
+                        let text = match accepted_kind {
+                            TransferKind::Text => info
+                                .string("public.utf8-plain-text")
+                                .map(|text| text.to_string()),
+                            TransferKind::Url => {
+                                info.string("public.url").map(|text| text.to_string())
                             }
-                            TransferKind::Url if session.can_load_urls() => {
-                                let state = Rc::clone(&state);
-                                session.load_urls(move |urls| {
-                                    if let Some(payload) = payload_from_strings(
-                                        accepted_kind,
-                                        urls.into_iter().next(),
-                                        &[],
-                                    ) {
-                                        deliver(&state, payload);
-                                    }
-                                });
-                            }
-                            TransferKind::Text if session.can_load_strings() => {
-                                let state = Rc::clone(&state);
-                                session.load_strings(move |strings| {
-                                    let text =
-                                        strings.first().map(std::string::ToString::to_string);
-                                    if let Some(payload) =
-                                        payload_from_strings(accepted_kind, text, &[])
-                                    {
-                                        deliver(&state, payload);
-                                    }
-                                });
-                            }
-                            _ => {}
-                        }
+                            _ => None,
+                        };
+                        let Some(payload) =
+                            payload_from_strings(accepted_kind, text, &info.file_urls())
+                        else {
+                            return false;
+                        };
+                        deliver(&state, payload);
+                        true
                     })
                 },
-            },
+            }),
         );
+    }
 
-        let mut leaf = NativeLeaf::new(
-            &*host,
-            DropSubView {
-                state: Rc::clone(&state),
+    #[cfg(target_os = "ios")]
+    let drop_target = kit::drop_target(
+        &host,
+        kit::DropHandlers {
+            can_handle: {
+                let state = Rc::clone(&state);
+                Rc::new(move |session| is_acceptable(session, &state))
             },
-        );
-        leaf.keep(sink_guard);
-        leaf.keep(state);
-        #[cfg(target_os = "ios")]
-        leaf.keep(drop_target);
-        leaf
-    });
+            entered: {
+                let state = Rc::clone(&state);
+                Rc::new(move |session| {
+                    if is_acceptable(session, &state) {
+                        call_enter(&state);
+                    }
+                })
+            },
+            update: {
+                let state = Rc::clone(&state);
+                Rc::new(move |session| {
+                    if is_acceptable(session, &state) {
+                        kit::DropOperation::Copy
+                    } else {
+                        kit::DropOperation::Forbidden
+                    }
+                })
+            },
+            exited: {
+                let state = Rc::clone(&state);
+                Rc::new(move |session| {
+                    if is_acceptable(session, &state) {
+                        call_exit(&state);
+                    }
+                })
+            },
+            perform: {
+                let state = Rc::clone(&state);
+                Rc::new(move |session| {
+                    if let Some(payload) = accepted_local_payload(session, &state) {
+                        deliver(&state, payload);
+                        return;
+                    }
+                    let accepted_kind = state.borrow().destination.accepted_kind();
+                    match accepted_kind {
+                        TransferKind::Files if session.has_file_urls() => {
+                            let state = Rc::clone(&state);
+                            session.load_urls(move |urls| {
+                                let file_urls: Vec<_> = urls
+                                    .into_iter()
+                                    .filter(|url| url.starts_with("file://"))
+                                    .collect();
+                                if let Some(payload) =
+                                    payload_from_strings(accepted_kind, None, &file_urls)
+                                {
+                                    deliver(&state, payload);
+                                }
+                            });
+                        }
+                        TransferKind::Url if session.can_load_urls() => {
+                            let state = Rc::clone(&state);
+                            session.load_urls(move |urls| {
+                                if let Some(payload) = payload_from_strings(
+                                    accepted_kind,
+                                    urls.into_iter().next(),
+                                    &[],
+                                ) {
+                                    deliver(&state, payload);
+                                }
+                            });
+                        }
+                        TransferKind::Text if session.can_load_strings() => {
+                            let state = Rc::clone(&state);
+                            session.load_strings(move |strings| {
+                                let text = strings.first().map(std::string::ToString::to_string);
+                                if let Some(payload) =
+                                    payload_from_strings(accepted_kind, text, &[])
+                                {
+                                    deliver(&state, payload);
+                                }
+                            });
+                        }
+                        _ => {}
+                    }
+                })
+            },
+        },
+    );
+
+    let mut leaf = NativeLeaf::new(
+        &*host,
+        DropSubView {
+            state: Rc::clone(&state),
+        },
+    );
+    leaf.keep(sink_guard);
+    leaf.keep(state);
+    #[cfg(target_os = "ios")]
+    leaf.keep(drop_target);
+    leaf
 }
 
 #[cfg(test)]

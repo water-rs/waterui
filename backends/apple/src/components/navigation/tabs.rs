@@ -10,7 +10,6 @@
 use alloc::vec::Vec;
 
 use crate::contract::NativeLeaf;
-use crate::dispatch::Dispatcher;
 use waterui::navigation::{
     TabsLayout,
     tab::{Tab, TabIcon, TabRole},
@@ -21,10 +20,11 @@ use waterui_core::layout::{
 };
 
 use super::extract_title_text;
+use crate::contract::RenderContext;
 
 /// Installs the `TabsLayout` handler.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<TabsLayout>(platform::tabs_leaf);
+pub fn realize_tabs_layout(value: TabsLayout, ctx: &RenderContext<'_>) -> NativeLeaf {
+    platform::tabs_leaf(value, ctx)
 }
 
 struct Fill;

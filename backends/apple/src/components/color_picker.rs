@@ -25,7 +25,6 @@ use waterui_core::layout::{
 };
 
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
@@ -41,6 +40,7 @@ mod platform {
     pub(super) use cocoa_ui::uikit::{color_well as well_colors, colors};
 }
 
+use crate::contract::RenderContext;
 use platform::{ColorWell, HostView};
 
 /// The gap between the leading label and the well.
@@ -345,97 +345,99 @@ fn bind_value_well(
 /// Installs the `color_picker` handler on the dispatcher:
 /// `Native<ColorPickerConfig>` maps to a container view with the label
 /// child and the platform color well.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<ColorPickerConfig>(|config, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let well = Rc::new(ColorWell::new(mtm));
-        let host_view: &PlatformView = &host;
-        cocoa_ui::view::add_subview(host_view, well.view());
-        #[cfg(target_os = "macos")]
-        well.set_supports_alpha(config.support_alpha(), mtm);
-        #[cfg(target_os = "ios")]
-        well.set_supports_alpha(config.support_alpha());
+#[expect(clippy::needless_pass_by_value, reason = "NativeBackend hands each payload by value")]
+pub fn realize_color_picker_config(
+    config: ColorPickerConfig,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let well = Rc::new(ColorWell::new(mtm));
+    let host_view: &PlatformView = &host;
+    cocoa_ui::view::add_subview(host_view, well.view());
+    #[cfg(target_os = "macos")]
+    well.set_supports_alpha(config.support_alpha(), mtm);
+    #[cfg(target_os = "ios")]
+    well.set_supports_alpha(config.support_alpha());
 
-        // The sync flag is shared with the state installed below.
-        let syncing = Rc::new(Cell::new(false));
-        let support_hdr = config.support_hdr();
+    // The sync flag is shared with the state installed below.
+    let syncing = Rc::new(Cell::new(false));
+    let support_hdr = config.support_hdr();
 
-        // Well → binding: a picked color reads back as a WorkingColor with
-        // linear Display-P3 channels and HDR headroom already encoded.
-        let action = well.install_action({
-            let well = Rc::clone(&well);
-            let syncing = Rc::clone(&syncing);
-            let value = config.value().clone();
-            move || {
-                if syncing.get() {
-                    return;
-                }
-                let Some(resolved) = read_well_color(&well, support_hdr) else {
-                    return;
-                };
-                value.set(Color::new(Working(resolved)));
+    // Well → binding: a picked color reads back as a WorkingColor with
+    // linear Display-P3 channels and HDR headroom already encoded.
+    let action = well.install_action({
+        let well = Rc::clone(&well);
+        let syncing = Rc::clone(&syncing);
+        let value = config.value().clone();
+        move || {
+            if syncing.get() {
+                return;
             }
-        });
-
-        // The label is always mounted — a hidden one collapses to zero
-        // size, matching `WuiColorPicker`'s always-present `labelView`.
-        let label = ctx
-            .render(waterui_backend_core::AnyView::new(config.label().clone()))
-            .mount(host_view);
-        // The semantic text is announced on the well itself.
-        cocoa_ui::view::hide_from_accessibility(label.view());
-
-        let state = Rc::new(RefCell::new(ColorPickerState {
-            well,
-            label: Some(label),
-            syncing,
-            color_guard: None,
-            _action: action,
-        }));
-
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |view| {
-                layout_children(view, proposal::response(view), &state.borrow());
-            }
-        });
-
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            ColorPickerSubView {
-                state: Rc::clone(&state),
-            },
-        );
-
-        // Binding → well: each `Color` the binding produces is resolved in
-        // this environment and observed — `observeColor` re-arming on every
-        // `Color` the binding emits, as `WuiColorPicker` does.
-        bind_value_well(&mut leaf, config.value(), &state, ctx.env(), support_hdr);
-
-        // The label's semantic text is announced on the well.
-        let accessibility_label = config.label().accessibility_label();
-        leaf.bind(&accessibility_label, {
-            let state = Rc::clone(&state);
-            move |styled| {
-                cocoa_ui::view::set_accessibility_label(
-                    state.borrow().well.view(),
-                    &accessibility_text(&styled),
-                );
-            }
-        });
-
-        // A disabled subtree must not respond to input.
-        if let Some(disabled) = ctx.env().get::<Disabled>() {
-            leaf.bind(disabled.signal(), {
-                let state = Rc::clone(&state);
-                move |is_disabled: bool| state.borrow().well.set_enabled(!is_disabled)
-            });
+            let Some(resolved) = read_well_color(&well, support_hdr) else {
+                return;
+            };
+            value.set(Color::new(Working(resolved)));
         }
-
-        leaf.keep(state);
-        leaf
     });
+
+    // The label is always mounted — a hidden one collapses to zero
+    // size, matching `WuiColorPicker`'s always-present `labelView`.
+    let label = ctx
+        .render(waterui_backend_core::AnyView::new(config.label().clone()))
+        .mount(host_view);
+    // The semantic text is announced on the well itself.
+    cocoa_ui::view::hide_from_accessibility(label.view());
+
+    let state = Rc::new(RefCell::new(ColorPickerState {
+        well,
+        label: Some(label),
+        syncing,
+        color_guard: None,
+        _action: action,
+    }));
+
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |view| {
+            layout_children(view, proposal::response(view), &state.borrow());
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        ColorPickerSubView {
+            state: Rc::clone(&state),
+        },
+    );
+
+    // Binding → well: each `Color` the binding produces is resolved in
+    // this environment and observed — `observeColor` re-arming on every
+    // `Color` the binding emits, as `WuiColorPicker` does.
+    bind_value_well(&mut leaf, config.value(), &state, ctx.env(), support_hdr);
+
+    // The label's semantic text is announced on the well.
+    let accessibility_label = config.label().accessibility_label();
+    leaf.bind(&accessibility_label, {
+        let state = Rc::clone(&state);
+        move |styled| {
+            cocoa_ui::view::set_accessibility_label(
+                state.borrow().well.view(),
+                &accessibility_text(&styled),
+            );
+        }
+    });
+
+    // A disabled subtree must not respond to input.
+    if let Some(disabled) = ctx.env().get::<Disabled>() {
+        leaf.bind(disabled.signal(), {
+            let state = Rc::clone(&state);
+            move |is_disabled: bool| state.borrow().well.set_enabled(!is_disabled)
+        });
+    }
+
+    leaf.keep(state);
+    leaf
 }
 
 #[cfg(test)]

@@ -20,9 +20,9 @@ use waterui_core::layout::{
 };
 
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
 use cocoa_ui::pointer::{PointerEvent, PointerEvents};
@@ -100,81 +100,82 @@ fn fire(state: &OnEventState, event: Event, location: Option<Point>) {
 }
 
 /// Installs the `on_event` handler on the dispatcher.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<OnEvent>>(|metadata, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let child = ctx.render(metadata.content);
-        // The handler resolves in the environment its content's modifier
-        // chain resolves in (water-rs/waterui#1292).
-        let env = child.handler_env(ctx.env());
-        let mounted = child.mount(&host);
-        crate::primary_content::forward(&host, mounted.view());
-        view::set_translates_autoresizing(mounted.view(), true);
+pub fn realize_on_event_metadata(
+    metadata: Metadata<OnEvent>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let child = ctx.render(metadata.content);
+    // The handler resolves in the environment its content's modifier
+    // chain resolves in (water-rs/waterui#1292).
+    let env = child.handler_env(ctx.env());
+    let mounted = child.mount(&host);
+    crate::primary_content::forward(&host, mounted.view());
+    view::set_translates_autoresizing(mounted.view(), true);
 
-        let state = Rc::new(RefCell::new(OnEventState {
-            child: mounted,
-            event: metadata.value.event(),
-            handler: RefCell::new(metadata.value),
-            env: env.clone(),
-        }));
+    let state = Rc::new(RefCell::new(OnEventState {
+        child: mounted,
+        event: metadata.value.event(),
+        handler: RefCell::new(metadata.value),
+        env: env.clone(),
+    }));
 
-        // All three pointer channels: `fire` filters by the subscribed
-        // event, so the mask is always `ALL`-minus-cursor.
-        host.set_pointer_handler(
-            PointerEvents::ENTERED
-                .union(PointerEvents::MOVED)
-                .union(PointerEvents::EXITED),
-            {
-                let state = Rc::clone(&state);
-                move |_, event| {
-                    let state = state.borrow();
-                    #[allow(clippy::cast_possible_truncation)]
-                    match event {
-                        PointerEvent::Entered => fire(&state, Event::HoverEnter, None),
-                        PointerEvent::Moved(point) => fire(
-                            &state,
-                            Event::HoverMove,
-                            Some(waterui_backend_core::Point::new(
-                                point.x as f32,
-                                point.y as f32,
-                            )),
-                        ),
-                        PointerEvent::Exited => fire(&state, Event::HoverExit, None),
-                        PointerEvent::CursorUpdate => {}
-                    }
-                    false
+    // All three pointer channels: `fire` filters by the subscribed
+    // event, so the mask is always `ALL`-minus-cursor.
+    host.set_pointer_handler(
+        PointerEvents::ENTERED
+            .union(PointerEvents::MOVED)
+            .union(PointerEvents::EXITED),
+        {
+            let state = Rc::clone(&state);
+            move |_, event| {
+                let state = state.borrow();
+                #[allow(clippy::cast_possible_truncation)]
+                match event {
+                    PointerEvent::Entered => fire(&state, Event::HoverEnter, None),
+                    PointerEvent::Moved(point) => fire(
+                        &state,
+                        Event::HoverMove,
+                        Some(waterui_backend_core::Point::new(
+                            point.x as f32,
+                            point.y as f32,
+                        )),
+                    ),
+                    PointerEvent::Exited => fire(&state, Event::HoverExit, None),
+                    PointerEvent::CursorUpdate => {}
                 }
-            },
-        );
-
-        // The content always fills the wrapper.
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |host| {
-                let state = state.borrow();
-                view::set_frame(state.child.view(), view::bounds(host));
+                false
             }
-        });
+        },
+    );
 
-        // `setPlacementProposal` forwards to the content.
-        let sink_guard = proposal::register_sink(&host, {
-            let state = Rc::clone(&state);
-            move |selected| {
-                let state = state.borrow();
-                proposal::deliver(state.child.view(), selected);
-            }
-        });
-
-        let mut leaf = NativeLeaf::new(
-            &*host,
-            OnEventSubView {
-                state: Rc::clone(&state),
-            },
-        );
-        leaf.set_handler_env(env);
-        leaf.keep(sink_guard);
-        leaf.keep(state);
-        leaf
+    // The content always fills the wrapper.
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |host| {
+            let state = state.borrow();
+            view::set_frame(state.child.view(), view::bounds(host));
+        }
     });
+
+    // `setPlacementProposal` forwards to the content.
+    let sink_guard = proposal::register_sink(&host, {
+        let state = Rc::clone(&state);
+        move |selected| {
+            let state = state.borrow();
+            proposal::deliver(state.child.view(), selected);
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        &*host,
+        OnEventSubView {
+            state: Rc::clone(&state),
+        },
+    );
+    leaf.set_handler_env(env);
+    leaf.keep(sink_guard);
+    leaf.keep(state);
+    leaf
 }

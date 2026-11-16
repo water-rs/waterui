@@ -23,9 +23,9 @@ use waterui_core::layout::{
 };
 
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
@@ -84,85 +84,86 @@ impl SubView for IgnoreSubView {
 /// Installs the `ignore_safe_area` handler on the dispatcher:
 /// `Metadata<IgnoreSafeArea>` maps to a transparent container that manages
 /// its safe area and erases the named edges for its subtree.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<IgnoreSafeArea>>(|metadata, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let host_view: &PlatformView = &host;
+pub fn realize_ignore_safe_area_metadata(
+    metadata: Metadata<IgnoreSafeArea>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let host_view: &PlatformView = &host;
 
-        let mounted = ctx.render(metadata.content).mount(host_view);
-        view::set_translates_autoresizing(mounted.view(), true);
+    let mounted = ctx.render(metadata.content).mount(host_view);
+    view::set_translates_autoresizing(mounted.view(), true);
 
-        // `WuiSafeAreaManaging`: the window root must hand this view the
-        // full bounds — escaping the safe area is the component's purpose.
-        host.set_manages_safe_area(true);
+    // `WuiSafeAreaManaging`: the window root must hand this view the
+    // full bounds — escaping the safe area is the component's purpose.
+    host.set_manages_safe_area(true);
 
-        #[cfg(target_os = "ios")]
-        {
-            // A declaration names regions × edges: `EdgeSet` alone means
-            // both regions (`SafeAreaRegions::ALL`); `KEYBOARD` names only
-            // the keyboard region, so the container region keeps its hold
-            // on the same edge.
-            let regions = metadata.value.regions();
-            let edges = metadata.value.edges();
-            let named = |region: bool| {
-                cocoa_ui::geometry::Edges::new(
-                    region && edges.top,
-                    region && edges.leading,
-                    region && edges.bottom,
-                    region && edges.trailing,
-                )
-            };
-            host.set_ignored_safe_area_edges(named(regions.container()), named(regions.keyboard()));
-            // The wrapper manages the safe area itself; `UIKit`'s own margin
-            // inset would double-count it.
-            view::set_insets_layout_margins_from_safe_area(host_view, false);
+    #[cfg(target_os = "ios")]
+    {
+        // A declaration names regions × edges: `EdgeSet` alone means
+        // both regions (`SafeAreaRegions::ALL`); `KEYBOARD` names only
+        // the keyboard region, so the container region keeps its hold
+        // on the same edge.
+        let regions = metadata.value.regions();
+        let edges = metadata.value.edges();
+        let named = |region: bool| {
+            cocoa_ui::geometry::Edges::new(
+                region && edges.top,
+                region && edges.leading,
+                region && edges.bottom,
+                region && edges.trailing,
+            )
+        };
+        host.set_ignored_safe_area_edges(named(regions.container()), named(regions.keyboard()));
+        // The wrapper manages the safe area itself; `UIKit`'s own margin
+        // inset would double-count it.
+        view::set_insets_layout_margins_from_safe_area(host_view, false);
+    }
+    #[cfg(target_os = "macos")]
+    let _ = metadata.value;
+
+    let state = Rc::new(IgnoreState { child: mounted });
+
+    // iOS: `contentView.frame = wuiContentFrame(of:in:)` — the holder
+    // extended this view to the edges it touches; the content lays out
+    // against the insets that remain once the ignored edges are erased.
+    #[cfg(target_os = "ios")]
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |host| {
+            let host_view: &PlatformView = host;
+            let frame = crate::native_layout::LayoutContext::of(host_view)
+                .content_frame(state.child.view());
+            view::set_frame(state.child.view(), frame);
         }
-        #[cfg(target_os = "macos")]
-        let _ = metadata.value;
-
-        let state = Rc::new(IgnoreState { child: mounted });
-
-        // iOS: `contentView.frame = wuiContentFrame(of:in:)` — the holder
-        // extended this view to the edges it touches; the content lays out
-        // against the insets that remain once the ignored edges are erased.
-        #[cfg(target_os = "ios")]
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |host| {
-                let host_view: &PlatformView = host;
-                let frame = crate::native_layout::LayoutContext::of(host_view)
-                    .content_frame(state.child.view());
-                view::set_frame(state.child.view(), frame);
-            }
-        });
-
-        // macOS: safe area is less of a concern — `contentView.frame = bounds`.
-        #[cfg(target_os = "macos")]
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |host| {
-                view::set_frame(state.child.view(), view::bounds(host));
-            }
-        });
-
-        // `setPlacementProposal`: the proposal selected for this wrapper is
-        // the proposal its content was negotiated with.
-        let sink_guard = proposal::register_sink(host_view, {
-            let state = Rc::clone(&state);
-            move |selected| {
-                proposal::deliver(state.child.view(), selected);
-            }
-        });
-
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            IgnoreSubView {
-                state: Rc::clone(&state),
-            },
-        );
-        leaf.keep(sink_guard);
-        leaf.keep(state);
-        leaf
     });
+
+    // macOS: safe area is less of a concern — `contentView.frame = bounds`.
+    #[cfg(target_os = "macos")]
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |host| {
+            view::set_frame(state.child.view(), view::bounds(host));
+        }
+    });
+
+    // `setPlacementProposal`: the proposal selected for this wrapper is
+    // the proposal its content was negotiated with.
+    let sink_guard = proposal::register_sink(host_view, {
+        let state = Rc::clone(&state);
+        move |selected| {
+            proposal::deliver(state.child.view(), selected);
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        IgnoreSubView {
+            state: Rc::clone(&state),
+        },
+    );
+    leaf.keep(sink_guard);
+    leaf.keep(state);
+    leaf
 }

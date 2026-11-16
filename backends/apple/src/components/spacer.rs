@@ -18,8 +18,8 @@ use waterui_core::layout::{
 };
 
 use crate::contract::NativeLeaf;
-use crate::dispatch::Dispatcher;
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
@@ -62,17 +62,16 @@ impl SubView for SpacerSubView {
 
 /// Installs the `spacer` handler on the dispatcher: `Native<Spacer>` maps to a
 /// transparent host view whose layout face is the stack's flexible gap.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<Spacer>(|spacer, ctx| {
-        let view = HostView::new(ctx.mtm(), cocoa_ui::Rect::ZERO);
-        NativeLeaf::new(
-            &*view,
-            SpacerSubView {
-                min_length: spacer.min_length(),
-                axis: ctx.env().get::<Axis>().copied(),
-            },
-        )
-    });
+#[expect(clippy::needless_pass_by_value, reason = "NativeBackend hands each payload by value")]
+pub fn realize_spacer(spacer: Spacer, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let view = HostView::new(ctx.mtm(), cocoa_ui::Rect::ZERO);
+    NativeLeaf::new(
+        &*view,
+        SpacerSubView {
+            min_length: spacer.min_length(),
+            axis: ctx.env().get::<Axis>().copied(),
+        },
+    )
 }
 
 #[cfg(test)]

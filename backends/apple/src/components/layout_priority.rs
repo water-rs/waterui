@@ -19,9 +19,9 @@ use waterui_core::layout::{
 };
 
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
@@ -82,46 +82,47 @@ impl SubView for PrioritySubView {
 }
 
 /// Installs the `layout_priority` handler on the dispatcher.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<LayoutPriority>>(|metadata, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let mounted = ctx.render(metadata.content).mount(&host);
-        // §7.1: the fill answer resolves through the `cocoaUiPrimaryContent`
-        // chain — `Color.opacity(..)` in a background slot stays a fill.
-        crate::primary_content::forward(&host, mounted.view());
-        view::set_translates_autoresizing(mounted.view(), true);
+pub fn realize_layout_priority_metadata(
+    metadata: Metadata<LayoutPriority>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let mounted = ctx.render(metadata.content).mount(&host);
+    // §7.1: the fill answer resolves through the `cocoaUiPrimaryContent`
+    // chain — `Color.opacity(..)` in a background slot stays a fill.
+    crate::primary_content::forward(&host, mounted.view());
+    view::set_translates_autoresizing(mounted.view(), true);
 
-        let state = Rc::new(RefCell::new(PriorityState { child: mounted }));
+    let state = Rc::new(RefCell::new(PriorityState { child: mounted }));
 
-        // The content always fills the wrapper — `contentView.frame = bounds`.
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |host| {
-                let state = state.borrow();
-                view::set_frame(state.child.view(), view::bounds(host));
-            }
-        });
-
-        // `setPlacementProposal`: the proposal selected for this wrapper is
-        // the proposal its content was negotiated with.
-        let sink_guard = proposal::register_sink(&host, {
-            let state = Rc::clone(&state);
-            move |selected| {
-                let state = state.borrow();
-                proposal::deliver(state.child.view(), selected);
-            }
-        });
-
-        let mut leaf = NativeLeaf::new(
-            &*host,
-            PrioritySubView {
-                state: Rc::clone(&state),
-                priority: metadata.value.get(),
-            },
-        );
-        leaf.keep(sink_guard);
-        leaf.keep(state);
-        leaf
+    // The content always fills the wrapper — `contentView.frame = bounds`.
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |host| {
+            let state = state.borrow();
+            view::set_frame(state.child.view(), view::bounds(host));
+        }
     });
+
+    // `setPlacementProposal`: the proposal selected for this wrapper is
+    // the proposal its content was negotiated with.
+    let sink_guard = proposal::register_sink(&host, {
+        let state = Rc::clone(&state);
+        move |selected| {
+            let state = state.borrow();
+            proposal::deliver(state.child.view(), selected);
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        &*host,
+        PrioritySubView {
+            state: Rc::clone(&state),
+            priority: metadata.value.get(),
+        },
+    );
+    leaf.keep(sink_guard);
+    leaf.keep(state);
+    leaf
 }

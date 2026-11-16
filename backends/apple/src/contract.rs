@@ -27,11 +27,15 @@ use cocoa_ui::uikit::HostView;
 use cocoa_ui::view::retain_base;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Context;
-use waterui_backend_core::{AnyView, Environment, View};
+use waterui_backend_core::{AnyView, Environment, Realize, View};
+use waterui_core::backend::{Backend, DynBackend, cast, take};
 use waterui_core::layout::SubView;
+use waterui_core::metadata::MetadataKey;
+use waterui_core::{Metadata, NativeView};
 
 use cocoa_ui::Retained;
 
+use crate::backend::AppleBackend;
 use crate::measure_memo::MemoizingSubView;
 use crate::proposal::{self, CommittedGeometry};
 
@@ -503,7 +507,6 @@ impl Mounted {
     /// of its strict ancestors is either — the internal invariant of the
     /// hand-off. A release build logs the violation and unwinds the
     /// containment as a plain unmount does.
-    #[cfg(feature = "transition_sites")]
     #[must_use]
     pub(crate) fn into_retired_leaf(mut self) -> NativeLeaf {
         let mut leaf = self.0.take().expect(LIVE_MOUNTED);
@@ -575,7 +578,6 @@ pub(crate) fn adopt_controllers(
 /// What a handler sees while it renders.
 pub struct RenderContext<'a> {
     env: &'a Environment,
-    dispatcher: Rc<crate::dispatch::Dispatcher>,
     mtm: cocoa_ui::MainThreadMarker,
 }
 
@@ -586,16 +588,8 @@ impl fmt::Debug for RenderContext<'_> {
 }
 
 impl<'a> RenderContext<'a> {
-    pub(crate) const fn new(
-        env: &'a Environment,
-        dispatcher: Rc<crate::dispatch::Dispatcher>,
-        mtm: cocoa_ui::MainThreadMarker,
-    ) -> Self {
-        Self {
-            env,
-            dispatcher,
-            mtm,
-        }
+    pub(crate) const fn new(env: &'a Environment, mtm: cocoa_ui::MainThreadMarker) -> Self {
+        Self { env, mtm }
     }
 
     /// The environment this subtree resolves against.
@@ -610,11 +604,11 @@ impl<'a> RenderContext<'a> {
         self.mtm
     }
 
-    /// Renders `view` into a leaf: registered handlers claim it and
-    /// composers expand through `body()` until one does.
+    /// Renders `view` into a leaf: composites expand through `body()` and
+    /// each native payload or metadata wrapper reaches its realization.
     #[must_use]
-    pub fn render(&self, view: impl Into<AnyView>) -> NativeLeaf {
-        self.dispatcher.render(view.into(), self.env, self.mtm)
+    pub fn render(&self, view: impl View) -> NativeLeaf {
+        crate::dispatch::render(view, self.env, self.mtm)
     }
 
     /// The same context under another environment — for metadata handlers
@@ -623,8 +617,8 @@ impl<'a> RenderContext<'a> {
     /// — and keep the clone in the leaf's [`KeepAlive`] when the subtree's
     /// signals may resolve through it after the handler returns.
     #[must_use]
-    pub fn with_env<'b>(&self, env: &'b Environment) -> RenderContext<'b> {
-        RenderContext::new(env, self.dispatcher.clone(), self.mtm)
+    pub const fn with_env<'b>(&self, env: &'b Environment) -> RenderContext<'b> {
+        RenderContext::new(env, self.mtm)
     }
 
     /// An owned handle that can render after the handler returns — from a
@@ -634,73 +628,117 @@ impl<'a> RenderContext<'a> {
     pub fn renderer(&self) -> Renderer {
         Renderer {
             env: self.env.clone(),
-            dispatcher: self.dispatcher.clone(),
             mtm: self.mtm,
         }
     }
 }
 
-/// A `'static` render capability: an environment clone, the dispatcher and
-/// the main-thread proof. `!Send`, so it can only be used on the main
-/// thread.
+/// A `'static` render capability: an environment clone and the main-thread
+/// proof. `!Send`, so it can only be used on the main thread.
 #[derive(Debug, Clone)]
 pub struct Renderer {
     env: Environment,
-    dispatcher: Rc<crate::dispatch::Dispatcher>,
     mtm: cocoa_ui::MainThreadMarker,
 }
 
 impl Renderer {
     /// Renders `view` under the captured environment.
-    ///
     #[must_use]
-    pub fn render(&self, view: impl Into<AnyView>) -> NativeLeaf {
-        self.dispatcher.render(view.into(), &self.env, self.mtm)
+    pub fn render(&self, view: impl View) -> NativeLeaf {
+        crate::dispatch::render(view, &self.env, self.mtm)
     }
 
     /// Renders `view` and answers the environment its leaf resolved
     /// under: the scope of the *leading* `Metadata<Environment>` chain —
     /// the environment layers at the root of `view` and the composite
-    /// bodies that produce them — and nothing below the first
-    /// handler-claimed view, so a scope a descendant installs (a
-    /// `.disabled` child inside the content) never leaks into the
-    /// answer. `body()` runs once per expansion, the same single pass
-    /// [`Renderer::render`] makes, and the peeled view renders under the
-    /// scope its outermost environment layers resolved to — each
-    /// `Metadata<Environment>` replaces the environment for its subtree,
-    /// matching `with_env`.
+    /// bodies that produce them — and nothing below the first native
+    /// payload or other metadata, so a scope a descendant installs (a
+    /// `.disabled` child inside the content) never leaks into the answer.
+    /// Each `Metadata<Environment>` replaces the environment for its
+    /// subtree, matching `with_env`.
     #[must_use]
-    pub fn render_resolved(&self, view: impl Into<AnyView>) -> (NativeLeaf, Environment) {
-        let mut env = self.env.clone();
-        let mut view = view.into();
-        loop {
-            match view.downcast::<waterui_core::Metadata<Environment>>() {
-                Ok(metadata) => {
-                    let waterui_core::Metadata { content, value } = *metadata;
-                    env = value;
-                    view = content;
-                }
-                Err(back) => {
-                    view = back;
-                    if self.dispatcher.claims(&view) {
-                        break;
-                    }
-                    view = AnyView::new(view.body(&env));
-                }
-            }
-        }
-        let leaf = Self {
-            env: env.clone(),
-            dispatcher: self.dispatcher.clone(),
-            mtm: self.mtm,
-        }
-        .render(view);
-        (leaf, env)
+    pub fn render_resolved(&self, view: impl View) -> (NativeLeaf, Environment) {
+        let mut backend = AppleBackend::new(self.mtm);
+        view.dispatch(&mut ResolveEnvironment(&mut backend), &self.env, ())
     }
 
-    /// The captured environment and dispatcher as a context.
+    /// The captured environment as a context.
     #[must_use]
-    pub fn context(&self) -> RenderContext<'_> {
-        RenderContext::new(&self.env, self.dispatcher.clone(), self.mtm)
+    pub const fn context(&self) -> RenderContext<'_> {
+        RenderContext::new(&self.env, self.mtm)
+    }
+}
+
+/// Peels the leading `Metadata<Environment>` chain for
+/// [`Renderer::render_resolved`], then realizes the rest through
+/// [`AppleBackend`] under the environment the chain resolved to.
+struct ResolveEnvironment<'a>(&'a mut AppleBackend);
+
+impl Backend for ResolveEnvironment<'_> {
+    type Output = (NativeLeaf, Environment);
+    type Ctx = ();
+
+    fn native<T: NativeView + 'static>(
+        &mut self,
+        native: T,
+        env: &Environment,
+        (): (),
+    ) -> Self::Output {
+        (Realize::new(self.0).native(native, env, ()), env.clone())
+    }
+
+    fn metadata<K: MetadataKey>(
+        &mut self,
+        metadata: Metadata<K>,
+        env: &Environment,
+        (): (),
+    ) -> Self::Output {
+        match cast::<Metadata<K>, Metadata<Environment>>(metadata) {
+            Ok(Metadata { content, value }) => content.dispatch(self, &value, ()),
+            Err(metadata) => (
+                Realize::new(self.0).metadata(metadata, env, ()),
+                env.clone(),
+            ),
+        }
+    }
+
+    fn erased(&mut self, view: AnyView, env: &Environment, (): ()) -> Self::Output {
+        *view
+            .dispatch_dyn(self, env, Box::new(()))
+            .downcast::<(NativeLeaf, Environment)>()
+            .expect("the erased path returns this probe's own output")
+    }
+}
+
+impl DynBackend for ResolveEnvironment<'_> {
+    fn native_dyn(
+        &mut self,
+        native: &mut dyn Any,
+        env: &Environment,
+        _cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        Box::new((
+            Realize::new(self.0).native_dyn(native, env, ()),
+            env.clone(),
+        ))
+    }
+
+    fn metadata_dyn(
+        &mut self,
+        metadata: &mut dyn Any,
+        env: &Environment,
+        _cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        if let Some(Metadata { content, value }) = take::<Metadata<Environment>>(metadata) {
+            return Box::new(content.dispatch(self, &value, ()));
+        }
+        Box::new((
+            Realize::new(self.0).metadata_dyn(metadata, env, ()),
+            env.clone(),
+        ))
+    }
+
+    fn erased_dyn(&mut self, view: AnyView, env: &Environment, _cx: Box<dyn Any>) -> Box<dyn Any> {
+        Box::new(self.erased(view, env, ()))
     }
 }

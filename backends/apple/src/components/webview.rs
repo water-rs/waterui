@@ -47,8 +47,7 @@ use waterui_webview::{
     WebViewOpenError, assets, bridge,
 };
 
-use crate::contract::NativeLeaf;
-use crate::dispatch::Dispatcher;
+use crate::contract::{NativeLeaf, RenderContext};
 
 /// The page-visible global the bridge script calls — `bridge::SEND_FUNCTION`,
 /// which is also the name the script-message transport registers under.
@@ -861,27 +860,28 @@ impl SubView for WebViewSubView {
 /// Installs the `webview` handler: `Native<WebView>` mounts the kit view the
 /// handle owns, keeping the `WebView` — and with it the event, navigation
 /// and signal subscriptions — alive for the leaf's life.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<waterui_webview::WebView>(|webview, ctx| {
-        // The controller failed to open this view and `waterui-webview`
-        // already reported it: mount an empty host where the page would be.
-        if webview.handle().is_unavailable() {
-            let host = HostView::new(ctx.mtm(), cocoa_ui::Rect::ZERO);
-            let mut leaf = NativeLeaf::new(&*host, WebViewSubView);
-            leaf.keep(webview);
-            return leaf;
-        }
-        let handle = webview.handle().downcast_ref::<WkWebViewHandle>().expect(
-            "a WebView leaf was handed a handle from another engine; the \
-                 WebViewController in this environment is not the Apple backend's",
-        );
-        let mut leaf = NativeLeaf::new(&**handle.controller().view(), WebViewSubView);
-        // The component owns the subscriptions that drive `can_go_back`,
-        // `can_go_forward` and the event signal; dropping it would leave a
-        // live view whose reactive state had gone dead.
+pub fn realize_web_view(
+    webview: waterui_webview::WebView,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    // The controller failed to open this view and `waterui-webview`
+    // already reported it: mount an empty host where the page would be.
+    if webview.handle().is_unavailable() {
+        let host = HostView::new(ctx.mtm(), cocoa_ui::Rect::ZERO);
+        let mut leaf = NativeLeaf::new(&*host, WebViewSubView);
         leaf.keep(webview);
-        leaf
-    });
+        return leaf;
+    }
+    let handle = webview.handle().downcast_ref::<WkWebViewHandle>().expect(
+        "a WebView leaf was handed a handle from another engine; the \
+                 WebViewController in this environment is not the Apple backend's",
+    );
+    let mut leaf = NativeLeaf::new(&**handle.controller().view(), WebViewSubView);
+    // The component owns the subscriptions that drive `can_go_back`,
+    // `can_go_forward` and the event signal; dropping it would leave a
+    // live view whose reactive state had gone dead.
+    leaf.keep(webview);
+    leaf
 }
 
 /// The `SchemeHandler` an `asset_origin` view registers — `AssetSchemeHandler`,

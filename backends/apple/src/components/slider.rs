@@ -30,7 +30,6 @@ use waterui_core::layout::{
 use crate::components::button_chrome;
 use crate::components::control_size::platform_control_size;
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
@@ -43,6 +42,7 @@ mod platform {
     pub(super) use cocoa_ui::uikit::{HostView, Slider};
 }
 
+use crate::contract::RenderContext;
 use platform::{HostView, Slider};
 
 /// The gap between the label row and the slider row.
@@ -324,125 +324,123 @@ fn as_view(slider: &Slider) -> &PlatformView {
 /// Installs the `slider` handler on the dispatcher: `Native<SliderConfig>`
 /// maps to a container view with the platform slider and the three label
 /// children mounted in it.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<SliderConfig>(|config, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let slider = Slider::new(mtm);
-        // `Slider`'s documented default size is `ExtraSmall`; the mapping is
-        // relative to it, so a bare slider draws at the platform's regular
-        // track like a bare `NSSlider`/`UISlider` does.
-        slider.set_control_size(platform_control_size(
-            config.size(),
-            waterui::component::ControlSize::ExtraSmall,
-        ));
-        slider.set_range(*config.range().start(), *config.range().end());
-        // AppKit holds the thumb to tick marks, one per step.
-        #[cfg(target_os = "macos")]
-        slider.set_step(config.step());
-        slider.set_value(
-            clamped(
-                config.value().snapshot(),
-                *config.range().start(),
-                *config.range().end(),
-            ),
-            None,
-        );
-        host.add_subview(as_view(&slider));
+pub fn realize_slider_config(config: SliderConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let slider = Slider::new(mtm);
+    // `Slider`'s documented default size is `ExtraSmall`; the mapping is
+    // relative to it, so a bare slider draws at the platform's regular
+    // track like a bare `NSSlider`/`UISlider` does.
+    slider.set_control_size(platform_control_size(
+        config.size(),
+        waterui::component::ControlSize::ExtraSmall,
+    ));
+    slider.set_range(*config.range().start(), *config.range().end());
+    // AppKit holds the thumb to tick marks, one per step.
+    #[cfg(target_os = "macos")]
+    slider.set_step(config.step());
+    slider.set_value(
+        clamped(
+            config.value().snapshot(),
+            *config.range().start(),
+            *config.range().end(),
+        ),
+        None,
+    );
+    host.add_subview(as_view(&slider));
 
-        let range = config.range().clone();
-        let step = config.step();
-        let action = slider.install_action({
-            let binding = config.value().clone();
-            let slider = slider.clone();
-            let range = range.clone();
-            move |value| {
-                // UIKit has no step: the thumb moves freely, so the value is
-                // snapped here and the thumb follows it, whether or not the
-                // binding changes.
-                let snapped = snap(value, &range, step);
-                slider.set_value(snapped, None);
-                binding.set(snapped);
-            }
-        });
+    let range = config.range().clone();
+    let step = config.step();
+    let action = slider.install_action({
+        let binding = config.value().clone();
+        let slider = slider.clone();
+        let range = range.clone();
+        move |value| {
+            // UIKit has no step: the thumb moves freely, so the value is
+            // snapped here and the thumb follows it, whether or not the
+            // binding changes.
+            let snapped = snap(value, &range, step);
+            slider.set_value(snapped, None);
+            binding.set(snapped);
+        }
+    });
 
-        // The label's semantic text is announced on the control itself; the
-        // visual label child is hidden from the accessibility tree below.
-        let accessibility_label = config.label().accessibility_label();
+    // The label's semantic text is announced on the control itself; the
+    // visual label child is hidden from the accessibility tree below.
+    let accessibility_label = config.label().accessibility_label();
 
-        let host_view: &PlatformView = &host;
-        let (label, min_value_label, max_value_label, _, value, ..) = config.into_parts();
-        let children = Children {
-            label: ctx
-                .render(waterui_backend_core::AnyView::new(label))
-                .mount(host_view),
-            min_label: ctx.render(min_value_label).mount(host_view),
-            max_label: ctx.render(max_value_label).mount(host_view),
-        };
-        cocoa_ui::view::hide_from_accessibility(children.label.view());
+    let host_view: &PlatformView = &host;
+    let (label, min_value_label, max_value_label, _, value, ..) = config.into_parts();
+    let children = Children {
+        label: ctx
+            .render(waterui_backend_core::AnyView::new(label))
+            .mount(host_view),
+        min_label: ctx.render(min_value_label).mount(host_view),
+        max_label: ctx.render(max_value_label).mount(host_view),
+    };
+    cocoa_ui::view::hide_from_accessibility(children.label.view());
 
-        let state = Rc::new(RefCell::new(SliderState {
-            slider: slider.clone(),
-            children: Some(children),
-            _action: action,
-        }));
+    let state = Rc::new(RefCell::new(SliderState {
+        slider: slider.clone(),
+        children: Some(children),
+        _action: action,
+    }));
 
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |view| {
-                layout_children(view, proposal::response(view), &state.borrow());
-            }
-        });
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |view| {
+            layout_children(view, proposal::response(view), &state.borrow());
+        }
+    });
 
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            SliderSubView {
-                state: Rc::clone(&state),
-            },
-        );
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        SliderSubView {
+            state: Rc::clone(&state),
+        },
+    );
 
-        // Signal → control: push binding changes (clamped into range) with
-        // the animation the watcher metadata carries.
-        leaf.watch(&value, {
-            let slider = slider.clone();
-            move |ctx| {
-                let animation = value_animation(ctx.metadata());
-                slider.set_value(
-                    clamped(*ctx.value(), *range.start(), *range.end()),
-                    animation,
-                );
-            }
-        });
+    // Signal → control: push binding changes (clamped into range) with
+    // the animation the watcher metadata carries.
+    leaf.watch(&value, {
+        let slider = slider.clone();
+        move |ctx| {
+            let animation = value_animation(ctx.metadata());
+            slider.set_value(
+                clamped(*ctx.value(), *range.start(), *range.end()),
+                animation,
+            );
+        }
+    });
 
-        // Announce the label's semantic text on the control.
-        leaf.bind(&accessibility_label, {
-            let slider = slider.clone();
-            move |styled| {
-                let text = accessibility_text(&styled);
-                slider.set_accessibility_label(if text.is_empty() {
-                    None
-                } else {
-                    Some(text.as_str())
-                });
-            }
-        });
-
-        // The tint colours the filled part of the track.
-        leaf.bind(&button_chrome::tint_signal(ctx.env()), {
-            let slider = slider.clone();
-            move |color| slider.set_track_tint(&button_chrome::platform_color(&color))
-        });
-
-        // A disabled subtree must not respond to input.
-        if let Some(disabled) = ctx.env().get::<Disabled>() {
-            leaf.bind(disabled.signal(), {
-                move |is_disabled: bool| slider.set_enabled(!is_disabled)
+    // Announce the label's semantic text on the control.
+    leaf.bind(&accessibility_label, {
+        let slider = slider.clone();
+        move |styled| {
+            let text = accessibility_text(&styled);
+            slider.set_accessibility_label(if text.is_empty() {
+                None
+            } else {
+                Some(text.as_str())
             });
         }
-
-        leaf.keep(state);
-        leaf
     });
+
+    // The tint colours the filled part of the track.
+    leaf.bind(&button_chrome::tint_signal(ctx.env()), {
+        let slider = slider.clone();
+        move |color| slider.set_track_tint(&button_chrome::platform_color(&color))
+    });
+
+    // A disabled subtree must not respond to input.
+    if let Some(disabled) = ctx.env().get::<Disabled>() {
+        leaf.bind(disabled.signal(), {
+            move |is_disabled: bool| slider.set_enabled(!is_disabled)
+        });
+    }
+
+    leaf.keep(state);
+    leaf
 }
 
 #[cfg(test)]

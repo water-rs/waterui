@@ -24,7 +24,6 @@ use waterui_core::layout::{
 
 use super::font::platform_font;
 use crate::contract::NativeLeaf;
-use crate::dispatch::Dispatcher;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -191,47 +190,45 @@ impl SubView for PlainSubView {
 /// Installs the `plain` handler on the dispatcher: `Native<Str>` maps to a
 /// kit label whose attributed string rebuilds when the body font slot or
 /// foreground slot changes.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<Str>(|text, ctx| {
-        let mtm = ctx.mtm();
-        let label = Label::new(mtm);
-        label.set_line_limit(0);
+pub(crate) fn realize_str(text: Str, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let label = Label::new(mtm);
+    label.set_line_limit(0);
 
-        let body = Body.resolve(ctx.env());
-        let foreground = Foreground.resolve(ctx.env());
-        let state = Rc::new(RefCell::new(PlainState {
-            mtm,
+    let body = Body.resolve(ctx.env());
+    let foreground = Foreground.resolve(ctx.env());
+    let state = Rc::new(RefCell::new(PlainState {
+        mtm,
+        label: label.clone(),
+        text,
+        font: body.snapshot(),
+        foreground: foreground.snapshot(),
+    }));
+    render(&state.borrow(), None);
+
+    let mut leaf = NativeLeaf::new(
+        as_view(&label),
+        PlainSubView {
             label: label.clone(),
-            text,
-            font: body.snapshot(),
-            foreground: foreground.snapshot(),
-        }));
-        render(&state.borrow(), None);
+        },
+    );
 
-        let mut leaf = NativeLeaf::new(
-            as_view(&label),
-            PlainSubView {
-                label: label.clone(),
-            },
-        );
-
-        leaf.watch(&body, {
-            let state = Rc::clone(&state);
-            move |ctx| {
-                let duration = cross_dissolve_duration(ctx.metadata());
-                state.borrow_mut().font = ctx.into_value();
-                render(&state.borrow(), duration);
-            }
-        });
-        leaf.watch(&foreground, {
-            let state = Rc::clone(&state);
-            move |ctx| {
-                let duration = cross_dissolve_duration(ctx.metadata());
-                state.borrow_mut().foreground = ctx.into_value();
-                render(&state.borrow(), duration);
-            }
-        });
-        leaf.keep(state);
-        leaf
+    leaf.watch(&body, {
+        let state = Rc::clone(&state);
+        move |ctx| {
+            let duration = cross_dissolve_duration(ctx.metadata());
+            state.borrow_mut().font = ctx.into_value();
+            render(&state.borrow(), duration);
+        }
     });
+    leaf.watch(&foreground, {
+        let state = Rc::clone(&state);
+        move |ctx| {
+            let duration = cross_dissolve_duration(ctx.metadata());
+            state.borrow_mut().foreground = ctx.into_value();
+            render(&state.borrow(), duration);
+        }
+    });
+    leaf.keep(state);
+    leaf
 }

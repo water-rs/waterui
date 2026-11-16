@@ -34,7 +34,7 @@ use waterui_graphics::backend::{AnyEffect, ErasedEffect, FilteredView, ParamGuar
 use waterui_graphics::gpu::{GpuRuntime, SharedGpuContext, wgpu};
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
-use crate::dispatch::{Dispatcher, is_native_boundary};
+use crate::dispatch::is_native_boundary;
 use crate::publication_park::PublicationPark;
 
 #[cfg(target_os = "macos")]
@@ -2472,54 +2472,51 @@ fn effects_from_body(
 
 /// Installs the `filtered` handler — `applied_filter` and `view_effect`
 /// collapse into one leaf under the cutover's `Native<FilteredView>`.
-#[allow(clippy::too_many_lines)]
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<FilteredView>(|filtered, ctx| {
-        let mtm = ctx.mtm();
-        let (content, chained) = fuse_enclosed_filters(filtered, ctx);
-        // `NativeFilteredView` on AppKit: a complete native `CIFilter`
-        // plan mounts the content visibly on `CALayer.filters` — no
-        // capture, no GPU setup (#1748). Any unmapped stage, GPU effect or
-        // output-size policy falls through to the capture path. A chain
-        // under a transition declaration always takes the GPU
-        // realization: a `CAFilter`-backed native filter cannot hand off
-        // a frozen GPU frame (§2.2, maintainer decision 10).
-        #[cfg(all(target_os = "macos", feature = "applied_filter"))]
-        if ctx
-            .env()
-            .get::<crate::transition::SnapshotDemand>()
-            .is_none()
-            && let Some(plan) = crate::components::native_filter::plan(&chained)
-        {
-            return crate::components::native_filter::mount(mtm, ctx, content, chained, &plan);
-        }
-        let Some(services) = services(ctx.env()) else {
-            return crate::gpu_runtime::unavailable_leaf(mtm, "filtered");
-        };
-        let (sources, guard_list): (Vec<AnyEffect>, Vec<ParamGuards>) = chained.into_iter().unzip();
-        // The chain presents outermost-last: effects render content-adjacent
-        // first, so reverse the collection order.
-        let effects: Vec<Box<dyn ErasedEffect>> =
-            sources.into_iter().rev().map(AnyEffect::build).collect();
+pub fn realize_filtered_view(filtered: FilteredView, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let (content, chained) = fuse_enclosed_filters(filtered, ctx);
+    // `NativeFilteredView` on AppKit: a complete native `CIFilter`
+    // plan mounts the content visibly on `CALayer.filters` — no
+    // capture, no GPU setup (#1748). Any unmapped stage, GPU effect or
+    // output-size policy falls through to the capture path. A chain
+    // under a transition declaration always takes the GPU
+    // realization: a `CAFilter`-backed native filter cannot hand off
+    // a frozen GPU frame (§2.2, maintainer decision 10).
+    #[cfg(all(target_os = "macos", feature = "applied_filter"))]
+    if ctx
+        .env()
+        .get::<crate::transition::SnapshotDemand>()
+        .is_none()
+        && let Some(plan) = crate::components::native_filter::plan(&chained)
+    {
+        return crate::components::native_filter::mount(mtm, ctx, content, chained, &plan);
+    }
+    let Some(services) = services(ctx.env()) else {
+        return crate::gpu_runtime::unavailable_leaf(mtm, "filtered");
+    };
+    let (sources, guard_list): (Vec<AnyEffect>, Vec<ParamGuards>) = chained.into_iter().unzip();
+    // The chain presents outermost-last: effects render content-adjacent
+    // first, so reverse the collection order.
+    let effects: Vec<Box<dyn ErasedEffect>> =
+        sources.into_iter().rev().map(AnyEffect::build).collect();
 
-        let view = HostView::new(mtm, cocoa_ui::Rect::ZERO);
-        #[cfg(target_os = "macos")]
-        cocoa_ui::view::ensure_layer_backed(&view);
+    let view = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+    #[cfg(target_os = "macos")]
+    cocoa_ui::view::ensure_layer_backed(&view);
 
-        let mounted = ctx.render(content).mount(&view);
-        let child_view = cocoa_ui::view::retain_base(mounted.view());
-        build_filtered_parts(
-            mtm,
-            services,
-            &view,
-            &child_view,
-            Some(mounted),
-            effects,
-            guard_list,
-            ctx.env(),
-        )
-        .leaf
-    });
+    let mounted = ctx.render(content).mount(&view);
+    let child_view = cocoa_ui::view::retain_base(mounted.view());
+    build_filtered_parts(
+        mtm,
+        services,
+        &view,
+        &child_view,
+        Some(mounted),
+        effects,
+        guard_list,
+        ctx.env(),
+    )
+    .leaf
 }
 
 /// The device-wide services a filtered view mounts against.

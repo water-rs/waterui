@@ -22,7 +22,6 @@ use waterui_core::layout::{
 
 use super::font::resolved_weight;
 use crate::contract::NativeLeaf;
-use crate::dispatch::Dispatcher;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -36,6 +35,7 @@ mod platform {
     pub(super) use cocoa_ui::uikit::colors;
 }
 
+use crate::contract::RenderContext;
 use cocoa_ui::PlatformView;
 use platform::ImageView;
 
@@ -142,37 +142,34 @@ impl SubView for ImageSubView {
 /// Installs the `image` handler on the dispatcher: `Native<SystemIcon>` maps
 /// to a kit image view drawing the named `SF Symbol`, tinted by the theme
 /// foreground and sized by the theme body font.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<SystemIcon>(|config, ctx| {
-        let mtm = ctx.mtm();
-        let view = ImageView::new(mtm);
-        view.set_scale_mode(cocoa_ui::ScaleMode::Fit);
+#[expect(clippy::needless_pass_by_value, reason = "NativeBackend hands each payload by value")]
+pub fn realize_system_icon(config: SystemIcon, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let view = ImageView::new(mtm);
+    view.set_scale_mode(cocoa_ui::ScaleMode::Fit);
 
-        let name = config.name().as_str();
-        if !view.set_system_symbol(name) {
-            waterui::contract_violation!(
-                "Unknown SF Symbol name: {name}; the view draws no symbol"
-            );
-        }
+    let name = config.name().as_str();
+    if !view.set_system_symbol(name) {
+        waterui::contract_violation!("Unknown SF Symbol name: {name}; the view draws no symbol");
+    }
 
-        // The image view draws the symbol in the leaf's response rectangle
-        // at the symbol's own size, which the leaf answers
-        // (docs/layout-spec.md §6).
-        let mut leaf = NativeLeaf::new(as_view(&view), ImageSubView { view: view.clone() });
+    // The image view draws the symbol in the leaf's response rectangle
+    // at the symbol's own size, which the leaf answers
+    // (docs/layout-spec.md §6).
+    let mut leaf = NativeLeaf::new(as_view(&view), ImageSubView { view: view.clone() });
 
-        // The theme foreground tints the symbol; the theme body font
-        // re-renders it at the themed type size — both push imperatively,
-        // exactly as the Swift leaf's two observations did. Watchers only
-        // fire on change, so the current values are applied eagerly.
-        let foreground = Foreground.resolve(ctx.env());
-        view.set_tint_color(Some(&platform_color(&foreground.snapshot())));
-        leaf.bind(&foreground, {
-            let view = view.clone();
-            move |color| view.set_tint_color(Some(&platform_color(&color)))
-        });
-        let body = Body.resolve(ctx.env());
-        apply_symbol_font(mtm, &view, &body.snapshot());
-        leaf.bind(&body, move |font| apply_symbol_font(mtm, &view, &font));
-        leaf
+    // The theme foreground tints the symbol; the theme body font
+    // re-renders it at the themed type size — both push imperatively,
+    // exactly as the Swift leaf's two observations did. Watchers only
+    // fire on change, so the current values are applied eagerly.
+    let foreground = Foreground.resolve(ctx.env());
+    view.set_tint_color(Some(&platform_color(&foreground.snapshot())));
+    leaf.bind(&foreground, {
+        let view = view.clone();
+        move |color| view.set_tint_color(Some(&platform_color(&color)))
     });
+    let body = Body.resolve(ctx.env());
+    apply_symbol_font(mtm, &view, &body.snapshot());
+    leaf.bind(&body, move |font| apply_symbol_font(mtm, &view, &font));
+    leaf
 }

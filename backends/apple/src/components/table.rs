@@ -35,7 +35,6 @@ use waterui_core::layout::{
 };
 
 use crate::contract::{NativeLeaf, RenderContext, Renderer};
-use crate::dispatch::Dispatcher;
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{HostView, TableView};
@@ -931,8 +930,8 @@ fn render(config: TableConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
 }
 
 /// Registers the `table` leaf.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<TableConfig>(render);
+pub fn realize_table_config(value: TableConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+    render(value, ctx)
 }
 
 #[cfg(test)]

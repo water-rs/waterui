@@ -19,7 +19,7 @@ use waterui_core::Metadata;
 
 use crate::components::passthrough::passthrough_leaf;
 use crate::contract::NativeLeaf;
-use crate::dispatch::Dispatcher;
+use crate::contract::RenderContext;
 
 /// The marker a link-hint leaf carries; `WuiList`'s `containsNavigationLink`
 /// matches on it.
@@ -51,22 +51,29 @@ fn tag_transition(leaf: &NativeLeaf, id: waterui_core::id::Id) {
 }
 
 /// Installs the three metadata handlers on the dispatcher.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<NavigationTransitionSource>>(|metadata, ctx| {
-        let leaf = passthrough_leaf(metadata.content, ctx);
-        tag_transition(&leaf, metadata.value.id());
-        leaf
-    });
+pub fn realize_navigation_transition_source_metadata(
+    metadata: Metadata<NavigationTransitionSource>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let leaf = passthrough_leaf(metadata.content, ctx);
+    tag_transition(&leaf, metadata.value.id());
+    leaf
+}
 
-    dispatcher.register_view::<Metadata<NavigationTransitionDestination>>(|metadata, ctx| {
-        let leaf = passthrough_leaf(metadata.content, ctx);
-        tag_transition(&leaf, metadata.value.id());
-        leaf
-    });
+pub fn realize_navigation_transition_destination_metadata(
+    metadata: Metadata<NavigationTransitionDestination>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let leaf = passthrough_leaf(metadata.content, ctx);
+    tag_transition(&leaf, metadata.value.id());
+    leaf
+}
 
-    dispatcher.register_view::<Metadata<NavigationLinkHint>>(|metadata, ctx| {
-        let leaf = passthrough_leaf(metadata.content, ctx);
-        cocoa_ui::view::set_accessibility_identifier(leaf.view(), Some(LINK_HINT_IDENTIFIER));
-        leaf
-    });
+pub fn realize_navigation_link_hint_metadata(
+    metadata: Metadata<NavigationLinkHint>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let leaf = passthrough_leaf(metadata.content, ctx);
+    cocoa_ui::view::set_accessibility_identifier(leaf.view(), Some(LINK_HINT_IDENTIFIER));
+    leaf
 }

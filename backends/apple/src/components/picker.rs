@@ -37,7 +37,6 @@ use waterui_core::layout::{
 use super::font::platform_font;
 use crate::components::control_size::platform_control_size;
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
@@ -52,6 +51,7 @@ mod platform {
     pub(super) use cocoa_ui::uikit::{HostView, Picker};
 }
 
+use crate::contract::RenderContext;
 use platform::{HostView, Picker, PickerStyle};
 
 /// The gap between the leading label and the control.
@@ -290,124 +290,123 @@ impl SubView for PickerSubView {
 /// Installs the `picker` handler on the dispatcher: `Native<PickerConfig>`
 /// maps to a container view with the platform selection control and, on
 /// `AppKit`, the visible leading label child.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<PickerConfig>(|config, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let stretch = waterui_core::NativeView::stretch_axis(&config);
-        let picker = Picker::new(mtm, platform_style(config.style()));
-        // `Picker`'s documented default size is `Small`; the mapping is
-        // relative to it, so a bare picker draws at the platform's regular
-        // size like a bare `NSSegmentedControl` does. `UIKit` has no size
-        // classes for its selection controls and ignores the value.
-        picker.set_control_size(platform_control_size(config.size(), ControlSize::Small));
-        let host_view: &PlatformView = &host;
-        cocoa_ui::view::add_subview(host_view, picker.view());
+#[expect(clippy::needless_pass_by_value, reason = "NativeBackend hands each payload by value")]
+pub fn realize_picker_config(config: PickerConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let stretch = waterui_core::NativeView::stretch_axis(&config);
+    let picker = Picker::new(mtm, platform_style(config.style()));
+    // `Picker`'s documented default size is `Small`; the mapping is
+    // relative to it, so a bare picker draws at the platform's regular
+    // size like a bare `NSSegmentedControl` does. `UIKit` has no size
+    // classes for its selection controls and ignores the value.
+    picker.set_control_size(platform_control_size(config.size(), ControlSize::Small));
+    let host_view: &PlatformView = &host;
+    cocoa_ui::view::add_subview(host_view, picker.view());
 
-        let state = Rc::new(RefCell::new(PickerState {
-            picker,
-            selection: config.selection().clone(),
-            tags: Vec::new(),
-            titles: Vec::new(),
-            item_watchers: Vec::new(),
-            label: None,
-            style: platform_style(config.style()),
-        }));
+    let state = Rc::new(RefCell::new(PickerState {
+        picker,
+        selection: config.selection().clone(),
+        tags: Vec::new(),
+        titles: Vec::new(),
+        item_watchers: Vec::new(),
+        label: None,
+        style: platform_style(config.style()),
+    }));
 
-        // Control → binding: a picked index writes its tag back.
-        state.borrow().picker.install_action({
-            let state = Rc::clone(&state);
-            let selection = config.selection().clone();
-            move |index| {
-                if let Some(tag) = state.borrow().tags.get(index).copied() {
-                    selection.set(tag);
-                }
-            }
-        });
-
-        // The label is visible chrome on `AppKit` unless hidden; on `UIKit`
-        // it is spoken text on the container only.
-        #[cfg(target_os = "macos")]
-        {
-            if !matches!(
-                config.label().display_mode_preference(),
-                LabelDisplayMode::Hidden
-            ) {
-                let label = ctx
-                    .render(waterui_backend_core::AnyView::new(config.label().clone()))
-                    .mount(host_view);
-                cocoa_ui::view::hide_from_accessibility(label.view());
-                state.borrow_mut().label = Some(label);
+    // Control → binding: a picked index writes its tag back.
+    state.borrow().picker.install_action({
+        let state = Rc::clone(&state);
+        let selection = config.selection().clone();
+        move |index| {
+            if let Some(tag) = state.borrow().tags.get(index).copied() {
+                selection.set(tag);
             }
         }
-
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |view| layout_children(view, proposal::response(view), &state.borrow())
-        });
-
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            PickerSubView {
-                state: Rc::clone(&state),
-                stretch,
-            },
-        );
-
-        // Items → control: rebuild rows and per-item label watchers on each
-        // change (`bind` applies the current list immediately).
-        leaf.bind(config.items(), {
-            let state = Rc::clone(&state);
-            move |items| rebuild_items(&state, &items)
-        });
-
-        // Binding → control: a changed tag selects its index.
-        leaf.watch(config.selection(), {
-            let state = Rc::clone(&state);
-            move |ctx| {
-                let index = state
-                    .borrow_mut()
-                    .tags
-                    .iter()
-                    .position(|tag| *tag == *ctx.value());
-                state.borrow().picker.set_selected_index(index);
-            }
-        });
-
-        // The theme's body font drives the control's item faces.
-        let body = Body.resolve(ctx.env());
-        leaf.bind(&body, {
-            let state = Rc::clone(&state);
-            move |font: ResolvedFont| {
-                state
-                    .borrow()
-                    .picker
-                    .set_font(&platform_font(mtm, &font, false));
-            }
-        });
-
-        // The label's semantic text is announced on the container — as the
-        // accessibility label (and tooltip on `AppKit`), exactly the
-        // `WuiControlAccessibility` treatment.
-        let accessibility_label = config.label().accessibility_label();
-        leaf.bind(&accessibility_label, {
-            let host_view = cocoa_ui::view::retain_base(host_view);
-            move |styled| {
-                cocoa_ui::view::set_accessibility_label(&host_view, &item_title(&styled));
-            }
-        });
-
-        // A disabled subtree must not respond to input.
-        if let Some(disabled) = ctx.env().get::<Disabled>() {
-            leaf.bind(disabled.signal(), {
-                let state = Rc::clone(&state);
-                move |is_disabled: bool| state.borrow().picker.set_enabled(!is_disabled)
-            });
-        }
-
-        leaf.keep(state);
-        leaf
     });
+
+    // The label is visible chrome on `AppKit` unless hidden; on `UIKit`
+    // it is spoken text on the container only.
+    #[cfg(target_os = "macos")]
+    {
+        if !matches!(
+            config.label().display_mode_preference(),
+            LabelDisplayMode::Hidden
+        ) {
+            let label = ctx
+                .render(waterui_backend_core::AnyView::new(config.label().clone()))
+                .mount(host_view);
+            cocoa_ui::view::hide_from_accessibility(label.view());
+            state.borrow_mut().label = Some(label);
+        }
+    }
+
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |view| layout_children(view, proposal::response(view), &state.borrow())
+    });
+
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        PickerSubView {
+            state: Rc::clone(&state),
+            stretch,
+        },
+    );
+
+    // Items → control: rebuild rows and per-item label watchers on each
+    // change (`bind` applies the current list immediately).
+    leaf.bind(config.items(), {
+        let state = Rc::clone(&state);
+        move |items| rebuild_items(&state, &items)
+    });
+
+    // Binding → control: a changed tag selects its index.
+    leaf.watch(config.selection(), {
+        let state = Rc::clone(&state);
+        move |ctx| {
+            let index = state
+                .borrow_mut()
+                .tags
+                .iter()
+                .position(|tag| *tag == *ctx.value());
+            state.borrow().picker.set_selected_index(index);
+        }
+    });
+
+    // The theme's body font drives the control's item faces.
+    let body = Body.resolve(ctx.env());
+    leaf.bind(&body, {
+        let state = Rc::clone(&state);
+        move |font: ResolvedFont| {
+            state
+                .borrow()
+                .picker
+                .set_font(&platform_font(mtm, &font, false));
+        }
+    });
+
+    // The label's semantic text is announced on the container — as the
+    // accessibility label (and tooltip on `AppKit`), exactly the
+    // `WuiControlAccessibility` treatment.
+    let accessibility_label = config.label().accessibility_label();
+    leaf.bind(&accessibility_label, {
+        let host_view = cocoa_ui::view::retain_base(host_view);
+        move |styled| {
+            cocoa_ui::view::set_accessibility_label(&host_view, &item_title(&styled));
+        }
+    });
+
+    // A disabled subtree must not respond to input.
+    if let Some(disabled) = ctx.env().get::<Disabled>() {
+        leaf.bind(disabled.signal(), {
+            let state = Rc::clone(&state);
+            move |is_disabled: bool| state.borrow().picker.set_enabled(!is_disabled)
+        });
+    }
+
+    leaf.keep(state);
+    leaf
 }
 
 #[cfg(test)]

@@ -19,9 +19,9 @@ use waterui_core::layout::{
 use waterui_core::metadata::Retain;
 
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
@@ -80,59 +80,60 @@ impl SubView for RetainSubView {
 /// Installs the `retain` handler on the dispatcher: `Metadata<Retain>` maps
 /// to a transparent container that holds the retained value for the leaf's
 /// life.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<Retain>>(|metadata, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let host_view: &PlatformView = &host;
+pub fn realize_retain_metadata(
+    metadata: Metadata<Retain>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let host_view: &PlatformView = &host;
 
-        let child = ctx.render(metadata.content);
-        // A `Retain::resolved` value is built from the environment its
-        // content's modifier chain resolves in, as a handler's is.
-        let env = child.handler_env(ctx.env());
-        let mut retained = metadata.value;
-        retained.resolve(&env);
-        let mounted = child.mount(host_view);
+    let child = ctx.render(metadata.content);
+    // A `Retain::resolved` value is built from the environment its
+    // content's modifier chain resolves in, as a handler's is.
+    let env = child.handler_env(ctx.env());
+    let mut retained = metadata.value;
+    retained.resolve(&env);
+    let mounted = child.mount(host_view);
 
-        view::set_translates_autoresizing(mounted.view(), true);
+    view::set_translates_autoresizing(mounted.view(), true);
 
-        let state = Rc::new(RetainState { child: mounted });
+    let state = Rc::new(RetainState { child: mounted });
 
-        // `contentView.frame = bounds`.
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |host| {
-                view::set_frame(state.child.view(), view::bounds(host));
-            }
-        });
-
-        // `WuiPrimaryContentProviding`: the primary-content chain descends
-        // into the content — a scroll surface under a retain wrapper keeps
-        // managing its own safe area instead of being framed inside it.
-        crate::primary_content::forward(&host, state.child.view());
-
-        // `setPlacementProposal`: the proposal selected for this wrapper is
-        // the proposal its content was negotiated with.
-        let sink_guard = proposal::register_sink(host_view, {
-            let state = Rc::clone(&state);
-            move |selected| {
-                proposal::deliver(state.child.view(), selected);
-            }
-        });
-
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            RetainSubView {
-                state: Rc::clone(&state),
-            },
-        );
-        leaf.keep(sink_guard);
-        leaf.keep(state);
-        // `WuiRetainValue`: the opaque value dies with the view.
-        leaf.keep(retained);
-        // Transparent to handler resolution: a handler wrapped around this
-        // leaf resolves through its content's chain.
-        leaf.set_handler_env(env);
-        leaf
+    // `contentView.frame = bounds`.
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |host| {
+            view::set_frame(state.child.view(), view::bounds(host));
+        }
     });
+
+    // `WuiPrimaryContentProviding`: the primary-content chain descends
+    // into the content — a scroll surface under a retain wrapper keeps
+    // managing its own safe area instead of being framed inside it.
+    crate::primary_content::forward(&host, state.child.view());
+
+    // `setPlacementProposal`: the proposal selected for this wrapper is
+    // the proposal its content was negotiated with.
+    let sink_guard = proposal::register_sink(host_view, {
+        let state = Rc::clone(&state);
+        move |selected| {
+            proposal::deliver(state.child.view(), selected);
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        RetainSubView {
+            state: Rc::clone(&state),
+        },
+    );
+    leaf.keep(sink_guard);
+    leaf.keep(state);
+    // `WuiRetainValue`: the opaque value dies with the view.
+    leaf.keep(retained);
+    // Transparent to handler resolution: a handler wrapped around this
+    // leaf resolves through its content's chain.
+    leaf.set_handler_env(env);
+    leaf
 }

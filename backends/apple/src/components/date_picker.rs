@@ -25,7 +25,6 @@ use waterui_core::layout::{
 };
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
@@ -464,112 +463,114 @@ impl SubView for DatePickerSubView {
 
 /// Installs the `date_picker` handler on the dispatcher:
 /// `Native<DatePickerConfig>` maps to the label/control row.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<DatePickerConfig>(|config, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let host_view: &PlatformView = &host;
+#[expect(clippy::needless_pass_by_value, reason = "NativeBackend hands each payload by value")]
+pub fn realize_date_picker_config(
+    config: DatePickerConfig,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let host_view: &PlatformView = &host;
 
-        #[cfg(target_os = "macos")]
-        let picker = DatePicker::new(mtm, platform::elements(config.ty()));
+    #[cfg(target_os = "macos")]
+    let picker = DatePicker::new(mtm, platform::elements(config.ty()));
+    #[cfg(target_os = "ios")]
+    let picker = DatePicker::new(mtm, platform::mode(config.ty()));
+    picker.set_range(
+        range_bound(*config.range().start()).as_deref(),
+        range_bound(*config.range().end()).as_deref(),
+    );
+    cocoa_ui::view::add_subview(host_view, as_view(&picker));
+
+    let label = ctx
+        .render(waterui_backend_core::AnyView::new(config.label().clone()))
+        .mount(host_view);
+    cocoa_ui::view::hide_from_accessibility(label.view());
+
+    let state = Rc::new(RefCell::new(DatePickerState {
+        picker,
+        syncing: Cell::new(false),
+        ty: config.ty(),
+        label,
         #[cfg(target_os = "ios")]
-        let picker = DatePicker::new(mtm, platform::mode(config.ty()));
-        picker.set_range(
-            range_bound(*config.range().start()).as_deref(),
-            range_bound(*config.range().end()).as_deref(),
-        );
-        cocoa_ui::view::add_subview(host_view, as_view(&picker));
+        seconds: None,
+    }));
 
-        let label = ctx
-            .render(waterui_backend_core::AnyView::new(config.label().clone()))
-            .mount(host_view);
-        cocoa_ui::view::hide_from_accessibility(label.view());
+    // `syncControls` runs before the action is wired, like the Swift init.
+    sync_controls(&state.borrow(), config.value().snapshot());
 
-        let state = Rc::new(RefCell::new(DatePickerState {
-            picker,
-            syncing: Cell::new(false),
-            ty: config.ty(),
-            label,
-            #[cfg(target_os = "ios")]
-            seconds: None,
-        }));
-
-        // `syncControls` runs before the action is wired, like the Swift init.
+    #[cfg(target_os = "ios")]
+    if shows_seconds(config.ty()) {
+        let seconds_label = platform::Label::new(mtm);
+        seconds_label.set_text_alignment(platform::NSTextAlignment::Right);
+        let stepper = platform::Stepper::new(mtm);
+        stepper.set_range(0.0, 59.0);
+        stepper.set_step(1.0);
+        cocoa_ui::view::add_subview(host_view, &seconds_label);
+        cocoa_ui::view::add_subview(host_view, &stepper);
+        state.borrow_mut().seconds = Some(SecondsControls {
+            label: seconds_label,
+            stepper,
+            font_size: Cell::new(0.0),
+            font_weight: Cell::new(cocoa_ui::font::weight::REGULAR),
+            foreground: RefCell::new(platform::UIColor::labelColor()),
+            value: Cell::new(0),
+        });
         sync_controls(&state.borrow(), config.value().snapshot());
+    }
 
-        #[cfg(target_os = "ios")]
-        if shows_seconds(config.ty()) {
-            let seconds_label = platform::Label::new(mtm);
-            seconds_label.set_text_alignment(platform::NSTextAlignment::Right);
-            let stepper = platform::Stepper::new(mtm);
-            stepper.set_range(0.0, 59.0);
-            stepper.set_step(1.0);
-            cocoa_ui::view::add_subview(host_view, &seconds_label);
-            cocoa_ui::view::add_subview(host_view, &stepper);
-            state.borrow_mut().seconds = Some(SecondsControls {
-                label: seconds_label,
-                stepper,
-                font_size: Cell::new(0.0),
-                font_weight: Cell::new(cocoa_ui::font::weight::REGULAR),
-                foreground: RefCell::new(platform::UIColor::labelColor()),
-                value: Cell::new(0),
-            });
-            sync_controls(&state.borrow(), config.value().snapshot());
-        }
+    // Control → binding: the action merges the edited fields back.
+    let action_target = state.borrow().picker.install_action({
+        let state = Rc::clone(&state);
+        let binding = config.value().clone();
+        move || update_binding(&state, &binding)
+    });
 
-        // Control → binding: the action merges the edited fields back.
-        let action_target = state.borrow().picker.install_action({
+    // `secondsChanged`: refresh the readout, then merge.
+    #[cfg(target_os = "ios")]
+    let seconds_target = state.borrow().seconds.as_ref().map(|seconds| {
+        seconds.stepper.install_action({
             let state = Rc::clone(&state);
             let binding = config.value().clone();
-            move || update_binding(&state, &binding)
-        });
-
-        // `secondsChanged`: refresh the readout, then merge.
-        #[cfg(target_os = "ios")]
-        let seconds_target = state.borrow().seconds.as_ref().map(|seconds| {
-            seconds.stepper.install_action({
-                let state = Rc::clone(&state);
-                let binding = config.value().clone();
-                move |value| {
-                    {
-                        let borrowed = state.borrow();
-                        if borrowed.syncing.get() {
-                            return;
-                        }
-                        if let Some(controls) = &borrowed.seconds {
-                            controls.value.set(current_seconds(value));
-                            set_seconds_text(controls);
-                        }
+            move |value| {
+                {
+                    let borrowed = state.borrow();
+                    if borrowed.syncing.get() {
+                        return;
                     }
-                    update_binding(&state, &binding);
+                    if let Some(controls) = &borrowed.seconds {
+                        controls.value.set(current_seconds(value));
+                        set_seconds_text(controls);
+                    }
                 }
-            })
-        });
-
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |view| {
-                layout_children(view, proposal::response(view), &state.borrow());
+                update_binding(&state, &binding);
             }
-        });
-
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            DatePickerSubView {
-                state: Rc::clone(&state),
-            },
-        );
-        wire(&mut leaf, &config, &state, ctx, mtm);
-
-        // Binding → control; the syncing flag drops the echo our own write
-        // raises back through the action.
-
-        leaf.keep(action_target);
-        #[cfg(target_os = "ios")]
-        leaf.keep(seconds_target);
-        leaf.keep(state);
-        leaf
+        })
     });
+
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |view| {
+            layout_children(view, proposal::response(view), &state.borrow());
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        DatePickerSubView {
+            state: Rc::clone(&state),
+        },
+    );
+    wire(&mut leaf, &config, &state, ctx, mtm);
+
+    // Binding → control; the syncing flag drops the echo our own write
+    // raises back through the action.
+
+    leaf.keep(action_target);
+    #[cfg(target_os = "ios")]
+    leaf.keep(seconds_target);
+    leaf.keep(state);
+    leaf
 }
 
 /// Wires the leaf's watches and binds — control ← signal subscriptions

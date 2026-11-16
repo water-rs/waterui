@@ -31,13 +31,15 @@ use waterui_core::layout::{
 };
 
 use crate::contract::{NativeLeaf, RenderContext};
-use crate::dispatch::Dispatcher;
 use crate::transition::ghost::Ghost;
 use crate::transition::live::{LiveChild, Removal};
 
 /// Installs the stack's claim on the dispatcher.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<NavigationStack<(), ()>>(stack_leaf);
+pub fn realize_navigation_stack(
+    value: NavigationStack<(), ()>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    stack_leaf(value, ctx)
 }
 
 /// The stack's leaf: a `NavigationController` is inserted into the child

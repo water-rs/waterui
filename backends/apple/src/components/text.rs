@@ -33,7 +33,6 @@ use waterui_core::layout::{
 
 use super::font::platform_font;
 use crate::contract::{NativeLeaf, RenderContext};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 use crate::theme::platform_color;
 
@@ -673,42 +672,38 @@ fn label_leaf(
 /// to a kit label with per-chunk signal watches and baseline measurement,
 /// and `Native<Str>` (a bare string used as a view) maps to the same leaf
 /// with static content.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<TextConfig>(|config, ctx| {
-        let content = config.content();
-        let (mut leaf, state, label) = label_leaf(
-            ctx,
-            config.line_limit(),
-            &content.snapshot(),
-            config.paragraph_alignment().snapshot(),
-        );
+#[expect(clippy::needless_pass_by_value, reason = "NativeBackend hands each payload by value")]
+pub fn realize_text_config(config: TextConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let content = config.content();
+    let (mut leaf, state, label) = label_leaf(
+        ctx,
+        config.line_limit(),
+        &content.snapshot(),
+        config.paragraph_alignment().snapshot(),
+    );
 
-        // Content changes re-resolve every chunk signal; paragraph
-        // alignment pushes straight to the label inside the leaf.
-        leaf.watch(&content, move |ctx| {
-            let duration = cross_dissolve_duration(ctx.metadata());
-            apply_styled(&state, ctx.value());
-            rebuild(&state.borrow(), duration);
-        });
-        leaf.watch(config.paragraph_alignment(), move |ctx| {
-            apply_alignment(&label, *ctx.value());
-        });
-        leaf
+    // Content changes re-resolve every chunk signal; paragraph
+    // alignment pushes straight to the label inside the leaf.
+    leaf.watch(&content, move |ctx| {
+        let duration = cross_dissolve_duration(ctx.metadata());
+        apply_styled(&state, ctx.value());
+        rebuild(&state.borrow(), duration);
     });
+    leaf.watch(config.paragraph_alignment(), move |ctx| {
+        apply_alignment(&label, *ctx.value());
+    });
+    leaf
+}
 
-    // `plain` owns the bare-`Str` leaf when enabled; `text` supplies it
-    // only so a `text`-without-`plain` build still renders strings. Two
-    // claims on the same type are rejected by the dispatcher.
-    #[cfg(not(feature = "plain"))]
-    dispatcher.register_native::<Str>(|text, ctx| {
-        let (leaf, ..) = label_leaf(
-            ctx,
-            None,
-            &StyledStr::from(text),
-            HorizontalAlignment::Leading,
-        );
-        leaf
-    });
+#[cfg(not(feature = "plain"))]
+pub fn realize_str(text: Str, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let (leaf, ..) = label_leaf(
+        ctx,
+        None,
+        &StyledStr::from(text),
+        HorizontalAlignment::Leading,
+    );
+    leaf
 }
 
 #[cfg(test)]

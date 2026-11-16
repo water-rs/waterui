@@ -14,12 +14,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
-#[cfg(all(target_os = "macos", feature = "draggable"))]
+#[cfg(target_os = "macos")]
 use cocoa_ui::objc2::AnyThread;
 use cocoa_ui::objc2::MainThreadOnly;
 use cocoa_ui::objc2::rc::Retained;
 use cocoa_ui::objc2::runtime::ProtocolObject;
-#[cfg(all(target_os = "macos", feature = "draggable"))]
+#[cfg(target_os = "macos")]
 use cocoa_ui::objc2_core_foundation::CGSize;
 use cocoa_ui::objc2_metal::{
     MTLDevice, MTLOrigin, MTLPixelFormat, MTLRegion, MTLSize, MTLStorageMode, MTLTexture,
@@ -903,7 +903,7 @@ pub async fn template_image(
 /// Reuses [`capture_rgba`] at the window's backing scale; the `CGImage`
 /// wraps the top-down raster unflipped, preserving the capture
 /// orientation.
-#[cfg(all(target_os = "macos", feature = "draggable"))]
+#[cfg(target_os = "macos")]
 #[expect(
     clippy::future_not_send,
     reason = "the drag capture awaits the main-thread capture of a main-thread view"
