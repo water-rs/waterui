@@ -1,0 +1,128 @@
+name: Dispatch instructions
+
+# Callgrind instruction counts of Hydrolysis's dispatch workloads
+# (`backends/hydrolysis/benches/dispatch`): each workload on a pull
+# request's merge commit against the main commit it merges into (the merge
+# commit's first parent), or on any pair of revisions by dispatch. The
+# counts are deterministic, so they compare across runs where wall-clock
+# time on a shared runner cannot. It reports and is not a required check.
+on:
+  workflow_dispatch:
+    inputs:
+      head:
+        description: Candidate revision (SHA, branch, or refs/pull/<number>/merge)
+        required: true
+        type: string
+      base:
+        description: Baseline revision; the counts compare against its merge base with head
+        required: false
+        default: origin/main
+        type: string
+  pull_request:
+    branches: [main]
+    paths:
+      - core/**
+      - backends/core/**
+      - backends/hydrolysis/**
+      - components/**
+      - src/**
+      - Cargo.lock
+      - .github/workflows/dispatch-ir.yml
+
+permissions:
+  contents: read
+
+jobs:
+  instructions:
+    name: instructions
+    runs-on: ubuntu-24.04
+    # A newer push to the same pull request supersedes the running measurement.
+    concurrency:
+      group: dispatch-ir-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: true
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      # The benches inherit the release profile, which strips symbols;
+      # gungraun collects inside the benchmark function and needs its symbol.
+      CARGO_PROFILE_RELEASE_DEBUG: "1"
+      CARGO_PROFILE_RELEASE_STRIP: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: "false"
+      - uses: ./.github/actions/cargo-sources
+      # The lazy-list workload renders through Hydrolysis's GPU painter, which
+      # needs Lavapipe on a runner without a GPU.
+      - uses: ./.github/actions/setup-linux-deps
+        with:
+          gpu: "true"
+          extra-packages: valgrind
+      # gungraun-runner must match the gungraun library exactly; the
+      # lockfile records it.
+      - name: The lockfile's gungraun version
+        id: runner
+        run: >-
+          echo "version=$(cargo metadata --format-version 1 --locked
+          | jq -r '.packages[] | select(.name == "gungraun") | .version')" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: gungraun-runner@${{ steps.runner.outputs.version }}
+          path: ~/.cargo/bin/gungraun-runner*
+      # Revisions the checkout does not hold are fetched from origin.
+      - name: Resolve the measurement pair
+        id: pair
+        env:
+          IR_BASE: ${{ inputs.base || format('{0}^1', github.sha) }}
+          IR_HEAD: ${{ inputs.head || github.sha }}
+        run: |
+          fetch_rev() {
+            if ! git rev-parse --verify --quiet --end-of-options "$1^{commit}" >/dev/null; then
+              git fetch --no-tags origin "$1" >&2
+              git rev-parse --verify 'FETCH_HEAD^{commit}'
+            else
+              git rev-parse --verify --end-of-options "$1^{commit}"
+            fi
+          }
+          head=$(fetch_rev "$IR_HEAD")
+          base=$(git merge-base "$(fetch_rev "$IR_BASE")" "$head")
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+          if git cat-file -e "$base:backends/hydrolysis/benches/dispatch/ir.rs" 2>/dev/null; then
+            echo "has-baseline=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Measure the merge base
+        if: steps.pair.outputs.has-baseline == 'true'
+        run: |
+          git checkout "${{ steps.pair.outputs.base }}"
+          cargo bench --locked -p hydrolysis --features testing --bench dispatch_ir -- --save-baseline=main
+      - name: Measure the head
+        env:
+          COMPARE: ${{ steps.pair.outputs.has-baseline == 'true' && '--baseline=main' || '' }}
+        run: |
+          git checkout "${{ steps.pair.outputs.head }}"
+          # shellcheck disable=SC2086 # COMPARE is empty or one flag
+          cargo bench --locked -p hydrolysis --features testing --bench dispatch_ir -- $COMPARE \
+            | tee dispatch-ir.txt
+      - name: Summarize
+        if: always() && hashFiles('dispatch-ir.txt') != ''
+        run: |
+          {
+            echo '```'
+            cat dispatch-ir.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload gungraun's output directory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dispatch-ir-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/gungraun/
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 30
