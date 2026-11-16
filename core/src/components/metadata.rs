@@ -13,6 +13,7 @@ use core::any::Any;
 use core::any::type_name;
 use core::fmt;
 
+use crate::backend::Backend;
 use crate::layout::StretchAxis;
 use crate::{AnyView, Environment, View};
 
@@ -52,6 +53,10 @@ impl<T: MetadataKey> Metadata<T> {
 impl<T: MetadataKey> View for Metadata<T> {
     fn body(self, _env: &Environment) -> impl View {
         never_expands::<T>();
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.metadata(self, env, cx)
     }
 
     /// Metadata is transparent for layout: the wrapper never changes how the

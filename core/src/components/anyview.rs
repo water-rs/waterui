@@ -14,10 +14,17 @@ use core::{
 
 use alloc::boxed::Box;
 
+use crate::backend::{Backend, DynBackend, Erased};
 use crate::{Environment, View, layout::StretchAxis};
 
 trait AnyViewImpl: 'static {
     fn body(self: Box<Self>, env: Environment) -> AnyView;
+    fn dispatch_dyn(
+        self: Box<Self>,
+        backend: &mut dyn DynBackend,
+        env: &Environment,
+        cx: Box<dyn Any>,
+    ) -> Box<dyn Any>;
     fn type_id(&self) -> TypeId {
         TypeId::of::<Self>()
     }
@@ -30,6 +37,14 @@ trait AnyViewImpl: 'static {
 impl<T: View> AnyViewImpl for T {
     fn body(self: Box<Self>, env: Environment) -> AnyView {
         AnyView::new(View::body(*self, &env))
+    }
+    fn dispatch_dyn(
+        self: Box<Self>,
+        backend: &mut dyn DynBackend,
+        env: &Environment,
+        cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        View::dispatch(*self, &mut Erased::new(backend), env, cx)
     }
     fn stretch_axis(&self) -> StretchAxis {
         View::stretch_axis(self)
@@ -100,6 +115,18 @@ impl AnyView {
     #[must_use]
     pub fn stretch_axis(&self) -> StretchAxis {
         AnyViewImpl::stretch_axis(&*self.0)
+    }
+
+    /// Expands the erased view through `backend`: its own subtree
+    /// dispatches statically, and only its native payloads and metadata
+    /// reach `backend`, each as `&mut dyn Any`.
+    pub fn dispatch_dyn(
+        self,
+        backend: &mut dyn DynBackend,
+        env: &Environment,
+        cx: Box<dyn Any>,
+    ) -> Box<dyn Any> {
+        self.0.dispatch_dyn(backend, env, cx)
     }
 
     #[doc(hidden)]
@@ -180,6 +207,10 @@ impl AnyView {
 impl View for AnyView {
     fn body(self, env: &Environment) -> impl View {
         self.0.body(env.clone())
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.erased(self, env, cx)
     }
 
     /// Forwards the erased view's own answer.
