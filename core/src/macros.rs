@@ -249,6 +249,11 @@ macro_rules! configurable {
         $crate::configurable!(@impl $(#[$meta])*; $view, $config, $crate::layout::StretchAxis::None);
     };
 }
+
+/// Invokes `$macro` once for each tuple arity a view sequence supports,
+/// with that many type parameter names.
+#[doc(hidden)]
+#[macro_export]
 macro_rules! tuples {
     ($macro:ident) => {
         $macro!();

@@ -74,7 +74,7 @@ fn visible_rows(
         .computed()
 }
 
-fn level_picker(minimum: &Binding<LogLevel>) -> impl View {
+fn level_picker(minimum: &Binding<LogLevel>) -> impl View + use<> {
     let levels = [
         LogLevel::Trace,
         LogLevel::Debug,

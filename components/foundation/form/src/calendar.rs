@@ -402,7 +402,7 @@ fn build_month_header(
     locale: &Computed<Locale>,
     visible_month: Binding<VisibleMonth>,
     range: RangeInclusive<Date>,
-) -> impl View {
+) -> impl View + use<> {
     let title = Text::computed(
         locale
             .zip(&visible_month)
@@ -464,7 +464,7 @@ fn month_navigation_button(
 /// Wraps day-grid content in its column cell: ideally [`CALENDAR_DAY_SIZE`]
 /// wide but free to shrink with its row, so the seven columns compress evenly
 /// on layouts narrower than the full grid instead of overflowing the calendar.
-fn day_grid_cell(content: impl View, height: f32) -> Frame {
+fn day_grid_cell<C: View>(content: C, height: f32) -> Frame<C> {
     Frame::new(content)
         .width(CALENDAR_DAY_SIZE)
         .min_width(0.0)

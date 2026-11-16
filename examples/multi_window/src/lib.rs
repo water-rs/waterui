@@ -119,7 +119,7 @@ fn window_section(
     title: &'static str,
     description: &'static str,
     state: &Binding<WindowState>,
-) -> impl View {
+) -> impl View + use<> {
     vstack((
         text(title).headline().bold(),
         text(description).body(),
@@ -229,7 +229,10 @@ fn create_controls_window(state: Binding<WindowState>) -> Window {
 }
 
 /// Content of the controls window: buttons driving its `WindowHandle`.
-fn controls_window_content(handle: &WindowHandle, always_on_top: &Binding<bool>) -> impl View {
+fn controls_window_content(
+    handle: &WindowHandle,
+    always_on_top: &Binding<bool>,
+) -> impl View + use<> {
     vstack((
         text("Window Controls").title().bold(),
         spacer().height(16.0),
@@ -273,7 +276,7 @@ fn controls_window_content(handle: &WindowHandle, always_on_top: &Binding<bool>)
 }
 
 /// Helper function to create window content
-fn window_content(title: &'static str, description: &'static str) -> impl View {
+fn window_content(title: &'static str, description: &'static str) -> impl View + use<> {
     vstack((
         text(title).title().bold(),
         spacer().height(16.0),
@@ -308,7 +311,7 @@ fn transparent_window_content() -> impl View {
 }
 
 /// Helper to create a colored box
-fn colored_box(color: Color, label: &'static str) -> impl View {
+fn colored_box(color: Color, label: &'static str) -> impl View + use<> {
     vstack((spacer(), text(label).bold().body(), spacer()))
         .padding_with(32.0)
         .background(color)
@@ -328,7 +331,7 @@ fn material_showcase() -> impl View {
 }
 
 /// Helper to display a material type description
-fn material_item(name: &'static str, description: &'static str) -> impl View {
+fn material_item(name: &'static str, description: &'static str) -> impl View + use<> {
     hstack((
         text(name).bold().body().width(100.0),
         text(description).caption(),

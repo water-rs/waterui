@@ -208,10 +208,10 @@ pub fn components_block_07() {
     let _ = {
         layout_grid(
             3,
-            [
+            (
                 grid_row((a, b, c)),
                 grid_row((d, e)), // short rows are fine
-            ],
+            ),
         )
         .spacing(10.0)
     };

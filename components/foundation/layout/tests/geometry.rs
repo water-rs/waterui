@@ -562,11 +562,11 @@ fn grid_with_short_middle_row_view() -> impl View {
     let cell = |label| labeled_card(label, 30.0, 20.0, Srgb::BLACK);
     waterui::layout::grid::grid(
         3,
-        [
+        (
             waterui::layout::grid::row((cell("a"), cell("b"), cell("c"))),
             waterui::layout::grid::row((cell("d"),)),
             waterui::layout::grid::row((cell("e"), cell("f"), cell("g"))),
-        ],
+        ),
     )
 }
 

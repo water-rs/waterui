@@ -31,7 +31,7 @@ macro_rules! native_backend {
             $( $(#[cfg($ncfg:meta)])* $(#[doc = $ndoc:literal])* $native:ident: $native_ty:ty, )*
         }
         parents {
-            $( $(#[cfg($pcfg:meta)])* $(#[doc = $pdoc:literal])* $parent:ident: $($parent_ty:ident)::+, )*
+            $( $(#[cfg($pcfg:meta)])* $(#[doc = $pdoc:literal])* $parent:ident<$child:ident>: $parent_ty:ty, )*
         }
         metadata {
             $( $(#[cfg($mcfg:meta)])* $(#[doc = $mdoc:literal])* $meta:ident: $meta_ty:ty, )*
@@ -69,7 +69,7 @@ macro_rules! native_backend {
             $(
                 $(#[cfg($pcfg)])*
                 $(#[doc = $pdoc])*
-                fn $parent<C: ChildView<Self>>(&mut self, native: $($parent_ty)::+<C>, env: &Environment, cx: Self::Ctx) -> Self::Output;
+                fn $parent<$child: ChildView<Self>>(&mut self, native: $parent_ty, env: &Environment, cx: Self::Ctx) -> Self::Output;
             )*
 
             $(
@@ -114,15 +114,30 @@ macro_rules! native_backend {
             )*
             $(
                 $(#[cfg($pcfg)])*
-                let native = match cast::<T, $($parent_ty)::+<Child<B::Family>>>(native) {
-                    Ok(native) => return backend.$parent(native, env, cx),
-                    Err(native) => native,
+                let native = {
+                    // The payload with its children in the slot `$child`.
+                    fn route<B: NativeBackend, $child: ChildView<B>, T: 'static>(
+                        backend: &mut B,
+                        native: T,
+                        env: &Environment,
+                        cx: B::Ctx,
+                    ) -> Result<B::Output, (T, B::Ctx)> {
+                        match cast::<T, $parent_ty>(native) {
+                            Ok(native) => Ok(backend.$parent(native, env, cx)),
+                            Err(native) => Err((native, cx)),
+                        }
+                    }
+                    let (native, cx_) = match route::<B, Child<B::Family>, T>(backend, native, env, cx) {
+                        Ok(output) => return output,
+                        Err(unmatched) => unmatched,
+                    };
+                    match route::<B, AnyView, T>(backend, native, env, cx_) {
+                        Ok(output) => return output,
+                        Err(unmatched) => unmatched,
+                    }
                 };
                 $(#[cfg($pcfg)])*
-                let native = match cast::<T, $($parent_ty)::+<AnyView>>(native) {
-                    Ok(native) => return backend.$parent(native, env, cx),
-                    Err(native) => native,
-                };
+                let (native, cx) = native;
             )*
             backend.provided(native, env, cx)
         }
@@ -157,8 +172,14 @@ macro_rules! native_backend {
             )*
             $(
                 $(#[cfg($pcfg)])*
-                if let Some(native) = native.take::<$($parent_ty)::+<AnyView>>() {
-                    return backend.$parent(native, env, cx);
+                {
+                    // The payload with its children in the erased slot.
+                    fn take<$child: 'static>(native: &mut ErasedPayload<'_>) -> Option<$parent_ty> {
+                        native.take::<$parent_ty>()
+                    }
+                    if let Some(native) = take::<AnyView>(&mut native) {
+                        return backend.$parent(native, env, cx);
+                    }
                 }
             )*
             backend.provided_dyn(native, env, cx)
@@ -206,9 +227,9 @@ macro_rules! native_backend {
 
             $(
                 $(#[cfg($pcfg)])*
-                fn $parent<C: ChildView<Self>>(&mut self, native: $($parent_ty)::+<C>, env: &Environment, (): ()) {
+                fn $parent<$child: ChildView<Self>>(&mut self, native: $parent_ty, env: &Environment, (): ()) {
                     self.reached.push(stringify!($parent));
-                    tests::Recorder::realize_children(self, native, env);
+                    tests::Recorder::realize_children(self, tests::Parent::children(native), env);
                 }
             )*
 
@@ -402,8 +423,6 @@ native_backend! {
         spacer: waterui::layout::Spacer,
         /// A line separating content.
         divider: waterui::layout::Divider,
-        /// A container with a fixed child list and a layout.
-        fixed_container: waterui::layout::container::FixedContainer,
         /// A container whose children are produced lazily.
         lazy_container: waterui::layout::container::LazyContainer,
         /// A view whose content a signal replaces.
@@ -503,7 +522,9 @@ native_backend! {
     }
     parents {
         /// A scroll view.
-        scroll: waterui::layout::scroll::ScrollView,
+        scroll<C>: waterui::layout::scroll::ScrollView<C>,
+        /// A container with a fixed child list and a layout.
+        fixed_container<C>: waterui::layout::container::FixedContainer<alloc::vec::Vec<C>>,
     }
     metadata {
         /// An environment scope over its content.
@@ -616,22 +637,42 @@ mod tests {
         pub(super) reached: Vec<&'static str>,
     }
 
+    /// A payload that holds child views, taken apart into them.
+    pub(super) trait Parent<C> {
+        fn children(self) -> Vec<C>;
+    }
+
+    impl<C> Parent<C> for waterui::layout::container::FixedContainer<Vec<C>> {
+        fn children(self) -> Vec<C> {
+            self.into_inner().1
+        }
+    }
+
+    impl<C> Parent<C> for waterui::layout::scroll::ScrollView<C> {
+        fn children(self) -> Vec<C> {
+            let (_, content, _, _) = self.into_inner().into_parts();
+            alloc::vec![content]
+        }
+    }
+
     impl Recorder {
-        /// Realizes each child view `native` holds.
+        /// Realizes each child view a payload held, recording whether it
+        /// arrived typed or erased.
         pub(super) fn realize_children<C: ChildView<Self>>(
             &mut self,
-            native: waterui::layout::scroll::ScrollView<C>,
+            children: Vec<C>,
             env: &Environment,
         ) {
-            self.reached.push(
-                if core::any::TypeId::of::<C>() == core::any::TypeId::of::<AnyView>() {
-                    "erased child"
-                } else {
-                    "typed child"
-                },
-            );
-            let (_, content, _, _) = native.into_inner().into_parts();
-            content.realize(self, env, ());
+            for child in children {
+                self.reached.push(
+                    if core::any::TypeId::of::<C>() == core::any::TypeId::of::<AnyView>() {
+                        "erased child"
+                    } else {
+                        "typed child"
+                    },
+                );
+                child.realize(self, env, ());
+            }
         }
     }
 

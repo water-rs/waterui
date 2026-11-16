@@ -66,7 +66,7 @@ fn locale_from_code(code: &str) -> Locale {
 }
 
 /// Locale picker section
-fn locale_picker_section(selection: &Binding<&'static str>, detected: String) -> impl View {
+fn locale_picker_section(selection: &Binding<&'static str>, detected: String) -> impl View + use<> {
     vstack((
         text!("Language Booth").size(16.0).bold(),
         hstack((text!("Detected Locale:"), spacer(), text(detected))),
@@ -104,7 +104,7 @@ fn paragraph_section() -> impl View {
 }
 
 /// Date formatting section
-fn date_section(locale: &Computed<Locale>) -> impl View {
+fn date_section(locale: &Computed<Locale>) -> impl View + use<> {
     let date_short = locale
         .clone()
         .map(|locale| format_date(&locale, &SimpleDate::new(2006, 3, 20), DateStyle::Short))
@@ -155,7 +155,7 @@ fn plural_section() -> impl View {
 }
 
 /// Unit formatting section
-fn unit_section(locale: &Computed<Locale>) -> impl View {
+fn unit_section(locale: &Computed<Locale>) -> impl View + use<> {
     let distance = locale
         .clone()
         .map(|locale| Length::<Meter>::new(1500.0).to_localized_string(&locale))
@@ -187,7 +187,7 @@ fn localized_content() -> impl View {
 }
 
 /// Date/unit sections need the locale value for formatting APIs
-fn formatted_content(locale: &Computed<Locale>) -> impl View {
+fn formatted_content(locale: &Computed<Locale>) -> impl View + use<> {
     vstack((date_section(locale), Divider, unit_section(locale)))
 }
 

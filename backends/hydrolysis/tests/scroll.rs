@@ -223,7 +223,7 @@ fn folder_icon_button() -> impl View {
 fn folder_rail_row(
     chips: &[(&'static str, i32)],
     controller: &waterui_layout::scroll::ScrollController<waterui::layout::Point>,
-) -> impl View {
+) -> impl View + use<> {
     use waterui::component::lazy::Lazy;
     use waterui::id::SelfId;
     use waterui::views::ForEach;

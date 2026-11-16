@@ -2,7 +2,7 @@
 
 use alloc::{vec, vec::Vec};
 use nami::collection::Collection;
-use waterui_core::{AnyView, View, id::Identifiable, view::TupleViews, views::ForEach};
+use waterui_core::{AnyView, View, id::Identifiable, view::ViewSequence, views::ForEach};
 
 use crate::{
     Layout, LayoutError, LazyContainer, PlacedSubview, PlacementInput, Point, ProposalSize, Rect,
@@ -301,7 +301,7 @@ impl<C> ZStack<C> {
 
 crate::stack::impl_stack_for_each!(ZStack, ZStackLayout);
 
-impl<C: TupleViews> ZStack<(C,)> {
+impl<C: ViewSequence> ZStack<(C,)> {
     /// Creates a new `ZStack` with the specified alignment and contents.
     ///
     /// # Arguments
@@ -328,13 +328,13 @@ where
 /// Creates a new `ZStack` with center alignment and the specified contents.
 ///
 /// This is a convenience function that creates a `ZStack` with `Alignment::Center`.
-pub const fn zstack<C: TupleViews>(contents: C) -> ZStack<(C,)> {
+pub const fn zstack<C: ViewSequence>(contents: C) -> ZStack<(C,)> {
     ZStack::new(Alignment::Center, contents)
 }
 
 impl<C> View for ZStack<(C,)>
 where
-    C: TupleViews + 'static,
+    C: ViewSequence + 'static,
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(self.layout, self.contents.0)

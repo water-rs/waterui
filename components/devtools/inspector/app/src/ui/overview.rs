@@ -76,7 +76,7 @@ pub fn view(model: Model, subscriptions: SubscriptionSender) -> impl View {
 ///
 /// Hidden when nothing was lost; loud when something was, because every other
 /// number in the app is wrong by that amount.
-fn dropped_notice(model: &Model) -> impl View {
+fn dropped_notice(model: &Model) -> impl View + use<> {
     let dropped = model.dropped.clone();
     let any = dropped.map(|dropped| dropped > 0).computed();
 
@@ -96,7 +96,11 @@ fn channel_rows(model: &Model, subscriptions: &SubscriptionSender) -> VStack<(Ve
 }
 
 /// One channel: a toggle, a description, and whether the target has it at all.
-fn channel_row(channel: Channel, model: &Model, subscriptions: &SubscriptionSender) -> impl View {
+fn channel_row(
+    channel: Channel,
+    model: &Model,
+    subscriptions: &SubscriptionSender,
+) -> impl View + use<> {
     let subscribed = model.subscribed.clone();
     let available = model.available.clone();
     let unavailable = available

@@ -167,15 +167,17 @@ pivot on an `Anchor` (in the prelude; normalized, `(0, 0)` top-left: `CENTER`, `
 `TOP_RIGHT`, `BOTTOM_LEFT`, `BOTTOM_RIGHT`, or `Anchor::new(x, y)`). Factors and angles take
 signals; the anchor is a plain value.
 
-Grid — note the import and the `row` name collision with the list row builder:
+Grid — note the import and the `row` name collision with the list row builder. Rows go in
+a tuple, which lets each row hold different views; an array or `Vec` works when every row
+has the same view types:
 
 ```rust
 use waterui::layout::grid::{grid as layout_grid, row as grid_row};
 
-layout_grid(3, [
+layout_grid(3, (
     grid_row((a, b, c)),
     grid_row((d, e)),          // short rows are fine
-])
+))
 .spacing(10.0)
 ```
 

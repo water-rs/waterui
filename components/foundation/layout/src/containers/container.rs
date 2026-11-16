@@ -9,12 +9,13 @@ use alloc::{boxed::Box, vec::Vec};
 use nami::{Computed, Signal};
 use waterui_core::{
     AnyView, Native, NativeView, View,
+    backend::Backend,
     layout::{
         HorizontalAlignment, LayoutDirection, LayoutError, LayoutInvalidationCallback,
         PlacedSubview, PlacementInput, Point, ProposalSize, Rect, ResolvedExtent, Size, SubView,
         SubviewPlacement, VerticalAlignment, ViewDimensions, with_memoized_children,
     },
-    view::TupleViews,
+    view::ViewSequence,
     views::{AnyViews, Views, ViewsExt},
 };
 
@@ -236,12 +237,15 @@ impl Layout for DirectionalLayout {
 
 /// A view wrapper that executes an arbitrary [`Layout`]
 /// implementation.
-pub struct FixedContainer {
+///
+/// Authored over a [`ViewSequence`] `S`, the container reaches a backend as
+/// `FixedContainer<Vec<C>>`, each child in the backend's child slot `C`.
+pub struct FixedContainer<S = Vec<AnyView>> {
     layout: Box<dyn Layout>,
-    contents: Vec<AnyView>,
+    contents: S,
 }
 
-impl Debug for FixedContainer {
+impl<S: Debug> Debug for FixedContainer<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Container")
             .field("layout", &"Box<dyn Layout>")
@@ -250,32 +254,43 @@ impl Debug for FixedContainer {
     }
 }
 
-impl FixedContainer {
-    /// Wraps the supplied layout object and tuple of child views into a
+impl<S> FixedContainer<S> {
+    /// Wraps the supplied layout object and sequence of child views into a
     /// container view.
-    pub fn new(layout: impl Layout + 'static, contents: impl TupleViews) -> Self {
+    pub fn new(layout: impl Layout + 'static, contents: S) -> Self {
         Self {
             layout: Box::new(layout),
-            contents: contents.into_views(),
+            contents,
         }
     }
 
-    /// Returns the boxed layout object together with the collected child views.
+    /// Returns the boxed layout object together with the children.
     #[must_use]
-    pub fn into_inner(self) -> (Box<dyn Layout>, Vec<AnyView>) {
+    pub fn into_inner(self) -> (Box<dyn Layout>, S) {
         (self.layout, self.contents)
     }
 
     /// Creates a fixed container from pre-built layout and children parts.
     #[must_use]
-    pub fn from_parts(layout: Box<dyn Layout>, contents: Vec<AnyView>) -> Self {
+    pub fn from_parts(layout: Box<dyn Layout>, contents: S) -> Self {
         Self { layout, contents }
     }
 
-    /// Returns borrowed access to the boxed layout and collected children.
+    /// Returns borrowed access to the boxed layout and the children.
     #[must_use = "this borrows the container's parts without consuming it"]
-    pub fn as_parts(&self) -> (&dyn Layout, &[AnyView]) {
+    pub fn as_parts(&self) -> (&dyn Layout, &S) {
         (self.layout.as_ref(), &self.contents)
+    }
+
+    /// The layout in the layout direction `env` declares.
+    fn directional(self, env: &waterui_core::Environment) -> Self {
+        Self {
+            layout: Box::new(DirectionalLayout::new(
+                self.layout,
+                waterui_core::layout::layout_direction(env),
+            )),
+            contents: self.contents,
+        }
     }
 
     /// The child the §7.1 fill rule extends as a background: `Some(0)` when
@@ -293,15 +308,31 @@ impl FixedContainer {
 
 /// A container's axis is its layout's answer over its realized children,
 /// so backends answer it from the realized node.
-impl NativeView for FixedContainer {}
+impl<C: 'static> NativeView for FixedContainer<Vec<C>> {}
 
-impl View for FixedContainer {
-    fn body(mut self, env: &waterui_core::Environment) -> impl View {
-        self.layout = Box::new(DirectionalLayout::new(
-            self.layout,
-            waterui_core::layout::layout_direction(env),
-        ));
-        Native::new(self)
+impl<S: ViewSequence> View for FixedContainer<S> {
+    /// The erased form, for code that expands views by hand.
+    fn body(self, env: &waterui_core::Environment) -> impl View {
+        let Self { layout, contents } = self.directional(env);
+        Native::new(FixedContainer::<Vec<AnyView>>::from_parts(
+            layout,
+            contents.into_slots(),
+        ))
+    }
+
+    /// Reaches the backend with each child in the backend's child slot.
+    fn dispatch<B: Backend>(
+        self,
+        backend: &mut B,
+        env: &waterui_core::Environment,
+        cx: B::Ctx,
+    ) -> B::Output {
+        let Self { layout, contents } = self.directional(env);
+        backend.native(
+            FixedContainer::<Vec<B::Slot>>::from_parts(layout, contents.into_slots()),
+            env,
+            cx,
+        )
     }
 }
 
