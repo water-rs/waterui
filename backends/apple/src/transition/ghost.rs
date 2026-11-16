@@ -8,7 +8,7 @@ use core::cell::{Cell, RefCell};
 
 use cocoa_ui::{MainThreadMarker, PlatformView, view};
 use waterui_backend_core::Environment;
-use waterui_core::transition::{GhostSlot, TransitionState};
+use waterui_structural_transition::{GhostSlot, TransitionState};
 
 use crate::transition::clock::{Timeline, TransitionDriver};
 use crate::transition::property::PropertyTarget;

@@ -381,7 +381,7 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         NavigationTransitionSource,
         #[cfg(feature = "navigation")]
         NavigationTransitionDestination,
-        waterui_core::transition::TransitionSpec
+        waterui_structural_transition::TransitionSpec
     );
     passthrough_ignorable_metadata_content!(
         MaterialBackground,
@@ -586,7 +586,7 @@ fn normalize_layout_view_with_budget(
         NavigationTransitionSource,
         #[cfg(feature = "navigation")]
         NavigationTransitionDestination,
-        waterui_core::transition::TransitionSpec
+        waterui_structural_transition::TransitionSpec
     );
     // Label/role/children stay plain passthrough here: they are
     // nearest-consumer metadata — the leaf that emits the semantic node reads

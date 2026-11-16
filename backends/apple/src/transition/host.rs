@@ -16,7 +16,7 @@ use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
-use waterui_core::transition::TransitionProperties;
+use waterui_structural_transition::TransitionProperties;
 
 use crate::contract::{Mounted, NativeLeaf};
 use crate::proposal;

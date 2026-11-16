@@ -27,12 +27,11 @@ use waterui_layout::stack::{VStack, vstack, zstack};
 
 use nami::collection::List;
 use waterui::graphics::Color;
-use waterui_backend_core::View;
 use waterui_core::dynamic::watch;
 use waterui_core::layout::{
     Layout, LayoutError, PlacementInput, ProposalSize, Rect, Size, SubView, SubviewPlacement,
 };
-use waterui_core::transition::PropertyTransition;
+use waterui_structural_transition::PropertyTransition;
 use waterui_core::views::ForEach;
 use waterui_graphics::color::signal_color;
 use waterui_layout::AbsoluteLayout;
@@ -760,7 +759,7 @@ fn transition_color_stack(list: &List<SelfId<u64>>) -> AnyView {
 }
 
 /// The same fixture with a caller-chosen transition declaration.
-fn transition_color_stack_with<T: waterui_core::transition::Transition + Clone>(
+fn transition_color_stack_with<T: waterui_structural_transition::Transition + Clone>(
     list: &List<SelfId<u64>>,
     transition: T,
 ) -> AnyView {
@@ -1475,8 +1474,8 @@ fn transition_outside_a_structural_site_is_reported_and_drawn_without_it() {
 #[derive(Clone, Copy)]
 struct CaptureOnlyTransition;
 
-impl waterui_core::transition::Transition for CaptureOnlyTransition {
-    fn captures_content(&self, _phase: waterui_core::transition::TransitionPhase) -> bool {
+impl waterui_structural_transition::Transition for CaptureOnlyTransition {
+    fn captures_content(&self, _phase: waterui_structural_transition::TransitionPhase) -> bool {
         true
     }
 }
@@ -1519,7 +1518,7 @@ fn reduced_pixel_transition_runs_as_opacity() {
         })
     };
     let mut env = test_environment();
-    env.insert(waterui_core::transition::ReduceMotion(true));
+    env.insert(waterui_structural_transition::ReduceMotion(true));
     let mut runtime =
         HeadlessRuntime::new_for_tests(env, builder, 400, 640, MinimalTestTheme::default());
     let start = Instant::now();

@@ -27,14 +27,13 @@ use waterui::metadata::anchored_overlay::{AnchorEdge, AnchoredOverlay};
 use waterui::prelude::text;
 use waterui::theme::ColorScheme;
 use waterui::widget::condition::when;
-use waterui_backend_core::View;
 use waterui_controls::button::button;
 use waterui_core::AnyView;
 use waterui_core::env::Store;
 use waterui_core::extract::Use;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
-use waterui_core::transition::PropertyTransition;
+use waterui_structural_transition::PropertyTransition;
 use waterui_layout::scroll;
 use waterui_layout::stack::{VStack, hstack, vstack, zstack};
 

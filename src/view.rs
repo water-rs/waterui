@@ -69,6 +69,7 @@ use crate::{
 #[cfg(feature = "std")]
 use waterkit_haptic::{Haptic, Intensity};
 use waterui_core::Metadata;
+use waterui_structural_transition::{Transition, Transitioned};
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent};
 use waterui_core::id::TaggedView;
 use waterui_core::interaction::{Disabled, InteractionReport, InteractionState, Selected};
@@ -124,6 +125,16 @@ pub trait ViewExt: View + Sized {
             ColorSpace::Sdr => AnyView::new(self.metadata(StandardDynamicRange::new())),
             ColorSpace::Hdr => AnyView::new(self.metadata(HighDynamicRange::new())),
         }
+    }
+
+    /// Animates structural insertion and removal of this view.
+    ///
+    /// Value updates do not trigger a transition. Applied to a `Dynamic`, this
+    /// decorates its replacing content; applied to a collection item, it follows
+    /// that item's membership. Removal immediately ends semantic membership,
+    /// while the backend retains a non-interactive visual and a fixed-size slot.
+    fn transition(self, transition: impl Transition) -> Transitioned<Self> {
+        Transitioned::new(self, transition)
     }
 
     /// Adjusts the opacity (transparency) of this view.

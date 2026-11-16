@@ -26,7 +26,7 @@ use nami::Binding;
 use waterui::metadata::anchored_overlay::{AnchorEdge, AnchorPlacement, Clamp, Dismissal};
 use waterui_core::Environment;
 use waterui_core::layout::layout_direction;
-use waterui_core::transition::TransitionSpec;
+use waterui_structural_transition::TransitionSpec;
 
 use crate::renderer::tree::transition::{
     TransitionPaint, TransitionRun, claim_transition, flush_transitioned,
@@ -237,7 +237,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             let mut state = core::mem::take(&mut *entry.presentations.borrow_mut());
             let reduce_motion = entry
                 .env
-                .get::<waterui_core::transition::ReduceMotion>()
+                .get::<waterui_structural_transition::ReduceMotion>()
                 .is_some_and(|flag| flag.0);
             if entry.presented {
                 // A new presentation builds fresh content: still-presented

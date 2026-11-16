@@ -24,7 +24,7 @@ use waterui::shape::RoundedRectangle;
 use waterui::widget::condition::when;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::HorizontalAlignment;
-use waterui_core::transition::{PropertyTransition, Transition};
+use waterui_structural_transition::{PropertyTransition, Transition};
 use waterui_core::{AnyView, View};
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::spacer::spacer;

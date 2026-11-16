@@ -12,7 +12,7 @@ use core::cell::RefCell;
 
 use cocoa_ui::{PlatformView, Retained, view};
 use waterui_core::layout::{LayoutDirection, Size};
-use waterui_core::transition::{
+use waterui_structural_transition::{
     TransitionGeometry, TransitionPhase, TransitionProperties, TransitionState,
 };
 
