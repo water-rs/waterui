@@ -915,3 +915,107 @@ fn a_pointer_activated_picker_menu_anchors_under_the_field() {
     approx::assert_relative_eq!(f64::from(frame.x()), field.x0 - margin, epsilon = 0.5);
     approx::assert_relative_eq!(f64::from(frame.y()), field.y1 + gap - margin, epsilon = 0.5);
 }
+
+/// water-rs/waterui#4720: a popup window renders at the main window's scale
+/// factor and composites into the main snapshot at its frame's origin on the
+/// scaled pixel grid. Every opaque pixel of the popup's own frame must land,
+/// unchanged, at the scaled origin of the main window's captured frame; an
+/// unscaled popup is a third of the size at a third of the distance from the
+/// window's origin, so neither the size nor the placement can pass.
+#[test]
+fn a_popup_renders_and_composites_at_the_main_windows_scale_factor() {
+    /// Large enough to hold the whole popup, so every pixel of it composites.
+    const WINDOW: f32 = 400.0;
+    for scale_factor in [1.0_f64, 3.0] {
+        let builder = AnyViewBuilder::<AnyView>::new(move || {
+            AnyView::new(
+                Frame::new(button("host").action(|| {}))
+                    .width(WINDOW)
+                    .height(WINDOW)
+                    .context_menu(vec!["Copy".action(|| {})]),
+            )
+        });
+        let mut runtime = HeadlessRuntime::new_for_tests(
+            test_environment(),
+            builder,
+            crate::num_cast::f32_as_u32(WINDOW),
+            crate::num_cast::f32_as_u32(WINDOW),
+            MinimalTestTheme::default(),
+        )
+        .with_scale_factor(scale_factor);
+
+        let start = Instant::now();
+        let _ = runtime.pump_at(false, start);
+        for event in secondary_click(WINDOW / 4.0, WINDOW / 4.0) {
+            runtime.push_input_event(event);
+        }
+        // The frame clock advances one 16 ms frame per pump, so the menu's
+        // enter animation finishes within the loop; the last capture is the
+        // settled composite.
+        let mut composite = None;
+        for frame in 1..64u32 {
+            let result = runtime.pump_at(true, start + Duration::from_millis(16) * frame);
+            if let Some(snapshot) = result.into_snapshot() {
+                composite = Some(snapshot);
+            }
+            if runtime.is_settled() {
+                break;
+            }
+        }
+        assert!(runtime.is_settled(), "the headless runtime never settled");
+        let composite = composite.expect("a settled runtime must capture a frame");
+
+        let frames = runtime.popup_frames();
+        let [frame] = frames.as_slice() else {
+            panic!("the secondary click must mount one popup window, got {frames:?}")
+        };
+        assert!(
+            frame.x() >= 0.0
+                && frame.y() >= 0.0
+                && frame.x() + frame.width() <= WINDOW
+                && frame.y() + frame.height() <= WINDOW,
+            "the popup must sit inside the window for every pixel to composite: {frame:?}"
+        );
+        let physical =
+            |value: f32| crate::num_cast::f64_as_u32((f64::from(value) * scale_factor).round());
+        let popup = runtime
+            .popup_frame(0)
+            .expect("the mounted popup must render its own frame");
+        assert_eq!(
+            (popup.width(), popup.height()),
+            (physical(frame.width()), physical(frame.height())),
+            "the popup's surface must be its frame's size in physical pixels at scale {scale_factor}"
+        );
+
+        let (origin_x, origin_y) = (physical(frame.x()), physical(frame.y()));
+        let mut opaque = 0_u32;
+        for y in 0..popup.height() {
+            for x in 0..popup.width() {
+                let index = ((y * popup.width() + x) * 4) as usize;
+                let source = &popup.rgba8()[index..index + 4];
+                if source[3] != u8::MAX {
+                    continue;
+                }
+                opaque += 1;
+                let target_index =
+                    (((origin_y + y) * composite.width() + origin_x + x) * 4) as usize;
+                let target = &composite.rgba8()[target_index..target_index + 4];
+                assert!(
+                    source
+                        .iter()
+                        .zip(target)
+                        .all(|(source, target)| source.abs_diff(*target) <= 1),
+                    "the popup's opaque pixel ({x}, {y}) must composite unchanged at its scaled \
+                     origin ({origin_x}, {origin_y}) at scale {scale_factor}: {source:?} vs {target:?}"
+                );
+            }
+        }
+        assert!(
+            opaque > popup.width() * popup.height() / 4,
+            "the popup's panel must be opaque over a large part of its frame: {opaque} opaque \
+             pixels in {}x{} at scale {scale_factor}",
+            popup.width(),
+            popup.height()
+        );
+    }
+}
