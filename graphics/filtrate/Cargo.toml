@@ -66,6 +66,9 @@ lanes = ["dep:cherenkov-shader", "cherenkov-shader/lanes"]
 # target is a compile error — native and WebGPU devices run the same code
 # without it.
 webgl = ["gpu", "wgpu/webgl"]
+# `video::GpuEffectProcessor`: an `Effect` as a WaterKit video frame processor
+# over `GpuTextureFrame`, driven by the frame's media timing.
+waterkit-video = ["gpu", "dep:waterkit-video-core", "dep:waterkit-video-processing"]
 
 [dependencies]
 bytemuck = "1"
@@ -82,6 +85,10 @@ thiserror = { version = "2.0.21", optional = true }
 tracing = { version = "0.1.44", optional = true }
 # Reports a broken contract: a panic in debug, an error log in release.
 waterui-contract.workspace = true
+# `video`: the frame-processor trait, texture frames and media timing the
+# adapter implements.
+waterkit-video-core = { workspace = true, optional = true }
+waterkit-video-processing = { workspace = true, optional = true, features = ["wgpu"] }
 # Portable SIMD for the CPU kernels.
 fearless_simd = { version = "1.1", default-features = false, features = ["std"] }
 cherenkov-simd = { version = "0.0.0", path = "../cherenkov/simd", default-features = false, features = ["std"] }
