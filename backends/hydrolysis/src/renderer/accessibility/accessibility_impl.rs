@@ -667,8 +667,10 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
     /// endpoint to reveal the answer in. The press path's focus lookup goes
     /// through `node_at_point_where` instead, which compiles everywhere the
     /// accessibility feature does.
-    #[cfg(any(not(target_arch = "wasm32"), test))]
-    #[cfg(feature = "menu")]
+    #[cfg(any(
+        test,
+        all(feature = "menu", feature = "inspector", not(target_arch = "wasm32"))
+    ))]
     pub(crate) fn node_at_point(&self, point: kurbo::Point) -> Option<AccessibilityNodeId> {
         self.node_at_point_where(point, |_| true)
     }

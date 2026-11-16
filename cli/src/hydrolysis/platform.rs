@@ -177,6 +177,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
         );
     }
     let render_features = render_features(project, &cargo_toml, platform, offscreen)?;
+    let inspector_feature = super::development_inspector(&cargo_toml, options.is_release())?;
 
     // The managed crate is its own workspace root, so its `Cargo.lock` is
     // re-seeded from the application's lockfile before every resolution —
@@ -225,7 +226,8 @@ pub async fn build_hydrolysis_with_envs_and_features(
         .with_features(
             render_features
                 .into_iter()
-                .chain(extra_features.iter().copied()),
+                .chain(extra_features.iter().copied())
+                .chain(inspector_feature),
         )
         .with_linkage(
             options.linkage(),
@@ -236,7 +238,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
         .with_features(options.app_features(project))
         .with_envs(options.cargo_envs().iter().cloned())
         .with_envs(extra_envs.iter().cloned());
-    let widget_features = assets::widget_features(
+    let backend_features = assets::backend_features(
         project,
         &backend_path.join("Cargo.toml"),
         &platform.triple(),
@@ -244,7 +246,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
         &["hydrolysis", "hydrolysis-m3"],
     )
     .await?;
-    build = build.with_features(widget_features);
+    build = build.with_features(backend_features);
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());
     }

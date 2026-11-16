@@ -763,13 +763,13 @@ impl HeadlessRuntime {
         style: impl crate::Style,
         family_resolution: FontFamilyResolution,
     ) -> Self {
-        let inspector = init_main_thread_executors();
-        let inspector_probe = inspector
-            .as_ref()
-            .map(waterui::inspector::InspectorRuntime::runtime_probe);
+        init_global_executor();
+        #[cfg(not(feature = "inspector"))]
+        let inspector_probe = None;
         let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
         waterui_core::install_application_resources(&mut env);
-        waterui::inspector::install(&mut env, inspector);
+        #[cfg(feature = "inspector")]
+        let inspector_probe = install_inspector(&mut env);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         #[cfg(any(
             test,

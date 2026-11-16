@@ -16,7 +16,7 @@ waterui-core.workspace = true
 waterui-structural-transition.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
 nami.workspace = true
 waterui-icon.workspace = true
 waterui-shape.workspace = true
@@ -56,11 +56,11 @@ keyboard-types.workspace = true
 # `serde` lets the Android host push the merged accesskit tree to its
 # accessibility provider as JSON (src/runner/android/accessibility.rs).
 accesskit = { version = "0.25", optional = true, features = ["serde"] }
-waterui-inspector-protocol.workspace = true
+waterui-inspector-protocol = { workspace = true, optional = true }
 # `effects`, never `gpu` by itself: the `Filtered`/`filtrate` recipe
 # vocabulary resolves under every painter (the HWUI and CPU mounts name
 # their refusal); the GPU halves arrive with the `gpu` feature.
-waterui = { workspace = true, features = ["dialog", "inspector", "effects"] }
+waterui = { workspace = true, features = ["dialog", "effects"] }
 waterui-graphics = { workspace = true, features = ["effects"] }
 # `engine` (selected by `gpu` and `cpu`) for the `parley` font context the
 # Cherenkov painters build and install into the environment; the faces come
@@ -217,7 +217,6 @@ objc2-web-kit = { version = "0.3.2", optional = true, default-features = false, 
     "WKWebViewConfiguration",
     "WKWebsiteDataStore",
 ] }
-serde_json = { workspace = true, optional = true }
 
 # The native app menu-bar surface (`App::menu_bar`): waterkit-menu builds the
 # real NSMenu on NSApp.mainMenu (macOS) and a Win32 HMENU on the window's HWND
@@ -315,11 +314,11 @@ waterui-video-gpu = { workspace = true, optional = true }
 raw-window-handle = { version = "0.6", optional = true }
 android_logger = { version = "0.15", optional = true }
 waterui-assets-core = { workspace = true, optional = true }
-tracing-log = "0.2"
+tracing-log = { version = "0.2", default-features = false, features = ["std", "log-tracer"], optional = true }
 # The accessibility tree publish and the platform-view placement set cross JNI
 # as JSON.
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+serde_json = { workspace = true, optional = true }
 # The published payload's `contentTypes` map serializes `ContentType`
 # (camelCase names) — the provider maps each onto `HintConstants`.
 waterui-controls = { workspace = true, features = ["serde"] }
@@ -336,7 +335,7 @@ console_error_panic_hook = { version = "0.1", optional = true }
 futures = { workspace = true, optional = true }
 js-sys = "0.3"
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+serde_json = { workspace = true, optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 # The `video` feature's realization of the two video leaves.
@@ -477,7 +476,7 @@ testing = []
 # Per-frame CPU/GPU stage timing: wgpu timestamp queries around the
 # layer-content and compositor submits plus the CPU stage split the window
 # pump measures.
-frame-profile = ["gpu"]
+frame-profile = []
 # The Cherenkov GPU painter and its GPU-content surface: the `cherenkov`
 # engine crates, `wgpu`, the parley text engine, and the framework's GPU
 # component vocabulary (`GpuView`, `ExternalFrame`, `waterui_graphics::gpu`).
@@ -485,6 +484,9 @@ frame-profile = ["gpu"]
 # it, while `hwui` + `gpu` keeps the HWUI painter with the GPU crates present
 # for hosted content (water-rs/waterui#1812).
 gpu = [
+    "dep:tracing-log",
+    "dep:serde_json",
+    "dep:tracing-subscriber",
     "dep:android_logger",
     "dep:cherenkov",
     "dep:cherenkov-gpu",
@@ -515,6 +517,9 @@ gpu = [
 # hardware adapter and on the CPU otherwise. The windowed runner presents
 # through the GPU only (water-rs/waterui#4064).
 cpu = [
+    "dep:tracing-log",
+    "dep:serde_json",
+    "dep:tracing-subscriber",
     "dep:cherenkov",
     "dep:cherenkov-cpu",
     "dep:lru",
@@ -530,13 +535,17 @@ cpu = [
     "dep:icu_locale",
     "waterui-text/engine",
 ]
-inspector-signals = ["waterui/inspector-signals"]
+inspector = ["dep:waterui-inspector-protocol", "waterui/inspector"]
+inspector-signals = ["inspector", "waterui/inspector-signals"]
 # The HWUI render target (Android only): the retained layer tree recorded
 # into `RenderNode` display lists through one command buffer per frame, and
 # text laid out and drawn by the platform's `StaticLayout`
 # (water-rs/waterui#1811). On other targets the feature selects nothing; the
 # subsystem still compiles for tests.
 hwui = [
+    "dep:tracing-log",
+    "dep:serde_json",
+    "dep:tracing-subscriber",
     "dep:askama",
     "dep:android_logger",
     "dep:lru",
@@ -610,6 +619,7 @@ video = [
     "web-sys?/WheelEventInit",
 ]
 web = [
+    "dep:serde_json",
     "accessibility",
     "dep:console_error_panic_hook",
     "dep:futures",

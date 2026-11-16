@@ -43,13 +43,27 @@ class BaselineProfileGenerator {
         val spec = loadInteractionSpec(
             InstrumentationRegistry.getInstrumentation().context,
         )
+        // `fixtures` narrows a generation run to a comma-separated subset
+        // (run.py generate-profile --fixture); absent, every journey runs.
+        val requested = args.getString("fixtures")?.split(",")
         val fixtures = spec.getJSONObject("fixtures").keys().asSequence()
+            .filter { requested == null || it in requested }
             .toList()
             .sorted()
+        require(fixtures.isNotEmpty()) {
+            "no journey matches fixtures=$requested"
+        }
+        // `maxIterations` / `stableIterations` bound the collection loop; the
+        // library defaults (15 / 3) run every journey up to fifteen times.
+        val maxIterations = args.getString("maxIterations")?.toIntOrNull() ?: 15
+        val stableIterations = args.getString("stableIterations")?.toIntOrNull() ?: 3
         baselineProfileRule.collect(
             packageName = packageName,
+            maxIterations = maxIterations,
+            stableIterations = stableIterations,
             includeInStartupProfile = true,
         ) {
+            Journey.prepareDevice(device)
             pressHome()
             for (fixture in fixtures) {
                 android.util.Log.i("BaselineProfile", "journey: $fixture")
@@ -62,11 +76,14 @@ class BaselineProfileGenerator {
                             SuiteRegistry.exampleForFixture(fixture) +
                             " --es waterui.env.WATERUI_DISABLE_DYNAMIC_COLORS 1",
                     )
-                    device.wait(Until.hasObject(By.res("screen-root")), 10_000)
+                    check(device.wait(Until.hasObject(By.res("screen-root")), 10_000)) {
+                        "Benchmark screen did not become ready"
+                    }
                     Journey.run(device, spec, fixture)
                 } finally {
                     device.pressHome()
-                    device.executeShellCommand("am force-stop $packageName")
+                    // Flush ART profiles before ending this fixture process.
+                    killProcess()
                 }
             }
         }

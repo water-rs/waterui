@@ -677,7 +677,7 @@ impl LocalExecutor for WinitMainThreadExecutor {
 pub fn run(
     app: App,
     style: impl crate::Style,
-    inspector: Option<waterui::inspector::InspectorRuntime>,
+    #[cfg(feature = "inspector")] inspector: Option<waterui::inspector::InspectorRuntime>,
 ) {
     let AppParts {
         windows,
@@ -741,6 +741,7 @@ pub fn run(
 
     let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
     waterui_core::install_application_resources(&mut env);
+    #[cfg(feature = "inspector")]
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
@@ -1479,12 +1480,17 @@ impl WinitRunner {
                 },
                 waterui::task::RefreshRate::from_millihertz,
             );
+        #[cfg(feature = "inspector")]
+        let inspector_probe = self
+            .env
+            .get::<waterui::inspector::InspectorRuntime>()
+            .map(waterui::inspector::InspectorRuntime::runtime_probe);
+        #[cfg(not(feature = "inspector"))]
+        let inspector_probe = None;
         let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
             local_executor,
             refresh_rate,
-            self.env
-                .get::<waterui::inspector::InspectorRuntime>()
-                .map(waterui::inspector::InspectorRuntime::runtime_probe),
+            inspector_probe,
         ));
         // Locale changes reach views through a mailbox, whose pump needs the
         // executor installed just above.
