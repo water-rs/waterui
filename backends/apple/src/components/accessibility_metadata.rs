@@ -1,5 +1,5 @@
 //! The `accessibility` metadata family:
-//! `IgnorableMetadata<Accessibility{Label,Value,Role,Hidden,Children,
+//! `Metadata<Accessibility{Label,Value,Role,Hidden,Children,
 //! State,StateSignal}>` wrapped around a child.
 //!
 //! Mirrors `WuiAccessibilityMetadata`: every property lands on the
@@ -36,7 +36,7 @@ use waterui::accessibility::{
     AccessibilityValue,
 };
 use waterui::reactive::Computed;
-use waterui_core::{AnyView, IgnorableMetadata};
+use waterui_core::{AnyView, Metadata};
 
 use crate::contract::{NativeLeaf, RenderContext};
 use crate::dispatch::Dispatcher;
@@ -237,17 +237,17 @@ fn render_state(
 
 /// Registers the constant and reactive state handlers on the shared bind.
 fn install_state(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<IgnorableMetadata<AccessibilityState>>(|metadata, ctx| {
+    dispatcher.register_view::<Metadata<AccessibilityState>>(|metadata, ctx| {
         render_state(metadata.content, Computed::constant(metadata.value), ctx)
     });
-    dispatcher.register_view::<IgnorableMetadata<AccessibilityStateSignal>>(|metadata, ctx| {
+    dispatcher.register_view::<Metadata<AccessibilityStateSignal>>(|metadata, ctx| {
         render_state(metadata.content, metadata.value.state().clone(), ctx)
     });
 }
 
 /// Installs the accessibility metadata handlers on the dispatcher.
 pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<IgnorableMetadata<AccessibilityLabel>>(|metadata, ctx| {
+    dispatcher.register_view::<Metadata<AccessibilityLabel>>(|metadata, ctx| {
         let mut leaf = ctx.render(metadata.content);
         let target = view::retain_base(leaf.view());
         leaf.keep(target.clone());
@@ -257,7 +257,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         leaf
     });
 
-    dispatcher.register_view::<IgnorableMetadata<AccessibilityValue>>(|metadata, ctx| {
+    dispatcher.register_view::<Metadata<AccessibilityValue>>(|metadata, ctx| {
         let mut leaf = ctx.render(metadata.content);
         let target = view::retain_base(leaf.view());
         leaf.keep(target.clone());
@@ -267,7 +267,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         leaf
     });
 
-    dispatcher.register_view::<IgnorableMetadata<AccessibilityRole>>(|metadata, ctx| {
+    dispatcher.register_view::<Metadata<AccessibilityRole>>(|metadata, ctx| {
         let mut leaf = ctx.render(metadata.content);
         let target = view::retain_base(leaf.view());
         a11y::set_role(target::of(&target), role(&metadata.value));
@@ -275,13 +275,13 @@ pub fn install(dispatcher: &mut Dispatcher) {
         leaf
     });
 
-    dispatcher.register_view::<IgnorableMetadata<AccessibilityGeometry>>(|metadata, ctx| {
+    dispatcher.register_view::<Metadata<AccessibilityGeometry>>(|metadata, ctx| {
         let leaf = ctx.render(metadata.content);
         name_geometry(&leaf, metadata.value);
         leaf
     });
 
-    dispatcher.register_view::<IgnorableMetadata<AccessibilityHidden>>(|metadata, ctx| {
+    dispatcher.register_view::<Metadata<AccessibilityHidden>>(|metadata, ctx| {
         let mut leaf = ctx.render(metadata.content);
         let target = view::retain_base(leaf.view());
         a11y::set_hidden(target::of(&target), metadata.value.is_hidden());
@@ -289,7 +289,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         leaf
     });
 
-    dispatcher.register_view::<IgnorableMetadata<AccessibilityChildren>>(|metadata, ctx| {
+    dispatcher.register_view::<Metadata<AccessibilityChildren>>(|metadata, ctx| {
         let mut leaf = ctx.render(metadata.content);
         let target = view::retain_base(leaf.view());
         if metadata.value.excludes_descendants() {

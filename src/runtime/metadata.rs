@@ -8,7 +8,7 @@
 /// The metadata mechanism itself: the wrappers that attach a value to a view
 /// and the marker trait that makes a type attachable. Re-exported here so the
 /// mechanism and the concrete keys below live at one path.
-pub use waterui_core::metadata::{IgnorableMetadata, Metadata, MetadataKey, Retain};
+pub use waterui_core::metadata::{Metadata, MetadataKey, Retain};
 
 /// Context menu metadata module.
 #[cfg(feature = "menu")]

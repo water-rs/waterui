@@ -1,4 +1,4 @@
-//! The `material_background` metadata: `IgnorableMetadata<MaterialBackground>`
+//! The `material_background` metadata: `Metadata<MaterialBackground>`
 //! wrapped around content a blur effect sits behind.
 //!
 //! Mirrors `WuiMaterialBackground`: a transparent `HostView` container —
@@ -19,8 +19,8 @@ use core::cell::Cell;
 use cocoa_ui::material;
 use cocoa_ui::view;
 use cocoa_ui::{PlatformView, Rect, Retained};
-use waterui::background::MaterialBackground;
-use waterui_core::IgnorableMetadata;
+use waterui::background::{MaterialBackground, MaterialGroup};
+use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
@@ -96,10 +96,16 @@ impl SubView for MaterialBackgroundSubView {
 }
 
 /// Installs the `material_background` handler on the dispatcher:
-/// `IgnorableMetadata<MaterialBackground>` maps to a transparent container
-/// with the platform's blur effect behind the content.
+/// `Metadata<MaterialBackground>` maps to a transparent container with the
+/// platform's blur effect behind the content, and `Metadata<MaterialGroup>`
+/// to a transparent container: each platform material composites against
+/// what is behind it on its own, so the group scope Hydrolysis needs to
+/// share one backdrop has nothing to do here.
 pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<IgnorableMetadata<MaterialBackground>>(|metadata, ctx| {
+    dispatcher.register_view::<Metadata<MaterialGroup>>(|metadata, ctx| {
+        crate::components::passthrough::passthrough_leaf(metadata.content, ctx)
+    });
+    dispatcher.register_view::<Metadata<MaterialBackground>>(|metadata, ctx| {
         let mtm = ctx.mtm();
         let host = HostView::new(mtm, Rect::ZERO);
         let host_view: &PlatformView = &host;
