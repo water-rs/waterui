@@ -1732,9 +1732,7 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
             let env = &self.env;
             let views = &snapshot;
             let mut cache = self.item_cache.borrow_mut();
-            let subview = cache.entry(id, || {
-                item_view_or_empty(views, index)
-            });
+            let subview = cache.entry(id, || item_view_or_empty(views, index));
             // The row's declaration is claimed before its first walk.
             subview.ensure_built(renderer, env);
             self.transitions.track(id, subview, renderer);
