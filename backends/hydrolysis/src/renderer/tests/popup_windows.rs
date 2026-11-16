@@ -816,8 +816,12 @@ fn an_accessibility_activated_popup_anchors_under_the_control() {
     let [frame] = frames.as_slice() else {
         panic!("the menu activation must mount one popup window, got {frames:?}")
     };
-    approx::assert_relative_eq!(f64::from(frame.x()), trigger.x0 - 14.0, epsilon = 0.5);
-    approx::assert_relative_eq!(f64::from(frame.y()), trigger.y1 - 14.0, epsilon = 0.5);
+    // The test theme's panel shadow reaches past the 14 points a fixed margin
+    // used to leave, so the window must follow the panel's elevation.
+    let margin = MinimalTestTheme::panel_margin();
+    assert!(margin > 14.0, "the test panel's shadow reaches {margin}");
+    approx::assert_relative_eq!(f64::from(frame.x()), trigger.x0 - margin, epsilon = 0.5);
+    approx::assert_relative_eq!(f64::from(frame.y()), trigger.y1 - margin, epsilon = 0.5);
 
     // The picker's popup frames exactly at the anchor: the field's
     // bottom-left corner in window space.
@@ -837,13 +841,25 @@ fn an_accessibility_activated_popup_anchors_under_the_control() {
     let [frame] = frames.as_slice() else {
         panic!("the picker activation must mount one popup window, got {frames:?}")
     };
-    // The popup window inflates by the panel margin on every side, so its
-    // frame origin sits one margin up-and-left of the panel, which opens the
-    // look's gap below the field.
-    let margin = crate::renderer::POPUP_MENU_PANEL_MARGIN;
+    // The popup window is the panel inflated by the panel's elevation extent
+    // on every side, so its frame origin sits one margin up-and-left of the
+    // panel, which opens the look's gap below the field.
+    let margin = MinimalTestTheme::panel_margin();
     let gap = crate::testing::plain_menu_picker_look().layout().popup_gap;
     approx::assert_relative_eq!(f64::from(frame.x()), field.x0 - margin, epsilon = 0.5);
     approx::assert_relative_eq!(f64::from(frame.y()), field.y1 + gap - margin, epsilon = 0.5);
+    let menu = MinimalTestTheme::menu_layout();
+    let panel_height = crate::renderer::picker_menu_panel_height(menu, menu.row_height, 2);
+    approx::assert_relative_eq!(
+        f64::from(frame.width()),
+        margin.mul_add(2.0, field.width()),
+        epsilon = 0.5
+    );
+    approx::assert_relative_eq!(
+        f64::from(frame.height()),
+        margin.mul_add(2.0, panel_height),
+        epsilon = 0.5
+    );
 }
 
 /// The pointer activation of the same picker anchors identically: a click on
@@ -910,7 +926,7 @@ fn a_pointer_activated_picker_menu_anchors_under_the_field() {
     let [frame] = frames.as_slice() else {
         panic!("the field click must mount one popup window, got {frames:?}")
     };
-    let margin = crate::renderer::POPUP_MENU_PANEL_MARGIN;
+    let margin = MinimalTestTheme::panel_margin();
     let gap = crate::testing::plain_menu_picker_look().layout().popup_gap;
     approx::assert_relative_eq!(f64::from(frame.x()), field.x0 - margin, epsilon = 0.5);
     approx::assert_relative_eq!(f64::from(frame.y()), field.y1 + gap - margin, epsilon = 0.5);

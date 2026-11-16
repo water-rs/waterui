@@ -1434,8 +1434,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     ) {
         let env = &overlay.env;
         let theme = Rc::clone(&overlay.theme);
-        let metrics = menu_look(&theme, env).layout();
-        let text = self.popup_menu_text_metrics(&items, metrics, env, &theme);
+        let look = menu_look(&theme, env);
+        let text = self.popup_menu_text_metrics(&items, look.layout(), env, &theme);
         let Some(origin) = popup_window_origin(
             LayoutPoint::new(
                 crate::num_cast::f64_as_f32(row_bounds.x1),
@@ -1451,7 +1451,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let group = overlay.menu_group.clone();
         group.truncate(1);
         let (window, state) =
-            popup_menu_window(items, origin, group.clone(), 1, metrics, text, &theme);
+            popup_menu_window(items, origin, group.clone(), 1, &look, text, &theme);
         group.push(state);
         manager.show(window, env);
         self.popup_menu.active_popup_menu_group = Some(group);

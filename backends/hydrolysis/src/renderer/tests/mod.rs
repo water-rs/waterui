@@ -168,7 +168,7 @@ use waterui_navigation::tab::{NativeTabStyle, Tab, TabsLayout};
 
 use crate::theme::WidgetTheme;
 use crate::theme::{
-    BadgeLook, ButtonLook, ButtonSpec, Chrome, CornerShape, Custom, DragMapping, Driven,
+    BadgeLook, ButtonLook, ButtonSpec, Chrome, CornerShape, Custom, DragMapping, Driven, Elevation,
     FocusIndicator, HitRegion, IndicatorLook, InputFieldMetrics, InteractionFocusBinding,
     InteractionMotion, Knob, Label, LinearProgressLook, ListLook, ListSpec, MenuLayout, MenuLook,
     MenuPickerLook, MenuSpec, ModalInteraction, Motion, NavigationBarLook, NavigationSpec,
@@ -3126,10 +3126,39 @@ impl MinimalTestTheme {
             min_width: 112.0,
             max_width: 320.0,
             width_per_char: 8.5,
-            corner_radius: 4.0,
             separator_horizontal_inset: 16.0,
             separator_thickness: 1.0,
         }
+    }
+
+    /// The theme's menu look: a 4-point panel under a level-2-like shadow
+    /// that reaches past 14 points, deep enough for tests to distinguish it
+    /// from the scrim's uniform dim and from a fixed popup margin. The
+    /// `WorkingColor` components are linear Display P3; the intended panel
+    /// colour is sRGB (0.96, 0.94, 0.97), so it converts rather than passing
+    /// raw.
+    #[cfg(feature = "menu")]
+    pub(crate) fn menu_look() -> MenuLook {
+        MenuLook::new(
+            Self::menu_layout(),
+            Surface::new(
+                CornerShape::radius(4.0),
+                crate::renderer::working_color(peniko::Color::new([0.96, 0.94, 0.97, 1.0])),
+            )
+            .elevation(Elevation::new(
+                Shadow::new(6.0, WorkingColor::new([0.0, 0.0, 0.0, 0.35]))
+                    .offset(kurbo::Vec2::new(0.0, 3.0)),
+                Elevation::NONE.ambient,
+            )),
+            Custom::new((), |_, _, ()| {}),
+        )
+    }
+
+    /// The transparent margin a popup menu window leaves around this
+    /// theme's menu panel: its elevation's reach.
+    #[cfg(feature = "menu")]
+    pub(crate) fn panel_margin() -> f64 {
+        Self::menu_look().panel_extent(Rect::ZERO)
     }
 }
 
@@ -3260,30 +3289,7 @@ impl WidgetTheme for MinimalTestTheme {
 
     #[cfg(feature = "menu")]
     fn menu(&self, _spec: &MenuSpec, _env: &Environment) -> MenuLook {
-        let layout = Self::menu_layout();
-        let radii = kurbo::RoundedRectRadii::from_single_radius(layout.corner_radius);
-        MenuLook::new(
-            layout,
-            Custom::new((), move |draw, bounds, ()| {
-                // A level-2-like shadow under the panel, deep enough for
-                // tests to distinguish it from the scrim's uniform dim.
-                draw.shadow(
-                    kurbo::RoundedRect::from_rect(bounds, radii),
-                    Shadow::new(6.0, WorkingColor::new([0.0, 0.0, 0.0, 0.35]))
-                        .offset(kurbo::Vec2::new(0.0, 3.0)),
-                );
-                draw.fill(
-                    kurbo::RoundedRect::from_rect(bounds, radii),
-                    // `WorkingColor` components are linear Display P3; the
-                    // intended panel colour is sRGB (0.96, 0.94, 0.97), so it
-                    // converts rather than passing raw.
-                    Paint::Solid(crate::renderer::working_color(peniko::Color::new([
-                        0.96, 0.94, 0.97, 1.0,
-                    ]))),
-                );
-            }),
-            Custom::new((), |_, _, ()| {}),
-        )
+        Self::menu_look()
     }
 
     #[cfg(any(feature = "picker", feature = "date-picker"))]
