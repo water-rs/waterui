@@ -207,14 +207,13 @@ impl SubView for FixedSubView {
 /// container's layout. A `BackgroundLayout` container marks slot 0 as the
 /// background, so the §7.1 fill rule extends it through touched-edge regions.
 pub fn realize_fixed_container(container: FixedContainer, ctx: &RenderContext<'_>) -> NativeLeaf {
-    let background =
-        (container.as_parts().0 as &dyn core::any::Any).is::<waterui::layout::BackgroundLayout>();
+    let background_slot = container.background_slot();
     let leaf = render_fixed_container(container, ctx);
-    if background {
+    if background_slot.is_some() {
         let host = leaf.view().downcast_ref::<HostView>().expect(
             "a `BackgroundLayout` container must mount a `HostView` — the fill rule marks the background slot on it",
         );
-        host.set_background_slot(Some(0));
+        host.set_background_slot(background_slot);
     }
     leaf
 }
