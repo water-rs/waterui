@@ -98,6 +98,8 @@ pub mod shader_effect;
 mod shape_field;
 #[cfg(all(test, any(feature = "gpu", feature = "lanes")))]
 mod test_filters;
+#[cfg(feature = "waterkit-video")]
+pub mod video;
 
 #[cfg(feature = "gpu")]
 pub use aux_image::TextureImage;

@@ -303,6 +303,8 @@ waterkit-haptic = "0.2"
 waterkit-camera = "0.2"
 waterkit-build = "0.2"
 waterkit-menu = "0.2"
+waterkit-video-core = "0.2"
+waterkit-video-processing = "0.1.4"
 waterui-backend-core = { version = "0.5.2", path = "backends/core", default-features = false }
 # The `filtrate` family — the filter library `.filter(F)`/`.effect(E)` and
 # Cherenkov share — lives in-tree under `graphics/filtrate/` (#1449). Every
@@ -762,6 +764,7 @@ waterkit-core = { git = "https://github.com/water-rs/waterkit", branch = "main" 
 waterkit-video = { git = "https://github.com/water-rs/waterkit", branch = "main" }
 waterkit-video-container = { git = "https://github.com/water-rs/waterkit", branch = "main" }
 waterkit-video-core = { git = "https://github.com/water-rs/waterkit", branch = "main" }
+waterkit-video-processing = { git = "https://github.com/water-rs/waterkit", branch = "main" }
 waterkit-video-player = { git = "https://github.com/water-rs/waterkit", branch = "main" }
 waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", branch = "main" }
 waterui-math = { git = "https://github.com/water-rs/math", branch = "main" }
