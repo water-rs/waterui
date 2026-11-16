@@ -653,9 +653,18 @@ impl HeadlessRuntime {
     pub fn set_scale_factor(&mut self, scale_factor: f64) {
         let before = self.runtime.platform.scale_factor();
         self.runtime.platform.set_scale_factor(scale_factor);
-        if self.runtime.platform.scale_factor().to_bits() != before.to_bits() {
+        let after = self.runtime.platform.scale_factor();
+        if after.to_bits() != before.to_bits() {
             self.runtime.request_refresh();
             self.runtime.request_redraw();
+            // Popup windows already mounted follow the main window's scale
+            // the same way: the surface reallocates and the next pump
+            // refreshes and renders at it.
+            for popup in &mut self.popup_windows {
+                popup.platform.set_scale_factor(after);
+                popup.request_refresh();
+                popup.request_redraw();
+            }
         }
     }
 
@@ -899,6 +908,9 @@ impl HeadlessRuntime {
         platform
             .touch_scroll_config
             .set(self.runtime.platform.touch_scroll_config.get());
+        // A popup renders at the main window's scale factor: `apply_properties`
+        // below allocates its surface from the logical frame at that scale.
+        platform.set_scale_factor(self.runtime.platform.scale_factor());
         platform.apply_properties(&window);
         let mut renderer = HydrolysisRenderer::with_engine(
             Rc::clone(&self.theme),
@@ -1481,8 +1493,9 @@ impl HeadlessRuntime {
             .as_mut()
             .and_then(|result| result.snapshot.as_mut())
         {
+            let scale_factor = self.runtime.platform.scale_factor();
             for (_, frame, popup_snapshot) in popup_snapshots {
-                composite_popup_snapshot(snapshot, &popup_snapshot, frame);
+                composite_popup_snapshot(snapshot, &popup_snapshot, frame, scale_factor);
             }
         }
         let executor_after_started_at = Instant::now();
@@ -1550,9 +1563,13 @@ fn composite_popup_snapshot(
     target: &mut HeadlessSnapshot,
     source: &HeadlessSnapshot,
     frame: waterui_core::layout::Rect,
+    scale_factor: f64,
 ) {
-    let offset_x = crate::num_cast::f32_as_i32(frame.x().round());
-    let offset_y = crate::num_cast::f32_as_i32(frame.y().round());
+    // The frame is in logical units and both snapshots are physical pixels:
+    // the origin lands on the pixel grid the way the window's own surface
+    // size does (`resize_to_logical` rounds the scaled value).
+    let offset_x = crate::num_cast::f64_as_i32((f64::from(frame.x()) * scale_factor).round());
+    let offset_y = crate::num_cast::f64_as_i32((f64::from(frame.y()) * scale_factor).round());
     for source_y in 0..source.height() {
         let target_y = offset_y + i32::try_from(source_y).expect("source y should fit i32");
         if target_y < 0
