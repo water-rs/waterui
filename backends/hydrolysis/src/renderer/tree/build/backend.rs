@@ -38,6 +38,12 @@ impl<'r, E: crate::text::TextEngine> HydroBackend<'r, E> {
         Realize::child(self, view, env, ())
     }
 
+    /// Builds a payload's child view into a node, counted like [`build`](Self::build).
+    fn build_child<C: ChildView<Self>>(&mut self, child: C, env: &Environment) -> RenderNode<E> {
+        self.renderer.state.counters.semantic_builds += 1;
+        child.realize(self, env, ())
+    }
+
     /// An accessibility wrapper: its content builds under `scoped`, the
     /// environment the wrapper's value installs, held by an `Env` node so
     /// emission reads it every flush and the content stays live.
@@ -859,7 +865,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     ) -> RenderNode<E> {
         let (axis, content, controller, offset) = native.into_inner().into_parts();
         let core = self.renderer.new_core();
-        let child = content.realize(self, env, ());
+        let child = self.build_child(content, env);
         // A scroll surface owns §7.1 for its subtree: the layout
         // pass hands the surface its facts and the child lays out
         // with no safe-area context — the surface insets and
