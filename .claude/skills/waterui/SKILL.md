@@ -230,8 +230,9 @@ facade features `canvas`, `chart`, `barcode` and `particle`, exposing
 `waterui::canvas` (the drawing API, also at `waterui::graphics::canvas`) and the
 independent crates as `waterui::chart`, `waterui::barcode` and
 `waterui::particle`. Direct dependencies such as `waterui-chart` remain valid and expose
-the same types as the facade, including with dynamic linking. Maps and Mermaid diagrams
-use direct dependencies on `waterui-map` and `waterui-mermaid`; `waterui-mermaid` lives
+the same types as the facade, including with dynamic linking. Maps have the facade
+feature `map` (`waterui::map`, the same types as a direct `waterui-map` dependency).
+Mermaid diagrams use a direct dependency on `waterui-mermaid`, which lives
 in its own repository (water-rs/mermaid) and is a git dependency until it can be
 published. Mermaid additionally needs one call at the root of the app: a
 ```` ```mermaid ```` fence in Markdown stays plain code until the environment has

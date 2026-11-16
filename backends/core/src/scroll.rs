@@ -2094,7 +2094,9 @@ mod tests {
             )
             .expect("the run must arm");
         assert!(handle.tick_smooth_scroll(start + Duration::from_millis(75)));
-        assert_eq!(handle.metrics().offset_y, 150.0);
+        // A mid-run sample comes from the curve evaluator, so it is exact
+        // only to rounding.
+        assert!((handle.metrics().offset_y - 150.0).abs() < SCROLL_EPSILON);
         let _ = handle.rebind(
             Axis::Vertical,
             100.0,
@@ -2104,7 +2106,7 @@ mod tests {
             (0.0, -60.0),
             None,
         );
-        assert_eq!(handle.metrics().offset_y, 90.0);
+        assert!((handle.metrics().offset_y - 90.0).abs() < SCROLL_EPSILON);
         assert_eq!(handle.scroll_run_outcome(&run), ScrollRunOutcome::Running);
         assert!(!handle.tick_smooth_scroll(start + Duration::from_millis(100)));
         assert_eq!(handle.metrics().offset_y, 140.0);

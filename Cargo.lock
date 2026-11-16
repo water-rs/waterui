@@ -12911,6 +12911,7 @@ dependencies = [
  "waterui",
  "waterui-core",
  "waterui-layout",
+ "waterui-structural-transition",
  "web-time",
 ]
 
@@ -13432,6 +13433,7 @@ dependencies = [
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",
+ "waterui-map",
  "waterui-math",
  "waterui-media",
  "waterui-meta",

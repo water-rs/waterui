@@ -482,7 +482,7 @@ signals. Cartesian charts also take `.chart_x_selection(&binding)` and friends; 
 `Legend::new(vec![LegendItem::new(label, color)])` is a separate view. `LineChart::fill(opacity)`
 shades under the line.
 
-Maps (`waterui-map`):
+Maps (`waterui-map`, or `waterui::map` with the facade feature `map`):
 
 ```rust
 use waterui_map::{Annotation, Coordinate, Map, MapStyle, Region};
