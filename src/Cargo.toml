@@ -27,6 +27,7 @@ waterui-navigation = { workspace = true, optional = true }
 waterui-form.workspace = true
 waterui-controls.workspace = true
 waterui-webview = { workspace = true, optional = true }
+waterui-map = { workspace = true, optional = true }
 waterui-widgets = { workspace = true, optional = true }
 # `number` is not optional here: `text!` interpolates every numeric argument
 # through `waterui_locale::LocalizedArgument`, so a WaterUI application that
@@ -193,6 +194,8 @@ remote = [
 # wasm32 it links nothing.
 video-gpu = ["video", "gpu", "dep:waterui-video-gpu"]
 webview = ["dep:waterui-webview"]
+# Maps (`waterui::map`).
+map = ["dep:waterui-map"]
 # The `#[waterui::widget]` authoring surface and its `WidgetKit` snapshot
 # schema (`waterui::widgets`). Off by default: an application that declares
 # no widgets pays for none of the schema or its FFI glue — and the `water`
@@ -277,6 +280,7 @@ all = [
     "assets",
     "media",
     "webview",
+    "map",
     "widgets",
     "flow-markdown",
     "markdown-math",

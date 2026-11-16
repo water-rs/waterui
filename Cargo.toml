@@ -76,6 +76,10 @@ repository.workspace = true
 description = "A modern UI framework for Rust"
 keywords = ["ui", "framework", "rust", "gui", "water"]
 categories = ["gui"]
+# `build.rs` exports the enabled features to direct dependents as
+# `DEP_WATERUI_FEATURES`, so a backend implements exactly the components the
+# application enabled.
+links = "waterui"
 
 # WaterUI framework release policy shared by the `water` CLI and release
 # automation. This table is the framework's own scaffold metadata: the
@@ -483,6 +487,7 @@ remote = ["waterui-internal/remote", "waterui-dylib?/remote"]
 # link it. The backend without one selects this.
 video-gpu = ["waterui-internal/video-gpu", "waterui-dylib?/video-gpu"]
 webview = ["waterui-internal/webview", "waterui-dylib?/webview"]
+map = ["waterui-internal/map", "waterui-dylib?/map"]
 # The `WidgetKit` authoring surface (`waterui::widgets`, `#[waterui::widget]`).
 widgets = ["waterui-internal/widgets", "waterui-dylib?/widgets"]
 # TypeScript views: the embedded JavaScript engine, the signal bridge, the
@@ -548,6 +553,7 @@ all = [
     "assets",
     "media",
     "webview",
+    "map",
     "flow-markdown",
     "video-gpu",
     "navigation-restoration",
