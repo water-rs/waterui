@@ -20,8 +20,6 @@ tracing-subscriber.workspace = true
 nami.workspace = true
 waterui-icon.workspace = true
 waterui-shape.workspace = true
-# Hosted content follows the occlusion rects through a watcher set.
-waterui-watcher-set = { workspace = true, optional = true }
 waterui-layout.workspace = true
 waterui-controls.workspace = true
 waterui-form.workspace = true
@@ -105,6 +103,12 @@ pollster = { workspace = true, optional = true }
 # only build once an application picks an activity backend — nothing in
 # this library may — so the dependency edge does not exist for the Android
 # target at all. The `winit` feature still exists there and means nothing.
+# Hosted content (Apple, Android and the web, the `hydrolysis_hosted` targets)
+# follows the occlusion rects through a watcher set, as does the web
+# platform's surface; no other target compiles either.
+[target.'cfg(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32"))'.dependencies]
+waterui-watcher-set = { workspace = true, optional = true }
+
 [target.'cfg(not(target_os = "android"))'.dependencies]
 winit = { version = "0.30", optional = true }
 ui-events-winit = { workspace = true, optional = true }
@@ -540,7 +544,7 @@ hwui = [
     "dep:read-fonts",
     "dep:waterkit-clipboard",
     "dep:waterui-backend-core",
-    ]
+]
 # The Android realization of the GPU video player's decoder plane
 # (`AndroidVideoSurfaceHost`), for an application that links
 # `waterui-video-gpu`. The CLI enables it for such an application; elsewhere

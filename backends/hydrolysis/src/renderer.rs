@@ -254,6 +254,10 @@ use waterui_graphics::gpu::RedrawHandle;
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::{ExternalFrameView, GpuView};
 
+#[cfg(waterui_feature = "map")]
+use waterui::map::MapConfig;
+#[cfg(waterui_feature = "webview")]
+use waterui::webview::WebView;
 use waterui_icon::SystemIcon;
 use waterui_layout::container::{FixedContainer, LazyContainer};
 use waterui_layout::safe_area::IgnoreSafeArea;
@@ -261,13 +265,9 @@ use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
-#[cfg(waterui_feature = "map")]
-use waterui::map::MapConfig;
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape, ShapeKind};
 use waterui_text::styled::StyledStr;
 use waterui_text::{Text, TextConfig};
-#[cfg(waterui_feature = "webview")]
-use waterui::webview::WebView;
 
 use crate::animation::{
     AnimatedScalarHandle, AnimationController, AnimationKey, PerpetualAnimation,

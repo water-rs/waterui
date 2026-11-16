@@ -9,8 +9,8 @@
 
 use std::collections::HashMap;
 
-use waterui_core::{Computed, Signal, Str};
 use waterui::webview::{Cookie, OriginPolicy, Url, WebViewError, WebViewEvent};
+use waterui_core::{Computed, Signal, Str};
 
 /// The token `OriginRule::LocalFiles` crosses as; Android spells a local-file
 /// origin rule `file://`.

@@ -10,7 +10,7 @@ use waterui_core::{NativeView, View};
 use super::*;
 
 /// Why a GPU leaf is not drawn in a build without the GPU painter.
-#[cfg(not(hydrolysis_gpu))]
+#[cfg(all(waterui_feature = "gpu", not(hydrolysis_gpu)))]
 const NO_GPU_PAINTER: &str =
     "this Hydrolysis build has no GPU painter: it was built without the `gpu` feature";
 

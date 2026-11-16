@@ -1771,8 +1771,8 @@ fn a_container_with_an_explicit_label_still_consumes_its_text() {
 #[cfg(feature = "accessibility")]
 #[test]
 fn a_label_survives_the_environment_snapshot_a_view_hook_takes() {
-    use waterui_core::AnyView;
     use waterui::map::{Coordinate, Map, MapConfig, Region};
+    use waterui_core::AnyView;
 
     let mut env = test_environment();
     // The hooked body stands in for a real map realization — `Native<MapConfig>`
@@ -1816,12 +1816,12 @@ fn a_label_survives_the_environment_snapshot_a_view_hook_takes() {
 fn a_webview_with_no_engine_to_draw_it_is_reported_and_not_drawn() {
     use std::future::{Future, ready};
 
-    use waterui_core::{Signal, Str};
     use waterui::webview::{
         BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime, ScriptMessageHandler,
         WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController, WebViewHandle,
         WebViewOpenError,
     };
+    use waterui_core::{Signal, Str};
 
     /// The smallest controller that can still create a `WebView`: the handle
     /// answers what construction asks and discards the rest, because the
