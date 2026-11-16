@@ -29,7 +29,7 @@ use cocoa_ui::view::retain_base;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Context;
 use waterui_backend_core::{AnyView, Environment, Realize, View};
-use waterui_core::backend::{Backend, DynBackend, cast, take};
+use waterui_core::backend::{Backend, DynBackend, ErasedPayload, cast};
 use waterui_core::layout::SubView;
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{Metadata, NativeView};
@@ -714,7 +714,7 @@ impl Backend for ResolveEnvironment<'_> {
 impl DynBackend for ResolveEnvironment<'_> {
     fn native_dyn(
         &mut self,
-        native: &mut dyn Any,
+        native: ErasedPayload<'_>,
         env: &Environment,
         _cx: Box<dyn Any>,
     ) -> Box<dyn Any> {
@@ -726,11 +726,11 @@ impl DynBackend for ResolveEnvironment<'_> {
 
     fn metadata_dyn(
         &mut self,
-        metadata: &mut dyn Any,
+        mut metadata: ErasedPayload<'_>,
         env: &Environment,
         _cx: Box<dyn Any>,
     ) -> Box<dyn Any> {
-        if let Some(Metadata { content, value }) = take::<Metadata<Environment>>(metadata) {
+        if let Some(Metadata { content, value }) = metadata.take::<Metadata<Environment>>() {
             return Box::new(content.dispatch(self, &value, ()));
         }
         Box::new((

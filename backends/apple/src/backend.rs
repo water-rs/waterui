@@ -1,8 +1,10 @@
 //! The Apple backend's [`NativeBackend`]: each component's realization,
 //! reached through static dispatch.
 
-use waterui_backend_core::{Environment, NativeBackend};
-use waterui_core::Metadata;
+use waterui_backend_core::{Environment, NativeBackend, report_unprovided};
+use waterui_core::backend::ErasedPayload;
+use waterui_core::metadata::MetadataKey;
+use waterui_core::{Metadata, NativeView};
 
 use crate::contract::{NativeLeaf, RenderContext};
 
@@ -46,6 +48,15 @@ impl NativeBackend for AppleBackend {
 
     fn spacer(&mut self, native: waterui::layout::Spacer, env: &Environment, (): ()) -> NativeLeaf {
         crate::components::spacer::realize_spacer(native, &RenderContext::new(env, self.mtm))
+    }
+
+    fn divider(
+        &mut self,
+        native: waterui::layout::Divider,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        crate::dispatch::render(native.composed(env), env, self.mtm)
     }
 
     fn fixed_container(
@@ -346,14 +357,28 @@ impl NativeBackend for AppleBackend {
         )
     }
 
-    #[cfg(waterui_feature = "canvas")]
+    // Every application can build a canvas, so the method exists whether or
+    // not this build carries the `canvas` realization.
     fn canvas(
         &mut self,
-        native: waterui::canvas::CanvasView,
+        native: waterui::graphics::canvas::CanvasView,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        crate::components::canvas::realize_canvas_view(native, &RenderContext::new(env, self.mtm))
+        #[cfg(feature = "canvas")]
+        return crate::components::canvas::realize_canvas_view(
+            native,
+            &RenderContext::new(env, self.mtm),
+        );
+        #[cfg(not(feature = "canvas"))]
+        {
+            drop(native);
+            report_unprovided(
+                "waterui-apple without its `canvas` feature",
+                "waterui_graphics::canvas::CanvasView",
+            );
+            self.empty((), env, ())
+        }
     }
 
     #[cfg(waterui_feature = "effects")]
@@ -972,10 +997,41 @@ impl NativeBackend for AppleBackend {
         )
     }
 
-    fn unrealized(&mut self, type_name: &'static str, env: &Environment, (): ()) -> NativeLeaf {
-        waterui_core::contract_violation!(
-            "waterui-apple has no realization for `{type_name}`: the payload is not part of NativeBackend"
-        );
+    // waterui-apple provides no components of its own yet: every payload
+    // outside `NativeBackend` is a contract violation.
+
+    fn provided<T: NativeView + 'static>(
+        &mut self,
+        _native: T,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        report_unprovided("waterui-apple", core::any::type_name::<T>());
+        self.empty((), env, ())
+    }
+
+    fn provided_dyn(&mut self, native: ErasedPayload<'_>, env: &Environment, (): ()) -> NativeLeaf {
+        report_unprovided("waterui-apple", native.type_name());
+        self.empty((), env, ())
+    }
+
+    fn provided_metadata<K: MetadataKey>(
+        &mut self,
+        _metadata: Metadata<K>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        report_unprovided("waterui-apple", core::any::type_name::<K>());
+        self.empty((), env, ())
+    }
+
+    fn provided_metadata_dyn(
+        &mut self,
+        metadata: ErasedPayload<'_>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        report_unprovided("waterui-apple", metadata.type_name());
         self.empty((), env, ())
     }
 }

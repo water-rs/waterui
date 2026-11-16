@@ -133,7 +133,6 @@ fn facade_features() {
         ("table", &["table"]),
         ("navigation", &["navigation"]),
         ("dialog", &["dialog"]),
-        ("canvas", &["canvas"]),
         ("webview", &["webview"]),
         ("map", &["map"]),
         ("video", &["video", "video_player"]),

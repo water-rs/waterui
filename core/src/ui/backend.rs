@@ -59,14 +59,13 @@ pub trait Backend {
 /// The object-safe face of a [`Backend`], for the one hop an [`AnyView`]
 /// erases.
 ///
-/// Each payload arrives as `&mut dyn Any` holding an `Option` of its
-/// concrete type — `Option<T>` for a native `T`, `Option<Metadata<K>>` for
-/// metadata — which the implementation takes after matching the type.
+/// Each payload arrives as an [`ErasedPayload`], which the implementation
+/// [`take`](ErasedPayload::take)s after matching the type.
 pub trait DynBackend {
     /// Realizes the native payload `native` holds.
     fn native_dyn(
         &mut self,
-        native: &mut dyn Any,
+        native: ErasedPayload<'_>,
         env: &Environment,
         cx: Box<dyn Any>,
     ) -> Box<dyn Any>;
@@ -74,7 +73,7 @@ pub trait DynBackend {
     /// Realizes the metadata wrapper `metadata` holds.
     fn metadata_dyn(
         &mut self,
-        metadata: &mut dyn Any,
+        metadata: ErasedPayload<'_>,
         env: &Environment,
         cx: Box<dyn Any>,
     ) -> Box<dyn Any>;
@@ -112,7 +111,8 @@ impl Backend for Erased<'_> {
         env: &Environment,
         cx: Self::Ctx,
     ) -> Self::Output {
-        self.inner.native_dyn(&mut Some(native), env, cx)
+        self.inner
+            .native_dyn(ErasedPayload::new(&mut Some(native)), env, cx)
     }
 
     fn metadata<K: MetadataKey>(
@@ -121,7 +121,8 @@ impl Backend for Erased<'_> {
         env: &Environment,
         cx: Self::Ctx,
     ) -> Self::Output {
-        self.inner.metadata_dyn(&mut Some(metadata), env, cx)
+        self.inner
+            .metadata_dyn(ErasedPayload::new(&mut Some(metadata)), env, cx)
     }
 
     fn erased(&mut self, view: AnyView, env: &Environment, cx: Self::Ctx) -> Self::Output {
@@ -129,12 +130,41 @@ impl Backend for Erased<'_> {
     }
 }
 
-/// Takes the `T` an `Option<T>` behind `slot` holds, when that is its type.
-///
-/// The counterpart of handing a payload through `&mut dyn Any`: the caller
-/// matches the type and takes the value out, leaving `None` behind.
-pub fn take<T: 'static>(slot: &mut dyn Any) -> Option<T> {
-    slot.downcast_mut::<Option<T>>().and_then(Option::take)
+/// A payload an erased view hands back to its [`DynBackend`]: the value,
+/// behind a slot the implementation takes it out of once it matched the
+/// type, and the type's name for reporting one it does not realize.
+pub struct ErasedPayload<'a> {
+    slot: &'a mut dyn Any,
+    type_name: &'static str,
+}
+
+impl<'a> ErasedPayload<'a> {
+    /// The payload `slot` holds.
+    pub fn new<T: 'static>(slot: &'a mut Option<T>) -> Self {
+        Self {
+            slot,
+            type_name: core::any::type_name::<T>(),
+        }
+    }
+
+    /// Takes the payload when it is a `T`, leaving the slot empty.
+    pub fn take<T: 'static>(&mut self) -> Option<T> {
+        self.slot.downcast_mut::<Option<T>>().and_then(Option::take)
+    }
+
+    /// The payload type's name.
+    #[must_use]
+    pub const fn type_name(&self) -> &'static str {
+        self.type_name
+    }
+}
+
+impl core::fmt::Debug for ErasedPayload<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ErasedPayload")
+            .field("type_name", &self.type_name)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Converts a payload of type `T` to the same value typed `U`, when `T` and
@@ -151,7 +181,7 @@ pub fn take<T: 'static>(slot: &mut dyn Any) -> Option<T> {
 /// another type keeps it.
 pub fn cast<T: 'static, U: 'static>(value: T) -> Result<U, T> {
     let mut slot = Some(value);
-    take::<U>(&mut slot).map_or_else(
+    ErasedPayload::new(&mut slot).take::<U>().map_or_else(
         || Err(slot.expect("a slot of another type keeps its value")),
         Ok,
     )
@@ -212,11 +242,11 @@ mod tests {
     impl DynBackend for DynRecorder<'_> {
         fn native_dyn(
             &mut self,
-            native: &mut dyn Any,
+            mut native: ErasedPayload<'_>,
             _env: &Environment,
             _cx: Box<dyn Any>,
         ) -> Box<dyn Any> {
-            let leaf = if take::<Leaf>(native).is_some() {
+            let leaf = if native.take::<Leaf>().is_some() {
                 type_name::<Leaf>()
             } else {
                 "unknown native"
@@ -227,11 +257,13 @@ mod tests {
 
         fn metadata_dyn(
             &mut self,
-            metadata: &mut dyn Any,
+            mut metadata: ErasedPayload<'_>,
             env: &Environment,
             _cx: Box<dyn Any>,
         ) -> Box<dyn Any> {
-            let metadata = take::<Metadata<Key>>(metadata).expect("only `Key` is attached");
+            let metadata = metadata
+                .take::<Metadata<Key>>()
+                .expect("only `Key` is attached");
             self.0.leaves.push(type_name::<Key>());
             metadata.content.dispatch(self.0, env, ());
             Box::new(())

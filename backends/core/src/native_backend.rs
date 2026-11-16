@@ -15,9 +15,9 @@
 //! come back through the same routing, by `TypeId` at run time.
 
 use alloc::boxed::Box;
-use core::any::{Any, type_name};
+use core::any::Any;
 
-use waterui_core::backend::{Backend, DynBackend, cast, take};
+use waterui_core::backend::{Backend, DynBackend, ErasedPayload, cast};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{AnyView, Environment, Metadata, NativeView, View, contract_violation};
 
@@ -56,12 +56,25 @@ macro_rules! native_backend {
                 fn $meta(&mut self, metadata: Metadata<$meta_ty>, env: &Environment, cx: Self::Ctx) -> Self::Output;
             )*
 
-            /// Realizes a payload no method names: one that reached the
-            /// backend outside the components `WaterUI` defines.
-            ///
-            /// This is a contract violation. A backend reports it and
-            /// returns the output of an empty view.
-            fn unrealized(&mut self, type_name: &'static str, env: &Environment, cx: Self::Ctx) -> Self::Output;
+            /// Realizes a native payload no method names: a component this
+            /// backend provides itself, which it matches by type, or a payload
+            /// it does not realize, which it reports through
+            /// [`report_unprovided`] before returning an empty view's output.
+            fn provided<T: NativeView + 'static>(&mut self, native: T, env: &Environment, cx: Self::Ctx) -> Self::Output;
+
+            /// [`provided`](Self::provided) for a payload an [`AnyView`]
+            /// handed back erased: the backend [`take`](ErasedPayload::take)s its
+            /// own types out of `native`.
+            fn provided_dyn(&mut self, native: ErasedPayload<'_>, env: &Environment, cx: Self::Ctx) -> Self::Output;
+
+            /// Realizes a metadata wrapper no method names: a key this backend
+            /// provides itself, or one it reports through
+            /// [`report_unprovided`].
+            fn provided_metadata<K: MetadataKey>(&mut self, metadata: Metadata<K>, env: &Environment, cx: Self::Ctx) -> Self::Output;
+
+            /// [`provided_metadata`](Self::provided_metadata) for a wrapper an
+            /// [`AnyView`] handed back erased.
+            fn provided_metadata_dyn(&mut self, metadata: ErasedPayload<'_>, env: &Environment, cx: Self::Ctx) -> Self::Output;
         }
 
         fn route_native<B: NativeBackend, T: NativeView + 'static>(
@@ -77,8 +90,7 @@ macro_rules! native_backend {
                     Err(native) => native,
                 };
             )*
-            drop(native);
-            unrealized::<B, T>(backend, env, cx)
+            backend.provided(native, env, cx)
         }
 
         fn route_metadata<B: NativeBackend, K: MetadataKey>(
@@ -94,38 +106,37 @@ macro_rules! native_backend {
                     Err(metadata) => metadata,
                 };
             )*
-            drop(metadata);
-            unrealized::<B, K>(backend, env, cx)
+            backend.provided_metadata(metadata, env, cx)
         }
 
         fn route_native_dyn<B: NativeBackend>(
             backend: &mut B,
-            native: &mut dyn Any,
+            mut native: ErasedPayload<'_>,
             env: &Environment,
             cx: B::Ctx,
         ) -> B::Output {
             $(
                 $(#[cfg($ncfg)])*
-                if let Some(native) = take::<$native_ty>(native) {
+                if let Some(native) = native.take::<$native_ty>() {
                     return backend.$native(native, env, cx);
                 }
             )*
-            backend.unrealized("an erased native payload", env, cx)
+            backend.provided_dyn(native, env, cx)
         }
 
         fn route_metadata_dyn<B: NativeBackend>(
             backend: &mut B,
-            metadata: &mut dyn Any,
+            mut metadata: ErasedPayload<'_>,
             env: &Environment,
             cx: B::Ctx,
         ) -> B::Output {
             $(
                 $(#[cfg($mcfg)])*
-                if let Some(metadata) = take::<Metadata<$meta_ty>>(metadata) {
+                if let Some(metadata) = metadata.take::<Metadata<$meta_ty>>() {
                     return backend.$meta(metadata, env, cx);
                 }
             )*
-            backend.unrealized("an erased metadata key", env, cx)
+            backend.provided_metadata_dyn(metadata, env, cx)
         }
 
         #[cfg(test)]
@@ -148,17 +159,32 @@ macro_rules! native_backend {
                 }
             )*
 
-            fn unrealized(&mut self, type_name: &'static str, _env: &Environment, (): ()) {
-                self.reached.push(type_name);
+            fn provided<T: NativeView + 'static>(&mut self, _native: T, _env: &Environment, (): ()) {
+                self.reached.push(core::any::type_name::<T>());
+            }
+
+            fn provided_dyn(&mut self, native: ErasedPayload<'_>, _env: &Environment, (): ()) {
+                self.reached.push(native.type_name());
+            }
+
+            fn provided_metadata<K: MetadataKey>(&mut self, metadata: Metadata<K>, env: &Environment, (): ()) {
+                self.reached.push(core::any::type_name::<K>());
+                Realize::child(self, metadata.content, env, ());
+            }
+
+            fn provided_metadata_dyn(&mut self, metadata: ErasedPayload<'_>, _env: &Environment, (): ()) {
+                self.reached.push(metadata.type_name());
             }
         }
     };
 }
 
-fn unrealized<B: NativeBackend, T>(backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
-    let name = type_name::<T>();
-    contract_violation!("{name} reached a backend, but `NativeBackend` names no method for it");
-    backend.unrealized(name, env, cx)
+/// Reports that `payload` reached `backend`, which neither `NativeBackend`
+/// nor the backend's own components realize: a contract violation.
+pub fn report_unprovided(backend: &str, payload: &str) {
+    contract_violation!(
+        "{payload} reached {backend}, which realizes it neither through a `NativeBackend` method nor as a component it provides"
+    );
 }
 
 /// The core [`Backend`] a [`NativeBackend`] realizes a tree through.
@@ -180,7 +206,12 @@ impl<'a, B: NativeBackend> Realize<'a, B> {
 
     /// Realizes the native payload an [`AnyView`] handed back through a
     /// [`DynBackend`].
-    pub fn native_dyn(&mut self, native: &mut dyn Any, env: &Environment, cx: B::Ctx) -> B::Output {
+    pub fn native_dyn(
+        &mut self,
+        native: ErasedPayload<'_>,
+        env: &Environment,
+        cx: B::Ctx,
+    ) -> B::Output {
         route_native_dyn(self.backend, native, env, cx)
     }
 
@@ -188,7 +219,7 @@ impl<'a, B: NativeBackend> Realize<'a, B> {
     /// [`DynBackend`].
     pub fn metadata_dyn(
         &mut self,
-        metadata: &mut dyn Any,
+        metadata: ErasedPayload<'_>,
         env: &Environment,
         cx: B::Ctx,
     ) -> B::Output {
@@ -240,7 +271,7 @@ impl<B: NativeBackend> RealizeDyn<'_, B> {
 impl<B: NativeBackend> DynBackend for RealizeDyn<'_, B> {
     fn native_dyn(
         &mut self,
-        native: &mut dyn Any,
+        native: ErasedPayload<'_>,
         env: &Environment,
         cx: Box<dyn Any>,
     ) -> Box<dyn Any> {
@@ -249,7 +280,7 @@ impl<B: NativeBackend> DynBackend for RealizeDyn<'_, B> {
 
     fn metadata_dyn(
         &mut self,
-        metadata: &mut dyn Any,
+        metadata: ErasedPayload<'_>,
         env: &Environment,
         cx: Box<dyn Any>,
     ) -> Box<dyn Any> {
@@ -273,6 +304,8 @@ native_backend! {
         color: waterui::Color,
         /// A flexible gap in a stack.
         spacer: waterui::layout::Spacer,
+        /// A line separating content.
+        divider: waterui::layout::Divider,
         /// A container with a fixed child list and a layout.
         fixed_container: waterui::layout::container::FixedContainer,
         /// A container whose children are produced lazily.
@@ -344,9 +377,8 @@ native_backend! {
         #[cfg(waterui_feature = "navigation")]
         /// Tabs.
         tabs: waterui::navigation::tab::TabsLayout,
-        #[cfg(waterui_feature = "canvas")]
         /// A canvas.
-        canvas: waterui::canvas::CanvasView,
+        canvas: waterui::graphics::canvas::CanvasView,
         #[cfg(waterui_feature = "effects")]
         /// A view drawn through a filter.
         filtered: waterui::graphics::backend::FilteredView,
