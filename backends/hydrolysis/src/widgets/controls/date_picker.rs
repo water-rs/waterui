@@ -56,6 +56,17 @@ pub struct DatePickerRenderState<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> DatePickerRenderState<E> {
+    /// The label this control contributes to a node naming itself from its
+    /// content: its own label.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn contributed_label(
+        &self,
+        _renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+    ) -> Option<String> {
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
+    }
+
     pub(crate) fn from_config(config: DatePickerConfig) -> Self {
         Self {
             label_view: RetainedSubview::new(AnyView::new(config.label().clone())),

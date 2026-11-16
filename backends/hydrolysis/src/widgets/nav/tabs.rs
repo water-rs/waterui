@@ -553,6 +553,7 @@ pub fn render_tabs_node<E: crate::text::TextEngine>(
                 st.prebuild_labels(ctx.renderer_mut(), env);
                 let selected_index = st.selected_index(selected_id);
                 let badges = st.badge_counts(ctx.renderer_mut());
+                let renderer = ctx.renderer_mut();
                 let labels: Vec<TabAccessibilityEntry> = st
                     .tabs
                     .iter()
@@ -564,7 +565,7 @@ pub fn render_tabs_node<E: crate::text::TextEngine>(
                                 state,
                                 crate::num_cast::i32_as_u32(i32::from(tab.tag)) as usize,
                             ),
-                            tab.label.default_a11y_label(),
+                            tab.label.accessibility_label(renderer),
                             Some(index) == selected_index,
                             badges[index],
                         )
@@ -1137,7 +1138,7 @@ pub fn emit_tabs_accessibility<E: crate::text::TextEngine>(
                         owner,
                         crate::num_cast::i32_as_u32(i32::from(tab.tag)) as usize,
                     ),
-                    tab.label.default_a11y_label(),
+                    tab.label.accessibility_label(renderer),
                     Some(index) == selected_index,
                     badges[index],
                 )

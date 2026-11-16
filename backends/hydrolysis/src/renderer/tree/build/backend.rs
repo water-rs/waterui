@@ -802,8 +802,6 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         let effect = GestureObserverEffect {
             gesture,
             action: Rc::new(RefCell::new(action)),
-            #[cfg(feature = "accessibility")]
-            default_a11y_label: renderer.accessibility_label_from_view(&content, env),
             gesture_group_identity: gesture_group_identity(&content),
             gesture_target: Cell::new(None),
             chrome: RefCell::new(None),

@@ -23,7 +23,7 @@
 //! re-dispatching the same screen from the `View` tree costs ~15ms.
 
 macro_rules! impl_widget_behavior {
-    ($state:ty, $render:path, $measure:expr $(, $priority:expr)? $(; prepare: $prepare:ident)? $(; dirty: $dirty:ident)? $(; a11y: $a11y:path)? $(; renders_nothing: $renders_nothing:literal)? $(; surface: $surface:ident)? $(; page: $page:path)?) => {
+    ($state:ty, $render:path, $measure:expr $(, $priority:expr)? $(; prepare: $prepare:ident)? $(; dirty: $dirty:ident)? $(; a11y: $a11y:path)? $(; renders_nothing: $renders_nothing:literal)? $(; surface: $surface:ident)? $(; page: $page:path)? $(; label: $label:ident)?) => {
         impl<E: crate::text::TextEngine> WidgetBehavior<E> for RefCell<$state> {
             $(fn priority(&self) -> i32 { $priority })?
 
@@ -67,6 +67,17 @@ macro_rules! impl_widget_behavior {
             )?
 
             $(
+                #[cfg(feature = "accessibility")]
+                fn accessibility_label(
+                    &self,
+                    renderer: &mut SemanticCore<E>,
+                    env: &Environment,
+                ) -> Option<String> {
+                    self.borrow().$label(renderer, env)
+                }
+            )?
+
+            $(
                 fn update_scroll_surface(&self, facts: Option<safe_area::ScrollSurfaceFacts>) {
                     self.borrow().$surface.facts.set(facts);
                 }
@@ -94,6 +105,8 @@ mod collection;
 mod flush;
 #[cfg(all(hydrolysis_hosted, hydrolysis_gpu))]
 mod hosted;
+#[cfg(feature = "accessibility")]
+mod label;
 mod layout;
 mod nodes;
 pub(super) mod safe_area;
