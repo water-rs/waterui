@@ -227,6 +227,9 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
         let default_a11y_label = renderer.accessibility_label_from_view(&view, env);
         #[cfg(not(feature = "accessibility"))]
         let default_a11y_label = None;
+        // Normalize as the container/collection build paths do, so a layout
+        // view (stack/spacer/etc.) inside a label lowers to its native form.
+        let view = normalize_layout_view(view, env);
         let node = RenderNode::build(view, env, renderer);
         let layout_dependencies = Some(LayoutDependencies::new(Rc::downgrade(&node.core().cell)));
         self.state = RetainedSubviewState::Built(Box::new(BuiltSubview {

@@ -241,7 +241,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 let view = item_view_or_empty(&snapshot, index);
                 let entry_core = renderer.new_core();
                 entry_core.cell.set_parent(&core.cell);
-                let node = Self::build_view(view, env, renderer);
+                let node = Self::build_view(normalize_layout_view(view, env), env, renderer);
                 node.core().cell.set_parent(&entry_core.cell);
                 Some(CollectionEntry::new(id, node, entry_core))
             })
@@ -460,7 +460,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             guards,
         } = filtered;
         let runtime = Rc::new(RefCell::new(FilteredRuntime::new(effect, guards)));
-        let child = Self::build_view(content, env, renderer);
+        let child = Self::build_view(normalize_layout_view(content, env), env, renderer);
         Self::Filtered(Box::new(FilteredNode {
             core: renderer.new_core(),
             runtime,
@@ -562,7 +562,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             .into_iter()
             .enumerate()
             .map(|(index, child)| {
-                let node = Self::build_view(child, child_env, renderer);
+                let node =
+                    Self::build_view(normalize_layout_view(child, child_env), child_env, renderer);
                 if Some(index) == background_slot && is_background_fill_leaf(&node) {
                     Self::Fill(Box::new(FillNode::new(node, renderer.new_core())))
                 } else {

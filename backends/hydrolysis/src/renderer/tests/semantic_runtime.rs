@@ -1860,3 +1860,16 @@ fn focused_binding_moves_ui_focus_and_tree_focus() {
     assert_eq!(runtime.focused_ui_node(), Some(name_node));
     assert_eq!(focus.snapshot(), Some(Field::Name));
 }
+
+#[test]
+fn a_tap_region_over_a_composite_derives_its_label_from_the_content() {
+    let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
+        AnyView::new(vstack((
+            hstack((text("Alpha"), text("Beta"))).on_tap(|| {}),
+        )))
+    }));
+    let update = pumped(&mut runtime);
+    assert_rooted(&update);
+    find_by_label(&update, Role::Button, "Alpha Beta")
+        .expect("the tap region's button takes its composite content's label");
+}
