@@ -24,7 +24,6 @@ use core::mem::size_of_val;
 use arc_swap::{ArcSwap, ArcSwapOption};
 use nami::watcher::BoxWatcherGuard;
 use nami::{Computed, Signal, SignalExt};
-use waterui_core::layout::StretchAxis;
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Environment, View, contract_violation};
 
@@ -93,10 +92,6 @@ impl View for ShaderPaintView {
         })
         // The hook also keeps the posting's watchers alive with the view.
         .on_frame(move || posting.post())
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
     }
 }
 
@@ -355,9 +350,13 @@ mod tests {
     #[test]
     fn a_shader_view_is_a_stretching_gpu_view() {
         let view = ShaderPaintView::new(FRAGMENT);
-        assert_eq!(view.stretch_axis(), StretchAxis::Both);
-        let body = AnyView::new(view.body(&Environment::new()));
-        assert!(body.downcast::<GpuView>().is_ok());
+        let body = AnyView::new(view.body(&Environment::new()))
+            .downcast::<GpuView>()
+            .expect("a shader view's body is a GpuView");
+        assert_eq!(
+            waterui_core::NativeView::stretch_axis(&*body),
+            waterui_core::layout::StretchAxis::Both
+        );
     }
 
     /// The mailbox follows the signals, and a change wakes an idle host.

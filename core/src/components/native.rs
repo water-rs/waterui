@@ -56,10 +56,6 @@ impl<T: 'static + NativeView> View for Native<T> {
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
         backend.native(self.native, env, cx)
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        NativeView::stretch_axis(&self.native)
-    }
 }
 
 /// Panics: a native view never expands, because every backend realizes every

@@ -488,10 +488,6 @@ impl View for Menu {
             size: self.size,
         })
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::None
-    }
 }
 
 /// What a command does to the thing it acts on, which decides how every

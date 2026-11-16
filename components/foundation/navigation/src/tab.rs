@@ -540,10 +540,6 @@ impl<T: Ord + Clone + 'static> View for Tabs<T> {
     fn body(self, _env: &Environment) -> impl View {
         self.into_layout()
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
 }
 
 #[cfg(test)]

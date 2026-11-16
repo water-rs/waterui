@@ -15,7 +15,7 @@ use core::{
 use alloc::boxed::Box;
 
 use crate::backend::{Backend, DynBackend, Erased};
-use crate::{Environment, View, layout::StretchAxis};
+use crate::{Environment, View};
 
 trait AnyViewImpl: 'static {
     fn body(self: Box<Self>, env: Environment) -> AnyView;
@@ -31,7 +31,6 @@ trait AnyViewImpl: 'static {
     fn name(&self) -> &'static str {
         type_name::<Self>()
     }
-    fn stretch_axis(&self) -> StretchAxis;
 }
 
 impl<T: View> AnyViewImpl for T {
@@ -45,9 +44,6 @@ impl<T: View> AnyViewImpl for T {
         cx: Box<dyn Any>,
     ) -> Box<dyn Any> {
         View::dispatch(*self, &mut Erased::new(backend), env, cx)
-    }
-    fn stretch_axis(&self) -> StretchAxis {
-        View::stretch_axis(self)
     }
 }
 
@@ -106,15 +102,6 @@ impl AnyView {
     #[must_use]
     pub fn name(&self) -> &'static str {
         AnyViewImpl::name(&*self.0)
-    }
-
-    /// Returns the stretch axis of the contained view.
-    ///
-    /// This delegates to the `View::stretch_axis()` method of the wrapped view,
-    /// which for native views returns their layout stretch behavior.
-    #[must_use]
-    pub fn stretch_axis(&self) -> StretchAxis {
-        AnyViewImpl::stretch_axis(&*self.0)
     }
 
     /// Expands the erased view through `backend`: its own subtree
@@ -211,17 +198,6 @@ impl View for AnyView {
 
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
         backend.erased(self, env, cx)
-    }
-
-    /// Forwards the erased view's own answer.
-    ///
-    /// Without this, erasing a view silently reset its stretch axis to the
-    /// default: the inherent [`AnyView::stretch_axis`] reported the real value
-    /// while the trait method — the one generic code calls — reported `None`.
-    /// Every container that wanted its content's axis therefore had to copy it
-    /// before erasing, and that copy is what went stale.
-    fn stretch_axis(&self) -> StretchAxis {
-        AnyViewImpl::stretch_axis(&*self.0)
     }
 }
 

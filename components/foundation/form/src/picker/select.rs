@@ -261,15 +261,14 @@ pub fn picker<T: Ord + Clone + 'static>(
 #[cfg(test)]
 mod tests {
     use nami::Binding;
+    use waterui_core::NativeView;
     use waterui_core::layout::StretchAxis;
-    use waterui_core::{NativeView, View};
     use waterui_text::Text;
 
     use super::{Picker, PickerStyle, TaggedView};
 
-    /// `docs/layout-spec.md` §3: only the segmented style is `Horizontal`,
-    /// both as the static answer a container reads before `body` and as the
-    /// payload a backend receives.
+    /// `docs/layout-spec.md` §3: only the segmented style is `Horizontal` on
+    /// the payload a backend receives.
     #[test]
     fn only_the_segmented_style_stretches() {
         let selection = Binding::i32(0);
@@ -286,7 +285,6 @@ mod tests {
                 &selection,
             )
             .style(style);
-            assert_eq!(View::stretch_axis(&picker), expected, "{style:?} (static)");
             assert_eq!(
                 NativeView::stretch_axis(&picker.0),
                 expected,

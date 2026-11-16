@@ -344,10 +344,6 @@ impl View for Gradient {
             waterui_core::AnyView::new(waterui_core::Native::new(self))
         }
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
 }
 
 #[cfg(test)]
