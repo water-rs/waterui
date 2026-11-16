@@ -13221,6 +13221,7 @@ mod transition {
     use waterui_apple::native_test_support::transition::ManualTransitionClock;
     use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
     use waterui_backend_core::AnyView;
+    use waterui_core::Metadata;
     use waterui_core::metadata::Retain;
     use waterui_structural_transition::{PropertyTransition, Transition, TransitionSpec};
 
