@@ -244,7 +244,6 @@ use waterui_core::{
     layout::StretchAxis,
     view::{Hook, ViewConfiguration},
 };
-use waterui_layout::spacer;
 use waterui_layout::stack::vstack;
 
 /// Something that happened in a `WebView`.
@@ -1301,10 +1300,7 @@ impl ViewConfiguration for WebView {
     type View = Native<Self>;
 
     fn render(self) -> Self::View {
-        // `Native` keeps the component available to a backend that consumes it
-        // by type; the `spacer` fallback exists only so this stays a view in
-        // the stripped-hook recursion described above.
-        Native::new(self).with_fallback(spacer())
+        Native::new(self)
     }
 }
 
