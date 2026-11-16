@@ -103,6 +103,8 @@ jobs:
           cargo bench --locked -p hydrolysis --features testing --bench dispatch_ir -- --save-baseline=main
       - name: Measure the head
         env:
+          # The output is also the step summary, which renders no ANSI colour.
+          GUNGRAUN_COLOR: never
           COMPARE: ${{ steps.pair.outputs.has-baseline == 'true' && '--baseline=main' || '' }}
         run: |
           git checkout "${{ steps.pair.outputs.head }}"
