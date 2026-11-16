@@ -972,7 +972,10 @@ impl NativeBackend for AppleBackend {
         )
     }
 
-    fn unrealized(&mut self, _type_name: &'static str, env: &Environment, (): ()) -> NativeLeaf {
+    fn unrealized(&mut self, type_name: &'static str, env: &Environment, (): ()) -> NativeLeaf {
+        waterui_core::contract_violation!(
+            "waterui-apple has no realization for `{type_name}`: the payload is not part of NativeBackend"
+        );
         self.empty((), env, ())
     }
 }
