@@ -748,13 +748,11 @@ impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubvie
     /// Keeps `key` retained across frames that do not touch it, replacing the
     /// previously pinned key, which is evicted by the next [`Self::end_frame`]
     /// that does not touch it. `None` unpins.
-    #[cfg(feature = "list")]
     pub(crate) fn pin(&mut self, key: Option<K>) {
         self.pinned = key;
     }
 
     /// The key [`Self::pin`] keeps.
-    #[cfg(feature = "list")]
     pub(crate) const fn pinned(&self) -> Option<&K> {
         self.pinned.as_ref()
     }
