@@ -43,7 +43,7 @@ impl_widget_behavior!(
 #[cfg(feature = "navigation")]
 fn navigation_page_transition<E: crate::text::TextEngine>(
     state: &crate::widgets::nav::navigation::NavigationViewRenderState<E>,
-) -> Option<waterui_core::transition::TransitionSpec> {
+) -> Option<waterui_structural_transition::TransitionSpec> {
     super::transition::claim_transition(state.content_node())
 }
 #[cfg(feature = "navigation")]

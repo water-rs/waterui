@@ -45,7 +45,7 @@ pub mod slots;
 use waterui::reactive::Signal;
 use waterui_backend_core::Environment;
 use waterui_core::layout::{LayoutDirection, layout_direction};
-use waterui_core::transition::{ReduceMotion, TransitionSpec};
+use waterui_structural_transition::{ReduceMotion, TransitionSpec};
 
 /// The `.transition(...)` declaration a leaf carries until a structural
 /// site claims it: the spec plus the environment answers resolved where

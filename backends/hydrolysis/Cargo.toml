@@ -13,6 +13,7 @@ categories = ["gui", "graphics"]
 
 [dependencies]
 waterui-core.workspace = true
+waterui-structural-transition.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

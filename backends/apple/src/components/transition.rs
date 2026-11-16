@@ -13,7 +13,7 @@
 //! docs/layout-spec.md §4.5.
 
 use waterui_core::Metadata;
-use waterui_core::transition::TransitionSpec;
+use waterui_structural_transition::TransitionSpec;
 
 use crate::dispatch::Dispatcher;
 use crate::transition::{SnapshotDemand, TransitionClaim};

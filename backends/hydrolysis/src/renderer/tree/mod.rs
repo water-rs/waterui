@@ -61,7 +61,7 @@ macro_rules! impl_widget_behavior {
             $(
                 fn claim_page_transition(
                     &self,
-                ) -> Option<waterui_core::transition::TransitionSpec> {
+                ) -> Option<waterui_structural_transition::TransitionSpec> {
                     $page(&self.borrow())
                 }
             )?
