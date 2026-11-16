@@ -317,7 +317,7 @@ floats) feeds `params`. The WGSL writes `@fragment fn main(@location(0) uv: vec2
 premultiplied linear Display P3; `cherenkov_linear_srgb` converts an sRGB colour. For
 full control, implement `GpuContent` (sync `setup(&mut self, gpu: &Context<'_>)` owns persistent GPU
 resources; `render(&mut self, frame: &mut Frame<'_>)` draws — call `frame.request_redraw()` at the
-end to keep animating) and wrap it: `GpuContentView::new(content).size(w, h)`. The content is `Send`
+end to keep animating) and wrap it: `GpuView::new(content).size(w, h)`. The content is `Send`
 and lives on the render thread once installed — it must NOT hold `Binding`s or other UI-thread
 state; instead read reactive state in a `.on_frame` hook (UI thread, once per frame) and post
 plain values to the content through shared `Arc<Mutex<..>>` state. `waterui::graphics` re-exports
@@ -325,7 +325,7 @@ plain values to the content through shared `Arc<Mutex<..>>` state. `waterui::gra
 Give the surface an accessibility name with `.labeled(..)` and a value with `.described(..)`.
 
 Input for self-drawn views (a terminal, an editor, a game board) arrives through
-`GpuContentView::on_input(|event: &SurfaceInputEvent| ..)` — a UI-thread `Fn`, so it may
+`GpuView::on_input(|event: &SurfaceInputEvent| ..)` — a UI-thread `Fn`, so it may
 capture cloned bindings — or, for a `SceneContent`, by returning `true` from
 `wants_input_events` and handling `input(&mut self, event)`. Positions are logical and
 local to the surface. What changes correctness:
@@ -333,7 +333,7 @@ local to the surface. What changes correctness:
 ```rust
 use waterui::graphics::input::{Code, Key, Modifiers, NamedKey, SurfaceInputEvent};
 
-GpuContentView::new(terminal)
+GpuView::new(terminal)
     .on_input(move |event| match event {
         // IME and injected insertions arrive as text events, never as `Key`
         SurfaceInputEvent::TextInput(text) | SurfaceInputEvent::CompositionCommit(text) => {

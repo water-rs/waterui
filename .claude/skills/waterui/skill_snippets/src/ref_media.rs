@@ -613,7 +613,7 @@ pub fn media_shader_prose() -> impl View {
 // Glue: a `GpuContent` for `terminal`, and the bindings the handler writes.
 // ---------------------------------------------------------------------------
 pub fn media_block_10() -> impl View {
-    use waterui::graphics::{Context, Frame, GpuContent, GpuContentView};
+    use waterui::graphics::{Context, Frame, GpuContent, GpuView};
 
     struct Terminal;
     impl GpuContent for Terminal {
@@ -628,7 +628,7 @@ pub fn media_block_10() -> impl View {
 
     use waterui::graphics::input::{Code, Key, Modifiers, NamedKey, SurfaceInputEvent};
 
-    GpuContentView::new(terminal).on_input(move |event| match event {
+    GpuView::new(terminal).on_input(move |event| match event {
         // IME and injected insertions arrive as text events, never as `Key`
         SurfaceInputEvent::TextInput(text) | SurfaceInputEvent::CompositionCommit(text) => {
             typed.set(text.clone())
@@ -657,10 +657,10 @@ pub fn media_block_10() -> impl View {
 // block.
 // ---------------------------------------------------------------------------
 pub fn media_gpu_input_prose<C: waterui::graphics::GpuContent>(content: C) -> impl View {
-    use waterui::graphics::GpuContentView;
+    use waterui::graphics::GpuView;
     use waterui::graphics::gpu::Rect;
 
-    GpuContentView::new(content)
+    GpuView::new(content)
         .labeled("Terminal")
         .described("Shell session")
         .on_ime_caret(|| Option::<Rect>::None)
