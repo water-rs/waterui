@@ -2,10 +2,10 @@
 //!
 //! An embedded surface is a rectangle of the window that draws its own
 //! interactive content and therefore owns the input landing on it: a browser
-//! engine, any [`GpuContentView`](waterui_graphics::GpuContentView) or
+//! engine, any [`GpuView`](waterui_graphics::GpuView) or
 //! [`ExternalFrameView`](waterui_graphics::ExternalFrameView) whose view asks
 //! for input with
-//! [`wants_input_events`](waterui_graphics::GpuContentView::wants_input_events),
+//! [`wants_input_events`](waterui_graphics::GpuView::wants_input_events),
 //! or any [`SceneView`](waterui_graphics::backend::SceneView) whose content asks the same
 //! through
 //! [`SceneContent::wants_input_events`](waterui_graphics::backend::SceneContent::wants_input_events).
@@ -202,7 +202,7 @@ pub struct BubbledKeySink {
 }
 
 /// Something that consumes the neutral [`SurfaceInputEvent`] vocabulary: the
-/// runtime of an embedded [`GpuContentView`](waterui_graphics::GpuContentView),
+/// runtime of an embedded [`GpuView`](waterui_graphics::GpuView),
 /// or the content of a self-drawn [`SceneView`](waterui_graphics::backend::SceneView).
 pub trait SurfaceInputReceiver {
     fn input(&mut self, event: &SurfaceInputEvent);
@@ -523,7 +523,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     /// Registers a surface whose drawing asked for input: an embedded
-    /// [`GpuContentView`](waterui_graphics::GpuContentView) runtime or a
+    /// [`GpuView`](waterui_graphics::GpuView) runtime or a
     /// [`SceneView`](waterui_graphics::backend::SceneView)'s content.
     ///
     /// `focus_node` is the surface's semantic node, when the semantic tree

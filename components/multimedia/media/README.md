@@ -258,7 +258,7 @@ All processing operations run on background threads via `blocking::unblock` to p
 ### Android
 
 - `Photo`: Uses Coil image loading library
-- `Video`: Uses `WaterUI` Rust video pipeline (`GpuContentView` + `waterkit-codec`)
+- `Video`: Uses `WaterUI` Rust video pipeline (`GpuView` + `waterkit-codec`)
 - `VideoPlayer`: Uses `WaterUI` Rust player controls and rendering pipeline
 - `LivePhoto`: Uses the same Rust-side photo/gesture/video composition
 - Live Photo picking: Extracts the embedded motion resource from Android Motion Photos

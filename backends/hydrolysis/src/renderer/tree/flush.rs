@@ -667,7 +667,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     }));
                 // Content that handles its own input receives the pointer,
                 // keyboard, IME and scroll events landing on its bounds, through
-                // the same routing an interactive `GpuContentView` uses.
+                // the same routing an interactive `GpuView` uses.
                 if wants_input {
                     renderer.register_surface_input_target(
                         ctx.bounds(),
@@ -1256,7 +1256,7 @@ fn flush_navigation_transition_element<E: crate::text::TextEngine>(
     child.flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
 }
 
-/// Records a GPU-backed leaf's per-flush semantics — a `GpuContentView`'s
+/// Records a GPU-backed leaf's per-flush semantics — a `GpuView`'s
 /// or an `ExternalFrameView`'s: the accessibility node, read off the view
 /// every flush, and, when the view takes input, the input target that
 /// routes pointer, keyboard and IME events landing on its bounds to it.

@@ -176,7 +176,7 @@ pub enum RenderNode<E: crate::text::TextEngine> {
     /// rather than through a frame-ordered effect slot, so a `Dynamic` swap to a
     /// different scene renders the new content instead of the previous scene's.
     SceneView(Box<SceneViewNode<E>>),
-    /// An embedded `GpuContentView` leaf owning its `GpuContentRuntime`
+    /// An embedded `GpuView` leaf owning its `GpuContentRuntime`
     /// directly (no cursor-bound slot), composited through an `Rc`-carrying layer.
     #[cfg(hydrolysis_gpu)]
     GpuContent(Box<GpuContentNode<E>>),

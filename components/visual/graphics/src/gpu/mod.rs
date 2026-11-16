@@ -87,7 +87,7 @@ type Shared<T> = Rc<T>;
 ///
 /// The backend supplies it in [`Context`]; requesting a redraw while a frame
 /// is already scheduled is a no-op. It wakes the same view instance only: a
-/// [`GpuContentView`] that a parent rebuild tears down takes its content with
+/// [`GpuView`] that a parent rebuild tears down takes its content with
 /// it, and a later request through its handle redraws nothing.
 #[derive(Clone)]
 pub struct RedrawHandle(Arc<dyn Fn() + Send + Sync>);
@@ -314,7 +314,7 @@ pub trait GpuContent: Send + 'static {
     /// - `Some(false)`: prefer an SDR target.
     /// - `None` — the default — means follow the host's surrounding policy.
     ///
-    /// The view's own [`prefer_hdr_surface`](GpuContentView::prefer_hdr_surface)
+    /// The view's own [`prefer_hdr_surface`](GpuView::prefer_hdr_surface)
     /// overrides this answer.
     fn preferred_surface_hdr(&self) -> Option<bool> {
         None
@@ -332,7 +332,7 @@ fn measure_by_intrinsic_size(intrinsic: Option<Size>, proposal: ProposalSize) ->
     }))
 }
 
-/// A UI-side handler for input the backend routes to a [`GpuContentView`]
+/// A UI-side handler for input the backend routes to a [`GpuView`]
 /// or an [`ExternalFrameView`].
 pub type InputHandler = Rc<dyn Fn(&SurfaceInputEvent)>;
 
@@ -349,7 +349,7 @@ pub type CaretQuery = Rc<dyn Fn() -> Option<kurbo::Rect>>;
 
 /// The UI-thread hooks a GPU-backed view carries for its host: input
 /// routing, the per-frame pump and the caret query, shared by
-/// [`GpuContentView`] and [`ExternalFrameView`].
+/// [`GpuView`] and [`ExternalFrameView`].
 #[derive(Default)]
 struct SurfaceHooks {
     input: Option<InputHandler>,
@@ -393,7 +393,7 @@ impl SurfaceHooks {
 ///
 /// Stretches on both axes unless the content reports an intrinsic size, in
 /// which case it is that size and does not stretch.
-pub struct GpuContentView {
+pub struct GpuView {
     content: Option<Box<dyn GpuContent>>,
     content_handle: Option<GpuContentHandle>,
     intrinsic_size: Option<Size>,
@@ -404,9 +404,9 @@ pub struct GpuContentView {
     value: Option<String>,
 }
 
-impl fmt::Debug for GpuContentView {
+impl fmt::Debug for GpuView {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GpuContentView")
+        f.debug_struct("GpuView")
             .field("intrinsic_size", &self.intrinsic_size)
             .field("opaque", &self.opaque)
             .field("label", &self.label)
@@ -414,7 +414,7 @@ impl fmt::Debug for GpuContentView {
     }
 }
 
-impl GpuContentView {
+impl GpuView {
     /// A view drawing `content`.
     #[must_use]
     pub fn new(content: impl GpuContent) -> Self {
@@ -497,7 +497,7 @@ impl GpuContentView {
     /// Measures this view's content against a layout proposal.
     ///
     /// Unlike [`intrinsic_size`](Self::intrinsic_size) — the snapshot taken at
-    /// [`GpuContentView::new`] — this asks the live content, so a source whose
+    /// [`GpuView::new`] — this asks the live content, so a source whose
     /// size resolves asynchronously reports it once it has one.
     #[must_use]
     pub fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
@@ -611,7 +611,7 @@ impl GpuContentView {
 /// The content in `slot`, or [`Vacant`] when it was already taken.
 fn take_once(slot: &mut Option<Box<dyn GpuContent>>) -> Box<dyn GpuContent> {
     slot.take().unwrap_or_else(|| {
-        contract_violation!("GpuContentView content installed twice; the layer draws nothing");
+        contract_violation!("GpuView content installed twice; the layer draws nothing");
         Box::new(Vacant)
     })
 }
@@ -625,7 +625,7 @@ impl GpuContent for Vacant {
     fn render(&mut self, _frame: &mut Frame<'_>) {}
 }
 
-impl NativeView for GpuContentView {
+impl NativeView for GpuView {
     fn stretch_axis(&self) -> StretchAxis {
         if self.intrinsic_size.is_some() {
             StretchAxis::None
@@ -635,7 +635,7 @@ impl NativeView for GpuContentView {
     }
 }
 
-impl View for GpuContentView {
+impl View for GpuView {
     fn body(self, _env: &Environment) -> impl View {
         Native::new(self)
     }
@@ -746,10 +746,10 @@ mod tests {
     #[test]
     #[cfg_attr(
         debug_assertions,
-        should_panic(expected = "GpuContentView content installed twice")
+        should_panic(expected = "GpuView content installed twice")
     )]
     fn content_taken_twice_draws_nothing() {
-        let mut view = GpuContentView::new(Sized);
+        let mut view = GpuView::new(Sized);
         assert!(view.take_content().intrinsic_size().is_some());
         assert!(view.take_content().intrinsic_size().is_none());
     }
@@ -757,10 +757,10 @@ mod tests {
     #[test]
     #[cfg_attr(
         debug_assertions,
-        should_panic(expected = "GpuContentView content installed twice")
+        should_panic(expected = "GpuView content installed twice")
     )]
     fn an_engine_handle_after_taking_the_content_draws_nothing() {
-        let mut view = GpuContentView::new(Sized);
+        let mut view = GpuView::new(Sized);
         let _ = view.take_content();
         let handle = view.engine_content();
         assert!(handle.lock().intrinsic_size().is_none());
