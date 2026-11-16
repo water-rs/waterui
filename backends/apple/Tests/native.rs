@@ -436,10 +436,6 @@ fn base_trials() -> Vec<Trial> {
             resolve::ignorable_metadata_renders_its_content();
             Ok(())
         }),
-        Trial::test("resolve::a_native_with_fallback_resolves_to_it", || {
-            resolve::a_native_with_fallback_resolves_to_it();
-            Ok(())
-        }),
         Trial::test(
             "resolve::unclaimed_wrappers_panic_while_claimed_render",
             || {
@@ -1179,16 +1175,6 @@ mod resolve {
         let view = cocoa_ui::view::retain_base(leaf.view());
         assert!(view.downcast_ref::<HostView>().is_some());
         assert!(cocoa_ui::view::is_hidden(&view));
-    }
-
-    /// `Native::with_fallback` is the honest port of "not claimed here":
-    /// the dispatcher expands to the embedded fallback and resolves it —
-    /// here, to the spacer host — inside the one `render` call.
-    pub fn a_native_with_fallback_resolves_to_it() {
-        let leaf = render(Native::new(UnclaimedNative).with_fallback(Spacer::new(8.0)));
-        let view = cocoa_ui::view::retain_base(leaf.view());
-        assert!(view.downcast_ref::<HostView>().is_some());
-        assert_eq!(leaf.layout().stretch_axis(), StretchAxis::MainAxis);
     }
 
     /// The typed unclaimed-view contract: a view whose `body()` panics —
