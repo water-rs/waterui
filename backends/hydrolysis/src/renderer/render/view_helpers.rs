@@ -372,7 +372,7 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         NavigationTransitionDestination,
         #[cfg(feature = "navigation")]
         NavigationLinkHint,
-        waterui_core::transition::TransitionSpec,
+        waterui_structural_transition::TransitionSpec,
         MaterialBackground,
         GlassBackground,
         // `.material_group()` marks a scope for backdrop capture only:
@@ -559,7 +559,7 @@ fn normalize_layout_view_with_budget(
         NavigationTransitionDestination,
         #[cfg(feature = "navigation")]
         NavigationLinkHint,
-        waterui_core::transition::TransitionSpec,
+        waterui_structural_transition::TransitionSpec,
         // Label/role/children stay plain passthrough here: they are
         // nearest-consumer metadata — the leaf that emits the semantic node
         // reads them from the build-time `Env` scope, and they must not be

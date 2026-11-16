@@ -27,8 +27,8 @@ use objc2_metal::MTLTexture;
 use waterui::reactive::{Binding, SignalExt};
 use waterui_backend_core::{AnyView, Environment};
 use waterui_core::layout::{LayoutDirection, Point, Rect as CoreRect, Size};
-use waterui_core::transition::{TransitionFrame, TransitionState};
 use waterui_graphics::gpu::GpuRuntime;
+use waterui_structural_transition::{TransitionFrame, TransitionState};
 
 use crate::components::filtered::{FrozenEffect, LiveEffect, Sendable};
 use crate::transition::ghost::GhostRun;

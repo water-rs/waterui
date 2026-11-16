@@ -13,8 +13,8 @@ use std::rc::Rc;
 use nami::collection::CollectionChange;
 use waterui_core::contract_violation;
 use waterui_core::layout::{LayoutError, PlacementInput, ResolvedExtent, resolve_layout_extent};
-use waterui_core::transition::{Ghost, GhostSlot, TransitionSpec};
 use waterui_core::views::ViewSnapshot;
+use waterui_structural_transition::{Ghost, GhostSlot, TransitionSpec};
 
 use super::transition::{
     TransitionPaint, TransitionRun, TransitionRuntime, claim_transition, flush_transitioned,
@@ -795,7 +795,7 @@ impl<T: View, E: crate::text::TextEngine> LazyTransitions<E, T> {
             rows: RefCell::new(std::collections::HashMap::new()),
             ghosts: RefCell::new(Vec::new()),
             reduce_motion: env
-                .get::<waterui_core::transition::ReduceMotion>()
+                .get::<waterui_structural_transition::ReduceMotion>()
                 .is_some_and(|flag| flag.0),
             direction: waterui_layout::layout_direction(env).snapshot(),
         }

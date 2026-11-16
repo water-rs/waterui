@@ -13222,7 +13222,7 @@ mod transition {
     use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
     use waterui_backend_core::AnyView;
     use waterui_core::metadata::Retain;
-    use waterui_core::transition::{PropertyTransition, Transition, TransitionSpec};
+    use waterui_structural_transition::{PropertyTransition, Transition, TransitionSpec};
 
     use cocoa_ui::objc2::rc::{Weak, autoreleasepool};
     use cocoa_ui::view;
@@ -16205,7 +16205,7 @@ mod transition {
     /// sample, and keeps it until the instance ends (§8.2).
     #[cfg(feature = "gpu_surface")]
     pub fn blur_returning_to_zero_keeps_one_effect() {
-        use waterui_core::transition::{
+        use waterui_structural_transition::{
             Transition, TransitionGeometry, TransitionPhase, TransitionProperties,
         };
         /// Blur `0 → 8 → 0` across the middle of the progress ramp —
@@ -16297,20 +16297,22 @@ mod transition {
     struct PixelProbe {
         /// The frame signal the body's `TransitionContext` published.
         frame: Rc<
-            RefCell<Option<waterui::reactive::Computed<waterui_core::transition::TransitionFrame>>>,
+            RefCell<
+                Option<waterui::reactive::Computed<waterui_structural_transition::TransitionFrame>>,
+            >,
         >,
     }
 
     #[cfg(feature = "gpu_surface")]
     impl Transition for PixelProbe {
-        fn captures_content(&self, _phase: waterui_core::transition::TransitionPhase) -> bool {
+        fn captures_content(&self, _phase: waterui_structural_transition::TransitionPhase) -> bool {
             true
         }
 
         fn body(
             &self,
             content: AnyView,
-            transition_context: waterui_core::transition::TransitionContext,
+            transition_context: waterui_structural_transition::TransitionContext,
         ) -> impl waterui_backend_core::View {
             *self.frame.borrow_mut() = Some(transition_context.frame().clone());
             let shader =
@@ -16329,7 +16331,11 @@ mod transition {
     /// [`PIXEL_PROBE_DURATION`].
     #[cfg(feature = "gpu_surface")]
     fn pixel_probe() -> (
-        Rc<RefCell<Option<waterui::reactive::Computed<waterui_core::transition::TransitionFrame>>>>,
+        Rc<
+            RefCell<
+                Option<waterui::reactive::Computed<waterui_structural_transition::TransitionFrame>>,
+            >,
+        >,
         TransitionSpec,
     ) {
         let frame = Rc::new(RefCell::new(None));
@@ -16449,7 +16455,7 @@ mod transition {
     #[cfg(feature = "gpu_surface")]
     fn published_source(
         frame: &RefCell<
-            Option<waterui::reactive::Computed<waterui_core::transition::TransitionFrame>>,
+            Option<waterui::reactive::Computed<waterui_structural_transition::TransitionFrame>>,
         >,
     ) -> waterui_core::layout::Rect {
         use waterui::reactive::Signal as _;

@@ -312,7 +312,7 @@ fn retire_member(
     state_rc: &Rc<RefCell<ContainerState>>,
     key: GhostKey,
     child: LiveChild,
-    slot: waterui_core::transition::GhostSlot,
+    slot: waterui_structural_transition::GhostSlot,
 ) {
     let weak = Rc::downgrade(state_rc);
     let Some(ghost) = child.remove(Removal {
@@ -368,7 +368,10 @@ fn depart_members(
 }
 
 /// A ghost slot's frozen size read on the lazy stack's axes.
-fn ghost_main_cross(slot: &waterui_core::transition::GhostSlot, lazy: &LazyConfig) -> (f64, f64) {
+fn ghost_main_cross(
+    slot: &waterui_structural_transition::GhostSlot,
+    lazy: &LazyConfig,
+) -> (f64, f64) {
     let size = slot.size();
     main_cross(
         cocoa_ui::Size::new(f64::from(size.width), f64::from(size.height)),

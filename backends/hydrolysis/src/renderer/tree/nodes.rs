@@ -10,8 +10,8 @@ use super::*;
 use crate::renderer::mount::motion::{LayerMotion, Motion};
 use crate::text::{TextEngine, TextLayout as _};
 use waterui::gesture::TapGesture;
-use waterui_core::transition::TransitionSpec;
 use waterui_layout::safe_area::IgnoreSafeArea;
+use waterui_structural_transition::TransitionSpec;
 use waterui_text::styled::TapSpan;
 
 /// A retained sub-view a native widget owns and re-renders every flush — the
@@ -915,7 +915,7 @@ pub trait WidgetBehavior<E: crate::text::TextEngine> {
     /// content, for the navigation stack that owns the leaf as a page
     /// (layout-spec.md §4.5). `None` for every leaf that is not a page.
     #[cfg(feature = "navigation")]
-    fn claim_page_transition(&self) -> Option<waterui_core::transition::TransitionSpec> {
+    fn claim_page_transition(&self) -> Option<waterui_structural_transition::TransitionSpec> {
         None
     }
 
@@ -1745,7 +1745,7 @@ impl<E: crate::text::TextEngine> DynamicTransitions<E> {
                 kurbo::Rect::ZERO,
             )),
             reduce_motion: env
-                .get::<waterui_core::transition::ReduceMotion>()
+                .get::<waterui_structural_transition::ReduceMotion>()
                 .is_some_and(|flag| flag.0),
             direction: waterui_layout::layout_direction(env).snapshot(),
         }

@@ -241,7 +241,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         // A `.transition(...)` declaration: a transparent node the structural
         // site that swaps this content claims from the built instance. One
         // placed directly over a conditional is that `Dynamic` host's own.
-        let view = match view.downcast::<Metadata<waterui_core::transition::TransitionSpec>>() {
+        let view = match view.downcast::<Metadata<waterui_structural_transition::TransitionSpec>>()
+        {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 let node = Self::build_wrapper(
@@ -1151,7 +1152,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             ghosts: Vec::new(),
             ghost_placed: Vec::new(),
             reduce_motion: env
-                .get::<waterui_core::transition::ReduceMotion>()
+                .get::<waterui_structural_transition::ReduceMotion>()
                 .is_some_and(|flag| flag.0),
             direction: waterui_layout::layout_direction(env).snapshot(),
             dirty,
