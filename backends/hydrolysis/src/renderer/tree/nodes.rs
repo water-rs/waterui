@@ -10,8 +10,8 @@ use super::*;
 use crate::renderer::mount::motion::{LayerMotion, Motion};
 use crate::text::{TextEngine, TextLayout as _};
 use waterui::gesture::TapGesture;
-use waterui_structural_transition::TransitionSpec;
 use waterui_layout::safe_area::IgnoreSafeArea;
+use waterui_structural_transition::TransitionSpec;
 use waterui_text::styled::TapSpan;
 
 /// A retained sub-view a native widget owns and re-renders every flush — the

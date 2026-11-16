@@ -69,11 +69,11 @@ use crate::{
 #[cfg(feature = "std")]
 use waterkit_haptic::{Haptic, Intensity};
 use waterui_core::Metadata;
-use waterui_structural_transition::{Transition, Transitioned};
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent};
 use waterui_core::id::TaggedView;
 use waterui_core::interaction::{Disabled, InteractionReport, InteractionState, Selected};
 use waterui_core::key::{KeyHandling, OnKeyPress};
+use waterui_structural_transition::{Transition, Transitioned};
 
 /// Plays an impact haptic. `Haptic::impact` is async; the event that
 /// triggers it does not wait for it.

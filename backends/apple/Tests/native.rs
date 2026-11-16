@@ -16313,7 +16313,9 @@ mod transition {
     struct PixelProbe {
         /// The frame signal the body's `TransitionContext` published.
         frame: Rc<
-            RefCell<Option<waterui::reactive::Computed<waterui_structural_transition::TransitionFrame>>>,
+            RefCell<
+                Option<waterui::reactive::Computed<waterui_structural_transition::TransitionFrame>>,
+            >,
         >,
     }
 
@@ -16345,7 +16347,11 @@ mod transition {
     /// [`PIXEL_PROBE_DURATION`].
     #[cfg(feature = "gpu_surface")]
     fn pixel_probe() -> (
-        Rc<RefCell<Option<waterui::reactive::Computed<waterui_structural_transition::TransitionFrame>>>>,
+        Rc<
+            RefCell<
+                Option<waterui::reactive::Computed<waterui_structural_transition::TransitionFrame>>,
+            >,
+        >,
         TransitionSpec,
     ) {
         let frame = Rc::new(RefCell::new(None));

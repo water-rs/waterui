@@ -237,7 +237,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         // A `.transition(...)` declaration: a transparent node the structural
         // site that swaps this content claims from the built instance. One
         // placed directly over a conditional is that `Dynamic` host's own.
-        let view = match view.downcast::<Metadata<waterui_structural_transition::TransitionSpec>>() {
+        let view = match view.downcast::<Metadata<waterui_structural_transition::TransitionSpec>>()
+        {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 let node = Self::build_wrapper(

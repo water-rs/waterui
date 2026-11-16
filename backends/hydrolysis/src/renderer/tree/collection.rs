@@ -13,8 +13,8 @@ use std::rc::Rc;
 use nami::collection::CollectionChange;
 use waterui_core::contract_violation;
 use waterui_core::layout::{LayoutError, PlacementInput, ResolvedExtent, resolve_layout_extent};
-use waterui_structural_transition::{Ghost, GhostSlot, TransitionSpec};
 use waterui_core::views::ViewSnapshot;
+use waterui_structural_transition::{Ghost, GhostSlot, TransitionSpec};
 
 use super::transition::{
     TransitionPaint, TransitionRun, TransitionRuntime, claim_transition, flush_transitioned,

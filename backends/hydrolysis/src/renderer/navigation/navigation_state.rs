@@ -87,7 +87,9 @@ impl<E: crate::text::TextEngine> StackPage<E> {
 
     /// The transition the page's root declares — its insertion on a push and
     /// its removal on a pop. Read after [`Self::ensure_built`].
-    pub(crate) const fn transition(&self) -> Option<&waterui_structural_transition::TransitionSpec> {
+    pub(crate) const fn transition(
+        &self,
+    ) -> Option<&waterui_structural_transition::TransitionSpec> {
         self.transition.as_ref()
     }
 

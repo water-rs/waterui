@@ -26,13 +26,13 @@ use waterui_controls::menu::CommandExt as _;
 use waterui_core::Native;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
-use waterui_structural_transition::PropertyTransition;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::scroll::scroll;
 use waterui_layout::stack::{VStack, vstack, zstack};
 use waterui_navigation::tab::{Tab, TabsLayout};
 use waterui_navigation::{NavigationLink, NavigationStack, NavigationView};
+use waterui_structural_transition::PropertyTransition;
 
 use super::popup_windows::find_by_label;
 use super::{MinimalTestTheme, test_environment};

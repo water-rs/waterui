@@ -24,12 +24,12 @@ use waterui::shape::RoundedRectangle;
 use waterui::widget::condition::when;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::HorizontalAlignment;
-use waterui_structural_transition::{PropertyTransition, Transition};
 use waterui_core::{AnyView, View};
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::vstack;
 use waterui_shape::ShapeExt as _;
+use waterui_structural_transition::{PropertyTransition, Transition};
 
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;

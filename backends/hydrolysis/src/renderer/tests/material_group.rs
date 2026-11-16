@@ -33,9 +33,9 @@ use waterui_core::env::Store;
 use waterui_core::extract::Use;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
-use waterui_structural_transition::PropertyTransition;
 use waterui_layout::scroll;
 use waterui_layout::stack::{VStack, hstack, vstack, zstack};
+use waterui_structural_transition::PropertyTransition;
 
 use super::{
     MinimalTestTheme, capture_bytes, inner_layers, material_layers, mounted_anchor_parent_children,
