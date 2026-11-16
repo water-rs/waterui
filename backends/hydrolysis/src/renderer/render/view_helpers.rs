@@ -190,7 +190,7 @@ fn a11y_scoped_identifier_env(env: &Environment, _value: &AccessibilityIdentifie
     env.clone()
 }
 
-/// If `view`'s outermost wrapper is an accessibility `IgnorableMetadata`
+/// If `view`'s outermost wrapper is an accessibility `Metadata`
 /// scope, peel it and return its content with `env` extended for it — the
 /// single definition of the metadata-type → scoping table. The retained
 /// build's `Env` arms and the List-row hoist both peel through this, so
@@ -204,9 +204,9 @@ pub fn a11y_scoped_env_for_view<E: crate::text::TextEngine>(
         ($view:expr, $( $ty:ty => $install:expr ),+ $(,)?) => {{
             let mut view = $view;
             $(
-                match view.downcast::<IgnorableMetadata<$ty>>() {
+                match view.downcast::<Metadata<$ty>>() {
                     Ok(metadata) => {
-                        let IgnorableMetadata { content, value } = *metadata;
+                        let Metadata { content, value } = *metadata;
                         let install: fn(&Environment, &$ty) -> Environment = $install;
                         return Ok((content, install(env, &value)));
                     }
@@ -244,7 +244,7 @@ pub fn a11y_scoped_env_for_view<E: crate::text::TextEngine>(
 /// leaf inside its content — claims the content's explicit label, role, or
 /// identifier; the subtree then emits under the container-child environment
 /// that strips that naming ([`accessibility_container_child_environment`]).
-/// `Metadata<Environment>` snapshots and `IgnorableMetadata<MaterialGroup>`
+/// `Metadata<Environment>` snapshots and `Metadata<MaterialGroup>`
 /// scope markers are transparent to hoisting. A snapshot stays on the
 /// returned view while the naming metadata inside it lifts, because every
 /// row's content arrives wrapped in the selection theme's `use_env`
@@ -281,11 +281,11 @@ fn hoist_accessibility_metadata_inner<E: crate::text::TextEngine>(
     // A `.material_group()` is a pure scope marker, like the
     // `Metadata<Environment>` snapshot above: it stays on the returned
     // view while the naming metadata inside it lifts.
-    view = match view.downcast::<IgnorableMetadata<MaterialGroup>>() {
+    view = match view.downcast::<Metadata<MaterialGroup>>() {
         Ok(metadata) => {
-            let IgnorableMetadata { content, value } = *metadata;
+            let Metadata { content, value } = *metadata;
             let content = hoist_accessibility_metadata_inner::<E>(content, scoped);
-            return AnyView::new(IgnorableMetadata { content, value });
+            return AnyView::new(Metadata { content, value });
         }
         Err(view) => view,
     };
@@ -327,16 +327,6 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         };
     }
 
-    macro_rules! passthrough_ignorable_metadata_content {
-        ($($ty:ty),+ $(,)?) => {
-            $(
-                if let Some(metadata) = view.downcast_ref::<IgnorableMetadata<$ty>>() {
-                    return Some(&metadata.content);
-                }
-            )+
-        };
-    }
-
     #[cfg(hydrolysis_video_plane)]
     if let Some(metadata) =
         view.downcast_ref::<Metadata<crate::runner::android::video_plane::VideoPlaneHost>>()
@@ -358,7 +348,6 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         GestureObserver,
         LifeCycleHook,
         OnEvent,
-        OnChange,
         OnKeyPress,
         Secure,
         StandardDynamicRange,
@@ -381,9 +370,9 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         NavigationTransitionSource,
         #[cfg(feature = "navigation")]
         NavigationTransitionDestination,
-        waterui_core::transition::TransitionSpec
-    );
-    passthrough_ignorable_metadata_content!(
+        #[cfg(feature = "navigation")]
+        NavigationLinkHint,
+        waterui_core::transition::TransitionSpec,
         MaterialBackground,
         GlassBackground,
         // `.material_group()` marks a scope for backdrop capture only:
@@ -530,23 +519,6 @@ fn normalize_layout_view_with_budget(
             )+
         };
     }
-    macro_rules! normalize_passthrough_ignorable_metadata {
-        ($($ty:ty),+ $(,)?) => {
-            $(
-                if view.is::<IgnorableMetadata<$ty>>() {
-                    let IgnorableMetadata { content, value } = *view
-                        .downcast::<IgnorableMetadata<$ty>>()
-                        .expect("layout normalization failed to downcast ignorable metadata");
-                    let normalized_content =
-                        normalize_layout_view_with_budget(content, env, remaining);
-                    return AnyView::new(IgnorableMetadata {
-                        content: normalized_content,
-                        value,
-                    });
-                }
-            )+
-        };
-    }
 
     normalize_passthrough_metadata!(
         LayoutPriority,
@@ -564,7 +536,6 @@ fn normalize_layout_view_with_budget(
         GestureObserver,
         LifeCycleHook,
         OnEvent,
-        OnChange,
         OnKeyPress,
         Secure,
         StandardDynamicRange,
@@ -586,14 +557,14 @@ fn normalize_layout_view_with_budget(
         NavigationTransitionSource,
         #[cfg(feature = "navigation")]
         NavigationTransitionDestination,
-        waterui_core::transition::TransitionSpec
-    );
-    // Label/role/children stay plain passthrough here: they are
-    // nearest-consumer metadata — the leaf that emits the semantic node reads
-    // them from the build-time `Env` scope, and they must not be baked into the
-    // environments that composite bodies snapshot below (a group label would
-    // then relabel every descendant leaf).
-    normalize_passthrough_ignorable_metadata!(
+        #[cfg(feature = "navigation")]
+        NavigationLinkHint,
+        waterui_core::transition::TransitionSpec,
+        // Label/role/children stay plain passthrough here: they are
+        // nearest-consumer metadata — the leaf that emits the semantic node
+        // reads them from the build-time `Env` scope, and they must not be
+        // baked into the environments that composite bodies snapshot below (a
+        // group label would then relabel every descendant leaf).
         MaterialBackground,
         GlassBackground,
         // `.material_group()` is a scope marker with no environment effect:
@@ -615,17 +586,17 @@ fn normalize_layout_view_with_budget(
     // `Metadata<Environment>` override, and a snapshot taken without the
     // scoping would drop the hidden/state scope wholesale at flush (an
     // `a11y_state_signal(hidden)` overlay stayed visible exactly this way).
-    macro_rules! normalize_env_scoping_ignorable_metadata {
+    macro_rules! normalize_env_scoping_metadata {
         ($($ty:ty, $scope:expr);+ $(;)?) => {
             $(
-                if view.is::<IgnorableMetadata<$ty>>() {
-                    let IgnorableMetadata { content, value } = *view
-                        .downcast::<IgnorableMetadata<$ty>>()
-                        .expect("layout normalization failed to downcast ignorable metadata");
+                if view.is::<Metadata<$ty>>() {
+                    let Metadata { content, value } = *view
+                        .downcast::<Metadata<$ty>>()
+                        .expect("layout normalization failed to downcast metadata");
                     let scoped = $scope(env, &value);
                     let normalized_content =
                         normalize_layout_view_with_budget(content, &scoped, remaining);
-                    return AnyView::new(IgnorableMetadata {
+                    return AnyView::new(Metadata {
                         content: normalized_content,
                         value,
                     });
@@ -633,7 +604,7 @@ fn normalize_layout_view_with_budget(
             )+
         };
     }
-    normalize_env_scoping_ignorable_metadata!(
+    normalize_env_scoping_metadata!(
         AccessibilityHidden, a11y_scoped_env;
         AccessibilityStateSignal, a11y_scoped_env_for_state_signal;
         AccessibilityState, a11y_scoped_env_for_state

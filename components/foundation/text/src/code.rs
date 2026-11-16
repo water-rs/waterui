@@ -22,7 +22,7 @@ use waterui_core::accessibility::AccessibilityRole;
 use waterui_core::gesture::{GestureObserver, TapGesture};
 use waterui_core::resolve::Resolvable;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
-use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, View, contract_violation};
+use waterui_core::{AnyView, Environment, Metadata, View, contract_violation};
 use waterui_layout::{
     background::background,
     padding::{EdgeInsets, Padding},
@@ -289,7 +289,7 @@ fn copy_button(content: String, on_copied: Option<OnCopied>) -> impl View {
     // resolves with `AccessibilityRole` in its environment registers an
     // accessibility node of that role — focusable, clickable, activatable —
     // while the label renders exactly as before.
-    IgnorableMetadata::new(
+    Metadata::new(
         Metadata::new(
             text("Copy").color(Color::new(AccentColor)),
             GestureObserver::new(TapGesture::new(), move |env: Environment| {

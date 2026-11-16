@@ -195,9 +195,9 @@ use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
 use waterui::navigation::tab::{NativeTabStyle, TabsLayout};
 #[cfg(feature = "navigation")]
 use waterui::navigation::{
-    CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStack,
-    NavigationToolbarPlacement, NavigationTransaction, NavigationTransitionDestination,
-    NavigationTransitionSource, NavigationView,
+    CustomNavigationController, NavigationController, NavigationLinkHint, NavigationSplitLayout,
+    NavigationStack, NavigationToolbarPlacement, NavigationTransaction,
+    NavigationTransitionDestination, NavigationTransitionSource, NavigationView,
 };
 use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::widget::Divider;
@@ -220,7 +220,7 @@ use waterui_controls::text_field::TextField;
 #[cfg(feature = "toggle")]
 use waterui_controls::toggle::ToggleConfig;
 use waterui_core::dynamic::{Dynamic, DynamicInitialContent};
-use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnChange, OnEvent};
+use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::handler::{BoxedAction, SharedAction};
@@ -237,7 +237,7 @@ use waterui_core::metadata::MetadataKey;
 use waterui_core::view::Hook;
 #[cfg(any(feature = "table", feature = "navigation"))]
 use waterui_core::views::Views;
-use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, Native, Retain, Str, View};
+use waterui_core::{AnyView, Environment, Metadata, Native, Retain, Str, View};
 #[cfg(feature = "picker")]
 use waterui_form::picker::PickerConfig;
 #[cfg(feature = "color-picker")]

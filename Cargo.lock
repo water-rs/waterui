@@ -2212,7 +2212,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -8880,7 +8880,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "syn 2.0.119",
@@ -12914,7 +12914,7 @@ dependencies = [
 [[package]]
 name = "waterui-barcode"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/barcode?branch=main#43c3018566525c3894038b0fc04f17c77c11d70c"
+source = "git+https://github.com/water-rs/barcode?branch=refactor%2Fstrict-metadata#bd101ecca8a3adba53e1ad679665ad570554ed9d"
 dependencies = [
  "barcoders",
  "fast_qr",
@@ -13520,7 +13520,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?branch=main#66a960b1903835e983f84c85ab5781517a86ebf9"
+source = "git+https://github.com/water-rs/map-gpu?branch=refactor%2Fstrict-metadata#0131cdd49663d3ac2f6f1ca0c5414ee0a08371a9"
 dependencies = [
  "arc-swap",
  "blocking",
@@ -13861,7 +13861,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=main#c53ba279a36e2dccd7b965883815de5c22140dbb"
+source = "git+https://github.com/water-rs/video-gpu?branch=refactor%2Fstrict-metadata#d2e89c83057634f09ff1e784f0f3e1c4034ebcc4"
 dependencies = [
  "async-channel",
  "executor-core",

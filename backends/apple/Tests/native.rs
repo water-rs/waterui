@@ -432,10 +432,6 @@ fn base_trials() -> Vec<Trial> {
             resolve::an_unclaimed_metadata_view_panics();
             Ok(())
         }),
-        Trial::test("resolve::ignorable_metadata_renders_its_content", || {
-            resolve::ignorable_metadata_renders_its_content();
-            Ok(())
-        }),
         Trial::test(
             "resolve::unclaimed_wrappers_panic_while_claimed_render",
             || {
@@ -1033,7 +1029,7 @@ mod resolve {
     use waterui_backend_core::{AnyView, View};
     use waterui_core::layout::{ProposalSize, Size, StretchAxis};
     use waterui_core::metadata::MetadataKey;
-    use waterui_core::{IgnorableMetadata, Metadata, Native, NativeView};
+    use waterui_core::{Metadata, Native, NativeView};
 
     use super::{HostView, Label, PlatformView, Retained, mtm};
 
@@ -1167,16 +1163,6 @@ mod resolve {
         assert!(render_or_panic(Metadata::new((), Unregistered)).is_none());
     }
 
-    /// `IgnorableMetadata` is transparent: its `body()` returns the
-    /// content, so an unregistered key renders through to the content's
-    /// leaf.
-    pub fn ignorable_metadata_renders_its_content() {
-        let leaf = render(IgnorableMetadata::new((), Unregistered));
-        let view = cocoa_ui::view::retain_base(leaf.view());
-        assert!(view.downcast_ref::<HostView>().is_some());
-        assert!(cocoa_ui::view::is_hidden(&view));
-    }
-
     /// The typed unclaimed-view contract: a view whose `body()` panics —
     /// `Metadata`/`Native` wrappers nobody claims — propagates the panic
     /// out of `render`; composable views resolve.
@@ -1185,7 +1171,6 @@ mod resolve {
         assert!(render_or_panic(Native::new(UnclaimedNative)).is_none());
         render(());
         render(Spacer::new(8.0));
-        render(IgnorableMetadata::new((), Unregistered));
     }
 
     /// §6's control contract: a finite height offer is advice, not an
@@ -13236,7 +13221,6 @@ mod transition {
     use waterui_apple::native_test_support::transition::ManualTransitionClock;
     use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
     use waterui_backend_core::AnyView;
-    use waterui_core::Metadata;
     use waterui_core::metadata::Retain;
     use waterui_core::transition::{PropertyTransition, Transition, TransitionSpec};
 

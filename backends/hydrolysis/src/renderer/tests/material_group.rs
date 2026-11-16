@@ -1,4 +1,4 @@
-//! `.material_group()` (water-rs/waterui#1999): the `IgnorableMetadata`
+//! `.material_group()` (water-rs/waterui#1999): the `Metadata`
 //! wrapper opens a material scope the flush keeps on a stack, and the mount
 //! table's group key `(scope, within-window level, resolved colour scheme,
 //! install canvas)` makes the members under one scope share one

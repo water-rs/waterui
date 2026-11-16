@@ -223,11 +223,15 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         };
         let view = match view.downcast::<Metadata<Retain>>() {
             Ok(meta) => {
-                let Metadata { content, value } = *meta;
+                let Metadata { content, mut value } = *meta;
+                let child = Self::build_view(content, env, renderer);
+                // A `Retain::resolved` value is built from the environment
+                // its content's modifier chain resolves in, as a handler's is.
+                value.resolve(Self::resolved_handler_env(&child, env));
                 return Self::Retain(Box::new(RetainNode {
                     core: renderer.new_core(),
                     _retain: value,
-                    child: Self::build_view(content, env, renderer),
+                    child,
                     #[cfg(hydrolysis_video_plane)]
                     plane: None,
                 }));
@@ -343,6 +347,14 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Ok(meta) => return Self::build_view(meta.content, env, renderer),
             Err(view) => view,
         };
+        // The link hint tells a native list to draw its destination-following
+        // affordance. Hydrolysis's list rows draw none, so the hint has
+        // nothing to drive here.
+        #[cfg(feature = "navigation")]
+        let view = match view.downcast::<Metadata<NavigationLinkHint>>() {
+            Ok(meta) => return Self::build_view(meta.content, env, renderer),
+            Err(view) => view,
+        };
         #[cfg(feature = "navigation")]
         let view = match view.downcast::<Metadata<NavigationTransitionSource>>() {
             Ok(meta) => {
@@ -369,9 +381,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
-        let view = match view.downcast::<IgnorableMetadata<MaterialBackground>>() {
+        let view = match view.downcast::<Metadata<MaterialBackground>>() {
             Ok(meta) => {
-                let IgnorableMetadata {
+                let Metadata {
                     content,
                     value: MaterialBackground(material),
                 } = *meta;
@@ -382,9 +394,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
-        let view = match view.downcast::<IgnorableMetadata<GlassBackground>>() {
+        let view = match view.downcast::<Metadata<GlassBackground>>() {
             Ok(meta) => {
-                let IgnorableMetadata {
+                let Metadata {
                     content,
                     value: GlassBackground(glass),
                 } = *meta;
@@ -397,7 +409,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             Err(view) => view,
         };
-        let view = match view.downcast::<IgnorableMetadata<MaterialGroup>>() {
+        let view = match view.downcast::<Metadata<MaterialGroup>>() {
             // The modifier takes no value: the wrapper's own render identity is
             // the group scope its member materials join at flush.
             Ok(meta) => {
@@ -575,13 +587,6 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     env,
                     renderer,
                 );
-            }
-            Err(view) => view,
-        };
-        let view = match view.downcast::<Metadata<OnChange>>() {
-            Ok(meta) => {
-                let Metadata { content, value } = *meta;
-                return Self::build_on_change(value, content, env, renderer);
             }
             Err(view) => view,
         };
@@ -996,6 +1001,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     fn resolved_handler_env<'a>(node: &'a Self, env: &'a Environment) -> &'a Environment {
         match node {
             Self::Env(node) => Self::resolved_handler_env(&node.child, &node.env),
+            // Retention is transparent to handler resolution.
+            Self::Retain(node) => Self::resolved_handler_env(&node.child, env),
             Self::Wrapper(node) if node.effect.captures_environment() => {
                 Self::resolved_handler_env(&node.child, &node.env)
             }
@@ -1007,32 +1014,6 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             }
             _ => env,
         }
-    }
-
-    /// Build an `.on_change(..)` wrapper. The handler subscribes once, at
-    /// build, against the environment the content resolves in — the same
-    /// resolution `build_wrapper` applies to the other handler effects — so a
-    /// `.state(&s)` between the view and `.on_change` reaches the handler. The
-    /// node owns the subscription: it ends when the node leaves the retained
-    /// tree.
-    fn build_on_change(
-        on_change: OnChange,
-        content: AnyView,
-        env: &Environment,
-        renderer: &mut SemanticCore<E>,
-    ) -> Self {
-        let child = Self::build_view(content, env, renderer);
-        let env = Self::resolved_handler_env(&child, env).clone();
-        Self::Wrapper(Box::new(WrapperNode {
-            accessibility_identity: Rc::new(()),
-            core: renderer.new_core(),
-            effect: WrapperEffect::OnChange {
-                _subscription: on_change.subscribe(&env),
-            },
-            env,
-            released_offsets: Cell::default(),
-            child,
-        }))
     }
 
     /// Build a node-owned lifecycle hook wrapper. An appear hook is retained until
@@ -1525,7 +1506,6 @@ fn is_background_fill_leaf<E: crate::text::TextEngine>(node: &RenderNode<E>) -> 
                 node.effect,
                 WrapperEffect::LayoutPriority(_)
                     | WrapperEffect::LifeCycle(_)
-                    | WrapperEffect::OnChange { .. }
                     | WrapperEffect::Focused(_)
                     | WrapperEffect::OnKeyPress(_)
                     | WrapperEffect::MaterialGroup
