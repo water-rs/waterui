@@ -7,8 +7,6 @@ use waterui_core::contract_violation;
 
 #[cfg(feature = "accessibility")]
 use crate::theme::InteractionFocusBinding;
-#[cfg(all(feature = "accessibility", feature = "table"))]
-use std::borrow::Cow;
 #[cfg(feature = "accessibility")]
 use std::collections::BTreeSet;
 #[cfg(feature = "accessibility")]
@@ -2632,18 +2630,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
     }
 
-    /// The label an erased view's content derives — the table cells that
-    /// have not moved to realized nodes yet use it.
-    #[cfg(feature = "accessibility")]
-    #[cfg(feature = "table")]
-    pub(crate) fn accessibility_label_from_view(
-        &mut self,
-        view: &AnyView,
-        env: &Environment,
-    ) -> Option<String> {
-        self.accessibility_label_from_view_with_budget(view, env, 32)
-    }
-
     /// Resolves the spoken accessibility text directly from a typed
     /// [`Label`](waterui_controls::label::Label) without any view-tree
     /// traversal. Backends should prefer this over `accessibility_label_from_view`
@@ -2667,158 +2653,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         } else {
             Some(String::from(trimmed))
         }
-    }
-
-    #[cfg(feature = "accessibility")]
-    #[cfg(feature = "table")]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
-    )]
-    fn accessibility_label_from_view_with_budget(
-        &mut self,
-        view: &AnyView,
-        env: &Environment,
-        remaining: usize,
-    ) -> Option<String> {
-        if remaining == 0 {
-            contract_violation!(
-                "hydrolysis accessibility label extraction exceeded recursion budget for {}; the node has no extracted label",
-                view.name()
-            );
-            return None;
-        }
-        let (view, scoped_env) = flatten_environment_metadata_ref(view, env);
-        if let Some(content) = passthrough_content(view) {
-            return self.accessibility_label_from_view_with_budget(
-                content,
-                &scoped_env,
-                remaining - 1,
-            );
-        }
-        if let Some(label) = view.downcast_ref::<SemanticLabel>() {
-            let styled = self.read_signal(&label.semantic_text().resolve(&scoped_env).content());
-            return Some(styled.to_semantic().to_string());
-        }
-        if let Some(text) = view.downcast_ref::<waterui_text::Text>() {
-            let styled = self.read_signal(&text.resolve(&scoped_env).content());
-            return Some(styled.to_semantic().to_string());
-        }
-        if let Some(label) = view.downcast_ref::<Str>() {
-            return Some(label.as_str().to_owned());
-        }
-        if let Some(label) = view.downcast_ref::<&'static str>() {
-            let body = AnyView::new((*label).body(&scoped_env));
-            return self.accessibility_label_from_view_with_budget(
-                &body,
-                &scoped_env,
-                remaining - 1,
-            );
-        }
-        if let Some(label) = view.downcast_ref::<String>() {
-            let body = AnyView::new(label.clone().body(&scoped_env));
-            return self.accessibility_label_from_view_with_budget(
-                &body,
-                &scoped_env,
-                remaining - 1,
-            );
-        }
-        if let Some(label) = view.downcast_ref::<Cow<'static, str>>() {
-            let body = AnyView::new(label.clone().body(&scoped_env));
-            return self.accessibility_label_from_view_with_budget(
-                &body,
-                &scoped_env,
-                remaining - 1,
-            );
-        }
-        if let Some(text) = view.downcast_ref::<Native<TextConfig>>() {
-            let styled = self.read_signal(&text.as_inner().content());
-            return Some(styled.to_semantic().to_string());
-        }
-        if let Some(icon) = view.downcast_ref::<Native<SystemIcon>>() {
-            return Some(icon.as_inner().name().as_str().to_owned());
-        }
-        // A control's `label` is the same `Label` a composite button's name
-        // derives from, so a container holding a bare control derives the
-        // control's own name rather than dropping it — e.g. a `List` row of a
-        // single `toggle("Wi-Fi")` announces "Wi-Fi".
-        macro_rules! label_from_native_config {
-            ($($(#[$attr:meta])* $config:ty),+ $(,)?) => {$(
-                $(#[$attr])*
-                if let Some(native) = view.downcast_ref::<Native<$config>>() {
-                    return Self::accessibility_label_from_label(
-                        native.as_inner().label(),
-                        &scoped_env,
-                    );
-                }
-            )+};
-        }
-        label_from_native_config!(
-            #[cfg(feature = "toggle")]
-            waterui_controls::toggle::ToggleConfig,
-            #[cfg(feature = "slider")]
-            waterui_controls::slider::SliderConfig,
-            #[cfg(feature = "stepper")]
-            waterui_controls::stepper::StepperConfig,
-            waterui_controls::button::ButtonConfig,
-            #[cfg(feature = "text-field")]
-            waterui_controls::text_field::ResolvedTextFieldConfig,
-            #[cfg(feature = "secure-field")]
-            waterui_form::secure::SecureFieldConfig,
-            #[cfg(feature = "picker")]
-            waterui_form::picker::PickerConfig,
-            #[cfg(feature = "date-picker")]
-            waterui_form::picker::date::DatePickerConfig,
-            #[cfg(feature = "color-picker")]
-            waterui_form::picker::color::ColorPickerConfig,
-        );
-        #[cfg(feature = "menu")]
-        if let Some(menu) = view.downcast_ref::<Native<waterui_controls::menu::ResolvedMenu>>() {
-            let styled = self.read_signal(&menu.as_inner().accessibility_label);
-            return Some(styled.to_semantic().to_string());
-        }
-        if let Some(progress) =
-            view.downcast_ref::<Native<waterui::component::progress::ProgressConfig>>()
-        {
-            return self
-                .accessibility_label_from_view_with_budget(
-                    progress.as_inner().label(),
-                    &scoped_env,
-                    remaining - 1,
-                )
-                .or_else(|| {
-                    self.accessibility_label_from_view_with_budget(
-                        progress.as_inner().value_label(),
-                        &scoped_env,
-                        remaining - 1,
-                    )
-                });
-        }
-        // Normalization keeps a `FixedContainer` plain (its `body` runs at
-        // build), so both the modifier-time and the body-produced (Native)
-        // forms reach here.
-        if let Some(container) = view.downcast_ref::<FixedContainer>().or_else(|| {
-            view.downcast_ref::<Native<FixedContainer>>()
-                .map(Native::as_inner)
-        }) {
-            let (_, children) = container.as_parts();
-            let labels = children
-                .iter()
-                .filter_map(|child| {
-                    self.accessibility_label_from_view_with_budget(
-                        child,
-                        &scoped_env,
-                        remaining - 1,
-                    )
-                    .map(|label| label.trim().to_owned())
-                    .filter(|label| !label.is_empty())
-                })
-                .collect::<Vec<_>>();
-            if !labels.is_empty() {
-                return Some(labels.join(" "));
-            }
-        }
-        None
     }
 
     #[cfg(feature = "accessibility")]

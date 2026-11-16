@@ -778,7 +778,7 @@ impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubvie
 
     /// Marks the retained item for `key` visible this frame; `false` when
     /// none is retained.
-    #[cfg(feature = "list")]
+    #[cfg(any(feature = "list", feature = "table"))]
     pub(crate) fn touch(&mut self, key: &K) -> bool {
         let retained = self.entries.contains_key(key);
         if retained {

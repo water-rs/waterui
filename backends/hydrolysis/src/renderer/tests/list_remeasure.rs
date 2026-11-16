@@ -3,7 +3,8 @@
 //! A `List` row's extent must track its content's measured size: a signal that
 //! changes what a row's content measures re-measures exactly that row — other
 //! rows keep their cached extents — and a change to a row above the viewport
-//! must not shift the row the viewport is anchored to.
+//! must not shift the row the viewport is anchored to. A `Table` column's
+//! width tracks its header's realized content the same way.
 
 use core::time::Duration;
 use std::time::Instant;
@@ -15,6 +16,7 @@ use nami::collection::SignalCollection;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityGeometry;
 use waterui::component::list::{List, ListItem};
+use waterui::component::table::{col, table};
 use waterui::component::text;
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
@@ -398,4 +400,27 @@ fn a_visible_row_is_realized_once_and_names_itself_from_its_current_content() {
         "the row's label follows its content's current text"
     );
     assert_eq!(built.get(), realized, "later frames reuse the realized row");
+}
+
+#[test]
+fn a_table_header_names_and_widens_its_column_from_its_current_content() {
+    let name = Binding::container(waterui_core::Str::from("Id"));
+    let shown = name.clone();
+    let mut runtime = runtime(AnyViewBuilder::<AnyView>::new(move || {
+        AnyView::new(table([col(text(shown.clone()), vec![text("1")])]))
+    }));
+    let mut at = Instant::now();
+
+    let updates = settle(&mut runtime, &mut at, 4);
+    let narrow = node_bounds(&updates, Role::ColumnHeader, "Id").expect("the header is emitted");
+
+    let wide_name = "Identifier of the record";
+    name.set(waterui_core::Str::from(wide_name));
+    let updates = settle(&mut runtime, &mut at, 4);
+    let wide = node_bounds(&updates, Role::ColumnHeader, wide_name)
+        .expect("the header's label follows its content's current text");
+    assert!(
+        wide.width() > narrow.width(),
+        "the column widens to its header's current content: {narrow:?} -> {wide:?}"
+    );
 }
