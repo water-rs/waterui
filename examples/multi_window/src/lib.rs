@@ -258,7 +258,8 @@ fn controls_window_content(handle: &WindowHandle, always_on_top: &Binding<bool>)
                     spawn_local(async move {
                         sleep(Duration::from_secs(3)).await;
                         handle.request_attention(UserAttention::Informational);
-                    });
+                    })
+                    .detach();
                 }
             }),
             spacer().width(12.0),
