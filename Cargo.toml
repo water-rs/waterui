@@ -297,19 +297,19 @@ waterui-git-head = { version = "0.5.1", path = "utils/git-head" }
 waterui-contract = { version = "0.5.1", path = "utils/contract" }
 waterui-easing = { version = "0.5.1", path = "utils/easing" }
 waterui-apple-os = { version = "0.5.1", path = "utils/apple-os" }
-waterkit-location = "0.2"
-waterkit-deeplink = "0.2"
-waterkit-audio = { version = "0.2", default-features = false }
-waterkit-clipboard = "0.2"
-waterkit-permission = "0.2"
-waterkit-dialog = "0.2"
-waterkit-fs = "0.2"
-waterkit-haptic = "0.2"
-waterkit-camera = "0.2"
-waterkit-build = "0.2"
-waterkit-menu = "0.2"
-waterkit-video-core = "0.2"
-waterkit-video-processing = "0.1.4"
+waterkit-location = "0.3"
+waterkit-deeplink = "0.3"
+waterkit-audio = { version = "0.3", default-features = false }
+waterkit-clipboard = "0.3"
+waterkit-permission = "0.3"
+waterkit-dialog = "0.3"
+waterkit-fs = "0.3"
+waterkit-haptic = "0.3"
+waterkit-camera = "0.3"
+waterkit-build = "0.3"
+waterkit-menu = "0.3"
+waterkit-video-core = "0.3"
+waterkit-video-processing = "0.2"
 waterui-backend-core = { version = "0.5.2", path = "backends/core", default-features = false }
 # The `filtrate` family — the filter library `.filter(F)`/`.effect(E)` and
 # Cherenkov share — lives in-tree under `graphics/filtrate/` (#1449). Every
@@ -680,7 +680,7 @@ hydrolysis = { path = "backends/hydrolysis" }
 hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "main" }
 # The waterkit family follows waterkit's `dev` so the framework consumes its
 # unreleased changes; the patches apply only while the `[workspace.dependencies]`
-# requirements admit `dev`'s version (0.2). Every waterkit crate the
+# requirements admit `dev`'s version (0.3). Every waterkit crate the
 # video/audio graph shares types across comes from the same source — a
 # registry `waterkit-audio` beside the patched `waterkit-video` gives two
 # `DecodedAudioFrame` types — and `waterkit-core` keeps the whole waterkit
