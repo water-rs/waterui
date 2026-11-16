@@ -555,8 +555,7 @@ mod tests {
         let view = default_role(&env, (), AccessibilityRole::Group);
 
         assert!(
-            view.downcast_ref::<Metadata<AccessibilityRole>>()
-                .is_none(),
+            view.downcast_ref::<Metadata<AccessibilityRole>>().is_none(),
             "a view whose role the application chose must not be wrapped again"
         );
     }

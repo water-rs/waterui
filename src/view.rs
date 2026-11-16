@@ -762,10 +762,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `role` - The accessibility role to apply
-    fn a11y_role(
-        self,
-        role: accessibility::AccessibilityRole,
-    ) -> Metadata<AccessibilityRole> {
+    fn a11y_role(self, role: accessibility::AccessibilityRole) -> Metadata<AccessibilityRole> {
         Metadata::new(self, role)
     }
 
@@ -794,10 +791,7 @@ pub trait ViewExt: View + Sized {
     /// stack allocated to a spacer — and `AccessibilityGeometry::Region`
     /// an explicit rectangle in the view's own coordinates. Hit testing,
     /// focus and drawing are unaffected.
-    fn a11y_geometry(
-        self,
-        geometry: AccessibilityGeometry,
-    ) -> Metadata<AccessibilityGeometry> {
+    fn a11y_geometry(self, geometry: AccessibilityGeometry) -> Metadata<AccessibilityGeometry> {
         Metadata::new(self, geometry)
     }
 
@@ -810,10 +804,7 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Applies explicit accessibility state metadata.
-    fn a11y_state(
-        self,
-        state: accessibility::AccessibilityState,
-    ) -> Metadata<AccessibilityState> {
+    fn a11y_state(self, state: accessibility::AccessibilityState) -> Metadata<AccessibilityState> {
         Metadata::new(self, state)
     }
 
