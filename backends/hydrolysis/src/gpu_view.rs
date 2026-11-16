@@ -1,28 +1,28 @@
-//! The retained state a `GpuContentView` leaf carries through the frame.
+//! The retained state a `GpuView` leaf carries through the frame.
 //!
-//! `GpuContentView` owns its producer — a `Send` `GpuContent` the engine runs
+//! `GpuView` owns its producer — a `Send` `GpuContent` the engine runs
 //! on its render thread — plus the UI-side hooks (input, per-frame pump, ime
 //! caret, accessibility label) that stay on this thread. The compositor holds
 //! the view behind this node so input routing and the per-frame
-//! [`waterui_graphics::gpu::GpuContentView::frame`] pump keep working after
+//! [`waterui_graphics::gpu::GpuView::frame`] pump keep working after
 //! the producer moves to the engine.
 //!
-//! The producer installs exactly once: [`GpuContentView::take_engine_content`]
+//! The producer installs exactly once: [`GpuView::take_engine_content`]
 //! moves it into an engine `GpuContentHandle`, registered as a
 //! `GpuProducer`. The producer outlives any one layer: a keyed mount that is
 //! dropped (a navigation page that is covered) and comes back binds the same
 //! producer to its new layer. Transient (capture) windows never install it at
 //! all: a capture cannot consume the one install the producer gets.
 
-use waterui_graphics::gpu::{ExternalFrameView, FrameReceiver, GpuContentView};
+use waterui_graphics::gpu::{ExternalFrameView, FrameReceiver, GpuView};
 
-/// The `GpuContentView` a [`crate::renderer::tree::GpuContentNode`] owns, and
+/// The `GpuView` a [`crate::renderer::tree::GpuContentNode`] owns, and
 /// its engine producer once installed.
 ///
 /// `producer` is set when the node's install layer first commits through the
 /// window's mount (`LayerTarget::mount_gpu_content`).
 pub struct GpuContentRuntime {
-    pub(crate) view: GpuContentView,
+    pub(crate) view: GpuView,
     /// The size and scale the view's input handler was last told about.
     pub(crate) resize: crate::renderer::ResizeTracker,
     /// The engine producer the content was registered as: `Some` once
@@ -113,7 +113,7 @@ impl HostedGpuView for ExternalFrameRuntime {
 
 impl GpuContentRuntime {
     pub(crate) const fn new(
-        view: GpuContentView,
+        view: GpuView,
         #[cfg(hydrolysis_hwui_gpu)] hosted: crate::runner::android::hosted_gpu::HostedLayer,
     ) -> Self {
         Self {

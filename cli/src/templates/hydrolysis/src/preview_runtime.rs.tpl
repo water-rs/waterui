@@ -97,7 +97,7 @@ fn new_runtime(width: f32, height: f32, ledger: &ContentLedger) -> HeadlessRunti
 /// Pumps until the frame stops changing and the views owe the capture no
 /// content.
 ///
-/// A `GpuView`'s `setup` is an async future spawned onto the local executor, so
+/// A `GpuContent`'s `setup` is an async future spawned onto the local executor, so
 /// its pipelines do not exist during the first frame. Capturing immediately
 /// yields a snapshot of the surface before any GPU content was drawn — the
 /// window background and nothing else. `rebuilt` is the real readiness signal

@@ -253,7 +253,7 @@ use waterui_graphics::color::Color;
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::gpu::RedrawHandle;
 #[cfg(hydrolysis_gpu)]
-use waterui_graphics::{ExternalFrameView, GpuContentView};
+use waterui_graphics::{ExternalFrameView, GpuView};
 
 use waterui_icon::SystemIcon;
 use waterui_layout::container::{FixedContainer, LazyContainer};

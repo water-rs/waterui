@@ -690,7 +690,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         // the runtime in a frame-ordered slot instead lets the ordering drift out of
         // step with the tree and hand a leaf another leaf's runtime.
         #[cfg(hydrolysis_gpu)]
-        let view = match view.downcast::<Native<GpuContentView>>() {
+        let view = match view.downcast::<Native<GpuView>>() {
             Ok(view) => {
                 return Self::build_gpu_content((*view).into_inner(), renderer, env);
             }
@@ -1311,13 +1311,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         }))
     }
 
-    /// Build a `GpuContentView` node owning its [`GpuContentRuntime`] — the
+    /// Build a `GpuView` node owning its [`GpuContentRuntime`] — the
     /// view keeps its UI-side hooks (input, frame pump, ime caret, a11y); the
     /// producer inside is taken exactly once, when the node's install layer
     /// first commits it on the window's engine.
     #[cfg(hydrolysis_gpu)]
     fn build_gpu_content(
-        view: GpuContentView,
+        view: GpuView,
         renderer: &SemanticCore<E>,
         #[cfg_attr(not(hydrolysis_hwui_gpu), expect(unused_variables))] env: &Environment,
     ) -> Self {

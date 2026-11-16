@@ -166,9 +166,7 @@ pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
 pub use waterui_graphics::gradient;
 #[cfg(feature = "gpu")]
-pub use waterui_graphics::{
-    GpuContent, GpuContentView, RedrawHandle, ShaderPaintView, image_decode,
-};
+pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle, ShaderPaintView, image_decode};
 pub use waterui_icon as icon;
 #[cfg(feature = "particle")]
 pub use waterui_particle as particle;

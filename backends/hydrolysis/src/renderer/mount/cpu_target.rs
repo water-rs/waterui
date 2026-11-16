@@ -99,7 +99,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_cpu::Raster {
         _pixels: (u32, u32),
         _wake: ProducerWake,
     ) {
-        crate::renderer::unsupported_gpu_device_view("GpuContentView", NO_GPU);
+        crate::renderer::unsupported_gpu_device_view("GpuView", NO_GPU);
     }
 
     #[cfg(hydrolysis_gpu)]
