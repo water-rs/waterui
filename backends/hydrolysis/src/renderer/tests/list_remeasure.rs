@@ -299,6 +299,7 @@ fn retained_list_measurement_reuses_the_watcher_snapshot() {
     let mut renderer = super::test_renderer();
     let theme = renderer.theme();
     let widget = RefCell::new(ListRenderState::from_config(list.config(), &env, &renderer));
+    widget.prepare(&mut renderer, &env);
     let mounted_captures = captures.get();
     assert!(mounted_captures > 0);
     let proposal = ProposalSize::new(Some(400.0), None);
@@ -345,6 +346,11 @@ fn specified_list_viewport_does_not_materialize_rows() {
     assert_eq!(bounded.size, waterui_core::layout::Size::new(400.0, 700.0));
     assert_eq!(materializations.get(), mounted);
 
+    // The list samples its first row, which the layout-time prepare realizes;
+    // measuring itself materializes nothing.
+    widget.prepare(&mut renderer, &env);
+    let prepared = materializations.get();
+    assert_eq!(prepared, mounted + 1);
     let ideal = widget.measure(
         &mut renderer.state,
         ProposalSize::new(Some(400.0), None),
@@ -352,5 +358,44 @@ fn specified_list_viewport_does_not_materialize_rows() {
         &theme,
     );
     assert!(ideal.size.height > 0.0);
-    assert!(materializations.get() > mounted);
+    assert_eq!(materializations.get(), prepared);
+}
+
+/// A row is realized once while it stays visible: later frames neither run
+/// its builder again nor lose what its content says now.
+#[test]
+fn a_visible_row_is_realized_once_and_names_itself_from_its_current_content() {
+    use core::cell::Cell;
+    use std::rc::Rc;
+
+    let name = Binding::container(waterui_core::Str::from("Alpha"));
+    let shown = name.clone();
+    let built = Rc::new(Cell::new(0_usize));
+    let counted = Rc::clone(&built);
+    let rows = Binding::container(vec![SelfId::new(1_u64)]);
+    let mut runtime = runtime(AnyViewBuilder::<AnyView>::new(move || {
+        let shown = shown.clone();
+        let counted = Rc::clone(&counted);
+        AnyView::new(List::for_each(
+            SignalCollection::new(rows.clone()),
+            move |_| {
+                counted.set(counted.get() + 1);
+                ListItem::new(text(shown.clone()))
+            },
+        ))
+    }));
+    let mut at = Instant::now();
+
+    let updates = settle(&mut runtime, &mut at, 4);
+    assert!(node_bounds(&updates, Role::ListItem, "Alpha").is_some());
+    let realized = built.get();
+    assert_eq!(realized, 1, "the row's builder runs once to realize it");
+
+    name.set(waterui_core::Str::from("Gamma"));
+    let updates = settle(&mut runtime, &mut at, 4);
+    assert!(
+        node_bounds(&updates, Role::ListItem, "Gamma").is_some(),
+        "the row's label follows its content's current text"
+    );
+    assert_eq!(built.get(), realized, "later frames reuse the realized row");
 }
