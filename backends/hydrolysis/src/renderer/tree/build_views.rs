@@ -18,6 +18,7 @@ impl_widget_behavior!(
     |state: &crate::widgets::layout::list::ListRenderState<E>, proposal, hydro, env, theme| {
         crate::widgets::layout::list::measure_list_node(state, proposal, hydro, env, theme)
     }
+    ; prepare: prepare_first_row
     ; a11y: crate::widgets::layout::list::emit_list_accessibility
     ; surface: surface
 );
@@ -123,14 +124,18 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     pub(super) fn build_list(
         config: ListConfig,
         env: &Environment,
-        renderer: &SemanticCore<E>,
+        renderer: &mut SemanticCore<E>,
     ) -> Self {
         use crate::widgets::layout::list::ListRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
-        let state = Rc::new(RefCell::new(ListRenderState::from_config(
-            config, env, renderer,
-        )));
-        Self::build_widget(renderer, state, stretch, env)
+        let state = ListRenderState::from_config(config, env, renderer);
+        // The first row is realized under this widget's cell as the record
+        // reader, so its node attaches to the list rather than the window.
+        let core = renderer.new_core();
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
+            state.refresh_first_row(env, renderer);
+        });
+        Self::build_widget_with_core(Rc::new(RefCell::new(state)), stretch, env, core)
     }
 
     /// Build a persistent table node: retain the config (its `columns` signal and

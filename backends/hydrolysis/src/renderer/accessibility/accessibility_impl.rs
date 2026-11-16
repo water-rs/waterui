@@ -2632,10 +2632,10 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
     }
 
-    /// The label an erased view's content derives — the list rows and table
-    /// cells that have not moved to realized nodes yet use it.
+    /// The label an erased view's content derives — the table cells that
+    /// have not moved to realized nodes yet use it.
     #[cfg(feature = "accessibility")]
-    #[cfg(any(feature = "list", feature = "table"))]
+    #[cfg(feature = "table")]
     pub(crate) fn accessibility_label_from_view(
         &mut self,
         view: &AnyView,
@@ -2670,7 +2670,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     #[cfg(feature = "accessibility")]
-    #[cfg(any(feature = "list", feature = "table"))]
+    #[cfg(feature = "table")]
     #[expect(
         clippy::too_many_lines,
         reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"

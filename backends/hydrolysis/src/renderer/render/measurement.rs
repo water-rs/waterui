@@ -1224,7 +1224,6 @@ pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
     if row_count == 0 {
         return LayoutSize::zero();
     }
-    let editing = state.measure_signal(list.editing());
     let first_item = materialize_list_item(contents, 0, env);
     let metrics = theme.list(&list_spec(env), env).metrics();
     let content_size = match width {
@@ -1239,9 +1238,38 @@ pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
         ),
         None => measure_transient_view_intrinsic(first_item.content(), state, env, theme),
     };
+    list_intrinsic_for_first_row(
+        list,
+        contents,
+        content_size,
+        first_item.get_insets(),
+        state,
+        env,
+        theme,
+    )
+}
+
+/// The list's own size from its first row's measured content, which every
+/// row is estimated at: `insets` are that row's `ListItem::insets`.
+#[cfg(feature = "list")]
+pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine>(
+    list: &ListConfig,
+    contents: &AnyViewsSnapshot<ListItem>,
+    content_size: LayoutSize,
+    insets: Option<&EdgeInsets>,
+    state: &mut HydroState<E>,
+    env: &Environment,
+    theme: &Rc<dyn WidgetTheme>,
+) -> LayoutSize {
+    let row_count = contents.len();
+    if row_count == 0 {
+        return LayoutSize::zero();
+    }
+    let editing = state.measure_signal(list.editing());
+    let metrics = theme.list(&list_spec(env), env).metrics();
     let row_height = list_row_height_for_content(
         f64::from(content_size.height),
-        first_item.get_insets(),
+        insets,
         list.min_row_height(),
         metrics,
     );
