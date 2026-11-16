@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use waterui_core::{Computed, Signal, Str};
-use waterui_webview::{Cookie, OriginPolicy, Url, WebViewError, WebViewEvent};
+use waterui::webview::{Cookie, OriginPolicy, Url, WebViewError, WebViewEvent};
 
 /// The token `OriginRule::LocalFiles` crosses as; Android spells a local-file
 /// origin rule `file://`.
@@ -193,7 +193,7 @@ pub fn parse_async_result(payload: &str) -> Result<AsyncResult, serde_json::Erro
 /// delivered for it.
 ///
 /// `evaluateJavascript` spells the value a script evaluated to as JSON, so the
-/// string `waterui_webview::raw_evaluation` always produces arrives as a JSON
+/// string `waterui::webview::raw_evaluation` always produces arrives as a JSON
 /// string literal; unquoting it is reading the engine's spelling, not encoding
 /// anything. The engine reports neither an exception nor a parse failure — the
 /// script then has no value, and the reply is `null` — so a reply that is not a
@@ -236,7 +236,7 @@ pub fn parse_cookie_header(header: &str) -> Vec<Cookie<'static>> {
 /// JNI- and executor-free: the Android side wraps a `oneshot::Sender`, the
 /// tests collect what they are handed.
 pub enum PendingCall {
-    /// `run_javascript`: the program is `waterui_webview::raw_evaluation`,
+    /// `run_javascript`: the program is `waterui::webview::raw_evaluation`,
     /// whose value is a string, and `evaluateJavascript` delivers a string
     /// JSON-quoted — see [`raw_reply`].
     JavaScript(Box<dyn FnOnce(Result<Str, Str>)>),
@@ -896,7 +896,7 @@ const _: () = assert!(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waterui_webview::{BridgeOrigins, Url};
+    use waterui::webview::{BridgeOrigins, Url};
 
     fn policy(origins: BridgeOrigins, initial: &str) -> OriginPolicy {
         let initial: Url = initial.parse().expect("a valid initial URL");

@@ -34,7 +34,7 @@ use jni::{Env, EnvUnowned, jni_sig, jni_str};
 use nami::Signal;
 use nami::watcher::BoxWatcherGuard;
 use waterui_core::{Computed, Str};
-use waterui_webview::{
+use waterui::webview::{
     ASSET_HTTPS_ORIGIN, AssetServer, BackendEvent, Cookie, CustomWebViewController,
     DOCUMENT_START_SCRIPT, DocumentScripts, NavigationPolicy, NavigationRequest,
     ScriptInjectionTime, ScriptMessageHandler, Url, UserScript, WatcherGuard, WatcherSet,
@@ -969,7 +969,7 @@ impl WebViewHandle for AndroidSystemWebViewHandle {
             |call_id, _token| {
                 self.inner.call_str(
                     WebViewMethodId::Evaluate,
-                    &waterui_webview::raw_evaluation(script),
+                    &waterui::webview::raw_evaluation(script),
                     &[JValue::Long(
                         jlong::try_from(call_id).expect("a call id fits a jlong"),
                     )],

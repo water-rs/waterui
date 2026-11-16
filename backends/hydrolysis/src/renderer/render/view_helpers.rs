@@ -181,28 +181,62 @@ pub fn a11y_scoped_env_for_state_signal(
 /// Without an accessibility tree there is nothing to name, so the value drops
 /// and the environment passes through.
 #[cfg(feature = "accessibility")]
-fn a11y_scoped_identifier_env(env: &Environment, value: &AccessibilityIdentifier) -> Environment {
+pub fn a11y_scoped_identifier_env(
+    env: &Environment,
+    value: &AccessibilityIdentifier,
+) -> Environment {
     a11y_scoped_env(env, &ScopedAccessibilityIdentifier::new(value.clone()))
 }
 
 #[cfg(not(feature = "accessibility"))]
-fn a11y_scoped_identifier_env(env: &Environment, _value: &AccessibilityIdentifier) -> Environment {
+pub fn a11y_scoped_identifier_env(
+    env: &Environment,
+    _value: &AccessibilityIdentifier,
+) -> Environment {
     env.clone()
 }
 
-/// If `view`'s outermost wrapper is an accessibility `Metadata`
-/// scope, peel it and return its content with `env` extended for it — the
-/// single definition of the metadata-type → scoping table. The retained
-/// build's `Env` arms and the List-row hoist both peel through this, so
-/// registering a new accessibility scope touches one place. `Err` hands the
-/// view back untouched when the outer wrapper is not one of these scopes.
-pub fn a11y_scoped_env_for_view<E: crate::text::TextEngine>(
+/// Applies `$callback` to the accessibility metadata scopes: each key's
+/// `NativeBackend` method, its type, and the function extending an
+/// environment for it — the single definition of the metadata-type →
+/// scoping table. The retained build's methods and the List-row hoist both
+/// expand it, so registering a new accessibility scope touches one place.
+/// `E` names the text engine at the expansion site.
+macro_rules! accessibility_scope_table {
+    ($callback:ident) => {
+        $callback! {
+            accessibility_label: AccessibilityLabel => a11y_naming_scoped_env::<AccessibilityLabel, E>;
+            // `.a11y_value(..)` is naming metadata like the label: the node
+            // that represents the wrapped view owns the semantic payload —
+            // once — and a container that no control spoke for synthesizes
+            // the node carrying it.
+            accessibility_value: AccessibilityValue => a11y_naming_scoped_env::<AccessibilityValue, E>;
+            accessibility_identifier: AccessibilityIdentifier => a11y_scoped_identifier_env;
+            accessibility_role: AccessibilityRole => a11y_naming_scoped_env::<AccessibilityRole, E>;
+            accessibility_hidden: AccessibilityHidden => a11y_scoped_env::<AccessibilityHidden>;
+            accessibility_children: AccessibilityChildren => a11y_scoped_env::<AccessibilityChildren>;
+            // The geometry source names the element the way a label does: the
+            // node that represents the wrapped view reads it from the scope.
+            accessibility_geometry: AccessibilityGeometry => a11y_scoped_env::<AccessibilityGeometry>;
+            accessibility_state: AccessibilityState => a11y_scoped_env_for_state;
+            accessibility_state_signal: AccessibilityStateSignal => a11y_scoped_env_for_state_signal;
+        }
+    };
+}
+pub(crate) use accessibility_scope_table;
+
+/// If `view`'s outermost wrapper is an accessibility `Metadata` scope, peel
+/// it and return its content with `env` extended for it. `Err` hands the view
+/// back untouched when the outer wrapper is not one of these scopes.
+#[cfg(feature = "accessibility")]
+#[cfg(feature = "list")]
+fn a11y_scoped_env_for_view<E: crate::text::TextEngine>(
     view: AnyView,
     env: &Environment,
 ) -> Result<(AnyView, Environment), AnyView> {
+    let mut view = view;
     macro_rules! try_scope {
-        ($view:expr, $( $ty:ty => $install:expr ),+ $(,)?) => {{
-            let mut view = $view;
+        ($( $(#[$doc:meta])* $method:ident: $ty:ty => $install:expr; )+) => {
             $(
                 match view.downcast::<Metadata<$ty>>() {
                     Ok(metadata) => {
@@ -213,26 +247,10 @@ pub fn a11y_scoped_env_for_view<E: crate::text::TextEngine>(
                     Err(back) => view = back,
                 }
             )+
-            Err(view)
-        }};
+        };
     }
-    try_scope!(
-        view,
-        AccessibilityLabel => a11y_naming_scoped_env::<AccessibilityLabel, E>,
-        // `.a11y_value(..)` is naming metadata like the label: the node that
-        // represents the wrapped view owns the semantic payload — once — and a
-        // container that no control spoke for synthesizes the node carrying it.
-        AccessibilityValue => a11y_naming_scoped_env::<AccessibilityValue, E>,
-        AccessibilityIdentifier => a11y_scoped_identifier_env,
-        AccessibilityRole => a11y_naming_scoped_env::<AccessibilityRole, E>,
-        AccessibilityHidden => a11y_scoped_env::<AccessibilityHidden>,
-        AccessibilityChildren => a11y_scoped_env::<AccessibilityChildren>,
-        // The geometry source names the element the way a label does: the
-        // node that represents the wrapped view reads it from the scope.
-        AccessibilityGeometry => a11y_scoped_env::<AccessibilityGeometry>,
-        AccessibilityState => a11y_scoped_env_for_state,
-        AccessibilityStateSignal => a11y_scoped_env_for_state_signal,
-    )
+    accessibility_scope_table!(try_scope);
+    Err(view)
 }
 
 /// Peels the accessibility metadata wrappers off `view`, installing each into a

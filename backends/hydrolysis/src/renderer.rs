@@ -234,7 +234,6 @@ use waterui_core::layout::{
 };
 #[cfg(feature = "accessibility")]
 use waterui_core::metadata::MetadataKey;
-use waterui_core::view::Hook;
 #[cfg(any(feature = "table", feature = "navigation"))]
 use waterui_core::views::Views;
 use waterui_core::{AnyView, Environment, Metadata, Native, Retain, Str, View};
@@ -262,11 +261,13 @@ use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
-use waterui_map::MapConfig;
+#[cfg(waterui_feature = "map")]
+use waterui::map::MapConfig;
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape, ShapeKind};
 use waterui_text::styled::StyledStr;
 use waterui_text::{Text, TextConfig};
-use waterui_webview::WebView;
+#[cfg(waterui_feature = "webview")]
+use waterui::webview::WebView;
 
 use crate::animation::{
     AnimatedScalarHandle, AnimationController, AnimationKey, PerpetualAnimation,

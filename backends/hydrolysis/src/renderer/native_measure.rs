@@ -56,6 +56,7 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SystemIcon> {
 /// Reaching `Native<MapConfig>` means `Map::body` found no `Hook<MapConfig>` —
 /// no map realization was installed — and this backend ships no map engine of
 /// its own. The map is not drawn and measures as zero.
+#[cfg(waterui_feature = "map")]
 pub fn unsupported_map() {
     contract_violation!(
         "Map is unsupported on Hydrolysis because the backend has no map engine; install a \
@@ -64,6 +65,7 @@ pub fn unsupported_map() {
     );
 }
 
+#[cfg(waterui_feature = "map")]
 impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<MapConfig> {
     fn intrinsic(
         _state: &mut HydroState<E>,
@@ -80,6 +82,7 @@ impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<MapConfig> {
 /// reaching `WebView` without a `Hook<WebView>` engine realization leaves the
 /// backend nothing to draw a page with. Reported as a contract violation by
 /// the tree builder and the leaf's measure.
+#[cfg(waterui_feature = "webview")]
 #[cfg(not(any(hydrolysis_system_webview, hydrolysis_android_system_webview)))]
 pub const UNSUPPORTED_WEBVIEW: &str = "WebView is unsupported on this Hydrolysis build because no web engine is bridged; \
      link a browser engine crate (`waterui-browser-cef`, `waterui-browser-wpe`), enable \
@@ -181,7 +184,9 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<Color>);
         $macro!(Native<Gradient>);
         $macro!(Native<ResolvedShape>);
+        #[cfg(waterui_feature = "map")]
         $macro!(Native<MapConfig>);
+        #[cfg(waterui_feature = "webview")]
         $macro!(WebView);
     };
 }

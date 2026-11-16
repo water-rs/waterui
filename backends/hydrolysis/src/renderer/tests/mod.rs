@@ -1772,7 +1772,7 @@ fn a_container_with_an_explicit_label_still_consumes_its_text() {
 #[test]
 fn a_label_survives_the_environment_snapshot_a_view_hook_takes() {
     use waterui_core::AnyView;
-    use waterui_map::{Coordinate, Map, MapConfig, Region};
+    use waterui::map::{Coordinate, Map, MapConfig, Region};
 
     let mut env = test_environment();
     // The hooked body stands in for a real map realization — `Native<MapConfig>`
@@ -1817,7 +1817,7 @@ fn a_webview_with_no_engine_to_draw_it_is_reported_and_not_drawn() {
     use std::future::{Future, ready};
 
     use waterui_core::{Signal, Str};
-    use waterui_webview::{
+    use waterui::webview::{
         BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime, ScriptMessageHandler,
         WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController, WebViewHandle,
         WebViewOpenError,
@@ -1838,7 +1838,7 @@ fn a_webview_with_no_engine_to_draw_it_is_reported_and_not_drawn() {
 
         // No interception facility: the double has no engine to route an asset
         // origin through, and the assertion it serves never opens assets.
-        fn asset_origin(&self) -> Option<waterui_webview::Url> {
+        fn asset_origin(&self) -> Option<waterui::webview::Url> {
             None
         }
     }
@@ -1850,7 +1850,7 @@ fn a_webview_with_no_engine_to_draw_it_is_reported_and_not_drawn() {
     impl WebViewHandle for TestWebViewHandle {
         fn go_back(&self) {}
         fn go_forward(&self) {}
-        fn go_to(&self, _url: &waterui_webview::Url) {}
+        fn go_to(&self, _url: &waterui::webview::Url) {}
         fn stop(&self) {}
         fn refresh(&self) {}
         fn set_user_agent(&self, _user_agent: &str) {}

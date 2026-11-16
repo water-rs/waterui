@@ -48,7 +48,7 @@ pub use macos::MacSystemWebViewController;
 
 use waterui_core::Environment;
 use waterui_core::layout::Size as LayoutSize;
-use waterui_webview::WebView;
+use waterui::webview::WebView;
 
 #[cfg(hydrolysis_web_system_webview)]
 mod web;
@@ -170,7 +170,7 @@ pub fn install_controller(
     jni_env: &mut jni::Env<'_>,
     session: std::sync::Arc<jni::objects::Global<jni::objects::JObject<'static>>>,
 ) -> Result<(), crate::runner::android::jni::JniError> {
-    use waterui_webview::WebViewController;
+    use waterui::webview::WebViewController;
 
     // The backend supplies the *default* controller, so an application or
     // test that installed its own keeps it — the same shape `macos::install`
