@@ -120,8 +120,8 @@ pub use render::FrameRenderTarget;
 pub use render::WidgetRenderContext;
 pub use render::*;
 pub use render::{
-    anchor_point, gesture_group_identity, normalize_layout_view, normalize_view_for_render,
-    path_commands_to_path, resolved_shape_to_path, transformed_rect,
+    anchor_point, gesture_group_identity, path_commands_to_path, resolved_shape_to_path,
+    transformed_rect,
 };
 use signals::LayoutDependencies;
 use std::any::Any;
@@ -214,7 +214,7 @@ use waterui_controls::stepper::StepperConfig;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
 #[cfg(feature = "toggle")]
 use waterui_controls::toggle::ToggleConfig;
-use waterui_core::dynamic::{Dynamic, DynamicInitialContent};
+use waterui_core::dynamic::DynamicInitialContent;
 use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::handler::AnyViewBuilder;
@@ -238,28 +238,24 @@ use waterui_form::picker::date::DatePickerConfig;
 #[cfg(feature = "secure-field")]
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::Gradient;
-use waterui_graphics::backend::{FilteredView, SceneView};
-use waterui_graphics::canvas::CanvasView;
+use waterui_graphics::backend::FilteredView;
 use waterui_graphics::color::Color;
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::gpu::RedrawHandle;
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::{ExternalFrameView, GpuView};
 
-#[cfg(waterui_feature = "map")]
-use waterui::map::MapConfig;
 #[cfg(waterui_feature = "webview")]
 use waterui::webview::WebView;
 use waterui_icon::SystemIcon;
-use waterui_layout::container::{FixedContainer, LazyContainer};
+use waterui_layout::container::FixedContainer;
 use waterui_layout::safe_area::IgnoreSafeArea;
 #[cfg(feature = "accessibility")]
 use waterui_layout::scroll::Axis as ScrollAxis;
-use waterui_layout::scroll::ScrollView;
 use waterui_layout::spacer::Spacer;
 use waterui_shape::{ClipShape, PathCommand, ResolvedShape, ShapeKind};
+use waterui_text::Text;
 use waterui_text::styled::StyledStr;
-use waterui_text::{Text, TextConfig};
 
 use crate::animation::{
     AnimatedScalarHandle, AnimationController, AnimationKey, PerpetualAnimation,

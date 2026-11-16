@@ -221,9 +221,6 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
             return;
         };
         let view = core::mem::replace(source, AnyView::new(()));
-        // Normalize as the container/collection build paths do, so a layout
-        // view (stack/spacer/etc.) inside a label lowers to its native form.
-        let view = normalize_layout_view(view, env);
         let node = RenderNode::build(view, env, renderer);
         let layout_dependencies = Some(LayoutDependencies::new(Rc::downgrade(&node.core().cell)));
         self.state = RetainedSubviewState::Built(Box::new(BuiltSubview {

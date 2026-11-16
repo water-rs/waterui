@@ -45,9 +45,9 @@ const VIDEO_PLANE_KIND: &str = "dev.waterui.hydrolysis.video-surface-host";
 /// content and the bridge waits for the node build, which gives the picture
 /// its decoder plane.
 ///
-/// The host is unwrapped when the view is normalized because its wrapped
-/// picture is only reachable by consuming it; every layout and build step
-/// then sees an ordinary passthrough wrapper.
+/// The host is unwrapped when the node is built because its wrapped picture is
+/// only reachable by consuming it; layout then sees an ordinary passthrough
+/// wrapper.
 pub struct VideoPlaneHost {
     bridge: AndroidVideoSurfaceBridge,
 }

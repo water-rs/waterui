@@ -25,7 +25,7 @@ use super::{MinimalTestTheme, Realized, test_environment};
 use crate::HeadlessRuntime;
 use crate::num_cast::f64_as_f32;
 use crate::platform::InputEvent;
-use crate::renderer::normalize_layout_view;
+
 use crate::theme::WidgetTheme;
 use waterui_core::layout::ProposalSize;
 
@@ -260,7 +260,7 @@ const LONG_LABEL: &str = "This is a deliberately long list row label that must w
 fn wrapped_label_height(width: f64) -> f64 {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let view = normalize_layout_view(AnyView::new(text(LONG_LABEL)), &env);
+    let view = AnyView::new(text(LONG_LABEL));
     let height = Realized::with_theme(view, &env, &theme)
         .measure(ProposalSize::new(Some(f64_as_f32(width)), None))
         .size

@@ -4,7 +4,6 @@ use super::*;
 use waterui_core::Computed;
 use waterui_core::contract_violation;
 use waterui_core::interaction::Selected;
-use waterui_core::layout::LayoutPriority;
 use waterui_core::metadata::MetadataKey;
 
 pub fn gesture_group_identity(view: &AnyView) -> usize {
@@ -39,13 +38,12 @@ pub fn flatten_environment_metadata_owned(
 }
 
 /// Extends `env` with an accessibility metadata value exactly like the retained
-/// build's `Env`-scoping arm does. Layout normalization pre-resolves composite
-/// bodies (`view.body(env)`), and a body may snapshot its environment into a
-/// `Metadata<Environment>` override (the `With`-style env wrappers behind
-/// `.foreground()` and friends), so normalization must resolve content under
-/// the same scoped environment the build-time `Env` node installs — otherwise
-/// the snapshot, which replaces the environment wholesale when flattened,
-/// silently drops the accessibility scoping above it.
+/// build's `Env`-scoping arm does. A composite body may snapshot its
+/// environment into a `Metadata<Environment>` override (the `With`-style env
+/// wrappers behind `.foreground()` and friends), so content resolves under the
+/// same scoped environment the build-time `Env` node installs — otherwise the
+/// snapshot, which replaces the environment wholesale when flattened, silently
+/// drops the accessibility scoping above it.
 pub fn a11y_scoped_env<T: MetadataKey + Clone + 'static>(
     env: &Environment,
     value: &T,
@@ -86,9 +84,9 @@ pub fn a11y_naming_scoped_env<T: MetadataKey + Clone + 'static, E: crate::text::
 /// Carries the accessibility naming scope across a `Metadata<Environment>`
 /// override.
 ///
-/// Naming metadata is *nearest-consumer*: layout normalization deliberately
-/// leaves `.a11y_label()` / `.a11y_role()` / `.a11y_id()` out of the
-/// environments composite bodies snapshot, because a group label baked into one
+/// Naming metadata is *nearest-consumer*: the build deliberately leaves
+/// `.a11y_label()` / `.a11y_role()` / `.a11y_id()` out of the environments
+/// composite bodies snapshot, because a group label baked into one
 /// would relabel every descendant leaf. The build-time `Env` node above is what
 /// the emitting leaf reads instead — which works right up until the body
 /// *itself* produces a snapshot, because flattening one replaces the
@@ -408,273 +406,6 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
     );
 
     None
-}
-
-fn is_layout_terminal(view: &AnyView) -> bool {
-    if view.downcast_ref::<Str>().is_some() || view.downcast_ref::<Divider>().is_some() {
-        return true;
-    }
-    super::is_hydro_native_view(view)
-}
-
-pub fn normalize_view_for_render(view: AnyView, env: &Environment) -> AnyView {
-    normalize_layout_view(view, env)
-}
-
-pub fn normalize_layout_view(view: AnyView, env: &Environment) -> AnyView {
-    normalize_layout_view_with_budget(view, env, 64)
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
-)]
-fn normalize_layout_view_with_budget(
-    view: AnyView,
-    env: &Environment,
-    remaining: usize,
-) -> AnyView {
-    if remaining == 0 {
-        contract_violation!(
-            "hydrolysis layout normalization exceeded recursion budget for {}; the view is replaced by an empty view",
-            view.name()
-        );
-        return AnyView::new(());
-    }
-    let next_remaining = remaining - 1;
-    let mut view = view;
-
-    // The GPU video player's host is unwrapped here: its picture is only
-    // reachable by consuming it, so layout and build see a passthrough.
-    #[cfg(hydrolysis_video_plane)]
-    if view.is::<Native<waterui_video_gpu::AndroidVideoSurfaceHost>>() {
-        let host = *view
-            .downcast::<Native<waterui_video_gpu::AndroidVideoSurfaceHost>>()
-            .expect("layout normalization failed to downcast the video surface host");
-        return normalize_layout_view_with_budget(
-            crate::runner::android::video_plane::unwrap_host(host),
-            env,
-            remaining,
-        );
-    }
-    #[cfg(hydrolysis_video_plane)]
-    if view.is::<Metadata<crate::runner::android::video_plane::VideoPlaneHost>>() {
-        let Metadata { content, value } = *view
-            .downcast::<Metadata<crate::runner::android::video_plane::VideoPlaneHost>>()
-            .expect("layout normalization failed to downcast the video plane host");
-        return AnyView::new(Metadata {
-            content: normalize_layout_view_with_budget(content, env, remaining),
-            value,
-        });
-    }
-    if view.is::<Metadata<Environment>>() {
-        let Metadata { content, value } = *view
-            .downcast::<Metadata<Environment>>()
-            .expect("layout normalization failed to downcast Metadata<Environment>");
-        let normalized_content = normalize_layout_view_with_budget(content, &value, remaining);
-        return AnyView::new(Metadata {
-            content: normalized_content,
-            value,
-        });
-    }
-    macro_rules! normalize_passthrough_metadata {
-        ($( $(#[$attr:meta])* $ty:ty),+ $(,)?) => {
-            $(
-                $(#[$attr])*
-                if view.is::<Metadata<$ty>>() {
-                    let Metadata { content, value } = *view
-                        .downcast::<Metadata<$ty>>()
-                        .expect("layout normalization failed to downcast metadata");
-                    let normalized_content =
-                        normalize_layout_view_with_budget(content, env, remaining);
-                    return AnyView::new(Metadata {
-                        content: normalized_content,
-                        value,
-                    });
-                }
-            )+
-        };
-    }
-
-    normalize_passthrough_metadata!(
-        LayoutPriority,
-        Retain,
-        Opacity,
-        Scale,
-        Rotation,
-        Offset,
-        ClipShape,
-        Border,
-        Shadow,
-        Focused,
-        Hittable,
-        Selected,
-        GestureObserver,
-        LifeCycleHook,
-        OnEvent,
-        OnKeyPress,
-        Secure,
-        StandardDynamicRange,
-        HighDynamicRange,
-        Cursor,
-        IgnoreSafeArea,
-        #[cfg(feature = "menu")]
-        ContextMenu,
-        #[cfg(feature = "menu")]
-        ResolvedContextMenu,
-        AnchoredOverlay,
-        waterui::dialog::Dialog,
-        #[cfg(feature = "menu")]
-        PopupMenuSurface,
-        Draggable,
-        DropDestination,
-        Background,
-        #[cfg(feature = "navigation")]
-        NavigationTransitionSource,
-        #[cfg(feature = "navigation")]
-        NavigationTransitionDestination,
-        #[cfg(feature = "navigation")]
-        NavigationLinkHint,
-        waterui_structural_transition::TransitionSpec,
-        // Label/role/children stay plain passthrough here: they are
-        // nearest-consumer metadata — the leaf that emits the semantic node
-        // reads them from the build-time `Env` scope, and they must not be
-        // baked into the environments that composite bodies snapshot below (a
-        // group label would then relabel every descendant leaf).
-        MaterialBackground,
-        GlassBackground,
-        // `.material_group()` is a scope marker with no environment effect:
-        // its wrapper must reach the tree build so the flush can push the
-        // scope its member materials join (water-rs/waterui#1999).
-        MaterialGroup,
-        AccessibilityIdentifier,
-        AccessibilityLabel,
-        AccessibilityValue,
-        AccessibilityRole,
-        AccessibilityChildren,
-        AccessibilityGeometry
-    );
-
-    // Hidden and (reactive) state have *subtree* semantics: every emission
-    // below resolves them from its environment. Their content must therefore be
-    // normalized under the same scoped environment the build arm installs — a
-    // composite body resolved below may snapshot its environment into a
-    // `Metadata<Environment>` override, and a snapshot taken without the
-    // scoping would drop the hidden/state scope wholesale at flush (an
-    // `a11y_state_signal(hidden)` overlay stayed visible exactly this way).
-    macro_rules! normalize_env_scoping_metadata {
-        ($($ty:ty, $scope:expr);+ $(;)?) => {
-            $(
-                if view.is::<Metadata<$ty>>() {
-                    let Metadata { content, value } = *view
-                        .downcast::<Metadata<$ty>>()
-                        .expect("layout normalization failed to downcast metadata");
-                    let scoped = $scope(env, &value);
-                    let normalized_content =
-                        normalize_layout_view_with_budget(content, &scoped, remaining);
-                    return AnyView::new(Metadata {
-                        content: normalized_content,
-                        value,
-                    });
-                }
-            )+
-        };
-    }
-    normalize_env_scoping_metadata!(
-        AccessibilityHidden, a11y_scoped_env;
-        AccessibilityStateSignal, a11y_scoped_env_for_state_signal;
-        AccessibilityState, a11y_scoped_env_for_state
-    );
-
-    // A plain `FixedContainer` has not run `body()` yet: its layout object
-    // is still the one the modifier built — the only moment
-    // `BackgroundLayout` is identifiable, because `body` wraps it in
-    // `DirectionalLayout`. Keep the container plain: the tree build
-    // identifies the slot while the layout is still concrete and then runs
-    // `body` itself; normalization only descends into the children.
-    if view.is::<FixedContainer>() {
-        let container = *view
-            .downcast::<FixedContainer>()
-            .expect("layout normalization failed to downcast FixedContainer");
-        let (layout, children) = container.into_inner();
-        let mut normalized_children = Vec::with_capacity(children.len());
-        for child in children {
-            normalized_children.push(normalize_layout_view_with_budget(
-                child,
-                env,
-                next_remaining,
-            ));
-        }
-        return AnyView::new(FixedContainer::from_parts(layout, normalized_children));
-    }
-
-    if view.is::<Native<FixedContainer>>() {
-        let native = *view
-            .downcast::<Native<FixedContainer>>()
-            .expect("layout normalization failed to downcast Native<FixedContainer>");
-        let (layout, children) = native.into_inner().into_inner();
-        let mut normalized_children = Vec::with_capacity(children.len());
-        for child in children {
-            normalized_children.push(normalize_layout_view_with_budget(child, env, remaining));
-        }
-        return AnyView::new(Native::new(FixedContainer::from_parts(
-            layout,
-            normalized_children,
-        )));
-    }
-
-    if view.is::<Native<LazyContainer>>() {
-        return view;
-    }
-
-    if view.is::<Native<ScrollView>>() {
-        let native = *view
-            .downcast::<Native<ScrollView>>()
-            .expect("layout normalization failed to downcast Native<ScrollView>");
-        let (axis, content, controller, offset) = native.into_inner().into_inner().into_parts();
-        let normalized_content = normalize_layout_view_with_budget(content, env, remaining);
-        let scroll = ScrollView::new(axis, normalized_content);
-        let scroll = match controller {
-            Some(controller) => scroll.scroll_controller(&controller),
-            None => scroll,
-        };
-        let scroll = match offset {
-            Some(offset) => scroll.report_offset(&offset),
-            None => scroll,
-        };
-        return AnyView::new(Native::new(scroll));
-    }
-
-    #[cfg(feature = "navigation")]
-    if view.is::<Native<NavigationView>>() {
-        let native = *view
-            .downcast::<Native<NavigationView>>()
-            .expect("layout normalization failed to downcast Native<NavigationView>");
-        let mut navigation = native.into_inner();
-        navigation.bar.title =
-            normalize_layout_view_with_budget(navigation.bar.title, env, remaining);
-        navigation.bar.subtitle =
-            normalize_layout_view_with_budget(navigation.bar.subtitle, env, remaining);
-        for item in navigation.bar.toolbar.items_mut() {
-            // Normalization resolves a label against the environment, so the
-            // bar scope has to wrap the item before it runs.
-            let content = normalize_layout_view_with_budget(
-                crate::widgets::nav::navigation::toolbar_item_view(item.take_content(), env),
-                env,
-                remaining,
-            );
-            item.set_content(content);
-        }
-        navigation.content = normalize_layout_view_with_budget(navigation.content, env, remaining);
-        return AnyView::new(Native::new(navigation));
-    }
-
-    if is_layout_terminal(&view) {
-        return view;
-    }
-
-    view = AnyView::new(view.body(env));
-    normalize_layout_view_with_budget(view, env, next_remaining)
 }
 
 /// Resolves a shape into a concrete path for `bounds`.

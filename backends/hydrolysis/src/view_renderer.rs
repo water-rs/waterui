@@ -205,7 +205,6 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
             .env
             .extending(SceneViewMergeToParent)
             .extending(ledger.clone());
-        let view = crate::renderer::normalize_view_for_render(view, &env);
         let bounds = kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
         renderer.capture_window_tree(
             view,

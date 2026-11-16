@@ -44,8 +44,8 @@ use super::{
 };
 use crate::HeadlessRuntime;
 use crate::platform::{InputEvent, PointerButton, PointerKind};
+use crate::renderer::ProposalSize;
 use crate::renderer::mount::backdrop::BackdropScope;
-use crate::renderer::{ProposalSize, normalize_layout_view};
 use crate::theme::WidgetTheme;
 
 /// The window, in points.
@@ -642,8 +642,8 @@ fn a_grouped_row_in_a_lazy_stack_measures_and_renders() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let proposal = ProposalSize::new(Some(crate::num_cast::u32_as_f32(WIDTH)), None);
-    let grouped = normalize_layout_view(AnyView::new(row().material_group()), &env);
-    let plain = normalize_layout_view(AnyView::new(row()), &env);
+    let grouped = AnyView::new(row().material_group());
+    let plain = AnyView::new(row());
     let grouped_size = Realized::with_theme(grouped, &env, &theme)
         .measure(proposal)
         .size;
@@ -751,11 +751,8 @@ fn a_grouped_empty_view_claims_no_stack_slot() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let proposal = ProposalSize::new(Some(200.0), None);
-    let grouped = normalize_layout_view(
-        AnyView::new(vstack((text("a"), ().material_group(), text("b")))),
-        &env,
-    );
-    let plain = normalize_layout_view(AnyView::new(vstack((text("a"), text("b")))), &env);
+    let grouped = AnyView::new(vstack((text("a"), ().material_group(), text("b"))));
+    let plain = AnyView::new(vstack((text("a"), text("b"))));
     let grouped_size = Realized::with_theme(grouped, &env, &theme)
         .measure(proposal)
         .size;

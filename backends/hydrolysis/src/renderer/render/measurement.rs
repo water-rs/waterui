@@ -503,17 +503,13 @@ pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine>(
 pub fn materialize_list_item(
     contents: &impl ViewSnapshot<View = ListItem>,
     index: usize,
-    env: &Environment,
 ) -> ListItem {
-    let mut item = contents.get_view(index).unwrap_or_else(|| {
+    contents.get_view(index).unwrap_or_else(|| {
         contract_violation!(
             "ListConfig failed to materialize item at index {index}; the row is empty"
         );
         ListItem::new(())
-    });
-    let content = normalize_layout_view(item.take_content(), env);
-    item.set_content(content);
-    item
+    })
 }
 
 /// A list row's extent from its content's measured height: the content plus
@@ -886,7 +882,7 @@ pub fn measure_picker_intrinsic_with_label_size<E: crate::text::TextEngine>(
 #[cfg(test)]
 mod tests {
     use super::measured_input_field_height;
-    use crate::renderer::normalize_layout_view;
+
     use crate::renderer::tests::{MinimalTestTheme, Realized, test_environment};
     use waterui_core::layout::ProposalSize;
 
@@ -929,14 +925,14 @@ mod tests {
                 .with_input_metrics(InputFieldMetrics::new(16.0, 280.0, 40.0, 16.0, 8.0)),
         );
         let value = Binding::container(Str::from("x"));
-        let view = normalize_layout_view(AnyView::new(field("Label", &value)), &env);
+        let view = AnyView::new(field("Label", &value));
         let size = Realized::with_theme(view, &env, &theme)
             .measure(ProposalSize::UNSPECIFIED)
             .size;
         approx::assert_relative_eq!(f64::from(size.height), 56.0);
 
         let secret = Binding::container(Secure::new(String::from("x")));
-        let view = normalize_layout_view(AnyView::new(secure("Label", &secret)), &env);
+        let view = AnyView::new(secure("Label", &secret));
         let size = Realized::with_theme(view, &env, &theme)
             .measure(ProposalSize::UNSPECIFIED)
             .size;
