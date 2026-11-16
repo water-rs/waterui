@@ -6,6 +6,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::theme::WidgetTheme;
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::rc::Rc;
 use waterui_core::layout::{LayoutError, ResolvedExtent};
 
@@ -39,6 +40,10 @@ pub(super) struct NodeSubView<'a, E: crate::text::TextEngine> {
     /// Present when this child is a resolved text-leaf subtree, letting `measure`
     /// shape it directly instead of recursing.
     resolved_text: Option<ResolvedNodeTextMeasure<E>>,
+    /// Whether any answer this child gave carried an explicit alignment guide:
+    /// the container measuring it then exports the guides its placement
+    /// forms. Atomic because the resolved-text path answers on any thread.
+    answered_guides: AtomicBool,
 }
 
 /// A text-leaf node resolved on the main thread, ready to be shaped on any thread.
@@ -108,6 +113,22 @@ impl<'a, E: crate::text::TextEngine> NodeSubView<'a, E> {
             theme: MainThreadBound::new(Rc::clone(theme)),
             measure_cache: MainThreadBound::new(RefCell::new(Vec::new())),
             resolved_text,
+            answered_guides: AtomicBool::new(false),
+        }
+    }
+
+    /// Whether any answer this child gave carried an explicit alignment
+    /// guide.
+    pub(super) fn answered_guides(&self) -> bool {
+        self.answered_guides.load(Ordering::Relaxed)
+    }
+
+    /// Records whether `dimensions` carries an explicit alignment guide.
+    fn note_guides(&self, dimensions: &ViewDimensions) {
+        if dimensions.explicit_horizontal_guides().next().is_some()
+            || dimensions.explicit_vertical_guides().next().is_some()
+        {
+            self.answered_guides.store(true, Ordering::Relaxed);
         }
     }
 
@@ -142,6 +163,7 @@ impl<E: crate::text::TextEngine> SubView for NodeSubView<'_, E> {
                     .service
                     .shape_limited(&resolved.input, proposal.width, resolved.max_lines);
             let dimensions = resolved.service.dimensions(&layout, resolved.max_lines);
+            self.note_guides(&dimensions);
             return self.apply_stretch(dimensions, proposal);
         }
         if let Some((_, dimensions)) = self
@@ -158,6 +180,7 @@ impl<E: crate::text::TextEngine> SubView for NodeSubView<'_, E> {
                 .measure(&mut state, &self.env, &self.theme, proposal)
         };
         let dimensions = self.apply_stretch(dimensions, proposal);
+        self.note_guides(&dimensions);
         self.measure_cache
             .borrow_mut()
             .push((proposal, dimensions.clone()));
