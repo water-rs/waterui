@@ -185,7 +185,7 @@ use window::{acquire_surface_frame, surface_error_requires_reconfigure};
 // Frame and tree profiles are published to the inspector endpoint, which exists
 // only where `waterui::inspector` does.
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(hydrolysis_cherenkov)]
+#[cfg(all(hydrolysis_cherenkov, feature = "inspector"))]
 mod inspector;
 
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
@@ -291,14 +291,30 @@ fn init_global_executor() {
     let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
 }
 
-/// Installs the global executor and prepares inspection.
+/// Prepares inspection after the global executor is installed.
 ///
 /// A browser page has no transport for the inspector endpoint, so the wasm
 /// runner installs the executor alone.
-#[cfg(not(target_arch = "wasm32"))]
-fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRuntime> {
-    init_global_executor();
+#[cfg(all(not(target_arch = "wasm32"), feature = "inspector"))]
+fn init_inspector() -> Option<waterui::inspector::InspectorRuntime> {
     waterui::inspector::maybe_init_from_env("hydrolysis")
+}
+
+/// Installs inspection into a runner environment and returns its executor probe.
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "inspector",
+    hydrolysis_cherenkov
+))]
+fn install_inspector(
+    env: &mut Environment,
+) -> Option<std::sync::Arc<dyn waterui::task::RuntimeProbe>> {
+    let inspector = init_inspector();
+    let probe = inspector
+        .as_ref()
+        .map(waterui::inspector::InspectorRuntime::runtime_probe);
+    waterui::inspector::install(env, inspector);
+    probe
 }
 
 /// Physical pixels per logical pixel for offscreen rendering, from
@@ -449,11 +465,16 @@ fn exit_without_gpu(error: impl core::error::Error + Send + Sync + 'static) -> !
 /// Panics when the seeded environment lost its `MenuShortcutRegistry`.
 pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl crate::Style) {
     init_tracing();
-    let inspector = init_main_thread_executors();
+    init_global_executor();
+    #[cfg(feature = "inspector")]
+    let inspector = init_inspector();
     let app = app(env);
+    #[cfg(feature = "inspector")]
     let inspector_probe = inspector
         .as_ref()
         .map(waterui::inspector::InspectorRuntime::runtime_probe);
+    #[cfg(not(feature = "inspector"))]
+    let inspector_probe = None;
     // This path renders each window once offscreen and returns; it owns no event
     // loop, so it supplies the headless executor rather than a platform one.
     // Keep a handle on the executor: the render loop below has to drive it, or
@@ -489,6 +510,7 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
     } = app.into_parts();
     let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
     waterui_core::install_application_resources(&mut env);
+    #[cfg(feature = "inspector")]
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
@@ -612,9 +634,16 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_winit))]
 pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl crate::Style) {
     init_tracing();
-    let executors = init_main_thread_executors();
+    init_global_executor();
+    #[cfg(feature = "inspector")]
+    let inspector = init_inspector();
     let app = app(env);
-    winit_runner::run(app, style, executors);
+    winit_runner::run(
+        app,
+        style,
+        #[cfg(feature = "inspector")]
+        inspector,
+    );
 }
 
 /// Installs the process-wide tracing subscriber when `RUST_LOG` or

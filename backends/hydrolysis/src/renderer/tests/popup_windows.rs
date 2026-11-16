@@ -131,14 +131,17 @@ fn secondary_click_merges_the_context_menu_popup_into_the_tree() {
         .expect("the context menu's items must merge into the returned tree");
     assert!(copy_node.supports_action(Action::Click));
 
-    // Debug builds append "Inspect element" under the application's own
-    // items — it reaches the merged tree by the same path.
-    if cfg!(debug_assertions) {
-        assert!(
-            find_by_label(&update, Role::Button, "Inspect element").is_some(),
-            "the appended Inspect element item must merge into the returned tree"
-        );
-    }
+    // The optional debug Inspector item reaches the merged tree by the
+    // same path as the application's own items.
+    assert_eq!(
+        find_by_label(&update, Role::Button, "Inspect element").is_some(),
+        cfg!(all(
+            debug_assertions,
+            feature = "inspector",
+            not(target_arch = "wasm32")
+        )),
+        "the merged tree must reflect whether the Inspector item is enabled"
+    );
 
     // The shifted ids are the merged tree's contract: an action aimed at one
     // demuxes back to the popup core that owns the item's target.

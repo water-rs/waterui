@@ -1318,8 +1318,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// the way a browser's entry joins its own menus: it extends a menu, it
     /// never creates one — an empty `.context_menu` behaves the same in every
     /// build. A release build appends nothing.
-    #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
     #[cfg(feature = "menu")]
+    #[cfg(all(
+        feature = "inspector",
+        feature = "accessibility",
+        not(target_arch = "wasm32")
+    ))]
     pub(crate) fn append_inspect_element_item(
         &self,
         items: &mut Vec<PopupMenuNode>,
@@ -1352,23 +1356,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             shortcut: None,
             subtitle: None,
         });
-    }
-
-    /// Inspecting an element means naming it in the accessibility tree, so a
-    /// build without that tree has no name to send — and a browser page has no
-    /// inspector endpoint to send it to.
-    #[cfg(any(not(feature = "accessibility"), target_arch = "wasm32"))]
-    // always an empty stub where it compiles — const would lie about the real variant
-    #[allow(clippy::missing_const_for_fn)]
-    #[cfg(feature = "menu")]
-    pub(crate) fn append_inspect_element_item(
-        &self,
-        _items: &mut Vec<PopupMenuNode>,
-        _point: kurbo::Point,
-    ) {
-        // The signature keeps `&self` so the call sites do not branch on the
-        // build shape: the real variant needs the tree this menu belongs to.
-        let _ = self;
     }
 
     /// The topmost context-menu target that covers `point` and wholly

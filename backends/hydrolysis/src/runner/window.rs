@@ -1996,9 +1996,9 @@ crate::engine::cfg_async_fn! {
     // the scheduled mode is cleared while the scene is pumped, and the elapsed
     // total has to start before any of it runs. A browser page hosts no
     // inspector endpoint, so neither is measured there.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "inspector"))]
     let frame_mode = runtime.mode;
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "inspector"))]
     let frame_pump_started_at = Instant::now();
     {
         let diagnostics_enabled = runtime.render_diagnostics.enabled();
@@ -2198,7 +2198,7 @@ crate::engine::cfg_async_fn! {
             runtime.platform.request_redraw();
         }
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "inspector"))]
     {
         super::inspector::publish_frame(
             env,
