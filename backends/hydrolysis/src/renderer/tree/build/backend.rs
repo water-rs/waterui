@@ -849,7 +849,6 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     ) -> RenderNode<E> {
         let renderer = &mut *self.renderer;
         let (axis, content, controller, offset) = native.into_inner().into_parts();
-        let content = normalize_layout_view(content, env);
         // A scroll surface owns §7.1 for its subtree: the layout
         // pass hands the surface its facts and the child lays out
         // with no safe-area context — the surface insets and

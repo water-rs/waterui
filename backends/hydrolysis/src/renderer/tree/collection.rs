@@ -637,7 +637,7 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
                     // node and spec from the current item. The entry keeps
                     // its identity; an in-flight insertion clock keeps running.
                     previous.replace_node(RenderNode::build(
-                        normalize_layout_view(item_view_or_empty(&snapshot, index), &env),
+                        item_view_or_empty(&snapshot, index),
                         &env,
                         renderer,
                     ));
@@ -647,7 +647,7 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
                 let view = item_view_or_empty(&snapshot, index);
                 let core = renderer.new_core();
                 core.cell.set_parent(&self.core.cell);
-                let node = RenderNode::build(normalize_layout_view(view, &env), &env, renderer);
+                let node = RenderNode::build(view, &env, renderer);
                 node.core().cell.set_parent(&core.cell);
                 let mut entry = CollectionEntry::new(id, node, core);
                 entry.begin_insertion(self.reduce_motion, renderer.frame_instant);
@@ -1165,7 +1165,7 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
                     // Build now, not at flush: a cached-but-unbuilt entry
                     // measures as zero and is skipped by `patch_for_parent`,
                     // so the row would place at a collapsed rect this frame.
-                    let subview = cache.materialize(id, || normalize_layout_view(view, env));
+                    let subview = cache.materialize(id, || view);
                     subview.ensure_built(renderer, env);
                     transitions.track(id, subview, renderer);
                     materialized = true;
@@ -1580,7 +1580,7 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         };
         let proposal = self.item_proposal(cross);
         let env = &self.env;
-        let materialize = || normalize_layout_view(item_view_or_empty(snapshot, index), env);
+        let materialize = || item_view_or_empty(snapshot, index);
         let (size, stretch) = {
             let mut cache = self.item_cache.borrow_mut();
             let subview = cache.entry(id, materialize);
@@ -1718,7 +1718,7 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
             let views = &snapshot;
             let mut cache = self.item_cache.borrow_mut();
             let subview = cache.entry(id, || {
-                normalize_layout_view(item_view_or_empty(views, index), env)
+                item_view_or_empty(views, index)
             });
             // The row's declaration is claimed before its first walk.
             subview.ensure_built(renderer, env);
