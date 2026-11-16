@@ -184,7 +184,7 @@ impl SubView for SecureFieldSubView {
     }
 }
 
-/// Installs the `secure_field` handler on the dispatcher:
+/// The `secure_field` realization:
 /// `Native<SecureFieldConfig>` maps to a container with the platform
 /// secure field and the mounted label child; the binding, the theme font,
 /// disabled state and accessibility stay live through watchers.

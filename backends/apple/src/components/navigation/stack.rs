@@ -34,7 +34,7 @@ use crate::contract::{NativeLeaf, RenderContext};
 use crate::transition::ghost::Ghost;
 use crate::transition::live::{LiveChild, Removal};
 
-/// Installs the stack's claim on the dispatcher.
+/// The navigation stack realization.
 pub fn realize_navigation_stack(
     value: NavigationStack<(), ()>,
     ctx: &RenderContext<'_>,

@@ -87,7 +87,7 @@ fn content_frame(host: &HostView, child: &PlatformView) -> Rect {
     crate::native_layout::LayoutContext::of(host_view).content_frame(child)
 }
 
-/// Installs the `with_env` handler on the dispatcher: `Metadata<Environment>`
+/// The `with_env` realization: `Metadata<Environment>`
 /// maps to a transparent container that renders its content under the
 /// metadata's environment.
 pub fn realize_environment_metadata(

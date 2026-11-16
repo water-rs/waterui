@@ -205,8 +205,11 @@ fn is_acceptable(session: &kit::DropSession<'_>, state: &RefCell<DropLeafState>)
     }
 }
 
-/// Installs the `drop_destination` handler on the dispatcher.
-#[expect(clippy::too_many_lines, reason = "one component's whole realization, as the handler it replaces")]
+/// The `drop_destination` realization.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one component's whole realization, as the handler it replaces"
+)]
 pub fn realize_drop_destination_metadata(
     metadata: Metadata<DropDestination>,
     ctx: &RenderContext<'_>,

@@ -26,7 +26,7 @@ use waterui_core::layout::{
 use crate::contract::KeepAlive;
 use crate::contract::{NativeLeaf, RenderContext};
 
-/// Installs the `NavigationSplitLayout` handler.
+/// The `NavigationSplitLayout` realization.
 pub fn realize_navigation_split_layout(
     value: NavigationSplitLayout,
     ctx: &RenderContext<'_>,

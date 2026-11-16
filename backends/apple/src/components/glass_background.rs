@@ -203,7 +203,7 @@ impl SubView for GlassBackgroundSubView {
     }
 }
 
-/// Installs the `glass_background` handler on the dispatcher:
+/// The `glass_background` realization:
 /// `Metadata<GlassBackground>` maps to a transparent container
 /// with the platform's glass surface behind the content.
 pub fn realize_glass_background_metadata(

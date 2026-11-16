@@ -94,7 +94,7 @@ impl SubView for OpacitySubView {
     }
 }
 
-/// Installs the `opacity` handler on the dispatcher.
+/// The `opacity` realization.
 pub fn realize_opacity_metadata(
     metadata: Metadata<Opacity>,
     ctx: &RenderContext<'_>,

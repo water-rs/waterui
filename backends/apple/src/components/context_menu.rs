@@ -395,8 +395,11 @@ fn set_accessory_item(state: &Rc<RefCell<ContextMenuState>>, menu: &appkit::Cont
     menu.set_accessory(&accessory_view, ideal_size(accessory));
 }
 
-/// Installs the `context_menu` handler on the dispatcher.
-#[expect(clippy::too_many_lines, reason = "one component's whole realization, as the handler it replaces")]
+/// The `context_menu` realization.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one component's whole realization, as the handler it replaces"
+)]
 pub fn realize_resolved_context_menu_metadata(
     metadata: Metadata<ResolvedContextMenu>,
     ctx: &RenderContext<'_>,

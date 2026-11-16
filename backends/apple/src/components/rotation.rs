@@ -116,7 +116,7 @@ impl SubView for RotationSubView {
     }
 }
 
-/// Installs the `rotation` handler on the dispatcher.
+/// The `rotation` realization.
 pub fn realize_rotation_metadata(
     metadata: Metadata<Rotation>,
     ctx: &RenderContext<'_>,

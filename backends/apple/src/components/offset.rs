@@ -147,11 +147,8 @@ impl SubView for OffsetSubView {
     }
 }
 
-/// Installs the `offset` handler on the dispatcher.
-pub fn realize_offset_metadata(
-    metadata: Metadata<Offset>,
-    ctx: &RenderContext<'_>,
-) -> NativeLeaf {
+/// The `offset` realization.
+pub fn realize_offset_metadata(metadata: Metadata<Offset>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     // A layer keeps the offset content composited rather than redrawn.

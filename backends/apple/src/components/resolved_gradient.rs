@@ -249,8 +249,11 @@ impl SubView for GradientSubView {
     }
 }
 
-/// Installs the `resolved_gradient` handler.
-#[expect(clippy::needless_pass_by_value, reason = "NativeBackend hands each payload by value")]
+/// The `resolved_gradient` realization.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "NativeBackend hands each payload by value"
+)]
 pub fn realize_gradient(gradient: Gradient, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let view = HostView::new(mtm, cocoa_ui::Rect::ZERO);

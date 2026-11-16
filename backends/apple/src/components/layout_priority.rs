@@ -81,7 +81,7 @@ impl SubView for PrioritySubView {
     }
 }
 
-/// Installs the `layout_priority` handler on the dispatcher.
+/// The `layout_priority` realization.
 pub fn realize_layout_priority_metadata(
     metadata: Metadata<LayoutPriority>,
     ctx: &RenderContext<'_>,

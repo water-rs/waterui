@@ -28,7 +28,7 @@ fn set_identifier(target: &PlatformView, identifier: &NSString) {
     a11y::set_identifier(target, identifier);
 }
 
-/// Installs the `accessibility_identifier` handler on the dispatcher.
+/// The `accessibility_identifier` realization.
 pub fn realize_accessibility_identifier_metadata(
     metadata: Metadata<AccessibilityIdentifier>,
     ctx: &RenderContext<'_>,

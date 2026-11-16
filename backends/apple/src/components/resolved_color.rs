@@ -104,10 +104,13 @@ fn color_leaf(mtm: cocoa_ui::MainThreadMarker) -> (Retained<ColorView>, NativeLe
     (view, leaf)
 }
 
-/// Installs the handler on the dispatcher: `Native<Color>` resolves through
+/// The `resolved_color` realization: `Native<Color>` resolves through
 /// the environment into a watched color signal; `Native<WorkingColor>`
 /// applies its already-resolved fill once.
-#[expect(clippy::needless_pass_by_value, reason = "NativeBackend hands each payload by value")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "NativeBackend hands each payload by value"
+)]
 pub fn realize_color(config: Color, ctx: &RenderContext<'_>) -> NativeLeaf {
     let (view, mut leaf) = color_leaf(ctx.mtm());
     let resolved = config.resolve(ctx.env());

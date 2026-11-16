@@ -57,7 +57,7 @@ struct DialogState {
     mtm: cocoa_ui::MainThreadMarker,
     /// The wrapper's own view — the window the alert presents from.
     host: Retained<HostView>,
-    /// The dispatcher's alert queue — one alert per window at a time.
+    /// The backend's alert queue — one alert per window at a time.
     queue: Rc<AlertQueue>,
     /// The mounted content — the dialog presents beside it.
     child: Mounted,
@@ -444,7 +444,7 @@ fn refresh_texts(state: &Rc<DialogState>) {
     alert.set_message(message.as_deref());
 }
 
-/// Installs the `dialog` handler on the dispatcher: `Metadata<Dialog>` maps
+/// The `dialog` realization: `Metadata<Dialog>` maps
 /// to a transparent container that presents the platform alert while the
 /// binding reads `true`.
 /// Gives the root environment the queue its dialogs share.
@@ -452,10 +452,7 @@ pub fn install(env: &mut Environment) {
     env.insert(Rc::new(AlertQueue::default()));
 }
 
-pub fn realize_dialog_metadata(
-    metadata: Metadata<Dialog>,
-    ctx: &RenderContext<'_>,
-) -> NativeLeaf {
+pub fn realize_dialog_metadata(metadata: Metadata<Dialog>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, KitRect::ZERO);
     let host_view: &PlatformView = &host;

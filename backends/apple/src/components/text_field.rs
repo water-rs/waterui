@@ -587,7 +587,7 @@ impl SubView for TextFieldSubView {
     }
 }
 
-/// Installs the `text_field` handler on the dispatcher:
+/// The `text_field` realization:
 /// `Native<ResolvedTextFieldConfig>` maps to a container with the platform
 /// field and the mounted label child; binding, prompt, disabled state and
 /// accessibility stay live through watchers.

@@ -248,11 +248,8 @@ impl SubView for ShadowSubView {
     }
 }
 
-/// Installs the `shadow` handler on the dispatcher.
-pub fn realize_shadow_metadata(
-    metadata: Metadata<Shadow>,
-    ctx: &RenderContext<'_>,
-) -> NativeLeaf {
+/// The `shadow` realization.
+pub fn realize_shadow_metadata(metadata: Metadata<Shadow>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let shadow = metadata.value;
 
     let mtm = ctx.mtm();

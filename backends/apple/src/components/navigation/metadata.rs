@@ -50,7 +50,7 @@ fn tag_transition(leaf: &NativeLeaf, id: waterui_core::id::Id) {
     leaf.view().setIdentifier(Some(&identifier));
 }
 
-/// Installs the three metadata handlers on the dispatcher.
+/// The three metadata realizations.
 pub fn realize_navigation_transition_source_metadata(
     metadata: Metadata<NavigationTransitionSource>,
     ctx: &RenderContext<'_>,

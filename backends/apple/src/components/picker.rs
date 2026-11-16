@@ -287,10 +287,13 @@ impl SubView for PickerSubView {
     }
 }
 
-/// Installs the `picker` handler on the dispatcher: `Native<PickerConfig>`
+/// The `picker` realization: `Native<PickerConfig>`
 /// maps to a container view with the platform selection control and, on
 /// `AppKit`, the visible leading label child.
-#[expect(clippy::needless_pass_by_value, reason = "NativeBackend hands each payload by value")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "NativeBackend hands each payload by value"
+)]
 pub fn realize_picker_config(config: PickerConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);

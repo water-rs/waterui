@@ -158,7 +158,7 @@ impl SubView for ButtonSubView {
     }
 }
 
-/// Registers the `button` leaf on `dispatcher`.
+/// The `button` realization.
 pub fn realize_button_config(config: ButtonConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let style = config.style();

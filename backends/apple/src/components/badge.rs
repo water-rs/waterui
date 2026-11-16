@@ -257,7 +257,7 @@ fn render(config: BadgeConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     leaf
 }
 
-/// Installs the `badge` handler on the dispatcher: `Native<BadgeConfig>`
+/// The `badge` realization: `Native<BadgeConfig>`
 /// maps to the overlay container.
 pub fn realize_badge_config(value: BadgeConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     render(value, ctx)

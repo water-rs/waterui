@@ -587,14 +587,13 @@ pub(super) fn render_calendar<S: CalendarSelection>(
 #[cfg(feature = "calendar")]
 mod component {
     use waterui::component::form::calendar::CalendarConfig;
-    
 
     use super::{CalendarSpec, NativeLeaf, RenderContext, render_calendar};
 
     /// Renders `Calendar`'s config.
     #[expect(
         clippy::needless_pass_by_value,
-        reason = "the dispatcher hands the config by value"
+        reason = "NativeBackend hands each payload by value"
     )]
     fn render(config: CalendarConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
         render_calendar(

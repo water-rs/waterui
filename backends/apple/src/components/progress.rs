@@ -506,13 +506,10 @@ fn tint_tick(state: &Weak<RefCell<ProgressState>>, host: &PlatformView) {
     schedule_tint_tick(Rc::downgrade(&state), cocoa_ui::view::retain_base(host));
 }
 
-/// Installs the `progress` handler on the dispatcher: `Native<ProgressConfig>`
+/// The `progress` realization: `Native<ProgressConfig>`
 /// maps to a container view with the platform indicator and the label pair
 /// `WuiProgress` stacks around it.
-pub fn realize_progress_config(
-    config: ProgressConfig,
-    ctx: &RenderContext<'_>,
-) -> NativeLeaf {
+pub fn realize_progress_config(config: ProgressConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     let host_view: &PlatformView = &host;

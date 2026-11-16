@@ -1,12 +1,13 @@
-//! The port contract every component handler compiles against.
+//! The port contract every component realization compiles against.
 //!
 //! FROZEN: a component port may rely on exactly these items. Anything it needs
 //! beyond them is a kit addition (a change to `cocoa-ui`, never a reactivity
 //! type), not a change to this file.
 //!
-//! The model: the dispatcher walks an [`AnyView`]; each registered handler
-//! claims a type and answers a [`NativeLeaf`] — a platform view plus the
-//! layout face a container lays out with. A handler that wraps other views
+//! The model: a view tree dispatches statically to [`crate::backend::AppleBackend`],
+//! whose `NativeBackend` methods each realize one payload as a [`NativeLeaf`]
+//! — a platform view plus the layout face a container lays out with. A
+//! realization that wraps other views
 //! renders its children through [`RenderContext::render`] and mounts them
 //! with [`NativeLeaf::mount`]; the returned [`Mounted`] detaches the child's
 //! view when it drops, which is how a container releases a child it replaces.

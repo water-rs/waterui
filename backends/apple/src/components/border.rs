@@ -142,11 +142,8 @@ impl SubView for BorderSubView {
     }
 }
 
-/// Installs the `border` handler on the dispatcher.
-pub fn realize_border_metadata(
-    metadata: Metadata<Border>,
-    ctx: &RenderContext<'_>,
-) -> NativeLeaf {
+/// The `border` realization.
+pub fn realize_border_metadata(metadata: Metadata<Border>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let border = metadata.value;
     let edges = border.get_edges();
     let width = border.width();

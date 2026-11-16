@@ -19,8 +19,8 @@ use waterui_core::{AnyView, ContentLedger};
 
 use crate::contract::{NativeLeaf, Renderer};
 
-/// The backend's `CustomViewRenderer`: a `'static` `Renderer` carrying the
-/// dispatcher, an environment clone and the main-thread proof.
+/// The backend's `CustomViewRenderer`: a `'static` `Renderer` carrying an
+/// environment clone and the main-thread proof.
 struct AppleViewRenderer {
     renderer: Renderer,
     mtm: cocoa_ui::MainThreadMarker,
@@ -89,8 +89,7 @@ fn render_error(failure: crate::capture_image::CaptureFailure) -> RenderError {
 pub fn install_service(env: &mut Environment) {
     let mtm = cocoa_ui::MainThreadMarker::new()
         .expect("the backend installs its services on the main thread");
-    let renderer =
-        crate::contract::RenderContext::new(env, mtm).renderer();
+    let renderer = crate::contract::RenderContext::new(env, mtm).renderer();
     env.insert(ViewRenderer::new(AppleViewRenderer { renderer, mtm }));
 }
 

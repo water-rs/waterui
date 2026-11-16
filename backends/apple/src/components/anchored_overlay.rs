@@ -559,7 +559,7 @@ impl SubView for AnchoredSubView {
     }
 }
 
-/// Installs the `anchored_overlay` handler on the dispatcher:
+/// The `anchored_overlay` realization:
 /// `Metadata<AnchoredOverlay>` maps to a transparent container that
 /// presents the overlay content in a window-level surface against the
 /// anchor's frame.

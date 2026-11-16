@@ -2859,7 +2859,7 @@ fn wire_position_report(
     ));
 }
 
-/// Installs the `list` handler on the dispatcher: `Native<ListConfig>` →
+/// The `list` realization: `Native<ListConfig>` →
 /// the platform's table surface.
 pub fn realize_list_config(value: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     render(value, ctx)

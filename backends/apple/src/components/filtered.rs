@@ -2470,7 +2470,7 @@ fn effects_from_body(
     }
 }
 
-/// Installs the `filtered` handler — `applied_filter` and `view_effect`
+/// The `filtered` realization — `applied_filter` and `view_effect`
 /// collapse into one leaf under the cutover's `Native<FilteredView>`.
 pub fn realize_filtered_view(filtered: FilteredView, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
@@ -2533,7 +2533,7 @@ struct GpuServices {
 /// `install` keeps the leaf; the native-test fixture drives the state and
 /// capturable handles directly.
 struct FilteredParts {
-    /// The mounted leaf the dispatcher returns.
+    /// The mounted leaf the realization returns.
     leaf: NativeLeaf,
     /// The leaf's render state — read by the native-test fixture.
     #[cfg_attr(

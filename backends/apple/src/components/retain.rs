@@ -77,13 +77,10 @@ impl SubView for RetainSubView {
     }
 }
 
-/// Installs the `retain` handler on the dispatcher: `Metadata<Retain>` maps
+/// The `retain` realization: `Metadata<Retain>` maps
 /// to a transparent container that holds the retained value for the leaf's
 /// life.
-pub fn realize_retain_metadata(
-    metadata: Metadata<Retain>,
-    ctx: &RenderContext<'_>,
-) -> NativeLeaf {
+pub fn realize_retain_metadata(metadata: Metadata<Retain>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     let host_view: &PlatformView = &host;

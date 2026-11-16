@@ -78,7 +78,7 @@ impl SubView for HittableSubView {
     }
 }
 
-/// Installs the `hittable` handler on the dispatcher.
+/// The `hittable` realization.
 pub fn realize_hittable_metadata(
     metadata: Metadata<Hittable>,
     ctx: &RenderContext<'_>,

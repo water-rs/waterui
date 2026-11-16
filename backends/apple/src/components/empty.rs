@@ -48,7 +48,7 @@ impl SubView for EmptySubView {
     }
 }
 
-/// Installs the `()` handler on the dispatcher: `Native<()>` maps to a
+/// The `()` realization: `Native<()>` maps to a
 /// hidden, zero-size view that never participates in layout.
 pub fn realize_empty((): (), ctx: &RenderContext<'_>) -> NativeLeaf {
     let view = HostView::new(ctx.mtm(), cocoa_ui::Rect::ZERO);

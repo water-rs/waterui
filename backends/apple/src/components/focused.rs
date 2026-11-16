@@ -138,7 +138,7 @@ impl SubView for FocusedSubView {
     }
 }
 
-/// Installs the `focused` handler on the dispatcher: `Metadata<Focused>`
+/// The `focused` realization: `Metadata<Focused>`
 /// maps to a transparent container that keeps the child's focus anchor
 /// and the `Binding<bool>` in sync both ways.
 pub fn realize_focused_metadata(

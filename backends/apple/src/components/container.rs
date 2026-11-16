@@ -1371,12 +1371,12 @@ impl SubView for ContainerSubView {
     }
 }
 
-/// Installs the `container` handler on the dispatcher.
-#[expect(clippy::too_many_lines, reason = "one component's whole realization, as the handler it replaces")]
-pub fn realize_lazy_container(
-    container: LazyContainer,
-    ctx: &RenderContext<'_>,
-) -> NativeLeaf {
+/// The `container` realization.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one component's whole realization, as the handler it replaces"
+)]
+pub fn realize_lazy_container(container: LazyContainer, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let direction = container.direction();
     let (layout, contents) = container.into_inner();

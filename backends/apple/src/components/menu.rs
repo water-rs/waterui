@@ -300,9 +300,12 @@ impl SubView for MenuSubView {
     }
 }
 
-/// Installs the `menu` handler on the dispatcher: `Native<ResolvedMenu>`
+/// The `menu` realization: `Native<ResolvedMenu>`
 /// maps to a host view holding the pull-down trigger and its label child.
-#[expect(clippy::too_many_lines, reason = "one component's whole realization, as the handler it replaces")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one component's whole realization, as the handler it replaces"
+)]
 pub fn realize_resolved_menu(config: ResolvedMenu, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);

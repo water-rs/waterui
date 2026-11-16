@@ -82,13 +82,10 @@ impl SubView for SecureSubView {
     }
 }
 
-/// Installs the `secure` handler on the dispatcher: `Metadata<Secure>` maps
+/// The `secure` realization: `Metadata<Secure>` maps
 /// to a transparent container whose `UIKit` secure-field overlay marks the
 /// subtree as capture-protected.
-pub fn realize_secure_metadata(
-    metadata: Metadata<Secure>,
-    ctx: &RenderContext<'_>,
-) -> NativeLeaf {
+pub fn realize_secure_metadata(metadata: Metadata<Secure>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     let host_view: &PlatformView = &host;

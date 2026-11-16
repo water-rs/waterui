@@ -95,7 +95,7 @@ impl SubView for MaterialBackgroundSubView {
     }
 }
 
-/// Installs the `material_background` handler on the dispatcher:
+/// The `material_background` realization:
 /// `Metadata<MaterialBackground>` maps to a transparent container with the
 /// platform's blur effect behind the content, and `Metadata<MaterialGroup>`
 /// to a transparent container: each platform material composites against

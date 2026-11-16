@@ -321,7 +321,7 @@ fn as_view(slider: &Slider) -> &PlatformView {
     slider
 }
 
-/// Installs the `slider` handler on the dispatcher: `Native<SliderConfig>`
+/// The `slider` realization: `Native<SliderConfig>`
 /// maps to a container view with the platform slider and the three label
 /// children mounted in it.
 pub fn realize_slider_config(config: SliderConfig, ctx: &RenderContext<'_>) -> NativeLeaf {

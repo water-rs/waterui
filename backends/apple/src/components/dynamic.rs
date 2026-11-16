@@ -333,7 +333,7 @@ fn render(
     leaf
 }
 
-/// Installs the `dynamic` handler on the dispatcher: `Native<Dynamic>`
+/// The `dynamic` realization: `Native<Dynamic>`
 /// becomes a host whose single child the handler's receiver swaps per
 /// delivered `Context<AnyView>`.
 pub fn realize_dynamic(dynamic: Dynamic, ctx: &RenderContext<'_>) -> NativeLeaf {

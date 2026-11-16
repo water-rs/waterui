@@ -668,11 +668,14 @@ fn label_leaf(
     (leaf, state, label)
 }
 
-/// Installs the `text` handler on the dispatcher: `Native<TextConfig>` maps
+/// The `text` realization: `Native<TextConfig>` maps
 /// to a kit label with per-chunk signal watches and baseline measurement,
 /// and `Native<Str>` (a bare string used as a view) maps to the same leaf
 /// with static content.
-#[expect(clippy::needless_pass_by_value, reason = "NativeBackend hands each payload by value")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "NativeBackend hands each payload by value"
+)]
 pub fn realize_text_config(config: TextConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     let content = config.content();
     let (mut leaf, state, label) = label_leaf(

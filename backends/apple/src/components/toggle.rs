@@ -179,7 +179,7 @@ impl SubView for ToggleSubView {
     }
 }
 
-/// Installs the `toggle` handler on the dispatcher: `Native<ToggleConfig>`
+/// The `toggle` realization: `Native<ToggleConfig>`
 /// maps to a kit row whose binding, enabled state, and accessibility name
 /// stay live through watchers.
 pub fn realize_toggle_config(config: ToggleConfig, ctx: &RenderContext<'_>) -> NativeLeaf {

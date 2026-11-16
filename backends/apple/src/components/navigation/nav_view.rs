@@ -11,11 +11,8 @@ use crate::contract::{NativeLeaf, RenderContext};
 use waterui::navigation::NavigationView;
 use waterui_core::layout::{LayoutError, ProposalSize, Rect, ResolvedExtent};
 
-/// Installs the `NavigationView` handler.
-pub fn realize_navigation_view(
-    value: NavigationView,
-    ctx: &RenderContext<'_>,
-) -> NativeLeaf {
+/// The `NavigationView` realization.
+pub fn realize_navigation_view(value: NavigationView, ctx: &RenderContext<'_>) -> NativeLeaf {
     platform::nav_view_leaf(value, ctx)
 }
 

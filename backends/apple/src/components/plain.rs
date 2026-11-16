@@ -187,7 +187,7 @@ impl SubView for PlainSubView {
     }
 }
 
-/// Installs the `plain` handler on the dispatcher: `Native<Str>` maps to a
+/// The `plain` realization: `Native<Str>` maps to a
 /// kit label whose attributed string rebuilds when the body font slot or
 /// foreground slot changes.
 pub(crate) fn realize_str(text: Str, ctx: &RenderContext<'_>) -> NativeLeaf {

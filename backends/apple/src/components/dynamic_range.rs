@@ -133,7 +133,7 @@ fn dynamic_range_leaf(
     leaf
 }
 
-/// Installs the two dynamic-range handlers on the dispatcher:
+/// The two dynamic-range realizations:
 /// `Metadata<StandardDynamicRange>` pins the subtree to SDR,
 /// `Metadata<HighDynamicRange>` pins it to HDR.
 pub fn realize_standard_dynamic_range_metadata(

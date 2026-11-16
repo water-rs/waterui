@@ -229,8 +229,11 @@ impl SubView for PictureSubView {
     }
 }
 
-/// Installs the `picture` handler.
-#[expect(clippy::needless_pass_by_value, reason = "NativeBackend hands each payload by value")]
+/// The `picture` realization.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "NativeBackend hands each payload by value"
+)]
 pub fn realize_picture(picture: Picture, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let view = ImageView::new(mtm);

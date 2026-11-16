@@ -22,7 +22,7 @@ use waterui_core::layout::{
 use super::extract_title_text;
 use crate::contract::RenderContext;
 
-/// Installs the `TabsLayout` handler.
+/// The `TabsLayout` realization.
 pub fn realize_tabs_layout(value: TabsLayout, ctx: &RenderContext<'_>) -> NativeLeaf {
     platform::tabs_leaf(value, ctx)
 }

@@ -2879,16 +2879,13 @@ impl SubView for SurfaceSubView {
 
 // MARK: - Install
 
-/// Installs the `gpu_surface` handlers — `Native<GpuView>` and
+/// The `gpu_surface` realizations — `Native<GpuView>` and
 /// `Native<ExternalFrameView>` and `Native<SceneView>` share presentation.
 pub fn realize_gpu_view(view: GpuView, ctx: &RenderContext<'_>) -> NativeLeaf {
     build_surface(view, "GPU content", ctx)
 }
 
-pub fn realize_external_frame_view(
-    view: ExternalFrameView,
-    ctx: &RenderContext<'_>,
-) -> NativeLeaf {
+pub fn realize_external_frame_view(view: ExternalFrameView, ctx: &RenderContext<'_>) -> NativeLeaf {
     build_surface(view, "external frame", ctx)
 }
 
@@ -2902,7 +2899,7 @@ pub fn realize_scene_view(
     build_surface(scene::Scene::new(view, engines), "scene", ctx)
 }
 
-/// The leaf construction the dispatcher's GPU-surface claims share —
+/// The leaf construction the GPU-surface realizations share —
 /// `GpuView`, `ExternalFrameView`, and `SceneView`. Without a GPU
 /// runtime the view (named `kind` in the report) mounts empty instead.
 fn build_surface<V: HostedView + 'static>(

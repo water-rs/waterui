@@ -139,10 +139,13 @@ impl SubView for ImageSubView {
     }
 }
 
-/// Installs the `image` handler on the dispatcher: `Native<SystemIcon>` maps
+/// The `image` realization: `Native<SystemIcon>` maps
 /// to a kit image view drawing the named `SF Symbol`, tinted by the theme
 /// foreground and sized by the theme body font.
-#[expect(clippy::needless_pass_by_value, reason = "NativeBackend hands each payload by value")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "NativeBackend hands each payload by value"
+)]
 pub fn realize_system_icon(config: SystemIcon, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let view = ImageView::new(mtm);

@@ -242,7 +242,7 @@ impl SubView for ClipShapeSubView {
     }
 }
 
-/// Installs the `clip_shape` handler on the dispatcher:
+/// The `clip_shape` realization:
 /// `Metadata<ClipShape>` maps to a transparent container whose backing
 /// layer masks its bounds to the shape.
 pub fn realize_clip_shape_metadata(

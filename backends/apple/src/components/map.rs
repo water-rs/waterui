@@ -140,10 +140,13 @@ impl SubView for MapSubView {
     }
 }
 
-/// Installs the `map` handler on the dispatcher: `Native<MapConfig>` maps to
+/// The `map` realization: `Native<MapConfig>` maps to
 /// a kit `MKMapView` with reactive region, annotations, supplied location and
 /// load status, plus the one-shot style and visibility flags.
-#[expect(clippy::needless_pass_by_value, reason = "NativeBackend hands each payload by value")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "NativeBackend hands each payload by value"
+)]
 pub fn realize_map_config(config: MapConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     let map = MapView::new(ctx.mtm());
     map.set_style(kit_style(config.style()));

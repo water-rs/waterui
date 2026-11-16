@@ -84,7 +84,7 @@ impl SubView for OnKeyPressSubView {
     }
 }
 
-/// Installs the `on_key_press` handler on the dispatcher.
+/// The `on_key_press` realization.
 pub fn realize_on_key_press_metadata(
     metadata: Metadata<OnKeyPress>,
     ctx: &RenderContext<'_>,

@@ -99,7 +99,7 @@ fn fire(state: &OnEventState, event: Event, location: Option<Point>) {
     state.handler.borrow_mut().handle(&env);
 }
 
-/// Installs the `on_event` handler on the dispatcher.
+/// The `on_event` realization.
 pub fn realize_on_event_metadata(
     metadata: Metadata<OnEvent>,
     ctx: &RenderContext<'_>,

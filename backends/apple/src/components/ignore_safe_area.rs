@@ -81,7 +81,7 @@ impl SubView for IgnoreSubView {
     }
 }
 
-/// Installs the `ignore_safe_area` handler on the dispatcher:
+/// The `ignore_safe_area` realization:
 /// `Metadata<IgnoreSafeArea>` maps to a transparent container that manages
 /// its safe area and erases the named edges for its subtree.
 pub fn realize_ignore_safe_area_metadata(

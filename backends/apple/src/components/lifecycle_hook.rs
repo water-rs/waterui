@@ -137,7 +137,7 @@ impl SubView for LifecycleSubView {
     }
 }
 
-/// Installs the `lifecycle_hook` handler on the dispatcher:
+/// The `lifecycle_hook` realization:
 /// `Metadata<LifeCycleHook>` maps to a transparent container that fires its
 /// one-shot handler on the matching window-membership change.
 pub fn realize_life_cycle_hook_metadata(

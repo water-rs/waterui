@@ -18,7 +18,7 @@ use waterui_structural_transition::TransitionSpec;
 use crate::contract::{NativeLeaf, RenderContext};
 use crate::transition::{SnapshotDemand, TransitionClaim};
 
-/// Installs the `transition` handler on the dispatcher:
+/// The `transition` realization:
 /// `Metadata<TransitionSpec>` maps to the content's own leaf carrying
 /// the declaration — or, when the content is a conditional, to the
 /// adopted `Dynamic` leaf.

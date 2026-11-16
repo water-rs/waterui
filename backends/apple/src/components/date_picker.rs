@@ -461,13 +461,13 @@ impl SubView for DatePickerSubView {
     }
 }
 
-/// Installs the `date_picker` handler on the dispatcher:
+/// The `date_picker` realization:
 /// `Native<DatePickerConfig>` maps to the label/control row.
-#[expect(clippy::needless_pass_by_value, reason = "NativeBackend hands each payload by value")]
-pub fn realize_date_picker_config(
-    config: DatePickerConfig,
-    ctx: &RenderContext<'_>,
-) -> NativeLeaf {
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "NativeBackend hands each payload by value"
+)]
+pub fn realize_date_picker_config(config: DatePickerConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     let host_view: &PlatformView = &host;

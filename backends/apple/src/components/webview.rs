@@ -857,13 +857,10 @@ impl SubView for WebViewSubView {
     }
 }
 
-/// Installs the `webview` handler: `Native<WebView>` mounts the kit view the
+/// The `webview` realization: `Native<WebView>` mounts the kit view the
 /// handle owns, keeping the `WebView` — and with it the event, navigation
 /// and signal subscriptions — alive for the leaf's life.
-pub fn realize_web_view(
-    webview: waterui_webview::WebView,
-    ctx: &RenderContext<'_>,
-) -> NativeLeaf {
+pub fn realize_web_view(webview: waterui_webview::WebView, ctx: &RenderContext<'_>) -> NativeLeaf {
     // The controller failed to open this view and `waterui-webview`
     // already reported it: mount an empty host where the page would be.
     if webview.handle().is_unavailable() {

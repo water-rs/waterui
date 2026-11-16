@@ -106,11 +106,8 @@ const fn kit_style(style: CursorStyle) -> appkit::Cursor {
     }
 }
 
-/// Installs the `cursor` handler on the dispatcher.
-pub fn realize_cursor_metadata(
-    metadata: Metadata<Cursor>,
-    ctx: &RenderContext<'_>,
-) -> NativeLeaf {
+/// The `cursor` realization.
+pub fn realize_cursor_metadata(metadata: Metadata<Cursor>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     let mounted = ctx.render(metadata.content).mount(&host);

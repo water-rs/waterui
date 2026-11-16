@@ -167,8 +167,11 @@ fn drag_items(
     }
 }
 
-/// Installs the `draggable` handler on the dispatcher.
-#[expect(clippy::too_many_lines, reason = "one component's whole realization, as the handler it replaces")]
+/// The `draggable` realization.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one component's whole realization, as the handler it replaces"
+)]
 pub fn realize_draggable_metadata(
     metadata: Metadata<Draggable>,
     ctx: &RenderContext<'_>,

@@ -208,10 +208,13 @@ fn rebuild(view: &HostView, layer: &ShapeLayer, shape: &ResolvedShape) {
     );
 }
 
-/// Installs the `resolved_shape` handler: the fill color is a `Computed`
+/// The `resolved_shape` realization: the fill color is a `Computed`
 /// watched imperatively; every change both repaints and invalidates any
 /// enclosing captured rendering.
-#[expect(clippy::needless_pass_by_value, reason = "NativeBackend hands each payload by value")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "NativeBackend hands each payload by value"
+)]
 pub fn realize_resolved_shape(shape: ResolvedShape, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let view = HostView::new(mtm, cocoa_ui::Rect::ZERO);

@@ -254,7 +254,7 @@ fn accessibility_value(formatted: Option<&String>, value: i32) -> String {
     formatted.map_or_else(|| value.to_string(), Clone::clone)
 }
 
-/// Installs the `stepper` handler on the dispatcher: `Native<StepperConfig>`
+/// The `stepper` realization: `Native<StepperConfig>`
 /// maps to a container view with the platform stepper, the label child and,
 /// when a `value_formatter` is present, a text child showing the formatted
 /// value.

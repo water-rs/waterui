@@ -251,7 +251,7 @@ pub fn realize_accessibility_state_signal_metadata(
     render_state(metadata.content, metadata.value.state().clone(), ctx)
 }
 
-/// Installs the accessibility metadata handlers on the dispatcher.
+/// The accessibility metadata realizations.
 pub fn realize_accessibility_label_metadata(
     metadata: Metadata<AccessibilityLabel>,
     ctx: &RenderContext<'_>,
@@ -330,6 +330,8 @@ pub fn realize_selected_metadata(
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let Selected(selected) = metadata.value;
-    let state = SignalExt::map(&selected, |selected| AccessibilityState::new().selected(selected));
+    let state = SignalExt::map(&selected, |selected| {
+        AccessibilityState::new().selected(selected)
+    });
     render_state(metadata.content, Computed::new(state), ctx)
 }

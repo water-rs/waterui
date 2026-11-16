@@ -47,7 +47,7 @@ impl CalendarSelection for Binding<Vec<Date>> {
 /// Renders the config through the shared calendar leaf.
 #[expect(
     clippy::needless_pass_by_value,
-    reason = "the dispatcher hands the config by value"
+    reason = "NativeBackend hands each payload by value"
 )]
 fn render(config: MultiDatePickerConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     render_calendar(
@@ -66,7 +66,7 @@ fn render(config: MultiDatePickerConfig, ctx: &RenderContext<'_>) -> NativeLeaf 
     )
 }
 
-/// Installs the `multi_date_picker` handler: the composer claim plus the
+/// The `multi_date_picker` realization: the composer claim plus the
 /// `Native<MultiDatePickerConfig>` claim for hook-produced payloads.
 /// `Native<MultiDatePickerConfig>`: the label resolves, then the platform
 /// picker renders.

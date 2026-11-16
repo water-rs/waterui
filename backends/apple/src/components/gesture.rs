@@ -612,7 +612,7 @@ fn activates_on_press(gesture: &Gesture) -> bool {
     }
 }
 
-/// Installs the `gesture` handler on the dispatcher.
+/// The `gesture` realization.
 pub fn realize_gesture_observer_metadata(
     metadata: Metadata<GestureObserver>,
     ctx: &RenderContext<'_>,

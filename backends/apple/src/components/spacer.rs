@@ -60,9 +60,12 @@ impl SubView for SpacerSubView {
     }
 }
 
-/// Installs the `spacer` handler on the dispatcher: `Native<Spacer>` maps to a
+/// The `spacer` realization: `Native<Spacer>` maps to a
 /// transparent host view whose layout face is the stack's flexible gap.
-#[expect(clippy::needless_pass_by_value, reason = "NativeBackend hands each payload by value")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "NativeBackend hands each payload by value"
+)]
 pub fn realize_spacer(spacer: Spacer, ctx: &RenderContext<'_>) -> NativeLeaf {
     let view = HostView::new(ctx.mtm(), cocoa_ui::Rect::ZERO);
     NativeLeaf::new(

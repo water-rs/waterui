@@ -342,10 +342,13 @@ fn bind_value_well(
     });
 }
 
-/// Installs the `color_picker` handler on the dispatcher:
+/// The `color_picker` realization:
 /// `Native<ColorPickerConfig>` maps to a container view with the label
 /// child and the platform color well.
-#[expect(clippy::needless_pass_by_value, reason = "NativeBackend hands each payload by value")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "NativeBackend hands each payload by value"
+)]
 pub fn realize_color_picker_config(
     config: ColorPickerConfig,
     ctx: &RenderContext<'_>,

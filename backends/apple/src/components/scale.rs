@@ -118,12 +118,12 @@ impl SubView for ScaleSubView {
     }
 }
 
-/// Installs the `scale` handler on the dispatcher.
-#[expect(clippy::too_many_lines, reason = "one component's whole realization, as the handler it replaces")]
-pub fn realize_scale_metadata(
-    metadata: Metadata<Scale>,
-    ctx: &RenderContext<'_>,
-) -> NativeLeaf {
+/// The `scale` realization.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one component's whole realization, as the handler it replaces"
+)]
+pub fn realize_scale_metadata(metadata: Metadata<Scale>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let scale = metadata.value;
     let anchor = Point::new(f64::from(scale.anchor().x), f64::from(scale.anchor().y));
 
