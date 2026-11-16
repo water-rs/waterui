@@ -4782,6 +4782,7 @@ dependencies = [
  "waterui-map",
  "waterui-navigation",
  "waterui-shape",
+ "waterui-structural-transition",
  "waterui-text",
  "waterui-url",
  "waterui-video",
@@ -12829,6 +12830,7 @@ dependencies = [
  "waterui-map",
  "waterui-meta",
  "waterui-preview-protocol",
+ "waterui-structural-transition",
  "waterui-video",
  "waterui-webview",
  "wgpu-hal",
@@ -13436,6 +13438,7 @@ dependencies = [
  "waterui-navigation",
  "waterui-particle",
  "waterui-shape",
+ "waterui-structural-transition",
  "waterui-svg",
  "waterui-text",
  "waterui-ts",
@@ -13691,6 +13694,13 @@ dependencies = [
  "nami",
  "waterui-core",
  "waterui-graphics",
+]
+
+[[package]]
+name = "waterui-structural-transition"
+version = "0.5.1"
+dependencies = [
+ "waterui-core",
 ]
 
 [[package]]

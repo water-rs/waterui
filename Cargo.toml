@@ -271,6 +271,7 @@ waterui-controls = { version = "0.5.1", path = "components/foundation/controls",
 waterui-color = { version = "0.5.1", path = "components/foundation/color" }
 waterui-graphics = { version = "0.5.1", path = "components/visual/graphics", default-features = false }
 waterui-shape = { version = "0.5.1", path = "components/foundation/shape", default-features = false }
+waterui-structural-transition = { version = "0.5.1", path = "components/foundation/transition" }
 waterui-svg = "0.4.0"
 waterui-math = "0.2.0"
 waterui-layout = { version = "0.5.1", path = "components/foundation/layout" }

@@ -2130,7 +2130,7 @@ fn moving_page_transition<E: crate::text::TextEngine>(
     stack_env: &Environment,
     identity: u64,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> Option<waterui_core::transition::TransitionSpec> {
+) -> Option<waterui_structural_transition::TransitionSpec> {
     let env = presented_page_env(stack_env, identity, theme);
     if identity == ROOT_NAVIGATION_IDENTITY {
         let mut state = state.borrow_mut();
