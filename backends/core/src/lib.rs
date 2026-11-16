@@ -46,6 +46,8 @@
 //! - Layout traits: [`SubView`], [`StretchAxis`], [`Layout`]
 //! - View types: [`AnyView`], [`View`], [`Environment`]
 
+extern crate alloc;
+
 pub mod dispatcher;
 pub mod frame_signals;
 #[cfg(feature = "gestures")]
@@ -53,12 +55,14 @@ pub mod gesture;
 pub mod input;
 #[cfg(feature = "log")]
 pub mod log;
+pub mod native_backend;
 #[cfg(feature = "overlay")]
 pub mod overlay;
 pub mod scroll;
 pub mod time;
 
 pub use dispatcher::ViewDispatcher;
+pub use native_backend::{NativeBackend, Realize};
 
 // Re-export common types from waterui-core
 pub use waterui_core::{AnyView, Environment, Native, View};

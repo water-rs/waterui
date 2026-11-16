@@ -4719,6 +4719,7 @@ dependencies = [
  "futures",
  "futures-core",
  "getrandom 0.4.3",
+ "gungraun",
  "hydrolysis",
  "icu_locale",
  "icu_properties",
@@ -12910,6 +12911,7 @@ dependencies = [
  "waterui",
  "waterui-core",
  "waterui-layout",
+ "waterui-structural-transition",
  "web-time",
 ]
 
@@ -13431,6 +13433,7 @@ dependencies = [
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",
+ "waterui-map",
  "waterui-math",
  "waterui-media",
  "waterui-meta",

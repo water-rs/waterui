@@ -161,7 +161,7 @@ view needs `inspector-signals` (implies `inspector`).
 
 Component features (`webview`, `flow-markdown`, `canvas`, `chart`, `barcode`, `particle`, …)
 re-export their crate as a `waterui` module (`waterui::chart`, `waterui::barcode`, …) and are
-covered in `references/components.md`, along with `waterui-map`, which is a crate of its own.
+covered in `references/components.md`; `map` re-exports `waterui-map` as `waterui::map`.
 
 ## `Water.toml`
 

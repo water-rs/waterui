@@ -414,12 +414,33 @@ waterui-webview = { workspace = true, features = ["conformance"] }
 # `complex-scripts` on the parley dep, no warning may be emitted at all.
 icu_provider = { version = "2.3", features = ["logging"] }
 tracing-log = "0.2"
-# Drives the text-measure bench (`benches/text_measure.rs`).
+# Drives the text-measure and dispatch benches.
 divan = "0.1"
+# Counts the dispatch bench's instructions (`benches/dispatch/ir.rs`); its
+# Callgrind runner does not compile for wasm32, and the version matches
+# `cherenkov-cpu`'s so one `gungraun-runner` serves both.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+gungraun = "=0.20.0"
+
 # The text-measure bench rides the real layout path; `harness = false` hands
 # the binary's `main` to divan.
 [[bench]]
 name = "text_measure"
+harness = false
+required-features = ["testing"]
+
+# The dispatch workloads (`benches/dispatch/workloads.rs`): wall-clock time
+# and allocations under divan here, instruction counts under gungraun in
+# `dispatch_ir`.
+[[bench]]
+name = "dispatch"
+path = "benches/dispatch/main.rs"
+harness = false
+required-features = ["testing"]
+
+[[bench]]
+name = "dispatch_ir"
+path = "benches/dispatch/ir.rs"
 harness = false
 required-features = ["testing"]
 
