@@ -23,9 +23,9 @@ use waterui_core::layout::{
 };
 
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
@@ -248,73 +248,71 @@ impl SubView for ShadowSubView {
     }
 }
 
-/// Installs the `shadow` handler on the dispatcher.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<Shadow>>(|metadata, ctx| {
-        let shadow = metadata.value;
+/// The `shadow` realization.
+pub fn realize_shadow_metadata(metadata: Metadata<Shadow>, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let shadow = metadata.value;
 
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        layer::ensure_layer(&host);
-        let mounted = ctx.render(metadata.content).mount(&host);
-        crate::primary_content::forward(&host, mounted.view());
-        view::set_translates_autoresizing(mounted.view(), true);
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    layer::ensure_layer(&host);
+    let mounted = ctx.render(metadata.content).mount(&host);
+    crate::primary_content::forward(&host, mounted.view());
+    view::set_translates_autoresizing(mounted.view(), true);
 
-        // `configureShadow`: offset and radius on the host's layer; the
-        // layer must not mask the shadow it draws.
-        if let Some(host_layer) = layer::layer_of(&host) {
-            layer::set_shadow(
-                &host_layer,
-                Size::new(f64::from(shadow.offset().x), f64::from(shadow.offset().y)),
-                f64::from(shadow.radius()),
-            );
-            layer::set_masks_to_bounds(&host_layer, false);
-        }
-
-        // The silhouette: `WuiShapePath.commands(from:)`'s pair — the
-        // structured kind first, the unit-space commands as the custom-path
-        // fallback.
-        let silhouette: &ClipShape = shadow.silhouette();
-        let kind = shape_kind(silhouette.kind());
-        let commands = shape_commands(silhouette.commands());
-
-        let state = Rc::new(ShadowState { child: mounted });
-
-        // The content fills the wrapper; the shadow path follows its bounds.
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |host_view| {
-                view::set_frame(state.child.view(), view::bounds(host_view));
-                update_shadow_path(host_view, kind, &commands);
-            }
-        });
-
-        // `setPlacementProposal`: the proposal selected for this wrapper is
-        // the proposal its content was negotiated with.
-        let sink_guard = proposal::register_sink(&host, {
-            let state = Rc::clone(&state);
-            move |selected| {
-                proposal::deliver(state.child.view(), selected);
-            }
-        });
-
-        let mut leaf = NativeLeaf::new(
-            &*host,
-            ShadowSubView {
-                state: Rc::clone(&state),
-            },
+    // `configureShadow`: offset and radius on the host's layer; the
+    // layer must not mask the shadow it draws.
+    if let Some(host_layer) = layer::layer_of(&host) {
+        layer::set_shadow(
+            &host_layer,
+            Size::new(f64::from(shadow.offset().x), f64::from(shadow.offset().y)),
+            f64::from(shadow.radius()),
         );
-        leaf.keep(sink_guard);
+        layer::set_masks_to_bounds(&host_layer, false);
+    }
 
-        let resolved = shadow.color().resolve(ctx.env());
-        leaf.bind(&resolved, {
-            move |color| {
-                apply_shadow_color(&color, &host);
-            }
-        });
-        leaf.keep(state);
-        leaf
+    // The silhouette: `WuiShapePath.commands(from:)`'s pair — the
+    // structured kind first, the unit-space commands as the custom-path
+    // fallback.
+    let silhouette: &ClipShape = shadow.silhouette();
+    let kind = shape_kind(silhouette.kind());
+    let commands = shape_commands(silhouette.commands());
+
+    let state = Rc::new(ShadowState { child: mounted });
+
+    // The content fills the wrapper; the shadow path follows its bounds.
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |host_view| {
+            view::set_frame(state.child.view(), view::bounds(host_view));
+            update_shadow_path(host_view, kind, &commands);
+        }
     });
+
+    // `setPlacementProposal`: the proposal selected for this wrapper is
+    // the proposal its content was negotiated with.
+    let sink_guard = proposal::register_sink(&host, {
+        let state = Rc::clone(&state);
+        move |selected| {
+            proposal::deliver(state.child.view(), selected);
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        &*host,
+        ShadowSubView {
+            state: Rc::clone(&state),
+        },
+    );
+    leaf.keep(sink_guard);
+
+    let resolved = shadow.color().resolve(ctx.env());
+    leaf.bind(&resolved, {
+        move |color| {
+            apply_shadow_color(&color, &host);
+        }
+    });
+    leaf.keep(state);
+    leaf
 }
 
 #[cfg(test)]

@@ -22,24 +22,14 @@
 //! a claim; `remove` performs the retirement sequence of §1.5 and hands
 //! back the ghost the site holds until `on_complete` fires.
 
-#[cfg(feature = "transition_sites")]
 pub mod clock;
-#[cfg(feature = "transition_sites")]
 pub mod ghost;
-#[cfg(feature = "transition_sites")]
 pub mod host;
-#[cfg(feature = "transition_sites")]
 pub mod live;
-#[cfg(all(
-    feature = "transition_sites",
-    any(feature = "applied_filter", feature = "view_effect")
-))]
+#[cfg(any(feature = "applied_filter", feature = "view_effect"))]
 pub mod pixel;
-#[cfg(feature = "transition_sites")]
 pub mod property;
-#[cfg(feature = "transition_sites")]
 pub mod retire;
-#[cfg(feature = "transition_sites")]
 pub mod slots;
 
 use waterui::reactive::Signal;

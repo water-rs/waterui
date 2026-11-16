@@ -23,12 +23,12 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-#[cfg(macos_layer_transform)]
+#[cfg(target_os = "macos")]
 use crate::components::layer_transform;
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
@@ -118,163 +118,164 @@ impl SubView for ScaleSubView {
     }
 }
 
-/// Installs the `scale` handler on the dispatcher.
-#[allow(clippy::too_many_lines)]
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<Scale>>(|metadata, ctx| {
-        let scale = metadata.value;
-        let anchor = Point::new(f64::from(scale.anchor().x), f64::from(scale.anchor().y));
+/// The `scale` realization.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one component's whole realization, as the handler it replaces"
+)]
+pub fn realize_scale_metadata(metadata: Metadata<Scale>, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let scale = metadata.value;
+    let anchor = Point::new(f64::from(scale.anchor().x), f64::from(scale.anchor().y));
 
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let mounted = ctx.render(metadata.content).mount(&host);
-        crate::primary_content::forward(&host, mounted.view());
-        view::set_translates_autoresizing(mounted.view(), true);
-        // The transform needs a layer-backed content on `AppKit`; `UIKit`
-        // views always have one.
-        cocoa_ui::layer::ensure_layer(&host);
-        cocoa_ui::layer::ensure_layer(mounted.view());
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let mounted = ctx.render(metadata.content).mount(&host);
+    crate::primary_content::forward(&host, mounted.view());
+    view::set_translates_autoresizing(mounted.view(), true);
+    // The transform needs a layer-backed content on `AppKit`; `UIKit`
+    // views always have one.
+    cocoa_ui::layer::ensure_layer(&host);
+    cocoa_ui::layer::ensure_layer(mounted.view());
 
-        let state = Rc::new(RefCell::new(ScaleState {
-            child: mounted,
-            x: 1.0,
-            y: 1.0,
-        }));
+    let state = Rc::new(RefCell::new(ScaleState {
+        child: mounted,
+        x: 1.0,
+        y: 1.0,
+    }));
 
-        // The content always fills the wrapper before the transform moves
-        // it visually.
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |host_view| {
-                let state = state.borrow();
-                let bounds = view::bounds(host_view);
-                #[cfg(target_os = "ios")]
-                {
-                    if let Some(layer) = cocoa_ui::layer::layer_of(state.child.view()) {
-                        cocoa_ui::layer::set_anchor_point(&layer, anchor);
-                    }
-                    view::set_bounds(
-                        state.child.view(),
-                        Rect::new(0.0, 0.0, bounds.size.width, bounds.size.height),
-                    );
-                    view::set_center(
-                        state.child.view(),
-                        Point::new(bounds.size.width * anchor.x, bounds.size.height * anchor.y),
-                    );
+    // The content always fills the wrapper before the transform moves
+    // it visually.
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |host_view| {
+            let state = state.borrow();
+            let bounds = view::bounds(host_view);
+            #[cfg(target_os = "ios")]
+            {
+                if let Some(layer) = cocoa_ui::layer::layer_of(state.child.view()) {
+                    cocoa_ui::layer::set_anchor_point(&layer, anchor);
                 }
-                #[cfg(target_os = "macos")]
-                {
-                    // The content fills the wrapper; the transform lives
-                    // on the wrapper layer's `sublayerTransform`, which
-                    // the anchor math ties to the bounds size — rewrite
-                    // it on every pass.
-                    view::set_frame(state.child.view(), bounds);
-                    apply_transform(&state, host_view, anchor);
-                }
+                view::set_bounds(
+                    state.child.view(),
+                    Rect::new(0.0, 0.0, bounds.size.width, bounds.size.height),
+                );
+                view::set_center(
+                    state.child.view(),
+                    Point::new(bounds.size.width * anchor.x, bounds.size.height * anchor.y),
+                );
             }
-        });
-
-        // `setPlacementProposal`: the proposal selected for this wrapper is
-        // the proposal its content was negotiated with.
-        let sink_guard = proposal::register_sink(&host, {
-            let state = Rc::clone(&state);
-            move |selected| {
-                let state = state.borrow();
-                proposal::deliver(state.child.view(), selected);
+            #[cfg(target_os = "macos")]
+            {
+                // The content fills the wrapper; the transform lives
+                // on the wrapper layer's `sublayerTransform`, which
+                // the anchor math ties to the bounds size — rewrite
+                // it on every pass.
+                view::set_frame(state.child.view(), bounds);
+                apply_transform(&state, host_view, anchor);
             }
-        });
-
-        let mut leaf = NativeLeaf::new(
-            &*host,
-            ScaleSubView {
-                state: Rc::clone(&state),
-            },
-        );
-        leaf.keep(sink_guard);
-
-        let x = scale.x();
-        let y = scale.y();
-        {
-            let mut borrowed = state.borrow_mut();
-            borrowed.x = x.snapshot();
-            borrowed.y = y.snapshot();
-            apply_transform(&borrowed, &host, anchor);
         }
-
-        leaf.watch(x, {
-            let state = Rc::clone(&state);
-            let host = host.clone();
-            move |wctx| {
-                state.borrow_mut().x = *wctx.value();
-                #[cfg(target_os = "ios")]
-                crate::animation::with_platform_animation(wctx.metadata(), {
-                    let state = Rc::clone(&state);
-                    let host = host.clone();
-                    move || {
-                        let borrowed = state.borrow();
-                        apply_transform(&borrowed, &host, anchor);
-                    }
-                });
-                #[cfg(target_os = "macos")]
-                {
-                    let borrowed = state.borrow();
-                    let layer = layer_transform::wrapper_transform_layer(&host);
-                    let transform = layer_transform::anchored(
-                        cocoa_ui::objc2_quartz_core::CATransform3D::new_scale(
-                            f64::from(borrowed.x),
-                            f64::from(borrowed.y),
-                            1.0,
-                        ),
-                        anchor,
-                        view::bounds(&host).size,
-                    );
-                    layer_transform::animate_sublayer_transform(
-                        &layer,
-                        transform,
-                        "wuiScale",
-                        wctx.metadata(),
-                    );
-                    view::invalidate_captured_rendering(&host);
-                }
-            }
-        });
-        leaf.watch(y, {
-            let state = Rc::clone(&state);
-            move |wctx| {
-                state.borrow_mut().y = *wctx.value();
-                #[cfg(target_os = "ios")]
-                crate::animation::with_platform_animation(wctx.metadata(), {
-                    let state = Rc::clone(&state);
-                    let host = host.clone();
-                    move || {
-                        let borrowed = state.borrow();
-                        apply_transform(&borrowed, &host, anchor);
-                    }
-                });
-                #[cfg(target_os = "macos")]
-                {
-                    let borrowed = state.borrow();
-                    let layer = layer_transform::wrapper_transform_layer(&host);
-                    let transform = layer_transform::anchored(
-                        cocoa_ui::objc2_quartz_core::CATransform3D::new_scale(
-                            f64::from(borrowed.x),
-                            f64::from(borrowed.y),
-                            1.0,
-                        ),
-                        anchor,
-                        view::bounds(&host).size,
-                    );
-                    layer_transform::animate_sublayer_transform(
-                        &layer,
-                        transform,
-                        "wuiScale",
-                        wctx.metadata(),
-                    );
-                    view::invalidate_captured_rendering(&host);
-                }
-            }
-        });
-        leaf.keep(state);
-        leaf
     });
+
+    // `setPlacementProposal`: the proposal selected for this wrapper is
+    // the proposal its content was negotiated with.
+    let sink_guard = proposal::register_sink(&host, {
+        let state = Rc::clone(&state);
+        move |selected| {
+            let state = state.borrow();
+            proposal::deliver(state.child.view(), selected);
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        &*host,
+        ScaleSubView {
+            state: Rc::clone(&state),
+        },
+    );
+    leaf.keep(sink_guard);
+
+    let x = scale.x();
+    let y = scale.y();
+    {
+        let mut borrowed = state.borrow_mut();
+        borrowed.x = x.snapshot();
+        borrowed.y = y.snapshot();
+        apply_transform(&borrowed, &host, anchor);
+    }
+
+    leaf.watch(x, {
+        let state = Rc::clone(&state);
+        let host = host.clone();
+        move |wctx| {
+            state.borrow_mut().x = *wctx.value();
+            #[cfg(target_os = "ios")]
+            crate::animation::with_platform_animation(wctx.metadata(), {
+                let state = Rc::clone(&state);
+                let host = host.clone();
+                move || {
+                    let borrowed = state.borrow();
+                    apply_transform(&borrowed, &host, anchor);
+                }
+            });
+            #[cfg(target_os = "macos")]
+            {
+                let borrowed = state.borrow();
+                let layer = layer_transform::wrapper_transform_layer(&host);
+                let transform = layer_transform::anchored(
+                    cocoa_ui::objc2_quartz_core::CATransform3D::new_scale(
+                        f64::from(borrowed.x),
+                        f64::from(borrowed.y),
+                        1.0,
+                    ),
+                    anchor,
+                    view::bounds(&host).size,
+                );
+                layer_transform::animate_sublayer_transform(
+                    &layer,
+                    transform,
+                    "wuiScale",
+                    wctx.metadata(),
+                );
+                view::invalidate_captured_rendering(&host);
+            }
+        }
+    });
+    leaf.watch(y, {
+        let state = Rc::clone(&state);
+        move |wctx| {
+            state.borrow_mut().y = *wctx.value();
+            #[cfg(target_os = "ios")]
+            crate::animation::with_platform_animation(wctx.metadata(), {
+                let state = Rc::clone(&state);
+                let host = host.clone();
+                move || {
+                    let borrowed = state.borrow();
+                    apply_transform(&borrowed, &host, anchor);
+                }
+            });
+            #[cfg(target_os = "macos")]
+            {
+                let borrowed = state.borrow();
+                let layer = layer_transform::wrapper_transform_layer(&host);
+                let transform = layer_transform::anchored(
+                    cocoa_ui::objc2_quartz_core::CATransform3D::new_scale(
+                        f64::from(borrowed.x),
+                        f64::from(borrowed.y),
+                        1.0,
+                    ),
+                    anchor,
+                    view::bounds(&host).size,
+                );
+                layer_transform::animate_sublayer_transform(
+                    &layer,
+                    transform,
+                    "wuiScale",
+                    wctx.metadata(),
+                );
+                view::invalidate_captured_rendering(&host);
+            }
+        }
+    });
+    leaf.keep(state);
+    leaf
 }

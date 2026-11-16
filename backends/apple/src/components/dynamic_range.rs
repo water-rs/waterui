@@ -22,9 +22,9 @@ use waterui_core::layout::{
 };
 
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
@@ -133,14 +133,19 @@ fn dynamic_range_leaf(
     leaf
 }
 
-/// Installs the two dynamic-range handlers on the dispatcher:
+/// The two dynamic-range realizations:
 /// `Metadata<StandardDynamicRange>` pins the subtree to SDR,
 /// `Metadata<HighDynamicRange>` pins it to HDR.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<StandardDynamicRange>>(|metadata, ctx| {
-        dynamic_range_leaf(DynamicRange::Standard, metadata.content, ctx)
-    });
-    dispatcher.register_view::<Metadata<HighDynamicRange>>(|metadata, ctx| {
-        dynamic_range_leaf(DynamicRange::High, metadata.content, ctx)
-    });
+pub fn realize_standard_dynamic_range_metadata(
+    metadata: Metadata<StandardDynamicRange>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    dynamic_range_leaf(DynamicRange::Standard, metadata.content, ctx)
+}
+
+pub fn realize_high_dynamic_range_metadata(
+    metadata: Metadata<HighDynamicRange>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    dynamic_range_leaf(DynamicRange::High, metadata.content, ctx)
 }

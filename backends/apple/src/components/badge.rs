@@ -25,7 +25,6 @@ use waterui_core::layout::{
 };
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
-use crate::dispatch::Dispatcher;
 
 #[cfg(target_os = "macos")]
 mod platform {
@@ -258,10 +257,10 @@ fn render(config: BadgeConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     leaf
 }
 
-/// Installs the `badge` handler on the dispatcher: `Native<BadgeConfig>`
+/// The `badge` realization: `Native<BadgeConfig>`
 /// maps to the overlay container.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<BadgeConfig>(render);
+pub fn realize_badge_config(value: BadgeConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+    render(value, ctx)
 }
 
 #[cfg(test)]

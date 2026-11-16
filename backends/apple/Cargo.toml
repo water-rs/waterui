@@ -18,149 +18,63 @@ workspace = true
 # Component ports are feature-gated so unused ones leave no code or
 # dependency in the artifact; the default is everything ported so far.
 default = [
-    "anchored_overlay",
     "applied_filter",
-    "accessibility_identifier",
-    "accessibility_metadata",
-    "badge",
-    "button",
     "calendar",
     "canvas",
-    "clip_shape",
     "gpu_surface",
     "color_picker",
-    "container",
     "context_menu",
-    "cursor",
     "date_picker",
     "dialog",
-    "draggable",
-    "drop_destination",
-    "dynamic",
-    "dynamic_range",
-    "fixed_container",
-    "focused",
-    "glass_background",
-    "ignore_safe_area",
-    "hittable",
-    "gesture",
-    "image",
-    "layout_priority",
-    "lifecycle_hook",
-    "material_background",
     "menu",
-    "offset",
-    "rotation",
-    "scale",
-    "border",
-    "shadow",
-    "opacity",
     "list",
     "multi_date_picker",
     "navigation",
-    "on_event",
-    "on_key_press",
     "picker",
     "picture",
-    "progress",
-    "resolved_color",
-    "resolved_gradient",
-    "resolved_shape",
-    "retain",
-    "scroll",
-    "secure",
     "secure_field",
     "slider",
-    "spacer",
     "stepper",
     "table",
-    "text",
     "text_field",
     "toggle",
     "view_effect",
-    "view_renderer",
-    "env",
 ]
-anchored_overlay = ["transition_sites"]
-accessibility_identifier = []
-applied_filter = ["gpu_surface", "dep:objc2-core-image"]
-accessibility_metadata = []
-badge = []
-border = []
-button = []
+applied_filter = ["gpu_surface", "dep:objc2-core-image", "waterui/effects"]
 calendar = ["waterui/calendar"]
 # The Core Animation realization of `Canvas`.
-canvas = ["dep:block2", "dep:skrifa"]
-clip_shape = []
-gpu_surface = ["dep:block2", "objc2-metal/block2"]
+canvas = ["dep:block2", "dep:skrifa", "waterui/canvas"]
+gpu_surface = ["dep:block2", "objc2-metal/block2", "waterui/gpu"]
 color_picker = ["waterui/color-picker"]
-container = ["transition_sites"]
 context_menu = ["waterui/menu"]
-cursor = []
 date_picker = ["waterui/date-picker"]
 dialog = ["waterui/dialog", "cocoa-ui/dialog"]
-draggable = []
-drop_destination = []
-dynamic = ["transition_sites"]
-dynamic_range = []
-fixed_container = []
-focused = []
-glass_background = []
-ignore_safe_area = []
-hittable = ["waterui/table"]
-gesture = []
-layout_priority = []
-image = []
-lifecycle_hook = []
-list = ["transition_sites", "waterui/list"]
+list = ["waterui/list"]
 # `cocoa-ui/map` brings `MKMapView`, the `MapKit` framework link and the
 # `CoreLocation` types; an app that never uses the leaf gets none of it.
-map = ["dep:waterui-map", "cocoa-ui/map"]
-material_background = []
+map = ["dep:waterui-map", "cocoa-ui/map", "waterui/map"]
 menu = ["waterui/menu"]
-offset = []
-opacity = []
 multi_date_picker = ["waterui/multi-date-picker"]
-navigation = ["menu", "text", "transition_sites", "waterui/navigation"]
-on_event = []
-on_key_press = []
+navigation = ["menu", "waterui/navigation"]
 picker = ["waterui/picker"]
 plain = []
-picture = []
-progress = []
-resolved_color = []
-resolved_gradient = []
-resolved_shape = []
-retain = []
-rotation = []
-scale = []
-scroll = []
-secure = []
+picture = ["waterui/gpu"]
 secure_field = ["waterui/secure-field"]
-shadow = []
 slider = ["waterui/slider"]
-spacer = []
 stepper = ["waterui/stepper"]
-table = []
-text = []
+table = ["list", "waterui/table"]
 text_field = ["waterui/text-field"]
 toggle = ["waterui/toggle"]
-# The structural transition machinery (ghosts, the transition host and
-# its clock) the ports that insert and remove children share; each such
-# port enables it.
-transition_sites = []
-view_effect = ["gpu_surface"]
-view_renderer = []
-webview = ["dep:waterui-webview", "dep:cookie", "cocoa-ui/webview"]
+view_effect = ["gpu_surface", "waterui/effects"]
+webview = ["dep:waterui-webview", "dep:cookie", "cocoa-ui/webview", "waterui/webview"]
 # `media` is the name the `water` CLI's capability mechanism (`waterui-video`
 # in the app's resolved graph) forwards to this crate; it turns on both
 # leaves the media semantic needs.
 media = ["video", "video_player"]
 # `cocoa-ui/avkit` brings the `AVFoundation`/`AVKit` framework links; an app
 # without media compiles and links none of it.
-video = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit"]
-video_player = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit"]
-env = []
+video = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit", "waterui/video"]
+video_player = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit", "waterui/video"]
 
 # The `preview::run` entry `water preview` links — the generated preview
 # package enables it; `water run` never does, so every other Apple app
@@ -190,7 +104,7 @@ native-test = [
 
 
 [dependencies]
-waterui = { workspace = true, features = ["inspector", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
+waterui = { workspace = true, features = ["inspector", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 waterui-core = { workspace = true }
 waterui-structural-transition.workspace = true
 thiserror.workspace = true

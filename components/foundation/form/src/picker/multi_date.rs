@@ -8,7 +8,7 @@ use nami::{Binding, Computed, Signal, SignalExt, signal::IntoComputed};
 use waterui_controls::label::Label;
 use waterui_controls::{IntoLabel, impl_label_style_methods};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
-use waterui_core::{AnyView, Environment, View};
+use waterui_core::{AnyView, Environment, Native, View};
 use waterui_locale::locale_binding;
 
 use crate::calendar::{
@@ -171,7 +171,7 @@ impl View for MultiDatePicker {
         if let Some(hook) = env.get::<Hook<MultiDatePickerConfig>>() {
             AnyView::new(hook.apply(env, config))
         } else {
-            AnyView::new(MultiDatePickerFallback::from_config(config.resolve(env)))
+            AnyView::new(Native::new(config))
         }
     }
 
@@ -180,8 +180,10 @@ impl View for MultiDatePicker {
     }
 }
 
+/// The multi-date picker composed from `WaterUI` views: how a self-drawn
+/// backend realizes [`MultiDatePickerConfig`].
 #[derive(Debug)]
-struct MultiDatePickerFallback {
+pub struct MultiDatePickerGrid {
     label: Label,
     value: Binding<BTreeSet<Date>>,
     range: RangeInclusive<Date>,
@@ -189,8 +191,11 @@ struct MultiDatePickerFallback {
     visible_month: Binding<VisibleMonth>,
 }
 
-impl MultiDatePickerFallback {
-    fn from_config(config: MultiDatePickerConfig) -> Self {
+impl MultiDatePickerGrid {
+    /// The grid for `config`, its label resolved against `env`.
+    #[must_use]
+    pub fn new(config: MultiDatePickerConfig, env: &Environment) -> Self {
+        let config = config.resolve(env);
         let value = Binding::mapping(
             &config.value,
             |dates: Vec<Date>| dates.into_iter().collect::<BTreeSet<_>>(),
@@ -211,7 +216,7 @@ impl MultiDatePickerFallback {
     }
 }
 
-impl View for MultiDatePickerFallback {
+impl View for MultiDatePickerGrid {
     fn body(self, env: &Environment) -> impl View {
         let label = self.label;
         let selection = self.value;

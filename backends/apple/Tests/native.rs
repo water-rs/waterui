@@ -346,9 +346,8 @@ fn trials() -> Vec<Trial> {
         tests.extend(gesture_ax::trials());
         tests.extend(a11y_frame::trials());
         tests.extend(gesture_events::trials());
-        #[cfg(all(feature = "scale", feature = "rotation"))]
         tests.extend(transform_modifiers::trials());
-        #[cfg(all(target_os = "macos", feature = "border"))]
+        #[cfg(target_os = "macos")]
         tests.extend(border_modifier::trials());
         #[cfg(feature = "gpu_surface")]
         {
@@ -16754,7 +16753,7 @@ mod transition {
 /// `AppKit`'s display-time geometry sync does not rewrite (#3504). After
 /// `displayIfNeeded` the anchored matrix must still be there, and a
 /// wrapper resize must recompute it for the new bounds size.
-#[cfg(all(target_os = "macos", feature = "scale", feature = "rotation"))]
+#[cfg(target_os = "macos")]
 mod transform_modifiers {
     use cocoa_ui::objc2::msg_send;
     use cocoa_ui::objc2::rc::autoreleasepool;
@@ -16917,7 +16916,7 @@ mod transform_modifiers {
 /// A `Border` strokes its edge and never clips what it wraps: a rounded
 /// border leaves its host layer unmasked, as Hydrolysis does, so content
 /// that extends past the rounded outline stays visible (#4277).
-#[cfg(all(target_os = "macos", feature = "border"))]
+#[cfg(target_os = "macos")]
 mod border_modifier {
     use cocoa_ui::objc2::rc::autoreleasepool;
     use cocoa_ui::{layer, view};

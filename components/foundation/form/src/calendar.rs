@@ -24,7 +24,7 @@ use waterui_core::interaction::Disabled;
 use waterui_core::layout::StretchAxis;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{
-    AnyView, Environment, Metadata, NativeView, View, env::use_env, views::ForEach,
+    AnyView, Environment, Metadata, Native, NativeView, View, env::use_env, views::ForEach,
 };
 use waterui_graphics::color::{AccentColor, AccentForegroundColor, Color, ForegroundColor};
 use waterui_layout::frame::Frame;
@@ -203,7 +203,7 @@ impl View for Calendar {
         if let Some(hook) = env.get::<Hook<CalendarConfig>>() {
             AnyView::new(hook.apply(env, config))
         } else {
-            AnyView::new(CalendarGrid(config))
+            AnyView::new(Native::new(config))
         }
     }
 
@@ -212,10 +212,18 @@ impl View for Calendar {
     }
 }
 
-/// The calendar composed from `WaterUI` views — the realization every backend
-/// without its own `Calendar` handler renders.
+/// The calendar composed from `WaterUI` views: how a self-drawn backend
+/// realizes [`CalendarConfig`].
 #[derive(Debug)]
-struct CalendarGrid(CalendarConfig);
+pub struct CalendarGrid(CalendarConfig);
+
+impl CalendarGrid {
+    /// The grid for `config`.
+    #[must_use]
+    pub const fn new(config: CalendarConfig) -> Self {
+        Self(config)
+    }
+}
 
 impl View for CalendarGrid {
     fn body(self, env: &Environment) -> impl View {

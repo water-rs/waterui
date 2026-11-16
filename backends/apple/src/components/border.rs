@@ -21,9 +21,9 @@ use waterui_core::layout::{
 };
 
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
@@ -142,103 +142,101 @@ impl SubView for BorderSubView {
     }
 }
 
-/// Installs the `border` handler on the dispatcher.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<Border>>(|metadata, ctx| {
-        let border = metadata.value;
-        let edges = border.get_edges();
-        let width = border.width();
-        let corner_radius = border.get_corner_radius();
-        let draws_all_edges = edges.top && edges.leading && edges.bottom && edges.trailing;
+/// The `border` realization.
+pub fn realize_border_metadata(metadata: Metadata<Border>, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let border = metadata.value;
+    let edges = border.get_edges();
+    let width = border.width();
+    let corner_radius = border.get_corner_radius();
+    let draws_all_edges = edges.top && edges.leading && edges.bottom && edges.trailing;
 
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        layer::ensure_layer(&host);
-        let mounted = ctx.render(metadata.content).mount(&host);
-        crate::primary_content::forward(&host, mounted.view());
-        view::set_translates_autoresizing(mounted.view(), true);
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    layer::ensure_layer(&host);
+    let mounted = ctx.render(metadata.content).mount(&host);
+    crate::primary_content::forward(&host, mounted.view());
+    view::set_translates_autoresizing(mounted.view(), true);
 
-        // `configureBorderLayer`: all four edges go through the layer's own
-        // border properties; a partial edge set draws through a stroke
-        // sublayer.
-        let border_layer = if draws_all_edges {
-            if let Some(host_layer) = layer::layer_of(&host) {
-                layer::set_border(
-                    &host_layer,
+    // `configureBorderLayer`: all four edges go through the layer's own
+    // border properties; a partial edge set draws through a stroke
+    // sublayer.
+    let border_layer = if draws_all_edges {
+        if let Some(host_layer) = layer::layer_of(&host) {
+            layer::set_border(
+                &host_layer,
+                f64::from(width),
+                f64::from(corner_radius),
+                false,
+            );
+        }
+        None
+    } else {
+        let shape = layer::ShapeLayer::new();
+        shape.set_fill(None);
+        shape.set_line_width(f64::from(width));
+        shape.set_line_cap_butt();
+        if let Some(host_layer) = layer::layer_of(&host) {
+            layer::add_sublayer(&host_layer, shape.layer());
+        }
+        Some(shape)
+    };
+
+    let state = Rc::new(BorderState {
+        child: mounted,
+        border_layer,
+    });
+
+    // The content fills the wrapper; the stroke layer covers it and
+    // traces the selected edges.
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |host_view| {
+            let state = &*state;
+            let bounds = view::bounds(host_view);
+            view::set_frame(state.child.view(), bounds);
+            if let Some(shape) = &state.border_layer {
+                shape.set_frame(bounds);
+                let mask = cocoa_ui::path::EdgeMask {
+                    top: edges.top,
+                    leading: edges.leading,
+                    bottom: edges.bottom,
+                    trailing: edges.trailing,
+                };
+                let path = cocoa_ui::path::border_path(
+                    bounds,
                     f64::from(width),
                     f64::from(corner_radius),
-                    false,
+                    mask,
                 );
+                shape.set_path(Some(&path));
             }
-            None
-        } else {
-            let shape = layer::ShapeLayer::new();
-            shape.set_fill(None);
-            shape.set_line_width(f64::from(width));
-            shape.set_line_cap_butt();
-            if let Some(host_layer) = layer::layer_of(&host) {
-                layer::add_sublayer(&host_layer, shape.layer());
-            }
-            Some(shape)
-        };
-
-        let state = Rc::new(BorderState {
-            child: mounted,
-            border_layer,
-        });
-
-        // The content fills the wrapper; the stroke layer covers it and
-        // traces the selected edges.
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |host_view| {
-                let state = &*state;
-                let bounds = view::bounds(host_view);
-                view::set_frame(state.child.view(), bounds);
-                if let Some(shape) = &state.border_layer {
-                    shape.set_frame(bounds);
-                    let mask = cocoa_ui::path::EdgeMask {
-                        top: edges.top,
-                        leading: edges.leading,
-                        bottom: edges.bottom,
-                        trailing: edges.trailing,
-                    };
-                    let path = cocoa_ui::path::border_path(
-                        bounds,
-                        f64::from(width),
-                        f64::from(corner_radius),
-                        mask,
-                    );
-                    shape.set_path(Some(&path));
-                }
-            }
-        });
-
-        // `setPlacementProposal`: the proposal selected for this wrapper is
-        // the proposal its content was negotiated with.
-        let sink_guard = proposal::register_sink(&host, {
-            let state = Rc::clone(&state);
-            move |selected| {
-                proposal::deliver(state.child.view(), selected);
-            }
-        });
-
-        let mut leaf = NativeLeaf::new(
-            &*host,
-            BorderSubView {
-                state: Rc::clone(&state),
-            },
-        );
-        leaf.keep(sink_guard);
-
-        let resolved = border.color().resolve(ctx.env());
-        leaf.bind(&resolved, {
-            let state = Rc::clone(&state);
-            move |color| {
-                apply_border_color(&color, &host, state.border_layer.as_ref());
-            }
-        });
-        leaf.keep(state);
-        leaf
+        }
     });
+
+    // `setPlacementProposal`: the proposal selected for this wrapper is
+    // the proposal its content was negotiated with.
+    let sink_guard = proposal::register_sink(&host, {
+        let state = Rc::clone(&state);
+        move |selected| {
+            proposal::deliver(state.child.view(), selected);
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        &*host,
+        BorderSubView {
+            state: Rc::clone(&state),
+        },
+    );
+    leaf.keep(sink_guard);
+
+    let resolved = border.color().resolve(ctx.env());
+    leaf.bind(&resolved, {
+        let state = Rc::clone(&state);
+        move |color| {
+            apply_border_color(&color, &host, state.border_layer.as_ref());
+        }
+    });
+    leaf.keep(state);
+    leaf
 }

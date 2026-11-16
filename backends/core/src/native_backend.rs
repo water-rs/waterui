@@ -177,6 +177,23 @@ impl<'a, B: NativeBackend> Realize<'a, B> {
     pub fn child<V: View>(backend: &mut B, view: V, env: &Environment, cx: B::Ctx) -> B::Output {
         view.dispatch(&mut Realize::new(backend), env, cx)
     }
+
+    /// Realizes the native payload an [`AnyView`] handed back through a
+    /// [`DynBackend`].
+    pub fn native_dyn(&mut self, native: &mut dyn Any, env: &Environment, cx: B::Ctx) -> B::Output {
+        route_native_dyn(self.backend, native, env, cx)
+    }
+
+    /// Realizes the metadata wrapper an [`AnyView`] handed back through a
+    /// [`DynBackend`].
+    pub fn metadata_dyn(
+        &mut self,
+        metadata: &mut dyn Any,
+        env: &Environment,
+        cx: B::Ctx,
+    ) -> B::Output {
+        route_metadata_dyn(self.backend, metadata, env, cx)
+    }
 }
 
 impl<B: NativeBackend> Backend for Realize<'_, B> {
@@ -312,9 +329,6 @@ native_backend! {
         #[cfg(waterui_feature = "list")]
         /// A list.
         list: waterui::component::list::ListConfig,
-        #[cfg(waterui_feature = "list")]
-        /// One row of a list.
-        list_item: waterui::component::list::ListItem,
         #[cfg(waterui_feature = "table")]
         /// A table.
         table: waterui::component::table::TableConfig,
@@ -412,8 +426,6 @@ native_backend! {
         border: waterui::border::Border,
         /// A clip shape.
         clip_shape: waterui::shape::ClipShape,
-        /// A background.
-        background: waterui::background::Background,
         /// A material background.
         material_background: waterui::background::MaterialBackground,
         /// A glass background.
@@ -440,9 +452,6 @@ native_backend! {
         high_dynamic_range: waterui::metadata::secure::HighDynamicRange,
         /// An anchored overlay.
         anchored_overlay: waterui::metadata::anchored_overlay::AnchoredOverlay,
-        #[cfg(waterui_feature = "menu")]
-        /// A context menu.
-        context_menu: waterui::metadata::context_menu::ContextMenu,
         #[cfg(waterui_feature = "menu")]
         /// A resolved context menu.
         resolved_context_menu: waterui::metadata::context_menu::ResolvedContextMenu,

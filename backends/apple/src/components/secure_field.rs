@@ -33,7 +33,6 @@ use waterui_core::layout::{
 
 use super::font::platform_font;
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
@@ -46,6 +45,7 @@ mod platform {
     pub(super) use cocoa_ui::uikit::{HostView, SecureField};
 }
 
+use crate::contract::RenderContext;
 use platform::{HostView, SecureField};
 
 /// The gap between the label and the field — `WuiSecureField.verticalSpacing`.
@@ -184,103 +184,104 @@ impl SubView for SecureFieldSubView {
     }
 }
 
-/// Installs the `secure_field` handler on the dispatcher:
+/// The `secure_field` realization:
 /// `Native<SecureFieldConfig>` maps to a container with the platform
 /// secure field and the mounted label child; the binding, the theme font,
 /// disabled state and accessibility stay live through watchers.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<SecureFieldConfig>(|config, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let field = SecureField::new(mtm);
+pub fn realize_secure_field_config(
+    config: SecureFieldConfig,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let field = SecureField::new(mtm);
 
-        let field_view: &PlatformView = &field;
-        host.add_subview(field_view);
+    let field_view: &PlatformView = &field;
+    host.add_subview(field_view);
 
-        // The label renders above the field; its semantic text names the
-        // control while the visual label leaves the accessibility tree —
-        // `WuiControlAccessibility`'s split.
-        let (label, value) = config.into_parts();
-        let accessibility_label = label.accessibility_label();
-        let host_view: &PlatformView = &host;
-        let mounted = ctx
-            .render(waterui_backend_core::AnyView::new(label))
-            .mount(host_view);
-        view::hide_from_accessibility(mounted.view());
+    // The label renders above the field; its semantic text names the
+    // control while the visual label leaves the accessibility tree —
+    // `WuiControlAccessibility`'s split.
+    let (label, value) = config.into_parts();
+    let accessibility_label = label.accessibility_label();
+    let host_view: &PlatformView = &host;
+    let mounted = ctx
+        .render(waterui_backend_core::AnyView::new(label))
+        .mount(host_view);
+    view::hide_from_accessibility(mounted.view());
 
-        let state = Rc::new(FieldState {
-            field: field.clone(),
-            label: mounted,
-        });
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |view| layout_children(view, proposal::response(view), &state)
-        });
-
-        let control = view::retain_base(field_view);
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            SecureFieldSubView {
-                state: Rc::clone(&state),
-            },
-        );
-
-        // Binding → field: external writes land on the field; an equal
-        // value is skipped so a user's own edit cannot echo back and move
-        // the caret (the role `isSyncingFromBinding` played in Swift —
-        // nami notifies synchronously inside `binding.set`).
-        leaf.bind(&value, {
-            let field = field.clone();
-            move |secure: Secure| {
-                let text = secure.expose();
-                if field.string() != text {
-                    field.set_string(text);
-                }
-            }
-        });
-
-        // Field → binding: user edits write back; the `String` moves into
-        // `Secure` with no plaintext copy kept.
-        #[cfg(target_os = "ios")]
-        leaf.keep(field.install_change_handler({
-            let binding = value.clone();
-            move |field| binding.set(Secure::new(field.string()))
-        }));
-        #[cfg(target_os = "macos")]
-        field.on_change({
-            let binding = value.clone();
-            move |field| binding.set(Secure::new(field.string()))
-        });
-
-        // The theme `Body` font drives the field's font —
-        // `bodyFontObservation` in `WuiSecureField`.
-        let body = Body.resolve(ctx.env());
-        leaf.bind(&body, {
-            let field = field.clone();
-            move |font| field.set_font(&platform_font(mtm, &font, false))
-        });
-
-        // Announce the label's semantic text on the field.
-        leaf.bind(&accessibility_label, {
-            move |styled: StyledStr| {
-                let plain = cocoa_ui::text::strip_bidi_controls(&styled.to_plain());
-                view::set_accessibility_label(&control, &plain);
-            }
-        });
-
-        // A disabled subtree must not respond to input.
-        let disabled = Disabled::resolve(ctx.env(), false);
-        leaf.bind(&disabled, {
-            let field = field.clone();
-            move |is_disabled| field.set_enabled(!is_disabled)
-        });
-
-        // The field is this subtree's focus anchor, as in `text_field`.
-        leaf.keep(focus::install(mtm, field_view));
-
-        leaf.keep(state);
-        leaf
+    let state = Rc::new(FieldState {
+        field: field.clone(),
+        label: mounted,
     });
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |view| layout_children(view, proposal::response(view), &state)
+    });
+
+    let control = view::retain_base(field_view);
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        SecureFieldSubView {
+            state: Rc::clone(&state),
+        },
+    );
+
+    // Binding → field: external writes land on the field; an equal
+    // value is skipped so a user's own edit cannot echo back and move
+    // the caret (the role `isSyncingFromBinding` played in Swift —
+    // nami notifies synchronously inside `binding.set`).
+    leaf.bind(&value, {
+        let field = field.clone();
+        move |secure: Secure| {
+            let text = secure.expose();
+            if field.string() != text {
+                field.set_string(text);
+            }
+        }
+    });
+
+    // Field → binding: user edits write back; the `String` moves into
+    // `Secure` with no plaintext copy kept.
+    #[cfg(target_os = "ios")]
+    leaf.keep(field.install_change_handler({
+        let binding = value.clone();
+        move |field| binding.set(Secure::new(field.string()))
+    }));
+    #[cfg(target_os = "macos")]
+    field.on_change({
+        let binding = value.clone();
+        move |field| binding.set(Secure::new(field.string()))
+    });
+
+    // The theme `Body` font drives the field's font —
+    // `bodyFontObservation` in `WuiSecureField`.
+    let body = Body.resolve(ctx.env());
+    leaf.bind(&body, {
+        let field = field.clone();
+        move |font| field.set_font(&platform_font(mtm, &font, false))
+    });
+
+    // Announce the label's semantic text on the field.
+    leaf.bind(&accessibility_label, {
+        move |styled: StyledStr| {
+            let plain = cocoa_ui::text::strip_bidi_controls(&styled.to_plain());
+            view::set_accessibility_label(&control, &plain);
+        }
+    });
+
+    // A disabled subtree must not respond to input.
+    let disabled = Disabled::resolve(ctx.env(), false);
+    leaf.bind(&disabled, {
+        let field = field.clone();
+        move |is_disabled| field.set_enabled(!is_disabled)
+    });
+
+    // The field is this subtree's focus anchor, as in `text_field`.
+    leaf.keep(focus::install(mtm, field_view));
+
+    leaf.keep(state);
+    leaf
 }
 
 #[cfg(test)]

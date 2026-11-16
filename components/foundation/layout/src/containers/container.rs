@@ -1,6 +1,7 @@
 //! View wrapper that lets arbitrary [`Layout`] implementations
 //! participate in the `WaterUI` view tree.
 
+use core::any::Any;
 use core::fmt;
 use fmt::Debug;
 
@@ -276,6 +277,18 @@ impl FixedContainer {
     pub fn as_parts(&self) -> (&dyn Layout, &[AnyView]) {
         (self.layout.as_ref(), &self.contents)
     }
+
+    /// The child the §7.1 fill rule extends as a background: `Some(0)` when
+    /// this container lays out a [`BackgroundLayout`](crate::BackgroundLayout),
+    /// before or after `body` applies the layout direction.
+    #[must_use]
+    pub fn background_slot(&self) -> Option<usize> {
+        let layout: &dyn Any = self.layout.as_ref();
+        let layout: &dyn Any = layout
+            .downcast_ref::<DirectionalLayout>()
+            .map_or(layout, |directional| directional.inner.as_ref());
+        layout.is::<crate::BackgroundLayout>().then_some(0)
+    }
 }
 
 impl FixedContainer {
@@ -416,6 +429,20 @@ mod tests {
                 proposal,
             )]
         }
+    }
+
+    #[test]
+    fn the_background_slot_survives_the_direction_wrap() {
+        let background = FixedContainer::new(crate::BackgroundLayout, ((), ()));
+        assert_eq!(background.background_slot(), Some(0));
+        let body = AnyView::new(background.body(&waterui_core::Environment::new()));
+        let native = body
+            .downcast::<Native<FixedContainer>>()
+            .expect("FixedContainer::body produces Native<FixedContainer>");
+        assert_eq!(native.as_inner().background_slot(), Some(0));
+
+        let plain = FixedContainer::new(OffsetLayout, ((),));
+        assert_eq!(plain.background_slot(), None);
     }
 
     /// A leaf that reports a fixed size and an explicit leading guide at a

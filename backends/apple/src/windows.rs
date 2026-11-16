@@ -278,7 +278,7 @@ mod imp {
         // host each layout pass, at the safe-area-aware frame `content_frame`
         // resolves.
         let content = declaration.build_content();
-        let leaf = crate::dispatch::dispatcher(env).render(content, env, mtm);
+        let leaf = crate::dispatch::render(content, env, mtm);
 
         let host = HostView::new(mtm, window.content_rect());
         host.add_subview(leaf.view());
@@ -332,7 +332,7 @@ mod imp {
         // system's capsule, spacing and overflow.
         if let Some(toolbar) = declaration.toolbar {
             let toolbar_env = crate::toolbar_chrome::toolbar_environment(env);
-            let toolbar_leaf = crate::dispatch::dispatcher(env).render(toolbar, &toolbar_env, mtm);
+            let toolbar_leaf = crate::dispatch::render(toolbar, &toolbar_env, mtm);
             install_toolbar(
                 window.native(),
                 toolbar_leaf.view(),
@@ -1117,7 +1117,7 @@ mod imp {
         );
 
         let content = declaration.build_content();
-        let leaf = crate::dispatch::dispatcher(env).render(content, env, mtm);
+        let leaf = crate::dispatch::render(content, env, mtm);
         let leaf_view = cocoa_ui::view::retain_base(leaf.view());
         #[cfg(feature = "gpu_surface")]
         let reveal_view = leaf_view.clone();

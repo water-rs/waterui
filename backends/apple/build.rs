@@ -8,6 +8,8 @@ use waterkit_build::SwiftModule;
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
+    facade_features();
+
     // The `SwiftUI` embedding bridge compiles header-free under the
     // `swiftui` feature only; every other configuration leaves `swiftc`
     // out of the build.
@@ -15,32 +17,6 @@ fn main() {
     compile_waterui_bridge();
 
     cfg_aliases! {
-        // Rotation and scale animate through `with_platform_animation` on
-        // iOS; on macOS they reach `timing` via the layer-transform
-        // machinery the two components share.
-        ios_transform_animation: {
-            all(target_os = "ios", any(feature = "rotation", feature = "scale"))
-        },
-        // The `WuiLayerTransform` helpers `rotation` and `scale` call —
-        // `AppKit` only, since iOS transforms animate through
-        // `with_platform_animation` instead.
-        macos_layer_transform: {
-            all(target_os = "macos", any(feature = "rotation", feature = "scale"))
-        },
-        // Components that honor watcher animation metadata through
-        // `with_platform_animation` (split so each expression stays within
-        // the macro's recursion budget).
-        container_animation: {
-            any(feature = "container", feature = "list", feature = "menu", feature = "table")
-        },
-        property_animation: { any(feature = "offset", feature = "opacity") },
-        watcher_animation: {
-            any(container_animation, property_animation, ios_transform_animation)
-        },
-        // Everything that maps an `Animation` to a kit `Timing`.
-        platform_timing: { any(watcher_animation, macos_layer_transform) },
-        // The frame-driven scroll flights evaluating the curve per tick.
-        frame_progress: { any(feature = "scroll", feature = "list") },
         // Mac Catalyst: the UIKit realization compiled for macOS.
         catalyst: { all(target_os = "ios", target_abi = "macabi") },
         // The in-process preview entry: the AppKit realization on macOS,
@@ -132,4 +108,57 @@ fn compile_waterui_bridge() {
 #[cfg(all(feature = "swiftui", not(any(target_os = "ios", target_os = "macos"))))]
 fn compile_waterui_bridge() {
     panic!("waterui-apple's swiftui feature requires a macOS host with Xcode");
+}
+
+/// Turns the facade's enabled features into `waterui_feature` cfgs, and
+/// fails the build when a facade component is on without the feature that
+/// realizes it here: `NativeBackend` then requires a method this crate
+/// would not compile.
+fn facade_features() {
+    // Each facade feature, and the features of this crate that realize its
+    // components.
+    const REALIZED_BY: &[(&str, &[&str])] = &[
+        ("calendar", &["calendar"]),
+        ("color-picker", &["color_picker"]),
+        ("date-picker", &["date_picker"]),
+        ("multi-date-picker", &["multi_date_picker"]),
+        ("picker", &["picker"]),
+        ("secure-field", &["secure_field"]),
+        ("slider", &["slider"]),
+        ("stepper", &["stepper"]),
+        ("text-field", &["text_field"]),
+        ("toggle", &["toggle"]),
+        ("menu", &["menu", "context_menu"]),
+        ("list", &["list"]),
+        ("table", &["table"]),
+        ("navigation", &["navigation"]),
+        ("dialog", &["dialog"]),
+        ("canvas", &["canvas"]),
+        ("webview", &["webview"]),
+        ("map", &["map"]),
+        ("video", &["video", "video_player"]),
+        ("gpu", &["gpu_surface", "picture"]),
+        ("effects", &["applied_filter"]),
+    ];
+
+    println!("cargo::rustc-check-cfg=cfg(waterui_feature, values(any()))");
+    let features = std::env::var("DEP_WATERUI_FEATURES")
+        .expect("the `waterui` facade's build script exports DEP_WATERUI_FEATURES");
+    let enabled = |feature: &str| {
+        std::env::var_os(format!(
+            "CARGO_FEATURE_{}",
+            feature.to_ascii_uppercase().replace('-', "_")
+        ))
+        .is_some()
+    };
+    for feature in features.split(',').filter(|feature| !feature.is_empty()) {
+        println!("cargo::rustc-cfg=waterui_feature=\"{feature}\"");
+        if let Some((_, realized_by)) = REALIZED_BY.iter().find(|(name, _)| *name == feature) {
+            let missing: Vec<_> = realized_by.iter().filter(|own| !enabled(own)).collect();
+            assert!(
+                missing.is_empty(),
+                "the application enables the `waterui` feature `{feature}`; enable waterui-apple's {missing:?} to realize it"
+            );
+        }
+    }
 }

@@ -586,16 +586,14 @@ pub(super) fn render_calendar<S: CalendarSelection>(
 /// `Calendar`'s handler.
 #[cfg(feature = "calendar")]
 mod component {
-    use waterui::component::form::calendar::{Calendar, CalendarConfig};
-    use waterui::view::{ConfigurableView, Hook};
+    use waterui::component::form::calendar::CalendarConfig;
 
     use super::{CalendarSpec, NativeLeaf, RenderContext, render_calendar};
-    use crate::dispatch::Dispatcher;
 
     /// Renders `Calendar`'s config.
     #[expect(
         clippy::needless_pass_by_value,
-        reason = "the dispatcher hands the config by value"
+        reason = "NativeBackend hands each payload by value"
     )]
     fn render(config: CalendarConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
         render_calendar(
@@ -610,25 +608,19 @@ mod component {
         )
     }
 
-    /// Installs the `calendar` handler: the composer claim plus the
-    /// `Native<CalendarConfig>` claim for hook-produced payloads.
-    pub fn install(dispatcher: &mut Dispatcher) {
-        dispatcher.register_native::<CalendarConfig>(render);
-        dispatcher.register_view::<Calendar>(|calendar, ctx| {
-            let mut config = calendar.config();
-            // `body()`: an environment hook wins; otherwise the label
-            // resolves.
-            if let Some(hook) = ctx.env().get::<Hook<CalendarConfig>>() {
-                return ctx.render(hook.apply(ctx.env(), config));
-            }
-            config.label_mut().resolve_in_place(ctx.env());
-            render(config, ctx)
-        });
+    /// `Native<CalendarConfig>`: the label resolves, then the platform
+    /// calendar renders.
+    pub fn realize_calendar_config(
+        mut config: CalendarConfig,
+        ctx: &RenderContext<'_>,
+    ) -> NativeLeaf {
+        config.label_mut().resolve_in_place(ctx.env());
+        render(config, ctx)
     }
 }
 
 #[cfg(feature = "calendar")]
-pub use component::install;
+pub use component::realize_calendar_config;
 
 #[cfg(test)]
 mod tests {

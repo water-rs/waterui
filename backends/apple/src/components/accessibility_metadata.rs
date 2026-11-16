@@ -36,10 +36,11 @@ use waterui::accessibility::{
     AccessibilityValue,
 };
 use waterui::reactive::Computed;
+use waterui_core::SignalExt;
+use waterui_core::interaction::Selected;
 use waterui_core::{AnyView, Metadata};
 
 use crate::contract::{NativeLeaf, RenderContext};
-use crate::dispatch::Dispatcher;
 use crate::proposal::in_view;
 
 #[cfg(target_os = "macos")]
@@ -236,68 +237,101 @@ fn render_state(
 }
 
 /// Registers the constant and reactive state handlers on the shared bind.
-fn install_state(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<AccessibilityState>>(|metadata, ctx| {
-        render_state(metadata.content, Computed::constant(metadata.value), ctx)
-    });
-    dispatcher.register_view::<Metadata<AccessibilityStateSignal>>(|metadata, ctx| {
-        render_state(metadata.content, metadata.value.state().clone(), ctx)
-    });
+pub fn realize_accessibility_state_metadata(
+    metadata: Metadata<AccessibilityState>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    render_state(metadata.content, Computed::constant(metadata.value), ctx)
 }
 
-/// Installs the accessibility metadata handlers on the dispatcher.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<AccessibilityLabel>>(|metadata, ctx| {
-        let mut leaf = ctx.render(metadata.content);
-        let target = view::retain_base(leaf.view());
-        leaf.keep(target.clone());
-        leaf.bind(metadata.value.signal(), move |label| {
-            a11y::set_label(target::of(&target), &NSString::from_str(&label));
-        });
-        leaf
-    });
+pub fn realize_accessibility_state_signal_metadata(
+    metadata: Metadata<AccessibilityStateSignal>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    render_state(metadata.content, metadata.value.state().clone(), ctx)
+}
 
-    dispatcher.register_view::<Metadata<AccessibilityValue>>(|metadata, ctx| {
-        let mut leaf = ctx.render(metadata.content);
-        let target = view::retain_base(leaf.view());
-        leaf.keep(target.clone());
-        leaf.bind(metadata.value.signal(), move |value| {
-            a11y::set_value(target::of(&target), &NSString::from_str(&value));
-        });
-        leaf
+/// The accessibility metadata realizations.
+pub fn realize_accessibility_label_metadata(
+    metadata: Metadata<AccessibilityLabel>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mut leaf = ctx.render(metadata.content);
+    let target = view::retain_base(leaf.view());
+    leaf.keep(target.clone());
+    leaf.bind(metadata.value.signal(), move |label| {
+        a11y::set_label(target::of(&target), &NSString::from_str(&label));
     });
+    leaf
+}
 
-    dispatcher.register_view::<Metadata<AccessibilityRole>>(|metadata, ctx| {
-        let mut leaf = ctx.render(metadata.content);
-        let target = view::retain_base(leaf.view());
-        a11y::set_role(target::of(&target), role(&metadata.value));
-        leaf.keep(target);
-        leaf
+pub fn realize_accessibility_value_metadata(
+    metadata: Metadata<AccessibilityValue>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mut leaf = ctx.render(metadata.content);
+    let target = view::retain_base(leaf.view());
+    leaf.keep(target.clone());
+    leaf.bind(metadata.value.signal(), move |value| {
+        a11y::set_value(target::of(&target), &NSString::from_str(&value));
     });
+    leaf
+}
 
-    dispatcher.register_view::<Metadata<AccessibilityGeometry>>(|metadata, ctx| {
-        let leaf = ctx.render(metadata.content);
-        name_geometry(&leaf, metadata.value);
-        leaf
+pub fn realize_accessibility_role_metadata(
+    metadata: Metadata<AccessibilityRole>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mut leaf = ctx.render(metadata.content);
+    let target = view::retain_base(leaf.view());
+    a11y::set_role(target::of(&target), role(&metadata.value));
+    leaf.keep(target);
+    leaf
+}
+
+pub fn realize_accessibility_geometry_metadata(
+    metadata: Metadata<AccessibilityGeometry>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let leaf = ctx.render(metadata.content);
+    name_geometry(&leaf, metadata.value);
+    leaf
+}
+
+pub fn realize_accessibility_hidden_metadata(
+    metadata: Metadata<AccessibilityHidden>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mut leaf = ctx.render(metadata.content);
+    let target = view::retain_base(leaf.view());
+    a11y::set_hidden(target::of(&target), metadata.value.is_hidden());
+    leaf.keep(target);
+    leaf
+}
+
+pub fn realize_accessibility_children_metadata(
+    metadata: Metadata<AccessibilityChildren>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mut leaf = ctx.render(metadata.content);
+    let target = view::retain_base(leaf.view());
+    if metadata.value.excludes_descendants() {
+        a11y::exclude_children(target::of(&target));
+    }
+    leaf.keep(target);
+    leaf
+}
+
+/// `.selected(...)`: the control it modifies is announced as selected while
+/// the signal reads `true`, through the same state scope as
+/// [`AccessibilityState`].
+pub fn realize_selected_metadata(
+    metadata: Metadata<Selected>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let Selected(selected) = metadata.value;
+    let state = SignalExt::map(&selected, |selected| {
+        AccessibilityState::new().selected(selected)
     });
-
-    dispatcher.register_view::<Metadata<AccessibilityHidden>>(|metadata, ctx| {
-        let mut leaf = ctx.render(metadata.content);
-        let target = view::retain_base(leaf.view());
-        a11y::set_hidden(target::of(&target), metadata.value.is_hidden());
-        leaf.keep(target);
-        leaf
-    });
-
-    dispatcher.register_view::<Metadata<AccessibilityChildren>>(|metadata, ctx| {
-        let mut leaf = ctx.render(metadata.content);
-        let target = view::retain_base(leaf.view());
-        if metadata.value.excludes_descendants() {
-            a11y::exclude_children(target::of(&target));
-        }
-        leaf.keep(target);
-        leaf
-    });
-
-    install_state(dispatcher);
+    render_state(metadata.content, Computed::new(state), ctx)
 }

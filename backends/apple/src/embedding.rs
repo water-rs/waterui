@@ -237,7 +237,6 @@ pub(crate) fn install_services(env: &mut Environment) {
         env.insert_hook::<waterui_map::MapConfig, _>(|_env, config| config.render());
     }
     crate::windows::install_manager(env);
-    #[cfg(feature = "view_renderer")]
     crate::components::view_renderer::install_service(env);
 }
 

@@ -12,7 +12,6 @@
 
 use core::cell::RefCell;
 
-use crate::dispatch::Dispatcher;
 use waterui::navigation::{
     NavigationSplitLayout, split::NavigationSplitDetailBuilder as DetailBuilder,
 };
@@ -25,10 +24,14 @@ use waterui_core::layout::{
 };
 
 use crate::contract::KeepAlive;
+use crate::contract::{NativeLeaf, RenderContext};
 
-/// Installs the `NavigationSplitLayout` handler.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<NavigationSplitLayout>(platform::split_leaf);
+/// The `NavigationSplitLayout` realization.
+pub fn realize_navigation_split_layout(
+    value: NavigationSplitLayout,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    platform::split_leaf(value, ctx)
 }
 
 struct Fill;

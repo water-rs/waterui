@@ -42,7 +42,7 @@ pub enum CaptureError {
         height: f64,
     },
     /// No connected window scene can host the offscreen capture window.
-    #[cfg(all(target_os = "ios", feature = "view_renderer"))]
+    #[cfg(target_os = "ios")]
     #[error("no UIWindowScene is connected to host the capture window")]
     NoWindowScene,
 }

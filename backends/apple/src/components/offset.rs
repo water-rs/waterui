@@ -22,9 +22,9 @@ use waterui_core::layout::{
 };
 
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
@@ -147,107 +147,105 @@ impl SubView for OffsetSubView {
     }
 }
 
-/// Installs the `offset` handler on the dispatcher.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<Offset>>(|metadata, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        // A layer keeps the offset content composited rather than redrawn.
-        cocoa_ui::layer::ensure_layer(&host);
-        let mounted = ctx.render(metadata.content).mount(&host);
-        crate::primary_content::forward(&host, mounted.view());
-        #[cfg(target_os = "ios")]
-        // This wrapper drives the content's bounds and center itself on
-        // every layout pass and moves it visually with `transform`. Letting
-        // `UIKit` translate the autoresizing mask into frame-pinning
-        // constraints makes the transform participate in constraint
-        // solving — the pinned frame absorbs part of the translation and
-        // the content lands short of its declared offset.
-        view::set_translates_autoresizing(mounted.view(), false);
-        #[cfg(target_os = "macos")]
-        view::set_translates_autoresizing(mounted.view(), true);
+/// The `offset` realization.
+pub fn realize_offset_metadata(metadata: Metadata<Offset>, ctx: &RenderContext<'_>) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    // A layer keeps the offset content composited rather than redrawn.
+    cocoa_ui::layer::ensure_layer(&host);
+    let mounted = ctx.render(metadata.content).mount(&host);
+    crate::primary_content::forward(&host, mounted.view());
+    #[cfg(target_os = "ios")]
+    // This wrapper drives the content's bounds and center itself on
+    // every layout pass and moves it visually with `transform`. Letting
+    // `UIKit` translate the autoresizing mask into frame-pinning
+    // constraints makes the transform participate in constraint
+    // solving — the pinned frame absorbs part of the translation and
+    // the content lands short of its declared offset.
+    view::set_translates_autoresizing(mounted.view(), false);
+    #[cfg(target_os = "macos")]
+    view::set_translates_autoresizing(mounted.view(), true);
 
-        let state = Rc::new(RefCell::new(OffsetState {
-            child: mounted,
-            x: 0.0,
-            y: 0.0,
-        }));
+    let state = Rc::new(RefCell::new(OffsetState {
+        child: mounted,
+        x: 0.0,
+        y: 0.0,
+    }));
 
-        // The content always fills the wrapper before the transform moves
-        // it visually.
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |host_view| {
-                let state = state.borrow();
-                #[cfg(target_os = "ios")]
-                position_content(&state, host_view);
-                #[cfg(target_os = "macos")]
-                apply_transform(&state, host_view);
-            }
-        });
-
-        // `setPlacementProposal`: the proposal selected for this wrapper is
-        // the proposal its content was negotiated with.
-        let sink_guard = proposal::register_sink(&host, {
-            let state = Rc::clone(&state);
-            move |selected| {
-                let state = state.borrow();
-                proposal::deliver(state.child.view(), selected);
-            }
-        });
-
-        let mut leaf = NativeLeaf::new(
-            &*host,
-            OffsetSubView {
-                state: Rc::clone(&state),
-            },
-        );
-        leaf.keep(sink_guard);
-
-        let offset = metadata.value;
-        let x = offset.x;
-        let y = offset.y;
-
-        {
-            let mut s = state.borrow_mut();
-            s.x = x.snapshot();
-            s.y = y.snapshot();
-        }
-        {
+    // The content always fills the wrapper before the transform moves
+    // it visually.
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |host_view| {
             let state = state.borrow();
-            apply_transform(&state, &host);
+            #[cfg(target_os = "ios")]
+            position_content(&state, host_view);
+            #[cfg(target_os = "macos")]
+            apply_transform(&state, host_view);
         }
-
-        leaf.watch(&x, {
-            let state = Rc::clone(&state);
-            let host = host.clone();
-            move |wctx| {
-                state.borrow_mut().x = *wctx.value();
-                crate::animation::with_platform_animation(wctx.metadata(), {
-                    let state = Rc::clone(&state);
-                    let host = host.clone();
-                    move || {
-                        let state = state.borrow();
-                        apply_transform(&state, &host);
-                    }
-                });
-            }
-        });
-        leaf.watch(&y, {
-            let state = Rc::clone(&state);
-            move |wctx| {
-                state.borrow_mut().y = *wctx.value();
-                crate::animation::with_platform_animation(wctx.metadata(), {
-                    let state = Rc::clone(&state);
-                    let host = host.clone();
-                    move || {
-                        let state = state.borrow();
-                        apply_transform(&state, &host);
-                    }
-                });
-            }
-        });
-        leaf.keep(state);
-        leaf
     });
+
+    // `setPlacementProposal`: the proposal selected for this wrapper is
+    // the proposal its content was negotiated with.
+    let sink_guard = proposal::register_sink(&host, {
+        let state = Rc::clone(&state);
+        move |selected| {
+            let state = state.borrow();
+            proposal::deliver(state.child.view(), selected);
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        &*host,
+        OffsetSubView {
+            state: Rc::clone(&state),
+        },
+    );
+    leaf.keep(sink_guard);
+
+    let offset = metadata.value;
+    let x = offset.x;
+    let y = offset.y;
+
+    {
+        let mut s = state.borrow_mut();
+        s.x = x.snapshot();
+        s.y = y.snapshot();
+    }
+    {
+        let state = state.borrow();
+        apply_transform(&state, &host);
+    }
+
+    leaf.watch(&x, {
+        let state = Rc::clone(&state);
+        let host = host.clone();
+        move |wctx| {
+            state.borrow_mut().x = *wctx.value();
+            crate::animation::with_platform_animation(wctx.metadata(), {
+                let state = Rc::clone(&state);
+                let host = host.clone();
+                move || {
+                    let state = state.borrow();
+                    apply_transform(&state, &host);
+                }
+            });
+        }
+    });
+    leaf.watch(&y, {
+        let state = Rc::clone(&state);
+        move |wctx| {
+            state.borrow_mut().y = *wctx.value();
+            crate::animation::with_platform_animation(wctx.metadata(), {
+                let state = Rc::clone(&state);
+                let host = host.clone();
+                move || {
+                    let state = state.borrow();
+                    apply_transform(&state, &host);
+                }
+            });
+        }
+    });
+    leaf.keep(state);
+    leaf
 }

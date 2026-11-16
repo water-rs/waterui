@@ -7,16 +7,11 @@
 //! flights the kit clock ticks — evaluate the curve themselves through
 //! [`progress`] instead.
 
-#[cfg(frame_progress)]
 use std::rc::Rc;
 
-#[cfg(platform_timing)]
 use cocoa_ui::core_animation::Timing;
-#[cfg(any(platform_timing, frame_progress))]
 use waterui::animation::Animation;
-#[cfg(watcher_animation)]
 use waterui::animation::ChangeAnimation;
-#[cfg(watcher_animation)]
 use waterui::reactive::watcher::Metadata;
 
 /// The kit timing `animation` plays under: its shared timing, the one core
@@ -27,7 +22,6 @@ use waterui::reactive::watcher::Metadata;
 /// shared spring to a spring primitive (`UISpringTimingParameters` on iOS,
 /// `CASpringAnimation` on macOS), which takes its stiffness, damping
 /// coefficient and settling duration from it.
-#[cfg(platform_timing)]
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the control points are authored as f32 and widen to f64 exactly, so they narrow back exactly"
@@ -52,7 +46,6 @@ pub fn timing(animation: &Animation) -> Timing {
 /// [`timing`]; a change that names no animation or disables it runs `body`
 /// directly. Every component that honors watcher animation metadata
 /// funnels here.
-#[cfg(watcher_animation)]
 pub fn with_platform_animation(metadata: &Metadata, body: impl FnOnce() + 'static) {
     let Some(animation) = ChangeAnimation::of(metadata).animation() else {
         return body();
@@ -64,13 +57,12 @@ pub fn with_platform_animation(metadata: &Metadata, body: impl FnOnce() + 'stati
 /// curve a frame-driven animation evaluates each tick, as the kit writes
 /// the model directly rather than handing the property to a platform
 /// animator.
-#[cfg(frame_progress)]
 pub fn progress(animation: &Animation) -> Rc<dyn Fn(f64) -> f64> {
     let animation = animation.clone().validated();
     Rc::new(move |elapsed| animation.progress(core::time::Duration::from_secs_f64(elapsed)))
 }
 
-#[cfg(all(test, platform_timing))]
+#[cfg(test)]
 mod tests {
     use core::time::Duration;
 

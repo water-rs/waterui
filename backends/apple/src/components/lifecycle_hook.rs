@@ -25,9 +25,9 @@ use waterui_core::layout::{
 };
 
 use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
 use crate::proposal;
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
@@ -137,68 +137,69 @@ impl SubView for LifecycleSubView {
     }
 }
 
-/// Installs the `lifecycle_hook` handler on the dispatcher:
+/// The `lifecycle_hook` realization:
 /// `Metadata<LifeCycleHook>` maps to a transparent container that fires its
 /// one-shot handler on the matching window-membership change.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<LifeCycleHook>>(|metadata, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let host_view: &PlatformView = &host;
+pub fn realize_life_cycle_hook_metadata(
+    metadata: Metadata<LifeCycleHook>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let host_view: &PlatformView = &host;
 
-        let hook = Rc::new(HookState {
-            hook: RefCell::new(Some(metadata.value)),
-            env: ctx.env().clone(),
-        });
-
-        let mounted = ctx.render(metadata.content).mount(host_view);
-
-        // §7.1: the fill answer resolves through the `cocoaUiPrimaryContent`
-        // chain — `Color.opacity(..)` in a background slot stays a fill.
-        crate::primary_content::forward(&host, mounted.view());
-        view::set_translates_autoresizing(mounted.view(), true);
-
-        let state = Rc::new(LifecycleState { child: mounted });
-
-        // `contentView.frame = bounds`.
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |host| {
-                view::set_frame(state.child.view(), view::bounds(host));
-            }
-        });
-
-        // `windowMembershipChanged`: leaving a window is `Disappear`;
-        // entering one schedules `Appear` on the transaction's commit.
-        host.set_window_handler({
-            let hook = Rc::clone(&hook);
-            move |host| {
-                if view::has_window(host) {
-                    schedule_appear(mtm, &hook, host);
-                } else {
-                    fire(&hook, LifeCycle::Disappear);
-                }
-            }
-        });
-
-        // `setPlacementProposal`: the proposal selected for this wrapper is
-        // the proposal its content was negotiated with.
-        let sink_guard = proposal::register_sink(host_view, {
-            let state = Rc::clone(&state);
-            move |selected| {
-                proposal::deliver(state.child.view(), selected);
-            }
-        });
-
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            LifecycleSubView {
-                state: Rc::clone(&state),
-            },
-        );
-        leaf.keep(sink_guard);
-        leaf.keep(state);
-        leaf.keep(hook);
-        leaf
+    let hook = Rc::new(HookState {
+        hook: RefCell::new(Some(metadata.value)),
+        env: ctx.env().clone(),
     });
+
+    let mounted = ctx.render(metadata.content).mount(host_view);
+
+    // §7.1: the fill answer resolves through the `cocoaUiPrimaryContent`
+    // chain — `Color.opacity(..)` in a background slot stays a fill.
+    crate::primary_content::forward(&host, mounted.view());
+    view::set_translates_autoresizing(mounted.view(), true);
+
+    let state = Rc::new(LifecycleState { child: mounted });
+
+    // `contentView.frame = bounds`.
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |host| {
+            view::set_frame(state.child.view(), view::bounds(host));
+        }
+    });
+
+    // `windowMembershipChanged`: leaving a window is `Disappear`;
+    // entering one schedules `Appear` on the transaction's commit.
+    host.set_window_handler({
+        let hook = Rc::clone(&hook);
+        move |host| {
+            if view::has_window(host) {
+                schedule_appear(mtm, &hook, host);
+            } else {
+                fire(&hook, LifeCycle::Disappear);
+            }
+        }
+    });
+
+    // `setPlacementProposal`: the proposal selected for this wrapper is
+    // the proposal its content was negotiated with.
+    let sink_guard = proposal::register_sink(host_view, {
+        let state = Rc::clone(&state);
+        move |selected| {
+            proposal::deliver(state.child.view(), selected);
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        LifecycleSubView {
+            state: Rc::clone(&state),
+        },
+    );
+    leaf.keep(sink_guard);
+    leaf.keep(state);
+    leaf.keep(hook);
+    leaf
 }

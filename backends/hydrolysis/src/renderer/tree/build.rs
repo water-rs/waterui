@@ -10,6 +10,10 @@ use super::*;
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::platform_view::PlatformView;
 use core::any::Any;
+#[cfg(feature = "multi-date-picker")]
+use waterui::component::form::picker::{MultiDatePickerConfig, MultiDatePickerGrid};
+#[cfg(feature = "calendar")]
+use waterui::component::form::{CalendarConfig, CalendarGrid};
 use waterui_core::contract_violation;
 use waterui_core::views::ViewSnapshot;
 use waterui_layout::BackgroundLayout;
@@ -804,6 +808,24 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let view = match view.downcast::<Native<ProgressConfig>>() {
             Ok(progress) => {
                 return Self::build_progress((*progress).into_inner(), env, renderer);
+            }
+            Err(view) => view,
+        };
+        // Hydrolysis realizes the calendar and the multi-date picker with
+        // their grids composed from `WaterUI` views.
+        #[cfg(feature = "calendar")]
+        let view = match view.downcast::<Native<CalendarConfig>>() {
+            Ok(calendar) => {
+                let grid = CalendarGrid::new((*calendar).into_inner());
+                return Self::build_view(AnyView::new(grid), env, renderer);
+            }
+            Err(view) => view,
+        };
+        #[cfg(feature = "multi-date-picker")]
+        let view = match view.downcast::<Native<MultiDatePickerConfig>>() {
+            Ok(picker) => {
+                let grid = MultiDatePickerGrid::new((*picker).into_inner(), env);
+                return Self::build_view(AnyView::new(grid), env, renderer);
             }
             Err(view) => view,
         };

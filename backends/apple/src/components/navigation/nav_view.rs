@@ -7,14 +7,13 @@
 //! header on macOS — publishing into the window toolbar instead when the
 //! window is titled.
 
+use crate::contract::{NativeLeaf, RenderContext};
 use waterui::navigation::NavigationView;
 use waterui_core::layout::{LayoutError, ProposalSize, Rect, ResolvedExtent};
 
-use crate::dispatch::Dispatcher;
-
-/// Installs the `NavigationView` handler.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<NavigationView>(platform::nav_view_leaf);
+/// The `NavigationView` realization.
+pub fn realize_navigation_view(value: NavigationView, ctx: &RenderContext<'_>) -> NativeLeaf {
+    platform::nav_view_leaf(value, ctx)
 }
 
 struct Fill;
