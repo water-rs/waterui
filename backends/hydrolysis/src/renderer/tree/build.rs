@@ -347,7 +347,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let env = item_env.as_ref().unwrap_or(env);
         *layout_mark.borrow_mut() = Rc::downgrade(&core.cell);
         let transitions = LazyTransitions::new(env, snapshot.borrow().clone(), membership);
-        Self::LazyStack(Box::new(LazyStackNode {
+        let first_snapshot = snapshot.borrow().clone();
+        let node = Box::new(LazyStackNode {
             memo_gate: Cell::default(),
             memo_slots: RefCell::default(),
             axis,
@@ -373,7 +374,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             _direction_guard: direction_guard,
             _layout_guards: layout_guards,
             transitions,
-        }))
+        });
+        node.realize_first_item(&first_snapshot, renderer);
+        Self::LazyStack(node)
     }
 
     /// Build a self-drawn scene node owning its `SceneContent` (no effect slot).

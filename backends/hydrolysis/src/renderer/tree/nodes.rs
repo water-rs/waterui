@@ -449,7 +449,7 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
     /// Unlike [`Self::patch_built`], this does not carry the change into another
     /// frame: the parent tree's current patch result already owns the structural
     /// bookkeeping and will lay out the updated child immediately.
-    fn patch_for_parent(&mut self, renderer: &mut SemanticCore<E>) -> bool {
+    pub(super) fn patch_for_parent(&mut self, renderer: &mut SemanticCore<E>) -> bool {
         let built = self.expect_built_mut("patch_for_parent");
         let structural = built.node.patch(renderer);
         built.needs_layout |= structural;
@@ -722,6 +722,9 @@ pub struct VisibleSubviewCache<K: Eq + core::hash::Hash + Clone, E: crate::text:
     entries: std::collections::HashMap<K, RetainedSubview<E>>,
     /// Keys touched during the in-progress frame; [`Self::end_frame`] evicts the rest.
     touched: std::collections::HashSet<K>,
+    /// A key [`Self::end_frame`] keeps although no frame touched it: the item
+    /// the collection measures for its estimates while it is scrolled away.
+    pinned: Option<K>,
 }
 
 impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubviewCache<K, E> {
@@ -729,7 +732,20 @@ impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubvie
         Self {
             entries: std::collections::HashMap::new(),
             touched: std::collections::HashSet::new(),
+            pinned: None,
         }
+    }
+
+    /// Keeps `key` retained across frames that do not touch it, replacing the
+    /// previously pinned key, which is evicted by the next [`Self::end_frame`]
+    /// that does not touch it. `None` unpins.
+    pub(crate) fn pin(&mut self, key: Option<K>) {
+        self.pinned = key;
+    }
+
+    /// The key [`Self::pin`] keeps.
+    pub(crate) const fn pinned(&self) -> Option<&K> {
+        self.pinned.as_ref()
     }
 
     /// Begin a frame: forget which keys were visible last frame.
@@ -819,7 +835,9 @@ impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubvie
     /// Evict every sub-view not touched this frame (items scrolled out of view).
     pub(crate) fn end_frame(&mut self) {
         let touched = &self.touched;
-        self.entries.retain(|key, _| touched.contains(key));
+        let pinned = self.pinned.as_ref();
+        self.entries
+            .retain(|key, _| touched.contains(key) || Some(key) == pinned);
     }
 }
 
