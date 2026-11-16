@@ -845,7 +845,7 @@ pub struct FrameCounters {
     scene_layers: u32,
     /// Number of recorded scene segment layers submitted for this frame.
     scene_segment_layers: u32,
-    /// Number of mounted `GpuContentView` layers submitted for this frame.
+    /// Number of mounted `GpuView` layers submitted for this frame.
     gpu_content_layers: u32,
     /// Number of clip scopes pushed while building this frame.
     clip_layers: u32,
@@ -903,7 +903,7 @@ impl FrameCounters {
         self.scene_segment_layers
     }
 
-    /// Number of mounted `GpuContentView` layers submitted for this frame.
+    /// Number of mounted `GpuView` layers submitted for this frame.
     #[must_use]
     pub const fn gpu_content_layers(&self) -> u32 {
         self.gpu_content_layers

@@ -49,8 +49,8 @@ pub use filter_view::{
 #[cfg(feature = "gpu")]
 pub use gpu::{
     CaretQuery, Context, DeviceLoss, ExternalFrameSource, ExternalFrameStream, ExternalFrameView,
-    Frame, FrameHook, FrameOutput, GpuContent, GpuContentHandle, GpuContentView, GpuRuntime,
-    InputHandler, RedrawHandle, SharedGpuContext,
+    Frame, FrameHook, FrameOutput, GpuContent, GpuContentHandle, GpuRuntime, GpuView, InputHandler,
+    RedrawHandle, SharedGpuContext,
 };
 #[cfg(feature = "gpu")]
 pub use gradient::FlowingGradient;

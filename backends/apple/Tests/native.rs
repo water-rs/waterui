@@ -11601,7 +11601,7 @@ mod a11y_frame {
         use cocoa_ui::appkit::surface_view::SurfaceView;
         use waterui_apple::native_test_support::{block_on_main, install_gpu, pump_main_until};
         use waterui_graphics::gpu::wgpu;
-        use waterui_graphics::gpu::{Context, Frame, GpuContent, GpuContentView, GpuRuntime};
+        use waterui_graphics::gpu::{Context, Frame, GpuContent, GpuRuntime, GpuView};
 
         /// A content of a fixed natural size that clears its frame.
         struct Clear;
@@ -11643,7 +11643,7 @@ mod a11y_frame {
         let mut env = resolve::env();
         let runtime = block_on_main(30.0, GpuRuntime::new()).expect("the harness has a GPU");
         install_gpu(&mut env, runtime);
-        let leaf = dispatch::render(AnyView::new(GpuContentView::new(Clear)), &env, mtm());
+        let leaf = dispatch::render(AnyView::new(GpuView::new(Clear)), &env, mtm());
         let _window = mount_and_order_front(leaf.view());
         view::layout_immediately(leaf.view());
         let view = leaf.view();

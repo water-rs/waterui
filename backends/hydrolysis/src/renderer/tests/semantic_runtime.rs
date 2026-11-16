@@ -37,7 +37,7 @@ use waterui_graphics::backend::{NextFrame, RecordingResources, SceneContent, Sce
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 #[cfg(hydrolysis_gpu)]
-use waterui_graphics::{GpuContent, GpuContentView};
+use waterui_graphics::{GpuContent, GpuView};
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::{VStackLayout, hstack, vstack};
 use waterui_layout::{Divider, LazyContainer, scroll};
@@ -1741,7 +1741,7 @@ impl GpuContent for GpuChart {
 fn gpu_surface_emits_an_image_leaf_with_its_label_and_value() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(
-            GpuContentView::new(GpuChart)
+            GpuView::new(GpuChart)
                 .labeled("weekly chart")
                 .described("up 12% week over week"),
         )

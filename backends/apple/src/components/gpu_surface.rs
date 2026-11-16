@@ -1,4 +1,4 @@
-//! The `gpu_surface` leaf: `Native<GpuContentView>` and
+//! The `gpu_surface` leaf: `Native<GpuView>` and
 //! `Native<ExternalFrameView>` and `Native<SceneView>` as a kit surface view
 //! presenting through a `CAMetalLayer` driven by a `CAMetalDisplayLink` —
 //! the platform's own presentation primitive.
@@ -30,7 +30,7 @@ use waterui_core::layout::{
 use waterui_graphics::backend::cherenkov::Next;
 use waterui_graphics::gpu::{
     Display, ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, FrameTime,
-    GpuContentRenderer, GpuContentView, GpuRuntime, HostedFrame, HostedLayerError, RedrawHandle,
+    GpuContentRenderer, GpuRuntime, GpuView, HostedFrame, HostedLayerError, RedrawHandle,
     RenderedFrame, SharedGpuContext, wgpu,
 };
 use waterui_graphics::input::SurfaceInputEvent;
@@ -330,7 +330,7 @@ impl From<HostedLayerError> for HostedError {
     }
 }
 
-impl HostedView for GpuContentView {
+impl HostedView for GpuView {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         Self::measure(self, proposal)
     }
@@ -2879,11 +2879,10 @@ impl SubView for SurfaceSubView {
 
 // MARK: - Install
 
-/// Installs the `gpu_surface` handlers — `Native<GpuContentView>` and
+/// Installs the `gpu_surface` handlers — `Native<GpuView>` and
 /// `Native<ExternalFrameView>` and `Native<SceneView>` share presentation.
 pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher
-        .register_native::<GpuContentView>(|view, ctx| build_surface(view, "GPU content", ctx));
+    dispatcher.register_native::<GpuView>(|view, ctx| build_surface(view, "GPU content", ctx));
     dispatcher.register_native::<ExternalFrameView>(|view, ctx| {
         build_surface(view, "external frame", ctx)
     });
@@ -2896,7 +2895,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
 }
 
 /// The leaf construction the dispatcher's GPU-surface claims share —
-/// `GpuContentView`, `ExternalFrameView`, and `SceneView`. Without a GPU
+/// `GpuView`, `ExternalFrameView`, and `SceneView`. Without a GPU
 /// runtime the view (named `kind` in the report) mounts empty instead.
 fn build_surface<V: HostedView + 'static>(
     view: V,

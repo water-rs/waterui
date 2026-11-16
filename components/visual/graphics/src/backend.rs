@@ -69,7 +69,7 @@ use waterui_core::AnyView;
 /// The name of `view` when it is a leaf that needs a GPU device to render,
 /// and `None` for any other view.
 ///
-/// The leaves are `GpuContentView` — user GPU content, which
+/// The leaves are `GpuView` — user GPU content, which
 /// `ShaderPaintView`, `FlowingGradient` and the GPU video player render
 /// through — and `ExternalFrameView`. A render target without a device
 /// refuses them by this name. Whether they exist depends on this crate's
@@ -80,8 +80,8 @@ use waterui_core::AnyView;
 pub fn gpu_device_view(view: &AnyView) -> Option<&'static str> {
     use waterui_core::Native;
 
-    if view.is::<Native<crate::GpuContentView>>() {
-        Some("GpuContentView")
+    if view.is::<Native<crate::GpuView>>() {
+        Some("GpuView")
     } else if view.is::<Native<crate::ExternalFrameView>>() {
         Some("ExternalFrameView")
     } else {
