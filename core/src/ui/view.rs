@@ -12,6 +12,7 @@
 //! These abstractions support a declarative and composable approach to UI building, allowing
 //! for flexible combinations of views and transformations.
 
+use crate::backend::Backend;
 use crate::{AnyView, Environment, components::Metadata, layout::StretchAxis};
 use alloc::{boxed::Box, vec::Vec};
 use core::any::type_name;
@@ -45,6 +46,19 @@ pub trait View: 'static {
     /// WARNING: This method should not be called directly by user.
     fn body(self, _env: &Environment) -> impl View;
 
+    /// Turns this view into `backend`'s node.
+    ///
+    /// A composite expands its `body` in place, so a tree of composites
+    /// resolves through monomorphized code down to the native payloads and
+    /// metadata the backend realizes. Native and metadata wrappers override
+    /// it to reach the backend; nothing else does.
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output
+    where
+        Self: Sized,
+    {
+        self.body(env).dispatch(backend, env, cx)
+    }
+
     #[doc(hidden)]
     /// Returns the stretch axis for this view.
     ///
@@ -75,6 +89,13 @@ impl<V: View, E: View> View for Result<V, E> {
         }
     }
 
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        match self {
+            Ok(view) => view.dispatch(backend, env, cx),
+            Err(view) => view.dispatch(backend, env, cx),
+        }
+    }
+
     fn stretch_axis(&self) -> StretchAxis {
         match self {
             Ok(view) => view.stretch_axis(),
@@ -86,6 +107,13 @@ impl<V: View, E: View> View for Result<V, E> {
 impl<V: View> View for Option<V> {
     fn body(self, _env: &Environment) -> impl View {
         self.map_or_else(|| AnyView::new(()), AnyView::new)
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        match self {
+            Some(view) => view.dispatch(backend, env, cx),
+            None => ().dispatch(backend, env, cx),
+        }
     }
 
     fn stretch_axis(&self) -> StretchAxis {

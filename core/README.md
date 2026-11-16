@@ -310,7 +310,6 @@ AnalyticsPlugin {
 
 ### Metadata & Hooks
 - `Metadata<T>` - Attach metadata to views (must be handled by renderer)
-- `IgnorableMetadata<T>` - Optional metadata (can be ignored by renderer)
 - `Retain` - Keep values alive for view lifetime
 - `Hook<C>` - Intercept and modify view configurations
 

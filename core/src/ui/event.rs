@@ -6,12 +6,12 @@
 //! - [`OnChange`] - Repeatable handlers for a signal's value changes
 
 use crate::{
-    Environment, LatestDispatch,
+    Environment, LatestDispatch, Metadata, Retain, View,
     handler::{
         BoxedAction, BoxedActionOnce, EventHandler, Handler, HandlerOnce, ReportExtraction,
         boxed_action, boxed_action_once, boxed_event_handler,
     },
-    layout::Point,
+    layout::{Point, StretchAxis},
     metadata::MetadataKey,
 };
 use alloc::{boxed::Box, rc::Rc};
@@ -169,28 +169,29 @@ impl fmt::Debug for OnEvent {
 /// it — `State<T>`, `Environment`, … — resolved from the environment its
 /// modified view resolves in, exactly as an [`OnEvent`] handler is: a
 /// `.state(..)` install on either side of the handler in the same modifier
-/// chain reaches it. A backend renders `Metadata<OnChange>` by resolving that
-/// environment and calling [`subscribe`](Self::subscribe) with it, keeping the
-/// returned guard for as long as the view is mounted.
+/// chain reaches it. It is a composite: its content is kept under a
+/// [`Retain`] whose subscription is built from that environment, so the
+/// handler runs exactly as long as the view is mounted and no backend knows
+/// the modifier.
 ///
 /// Consecutive equal values are collapsed: the handler runs only when the
 /// value differs from the last one it saw.
-pub struct OnChange {
+pub struct OnChange<V> {
+    content: V,
     subscribe: Box<dyn FnOnce(&Environment) -> BoxWatcherGuard>,
 }
 
-impl MetadataKey for OnChange {}
-
-impl OnChange {
-    /// Creates a handler that runs `handler` whenever `source`'s value
-    /// changes.
+impl<V: View> OnChange<V> {
+    /// Wraps `content` with a handler that runs `handler` whenever
+    /// `source`'s value changes.
     ///
     /// # Arguments
     ///
+    /// * `content` - The view whose lifetime bounds the subscription.
     /// * `source` - The signal to watch for changes.
     /// * `handler` - The [`EventHandler`] to run with each new value.
     #[must_use]
-    pub fn new<C, H, A>(source: &C, handler: H) -> Self
+    pub fn new<C, H, A>(content: V, source: &C, handler: H) -> Self
     where
         C: Signal,
         C::Output: PartialEq + Clone,
@@ -199,6 +200,7 @@ impl OnChange {
         let source = source.clone();
         let handler = boxed_event_handler(handler);
         Self {
+            content,
             subscribe: Box::new(move |env: &Environment| {
                 let env = env.clone();
                 let handler = RefCell::new(handler);
@@ -234,13 +236,25 @@ impl OnChange {
     ///
     /// Nothing runs before this call. The subscription lasts as long as the
     /// returned guard does.
+    #[cfg(test)]
     #[must_use = "dropping the guard ends the subscription"]
-    pub fn subscribe(self, env: &Environment) -> BoxWatcherGuard {
+    fn subscribe(self, env: &Environment) -> BoxWatcherGuard {
         (self.subscribe)(env)
     }
 }
 
-impl fmt::Debug for OnChange {
+impl<V: View> View for OnChange<V> {
+    fn body(self, _env: &Environment) -> impl View {
+        let subscribe = self.subscribe;
+        Metadata::new(self.content, Retain::resolved(subscribe))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.content.stretch_axis()
+    }
+}
+
+impl<V> fmt::Debug for OnChange<V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OnChange").finish_non_exhaustive()
     }
@@ -286,7 +300,7 @@ mod tests {
         let source = Binding::i32(0);
         let seen = Rc::new(RefCell::new(Vec::new()));
 
-        let _guard = OnChange::new(&source, {
+        let _guard = OnChange::new((), &source, {
             let seen = Rc::clone(&seen);
             move |value: i32| seen.borrow_mut().push(value)
         })
@@ -311,7 +325,7 @@ mod tests {
         };
         let seen = Rc::new(RefCell::new(Vec::new()));
 
-        let _guard = OnChange::new(&changes_before_watch, {
+        let _guard = OnChange::new((), &changes_before_watch, {
             let seen = Rc::clone(&seen);
             move |value: i32| seen.borrow_mut().push(value)
         })
@@ -330,9 +344,13 @@ mod tests {
         let mut env = Environment::new();
         env.insert(State(total.clone()));
 
-        let _guard = OnChange::new(&source, |value: i32, State(total): State<Binding<i32>>| {
-            total.add_assign(value);
-        })
+        let _guard = OnChange::new(
+            (),
+            &source,
+            |value: i32, State(total): State<Binding<i32>>| {
+                total.add_assign(value);
+            },
+        )
         .subscribe(&env);
 
         source.set(2);
@@ -349,7 +367,7 @@ mod tests {
         let source = Binding::i32(0);
         let seen = Rc::new(RefCell::new(Vec::new()));
 
-        let _guard = OnChange::new(&source, {
+        let _guard = OnChange::new((), &source, {
             let seen = Rc::clone(&seen);
             let source = source.clone();
             move |value: i32| {
@@ -377,7 +395,7 @@ mod tests {
         let source = Binding::i32(0);
         let seen = Rc::new(RefCell::new(Vec::new()));
 
-        let _guard = OnChange::new(&source, {
+        let _guard = OnChange::new((), &source, {
             let seen = Rc::clone(&seen);
             let source = source.clone();
             move |value: i32| {
@@ -399,7 +417,7 @@ mod tests {
         let source = Binding::i32(0);
         let seen = Rc::new(RefCell::new(Vec::new()));
 
-        let on_change = OnChange::new(&source, {
+        let on_change = OnChange::new((), &source, {
             let seen = Rc::clone(&seen);
             move |value: i32| seen.borrow_mut().push(value)
         });

@@ -86,7 +86,13 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let host = HostView::new(mtm, Rect::ZERO);
         let host_view: &PlatformView = &host;
 
-        let mounted = ctx.render(metadata.content).mount(host_view);
+        let child = ctx.render(metadata.content);
+        // A `Retain::resolved` value is built from the environment its
+        // content's modifier chain resolves in, as a handler's is.
+        let env = child.handler_env(ctx.env());
+        let mut retained = metadata.value;
+        retained.resolve(&env);
+        let mounted = child.mount(host_view);
 
         view::set_translates_autoresizing(mounted.view(), true);
 
@@ -123,7 +129,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
         leaf.keep(sink_guard);
         leaf.keep(state);
         // `WuiRetainValue`: the opaque value dies with the view.
-        leaf.keep(metadata.value);
+        leaf.keep(retained);
+        // Transparent to handler resolution: a handler wrapped around this
+        // leaf resolves through its content's chain.
+        leaf.set_handler_env(env);
         leaf
     });
 }

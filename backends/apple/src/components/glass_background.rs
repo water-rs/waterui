@@ -1,4 +1,4 @@
-//! The `glass_background` metadata: `IgnorableMetadata<GlassBackground>`
+//! The `glass_background` metadata: `Metadata<GlassBackground>`
 //! wrapped around content Liquid Glass sits behind.
 //!
 //! Mirrors `WuiGlassBackground`: a transparent `HostView` container —
@@ -20,7 +20,7 @@ use cocoa_ui::{PlatformView, Rect, Retained};
 use waterui::background::{Glass, GlassBackground};
 use waterui::graphics::color::WorkingColor;
 use waterui::shape::ShapeKind;
-use waterui_core::IgnorableMetadata;
+use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
@@ -204,10 +204,10 @@ impl SubView for GlassBackgroundSubView {
 }
 
 /// Installs the `glass_background` handler on the dispatcher:
-/// `IgnorableMetadata<GlassBackground>` maps to a transparent container
+/// `Metadata<GlassBackground>` maps to a transparent container
 /// with the platform's glass surface behind the content.
 pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<IgnorableMetadata<GlassBackground>>(|metadata, ctx| {
+    dispatcher.register_view::<Metadata<GlassBackground>>(|metadata, ctx| {
         let mtm = ctx.mtm();
         let host = HostView::new(mtm, Rect::ZERO);
         let host_view: &PlatformView = &host;

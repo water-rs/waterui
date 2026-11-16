@@ -79,7 +79,7 @@ impl Dispatcher {
     }
 
     /// Claims `T` exactly as it appears in the view tree: a metadata wrapper
-    /// (`Metadata<M>`, `IgnorableMetadata<M>`), or a composer the port takes
+    /// (`Metadata<M>`, `Metadata<M>`), or a composer the port takes
     /// before `body()` expands it.
     ///
     /// A `register_view` handler typically owns no platform view of its own:

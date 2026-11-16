@@ -13,7 +13,7 @@ use suiteki::Str;
 
 use crate::layout::{PlacedGeometry, Rect};
 use crate::metadata::MetadataKey;
-use crate::{AnyView, Environment, IgnorableMetadata, View};
+use crate::{AnyView, Environment, Metadata, View};
 
 /// Overrides the spoken label for a component when the default text is not
 /// adequate.
@@ -200,8 +200,7 @@ impl MetadataKey for AccessibilityRole {}
 /// in the environment passes the view straight through, because the application
 /// knows what its surface is and the component only knows what it draws.
 ///
-/// The role is attached as [`IgnorableMetadata`], so a renderer that consumes no
-/// accessibility metadata skips it instead of refusing the whole view.
+/// The role is attached as [`Metadata`], which every backend realizes.
 ///
 /// No label is defaulted here. Only the application knows what the surface
 /// shows, and an invented label reads worse than none; a component with
@@ -211,7 +210,7 @@ pub fn default_role(env: &Environment, view: impl View, role: AccessibilityRole)
     if env.get::<AccessibilityRole>().is_some() {
         AnyView::new(view)
     } else {
-        AnyView::new(IgnorableMetadata::new(view, role))
+        AnyView::new(Metadata::new(view, role))
     }
 }
 
@@ -533,7 +532,7 @@ impl AccessibilityStateSignal {
 #[cfg(test)]
 mod tests {
     use super::{AccessibilityRole, AccessibilityState, AccessibilityStateSignal, default_role};
-    use crate::{Environment, IgnorableMetadata};
+    use crate::{Environment, Metadata};
     use nami::Signal;
 
     /// A surface with nothing said about it publishes the role it was given.
@@ -542,8 +541,8 @@ mod tests {
         let view = default_role(&Environment::new(), (), AccessibilityRole::Group);
 
         let wrapper = view
-            .downcast_ref::<IgnorableMetadata<AccessibilityRole>>()
-            .expect("the default role is attached as ignorable metadata");
+            .downcast_ref::<Metadata<AccessibilityRole>>()
+            .expect("the default role is attached as metadata");
         assert_eq!(wrapper.value, AccessibilityRole::Group);
     }
 
@@ -556,8 +555,7 @@ mod tests {
         let view = default_role(&env, (), AccessibilityRole::Group);
 
         assert!(
-            view.downcast_ref::<IgnorableMetadata<AccessibilityRole>>()
-                .is_none(),
+            view.downcast_ref::<Metadata<AccessibilityRole>>().is_none(),
             "a view whose role the application chose must not be wrapped again"
         );
     }
