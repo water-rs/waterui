@@ -1,5 +1,5 @@
 //! Content a navigation page presents through its own compositor layer — a
-//! `GpuContentView`, a `SceneView` — belongs to the page: the stack records
+//! `GpuView`, a `SceneView` — belongs to the page: the stack records
 //! each page in the page's own space and presents it at the stack's place in
 //! the window, and those layers have to be placed the same way and only when
 //! the page itself is presented.
@@ -21,7 +21,7 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::Size;
 use waterui_core::{AnyView, Environment};
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
-use waterui_graphics::{GpuContent, GpuContentView};
+use waterui_graphics::{GpuContent, GpuView};
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::stack::vstack;
 use waterui_navigation::{NavigationPath, NavigationStack, NavigationView, navigation_transition};
@@ -62,7 +62,7 @@ fn gpu(size: Size) -> impl waterui_core::View {
 }
 
 fn probe_view(probe: Probe, size: Size) -> impl waterui_core::View {
-    GpuContentView::new(probe).size(size.width, size.height)
+    GpuView::new(probe).size(size.width, size.height)
 }
 
 fn env_with_top_inset(top: f32) -> Environment {

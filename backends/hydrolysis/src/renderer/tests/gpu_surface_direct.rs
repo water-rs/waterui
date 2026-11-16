@@ -1,10 +1,10 @@
-//! A full-window `GpuContentView` presented through the engine layer tree.
+//! A full-window `GpuView` presented through the engine layer tree.
 //!
 //! Before the Cherenkov cutover a full-window opaque GPU surface could render
 //! straight into the window's own target, skipping the compositor; whether a
 //! frame took that branch or the composited one was a Hydrolysis decision with
 //! its own counters. In the engine-content model there is exactly one path: a
-//! `GpuContentView`'s producer installs once on a keyed engine layer, draws
+//! `GpuView`'s producer installs once on a keyed engine layer, draws
 //! into an engine-owned attachment, and presentation is the engine's.
 //!
 //! What stays pinned here:
@@ -30,7 +30,7 @@ use waterui::Binding;
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
-use waterui_graphics::{GpuContent, GpuContentView};
+use waterui_graphics::{GpuContent, GpuView};
 use waterui_layout::frame::Frame;
 
 use super::{MinimalTestTheme, pumped_test_environment};
@@ -144,7 +144,7 @@ impl GpuContent for FillProbe {
 /// A window whose entire content is one GPU surface, sized by the test.
 ///
 /// The size is a `Binding` rather than a rebuild so the surface's node — and
-/// therefore the `GpuContentView` inside it and everything `setup` gave it —
+/// therefore the `GpuView` inside it and everything `setup` gave it —
 /// survives every change the tests make.
 fn runtime_with(
     log: &ProbeLog,
@@ -161,7 +161,7 @@ fn runtime_with(
             .take()
             .expect("the probe window is built once");
         AnyView::new(
-            Frame::new(GpuContentView::new(FillProbe { log, opaque }))
+            Frame::new(GpuView::new(FillProbe { log, opaque }))
                 .width(width)
                 .height(height),
         )
@@ -271,7 +271,7 @@ fn write_png(name: &str, snapshot: &crate::runner::HeadlessSnapshot) -> std::pat
 }
 
 #[test]
-fn a_full_window_gpu_content_view_mounts_as_one_engine_layer_at_every_scale() {
+fn a_full_window_gpu_view_mounts_as_one_engine_layer_at_every_scale() {
     for scale in [1.0_f64, 2.0] {
         let log = ProbeLog::default();
         let (width, height) = full_window_bindings();
@@ -321,7 +321,7 @@ fn a_non_opaque_full_window_surface_mounts_the_same_way_at_every_scale() {
 }
 
 #[test]
-fn resizing_a_gpu_content_view_never_re_runs_setup() {
+fn resizing_a_gpu_view_never_re_runs_setup() {
     let log = ProbeLog::default();
     let (width, height) = full_window_bindings();
     let mut runtime = runtime_with(&log, true, &width, &height, 2.0);
@@ -444,7 +444,7 @@ fn opaque_and_non_opaque_content_present_identically() {
 /// scale — so a scale-2 window hands the surface `bounds * 2` device pixels,
 /// not `bounds * 4`.
 #[test]
-fn a_gpu_content_view_renders_at_one_display_scale() {
+fn a_gpu_view_renders_at_one_display_scale() {
     for (scale, expected) in [
         (1.0_f64, (WINDOW_WIDTH, WINDOW_HEIGHT)),
         (2.0, (WINDOW_WIDTH * 2, WINDOW_HEIGHT * 2)),

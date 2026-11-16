@@ -63,7 +63,7 @@ on-demand-window app sets `App::on_last_window_closed(LastWindowPolicy::StayResi
 window hosting it.
 
 **A snackbar shown from a callback does nothing.** `SnackbarManager` reaches handlers as a
-parameter, but a callback that is not a WaterUI handler (a `GpuContentView::on_input`, a
+parameter, but a callback that is not a WaterUI handler (a `GpuView::on_input`, a
 closure handed to another component) has none. Read it while building the view with
 `use_env(|manager: SnackbarManager| ..)` and move it into the callback.
 

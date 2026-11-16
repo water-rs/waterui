@@ -14,7 +14,7 @@ use core::hash::Hash;
 use std::collections::{HashMap, HashSet};
 
 use waterui_core::layout::ViewDimensions;
-use waterui_core::transition::GhostSlot;
+use waterui_structural_transition::GhostSlot;
 
 /// A removal ghost's identity inside a [`SlotSequence`] — unique per
 /// departed member, so a reinserted id never collides with the ghost its

@@ -13,7 +13,7 @@ use waterkit_camera::{Camera, FrameConverter};
 use waterkit_permission::{Permission, PermissionStatus, check, request};
 use waterui::app::App;
 use waterui::graphics::gpu::bytemuck;
-use waterui::graphics::{Context, Frame, GpuContent, GpuContentView};
+use waterui::graphics::{Context, Frame, GpuContent, GpuView};
 use waterui::prelude::slider::slider;
 use waterui::prelude::theme_color::Surface;
 use waterui::prelude::*;
@@ -94,9 +94,11 @@ fn camera_filter_lab<V: View>(preview: V, state: &CameraLabState) -> impl View +
 
     let header = vstack((
         text("WaterUI + Waterkit Camera Filter Lab").title().bold(),
-        text("Live camera preview via waterkit-camera, rendered and filtered with WaterUI GpuContentView.")
-            .body()
-            .muted(),
+        text(
+            "Live camera preview via waterkit-camera, rendered and filtered with WaterUI GpuView.",
+        )
+        .body()
+        .muted(),
         Divider,
     ))
     .spacing(8.0);
@@ -277,10 +279,10 @@ impl SyntheticCameraPreviewRenderer {
         }
     }
 
-    fn into_view(self) -> GpuContentView {
+    fn into_view(self) -> GpuView {
         let uniforms = Arc::new(Mutex::new(FilterUniforms(filter_params(0, 0.75))));
         let bridge = std::cell::RefCell::new(self);
-        GpuContentView::new(SyntheticCameraPreviewContent {
+        GpuView::new(SyntheticCameraPreviewContent {
             uniforms: Arc::clone(&uniforms),
         })
         .on_frame(move || {
@@ -358,10 +360,10 @@ impl CameraFilterRenderer {
         }
     }
 
-    fn into_view(self) -> GpuContentView {
+    fn into_view(self) -> GpuView {
         let shared = Arc::clone(&self.shared);
         let bridge = std::cell::RefCell::new(self);
-        GpuContentView::new(CameraFilterContent {
+        GpuView::new(CameraFilterContent {
             shared,
             pipeline: None,
             bind_group_layout: None,

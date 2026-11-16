@@ -237,7 +237,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         // A `.transition(...)` declaration: a transparent node the structural
         // site that swaps this content claims from the built instance. One
         // placed directly over a conditional is that `Dynamic` host's own.
-        let view = match view.downcast::<Metadata<waterui_core::transition::TransitionSpec>>() {
+        let view = match view.downcast::<Metadata<waterui_structural_transition::TransitionSpec>>()
+        {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 let node = Self::build_wrapper(
@@ -690,7 +691,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         // the runtime in a frame-ordered slot instead lets the ordering drift out of
         // step with the tree and hand a leaf another leaf's runtime.
         #[cfg(hydrolysis_gpu)]
-        let view = match view.downcast::<Native<GpuContentView>>() {
+        let view = match view.downcast::<Native<GpuView>>() {
             Ok(view) => {
                 return Self::build_gpu_content((*view).into_inner(), renderer, env);
             }
@@ -1170,7 +1171,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             ghosts: Vec::new(),
             ghost_placed: Vec::new(),
             reduce_motion: env
-                .get::<waterui_core::transition::ReduceMotion>()
+                .get::<waterui_structural_transition::ReduceMotion>()
                 .is_some_and(|flag| flag.0),
             direction: waterui_layout::layout_direction(env).snapshot(),
             dirty,
@@ -1311,13 +1312,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         }))
     }
 
-    /// Build a `GpuContentView` node owning its [`GpuContentRuntime`] — the
+    /// Build a `GpuView` node owning its [`GpuContentRuntime`] — the
     /// view keeps its UI-side hooks (input, frame pump, ime caret, a11y); the
     /// producer inside is taken exactly once, when the node's install layer
     /// first commits it on the window's engine.
     #[cfg(hydrolysis_gpu)]
     fn build_gpu_content(
-        view: GpuContentView,
+        view: GpuView,
         renderer: &SemanticCore<E>,
         #[cfg_attr(not(hydrolysis_hwui_gpu), expect(unused_variables))] env: &Environment,
     ) -> Self {

@@ -11,7 +11,7 @@
 //! A leaf answering more than the offer it was just measured at is the contract
 //! break; the layout must never clip it back (layout-spec §4.2).
 
-// The `GpuContentView` cases build GPU-content nodes, which only a build with
+// The `GpuView` cases build GPU-content nodes, which only a build with
 // the `gpu` feature realizes: without it the leaf is refused by name
 // (`cpu_refusals`).
 
@@ -34,7 +34,7 @@ use waterui_graphics::backend::{
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui_graphics::input::SurfaceInputEvent;
 #[cfg(hydrolysis_gpu)]
-use waterui_graphics::{GpuContent, GpuContentView};
+use waterui_graphics::{GpuContent, GpuView};
 use waterui_layout::LazyContainer;
 use waterui_layout::stack::hstack;
 use waterui_layout::{Divider, ProposalSize, Size, SubView};
@@ -231,7 +231,7 @@ impl SubView for OfferProbe<'_> {
 fn pane_view(kind: Pane) -> AnyView {
     match kind {
         #[cfg(hydrolysis_gpu)]
-        Pane::GpuSurface => AnyView::new(GpuContentView::new(PaneProbe).on_input(|_| {})),
+        Pane::GpuSurface => AnyView::new(GpuView::new(PaneProbe).on_input(|_| {})),
         Pane::Scene => AnyView::new(SceneView::new(ScenePane)),
     }
 }
@@ -741,9 +741,9 @@ fn input_scene_view_panes_split_the_divider_width() {
     );
 }
 
-/// water-rs/waterui#1958 — a `GpuContentView` is sized by
+/// water-rs/waterui#1958 — a `GpuView` is sized by
 /// `GpuContent::measure`, not by the `intrinsic_size` snapshot
-/// `GpuContentView::new` took at construction. The probe keeps
+/// `GpuView::new` took at construction. The probe keeps
 /// `intrinsic_size` `None` and reports 100x200 through `measure` once the
 /// source knows its size, the deferred-source contract a camera or decoded
 /// stream implements.
@@ -759,7 +759,7 @@ fn gpu_content_is_sized_by_its_live_measure() {
     let theme = renderer.theme();
     let natural = Arc::new(Mutex::new(None));
     let node = RenderNode::build(
-        AnyView::new(GpuContentView::new(DeferredSizeProbe {
+        AnyView::new(GpuView::new(DeferredSizeProbe {
             natural: Arc::clone(&natural),
             declared: None,
         })),
@@ -792,14 +792,12 @@ fn gpu_content_is_sized_by_its_live_measure() {
         "a leaf constructed with no intrinsic size keeps its declared stretch"
     );
 
-    // The semantic measure path (`Native<GpuContentView>::dimensions`, used
+    // The semantic measure path (`Native<GpuView>::dimensions`, used
     // for transient measures) answers the same live contract.
-    let leaf = AnyView::new(waterui_core::Native::new(GpuContentView::new(
-        DeferredSizeProbe {
-            natural: Arc::clone(&natural),
-            declared: None,
-        },
-    )));
+    let leaf = AnyView::new(waterui_core::Native::new(GpuView::new(DeferredSizeProbe {
+        natural: Arc::clone(&natural),
+        declared: None,
+    })));
     let dims = crate::renderer::measure_transient_view_with_proposal(
         &leaf,
         ProposalSize::UNSPECIFIED,
@@ -822,7 +820,7 @@ fn gpu_content_measure_drift_marks_layout() {
     let env = test_environment();
     let mut renderer = test_renderer();
     let natural = Arc::new(Mutex::new(None));
-    let mut retained = RetainedSubview::new(AnyView::new(GpuContentView::new(DeferredSizeProbe {
+    let mut retained = RetainedSubview::new(AnyView::new(GpuView::new(DeferredSizeProbe {
         natural: Arc::clone(&natural),
         declared: None,
     })));
@@ -880,7 +878,7 @@ fn gpu_content_stretch_uses_its_declared_contract() {
             // The retained node answers the declared stretch and the live
             // measured size independently.
             let node = RenderNode::build(
-                AnyView::new(GpuContentView::new(DeferredSizeProbe {
+                AnyView::new(GpuView::new(DeferredSizeProbe {
                     natural: Arc::clone(&cell),
                     declared,
                 })),
@@ -900,12 +898,10 @@ fn gpu_content_stretch_uses_its_declared_contract() {
             );
 
             // The transient/native path reads the same declaration.
-            let leaf = AnyView::new(waterui_core::Native::new(GpuContentView::new(
-                DeferredSizeProbe {
-                    natural: Arc::clone(&cell),
-                    declared,
-                },
-            )));
+            let leaf = AnyView::new(waterui_core::Native::new(GpuView::new(DeferredSizeProbe {
+                natural: Arc::clone(&cell),
+                declared,
+            })));
             assert_eq!(
                 crate::renderer::render::effective_stretch_axis(&leaf),
                 want,

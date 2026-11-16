@@ -5,7 +5,7 @@
 use alloc::rc::Rc;
 
 use cocoa_ui::{PlatformView, Retained, focus, view};
-use waterui_core::transition::TransitionGeometry;
+use waterui_structural_transition::TransitionGeometry;
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;

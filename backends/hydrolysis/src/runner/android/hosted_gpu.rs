@@ -1,7 +1,7 @@
 //! GPU content on the HWUI painter (water-rs/waterui#1812).
 //!
 //! HWUI draws the retained tree into `RenderNode`s and has no engine layer
-//! tree a GPU producer could join. Each `GpuContentView` and
+//! tree a GPU producer could join. Each `GpuView` and
 //! `ExternalFrameView` therefore gets a surface of its own: a Kotlin
 //! `TextureView` mounted as a platform view at the node's frame. The
 //! painter places it exactly like any other platform view — in session
@@ -38,9 +38,9 @@ use waterui::Environment;
 use waterui_graphics::OffscreenSize;
 use waterui_graphics::gpu::interop::GpuContentBox;
 use waterui_graphics::gpu::{
-    Display, ExternalFrameRenderer, ExternalFrameView, FrameTime, GpuContentRenderer,
-    GpuContentView, GpuRuntime, GpuRuntimeError, HostedFrame, HostedLayerError, RedrawHandle,
-    RenderedFrame, SharedGpuContext, preferred_surface_format, wgpu,
+    Display, ExternalFrameRenderer, ExternalFrameView, FrameTime, GpuContentRenderer, GpuRuntime,
+    GpuRuntimeError, GpuView, HostedFrame, HostedLayerError, RedrawHandle, RenderedFrame,
+    SharedGpuContext, preferred_surface_format, wgpu,
 };
 
 use super::native_window::AndroidWindow;
@@ -365,7 +365,7 @@ pub trait HostedSource {
     fn before_frame(&self);
 }
 
-impl HostedSource for GpuContentView {
+impl HostedSource for GpuView {
     fn renderer(
         &mut self,
         runtime: GpuRuntime,

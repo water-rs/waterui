@@ -8,11 +8,11 @@ use waterui_graphics::backend::{FilteredView, SceneView, resolve_scene_proposal}
 use waterui_graphics::canvas::CanvasView;
 use waterui_graphics::color::Color;
 #[cfg(hydrolysis_gpu)]
-use waterui_graphics::{ExternalFrameView, GpuContentView};
+use waterui_graphics::{ExternalFrameView, GpuView};
 use waterui_shape::ResolvedShape;
 
 #[cfg(hydrolysis_gpu)]
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<GpuContentView> {
+impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<GpuView> {
     fn intrinsic(
         _state: &mut HydroState<E>,
         view: &Self,

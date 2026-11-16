@@ -10,8 +10,8 @@ use super::*;
 use crate::renderer::mount::motion::{LayerMotion, Motion};
 use crate::text::{TextEngine, TextLayout as _};
 use waterui::gesture::TapGesture;
-use waterui_core::transition::TransitionSpec;
 use waterui_layout::safe_area::IgnoreSafeArea;
+use waterui_structural_transition::TransitionSpec;
 use waterui_text::styled::TapSpan;
 
 /// A retained sub-view a native widget owns and re-renders every flush — the
@@ -915,7 +915,7 @@ pub trait WidgetBehavior<E: crate::text::TextEngine> {
     /// content, for the navigation stack that owns the leaf as a page
     /// (layout-spec.md §4.5). `None` for every leaf that is not a page.
     #[cfg(feature = "navigation")]
-    fn claim_page_transition(&self) -> Option<waterui_core::transition::TransitionSpec> {
+    fn claim_page_transition(&self) -> Option<waterui_structural_transition::TransitionSpec> {
         None
     }
 
@@ -1579,8 +1579,8 @@ impl<E: crate::text::TextEngine> SceneViewNode<E> {
     }
 }
 
-/// A `GpuContentView` leaf that OWNS its [`GpuContentRuntime`] — the node
-/// analogue of [`SceneViewNode`], for a `Native<GpuContentView>` reached
+/// A `GpuView` leaf that OWNS its [`GpuContentRuntime`] — the node
+/// analogue of [`SceneViewNode`], for a `Native<GpuView>` reached
 /// through the retained tree. Identity is structural: a reactive swap builds
 /// a fresh node with a fresh runtime (and a fresh one-shot engine-content
 /// install), while a per-frame re-flush re-binds the *same* runtime via an
@@ -1601,10 +1601,10 @@ pub struct GpuContentNode<E: crate::text::TextEngine> {
 #[cfg(hydrolysis_gpu)]
 impl<E: crate::text::TextEngine> GpuContentNode<E> {
     /// The leaf's live measure under `proposal` — the `measure_body`
-    /// arm's own call. [`GpuContentView::measure`] asks the content
+    /// arm's own call. [`GpuView::measure`] asks the content
     /// itself, so a source whose size resolves after mount answers its
     /// new natural size instead of the `intrinsic_size` snapshot
-    /// [`GpuContentView::new`] took (water-rs/waterui#1958).
+    /// [`GpuView::new`] took (water-rs/waterui#1958).
     pub(super) fn intrinsic_dimensions(&self, proposal: ProposalSize) -> ViewDimensions {
         self.runtime.borrow().view.measure(proposal)
     }
@@ -1753,7 +1753,7 @@ impl<E: crate::text::TextEngine> DynamicTransitions<E> {
                 kurbo::Rect::ZERO,
             )),
             reduce_motion: env
-                .get::<waterui_core::transition::ReduceMotion>()
+                .get::<waterui_structural_transition::ReduceMotion>()
                 .is_some_and(|flag| flag.0),
             direction: waterui_layout::layout_direction(env).snapshot(),
         }

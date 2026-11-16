@@ -533,11 +533,11 @@ fn ui_test_drains_local_tasks_through_headless_runtime() {
 // Rendered-runtime behavior the semantic pipeline cannot express
 // ============================================================================
 
-// `GpuContentView` needs a GPU device, so these run only with the GPU painter.
+// `GpuView` needs a GPU device, so these run only with the GPU painter.
 #[cfg(feature = "gpu")]
 use waterui::graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 #[cfg(feature = "gpu")]
-use waterui::graphics::{GpuContent, GpuContentView};
+use waterui::graphics::{GpuContent, GpuView};
 
 /// A `GpuContent` that draws nothing until its `setup` has run — the
 /// readiness flag distinguishes "the engine ran setup" from "a render slipped
@@ -586,7 +586,7 @@ impl GpuContent for DeferredClearRenderer {
     }
 }
 
-/// A `GpuContentView` must reach the captured frame only after its `setup`
+/// A `GpuView` must reach the captured frame only after its `setup`
 /// ran. Capturing the very first pumped frame photographs the surface before
 /// any GPU content exists — the regression that made every GPU preview in the
 /// book render as a flat background.
@@ -600,7 +600,7 @@ fn headless_capture_waits_for_gpu_setup() {
     let ready = Arc::new(AtomicBool::new(false));
     let ready_for_view = Arc::clone(&ready);
     let content = AnyViewBuilder::new(move || {
-        AnyView::new(GpuContentView::new(DeferredClearRenderer {
+        AnyView::new(GpuView::new(DeferredClearRenderer {
             // Black is gamut-neutral: it survives the engine's linear-P3
             // presentation unchanged, where a saturated primary would
             // shift under the P3 → sRGB gamut map.
@@ -642,7 +642,7 @@ fn headless_capture_waits_for_gpu_setup() {
     assert_eq!(
         &snapshot.rgba8()[center..center + 3],
         &[0, 0, 0],
-        "the GpuContentView content must be present in the captured frame"
+        "the GpuView content must be present in the captured frame"
     );
 }
 

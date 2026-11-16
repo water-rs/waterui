@@ -52,6 +52,7 @@ waterui-macros.workspace = true
 waterui-graphics = { workspace = true, default-features = false }
 waterui-icon.workspace = true
 waterui-shape = { workspace = true, default-features = false }
+waterui-structural-transition.workspace = true
 waterui-svg = { workspace = true, optional = true }
 waterui-chart = { workspace = true, optional = true }
 waterui-barcode = { workspace = true, optional = true }

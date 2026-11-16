@@ -169,7 +169,7 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<Dynamic>);
         $macro!(Native<SystemIcon>);
         #[cfg(hydrolysis_gpu)]
-        $macro!(Native<GpuContentView>);
+        $macro!(Native<GpuView>);
         #[cfg(hydrolysis_gpu)]
         $macro!(Native<ExternalFrameView>);
         $macro!(Native<PlatformView>);

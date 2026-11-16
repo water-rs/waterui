@@ -169,7 +169,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for HwuiTarget {
         _wake: ProducerWake,
     ) {
         contract_violation!(
-            "hydrolysis HWUI: GpuContentView is hosted by the Android runner built with the \
+            "hydrolysis HWUI: GpuView is hosted by the Android runner built with the \
              `gpu` feature; the content is not drawn"
         );
     }

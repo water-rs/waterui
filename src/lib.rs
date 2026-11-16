@@ -166,9 +166,7 @@ pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
 pub use waterui_graphics::gradient;
 #[cfg(feature = "gpu")]
-pub use waterui_graphics::{
-    GpuContent, GpuContentView, RedrawHandle, ShaderPaintView, image_decode,
-};
+pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle, ShaderPaintView, image_decode};
 pub use waterui_icon as icon;
 #[cfg(feature = "particle")]
 pub use waterui_particle as particle;
@@ -245,9 +243,9 @@ pub use waterui_core::{
 
 // Selective re-exports only: `waterui::transition` stays free for the
 // `waterui-transition` pixel-effects crate re-export (#1389).
-pub use waterui_core::transition::{
+pub use waterui_structural_transition::{
     AnyTransition, Edge, PropertyTransition, ReduceMotion, Transition, TransitionContext,
-    TransitionFrame, TransitionGeometry, TransitionPhase, TransitionProperties,
+    TransitionFrame, TransitionGeometry, TransitionPhase, TransitionProperties, Transitioned,
 };
 
 /// Haptic feedback intensity for the `on_*_haptic` modifiers.

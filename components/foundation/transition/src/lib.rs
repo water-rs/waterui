@@ -5,16 +5,20 @@
 //! membership; a [`Ghost`] is never an accessibility, input, focus, or testing
 //! node. It owns only the outgoing realization and its retained layout slot.
 
+#![no_std]
+
+extern crate alloc;
+
 use alloc::rc::Rc;
 use core::{fmt, time::Duration};
 
-use crate::animation::Animation;
-use crate::layout::{
+use waterui_core::animation::Animation;
+use waterui_core::layout::{
     LayoutDirection, LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
-use crate::metadata::MetadataKey;
-use crate::{AnyView, Binding, Computed, Metadata, Signal, SignalExt, View};
+use waterui_core::metadata::MetadataKey;
+use waterui_core::{AnyView, Binding, Computed, Environment, Metadata, Signal, SignalExt, View};
 
 /// The structural event starting an independent transition instance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,7 +65,7 @@ impl Edge {
     }
 }
 
-crate::impl_constant!(Edge);
+waterui_core::impl_constant!(Edge);
 
 /// Environment flag requesting reduced motion.
 ///
@@ -148,7 +152,7 @@ impl TransitionFrame {
     }
 }
 
-crate::impl_constant!(TransitionFrame);
+waterui_core::impl_constant!(TransitionFrame);
 
 impl TransitionFrame {
     /// Window space a host reports to a pixel transition.
@@ -585,7 +589,7 @@ impl<I: Transition, R: Transition> Transition for Asymmetric<I, R> {
     }
 }
 
-/// Strict metadata attached by [`View::transition`].
+/// Strict metadata attached by [`Transitioned`].
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct TransitionSpec {
@@ -651,11 +655,42 @@ impl TransitionSpec {
     }
 }
 
-impl Metadata<TransitionSpec> {
+/// A view whose structural insertion and removal animate: what
+/// `.transition(...)` returns.
+///
+/// It expands to its content under [`TransitionSpec`] metadata, which the
+/// backends realize.
+#[derive(Debug)]
+pub struct Transitioned<V> {
+    content: V,
+    spec: TransitionSpec,
+}
+
+impl<V: View> Transitioned<V> {
+    /// Animates structural insertion and removal of `content` with
+    /// `transition`.
+    pub fn new(content: V, transition: impl Transition) -> Self {
+        Self {
+            content,
+            spec: TransitionSpec::new(transition),
+        }
+    }
+
     /// Sets insertion and removal timing without rebuilding reactive content.
+    #[must_use]
     pub const fn animation(mut self, animation: Animation) -> Self {
-        self.value.animation = animation;
+        self.spec.animation = animation;
         self
+    }
+}
+
+impl<V: View> View for Transitioned<V> {
+    fn body(self, _env: &Environment) -> impl View {
+        Metadata::new(self.content, self.spec)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.content.stretch_axis()
     }
 }
 

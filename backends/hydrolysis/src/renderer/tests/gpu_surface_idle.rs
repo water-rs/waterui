@@ -24,7 +24,7 @@ use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui_graphics::input::SurfaceInputEvent;
-use waterui_graphics::{GpuContent, GpuContentView, RedrawHandle};
+use waterui_graphics::{GpuContent, GpuView, RedrawHandle};
 use waterui_layout::frame::Frame;
 use waterui_layout::stack::vstack;
 
@@ -114,7 +114,7 @@ fn runtime_with(
 ) -> HeadlessRuntime {
     runtime_with_probe_view(
         driver,
-        GpuContentView::new(CountingView(probe.clone())),
+        GpuView::new(CountingView(probe.clone())),
         probe_width,
     )
 }
@@ -123,7 +123,7 @@ fn runtime_with(
 /// can carry `on_input` / `on_ime_caret` handlers.
 fn runtime_with_probe_view(
     driver: &RenderCounter,
-    probe_view: GpuContentView,
+    probe_view: GpuView,
     probe_width: &Binding<f32>,
 ) -> HeadlessRuntime {
     let views = RefCell::new(Some((driver.clone(), probe_view, probe_width.clone())));
@@ -133,7 +133,7 @@ fn runtime_with_probe_view(
             .take()
             .expect("the probe window is built once");
         AnyView::new(vstack((
-            GpuContentView::new(CountingView(driver))
+            GpuView::new(CountingView(driver))
                 .size(crate::num_cast::u32_as_f32(WINDOW_WIDTH), DRIVER_HEIGHT),
             Frame::new(probe_view)
                 .width(probe_width)
@@ -241,7 +241,7 @@ fn a_pointer_moving_over_an_idle_surface_re_renders_it() {
     let handler_probe = probe.clone();
     let mut runtime = runtime_with_probe_view(
         &driver,
-        GpuContentView::new(CountingView(probe.clone())).on_input(move |event| {
+        GpuView::new(CountingView(probe.clone())).on_input(move |event| {
             if let SurfaceInputEvent::PointerMove { .. } = event {
                 handler_probe.request_redraw();
             }
