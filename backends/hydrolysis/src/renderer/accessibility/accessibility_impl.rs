@@ -7,7 +7,7 @@ use waterui_core::contract_violation;
 
 #[cfg(feature = "accessibility")]
 use crate::theme::InteractionFocusBinding;
-#[cfg(all(feature = "accessibility", any(feature = "list", feature = "table")))]
+#[cfg(all(feature = "accessibility", feature = "table"))]
 use std::borrow::Cow;
 #[cfg(feature = "accessibility")]
 use std::collections::BTreeSet;

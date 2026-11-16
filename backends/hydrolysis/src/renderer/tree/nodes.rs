@@ -733,11 +733,13 @@ impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubvie
     /// Keeps `key` retained across frames that do not touch it, replacing the
     /// previously pinned key, which is evicted by the next [`Self::end_frame`]
     /// that does not touch it. `None` unpins.
+    #[cfg(feature = "list")]
     pub(crate) fn pin(&mut self, key: Option<K>) {
         self.pinned = key;
     }
 
     /// The key [`Self::pin`] keeps.
+    #[cfg(feature = "list")]
     pub(crate) const fn pinned(&self) -> Option<&K> {
         self.pinned.as_ref()
     }
@@ -776,6 +778,7 @@ impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubvie
 
     /// Marks the retained item for `key` visible this frame; `false` when
     /// none is retained.
+    #[cfg(feature = "list")]
     pub(crate) fn touch(&mut self, key: &K) -> bool {
         let retained = self.entries.contains_key(key);
         if retained {
@@ -786,6 +789,7 @@ impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubvie
 
     /// The already-retained item for `key`, mutably, without marking it
     /// visible this frame.
+    #[cfg(feature = "list")]
     pub(crate) fn get_mut(&mut self, key: &K) -> Option<&mut RetainedSubview<E>> {
         self.entries.get_mut(key)
     }
