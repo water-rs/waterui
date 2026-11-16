@@ -1,10 +1,8 @@
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
-
 use kurbo::{Affine, Rect, RoundedRect, Vec2};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use cherenkov::testing::LayerOp;
+use cherenkov::testing::allocations::count;
 use cherenkov::{
     Animatable, BlendMode, BlendSpace, FilterId, LayerId, Prop, Retarget, ShapeData, SurfaceTree,
 };
@@ -28,86 +26,9 @@ const fn backdrop(layer: LayerId, sample: cherenkov::BackdropSample) -> LayerOp 
     LayerOp::Backdrop(layer, Some(snapped(sample)))
 }
 
-mod alloc_counter {
-    use std::cell::Cell;
-
-    thread_local! {
-        // Each initializer is already const; the lint misfires on
-        // Android's emulated-TLS expansion (see `render::diag`'s allow).
-        #[allow(
-            clippy::missing_const_for_thread_local,
-            reason = "the initializer is already const; false positive on clippy 1.99"
-        )]
-        pub(super) static TRACKING: Cell<bool> = const { Cell::new(false) };
-        #[allow(
-            clippy::missing_const_for_thread_local,
-            reason = "the initializer is already const; false positive on clippy 1.99"
-        )]
-        pub(super) static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
-        #[allow(
-            clippy::missing_const_for_thread_local,
-            reason = "the initializer is already const; false positive on clippy 1.99"
-        )]
-        pub(super) static REALLOCATIONS: Cell<usize> = const { Cell::new(0) };
-    }
-}
-
-use alloc_counter::{ALLOCATIONS, REALLOCATIONS, TRACKING};
-
-struct ThreadAllocator;
-
 #[global_allocator]
-static ALLOCATOR: ThreadAllocator = ThreadAllocator;
-
-// SAFETY: every method delegates to `System` under identical contracts —
-// `layout`/`pointer` are passed through unchanged — and the tracking only
-// touches thread-local counters.
-unsafe impl GlobalAlloc for ThreadAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: `layout` is the caller's allocation request, forwarded.
-        let pointer = unsafe { System.alloc(layout) };
-        if TRACKING.try_with(Cell::get).unwrap_or(false) {
-            let _ = ALLOCATIONS.try_with(|count| count.set(count.get() + 1));
-        }
-        pointer
-    }
-
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: `layout` is the caller's allocation request, forwarded.
-        let pointer = unsafe { System.alloc_zeroed(layout) };
-        if TRACKING.try_with(Cell::get).unwrap_or(false) {
-            let _ = ALLOCATIONS.try_with(|count| count.set(count.get() + 1));
-        }
-        pointer
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        // SAFETY: `pointer`/`layout` satisfy `System.dealloc` because
-        // they came from `System.alloc` — the allocator contract.
-        unsafe { System.dealloc(pointer, layout) };
-    }
-
-    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-        // SAFETY: `pointer`/`layout`/`size` are the caller's request,
-        // forwarded — the allocator contract.
-        let pointer = unsafe { System.realloc(pointer, layout, size) };
-        if TRACKING.try_with(Cell::get).unwrap_or(false) {
-            let _ = REALLOCATIONS.try_with(|count| count.set(count.get() + 1));
-        }
-        pointer
-    }
-}
-
-pub(super) fn start_tracking() {
-    ALLOCATIONS.with(|count| count.set(0));
-    REALLOCATIONS.with(|count| count.set(0));
-    TRACKING.with(|tracking| tracking.set(true));
-}
-
-pub(super) fn stop_tracking() -> (usize, usize) {
-    TRACKING.with(|tracking| tracking.set(false));
-    (ALLOCATIONS.with(Cell::get), REALLOCATIONS.with(Cell::get))
-}
+static ALLOCATOR: cherenkov::testing::allocations::ThreadAllocator =
+    cherenkov::testing::allocations::ThreadAllocator;
 
 use super::{
     Candidate, Compositor, Ineligible, Level, Plan, PlanScratch, Source, frames_only, plan,
@@ -213,17 +134,21 @@ fn steady_pose_plan_allocates_nothing() {
             VIDEO,
             prop(Affine::translate((f64::from(x), 0.))),
         ));
-        start_tracking();
-        super::plan_with::<Test>(
-            &tree,
-            BlendSpace::Linear,
-            &candidates,
-            &ready,
-            &mut scratch,
-            &mut output,
+        let ((), counts) = count(|| {
+            super::plan_with::<Test>(
+                &tree,
+                BlendSpace::Linear,
+                &candidates,
+                &ready,
+                &mut scratch,
+                &mut output,
+            );
+        });
+        assert_eq!(
+            (counts.allocations, counts.reallocations),
+            (0, 0),
+            "pose {x}"
         );
-        let counts = stop_tracking();
-        assert_eq!(counts, (0, 0), "pose {x}");
     }
     assert_eq!(
         output,
