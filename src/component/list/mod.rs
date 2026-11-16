@@ -15,7 +15,7 @@ use nami::collection::{Collection, CollectionChange};
 use nami::watcher::Context;
 use nami::{Binding, Computed, signal::IntoComputed};
 
-use crate::views::{AnyViews, ForEach, SharedAnyViews, ViewSnapshot, Views, ViewsExt};
+use crate::views::{AnyViews, ForEach, SharedAnyViews, ViewSnapshot, Views};
 use waterui_core::id::Mapping;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{
@@ -439,9 +439,7 @@ fn render_list_config(mut config: ListConfig, env: &Environment) -> impl View {
     if let Some(hook) = env.get::<Hook<ListConfig>>() {
         AnyView::new(hook.apply(env, config))
     } else {
-        let fallback =
-            crate::component::lazy::Lazy::vstack(config.contents.clone().map(|item| item.content));
-        AnyView::new(Native::new(config).with_fallback(fallback))
+        AnyView::new(Native::new(config))
     }
 }
 
