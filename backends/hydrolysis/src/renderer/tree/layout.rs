@@ -11,8 +11,8 @@ use crate::text::TextEngine;
 use crate::theme::WidgetTheme;
 use waterui_core::contract_violation;
 use waterui_core::layout::{
-    Layout, LayoutError, LayoutPlacement, ResolvedExtent, SubviewPlacement, place_layout,
-    resolve_layout_extent,
+    Layout, LayoutError, LayoutPlacement, PlacedSubview, Rect as LayoutRect, ResolvedExtent,
+    SubviewPlacement, place_layout, resolve_layout_extent,
 };
 use waterui_graphics::backend::scene_stretch_axis;
 use waterui_layout::scroll::scroll_stretch_axis;
@@ -212,7 +212,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     .map(|child| NodeSubView::new(child, &cell, env, theme))
                     .collect();
                 let refs: Vec<&dyn SubView> = subs.iter().map(|sub| sub as &dyn SubView).collect();
-                ViewDimensions::new(container.layout.size_that_fits(proposal, &refs))
+                let size = container.layout.size_that_fits(proposal, &refs);
+                container_dimensions(&*container.layout, size, proposal, &subs, &refs)
             }
             // Transform/opacity wrappers are layout-transparent.
             Self::Opacity(node) => node.child.measure(state, env, theme, proposal),
@@ -1115,4 +1116,59 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::LazyStack(node) => node.item_cache.borrow().signature_into(hasher),
         }
     }
+}
+
+/// A container's answer to `proposal`: its `size` with the explicit alignment
+/// guides it exports (§2.2) — the alignments its layout declares and those
+/// its children answered, each resolved by the layout over the placement it
+/// makes inside `size`. A container whose layout declares none and whose
+/// children answered none exports none, without placing.
+fn container_dimensions<E: crate::text::TextEngine>(
+    layout: &dyn Layout,
+    size: Size,
+    proposal: ProposalSize,
+    subs: &[NodeSubView<'_, E>],
+    refs: &[&dyn SubView],
+) -> ViewDimensions {
+    let mut dimensions = ViewDimensions::new(size);
+    let mut horizontal = layout.explicit_horizontal_alignments();
+    let mut vertical = layout.explicit_vertical_alignments();
+    if !size.width.is_finite()
+        || !size.height.is_finite()
+        || (horizontal.is_empty()
+            && vertical.is_empty()
+            && !subs.iter().any(NodeSubView::answered_guides))
+    {
+        return dimensions;
+    }
+    let bounds = LayoutRect::from_size(size);
+    let placed: Vec<PlacedSubview<'_>> = refs
+        .iter()
+        .zip(layout.place(bounds, proposal, refs))
+        .map(|(view, placement)| PlacedSubview::new(*view, placement))
+        .collect();
+    for child in &placed {
+        let child_dimensions = child.dimensions();
+        for (alignment, _) in child_dimensions.explicit_horizontal_guides() {
+            if !horizontal.contains(&alignment) {
+                horizontal.push(alignment);
+            }
+        }
+        for (alignment, _) in child_dimensions.explicit_vertical_guides() {
+            if !vertical.contains(&alignment) {
+                vertical.push(alignment);
+            }
+        }
+    }
+    for alignment in horizontal {
+        if let Some(value) = layout.explicit_horizontal(alignment, bounds, &placed) {
+            dimensions.set_horizontal(alignment, value);
+        }
+    }
+    for alignment in vertical {
+        if let Some(value) = layout.explicit_vertical(alignment, bounds, &placed) {
+            dimensions.set_vertical(alignment, value);
+        }
+    }
+    dimensions
 }
