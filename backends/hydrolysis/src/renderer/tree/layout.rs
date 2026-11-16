@@ -51,7 +51,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// treats a child answering `true` as a non-member (§4.4: it takes no
     /// slot and no spacing), and a `Dynamic` flipping between `()` and content
     /// is a membership change — `layout` re-asks this every pass.
-    pub(super) fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         match self {
             Self::Widget(node) => node.behavior.renders_nothing(),
             Self::Opacity(node) => node.child.is_empty(),

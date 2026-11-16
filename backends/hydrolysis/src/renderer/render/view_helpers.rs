@@ -3,38 +3,27 @@
 use super::*;
 use waterui_core::Computed;
 use waterui_core::contract_violation;
-use waterui_core::interaction::Selected;
 use waterui_core::metadata::MetadataKey;
 
-pub fn gesture_group_identity(view: &AnyView) -> usize {
-    gesture_group_identity_with_budget(view, 64)
-}
+/// Defaults an environment scope gives every environment snapshot below it.
+///
+/// A `Metadata<Environment>` snapshot replaces the environment wholesale, so
+/// a scope that sets a default for its whole subtree (a bar item's icon-only
+/// labels) would stop at the first snapshot inside it. The build applies
+/// these defaults to each snapshot it installs below the scope and carries
+/// them on, so the subtree keeps one scope however its content was wrapped.
+#[derive(Clone, Copy)]
+pub struct SnapshotDefaults(pub fn(&Environment) -> Environment);
 
-pub fn flatten_environment_metadata_ref<'a>(
-    mut view: &'a AnyView,
-    env: &Environment,
-) -> (&'a AnyView, Environment) {
-    let mut scoped_env = env.clone();
-    while let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
-        scoped_env = metadata.value.clone();
-        view = &metadata.content;
-    }
-    (view, scoped_env)
-}
-
-pub fn flatten_environment_metadata_owned(
-    mut view: AnyView,
-    env: &Environment,
-) -> (AnyView, Environment) {
-    let mut scoped_env = env.clone();
-    while view.is::<Metadata<Environment>>() {
-        let Metadata { content, value } = *view
-            .downcast::<Metadata<Environment>>()
-            .expect("environment metadata flattening downcast must succeed");
-        scoped_env = value;
-        view = content;
-    }
-    (view, scoped_env)
+/// `snapshot` with the [`SnapshotDefaults`] `outer` carries applied and
+/// carried on.
+pub fn apply_snapshot_defaults(outer: &Environment, snapshot: Environment) -> Environment {
+    let Some(&defaults) = outer.get::<SnapshotDefaults>() else {
+        return snapshot;
+    };
+    let mut snapshot = (defaults.0)(&snapshot);
+    snapshot.insert(defaults);
+    snapshot
 }
 
 /// Extends `env` with an accessibility metadata value exactly like the retained
@@ -197,8 +186,8 @@ pub fn a11y_scoped_identifier_env(
 /// Applies `$callback` to the accessibility metadata scopes: each key's
 /// `NativeBackend` method, its type, and the function extending an
 /// environment for it — the single definition of the metadata-type →
-/// scoping table. The retained build's methods and the List-row hoist both
-/// expand it, so registering a new accessibility scope touches one place.
+/// scoping table, so registering a new accessibility scope touches one
+/// place.
 /// `E` names the text engine at the expansion site.
 macro_rules! accessibility_scope_table {
     ($callback:ident) => {
@@ -222,191 +211,6 @@ macro_rules! accessibility_scope_table {
     };
 }
 pub(crate) use accessibility_scope_table;
-
-/// If `view`'s outermost wrapper is an accessibility `Metadata` scope, peel
-/// it and return its content with `env` extended for it. `Err` hands the view
-/// back untouched when the outer wrapper is not one of these scopes.
-#[cfg(feature = "accessibility")]
-#[cfg(feature = "list")]
-fn a11y_scoped_env_for_view<E: crate::text::TextEngine>(
-    view: AnyView,
-    env: &Environment,
-) -> Result<(AnyView, Environment), AnyView> {
-    let mut view = view;
-    macro_rules! try_scope {
-        ($( $(#[$doc:meta])* $method:ident: $ty:ty => $install:expr; )+) => {
-            $(
-                match view.downcast::<Metadata<$ty>>() {
-                    Ok(metadata) => {
-                        let Metadata { content, value } = *metadata;
-                        let install: fn(&Environment, &$ty) -> Environment = $install;
-                        return Ok((content, install(env, &value)));
-                    }
-                    Err(back) => view = back,
-                }
-            )+
-        };
-    }
-    accessibility_scope_table!(try_scope);
-    Err(view)
-}
-
-/// Peels the accessibility metadata wrappers off `view`, installing each into a
-/// scoped copy of `env` the way the retained build's `Env`-scoping arms do —
-/// naming metadata grows a fresh [`ScopedAccessibilitySemantics`] so the first
-/// node registered under the result claims it.
-///
-/// A `List` row uses this so the row's own `ListItem` node — rather than a
-/// leaf inside its content — claims the content's explicit label, role, or
-/// identifier; the subtree then emits under the container-child environment
-/// that strips that naming ([`accessibility_container_child_environment`]).
-/// `Metadata<Environment>` snapshots and `Metadata<MaterialGroup>`
-/// scope markers are transparent to hoisting. A snapshot stays on the
-/// returned view while the naming metadata inside it lifts, because every
-/// row's content arrives wrapped in the selection theme's `use_env`
-/// snapshot, which is not a view the user named. A group marker stays the
-/// same way — a pure scope marker is not a view the user named either.
-/// Any other `Metadata<T>` (a `.padding()` between
-/// the modifier and the named view) still belongs to the subtree's own build,
-/// so hoisting stops at one.
-#[cfg(feature = "accessibility")]
-#[cfg(feature = "list")]
-pub fn hoist_accessibility_metadata<E: crate::text::TextEngine>(
-    view: AnyView,
-    env: &Environment,
-) -> (AnyView, Environment) {
-    let mut scoped = env.clone();
-    let view = hoist_accessibility_metadata_inner::<E>(view, &mut scoped);
-    (view, scoped)
-}
-
-#[cfg(feature = "accessibility")]
-#[cfg(feature = "list")]
-fn hoist_accessibility_metadata_inner<E: crate::text::TextEngine>(
-    mut view: AnyView,
-    scoped: &mut Environment,
-) -> AnyView {
-    view = match view.downcast::<Metadata<Environment>>() {
-        Ok(metadata) => {
-            let Metadata { content, value } = *metadata;
-            let content = hoist_accessibility_metadata_inner::<E>(content, scoped);
-            return AnyView::new(Metadata { content, value });
-        }
-        Err(view) => view,
-    };
-    // A `.material_group()` is a pure scope marker, like the
-    // `Metadata<Environment>` snapshot above: it stays on the returned
-    // view while the naming metadata inside it lifts.
-    view = match view.downcast::<Metadata<MaterialGroup>>() {
-        Ok(metadata) => {
-            let Metadata { content, value } = *metadata;
-            let content = hoist_accessibility_metadata_inner::<E>(content, scoped);
-            return AnyView::new(Metadata { content, value });
-        }
-        Err(view) => view,
-    };
-    match a11y_scoped_env_for_view::<E>(view, scoped) {
-        Ok((content, next)) => {
-            *scoped = next;
-            hoist_accessibility_metadata_inner::<E>(content, scoped)
-        }
-        Err(view) => view,
-    }
-}
-
-fn gesture_group_identity_with_budget(view: &AnyView, remaining: usize) -> usize {
-    if remaining == 0 {
-        contract_violation!(
-            "hydrolysis gesture group identity extraction exceeded recursion budget for {}; the group is identified by this view",
-            view.name()
-        );
-        return view.stable_ptr() as usize;
-    }
-    if let Some(metadata) = view.downcast_ref::<Metadata<Environment>>() {
-        return gesture_group_identity_with_budget(&metadata.content, remaining - 1);
-    }
-    if let Some(content) = passthrough_content(view) {
-        return gesture_group_identity_with_budget(content, remaining - 1);
-    }
-    view.stable_ptr() as usize
-}
-
-pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
-    macro_rules! passthrough_metadata_content {
-        ($( $(#[$attr:meta])* $ty:ty),+ $(,)?) => {
-            $(
-                $(#[$attr])*
-                if let Some(metadata) = view.downcast_ref::<Metadata<$ty>>() {
-                    return Some(&metadata.content);
-                }
-            )+
-        };
-    }
-
-    #[cfg(hydrolysis_video_plane)]
-    if let Some(metadata) =
-        view.downcast_ref::<Metadata<crate::runner::android::video_plane::VideoPlaneHost>>()
-    {
-        return Some(&metadata.content);
-    }
-    passthrough_metadata_content!(
-        Environment,
-        Retain,
-        Opacity,
-        Scale,
-        Rotation,
-        Offset,
-        ClipShape,
-        Border,
-        Shadow,
-        Focused,
-        Hittable,
-        GestureObserver,
-        LifeCycleHook,
-        OnEvent,
-        OnKeyPress,
-        Secure,
-        StandardDynamicRange,
-        HighDynamicRange,
-        Cursor,
-        IgnoreSafeArea,
-        #[cfg(feature = "menu")]
-        ContextMenu,
-        #[cfg(feature = "menu")]
-        ResolvedContextMenu,
-        AnchoredOverlay,
-        waterui::dialog::Dialog,
-        #[cfg(feature = "menu")]
-        PopupMenuSurface,
-        Draggable,
-        DropDestination,
-        Background,
-        Selected,
-        #[cfg(feature = "navigation")]
-        NavigationTransitionSource,
-        #[cfg(feature = "navigation")]
-        NavigationTransitionDestination,
-        #[cfg(feature = "navigation")]
-        NavigationLinkHint,
-        waterui_structural_transition::TransitionSpec,
-        MaterialBackground,
-        GlassBackground,
-        // `.material_group()` marks a scope for backdrop capture only:
-        // every measure/identity/label lookup sees the content it wraps.
-        MaterialGroup,
-        AccessibilityIdentifier,
-        AccessibilityLabel,
-        AccessibilityValue,
-        AccessibilityRole,
-        AccessibilityHidden,
-        AccessibilityChildren,
-        AccessibilityGeometry,
-        AccessibilityState,
-        AccessibilityStateSignal
-    );
-
-    None
-}
 
 /// Resolves a shape into a concrete path for `bounds`.
 ///

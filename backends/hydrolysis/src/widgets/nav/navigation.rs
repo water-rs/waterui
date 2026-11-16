@@ -2,6 +2,7 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::ROOT_NAVIGATION_IDENTITY;
 use crate::renderer::SafeAreaLayout;
+use crate::renderer::SnapshotDefaults;
 use crate::renderer::bounded_proposal;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 use crate::renderer::live_bar::{BarFrames, LiveBarParts};
@@ -34,7 +35,7 @@ use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::{AnyView, Environment, Metadata, Native};
+use waterui_core::{AnyView, Environment, Metadata};
 use waterui_graphics::color::Color;
 
 #[derive(Clone, Copy)]
@@ -199,7 +200,6 @@ pub struct NavigationViewRenderState<E: crate::text::TextEngine> {
     color: Computed<WorkingColor>,
     hidden: Computed<bool>,
     display_mode: NavigationTitleDisplayMode,
-    subtitle_present: bool,
     /// The look the theme gave for the chrome's spec, held while the spec
     /// stays the same.
     look: Option<(NavigationSpec, NavigationBarLook)>,
@@ -225,25 +225,6 @@ fn held_navigation_look(
     (look.clone(), requested)
 }
 
-/// Whether a bar slot is bound. An unbound slot is `()`, which resolves to
-/// the native-leaf `Native<()>` by the time the backend sees it (`()` is a
-/// raw view); waterui may also wrap a slot in `Metadata<Environment>`
-/// (`navigation_slot_with_environment`), so the check looks through that wrap
-/// too.
-#[expect(
-    clippy::option_if_let_else,
-    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
-)]
-fn navigation_slot_is_empty(view: &AnyView) -> bool {
-    if view.is::<()>() || view.is::<Native<()>>() {
-        return true;
-    }
-    match view.downcast_ref::<Metadata<Environment>>() {
-        Some(meta) => navigation_slot_is_empty(&meta.content),
-        None => false,
-    }
-}
-
 /// The environment a bar item builds, measures and renders under: `env`
 /// with labels defaulting to icon-only, as the platform bars present them.
 /// An explicit `LabelDisplayMode` keeps precedence; the title stays the
@@ -259,12 +240,13 @@ pub fn toolbar_item_env(env: &Environment) -> Environment {
     }
 }
 
-/// `content` scoped to [`toolbar_item_env`]. The scope is baked into the
-/// view because an environment snapshot in the content replaces the
-/// environment wholesale, so build, measure and render all see one scope.
+/// `content` scoped to [`toolbar_item_env`]: the scope reaches every
+/// environment snapshot inside the content as its [`SnapshotDefaults`], so
+/// build, measure and render all see one scope.
 pub fn toolbar_item_view(content: AnyView, env: &Environment) -> AnyView {
-    let (content, scoped) = crate::renderer::flatten_environment_metadata_owned(content, env);
-    AnyView::new(Metadata::new(content, toolbar_item_env(&scoped)))
+    let mut scoped = toolbar_item_env(env);
+    scoped.insert(SnapshotDefaults(toolbar_item_env));
+    AnyView::new(Metadata::new(content, scoped))
 }
 
 impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
@@ -283,7 +265,6 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
             || Color::new(Surface).resolve(env),
             |color| color.expect_resolved().clone(),
         );
-        let subtitle_present = !navigation_slot_is_empty(&subtitle);
         let mut principal = Vec::new();
         let mut leading = Vec::new();
         let mut trailing = Vec::new();
@@ -326,7 +307,6 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
             color,
             hidden,
             display_mode,
-            subtitle_present,
             look: None,
             top_bar: None,
             bottom_bar: None,
@@ -348,6 +328,12 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
         look
     }
 
+    /// Whether the bar's subtitle slot draws anything: an unbound slot is
+    /// `()`, which realizes as an empty node.
+    fn subtitle_present(&self) -> bool {
+        self.subtitle.node().is_some_and(|node| !node.is_empty())
+    }
+
     /// Eagerly build the bar/content sub-views (the measure path has no renderer to
     /// build on).
     pub(crate) fn prebuild(
@@ -356,9 +342,7 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
         env: &Environment,
     ) {
         self.title.ensure_built(renderer, env);
-        if self.subtitle_present {
-            self.subtitle.ensure_built(renderer, env);
-        }
+        self.subtitle.ensure_built(renderer, env);
         for item in self
             .principal
             .iter_mut()
@@ -430,7 +414,7 @@ pub fn navigation_view_accessibility<E: crate::text::TextEngine>(
             return;
         }
         let default_title_label = state.title.accessibility_label(renderer);
-        let default_subtitle_label = if state.subtitle_present {
+        let default_subtitle_label = if state.subtitle_present() {
             state.subtitle.accessibility_label(renderer)
         } else {
             None
@@ -490,7 +474,7 @@ pub fn navigation_view_accessibility<E: crate::text::TextEngine>(
                         .then_some(title_rect);
                     // The subtitle sits under the title inside `title_rect`,
                     // positioned by the same split the suppressed flush draws at.
-                    let subtitle_bounds = if state.subtitle_present {
+                    let subtitle_bounds = if state.subtitle_present() {
                         let title_size =
                             state.title.measure_built(renderer.state_mut(), env, theme);
                         let subtitle_size =
@@ -538,7 +522,7 @@ pub fn navigation_view_accessibility<E: crate::text::TextEngine>(
         if let Some(title_node_id) = title_node_id {
             bar_node.push_child(title_node_id);
         }
-        if state.subtitle_present {
+        if state.subtitle_present() {
             let mut subtitle_node = AccessibilityNode::new(
                 crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                     env,
@@ -610,7 +594,7 @@ pub fn measure_navigation_view_node<E: crate::text::TextEngine>(
     };
     let title_size = if bar_height > 0.0 && state.principal.is_empty() {
         let title = state.title.measure_built(hydro, env, theme);
-        let subtitle = if state.subtitle_present {
+        let subtitle = if state.subtitle_present() {
             state.subtitle.measure_built(hydro, env, theme)
         } else {
             LayoutSize::zero()
@@ -1091,7 +1075,7 @@ fn flush_title_and_subtitle<E: crate::text::TextEngine>(
     bar: &crate::renderer::ChromeBar,
 ) {
     let title_size = state.title.measure_intrinsic(ctx.renderer_mut(), env);
-    let subtitle_size = if state.subtitle_present {
+    let subtitle_size = if state.subtitle_present() {
         state.subtitle.measure_intrinsic(ctx.renderer_mut(), env)
     } else {
         LayoutSize::zero()
@@ -1109,7 +1093,7 @@ fn flush_title_and_subtitle<E: crate::text::TextEngine>(
             title_area,
         );
     }
-    if state.subtitle_present && subtitle_rect.height() > 0.0 {
+    if state.subtitle_present() && subtitle_rect.height() > 0.0 {
         let render_ctx = ctx.render_context();
         let subtitle_area = bar.area_for(subtitle_rect);
         state.subtitle.place(
