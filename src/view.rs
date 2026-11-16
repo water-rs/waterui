@@ -16,7 +16,7 @@ use waterui_core::IntoSignalF32;
 use waterui_core::handler::ReportExtraction;
 pub use waterui_core::view::*;
 use waterui_core::{
-    AnyView, Environment, IgnorableMetadata, Retain,
+    AnyView, Environment, Metadata, Retain,
     env::{Installed, With},
     extract::State,
     handler::{EventHandler, Handler, HandlerOnce},
@@ -68,7 +68,6 @@ use crate::{
 };
 #[cfg(feature = "std")]
 use waterkit_haptic::{Haptic, Intensity};
-use waterui_core::Metadata;
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent};
 use waterui_core::id::TaggedView;
 use waterui_core::interaction::{Disabled, InteractionReport, InteractionState, Selected};
@@ -251,13 +250,13 @@ pub trait ViewExt: View + Sized {
     ///     })
     ///     .state(&last_seen);
     /// ```
-    fn on_change<C, H, A>(self, source: &C, handler: H) -> Metadata<OnChange>
+    fn on_change<C, H, A>(self, source: &C, handler: H) -> OnChange<Self>
     where
         C: Signal,
         C::Output: PartialEq + Clone,
         H: EventHandler<C::Output, A>,
     {
-        Metadata::new(self, OnChange::new(source, handler))
+        OnChange::new(self, source, handler)
     }
 
     /// Spawns an asynchronous task tied to the lifecycle of this view.
@@ -326,8 +325,8 @@ pub trait ViewExt: View + Sized {
     /// ))
     /// .material_group();
     /// ```
-    fn material_group(self) -> IgnorableMetadata<crate::background::MaterialGroup> {
-        IgnorableMetadata::new(AnyView::new(self), crate::background::MaterialGroup)
+    fn material_group(self) -> Metadata<crate::background::MaterialGroup> {
+        Metadata::new(AnyView::new(self), crate::background::MaterialGroup)
     }
 
     /// Sets the foreground color for this view and all its descendants.
@@ -738,8 +737,8 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `label` - The accessibility label to apply, constant or reactive
-    fn a11y_label(self, label: impl IntoComputed<Str>) -> IgnorableMetadata<AccessibilityLabel> {
-        IgnorableMetadata::new(self, accessibility::AccessibilityLabel::new(label))
+    fn a11y_label(self, label: impl IntoComputed<Str>) -> Metadata<AccessibilityLabel> {
+        Metadata::new(self, accessibility::AccessibilityLabel::new(label))
     }
 
     /// Sets the accessibility value for this view.
@@ -755,19 +754,16 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `value` - The accessibility value to apply, constant or reactive
-    fn a11y_value(self, value: impl IntoComputed<Str>) -> IgnorableMetadata<AccessibilityValue> {
-        IgnorableMetadata::new(self, accessibility::AccessibilityValue::new(value))
+    fn a11y_value(self, value: impl IntoComputed<Str>) -> Metadata<AccessibilityValue> {
+        Metadata::new(self, accessibility::AccessibilityValue::new(value))
     }
 
     /// Sets the accessibility role for this view.
     ///
     /// # Arguments
     /// * `role` - The accessibility role to apply
-    fn a11y_role(
-        self,
-        role: accessibility::AccessibilityRole,
-    ) -> IgnorableMetadata<AccessibilityRole> {
-        IgnorableMetadata::new(self, role)
+    fn a11y_role(self, role: accessibility::AccessibilityRole) -> Metadata<AccessibilityRole> {
+        Metadata::new(self, role)
     }
 
     /// Sets a stable automation identifier for locating this view in UI tests.
@@ -775,16 +771,16 @@ pub trait ViewExt: View + Sized {
     /// Identifiers are invisible to end users and assistive technologies; they
     /// exist for `waterui-testing` selectors and native automation frameworks
     /// (`XCUITest` `accessibilityIdentifier`, Android `UiAutomator`).
-    fn a11y_id(self, identifier: impl Into<Str>) -> IgnorableMetadata<AccessibilityIdentifier> {
-        IgnorableMetadata::new(
+    fn a11y_id(self, identifier: impl Into<Str>) -> Metadata<AccessibilityIdentifier> {
+        Metadata::new(
             self,
             accessibility::AccessibilityIdentifier::new(identifier),
         )
     }
 
     /// Overrides whether this view is hidden from assistive technologies.
-    fn a11y_hidden(self, hidden: bool) -> IgnorableMetadata<AccessibilityHidden> {
-        IgnorableMetadata::new(self, accessibility::AccessibilityHidden::new(hidden))
+    fn a11y_hidden(self, hidden: bool) -> Metadata<AccessibilityHidden> {
+        Metadata::new(self, accessibility::AccessibilityHidden::new(hidden))
     }
 
     /// Chooses which rectangle this view's accessibility element reports.
@@ -795,35 +791,29 @@ pub trait ViewExt: View + Sized {
     /// stack allocated to a spacer — and `AccessibilityGeometry::Region`
     /// an explicit rectangle in the view's own coordinates. Hit testing,
     /// focus and drawing are unaffected.
-    fn a11y_geometry(
-        self,
-        geometry: AccessibilityGeometry,
-    ) -> IgnorableMetadata<AccessibilityGeometry> {
-        IgnorableMetadata::new(self, geometry)
+    fn a11y_geometry(self, geometry: AccessibilityGeometry) -> Metadata<AccessibilityGeometry> {
+        Metadata::new(self, geometry)
     }
 
     /// Controls how descendants contribute semantics for this view.
     fn a11y_children(
         self,
         behavior: accessibility::AccessibilityChildren,
-    ) -> IgnorableMetadata<AccessibilityChildren> {
-        IgnorableMetadata::new(self, behavior)
+    ) -> Metadata<AccessibilityChildren> {
+        Metadata::new(self, behavior)
     }
 
     /// Applies explicit accessibility state metadata.
-    fn a11y_state(
-        self,
-        state: accessibility::AccessibilityState,
-    ) -> IgnorableMetadata<AccessibilityState> {
-        IgnorableMetadata::new(self, state)
+    fn a11y_state(self, state: accessibility::AccessibilityState) -> Metadata<AccessibilityState> {
+        Metadata::new(self, state)
     }
 
     /// Applies reactive accessibility state metadata.
     fn a11y_state_signal(
         self,
         state: impl IntoComputed<accessibility::AccessibilityState>,
-    ) -> IgnorableMetadata<accessibility::AccessibilityStateSignal> {
-        IgnorableMetadata::new(self, accessibility::AccessibilityStateSignal::new(state))
+    ) -> Metadata<accessibility::AccessibilityStateSignal> {
+        Metadata::new(self, accessibility::AccessibilityStateSignal::new(state))
     }
 
     /// Observes a gesture and executes an action when the gesture is recognized.

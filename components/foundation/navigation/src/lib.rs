@@ -27,10 +27,10 @@ use nami::{Binding, Computed, Signal as _, SignalExt as _};
 use waterui_controls::{ButtonStyle, IntoLabel, button};
 use waterui_core::handler::{AnyViewBuilder, BoxedAction, Handler, ReportExtraction, boxed_action};
 use waterui_core::{
-    AnyView, Environment, Error, IgnorableMetadata, IntoSignal, Metadata, Native, NativeView,
-    Retain, SerialDispatch, Str, View, contract_violation, env::use_env, extract::ExtractionState,
-    extract::Extractor, extract::State, flatten_signal, handler::ViewBuilder, impl_extractor,
-    layout::StretchAxis, metadata::MetadataKey, raw_view,
+    AnyView, Environment, Error, IntoSignal, Metadata, Native, NativeView, Retain, SerialDispatch,
+    Str, View, contract_violation, env::use_env, extract::ExtractionState, extract::Extractor,
+    extract::State, flatten_signal, handler::ViewBuilder, impl_extractor, layout::StretchAxis,
+    metadata::MetadataKey, raw_view,
 };
 use waterui_graphics::color::{Color, WorkingColor};
 use waterui_icon::SystemIcon;
@@ -1018,8 +1018,8 @@ impl Default for Bar {
 /// The link itself renders and behaves as a plain button; this marker is how
 /// a platform that draws a destination-following affordance around the row a
 /// link sits in — the iOS disclosure chevron — recognizes one. It carries no
-/// behavior, and a renderer with no such affordance (a Mac list, say) ignores
-/// it, which is why it wraps as [`IgnorableMetadata`].
+/// behavior, and a backend with no such affordance (a Mac list, say) ignores
+/// it explicitly.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NavigationLinkHint;
 
@@ -1486,7 +1486,7 @@ where
         );
 
         let destination = AnyViewBuilder::new(self.content);
-        IgnorableMetadata::new(
+        Metadata::new(
             button(self.label)
                 // A navigation link carries no chrome of its own. It is a button
                 // semantically — it is activated, and reads as one to assistive
@@ -1531,7 +1531,7 @@ where
             );
             AnyView::new(button(self.label).style(ButtonStyle::Plain).action(|| {}))
         };
-        IgnorableMetadata::new(link, NavigationLinkHint)
+        Metadata::new(link, NavigationLinkHint)
     }
 }
 

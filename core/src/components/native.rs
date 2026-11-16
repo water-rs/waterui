@@ -2,6 +2,7 @@
 
 use core::any::type_name;
 
+use crate::backend::Backend;
 use crate::{Environment, View, layout::StretchAxis};
 
 /// A wrapper for platform-specific native UI components.
@@ -50,6 +51,10 @@ impl<T: NativeView> Native<T> {
 impl<T: 'static + NativeView> View for Native<T> {
     fn body(self, _env: &Environment) -> impl View {
         never_expands::<T>();
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.native, env, cx)
     }
 
     fn stretch_axis(&self) -> StretchAxis {

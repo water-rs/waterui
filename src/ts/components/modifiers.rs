@@ -21,7 +21,7 @@ use crate::appearance::style::Vector;
 use nami::{Computed, SignalExt as _};
 use suiteki::Str;
 use waterui_core::accessibility::AccessibilityIdentifier;
-use waterui_core::{AnyView, IgnorableMetadata};
+use waterui_core::{AnyView, Metadata};
 use waterui_graphics::WorkingColor;
 use waterui_graphics::color::{Color, Working};
 use waterui_layout::background::BackgroundView;
@@ -106,7 +106,7 @@ pub fn apply(
         }
         "a11yId" => {
             let identifier = Str::from_js(value, bridge)?;
-            Ok(AnyView::new(IgnorableMetadata::new(
+            Ok(AnyView::new(Metadata::new(
                 view,
                 AccessibilityIdentifier::new(identifier),
             )))

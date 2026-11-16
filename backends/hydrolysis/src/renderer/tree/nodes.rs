@@ -1011,13 +1011,6 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// A hover-enter/move/exit handler re-registered every flush. The handler is
     /// shared so the node can re-register the same `OnEvent` each frame.
     OnEvent(Rc<RefCell<OnEvent>>),
-    /// An `.on_change(..)` subscription, made at build against the
-    /// environment the wrapped content resolves in and held for the node's
-    /// life. Paint-, layout- and accessibility-transparent.
-    OnChange {
-        /// The subscription, never read: dropping it ends the handler.
-        _subscription: nami::watcher::BoxWatcherGuard,
-    },
     /// An `.on_key_press` ancestor scope: pushed onto the renderer's key
     /// handler stack while the child flushes, so a focused input inside the
     /// subtree bubbles its unconsumed keys here.
@@ -1092,7 +1085,6 @@ impl<E: crate::text::TextEngine> WrapperEffect<E> {
         matches!(
             self,
             Self::OnEvent(_)
-                | Self::OnChange { .. }
                 | Self::GestureObserver(_)
                 | Self::DropDestination(_)
                 | Self::AnchoredOverlay(_)
