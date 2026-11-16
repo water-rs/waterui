@@ -18,6 +18,7 @@ impl_widget_behavior!(
     |state: &crate::widgets::layout::list::ListRenderState<E>, proposal, hydro, env, theme| {
         crate::widgets::layout::list::measure_list_node(state, proposal, hydro, env, theme)
     }
+    ; prepare: prepare_first_row
     ; a11y: crate::widgets::layout::list::emit_list_accessibility
     ; surface: surface
 );
@@ -26,8 +27,9 @@ impl_widget_behavior!(
     crate::widgets::layout::table::TableRenderState<E>,
     crate::widgets::layout::table::render_table_node,
     |state: &crate::widgets::layout::table::TableRenderState<E>, proposal, hydro, env, theme| {
-        crate::widgets::layout::table::measure_table_node(&state.config, proposal, hydro, env, theme)
+        crate::widgets::layout::table::measure_table_node(state, proposal, hydro, env, theme)
     }
+    ; prepare: prepare_headers
     ; a11y: crate::widgets::layout::table::emit_table_accessibility
     ; surface: surface
 );
@@ -123,33 +125,43 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     pub(super) fn build_list(
         config: ListConfig,
         env: &Environment,
-        renderer: &SemanticCore<E>,
+        renderer: &mut SemanticCore<E>,
     ) -> Self {
         use crate::widgets::layout::list::ListRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
-        let state = Rc::new(RefCell::new(ListRenderState::from_config(
-            config, env, renderer,
-        )));
-        Self::build_widget(renderer, state, stretch, env)
+        let state = ListRenderState::from_config(config, env, renderer);
+        // The first row is realized under this widget's cell as the record
+        // reader, so its node attaches to the list rather than the window.
+        let core = renderer.new_core();
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
+            state.refresh_first_row(env, renderer);
+        });
+        Self::build_widget_with_core(Rc::new(RefCell::new(state)), stretch, env, core)
     }
 
     /// Build a persistent table node: retain the config (its `columns` signal and
-    /// per-column reactive `rows` stay owned by the cell). Each flush re-reads the
-    /// columns, re-resolves the visible row/column windows from the enclosing
-    /// scroll's pushed viewport, and re-dispatches only those header/data cells, so
-    /// reactive cell content and a changing column/row set stay live; the
-    /// `LazyTableController` column-width/row-count cache (keyed by body-order cursor
-    /// slot) persists across frames. Stretch is read from the config.
+    /// per-column reactive `rows` stay owned by the cell) and realize every
+    /// column's header. Each flush re-reads the columns, re-resolves the visible
+    /// row/column windows from the enclosing scroll's pushed viewport, and
+    /// realizes only the data cells that become visible, so reactive cell content
+    /// and a changing column/row set stay live. Stretch is read from the config.
     #[cfg(feature = "table")]
     pub(super) fn build_table(
-        renderer: &SemanticCore<E>,
+        renderer: &mut SemanticCore<E>,
         config: TableConfig,
         env: &Environment,
     ) -> Self {
         use crate::widgets::layout::table::TableRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
-        let state = Rc::new(RefCell::new(TableRenderState::from_config(config)));
-        Self::build_widget(renderer, state, stretch, env)
+        let state = TableRenderState::from_config(config);
+        // The headers are realized under this widget's cell as the record
+        // reader, so their nodes attach to the table rather than the window.
+        let core = renderer.new_core();
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
+            let columns = renderer.read_signal(&state.config.columns);
+            state.refresh_headers(&columns, env, renderer);
+        });
+        Self::build_widget_with_core(Rc::new(RefCell::new(state)), stretch, env, core)
     }
 
     /// Build a persistent navigation-view node: its bar `title`/`leading`/`trailing`

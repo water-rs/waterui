@@ -300,6 +300,17 @@ pub struct ButtonRenderState<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> ButtonRenderState<E> {
+    /// The label this control contributes to a node naming itself from its
+    /// content: its own label.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn contributed_label(
+        &self,
+        _renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+    ) -> Option<String> {
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
+    }
+
     pub(crate) fn from_config(config: ButtonConfig) -> Self {
         Self {
             config,
@@ -582,6 +593,26 @@ enum MenuLabel<E: crate::text::TextEngine> {
 
 #[cfg(feature = "menu")]
 impl<E: crate::text::TextEngine> MenuRenderState<E> {
+    /// The label a menu contributes to a node naming itself from its
+    /// content: its accessibility label.
+    #[cfg(feature = "accessibility")]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the widget label contract answers an Option; a menu always names itself"
+    )]
+    pub(crate) fn contributed_label(
+        &self,
+        renderer: &mut crate::renderer::SemanticCore<E>,
+        _env: &Environment,
+    ) -> Option<String> {
+        Some(
+            renderer
+                .read_signal(&self.accessibility_label)
+                .to_semantic()
+                .to_string(),
+        )
+    }
+
     pub(crate) fn from_resolved(menu: ResolvedMenu, env: &Environment) -> Self {
         let ResolvedMenu {
             label,

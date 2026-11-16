@@ -602,6 +602,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             ctx,
                             child_env,
                             effect,
+                            &node.child,
                             |r, walk_env| {
                                 node.child.flush(r, ctx, walk_env, kurbo::Affine::IDENTITY);
                             },
@@ -967,7 +968,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 match &node.effect {
                     WrapperEffect::GestureObserver(effect) => {
                         let claim = HydrolysisRenderer::emit_gesture_observer_accessibility(
-                            renderer, child_env, effect,
+                            renderer,
+                            child_env,
+                            effect,
+                            &node.child,
                         );
                         // The gesture's node claimed the naming scope: the
                         // content walks under the same shielded environment a

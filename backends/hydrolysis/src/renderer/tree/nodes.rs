@@ -70,10 +70,6 @@ struct BuiltSubview<E: crate::text::TextEngine> {
     /// reach the sub-view again). `None` only while the set is lent to
     /// [`HydroState::layout_dependencies`] for the duration of a pass.
     layout_dependencies: Option<LayoutDependencies<E>>,
-    /// The default spoken accessibility label extracted from the source view once,
-    /// at build time (mirrors `GestureObserverEffect::default_a11y_label`): the
-    /// node owns the source after build, so the per-frame a11y path reads this.
-    default_a11y_label: Option<String>,
 }
 
 /// Writes `safe_area` into a node's stored-context slot, overwriting the
@@ -221,12 +217,6 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
             return;
         };
         let view = core::mem::replace(source, AnyView::new(()));
-        // Extract the default a11y label from the source before it is consumed
-        // by `build` (the node owns the view afterward).
-        #[cfg(feature = "accessibility")]
-        let default_a11y_label = renderer.accessibility_label_from_view(&view, env);
-        #[cfg(not(feature = "accessibility"))]
-        let default_a11y_label = None;
         // Normalize as the container/collection build paths do, so a layout
         // view (stack/spacer/etc.) inside a label lowers to its native form.
         let view = normalize_layout_view(view, env);
@@ -240,7 +230,6 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
             laid_out_area: None,
             content_anchor: None,
             layout_dependencies,
-            default_a11y_label,
         }));
         // The current reader — the record or layout pass this build runs
         // inside — is the owning widget's cell; a build with no reader
@@ -270,11 +259,13 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
         built
     }
 
-    /// The default spoken a11y label extracted from the source at build time.
-    pub(crate) fn default_a11y_label(&self) -> Option<String> {
-        self.expect_built("default_a11y_label")
-            .default_a11y_label
-            .clone()
+    /// The spoken label the sub-view's realized content derives, read now:
+    /// see [`RenderNode::accessibility_label`].
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn accessibility_label(&self, renderer: &mut SemanticCore<E>) -> Option<String> {
+        self.expect_built("accessibility_label")
+            .node
+            .accessibility_label(renderer)
     }
 
     /// Transform the still-unbuilt source view (e.g. apply a default foreground
@@ -783,6 +774,22 @@ impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubvie
             .or_insert_with(|| RetainedSubview::new(build()))
     }
 
+    /// Marks the retained item for `key` visible this frame; `false` when
+    /// none is retained.
+    pub(crate) fn touch(&mut self, key: &K) -> bool {
+        let retained = self.entries.contains_key(key);
+        if retained {
+            self.touched.insert(key.clone());
+        }
+        retained
+    }
+
+    /// The already-retained item for `key`, mutably, without marking it
+    /// visible this frame.
+    pub(crate) fn get_mut(&mut self, key: &K) -> Option<&mut RetainedSubview<E>> {
+        self.entries.get_mut(key)
+    }
+
     /// Look up an already-retained item without marking it visible this frame.
     pub(crate) fn get(&self, key: &K) -> Option<&RetainedSubview<E>> {
         self.entries.get(key)
@@ -944,6 +951,19 @@ pub trait WidgetBehavior<E: crate::text::TextEngine> {
     #[cfg(feature = "accessibility")]
     #[cfg(hydrolysis_cherenkov)]
     fn emit_accessibility(self: Rc<Self>, _renderer: &mut SemanticCore<E>, _env: &Environment) {}
+
+    /// The spoken label this widget contributes when an enclosing node names
+    /// itself from its content — a control's own label, so a row of a single
+    /// `toggle("Wi-Fi")` announces "Wi-Fi". `env` is the widget's build
+    /// environment. Widgets that name nothing answer `None`.
+    #[cfg(feature = "accessibility")]
+    fn accessibility_label(
+        &self,
+        _renderer: &mut SemanticCore<E>,
+        _env: &Environment,
+    ) -> Option<String> {
+        None
+    }
 }
 
 /// A native widget leaf rendered every flush from one retained state allocation.
@@ -1203,16 +1223,14 @@ impl Drop for LifeCycleEffect {
 
 /// The build-resolved state of a `.gesture(...)` observer, shared by the dispatch
 /// handler and the retained `Wrapper` node. A node has no `content: AnyView` at
-/// flush, so the two pieces the dispatch path derives from `content` are resolved
-/// at build time and stored here: `default_a11y_label` (the default spoken label,
-/// via `accessibility_label_from_view`) and `gesture_group_identity` (via
-/// `gesture_group_identity`). The action is shared (`Rc<RefCell<…>>`) so the node
-/// can re-register the same action every flush.
+/// flush, so the gesture group identity the dispatch path derives from `content`
+/// is resolved at build time and stored here; the default spoken label is
+/// derived from the wrapper's realized child when the claim is emitted. The
+/// action is shared (`Rc<RefCell<…>>`) so the node can re-register the same
+/// action every flush.
 pub struct GestureObserverEffect {
     pub gesture: Gesture,
     pub(crate) action: Rc<RefCell<BoxedAction<()>>>,
-    #[cfg(feature = "accessibility")]
-    pub(crate) default_a11y_label: Option<String>,
     pub(crate) gesture_group_identity: usize,
     /// The target the last flush registered. Every scene emit rebuilds the
     /// engine's target list under `clear_targets`, so the next flush

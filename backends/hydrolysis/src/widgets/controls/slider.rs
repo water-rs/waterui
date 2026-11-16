@@ -89,6 +89,17 @@ fn valid_range(range: RangeInclusive<f64>) -> RangeInclusive<f64> {
 }
 
 impl<E: crate::text::TextEngine> SliderRenderState<E> {
+    /// The label this control contributes to a node naming itself from its
+    /// content: its own label.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn contributed_label(
+        &self,
+        _renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+    ) -> Option<String> {
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&self.label, env)
+    }
+
     pub(crate) fn from_config(config: SliderConfig) -> Self {
         let (label, min_value_label, max_value_label, range, value, size, value_indicator, step) =
             config.into_parts();

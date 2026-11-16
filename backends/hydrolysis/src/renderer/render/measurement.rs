@@ -1224,7 +1224,6 @@ pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
     if row_count == 0 {
         return LayoutSize::zero();
     }
-    let editing = state.measure_signal(list.editing());
     let first_item = materialize_list_item(contents, 0, env);
     let metrics = theme.list(&list_spec(env), env).metrics();
     let content_size = match width {
@@ -1239,9 +1238,38 @@ pub fn measure_list_intrinsic<E: crate::text::TextEngine>(
         ),
         None => measure_transient_view_intrinsic(first_item.content(), state, env, theme),
     };
+    list_intrinsic_for_first_row(
+        list,
+        contents,
+        content_size,
+        first_item.get_insets(),
+        state,
+        env,
+        theme,
+    )
+}
+
+/// The list's own size from its first row's measured content, which every
+/// row is estimated at: `insets` are that row's `ListItem::insets`.
+#[cfg(feature = "list")]
+pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine>(
+    list: &ListConfig,
+    contents: &AnyViewsSnapshot<ListItem>,
+    content_size: LayoutSize,
+    insets: Option<&EdgeInsets>,
+    state: &mut HydroState<E>,
+    env: &Environment,
+    theme: &Rc<dyn WidgetTheme>,
+) -> LayoutSize {
+    let row_count = contents.len();
+    if row_count == 0 {
+        return LayoutSize::zero();
+    }
+    let editing = state.measure_signal(list.editing());
+    let metrics = theme.list(&list_spec(env), env).metrics();
     let row_height = list_row_height_for_content(
         f64::from(content_size.height),
-        first_item.get_insets(),
+        insets,
         list.min_row_height(),
         metrics,
     );
@@ -1553,70 +1581,12 @@ pub fn measure_table_metrics<E: crate::text::TextEngine>(
     }
 }
 
-#[cfg(feature = "table")]
-pub fn refresh_table_slot_baseline<E: crate::text::TextEngine>(
-    columns: &[TableColumn],
-    slot: &mut LazyTableSlot,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-    metrics: crate::theme::TableMetrics,
-) {
-    slot.prepare_columns(columns.len(), metrics);
-    slot.max_rows = 0;
-    for (index, column) in columns.iter().enumerate() {
-        let label_view = normalize_layout_view(AnyView::new(column.label()), env);
-        let label_size = measure_transient_view_intrinsic(&label_view, state, env, theme);
-        let width = (f64::from(label_size.width) + metrics.cell_horizontal_padding)
-            .max(metrics.min_column_width);
-        if slot.column_widths[index] < width {
-            slot.column_widths[index] = width;
-        }
-        slot.max_rows = slot.max_rows.max(column.rows().len().snapshot());
-    }
-}
-
 /// The cells of a table a frame shows: the rows and columns in view.
 #[derive(Debug, Clone, Copy)]
 #[cfg(feature = "table")]
 pub struct VisibleCells {
     pub rows: VisibleIndexWindow,
     pub columns: VisibleColumnWindow,
-}
-
-#[cfg(feature = "table")]
-pub fn update_table_slot_visible_cell_widths<E: crate::text::TextEngine>(
-    columns: &[TableColumn],
-    slot: &mut LazyTableSlot,
-    visible: VisibleCells,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn WidgetTheme>,
-    metrics: crate::theme::TableMetrics,
-) {
-    let VisibleCells {
-        rows: row_window,
-        columns: col_window,
-    } = visible;
-    for (column_index, column) in columns
-        .iter()
-        .enumerate()
-        .take(col_window.end)
-        .skip(col_window.start)
-    {
-        let rows = column.rows().snapshot();
-        for row_index in row_window.start..row_window.end {
-            if let Some(cell) = rows.get_view(row_index) {
-                let cell_view = normalize_layout_view(AnyView::new(cell), env);
-                let size = measure_transient_view_intrinsic(&cell_view, state, env, theme);
-                let width = (f64::from(size.width) + metrics.cell_horizontal_padding)
-                    .max(metrics.min_column_width);
-                if slot.column_widths[column_index] < width {
-                    slot.column_widths[column_index] = width;
-                }
-            }
-        }
-    }
 }
 
 #[cfg(feature = "picker")]

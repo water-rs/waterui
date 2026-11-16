@@ -455,9 +455,9 @@ pub fn navigation_view_accessibility<E: crate::text::TextEngine>(
         if renderer.read_signal(hidden) {
             return;
         }
-        let default_title_label = state.title.default_a11y_label();
+        let default_title_label = state.title.accessibility_label(renderer);
         let default_subtitle_label = if state.subtitle_present {
-            state.subtitle.default_a11y_label()
+            state.subtitle.accessibility_label(renderer)
         } else {
             None
         };

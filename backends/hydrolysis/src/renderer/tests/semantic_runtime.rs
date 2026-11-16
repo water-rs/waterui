@@ -1873,3 +1873,22 @@ fn a_tap_region_over_a_composite_derives_its_label_from_the_content() {
     find_by_label(&update, Role::Button, "Alpha Beta")
         .expect("the tap region's button takes its composite content's label");
 }
+
+#[test]
+fn a_tap_region_names_itself_from_its_content_as_it_is_now() {
+    let name = Binding::container(Str::from("Alpha"));
+    let shown = name.clone();
+    let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
+        AnyView::new(vstack((
+            hstack((text(shown.clone()), text("Beta"))).on_tap(|| {}),
+        )))
+    }));
+    let update = pumped(&mut runtime);
+    find_by_label(&update, Role::Button, "Alpha Beta")
+        .expect("the tap region's button takes its composite content's label");
+
+    name.set(Str::from("Gamma"));
+    let update = pumped(&mut runtime);
+    find_by_label(&update, Role::Button, "Gamma Beta")
+        .expect("the label follows the content's current text");
+}

@@ -57,6 +57,17 @@ pub struct TextFieldRenderState<E: crate::text::TextEngine> {
 
 #[cfg(feature = "text-field")]
 impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
+    /// The label this control contributes to a node naming itself from its
+    /// content: its own label.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn contributed_label(
+        &self,
+        _renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+    ) -> Option<String> {
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
+    }
+
     pub(crate) fn from_config(config: ResolvedTextFieldConfig) -> Self {
         let field = FieldChrome::new();
         Self {
@@ -101,6 +112,17 @@ pub struct SecureFieldRenderState<E: crate::text::TextEngine> {
 
 #[cfg(feature = "secure-field")]
 impl<E: crate::text::TextEngine> SecureFieldRenderState<E> {
+    /// The label this control contributes to a node naming itself from its
+    /// content: its own label.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn contributed_label(
+        &self,
+        _renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+    ) -> Option<String> {
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
+    }
+
     pub(crate) fn from_config(config: SecureFieldConfig) -> Self {
         let field = FieldChrome::new();
         Self {
