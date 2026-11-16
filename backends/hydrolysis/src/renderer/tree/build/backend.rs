@@ -1,7 +1,11 @@
 //! Hydrolysis's [`NativeBackend`]: each payload's retained node, built by
 //! the method `View::dispatch` reaches.
 
-use waterui_backend_core::{NativeBackend, Realize, report_unprovided};
+use core::marker::PhantomData;
+
+use waterui_backend_core::{
+    ChildView, NativeBackend, NativeBackendFamily, Realize, report_unprovided,
+};
 use waterui_core::backend::{ErasedPayload, cast};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{NativeView, View};
@@ -74,9 +78,23 @@ macro_rules! accessibility_scopes {
     };
 }
 
+/// [`HydroBackend`] with its renderer borrow left open.
+pub(in crate::renderer::tree) struct HydroFamily<E>(PhantomData<E>);
+
+impl<E: crate::text::TextEngine> NativeBackendFamily for HydroFamily<E> {
+    type Output = RenderNode<E>;
+    type Ctx = ();
+    type Backend<'a> = HydroBackend<'a, E>;
+}
+
 impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     type Output = RenderNode<E>;
     type Ctx = ();
+    type Family = HydroFamily<E>;
+
+    fn with_family<R>(&mut self, f: impl for<'a> FnOnce(&mut HydroBackend<'a, E>) -> R) -> R {
+        f(self)
+    }
 
     accessibility_scope_table!(accessibility_scopes);
 
@@ -833,14 +851,15 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_lifecycle(value, content, env, renderer)
     }
 
-    fn scroll(
+    fn scroll<C: ChildView<Self>>(
         &mut self,
-        native: waterui::layout::scroll::ScrollView,
+        native: waterui::layout::scroll::ScrollView<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        let renderer = &mut *self.renderer;
         let (axis, content, controller, offset) = native.into_inner().into_parts();
+        let core = self.renderer.new_core();
+        let child = content.realize(self, env, ());
         // A scroll surface owns §7.1 for its subtree: the layout
         // pass hands the surface its facts and the child lays out
         // with no safe-area context — the surface insets and
@@ -849,9 +868,9 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
             memo_gate: Cell::default(),
             memo_slots: RefCell::default(),
             accessibility_identity: Rc::new(()),
-            core: renderer.new_core(),
+            core,
             axis,
-            child: RenderNode::build_view(content, env, renderer),
+            child,
             controller,
             offset,
             applied_scroll_generation: Cell::new(0),

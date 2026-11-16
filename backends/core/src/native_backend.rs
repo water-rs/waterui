@@ -21,12 +21,17 @@ use waterui_core::backend::{Backend, DynBackend, ErasedPayload, cast};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{AnyView, Environment, Metadata, NativeView, View, contract_violation};
 
+use crate::child::{Child, ChildView, NativeBackendFamily};
+
 /// Declares [`NativeBackend`] and both routers from one list, so the trait
 /// and the routing never disagree.
 macro_rules! native_backend {
     (
         natives {
             $( $(#[cfg($ncfg:meta)])* $(#[doc = $ndoc:literal])* $native:ident: $native_ty:ty, )*
+        }
+        parents {
+            $( $(#[cfg($pcfg:meta)])* $(#[doc = $pdoc:literal])* $parent:ident: $($parent_ty:ident)::+, )*
         }
         metadata {
             $( $(#[cfg($mcfg:meta)])* $(#[doc = $mdoc:literal])* $meta:ident: $meta_ty:ty, )*
@@ -43,11 +48,28 @@ macro_rules! native_backend {
             type Output: 'static;
             /// What a parent hands each child it realizes.
             type Ctx: 'static;
+            /// This backend type with its lifetimes left open, for the
+            /// [`Child`] views of the payloads it receives.
+            type Family: NativeBackendFamily<Output = Self::Output, Ctx = Self::Ctx>;
+
+            /// Runs `f` on this backend as its family names it. Every
+            /// implementation is `f(self)`; the signature is what ties the
+            /// backend to its family.
+            fn with_family<R>(
+                &mut self,
+                f: impl for<'a> FnOnce(&mut <Self::Family as NativeBackendFamily>::Backend<'a>) -> R,
+            ) -> R;
 
             $(
                 $(#[cfg($ncfg)])*
                 $(#[doc = $ndoc])*
                 fn $native(&mut self, native: $native_ty, env: &Environment, cx: Self::Ctx) -> Self::Output;
+            )*
+
+            $(
+                $(#[cfg($pcfg)])*
+                $(#[doc = $pdoc])*
+                fn $parent<C: ChildView<Self>>(&mut self, native: $($parent_ty)::+<C>, env: &Environment, cx: Self::Ctx) -> Self::Output;
             )*
 
             $(
@@ -90,6 +112,18 @@ macro_rules! native_backend {
                     Err(native) => native,
                 };
             )*
+            $(
+                $(#[cfg($pcfg)])*
+                let native = match cast::<T, $($parent_ty)::+<Child<B::Family>>>(native) {
+                    Ok(native) => return backend.$parent(native, env, cx),
+                    Err(native) => native,
+                };
+                $(#[cfg($pcfg)])*
+                let native = match cast::<T, $($parent_ty)::+<AnyView>>(native) {
+                    Ok(native) => return backend.$parent(native, env, cx),
+                    Err(native) => native,
+                };
+            )*
             backend.provided(native, env, cx)
         }
 
@@ -121,6 +155,12 @@ macro_rules! native_backend {
                     return backend.$native(native, env, cx);
                 }
             )*
+            $(
+                $(#[cfg($pcfg)])*
+                if let Some(native) = native.take::<$($parent_ty)::+<AnyView>>() {
+                    return backend.$parent(native, env, cx);
+                }
+            )*
             backend.provided_dyn(native, env, cx)
         }
 
@@ -140,14 +180,35 @@ macro_rules! native_backend {
         }
 
         #[cfg(test)]
+        #[cfg(test)]
+        impl NativeBackendFamily for tests::Recorder {
+            type Output = ();
+            type Ctx = ();
+            type Backend<'a> = Self;
+        }
+
+        #[cfg(test)]
         impl NativeBackend for tests::Recorder {
             type Output = ();
             type Ctx = ();
+            type Family = Self;
+
+            fn with_family<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+                f(self)
+            }
 
             $(
                 $(#[cfg($ncfg)])*
                 fn $native(&mut self, _native: $native_ty, _env: &Environment, (): ()) {
                     self.reached.push(stringify!($native));
+                }
+            )*
+
+            $(
+                $(#[cfg($pcfg)])*
+                fn $parent<C: ChildView<Self>>(&mut self, native: $($parent_ty)::+<C>, env: &Environment, (): ()) {
+                    self.reached.push(stringify!($parent));
+                    tests::Recorder::realize_children(self, native, env);
                 }
             )*
 
@@ -241,6 +302,7 @@ impl<'a, B: NativeBackend> Realize<'a, B> {
 impl<B: NativeBackend> Backend for Realize<'_, B> {
     type Output = B::Output;
     type Ctx = B::Ctx;
+    type Slot = Child<B::Family>;
 
     fn native<T: NativeView + 'static>(
         &mut self,
@@ -344,8 +406,6 @@ native_backend! {
         fixed_container: waterui::layout::container::FixedContainer,
         /// A container whose children are produced lazily.
         lazy_container: waterui::layout::container::LazyContainer,
-        /// A scroll view.
-        scroll: waterui::layout::scroll::ScrollView,
         /// A view whose content a signal replaces.
         dynamic: waterui_core::Dynamic,
         /// A resolved shape.
@@ -440,6 +500,10 @@ native_backend! {
         #[cfg(waterui_feature = "map")]
         /// A map.
         map: waterui::map::MapConfig,
+    }
+    parents {
+        /// A scroll view.
+        scroll: waterui::layout::scroll::ScrollView,
     }
     metadata {
         /// An environment scope over its content.
@@ -541,6 +605,7 @@ mod tests {
     use alloc::vec::Vec;
 
     use waterui::layout::Spacer;
+    use waterui::layout::scroll::scroll;
     use waterui_core::layout::LayoutPriority;
 
     use super::*;
@@ -549,6 +614,25 @@ mod tests {
     #[derive(Debug, Default)]
     pub(super) struct Recorder {
         pub(super) reached: Vec<&'static str>,
+    }
+
+    impl Recorder {
+        /// Realizes each child view `native` holds.
+        pub(super) fn realize_children<C: ChildView<Self>>(
+            &mut self,
+            native: waterui::layout::scroll::ScrollView<C>,
+            env: &Environment,
+        ) {
+            self.reached.push(
+                if core::any::TypeId::of::<C>() == core::any::TypeId::of::<AnyView>() {
+                    "erased child"
+                } else {
+                    "typed child"
+                },
+            );
+            let (_, content, _, _) = native.into_inner().into_parts();
+            content.realize(self, env, ());
+        }
     }
 
     fn tree() -> impl View {
@@ -580,6 +664,27 @@ mod tests {
         let mut recorder = Recorder::default();
         Realize::child(&mut recorder, ErasesItself, &Environment::new(), ());
         assert_eq!(recorder.reached, ["empty"]);
+    }
+
+    #[test]
+    fn a_payload_child_realizes_through_the_same_backend() {
+        let mut recorder = Recorder::default();
+        let env = Environment::new();
+        Realize::child(&mut recorder, scroll(tree()), &env, ());
+        Realize::child(&mut recorder, AnyView::new(scroll(tree())), &env, ());
+        Realize::child(&mut recorder, scroll(AnyView::new(tree())), &env, ());
+        // A typed tree's child stays typed; only an erased scroll's payload
+        // carries an erased child. Content erased by hand stays erased
+        // inside the typed slot.
+        assert_eq!(
+            recorder.reached,
+            [
+                ["scroll", "typed child", "layout_priority", "spacer"],
+                ["scroll", "erased child", "layout_priority", "spacer"],
+                ["scroll", "typed child", "layout_priority", "spacer"],
+            ]
+            .concat()
+        );
     }
 
     #[test]

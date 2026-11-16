@@ -34,6 +34,11 @@ pub trait Backend {
     type Output;
     /// What a parent hands each child it dispatches.
     type Ctx;
+    /// What a native payload's child views become before the payload reaches
+    /// [`Backend::native`]: a payload holding views converts each into this
+    /// slot in its [`View::dispatch`], so the backend realizes the child
+    /// later, where it places it.
+    type Slot: ChildSlot;
 
     /// Realizes a native payload.
     fn native<T: NativeView + 'static>(
@@ -54,6 +59,23 @@ pub trait Backend {
     /// Realizes an erased view, typically through
     /// [`AnyView::dispatch_dyn`].
     fn erased(&mut self, view: AnyView, env: &Environment, cx: Self::Ctx) -> Self::Output;
+}
+
+/// A child view of a native payload, held until the backend realizes it.
+///
+/// A payload generic over its child views converts each into its backend's
+/// slot when it dispatches, so the payload type a backend matches on is
+/// concrete, while the child's own type is kept wherever the slot keeps it.
+pub trait ChildSlot: 'static {
+    /// The slot holding `view`.
+    fn from_view<V: View>(view: V) -> Self;
+}
+
+/// The erased slot: the child dispatches through [`Backend::erased`].
+impl ChildSlot for AnyView {
+    fn from_view<V: View>(view: V) -> Self {
+        Self::new(view)
+    }
 }
 
 /// The object-safe face of a [`Backend`], for the one hop an [`AnyView`]
@@ -104,6 +126,7 @@ impl core::fmt::Debug for Erased<'_> {
 impl Backend for Erased<'_> {
     type Output = Box<dyn Any>;
     type Ctx = Box<dyn Any>;
+    type Slot = AnyView;
 
     fn native<T: NativeView + 'static>(
         &mut self,
@@ -217,6 +240,7 @@ mod tests {
     impl Backend for Recorder {
         type Output = ();
         type Ctx = ();
+        type Slot = AnyView;
 
         fn native<T: NativeView + 'static>(&mut self, _native: T, _env: &Environment, (): ()) {
             self.leaves.push(type_name::<T>());
