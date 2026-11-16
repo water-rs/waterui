@@ -8,6 +8,7 @@ mod hwui;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    facade_features();
     #[cfg(feature = "hwui")]
     {
         for input in [
@@ -161,5 +162,49 @@ fn main() {
         // Both Cherenkov painters: the offscreen runtime selects one at
         // construction from the host's adapters.
         hydrolysis_both_painters: { all(hydrolysis_gpu_painter, hydrolysis_cpu_painter) },
+    }
+}
+
+/// Turns the facade's enabled features into `waterui_feature` cfgs, and
+/// fails the build when a facade component this crate realizes itself is on
+/// without the feature that realizes it: `NativeBackend` then requires a
+/// method this crate would not compile. Components drawn by a realization
+/// the application links (`map`, `video`, a browser engine's `webview`)
+/// are not listed: their methods report a missing realization at run time.
+fn facade_features() {
+    // Each facade feature, and the feature of this crate that realizes it.
+    const REALIZED_BY: &[(&str, &str)] = &[
+        ("calendar", "calendar"),
+        ("color-picker", "color-picker"),
+        ("date-picker", "date-picker"),
+        ("multi-date-picker", "multi-date-picker"),
+        ("picker", "picker"),
+        ("secure-field", "secure-field"),
+        ("slider", "slider"),
+        ("stepper", "stepper"),
+        ("text-field", "text-field"),
+        ("toggle", "toggle"),
+        ("menu", "menu"),
+        ("list", "list"),
+        ("table", "table"),
+        ("navigation", "navigation"),
+    ];
+
+    println!("cargo::rustc-check-cfg=cfg(waterui_feature, values(any()))");
+    let features = std::env::var("DEP_WATERUI_FEATURES")
+        .expect("the `waterui` facade's build script exports DEP_WATERUI_FEATURES");
+    for feature in features.split(',').filter(|feature| !feature.is_empty()) {
+        println!("cargo::rustc-cfg=waterui_feature=\"{feature}\"");
+        if let Some((_, own)) = REALIZED_BY.iter().find(|(name, _)| *name == feature) {
+            let enabled = std::env::var_os(format!(
+                "CARGO_FEATURE_{}",
+                own.to_ascii_uppercase().replace('-', "_")
+            ))
+            .is_some();
+            assert!(
+                enabled,
+                "the application enables the `waterui` feature `{feature}`; enable hydrolysis's `{own}` to realize it"
+            );
+        }
     }
 }

@@ -59,7 +59,7 @@ pub mod overlay;
 pub mod scroll;
 pub mod time;
 
-pub use native_backend::{NativeBackend, Realize};
+pub use native_backend::{NativeBackend, Realize, report_unprovided};
 
 // Re-export common types from waterui-core
 pub use waterui_core::{AnyView, Environment, Native, View};

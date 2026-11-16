@@ -4779,7 +4779,6 @@ dependencies = [
  "waterui-inspector-protocol",
  "waterui-layout",
  "waterui-locale",
- "waterui-map",
  "waterui-navigation",
  "waterui-shape",
  "waterui-structural-transition",
