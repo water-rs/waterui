@@ -193,6 +193,8 @@ pub use waterui_svg as svg;
 pub use waterui_text as text;
 #[cfg(feature = "ts")]
 pub mod ts;
+#[cfg(feature = "map")]
+pub use waterui_map as map;
 #[cfg(feature = "video")]
 pub use waterui_video as video;
 #[cfg(feature = "webview")]
