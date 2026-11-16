@@ -276,10 +276,6 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// Build a viewport-virtualized lazy stack: store the collection and subscribe
     /// to membership changes (a change schedules a refresh so the visible window
     /// re-resolves). Items are materialized lazily at flush, not here.
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
-    )]
     fn build_lazy_stack(
         axis: LazyStackAxisConfig,
         views: &AnyViews<AnyView>,
