@@ -6,17 +6,17 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::theme::WidgetTheme;
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::rc::Rc;
 use waterui_core::layout::{LayoutError, ResolvedExtent};
 
 /// A [`SubView`] adapter that measures a child [`RenderNode`] **on demand** at
-/// whatever proposal the real [`Layout`] passes — the node analogue of
-/// [`HydroSubview`]. A fixed pre-measured size is wrong: layouts re-probe children
+/// whatever proposal the real [`Layout`] passes. A fixed pre-measured size is wrong: layouts re-probe children
 /// at refined proposals (e.g. `GridLayout` asks each cell its height at the column
 /// width; a `FrameLayout` with no height constraint would otherwise fill the whole
 /// proposed height), so the adapter must forward the live proposal.
 ///
-/// Like [`HydroSubview`], a text-leaf subtree is resolved at construction (reading
+/// A text-leaf subtree is resolved at construction (reading
 /// its signals and theme) into a shaping input, and `measure` then shapes it
 /// through the content-keyed `TextService` directly. Every other node
 /// measures by recursing through the renderer's `HydroState`, shared across one
@@ -39,6 +39,10 @@ pub(super) struct NodeSubView<'a, E: crate::text::TextEngine> {
     /// Present when this child is a resolved text-leaf subtree, letting `measure`
     /// shape it directly instead of recursing.
     resolved_text: Option<ResolvedNodeTextMeasure<E>>,
+    /// Whether any answer this child gave carried an explicit alignment guide:
+    /// the container measuring it then exports the guides its placement
+    /// forms. Atomic because the resolved-text path answers on any thread.
+    answered_guides: AtomicBool,
 }
 
 /// A text-leaf node resolved on the main thread, ready to be shaped on any thread.
@@ -108,11 +112,26 @@ impl<'a, E: crate::text::TextEngine> NodeSubView<'a, E> {
             theme: MainThreadBound::new(Rc::clone(theme)),
             measure_cache: MainThreadBound::new(RefCell::new(Vec::new())),
             resolved_text,
+            answered_guides: AtomicBool::new(false),
         }
     }
 
-    /// Apply this child's stretch axis to a measured size against the proposal,
-    /// matching [`HydroSubview::apply_stretch`] so both paths agree.
+    /// Whether any answer this child gave carried an explicit alignment
+    /// guide.
+    pub(super) fn answered_guides(&self) -> bool {
+        self.answered_guides.load(Ordering::Relaxed)
+    }
+
+    /// Records whether `dimensions` carries an explicit alignment guide.
+    fn note_guides(&self, dimensions: &ViewDimensions) {
+        if dimensions.explicit_horizontal_guides().next().is_some()
+            || dimensions.explicit_vertical_guides().next().is_some()
+        {
+            self.answered_guides.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Apply this child's stretch axis to a measured size against the proposal.
     const fn apply_stretch(
         &self,
         mut dimensions: ViewDimensions,
@@ -142,6 +161,7 @@ impl<E: crate::text::TextEngine> SubView for NodeSubView<'_, E> {
                     .service
                     .shape_limited(&resolved.input, proposal.width, resolved.max_lines);
             let dimensions = resolved.service.dimensions(&layout, resolved.max_lines);
+            self.note_guides(&dimensions);
             return self.apply_stretch(dimensions, proposal);
         }
         if let Some((_, dimensions)) = self
@@ -158,6 +178,7 @@ impl<E: crate::text::TextEngine> SubView for NodeSubView<'_, E> {
                 .measure(&mut state, &self.env, &self.theme, proposal)
         };
         let dimensions = self.apply_stretch(dimensions, proposal);
+        self.note_guides(&dimensions);
         self.measure_cache
             .borrow_mut()
             .push((proposal, dimensions.clone()));

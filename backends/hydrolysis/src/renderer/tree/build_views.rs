@@ -376,8 +376,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
 
     /// Build a persistent divider node: a static separator line drawn from theme
     /// metrics, oriented by the enclosing stack axis (read from env every flush).
-    /// Stretches on its cross axis (`StretchAxis::CrossAxis`, matching the dispatch
-    /// path's [`effective_stretch_axis`] for `Divider`).
+    /// Stretches on its cross axis (`StretchAxis::CrossAxis`).
     pub(super) fn build_divider(
         renderer: &SemanticCore<E>,
         divider: Divider,

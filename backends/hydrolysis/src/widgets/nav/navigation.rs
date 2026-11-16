@@ -6,11 +6,9 @@ use crate::renderer::bounded_proposal;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 use crate::renderer::live_bar::{BarFrames, LiveBarParts};
 use crate::renderer::{
-    Edge, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
-    WidgetRenderContext, measure_navigation_view_intrinsic,
-    measure_owned_navigation_view_with_proposal, measure_transient_view_with_proposal,
+    Edge, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview, WidgetRenderContext,
     navigation_back_button_rect, navigation_base_bar_height, navigation_look,
-    normalize_layout_view, split_compact_threshold,
+    split_compact_threshold,
 };
 use crate::theme::{NavigationBarLook, NavigationSpec, WidgetTheme};
 #[cfg(feature = "accessibility")]
@@ -404,30 +402,6 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
             dirty |= search_field.take_layout_dirty_if_built();
         }
         dirty
-    }
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<NavigationView> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_navigation_view_intrinsic(view.as_inner(), state, env, theme)
-    }
-
-    fn dimensions(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-        proposal: ProposalSize,
-    ) -> ViewDimensions {
-        if let (Some(width), Some(height)) = (proposal.width, proposal.height) {
-            return ViewDimensions::new(LayoutSize::new(width, height));
-        }
-        ViewDimensions::new(Self::intrinsic(state, view, env, theme))
     }
 }
 
@@ -1314,39 +1288,6 @@ impl<E: crate::text::TextEngine> NavigationSplitRenderState<E> {
     }
 }
 
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<NavigationSplitLayout> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_navigation_split_layout(
-            view.as_inner(),
-            ProposalSize::UNSPECIFIED,
-            state,
-            env,
-            theme,
-        )
-    }
-
-    fn dimensions(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-        proposal: ProposalSize,
-    ) -> ViewDimensions {
-        ViewDimensions::new(measure_navigation_split_layout(
-            view.as_inner(),
-            proposal,
-            state,
-            env,
-            theme,
-        ))
-    }
-}
-
 /// The column plan a navigation split resolves under a proposal, mirroring
 /// [`render_navigation_split_parts`]: whether the pane is compact, whether a
 /// three-column split shows all columns, the resolved fixed-column width, and
@@ -1421,134 +1362,6 @@ fn retained_split_column<'a, E: crate::text::TextEngine>(
     } else {
         placeholder
     }
-}
-
-#[expect(
-    clippy::option_if_let_else,
-    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
-)]
-// the split layout's column-size resolution is one continuous pass
-#[expect(
-    clippy::too_many_lines,
-    reason = "the layout resolves pane columns and dividers in a single sweep; the length is the enumeration, not logic"
-)]
-fn measure_navigation_split_layout<E: crate::text::TextEngine>(
-    split: &NavigationSplitLayout,
-    proposal: ProposalSize,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let primary_selection = state.measure_signal(split.primary_selection());
-    let detail_selection = split
-        .secondary_selection()
-        .map_or(primary_selection, |selection| {
-            state.measure_signal(selection)
-        });
-    let plan = split_measure_plan(
-        split.content_builder().is_some(),
-        split.sidebar_width_constraints(),
-        split.native_style(),
-        state.measure_signal(split.column_visibility_signal()),
-        proposal,
-    );
-
-    // A dispatch-time measure has no retained columns to read: each column is
-    // built transient — normalized then measured — against the proposal its
-    // rect would hand it.
-    let transient_primary = || normalize_layout_view(split.primary_builder().build(), env);
-    let transient_placeholder = || normalize_layout_view(split.placeholder_builder().build(), env);
-
-    if plan.compact {
-        let view = if plan.three_column {
-            if let Some(selected) = detail_selection {
-                normalize_layout_view(AnyView::new(split.detail_builder().build(selected)), env)
-            } else if let Some(selected) = primary_selection {
-                normalize_layout_view(
-                    AnyView::new(
-                        split
-                            .content_builder()
-                            .expect("three-column split must provide a content builder")
-                            .build(selected),
-                    ),
-                    env,
-                )
-            } else {
-                transient_primary()
-            }
-        } else if let Some(selected) = detail_selection {
-            normalize_layout_view(AnyView::new(split.detail_builder().build(selected)), env)
-        } else {
-            transient_primary()
-        };
-        return measure_transient_view_with_proposal(&view, proposal, state, env, theme);
-    }
-
-    let mut width = 0.0_f64;
-    let mut height = 0.0_f64;
-    if !plan.three_column || plan.show_all {
-        let size = measure_transient_view_with_proposal(
-            &transient_primary(),
-            plan.column_proposal,
-            state,
-            env,
-            theme,
-        );
-        width += f64::from(size.width);
-        height = height.max(f64::from(size.height));
-    }
-    if plan.three_column {
-        let size = if let Some(selected) = primary_selection {
-            measure_owned_navigation_view_with_proposal(
-                split
-                    .content_builder()
-                    .expect("three-column split must provide a content builder")
-                    .build(selected),
-                plan.column_proposal,
-                state,
-                env,
-                theme,
-            )
-        } else {
-            measure_transient_view_with_proposal(
-                &transient_placeholder(),
-                plan.column_proposal,
-                state,
-                env,
-                theme,
-            )
-        };
-        width += f64::from(size.width);
-        height = height.max(f64::from(size.height));
-    }
-    let size = if let Some(selected) = detail_selection {
-        measure_owned_navigation_view_with_proposal(
-            split.detail_builder().build(selected),
-            plan.detail_proposal,
-            state,
-            env,
-            theme,
-        )
-    } else {
-        measure_transient_view_with_proposal(
-            &transient_placeholder(),
-            plan.detail_proposal,
-            state,
-            env,
-            theme,
-        )
-    };
-    width += f64::from(size.width);
-    height = height.max(f64::from(size.height));
-
-    LayoutSize::new(
-        proposal
-            .width
-            .unwrap_or_else(|| crate::num_cast::f64_as_f32(width)),
-        proposal
-            .height
-            .unwrap_or_else(|| crate::num_cast::f64_as_f32(height)),
-    )
 }
 
 pub fn measure_navigation_split_node<E: crate::text::TextEngine>(
@@ -2729,17 +2542,6 @@ fn present_navigation_pages<E: crate::text::TextEngine>(
                 );
             }
         }
-    }
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<NavigationStack<(), ()>> {
-    fn intrinsic(
-        _state: &mut HydroState<E>,
-        _view: &Self,
-        _env: &Environment,
-        _theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        LayoutSize::zero()
     }
 }
 

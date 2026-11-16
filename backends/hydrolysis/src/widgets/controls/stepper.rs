@@ -2,8 +2,7 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 use crate::renderer::{
-    HydroNativeView, HydroState, InteractionKey, RenderContext, SemanticCore, WidgetRenderContext,
-    measure_label_intrinsic,
+    HydroState, InteractionKey, RenderContext, SemanticCore, WidgetRenderContext,
 };
 use crate::theme::{Chrome, SpecTint, StepperLook, StepperSpec, WidgetTheme};
 #[cfg(feature = "accessibility")]
@@ -20,7 +19,7 @@ use waterui_core::contract_violation;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{LayoutDirection, ProposalSize, ViewDimensions};
-use waterui_core::{AnyView, Environment, Native};
+use waterui_core::{AnyView, Environment};
 
 use crate::renderer::RetainedSubview;
 use crate::widgets::util::{label_beside_control_bounds, mirrored_in, widget_disabled};
@@ -152,17 +151,6 @@ fn stepper_spec(env: &Environment) -> StepperSpec {
         waterui_core::layout::layout_direction(env).snapshot(),
         SpecTint::resolve(env),
     )
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<StepperConfig> {
-    fn intrinsic(
-        state: &mut crate::renderer::HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_stepper_intrinsic(view.as_inner(), state, env, theme)
-    }
 }
 
 /// Emits a stepper's accessibility node from its config. Shared by the dispatch
@@ -513,17 +501,6 @@ fn stepper_size(look: &StepperLook, label: LayoutSize) -> LayoutSize {
         crate::num_cast::f64_as_f32(width),
         crate::num_cast::f64_as_f32(height),
     )
-}
-
-pub fn measure_stepper_intrinsic<E: crate::text::TextEngine>(
-    stepper: &StepperConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let look = theme.stepper(&stepper_spec(env), env);
-    let label_size = measure_label_intrinsic(stepper.label(), state, env, theme);
-    stepper_size(&look, label_size)
 }
 
 /// Emits a retained stepper's accessibility node for the semantic walk — the

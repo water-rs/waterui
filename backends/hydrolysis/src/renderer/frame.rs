@@ -33,16 +33,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         &mut self.state
     }
 
-    /// Drop cached `Dynamic` measurements whose node has left the retained tree.
-    ///
-    /// Shared by the two frames that can remove nodes: the one-time build and any
-    /// refresh that applied a structural patch.
-    pub(crate) fn prune_dynamic_measurements(&mut self, live: &FxHashSet<usize>) {
-        self.state
-            .measurement
-            .retain_dynamic_identities(|identity| live.contains(&identity));
-    }
-
     /// Drop text-input focus / the selection drag when the target they name is
     /// no longer emitted. Targets are pure-emission (rebuilt in flush order every
     /// frame), so after any flush — rebuild or refresh — a previously focused
@@ -347,17 +337,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             self.program.is_empty(),
             "hydrolysis renderer: a node program is still open at the end of a rebuild"
         );
-        // Prune the measure-path `Dynamic` dimension cache down to the identities
-        // still present in the retained render tree. The cache is read by
-        // `measure_dynamic` when a `Dynamic` leaf is measured after its content was
-        // handed to a `DynamicHostNode`; the live `DynamicHostNode`s in `render_tree`
-        // are exactly the alive identities now that the dispatch path is gone.
-        let live_dynamics = self
-            .render_tree
-            .as_ref()
-            .map_or_default(RenderNode::collect_dynamic_identities);
-        self.prune_dynamic_measurements(&live_dynamics);
-
         // The frame's window-level record closes before materialization:
         // the leave retires every subtree the root record left unplaced,
         // so the flat lists rebuild against the post-retire registries.

@@ -2,8 +2,8 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::live_toggle::LiveToggleParts;
 use crate::renderer::{
-    GroupOpacity, HydroNativeView, HydroState, InteractionKey, RenderContext, Track, TrackAction,
-    WidgetRenderContext, measure_label_intrinsic,
+    GroupOpacity, HydroState, InteractionKey, RenderContext, Track, TrackAction,
+    WidgetRenderContext,
 };
 use crate::theme::{
     CheckboxLook, SpecTint, SwitchDrag, SwitchLook, ToggleControl, ToggleSpec, WidgetTheme,
@@ -22,7 +22,7 @@ use waterui_core::contract_violation;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::{LayoutDirection, Size as LayoutSize};
 use waterui_core::layout::{ProposalSize, StretchAxis, ViewDimensions};
-use waterui_core::{AnyView, Environment, Native};
+use waterui_core::{AnyView, Environment};
 
 use crate::renderer::RetainedSubview;
 use crate::widgets::util::{label_beside_control_bounds, mirrored_in, widget_disabled};
@@ -144,17 +144,6 @@ impl<E: crate::text::TextEngine> ToggleRenderState<E> {
         self.held(spec)
             .cloned()
             .unwrap_or_else(|| ToggleLook::resolve(theme, spec, env))
-    }
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ToggleConfig> {
-    fn intrinsic(
-        state: &mut crate::renderer::HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_toggle_intrinsic(view.as_inner(), state, env, theme)
     }
 }
 
@@ -523,21 +512,6 @@ fn toggle_binding_action<E: crate::text::TextEngine>(
         binding.toggle();
         true
     }
-}
-
-pub fn measure_toggle_intrinsic<E: crate::text::TextEngine>(
-    toggle: &ToggleConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let look = ToggleLook::resolve(theme, &toggle_spec(toggle, env), env);
-    let label_size = measure_label_intrinsic(toggle.label(), state, env, theme);
-    let (width, height) = toggle_size(look.control(), label_size);
-    LayoutSize::new(
-        crate::num_cast::f64_as_f32(width),
-        crate::num_cast::f64_as_f32(height),
-    )
 }
 
 /// What a toggle of `style` in `bounds` proposes to its label: a checkbox's

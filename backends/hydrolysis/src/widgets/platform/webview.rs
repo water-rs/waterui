@@ -46,64 +46,11 @@ pub use android::AndroidSystemWebViewHandle;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use macos::MacSystemWebViewController;
 
-use waterui::webview::WebView;
-use waterui_core::Environment;
-use waterui_core::layout::Size as LayoutSize;
-
 #[cfg(hydrolysis_web_system_webview)]
 mod web;
 
 #[cfg(hydrolysis_web_system_webview)]
 pub use web::WebSystemWebViewController;
-
-use crate::renderer::{HydroNativeView, HydroState};
-
-#[cfg(not(hydrolysis_android_system_webview))]
-impl<E: crate::text::TextEngine> HydroNativeView<E> for WebView {
-    fn intrinsic(
-        _state: &mut HydroState<E>,
-        _view: &Self,
-        _env: &Environment,
-        _theme: &std::rc::Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        #[cfg(hydrolysis_system_webview)]
-        {
-            LayoutSize::new(0.0, 0.0)
-        }
-        #[cfg(not(hydrolysis_system_webview))]
-        {
-            waterui_core::contract_violation!(
-                "{}; the web view measures as zero",
-                crate::renderer::UNSUPPORTED_WEBVIEW
-            );
-            LayoutSize::zero()
-        }
-    }
-}
-
-/// The Android system bridge measures like `Native<PlatformView>`: the mounted
-/// `WebView` has no intrinsic size and fills the proposal its slot assigns.
-#[cfg(hydrolysis_android_system_webview)]
-impl<E: crate::text::TextEngine> HydroNativeView<E> for WebView {
-    fn intrinsic(
-        _state: &mut HydroState<E>,
-        _view: &Self,
-        _env: &Environment,
-        _theme: &std::rc::Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        LayoutSize::zero()
-    }
-
-    fn dimensions(
-        _state: &mut HydroState<E>,
-        _view: &Self,
-        _env: &Environment,
-        _theme: &std::rc::Rc<dyn crate::theme::WidgetTheme>,
-        proposal: waterui_core::layout::ProposalSize,
-    ) -> waterui_core::layout::ViewDimensions {
-        crate::renderer::graphics_dimensions_from_proposal(proposal)
-    }
-}
 
 /// The hosted leaf showing `view`'s `WKWebView`, or `None` when there is no
 /// page to host: the controller failed to open the view (already reported by

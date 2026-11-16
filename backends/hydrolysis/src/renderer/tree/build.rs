@@ -476,9 +476,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
-        let identity = dynamic.identity();
         let pending: Rc<RefCell<Option<AnyView>>> = Rc::new(RefCell::new(None));
-        let source = dynamic.clone();
         let signals = renderer.signals.clone();
         let core = renderer.new_core();
         let cell = Rc::downgrade(&core.cell);
@@ -513,16 +511,9 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             None => Self::build_view(AnyView::new(()), env, renderer),
         };
         let child = Rc::new(RefCell::new(child));
-        // The dispatch measure (`measure_dynamic`) reaches this child through
-        // the identity registry once the `Dynamic` has connected.
-        renderer
-            .state
-            .measurement
-            .register_dynamic_node(identity, &child);
         let host = DynamicHostNode {
             core,
             safe_area: None,
-            source,
             pending,
             env: env.clone(),
             child,

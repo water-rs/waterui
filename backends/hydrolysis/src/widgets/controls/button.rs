@@ -2,12 +2,11 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 #[cfg(feature = "menu")]
-use crate::renderer::measure_view_intrinsic;
 #[cfg(feature = "menu")]
 use crate::renderer::popup_menu_nodes;
 use crate::renderer::{
-    GroupOpacity, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
-    WidgetRenderContext, measure_label_intrinsic,
+    GroupOpacity, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
+    WidgetRenderContext,
 };
 use crate::theme::{
     ButtonLook, ButtonSpec, Chrome, CornerShape, Corners, Inputs, Label as LookLabel, SpecTint,
@@ -33,7 +32,7 @@ use waterui_core::handler::ReportExtraction as _;
 use waterui_core::interaction::InteractionState;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
-use waterui_core::{AnyView, Environment, Native};
+use waterui_core::{AnyView, Environment};
 use waterui_graphics::color::Color;
 use waterui_text::font::Font;
 use waterui_text::styled::StyledStr;
@@ -393,17 +392,6 @@ impl<E: crate::text::TextEngine> ButtonRenderState<E> {
     }
 }
 
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ButtonConfig> {
-    fn intrinsic(
-        state: &mut crate::renderer::HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_button_intrinsic(view.as_inner(), state, env, theme)
-    }
-}
-
 /// Emits a button's accessibility node from its retained state. Shared by the
 /// rendered `Widget`-node flush and the semantic emission walk so both produce
 /// the same a11y tree.
@@ -680,18 +668,6 @@ impl<E: crate::text::TextEngine> MenuRenderState<E> {
             MenuLabel::View(subview) => subview.take_layout_dirty_if_built(),
             MenuLabel::Title(_) => false,
         }
-    }
-}
-
-#[cfg(feature = "menu")]
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<ResolvedMenu> {
-    fn intrinsic(
-        state: &mut crate::renderer::HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_menu_intrinsic(view.as_inner(), state, env, theme)
     }
 }
 
@@ -1166,72 +1142,6 @@ pub fn render_menu_parts<E: crate::text::TextEngine>(
                 )
             },
         );
-}
-
-/// The intrinsic size of a button from its look, measured without a
-/// retained node.
-pub fn measure_button_intrinsic<E: crate::text::TextEngine>(
-    button: &ButtonConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    measure_button_look_intrinsic(
-        button.style(),
-        button.size(),
-        button.label(),
-        state,
-        env,
-        theme,
-    )
-}
-
-/// The intrinsic size of a `style` button of `size` showing `label`, from
-/// its look — shared by the configured and the generic `Button` paths.
-pub fn measure_button_look_intrinsic<E: crate::text::TextEngine>(
-    style: ButtonStyle,
-    size: ControlSize,
-    label: &Label,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let spec = button_spec(style, size, label_resolves_icon_only(label, env), env);
-    let look = resolve_look(theme, &spec, env);
-    let font = look_font(&look, InteractionState::empty(), Rect::ZERO);
-    let label_size = if renders_as_plain_title(label) {
-        let styled = styled_button_title(state, font, label, env);
-        HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
-    } else {
-        let label = styled_button_label(font, label.clone());
-        measure_label_intrinsic(&label, state, env, theme)
-    };
-    button_size(label_size, &look, ProposalSize::UNSPECIFIED)
-}
-
-#[cfg(feature = "menu")]
-pub fn measure_menu_intrinsic<E: crate::text::TextEngine>(
-    menu: &ResolvedMenu,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let icon_only = menu
-        .label
-        .downcast_ref::<Label>()
-        .is_some_and(|label| label_resolves_icon_only(label, env));
-    let spec = button_spec(menu.style, menu.size, icon_only, env);
-    let look = resolve_look(theme, &spec, env);
-    let label_size = if let Some(label) = menu.label.downcast_ref::<Label>()
-        && renders_as_plain_title(label)
-    {
-        let font = look_font(&look, InteractionState::empty(), Rect::ZERO);
-        let styled = styled_button_title(state, font, label, env);
-        HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
-    } else {
-        measure_view_intrinsic(&menu.label, state, env, theme)
-    };
-    button_size(label_size, &look, ProposalSize::UNSPECIFIED)
 }
 
 fn button_label_view(color: Option<Color>, label: AnyView) -> AnyView {

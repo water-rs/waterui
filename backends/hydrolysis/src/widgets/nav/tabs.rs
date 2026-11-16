@@ -6,8 +6,7 @@ use std::rc::Rc;
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::live_tabs::{LiveTabsParts, TabsFrames};
 use crate::renderer::{
-    Edge, HydroNativeView, HydroState, RetainedSubview, WidgetRenderContext, measure_tabs_layout,
-    tabs_button_rect, tabs_content_proposal,
+    Edge, HydroState, RetainedSubview, WidgetRenderContext, tabs_button_rect, tabs_content_proposal,
 };
 use crate::theme::{TabItemGeometry, TabItemLayout, TabsLook, TabsSpec, WidgetTheme};
 #[cfg(feature = "accessibility")]
@@ -22,7 +21,7 @@ use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::layout::{LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot, Views};
-use waterui_core::{AnyView, Environment, Native};
+use waterui_core::{AnyView, Environment};
 
 #[cfg(feature = "accessibility")]
 use crate::widgets::util::widget_disabled;
@@ -309,39 +308,6 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
                     .is_some_and(RetainedSubview::take_layout_dirty_if_built)
                 | tab.content.take_layout_dirty_if_built()
         })
-    }
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<TabsLayout> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_tabs_layout(
-            view.as_inner(),
-            ProposalSize::UNSPECIFIED,
-            state,
-            env,
-            theme,
-        )
-    }
-
-    fn dimensions(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-        proposal: ProposalSize,
-    ) -> ViewDimensions {
-        ViewDimensions::new(measure_tabs_layout(
-            view.as_inner(),
-            proposal,
-            state,
-            env,
-            theme,
-        ))
     }
 }
 
