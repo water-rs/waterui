@@ -8,7 +8,6 @@ use waterui_core::contract_violation;
 #[cfg(feature = "accessibility")]
 use crate::theme::InteractionFocusBinding;
 #[cfg(feature = "accessibility")]
-#[cfg(feature = "accessibility")]
 use std::collections::BTreeSet;
 #[cfg(feature = "accessibility")]
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
