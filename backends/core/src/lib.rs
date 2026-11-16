@@ -9,7 +9,6 @@
 //!
 //! This crate provides shared infrastructure used by `WaterUI` backends:
 //!
-//! - [`ViewDispatcher`]: Type-based view dispatch for routing views to handlers
 //! - [`frame_signals`]: the frame-economy trigger handle shared by self-drawn
 //!   render loops (redraw / patch / structural rebuild requests)
 //! - [`gesture`]: platform-agnostic gesture recognition state machines
@@ -48,7 +47,6 @@
 
 extern crate alloc;
 
-pub mod dispatcher;
 pub mod frame_signals;
 #[cfg(feature = "gestures")]
 pub mod gesture;
@@ -61,7 +59,6 @@ pub mod overlay;
 pub mod scroll;
 pub mod time;
 
-pub use dispatcher::ViewDispatcher;
 pub use native_backend::{NativeBackend, Realize};
 
 // Re-export common types from waterui-core
