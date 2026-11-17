@@ -10,6 +10,7 @@ use super::*;
 use crate::renderer::mount::motion::{LayerMotion, Motion};
 use crate::text::{TextEngine, TextLayout as _};
 use waterui::gesture::TapGesture;
+use waterui_backend_core::Child;
 use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_structural_transition::TransitionSpec;
 use waterui_text::styled::TapSpan;
@@ -1708,7 +1709,7 @@ pub struct DynamicHostNode<E: crate::text::TextEngine> {
     /// mid-pass layout for a child that applied its pending reuses it.
     pub(super) safe_area: Option<Box<safe_area::SafeAreaLayout>>,
     /// Latest content delivered by the `Dynamic`, awaiting a patch.
-    pub(super) pending: Rc<RefCell<Option<AnyView>>>,
+    pub(super) pending: Rc<RefCell<Option<Child<super::build::backend::HydroFamily<E>>>>>,
     /// Environment captured at build, used to rebuild the child on a change.
     pub(super) env: Environment,
     /// The current expansion of the `Dynamic`'s content. Interior mutability
@@ -1833,7 +1834,7 @@ impl<E: crate::text::TextEngine> DynamicHostNode<E> {
         match pending {
             Some(content) => {
                 let node_env = self.env.clone();
-                let child = RenderNode::build(content, &node_env, renderer);
+                let child = RenderNode::build_held(content, &node_env, renderer);
                 // The rebuilt child re-roots its marks under this host —
                 // without it the subtree is an orphan whose dirty bits can
                 // never reach the window root.

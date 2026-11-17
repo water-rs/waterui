@@ -20,8 +20,11 @@
 //! let content = watch(show_details, |show| {
 //!     if show { "Details" } else { "Summary" }
 //! });
+use crate::backend::{Backend, ChildSlot};
 use crate::components::metadata::Retain;
-use crate::{AnyView, Environment, LatestDispatch, Metadata, SerialDispatch, View};
+use crate::{
+    AnyView, Environment, LatestDispatch, Metadata, Native, NativeView, SerialDispatch, View,
+};
 use alloc::rc::Rc;
 use core::cell::RefCell;
 use core::marker::PhantomData;
@@ -29,18 +32,22 @@ use nami::watcher::Context;
 use nami::{Signal, watcher::Metadata as WatcherMetadata};
 use waterui_macros::state;
 
-/// A dynamic view that can be updated.
+/// A view whose content is replaced at runtime, by a [`DynamicHandler`].
 ///
-/// Represents a view whose content can be changed dynamically at runtime.
+/// `V` is the type of the content it shows. A dynamic fed views of different
+/// types holds [`AnyView`], the default.
 ///
 /// You should avoid using this component if possible,
 /// most of components in `WaterUI` already provide a way to update their content reactively.
-#[derive(Clone)]
-pub struct Dynamic(DynamicHandler);
+pub struct Dynamic<V: 'static = AnyView>(DynamicHandler<V>);
 
-raw_view!(Dynamic);
+impl<V> Clone for Dynamic<V> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
-/// A handler for updating a Dynamic view.
+/// A handler for updating a [`Dynamic`] view.
 ///
 /// Provides methods to set new content for the associated Dynamic view.
 ///
@@ -48,47 +55,52 @@ raw_view!(Dynamic);
 /// `handler: DynamicHandler` parameter shares positions with
 /// `State<DynamicHandler>` ones.
 #[state]
-#[derive(Clone)]
-pub struct DynamicHandler(Rc<DynamicHandlerInner>);
+pub struct DynamicHandler<V: 'static = AnyView>(Rc<DynamicHandlerInner<V>>);
 
-struct DynamicHandlerInner {
-    state: RefCell<DynamicHandlerState>,
+impl<V> Clone for DynamicHandler<V> {
+    fn clone(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+}
+
+struct DynamicHandlerInner<V> {
+    state: RefCell<DynamicHandlerState<V>>,
     /// Updates issued while a receiver call is in flight are delivered after
     /// it returns, in order, rather than re-entering the receiver.
-    dispatch: SerialDispatch<(AnyView, WatcherMetadata)>,
+    dispatch: SerialDispatch<(V, WatcherMetadata)>,
 }
 
-enum DynamicHandlerState {
-    /// Connected to a receiver (Swift/native side).
-    Connected {
-        receiver: Receiver,
-        pending_view_slot: Option<Rc<RefCell<Option<AnyView>>>>,
-    },
-    /// Not yet connected, stores the initial view if set before connection.
-    Unconnected(Option<AnyView>),
+enum DynamicHandlerState<V> {
+    /// Connected to the backend's receiver.
+    Connected(Rc<dyn Fn(Context<V>)>),
+    /// Not yet connected; holds the latest view set before the connection.
+    Unconnected(Option<V>),
 }
-
-type Receiver = Rc<dyn Fn(Context<AnyView>)>;
 
 /// Metadata marker for the body-time snapshot installed by [`Dynamic::watch`].
 #[derive(Clone, Copy, Debug)]
 pub struct DynamicInitialContent;
 
-impl_debug!(Dynamic);
-impl_debug!(DynamicHandler);
+impl<V> core::fmt::Debug for Dynamic<V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("Dynamic").finish_non_exhaustive()
+    }
+}
 
-impl DynamicHandler {
+impl<V> core::fmt::Debug for DynamicHandler<V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("DynamicHandler").finish_non_exhaustive()
+    }
+}
+
+impl<V> DynamicHandler<V> {
     /// Sets the content of the Dynamic view with the provided view and metadata.
     ///
     /// # Arguments
     ///
     /// * `view` - The new view to display
     /// * `metadata` - Additional metadata associated with the update
-    pub fn set_with_metadata(&self, view: impl View, metadata: WatcherMetadata) {
-        self.set_any_with_metadata(AnyView::new(view), metadata);
-    }
-
-    fn set_any_with_metadata(&self, view: AnyView, metadata: WatcherMetadata) {
+    pub fn set_with_metadata(&self, view: V, metadata: WatcherMetadata) {
         // A `set` that lands while the receiver runs only enqueues; the
         // delivery in flight drains it once the receiver returns, so the
         // receiver is never called re-entrantly.
@@ -98,7 +110,7 @@ impl DynamicHandler {
                 let receiver = {
                     let mut inner = self.0.state.borrow_mut();
                     match &mut *inner {
-                        DynamicHandlerState::Connected { receiver, .. } => Rc::clone(receiver),
+                        DynamicHandlerState::Connected(receiver) => Rc::clone(receiver),
                         DynamicHandlerState::Unconnected(temp_view) => {
                             *temp_view = Some(view);
                             return;
@@ -114,12 +126,12 @@ impl DynamicHandler {
     /// # Arguments
     ///
     /// * `view` - The new view to display
-    pub fn set(&self, view: impl View) {
+    pub fn set(&self, view: V) {
         self.set_with_metadata(view, WatcherMetadata::new());
     }
 }
 
-impl Dynamic {
+impl<V> Dynamic<V> {
     /// Creates a new Dynamic view along with its handler.
     ///
     /// Returns a tuple of (handler, view) where the handler can be used to update
@@ -129,7 +141,7 @@ impl Dynamic {
     ///
     /// A tuple containing the [`DynamicHandler`] and Dynamic view
     #[must_use]
-    pub fn new() -> (DynamicHandler, Self) {
+    pub fn new() -> (DynamicHandler<V>, Self) {
         let handler = DynamicHandler(Rc::new(DynamicHandlerInner {
             state: RefCell::new(DynamicHandlerState::Unconnected(None)),
             dispatch: SerialDispatch::new(),
@@ -137,6 +149,66 @@ impl Dynamic {
         (handler.clone(), Self(handler))
     }
 
+    /// Connects the Dynamic view to a receiver function.
+    ///
+    /// For backends.
+    ///
+    /// The receiver function is called whenever the view content is updated.
+    /// A view set before the connection is delivered to the receiver at once.
+    ///
+    /// # Arguments
+    ///
+    /// * `receiver` - A function that receives view updates
+    pub fn connect(self, receiver: impl Fn(Context<V>) + 'static) {
+        let initial = {
+            let mut inner = self.0.0.state.borrow_mut();
+
+            match &mut *inner {
+                DynamicHandlerState::Unconnected(temp_view) => {
+                    let initial = temp_view.take();
+                    *inner = DynamicHandlerState::Connected(Rc::new(receiver));
+                    initial
+                }
+                DynamicHandlerState::Connected(_) => {
+                    // A clone of a connected `Dynamic` was realized again.
+                    // The first receiver keeps the node; this realization
+                    // stays empty.
+                    crate::contract_violation!(
+                        "a Dynamic was connected twice: the second realization stays empty and the first keeps receiving updates"
+                    );
+                    return;
+                }
+            }
+        };
+
+        // The pre-connection view is delivered through the queue so a set from
+        // inside the receiver cannot re-enter it.
+        if let Some(view) = initial {
+            self.0.set_with_metadata(view, WatcherMetadata::new());
+        }
+    }
+
+    /// Returns a stable identity for this dynamic node.
+    #[must_use]
+    pub fn identity(&self) -> usize {
+        Rc::as_ptr(&self.0.0).cast::<()>() as usize
+    }
+}
+
+impl<V: View> Dynamic<V> {
+    /// The same dynamic delivering each view in the slot `S`: a dynamic
+    /// forwarding to this one's handler, converting every view it delivers.
+    fn into_slots<S: ChildSlot>(self) -> Dynamic<S> {
+        let (handler, slots) = Dynamic::new();
+        self.connect(move |context| {
+            let (view, metadata) = context.into_parts();
+            handler.set_with_metadata(S::from_view(view), metadata);
+        });
+        slots
+    }
+}
+
+impl Dynamic {
     /// Creates a Dynamic view that watches structural reactive state.
     ///
     /// The provided function is used to convert the value to a view.
@@ -165,142 +237,23 @@ impl Dynamic {
             marker: PhantomData,
         }
     }
+}
 
-    /// Connects the Dynamic view to a receiver function.
-    ///
-    /// For internal use only.
-    ///
-    /// The receiver function is called whenever the view content is updated.
-    /// If there's a temporary view stored (set before connecting), it will
-    /// be immediately passed to the receiver.
-    ///
-    /// # Arguments
-    ///
-    /// * `receiver` - A function that receives view updates
-    pub fn connect(self, receiver: impl Fn(Context<AnyView>) + 'static) {
-        self.connect_internal(None, receiver);
+/// A dynamic reaches its backend as a `Dynamic` of the backend's child
+/// slot; the content it shows has its own stretch axis, answered by the
+/// realized node.
+impl<S: 'static> NativeView for Dynamic<S> {}
+
+impl<V: View> View for Dynamic<V> {
+    /// The erased form, for code that expands views by hand.
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self.into_slots::<AnyView>())
     }
 
-    /// Connects the dynamic node while preserving a pending measurement view.
-    ///
-    /// This is used by renderers that need to stage a temporary child view
-    /// before the final backend receiver is attached.
-    pub fn connect_with_pending_view(
-        self,
-        pending_view_slot: Rc<RefCell<Option<AnyView>>>,
-        receiver: impl Fn(Context<AnyView>) + 'static,
-    ) {
-        self.connect_internal(Some(pending_view_slot), receiver);
-    }
-
-    fn connect_internal(
-        self,
-        pending_view_slot: Option<Rc<RefCell<Option<AnyView>>>>,
-        receiver: impl Fn(Context<AnyView>) + 'static,
-    ) {
-        let initial = {
-            let mut inner = self.0.0.state.borrow_mut();
-
-            match &mut *inner {
-                DynamicHandlerState::Unconnected(temp_view) => {
-                    let initial = temp_view.take();
-                    *inner = DynamicHandlerState::Connected {
-                        receiver: Rc::new(receiver),
-                        pending_view_slot,
-                    };
-                    initial
-                }
-                DynamicHandlerState::Connected { .. } => {
-                    // A clone of a connected `Dynamic` was realized again.
-                    // The first receiver keeps the node; this realization
-                    // stays empty.
-                    crate::contract_violation!(
-                        "a Dynamic was connected twice: the second realization stays empty and the first keeps receiving updates"
-                    );
-                    return;
-                }
-            }
-        };
-
-        // The pre-connection view is delivered through the queue so a set from
-        // inside the receiver cannot re-enter it.
-        if let Some(view) = initial {
-            self.0.set_any_with_metadata(view, WatcherMetadata::new());
-        }
-    }
-
-    /// Returns a stable identity for this dynamic node.
-    #[must_use]
-    pub fn identity(&self) -> usize {
-        Rc::as_ptr(&self.0.0) as usize
-    }
-
-    /// Reads the current pre-connection view snapshot, if this dynamic node
-    /// has not been connected yet.
-    ///
-    /// Returns `None` when the node is already connected to a backend receiver.
-    pub fn with_unconnected_view<R>(&self, f: impl FnOnce(Option<&AnyView>) -> R) -> Option<R> {
-        let inner = self.0.0.state.borrow();
-        match &*inner {
-            DynamicHandlerState::Unconnected(view) => Some(f(view.as_ref())),
-            DynamicHandlerState::Connected { .. } => None,
-        }
-    }
-
-    /// Mutates the current pre-connection view snapshot before the dynamic node connects.
-    ///
-    /// Returns `None` when the node is already connected to a backend receiver.
-    pub fn with_unconnected_view_mut<R>(
-        &self,
-        f: impl FnOnce(&mut Option<AnyView>) -> R,
-    ) -> Option<R> {
-        let mut inner = self.0.0.state.borrow_mut();
-        match &mut *inner {
-            DynamicHandlerState::Unconnected(view) => Some(f(view)),
-            DynamicHandlerState::Connected { .. } => None,
-        }
-    }
-
-    /// Mutates whichever view snapshot should be used for layout measurement.
-    ///
-    /// Before connection this is the unconnected snapshot; after connection it
-    /// targets the pending connected snapshot when one exists.
-    pub fn with_measurement_view_mut<R>(
-        &self,
-        f: impl FnOnce(&mut Option<AnyView>) -> R,
-    ) -> Option<R> {
-        let mut inner = self.0.0.state.borrow_mut();
-        match &mut *inner {
-            DynamicHandlerState::Unconnected(view) => Some(f(view)),
-            DynamicHandlerState::Connected {
-                pending_view_slot: Some(slot),
-                ..
-            } => Some(f(&mut slot.borrow_mut())),
-            DynamicHandlerState::Connected {
-                pending_view_slot: None,
-                ..
-            } => None,
-        }
-    }
-
-    /// Mutates the pending connected snapshot without affecting the
-    /// pre-connection snapshot.
-    pub fn with_connected_pending_view_mut<R>(
-        &self,
-        f: impl FnOnce(&mut Option<AnyView>) -> R,
-    ) -> Option<R> {
-        let mut inner = self.0.0.state.borrow_mut();
-        match &mut *inner {
-            DynamicHandlerState::Connected {
-                pending_view_slot: Some(slot),
-                ..
-            } => Some(f(&mut slot.borrow_mut())),
-            DynamicHandlerState::Connected {
-                pending_view_slot: None,
-                ..
-            }
-            | DynamicHandlerState::Unconnected(_) => None,
-        }
+    /// Reaches the backend with each delivered view in the backend's child
+    /// slot.
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.into_slots::<B::Slot>(), env, cx)
     }
 }
 
@@ -379,11 +332,8 @@ mod tests {
     struct Probe(usize);
     impl MetadataKey for Probe {}
 
-    fn probe_of(view: AnyView) -> usize {
-        view.downcast::<Metadata<Probe>>()
-            .expect("the delivered view carries a Probe")
-            .value
-            .0
+    fn probe_of(view: &Metadata<Probe>) -> usize {
+        view.value.0
     }
 
     /// A `set` issued while the receiver still runs must queue behind the
@@ -402,7 +352,7 @@ mod tests {
                     !delivering.replace(true),
                     "the receiver must not run re-entrantly"
                 );
-                delivered.borrow_mut().push(probe_of(context.into_value()));
+                delivered.borrow_mut().push(probe_of(&context.into_value()));
                 if !nested.replace(true) {
                     handle.set(Metadata::new((), Probe(2)));
                 }
@@ -466,12 +416,12 @@ mod tests {
             .downcast::<Metadata<Retain>>()
             .expect("the watched dynamic body carries its retain guard");
         let dynamic = content
-            .downcast::<Dynamic>()
+            .downcast::<Dynamic<Metadata<Probe>>>()
             .expect("the watched dynamic body resolves to a Dynamic");
         dynamic.connect({
             let delivered = Rc::clone(&delivered);
             move |context| {
-                delivered.borrow_mut().push(probe_of(context.into_value()));
+                delivered.borrow_mut().push(probe_of(&context.into_value()));
             }
         });
 
@@ -504,7 +454,7 @@ mod tests {
             .downcast::<Metadata<Retain>>()
             .expect("the watched dynamic body carries its retain guard");
         let dynamic = content
-            .downcast::<Dynamic>()
+            .downcast::<Dynamic<Metadata<Probe>>>()
             .expect("the watched dynamic body resolves to a Dynamic");
         dynamic.connect({
             let seen = Rc::clone(&seen);

@@ -39,7 +39,11 @@ impl<'r, E: crate::text::TextEngine> HydroBackend<'r, E> {
     }
 
     /// Builds a payload's child view into a node, counted like [`build`](Self::build).
-    fn build_child<C: ChildView<Self>>(&mut self, child: C, env: &Environment) -> RenderNode<E> {
+    pub(in crate::renderer::tree) fn build_child<C: ChildView<Self>>(
+        &mut self,
+        child: C,
+        env: &Environment,
+    ) -> RenderNode<E> {
         self.renderer.state.counters.semantic_builds += 1;
         child.realize(self, env, ())
     }
@@ -962,14 +966,14 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_filtered(native, env, renderer)
     }
 
-    fn dynamic(
+    fn dynamic<C: ChildView<Self>>(
         &mut self,
-        native: waterui_core::Dynamic,
+        native: waterui_core::Dynamic<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
         let renderer = &mut *self.renderer;
-        RenderNode::build_dynamic_host(native, env, renderer)
+        RenderNode::build_dynamic_host(native, <C as ChildView<Self>>::into_child, env, renderer)
     }
 
     // A native widget leaf: build a `Widget` node that re-renders it every flush

@@ -38,7 +38,7 @@ use waterui_core::{
     handler::{AnyViewBuilder, ViewBuilder},
 };
 
-use crate::{ViewExt, component::Dynamic};
+use crate::{OneOf2, ViewExt, component::Dynamic};
 
 /// A component that manages asynchronous content loading with loading states.
 ///
@@ -260,7 +260,7 @@ where
 {
     fn body(self, env: &Environment) -> impl View {
         let (handler, view) = Dynamic::new();
-        handler.set(self.loading);
+        handler.set(OneOf2::A(self.loading));
 
         // A capture waits for the loaded content, not the loading view: the
         // entry is owed from mount and resolves once the content is swapped
@@ -272,7 +272,7 @@ where
         // future instead of leaving it polled until it completes.
         view.task(async move {
             let content = SuspendedView::body(self.content, new_env).await;
-            handler.set(content);
+            handler.set(OneOf2::B(content));
             if let Some(owed) = owed {
                 owed.fulfil();
             }

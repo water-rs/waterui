@@ -185,10 +185,10 @@ mod tests {
         let retained = *render(shadows, &env)
             .downcast::<Metadata<Retain>>()
             .expect("the shadow layer is a watched Dynamic");
-        let dynamic = *retained
-            .content
-            .downcast::<Dynamic>()
-            .expect("the retained view is the Dynamic");
+        let dynamic = render(retained.content, &env)
+            .downcast::<Native<Dynamic>>()
+            .expect("the retained view is the Dynamic")
+            .into_inner();
         let layers = Rc::new(RefCell::new(Vec::new()));
         let sink = Rc::clone(&layers);
         dynamic.connect(move |ctx| sink.borrow_mut().push(ctx.into_value()));
