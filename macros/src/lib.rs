@@ -18,13 +18,16 @@ mod locale;
 mod state;
 mod view_builder;
 
+/// `::waterui`, or the name the crate renamed it to. Both `waterui` packages
+/// (the facade and `waterui-internal`) declare `extern crate self as waterui`,
+/// so inside them the same path resolves, as it does in their doctests.
 fn waterui_crate_path() -> syn::Result<TokenStream2> {
     if std::env::var("CARGO_PKG_NAME").as_deref() == Ok("waterui-internal") {
-        return Ok(quote!(crate));
+        return Ok(quote!(::waterui));
     }
 
     match crate_name("waterui") {
-        Ok(FoundCrate::Itself) => Ok(quote!(crate)),
+        Ok(FoundCrate::Itself) => Ok(quote!(::waterui)),
         Ok(FoundCrate::Name(name)) => {
             let ident = syn::Ident::new(&name, Span::call_site());
             Ok(quote!(::#ident))
