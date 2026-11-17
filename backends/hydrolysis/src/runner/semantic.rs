@@ -12,6 +12,7 @@
 //! and accessibility actions addressed to nodes directly.
 
 use super::executor::{DrainExecutorOnDrop, HeadlessMainThreadExecutor};
+use super::window::{RootWindow, root_window};
 use super::*;
 use crate::animation::PerpetualAnimation;
 #[cfg(feature = "accessibility")]
