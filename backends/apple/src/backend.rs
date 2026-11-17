@@ -89,9 +89,9 @@ impl NativeBackend for AppleBackend {
         )
     }
 
-    fn lazy_container(
+    fn lazy_container<C: ChildView<Self>>(
         &mut self,
-        native: waterui::layout::container::LazyContainer,
+        native: waterui::layout::container::LazyContainer<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {

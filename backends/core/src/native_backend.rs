@@ -423,8 +423,6 @@ native_backend! {
         spacer: waterui::layout::Spacer,
         /// A line separating content.
         divider: waterui::layout::Divider,
-        /// A container whose children are produced lazily.
-        lazy_container: waterui::layout::container::LazyContainer,
         /// A resolved shape.
         shape: waterui::shape::ResolvedShape,
         /// A system icon.
@@ -525,6 +523,8 @@ native_backend! {
         fixed_container<C>: waterui::layout::container::FixedContainer<alloc::vec::Vec<C>>,
         /// A view whose content a handler replaces.
         dynamic<C>: waterui_core::Dynamic<C>,
+        /// A container whose children are produced lazily.
+        lazy_container<C>: waterui::layout::container::LazyContainer<C>,
     }
     metadata {
         /// An environment scope over its content.
@@ -654,6 +654,17 @@ mod tests {
         fn children(self) -> Vec<C> {
             let (_, content, _, _) = self.into_inner().into_parts();
             alloc::vec![content]
+        }
+    }
+
+    /// A lazy container's children are the items it currently holds.
+    impl<C: 'static> Parent<C> for waterui::layout::container::LazyContainer<C> {
+        fn children(self) -> Vec<C> {
+            let snapshot = self.into_inner().1.snapshot();
+            snapshot
+                .range()
+                .filter_map(|index| snapshot.get_view(index))
+                .collect()
         }
     }
 

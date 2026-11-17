@@ -196,7 +196,7 @@ impl<E: crate::text::TextEngine> TableRenderState<E> {
             return false;
         };
         cache
-            .entry(key, || AnyView::new(cell))
+            .entry(key, || RetainedSubview::new(cell))
             .ensure_built(renderer, env);
         true
     }
@@ -901,7 +901,7 @@ pub fn render_table_parts<E: crate::text::TextEngine>(
                     ctx,
                     env,
                     inset,
-                    cache.entry(key, move || AnyView::new(cell)),
+                    cache.entry(key, move || RetainedSubview::new(cell)),
                 );
             }
             ctx.draw_context(|draw| {

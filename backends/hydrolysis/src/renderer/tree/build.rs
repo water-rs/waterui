@@ -15,7 +15,6 @@ use waterui::component::form::CalendarGrid;
 use waterui::component::form::picker::MultiDatePickerGrid;
 use waterui_backend_core::Child;
 use waterui_core::contract_violation;
-use waterui_core::views::ViewSnapshot;
 
 pub(in crate::renderer::tree) mod backend;
 
@@ -57,7 +56,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
 
     /// Builds a child a node held to realize later, like [`build`](Self::build).
     pub(super) fn build_held(
-        child: Child<backend::HydroFamily<E>>,
+        child: HeldChild<E>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
     ) -> Self {
@@ -248,7 +247,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// it dirty and schedules a refresh, which reconciles by id).
     fn build_collection(
         layout: Box<dyn Layout>,
-        views: &AnyViews<AnyView>,
+        views: &AnyViews<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
         layout_guards: Vec<BoxWatcherGuard>,
@@ -310,7 +309,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 let view = item_view_or_empty(&snapshot, index);
                 let entry_core = renderer.new_core();
                 entry_core.cell.set_parent(&core.cell);
-                let node = Self::build_view(view, env, renderer);
+                let node = backend::HydroBackend::new(renderer).build_child(view, env);
                 node.core().cell.set_parent(&entry_core.cell);
                 Some(CollectionEntry::new(id, node, entry_core))
             })
@@ -347,7 +346,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// re-resolves). Items are materialized lazily at flush, not here.
     fn build_lazy_stack(
         axis: LazyStackAxisConfig,
-        views: &AnyViews<AnyView>,
+        views: &AnyViews<HeldChild<E>>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
         layout_guards: Vec<BoxWatcherGuard>,

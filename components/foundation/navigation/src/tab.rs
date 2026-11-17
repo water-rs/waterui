@@ -549,7 +549,7 @@ mod tests {
     use alloc::vec::Vec;
     use nami::collection::List as SignalList;
     use nami::id::SelfId;
-    use waterui_core::views::{ForEach, ViewSnapshot as _};
+    use waterui_core::views::ForEach;
 
     /// The label-only `Tab` fixture — content is irrelevant to id erasure.
     fn tab(label: &'static str) -> Tab {

@@ -53,7 +53,7 @@ fn a_label_without_an_icon_carries_none() {
 #[test]
 fn erasing_tab_identity_keeps_the_icon() {
     use waterui::navigation::Tabs;
-    use waterui::views::{ViewSnapshot as _, Views as _};
+    use waterui::views::Views as _;
 
     let selection = Binding::container(0usize);
     let tabs = Tabs::new(
