@@ -20,7 +20,7 @@ use waterui_controls::label::LabelDisplayMode;
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::layout::{LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot, Views};
+use waterui_core::views::{AnyViewsSnapshot, Views};
 use waterui_core::{AnyView, Environment};
 
 #[cfg(feature = "accessibility")]

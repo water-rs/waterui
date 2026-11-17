@@ -299,15 +299,19 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         }))
     }
 
-    fn lazy_container(
+    fn lazy_container<C: ChildView<Self>>(
         &mut self,
-        native: waterui::layout::container::LazyContainer,
+        native: waterui::layout::container::LazyContainer<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
         let renderer = &mut *self.renderer;
         let direction = native.direction();
         let (layout, children) = native.into_inner();
+        // A function pointer, so the mapped collection does not borrow
+        // this backend.
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        let children = children.map_views(into_child);
         // The collection's own layout inputs (stack spacing, absolute
         // pins, …) are signals too: subscribe them through
         // `watch_invalidation` like a FixedContainer's, so a change

@@ -65,7 +65,7 @@ pub struct StackPage<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> StackPage<E> {
-    pub(crate) const fn new(view: AnyView) -> Self {
+    pub(crate) fn new(view: AnyView) -> Self {
         Self {
             content: RetainedSubview::new(view),
             transition: None,

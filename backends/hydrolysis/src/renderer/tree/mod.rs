@@ -115,6 +115,11 @@ pub(super) mod transition;
 mod window;
 
 pub use collection::*;
+
+/// A child view held for Hydrolysis to build later: a payload's child in
+/// Hydrolysis's child slot.
+pub(in crate::renderer::tree) type HeldChild<E> =
+    waterui_backend_core::Child<build::backend::HydroFamily<E>>;
 pub use nodes::*;
 use subview::NodeSubView;
 
@@ -134,7 +139,7 @@ use std::rc::{Rc, Weak};
 use waterui_core::MainThreadBound;
 use waterui_core::id::Id as RawId;
 use waterui_core::layout::{LayoutPriority, PlacedGeometry, Point, Rect, Size, UnitPoint};
-use waterui_core::views::{AnyViews, AnyViewsSnapshot, ViewSnapshot, Views};
+use waterui_core::views::{AnyViews, AnyViewsSnapshot};
 use waterui_layout::scroll::{Axis as ScrollAxis, ScrollController};
 
 /// The type-erased item identity used by [`CollectionNode`]'s reconcile.
